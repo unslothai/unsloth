@@ -7219,7 +7219,8 @@ _MOE_CACHE_AUTO_TOKENS = ("--moe-cache-mib", "auto")
 #   L4, gemma-4-26B-A4B UD-Q4_K_XL (r at micro-batch 512 / 2048): r 0.23 / 0.20 cache
 #   23.5 / 384 vs split 24.5 / 448 (loses both), r 0.53 / 0.49 44.9 / 556 vs 31.2 / 593
 #   (+44% decode), r 0.82 / 0.79 48.5 / 592 vs 42.0 / 897 (prompt -34%, -50% with a busy
-#   PCIe link).
+#   PCIe link). On a 2.9 GiB/s host link the cache kept 0.60x decode at r 0.23 and gained
+#   1.54x at r 0.53.
 #   RTX PRO 6000, Qwen3.8-Flash-Next: r <= 0.745 decode +24-42%, r 0.846 prompt -6-40%.
 # Bounds sit between the losing and winning points; an unknown share keeps the split.
 _MOE_CACHE_MIN_RESIDENT_SHARE = 0.35
@@ -7233,6 +7234,10 @@ _MOE_CACHE_WITH_DRAFTER = True
 # the raise cost 14% of them and decode fell 3% (13% with the cache, which it shrank by
 # 16%); at r 0.53 and 0.82 it cost 4-6%.
 _MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
+# With the cache the raise shrinks the cache itself. Measured with the cache, ub 512 vs
+# 2048: r 0.20 decode 26.9 vs 23.5 (hit rate 75% vs 68%), r 0.49 46.0 / 591 vs 44.9 / 556,
+# r 0.79 equal. So the cache keeps the default micro-batch below this raised share.
+_MOE_CACHE_RAISE_MIN_SHARE = 0.50
 # Overrides, "auto" by default: "on" restores the ungated v0.1.906 choice, "off" never
 # emits the cache / never raises the micro-batch (v0.1.905). Anything else reads as auto.
 _MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
@@ -7284,10 +7289,13 @@ def _moe_spill_raise_keeps_experts(
     share_after: Optional[float],
     *,
     switch: str = "auto",
+    cache_follows: bool = False,
 ) -> bool:
     """Whether to keep the expert-spill micro-batch raise, from the resident expert share
     priced at the old and the raised micro-batch. Nothing spilling before the raise means
-    nothing to stream, and the raise would only push experts off. Unpriceable keeps it."""
+    nothing to stream, and the raise would only push experts off. Unpriceable keeps it.
+    ``cache_follows``: the cache would launch at the raised share, which then also has to
+    reach ``_MOE_CACHE_RAISE_MIN_SHARE``."""
     if switch != "auto":
         return switch == "on"
     if share_before is None:
@@ -7296,6 +7304,8 @@ def _moe_spill_raise_keeps_experts(
         return False
     if share_after is None:
         return True
+    if cache_follows and share_after < _MOE_CACHE_RAISE_MIN_SHARE:
+        return False
     return share_before - share_after <= _MOE_SPILL_UB_MAX_RESIDENT_LOSS * share_before
 
 
@@ -28545,6 +28555,21 @@ class LlamaCppBackend:
                         discrete_gpu = _moe_spill_discrete_gpu,
                         user_named_batch = _user_named_batch,
                     )
+                    # Independent of the micro-batch; the raise below asks it.
+                    _moe_cache_candidate = self._moe_cache_auto_eligible(
+                        caps = server_caps,
+                        gpu_memory_mode = gpu_memory_mode,
+                        use_fit = use_fit,
+                        experts_on_host = _moe_experts_on_host,
+                        discrete_gpu = _moe_spill_discrete_gpu,
+                        gpu_indices = gpu_indices,
+                        detected_gpus = _detected_gpus,
+                        is_vulkan_backend = is_vulkan_backend,
+                        tensor_parallel = tensor_parallel,
+                        extra_args = extra_args,
+                        env = os.environ,
+                    )
+                    _moe_cache_switch = _moe_switch(_MOE_CACHE_ENV)
                     _moe_ub_switch = _moe_switch(_MOE_SPILL_UBATCH_ENV)
                     if _spill_n_ubatch != n_ubatch and _moe_ub_switch != "off":
                         # Re-price the residency at the raised micro-batch: its compute
@@ -28578,7 +28603,18 @@ class LlamaCppBackend:
                             else None
                         )
                         if _moe_spill_raise_keeps_experts(
-                            _share_before, _share_after, switch = _moe_ub_switch
+                            _share_before,
+                            _share_after,
+                            switch = _moe_ub_switch,
+                            # Whether the cache would follow at the raised micro-batch.
+                            cache_follows = bool(
+                                _moe_cache_candidate
+                                and _moe_cache_share_admits(
+                                    _share_after,
+                                    drafter = _mtp_will_engage,
+                                    switch = _moe_cache_switch,
+                                )
+                            ),
                         ):
                             logger.info(
                                 "MoE experts are offloaded to system RAM; raising "
@@ -28607,20 +28643,6 @@ class LlamaCppBackend:
                                 100 * (_share_before or 0.0),
                                 100 * (_share_after or 0.0),
                             )
-
-                    _moe_cache_candidate = self._moe_cache_auto_eligible(
-                        caps = server_caps,
-                        gpu_memory_mode = gpu_memory_mode,
-                        use_fit = use_fit,
-                        experts_on_host = _moe_experts_on_host,
-                        discrete_gpu = _moe_spill_discrete_gpu,
-                        gpu_indices = gpu_indices,
-                        detected_gpus = _detected_gpus,
-                        is_vulkan_backend = is_vulkan_backend,
-                        tensor_parallel = tensor_parallel,
-                        extra_args = extra_args,
-                        env = os.environ,
-                    )
 
                     # Pass the final slot and micro-batch values instead of the defaults
                     # captured before slot reduction.
@@ -29003,7 +29025,6 @@ class LlamaCppBackend:
                     if _moe_cache_candidate:
                         # The cache only pays at a middling resident share (see
                         # _MOE_CACHE_MAX_RESIDENT_SHARE); priced at the launched micro-batch.
-                        _moe_cache_switch = _moe_switch(_MOE_CACHE_ENV)
                         _moe_share = (
                             _moe_resident_share_now() if _moe_cache_switch == "auto" else None
                         )

@@ -4647,6 +4647,24 @@ def test_the_spill_raise_keeps_the_resident_experts(before, after, kept):
 
 
 @pytest.mark.parametrize(
+    "before, after, kept",
+    [
+        # The cache follows: the raise must also leave it at least half the experts.
+        (0.23, 0.197, False),
+        (0.527, 0.494, False),
+        (0.55, 0.52, True),
+        (0.70, 0.66, True),
+        (None, None, True),
+    ],
+)
+def test_the_spill_raise_with_the_cache_needs_half_the_experts(before, after, kept):
+    keeps = llama_cpp_module._moe_spill_raise_keeps_experts
+
+    assert keeps(before, after, cache_follows = True) is kept
+    assert keeps(before, after, cache_follows = True, switch = "on") is True
+
+
+@pytest.mark.parametrize(
     "raw, switch",
     [
         (None, "auto"),
@@ -4768,6 +4786,33 @@ def test_the_spill_raise_is_priced_against_the_resident_experts(
     assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
     assert (backend._moe_spill_batch_restore is not None) is raised
     assert _has_moe_cache(cmd) is cached, cmd
+
+
+@pytest.mark.parametrize(
+    "cache_switch, raised, cached",
+    # ~51% resident, and a 0.4 GiB larger buffer costs ~5% of those experts (under the
+    # 10% rule) but leaves 48%: with the cache following, keep the default micro-batch.
+    [("auto", False, True), ("off", True, False)],
+    ids = ["cache_keeps_default_ubatch", "split_takes_the_raise"],
+)
+def test_the_raise_is_dropped_when_it_would_leave_the_cache_under_half(
+    tmp_path, _moe_cache_host, monkeypatch, cache_switch, raised, cached
+):
+    _ubatch_sized_compute_buffer(monkeypatch, 0.4)
+    monkeypatch.setenv("UNSLOTH_MOE_CACHE", cache_switch)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, 15_000, 32_000)])
+
+    assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
+    assert _has_moe_cache(cmd) is cached, cmd
+
+
+def test_the_v0_1_905_workaround_args_are_honoured(tmp_path, _moe_cache_host):
+    """``--moe-cache-mib 0 -ub 512``, the workaround users ran on v0.1.906."""
+    backend, cmd = _cache_launch(tmp_path, extra_args = ["--moe-cache-mib", "0", "-ub", "512"])
+
+    assert backend._moe_cache_flags == []
+    assert cmd.count("--moe-cache-mib") == 1 and cmd[cmd.index("--moe-cache-mib") + 1] == "0"
+    assert _ubatch_values(cmd) == ["512"], cmd
 
 
 def test_the_spill_ubatch_switch(tmp_path, _moe_cache_host, monkeypatch):
