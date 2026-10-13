@@ -521,6 +521,11 @@ def _rms_backward(
 _eager_kernel = lambda kernel: kernel
 
 
+def _rms_weight_grad(dY, X, W, r):
+    # Only for a trainable weight (full finetuning); must run before the non-Gemma kernel overwrites dY.
+    return (dY.float() * (X.float() * r.view(-1, 1))).sum(0).to(W.dtype)
+
+
 class Fast_RMS_Layernorm(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -548,11 +553,12 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
+        dW = _rms_weight_grad(dY, X, W, r) if ctx.needs_input_grad[1] else None
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
         with torch_gpu_device(dY.device):
             _rms_backward(dY, dX, X, W, r, ctx.eps, ctx.GEMMA, _eager_kernel)
         dX = dX.view(*shape)
-        return dX, None, None, None
+        return dX, dW, None, None
 
 
 # Compiled graphs take these ops: same kernels, fresh outputs (the Function writes dX over dY).
@@ -619,8 +625,10 @@ if _TRACEABLE:
 
     def _rms_layernorm_op_backward(ctx, dY, dr):
         X, W, r = ctx.saved_tensors
-        dX = torch.ops.unsloth.rms_layernorm_backward(dY.contiguous(), X, W, r, ctx.eps, ctx.gemma)
-        return dX, None, None, None
+        dY = dY.contiguous()
+        dW = _rms_weight_grad(dY, X, W, r) if ctx.needs_input_grad[1] else None
+        dX = torch.ops.unsloth.rms_layernorm_backward(dY, X, W, r, ctx.eps, ctx.gemma)
+        return dX, dW, None, None
 
     _rms_layernorm_op.register_autograd(
         _rms_layernorm_op_backward, setup_context = _rms_setup_context

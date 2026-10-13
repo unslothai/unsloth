@@ -87,6 +87,14 @@ def _rms_case(fn, shape, dtype, gemma, non_contiguous):
     return Y.detach(), X.grad, norm.weight.grad
 
 
+def _assert_rms_matches(eager, compiled):
+    for e, c, name in zip(eager[:2], compiled[:2], ("Y", "dX")):
+        assert _bytes_equal(e, c), name
+    # dW is a plain torch reduction that Inductor may reorder, so close rather than byte-equal.
+    assert eager[2] is not None and compiled[2] is not None
+    torch.testing.assert_close(compiled[2], eager[2])
+
+
 @pytest.mark.parametrize("dtype", DTYPES, ids = str)
 @pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
 @pytest.mark.parametrize(
@@ -100,8 +108,7 @@ def test_rms_layernorm_compiled_matches_eager(shape, non_contiguous, gemma, dtyp
     compiled = _rms_case(
         _compile(lambda n, x, gm: fast_rms_layernorm(n, x, gm)), shape, dtype, gemma, non_contiguous
     )
-    for e, c, name in zip(eager, compiled, ("Y", "dX", "dW")):
-        assert _bytes_equal(e, c), name
+    _assert_rms_matches(eager, compiled)
     if TRACEABLE:
         assert _graph_breaks() == 0
 
@@ -246,7 +253,8 @@ def test_bf16_without_native_support_stays_untraced(monkeypatch):
         False,
         False,
     )
-    assert all(_bytes_equal(e, c) for e, c in zip(eager, compiled)) and _graph_breaks() == 0
+    _assert_rms_matches(eager, compiled)
+    assert _graph_breaks() == 0
     torch._dynamo.reset()
     dynamo_utils.counters.clear()
     eager = _rms_case(fast_rms_layernorm, (64, 256), torch.bfloat16, False, False)
@@ -257,7 +265,8 @@ def test_bf16_without_native_support_stays_untraced(monkeypatch):
         False,
         False,
     )
-    assert all(_bytes_equal(e, c) for e, c in zip(eager, compiled)) and _graph_breaks() > 0
+    _assert_rms_matches(eager, compiled)
+    assert _graph_breaks() > 0
 
 
 def test_rope_dynamic_shapes():
