@@ -2537,6 +2537,13 @@ export const ar = {
         "إظهار زر للعودة إلى أحدث رسالة بعد التمرير لأعلى.",
       scrollToBottomButtonKeywords:
         "تمرير أسفل أحدث سهم زر إخفاء scroll bottom button",
+      replyNotification: "الإشعار عند انتهاء الرد",
+      replyNotificationDescription:
+        "إظهار إشعار من النظام عند انتهاء الرد بينما يكون Unsloth مصغرًا أو في الخلفية.",
+      replyNotificationBlocked:
+        "الإشعارات محظورة. اسمح بها لـ Unsloth في إعدادات المتصفح أو النظام، ثم حاول مرة أخرى.",
+      replyNotificationKeywords:
+        "إشعار تنبيه انتهى اكتمل جاهز رد خلفية مصغر notify notification alert done finished reply background",
       showResponseModel: "إظهار نموذج الاستجابة",
       showResponseModelDescription:
         "إظهار البيانات الوصفية للنموذج في ردود المساعد.",

@@ -2543,6 +2543,13 @@ export const hi = {
         "ऊपर स्क्रॉल करने के बाद नवीनतम संदेश पर वापस जाने के लिए बटन दिखाएँ।",
       scrollToBottomButtonKeywords:
         "स्क्रॉल नीचे नवीनतम तीर बटन छिपाएँ scroll bottom button",
+      replyNotification: "जवाब पूरा होने पर सूचना दें",
+      replyNotificationDescription:
+        "जब Unsloth छोटा किया हुआ हो या बैकग्राउंड में हो, तब जवाब पूरा होने पर सिस्टम सूचना दिखाएँ।",
+      replyNotificationBlocked:
+        "सूचनाएँ ब्लॉक हैं। ब्राउज़र या सिस्टम सेटिंग्स में Unsloth के लिए इन्हें अनुमति दें, फिर दोबारा कोशिश करें।",
+      replyNotificationKeywords:
+        "सूचना अलर्ट पूरा तैयार जवाब बैकग्राउंड notify notification alert done finished reply background",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",

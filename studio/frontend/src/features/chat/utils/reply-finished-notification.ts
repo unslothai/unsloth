@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import { isTauri } from "@/lib/api-base";
+import {
+  notifyNative,
+  primeNativeNotificationPermission,
+} from "@/lib/native-notifications";
+import { useChatPreferencesStore } from "../stores/chat-preferences-store.ts";
+
+const TITLE = "Reply finished";
+const BODY = "Your reply in Unsloth Studio is ready.";
+// One tag, so a burst of finished replies (compare mode, a prompt queue) replaces one browser
+// notification instead of stacking.
+const BROWSER_TAG = "unsloth-reply-finished";
+
+let sequence = 0;
+
+function browserNotificationApi(): typeof Notification | null {
+  if (typeof window === "undefined" || !("Notification" in window)) {
+    return null;
+  }
+  return window.Notification;
+}
+
+function windowIsInBackground(): boolean {
+  if (typeof document === "undefined") {
+    return false;
+  }
+  return (
+    document.visibilityState !== "visible" ||
+    (typeof document.hasFocus === "function" && !document.hasFocus())
+  );
+}
+
+// Runs once when a reply ends, never per token. Off by default, and silent while the user is
+// looking at the window: the reply on screen already says it finished.
+export function notifyReplyFinished(): void {
+  if (!useChatPreferencesStore.getState().notifyWhenReplyFinishes) {
+    return;
+  }
+  if (!windowIsInBackground()) {
+    return;
+  }
+  sequence += 1;
+  if (isTauri) {
+    notifyNative({
+      key: `reply-finished:${sequence}`,
+      title: TITLE,
+      body: BODY,
+      requestPermission: false,
+    }).catch(() => undefined);
+    return;
+  }
+  const api = browserNotificationApi();
+  if (api?.permission !== "granted") {
+    return;
+  }
+  try {
+    const notification = new api(TITLE, { body: BODY, tag: BROWSER_TAG });
+    notification.onclick = () => {
+      window.focus();
+      notification.close();
+    };
+  } catch {
+    // Some browsers only allow notifications from a service worker.
+  }
+}
+
+// Called from the settings switch, a user gesture, so the browser or OS can show its prompt.
+// Resolves false when notifications cannot be shown, so the switch does not claim otherwise.
+export async function requestReplyFinishedPermission(): Promise<boolean> {
+  if (isTauri) {
+    return primeNativeNotificationPermission();
+  }
+  const api = browserNotificationApi();
+  if (!api) {
+    return false;
+  }
+  if (api.permission === "granted") {
+    return true;
+  }
+  if (api.permission === "denied") {
+    return false;
+  }
+  try {
+    return (await api.requestPermission()) === "granted";
+  } catch {
+    return false;
+  }
+}

@@ -185,6 +185,7 @@ import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
+import { notifyReplyFinished } from "./utils/reply-finished-notification";
 import {
   extractDeltaText,
   parseAssistantContent,
@@ -2436,9 +2437,12 @@ function createPersistedRunAdapter(
       }
       if (typeof result === "object" && Symbol.asyncIterator in result) {
         yield* result;
-        return;
+      } else {
+        yield await result;
       }
-      yield await result;
+      if (!options.abortSignal?.aborted) {
+        notifyReplyFinished();
+      }
     },
   };
 }

@@ -2575,6 +2575,13 @@ export const de = {
         "Eine Schaltfläche anzeigen, um nach dem Hochscrollen zur neuesten Nachricht zurückzuspringen.",
       scrollToBottomButtonKeywords:
         "scrollen unten springen neueste Pfeil Schaltfläche ausblenden scroll bottom button",
+      replyNotification: "Benachrichtigen, wenn eine Antwort fertig ist",
+      replyNotificationDescription:
+        "Zeigt eine Systembenachrichtigung, wenn eine Antwort fertig ist, während Unsloth minimiert oder im Hintergrund ist.",
+      replyNotificationBlocked:
+        "Benachrichtigungen sind blockiert. Erlaube sie für Unsloth in den Browser- oder Systemeinstellungen und versuche es erneut.",
+      replyNotificationKeywords:
+        "Benachrichtigung benachrichtigen Hinweis fertig abgeschlossen bereit Antwort Hintergrund minimiert notify notification alert done finished reply background",
       showResponseModel: "Antwortmodell anzeigen",
       showResponseModelDescription:
         "Modellmetadaten in Antworten des Assistenten anzeigen.",

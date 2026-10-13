@@ -2530,6 +2530,13 @@ export const ko = {
         "위로 스크롤한 뒤 최신 메시지로 돌아가는 버튼을 표시합니다.",
       scrollToBottomButtonKeywords:
         "스크롤 맨 아래 최신 화살표 버튼 숨기기 scroll bottom button",
+      replyNotification: "응답이 끝나면 알림",
+      replyNotificationDescription:
+        "Unsloth가 최소화되었거나 백그라운드에 있을 때 응답이 끝나면 시스템 알림을 표시합니다.",
+      replyNotificationBlocked:
+        "알림이 차단되어 있습니다. 브라우저 또는 시스템 설정에서 Unsloth의 알림을 허용한 후 다시 시도하세요.",
+      replyNotificationKeywords:
+        "알림 통지 완료 끝 준비 응답 백그라운드 최소화 notify notification alert done finished reply background",
       showResponseModel: "응답 모델 표시",
       showResponseModelDescription:
         "어시스턴트 응답에 모델 메타데이터를 표시합니다.",

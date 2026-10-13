@@ -2521,6 +2521,13 @@ export const ja = {
         "上にスクロールしたときに、最新のメッセージへ戻るボタンを表示します。",
       scrollToBottomButtonKeywords:
         "スクロール 一番下 最新 矢印 ボタン 非表示 scroll bottom button",
+      replyNotification: "応答完了時に通知",
+      replyNotificationDescription:
+        "Unsloth が最小化またはバックグラウンドにあるときに応答が完了すると、システム通知を表示します。",
+      replyNotificationBlocked:
+        "通知がブロックされています。ブラウザーまたはシステムの設定で Unsloth の通知を許可してから、もう一度お試しください。",
+      replyNotificationKeywords:
+        "通知 アラート 完了 終了 準備完了 応答 バックグラウンド 最小化 notify notification alert done finished reply background",
       showResponseModel: "応答モデルを表示",
       showResponseModelDescription:
         "アシスタントの応答にモデルのメタデータを表示します。",

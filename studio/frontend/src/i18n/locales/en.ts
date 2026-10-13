@@ -2572,6 +2572,13 @@ export const en = {
         "Show a button to jump back to the latest message after you scroll up.",
       scrollToBottomButtonKeywords:
         "scroll bottom jump latest newest arrow down button floating hide show",
+      replyNotification: "Notify when a reply finishes",
+      replyNotificationDescription:
+        "Show a system notification when a reply finishes while Unsloth is minimized or in the background.",
+      replyNotificationBlocked:
+        "Notifications are blocked. Allow them for Unsloth in your browser or system settings, then try again.",
+      replyNotificationKeywords:
+        "notify notification alert done finished complete ready response reply background minimized desktop sound",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
