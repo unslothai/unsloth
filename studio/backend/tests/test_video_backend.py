@@ -4690,6 +4690,44 @@ def test_an_explicit_mode_is_re_fitted_before_launch_and_never_altered(monkeypat
         )
 
 
+def _host_ram(monkeypatch, ram):
+    from core.inference import video_minimax_h3
+
+    monkeypatch.setattr(video_minimax_h3, "h3_native_host_budgets", lambda: (ram, 1 << 50))
+
+
+def test_a_reused_server_still_needs_its_per_render_host_ram(monkeypatch):
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    running = ("--offload-to-cpu", "--diffusion-fa", "--clip-on-cpu")
+    slot = types.SimpleNamespace(alive_signature = lambda: ("bin", (), running, ()))
+    _host_ram(monkeypatch, 1 << 30)
+    with pytest.raises(H3NativeMemoryRefusal, match = "frames, audio and CPU buffers"):
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot), list(running), render_resident = False, memory_mode = "auto"
+        )
+    # Swap does not count; enough RAM lets the reuse through without a full fit.
+    _host_ram(monkeypatch, 4 << 30)
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), list(running), render_resident = False, memory_mode = "auto"
+    ) == list(running)
+
+
+def test_a_resident_render_and_a_resident_start_check_their_host_ram(monkeypatch):
+    from core.inference.video import _h3_launch_flags, _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    resident = ["--diffusion-fa", "--max-vram", "-1"]
+    _host_ram(monkeypatch, 1 << 30)
+    with pytest.raises(H3NativeMemoryRefusal):
+        _h3_offloaded_render_flags(_render_runtime(), resident, render_resident = True, memory_mode = "auto")
+    with pytest.raises(H3NativeMemoryRefusal):
+        _h3_launch_flags(_render_runtime(), resident, "auto")
+    _host_ram(monkeypatch, 4 << 30)
+    assert _h3_launch_flags(_render_runtime(), resident, "auto") == resident
+
+
 def test_a_resident_render_is_never_re_fitted(monkeypatch):
     from core.inference.video import _h3_offloaded_render_flags
     from core.inference import video_minimax_h3

@@ -1692,6 +1692,19 @@ def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) ->
     )
 
 
+def h3_native_render_overhead_refusal() -> Optional[str]:
+    """Why a render that places no new weights (a reused server, or a resident render) cannot start: live
+    available RAM (``h3_native_host_budgets``) below the per-render host overhead. None when it fits or RAM cannot
+    be read. File reads only."""
+    ram, _swap = h3_native_host_budgets()
+    if ram is None or ram >= H3_NATIVE_HOST_OVERHEAD_BYTES:
+        return None
+    return (
+        f"A MiniMax-H3 render needs about {_gib(H3_NATIVE_HOST_OVERHEAD_BYTES)} of free system RAM for its frames, "
+        f"audio and CPU buffers, and {_gib(ram)} is available. Close other applications and try again."
+    )
+
+
 H3_NATIVE_RENDER_RUNNING_HINT = " A render on the model being replaced is still running and holds that memory; try again after it finishes."
 
 

@@ -1430,6 +1430,9 @@ def _h3_offloaded_render_flags(
 
     inputs = getattr(runtime, "fit_inputs", None)
     if render_resident or "--offload-to-cpu" not in render_flags or inputs is None:
+        if inputs is not None:
+            # A resident render places its weights in VRAM, but still needs its per-render host RAM.
+            _h3_check_render_overhead()
         return h3_native_offloaded_render_flags(
             render_flags,
             render_resident = render_resident,
@@ -1439,7 +1442,9 @@ def _h3_offloaded_render_flags(
     slot = getattr(runtime, "server_slot", None)
     live = slot.alive_signature() if slot is not None else None
     if reuse_live_server and live is not None and "--offload-to-cpu" in live[2]:
-        # A reading now would count the server's own placed weights against it.
+        # A reading now would count the server's own placed weights against it; only what this render newly needs
+        # (its per-render host RAM) is checked.
+        _h3_check_render_overhead()
         return list(live[2])
     released = "none"
     if live is not None:
@@ -1452,6 +1457,14 @@ def _h3_offloaded_render_flags(
         memory_mode,
         hint = H3_NATIVE_RENDER_RUNNING_HINT if released == "pending" else "",
     )
+
+
+def _h3_check_render_overhead(hint: str = "") -> None:
+    from .video_minimax_h3 import H3NativeMemoryRefusal, h3_native_render_overhead_refusal
+
+    refusal = h3_native_render_overhead_refusal()
+    if refusal:
+        raise H3NativeMemoryRefusal(refusal + hint)
 
 
 def _h3_launch_flags(
@@ -1468,7 +1481,11 @@ def _h3_launch_flags(
     from .video_minimax_h3 import H3NativeMemoryRefusal, h3_native_live_fit
 
     inputs = getattr(runtime, "fit_inputs", None)
-    if inputs is None or "--offload-to-cpu" not in render_flags:
+    if inputs is None:
+        return list(render_flags)
+    if "--offload-to-cpu" not in render_flags:
+        # A resident start: its weights go to VRAM (judged by the resident choice), its per-render RAM is checked.
+        _h3_check_render_overhead(hint)
         return list(render_flags)
     mode = memory_mode or "auto"
     fit = h3_native_live_fit(inputs, mode)
