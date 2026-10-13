@@ -2163,7 +2163,6 @@ def test_an_offline_status_read_does_not_rename_a_started_job(hub, monkeypatch):
     assert acm._job_rows == {}
 
 
-
 def test_a_failed_hub_listing_does_not_record_a_cached_guess(hub, monkeypatch):
     # Online, but the listing call fails: resolve falls back to the cache, where only tiny is.
     snap = _snapshot(hub)
@@ -2181,6 +2180,7 @@ def test_a_failed_hub_listing_does_not_record_a_cached_guess(hub, monkeypatch):
     assert acm.resolve(row, "small/Q8_0").from_hub is False
     acm.download_target(row, "small/Q8_0")
     assert acm._job_rows == {}
+
 
 def test_active_downloads_name_umbrella_jobs_by_row(hub, monkeypatch):
     import asyncio
