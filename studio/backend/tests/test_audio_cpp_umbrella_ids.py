@@ -535,3 +535,30 @@ def test_an_empty_variant_path_names_no_folder_variant(hub, monkeypatch, variant
         asyncio.run(deletion.delete_cached_model_response(QWEN, variant))
     assert err.value.status_code == 404
     assert len(_left(hub)) == 3
+
+
+@pytest.mark.parametrize(
+    "variant, picks",
+    [
+        (".", []),
+        ("./", []),
+        ("Moonshine-Streaming-GGUF", []),
+        ("gguf", []),
+        ("-", []),
+        ("q8_0.gguf", []),
+        ("TINY/Q8_0", ["tiny"]),
+        ("tiny/Q8_0/", ["tiny"]),
+        ("moonshine-streaming-small-q8_0", ["small"]),
+        ("moonshine-streaming-small-q8_0.gguf", ["small"]),
+        ("tiny", ["tiny"]),
+    ],
+)
+def test_a_folder_variant_names_only_what_it_says(hub, variant, picks):
+    moon = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    keys = {
+        size: f"Moonshine-Streaming-GGUF/moonshine-streaming-{size}-q8_0"
+        for size in ("tiny", "small")
+    }
+    _add_snapshot(hub, "a" * 40, {f"{k}.gguf": "moonshine_asr" for k in keys.values()}, main = True)
+    acm.forget()
+    assert acm.cached_folder_target(moon, variant) == (AUDIO_CPP_REPO, [keys[p] for p in picks])

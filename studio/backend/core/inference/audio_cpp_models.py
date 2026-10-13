@@ -2611,11 +2611,13 @@ def _cached_variants_named(
     listing (``tiny/Q8_0``) while a cache holding one size keys it ``Q8_0``, so scope words also
     match the file path; a quant must still pick exactly one, never a fallback default (``match_variant``
     would rank a bare ``Q8_0`` onto one of ``tiny/Q8_0`` and ``small/Q8_0``)."""
-    low = wanted.strip().replace("\\", "/").lower()
+    low = wanted.strip().replace("\\", "/").strip("/").lower()
     exact = [
         v
         for v in variants
-        if v.key.lower() == low or v.main_file.lower() in (low, f"{folder}/{low}".lower())
+        if v.key.lower() == low
+        or v.main_file.lower() in (low, f"{folder}/{low}".lower())
+        or v.main_file.rsplit("/", 1)[-1].lower() in (low, f"{low}.gguf")
     ]
     if exact:
         return exact[:1]
@@ -2623,13 +2625,21 @@ def _cached_variants_named(
     if not parts:
         return []
     quants = {quant_label(v.main_file).lower() for v in variants}
-    quant = parts[-1] if parts and parts[-1] in quants else None
+    quant = parts[-1] if parts[-1] in quants else None
     words = parts[:-1] if quant else parts
+    folder_words = set(re.split(r"[-_.]+", folder.lower()))
+
+    def scope(v: AudioCppVariant) -> set[str]:
+        # A size or edition: a directory of the key, or a word of the file name the folder's own
+        # name does not supply (``tiny`` in ``moonshine-streaming-tiny-q8_0``).
+        stem = v.main_file.rsplit("/", 1)[-1].lower().removesuffix(".gguf")
+        return set(v.key.lower().split("/")[:-1]) | (set(re.split(r"[-_.]+", stem)) - folder_words)
+
     found = [
         v
         for v in variants
         if (quant is None or quant_label(v.main_file).lower() == quant)
-        and all(w in f"{v.key}/{v.main_file}".lower() for w in words)
+        and all(w in scope(v) for w in words)
     ]
     return found if quant is None or len(found) == 1 else []
 
