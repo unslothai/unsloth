@@ -8,6 +8,7 @@ __all__ = [
 
 import contextlib
 import copy
+import dataclasses
 import json
 import math
 import os
@@ -34,6 +35,7 @@ from ._decision_common import *  # noqa: F401,F403
 HEAD_LEARNING_RATE = 1e-4
 # DecisionTrainer defaults for Clef; every key is also a DecisionTrainer argument.
 CLEF_RECIPE = {}
+_PIXEL_KEYS = ("pixel_values", "pixel_values_videos")
 _DECISION_CONFIG = "unsloth_decision_config.json"
 # Copied byte for byte from the checkpoint a Clef fine-tune started from: Cloudflare's loader and
 # license, and the tokenizer / processor files, which transformers would otherwise rewrite (a
@@ -263,11 +265,22 @@ class ClefDataCollator:
             "targets": [item["targets"][i] for i in order],
         }
 
+    def _with_pixels(self, item) -> dict:
+        from .._vendor.clef.joint_schema_model import _encode_media
+
+        record = item["record"]
+        if not record.media or any(key in record.media for key in _PIXEL_KEYS):
+            return item
+        _, media = _encode_media(self.processor, item["source"])
+        pixels = {key: media[key] for key in _PIXEL_KEYS if key in media}
+        return {**item, "record": dataclasses.replace(record, media = {**record.media, **pixels})}
+
     def __call__(self, items: list) -> dict:
         from .clef import QUESTION_TYPES as CLEF_TYPES, collate_records
 
         if self.permute_fields:
             items = [self._permuted(item) if "source" in item else item for item in items]
+        items = [self._with_pixels(item) for item in items]
         inputs = collate_records(
             [item["record"] for item in items], self.pad_token_id, torch.device("cpu")
         )
@@ -385,13 +398,19 @@ def _clef_items(rows, tokenizer, max_len, validate, report, skip) -> list:
         if not kept:
             continue
         source = {"state": state, "questions": kept}
-        source.update({key: row[key] for key in ("images", "media_kwargs") if key in row})
         try:
+            images = _row_images(row)
+            if images:
+                source.update(images = images, media_kwargs = row.get("media_kwargs"))
             record = encode_record(tokenizer, source, max_length = max_len, processor = processor)
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OSError) as exc:
             for name in kept:
                 skip(index, f"does not fit: {exc}", name)
             continue
+        if record.media:
+            # ClefDataCollator makes the pixels again per batch: kept here they cost 24 MiB per 1024x1024 image.
+            media = {k: v for k, v in record.media.items() if k not in _PIXEL_KEYS}
+            record = dataclasses.replace(record, media = media)
         items.append(
             {
                 "input_ids": list(record.input_ids),
@@ -412,13 +431,16 @@ def _clef_logits(
     items: list,
     pad_token_id: int,
     batch_size: int = 4,
+    processor = None,
 ) -> tuple:
     # Per question logits plus one Laya-shaped item per question for the shared metrics.
     from .clef import QUESTION_TYPES as CLEF_TYPES
 
     device = next(model.parameters()).device
     amp_dtype = _clef_amp_dtype(model, device)
-    collate = ClefDataCollator(pad_token_id)
+    if not hasattr(processor, "tokenizer"):
+        processor = getattr(model, "_saved_temp_tokenizer", None)
+    collate = ClefDataCollator(pad_token_id, tokenizer = processor)
     # Clef numbers question types noul, choice, score; Laya's metrics use choice, score, noul.
     laya_type = {CLEF_TYPES[kind]: QUESTION_TYPES.index(kind) for kind in QUESTION_TYPES}
     was_training = model.training
@@ -455,7 +477,7 @@ def _decision_logits(
     pad_token_id = getattr(tokenizer, "tokenizer", tokenizer).pad_token_id
     if getattr(model, "is_clef", False):
         # A run that lowered its batch to fit a 9B / 27B backbone scores in that batch too.
-        return _clef_logits(model, items, pad_token_id, batch_size or 4)
+        return _clef_logits(model, items, pad_token_id, batch_size or 4, tokenizer)
     return _logits(model, items, pad_token_id), items
 
 
@@ -1768,7 +1790,7 @@ class FastDecisionModel:
                 questions,
                 max_length = max_length,
                 predicted = True,
-                images = images,
+                images = _row_images({"images": images}),
             )["answers"]
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         if images:

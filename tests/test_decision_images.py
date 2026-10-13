@@ -56,16 +56,18 @@ def test_image_records_batch_and_permute_without_losing_order(processor, row):
     ]
     for item, record in zip(items, encoded):
         assert item["input_ids"] == list(record.input_ids)
-    assert not torch.equal(
-        items[2]["record"].media["pixel_values"], items[3]["record"].media["pixel_values"]
-    )
+        # Items keep no pixels: the collator makes them again per batch.
+        assert "pixel_values" not in (item["record"].media or {})
     expected = collate_records(encoded, processor.tokenizer.pad_token_id, torch.device("cpu"))
-    collator = decision.ClefDataCollator(processor.tokenizer.pad_token_id)
+    collator = decision.ClefDataCollator(processor.tokenizer.pad_token_id, tokenizer = processor)
     batch = collator(items)
     for key in ("input_ids", "attention_mask"):
         torch.testing.assert_close(batch[key], expected[key])
     for key, value in expected["media"].items():
         torch.testing.assert_close(batch[key], value)
+    assert not torch.equal(
+        collator(items[2:3])["pixel_values"], collator(items[3:4])["pixel_values"]
+    )
     shuffled = decision.ClefDataCollator(
         processor.tokenizer.pad_token_id,
         tokenizer = processor,
@@ -77,7 +79,23 @@ def test_image_records_batch_and_permute_without_losing_order(processor, row):
     by_name = dict(zip(row["questions"], items[2]["targets"]))
     for target, question in zip(shuffled["target"], shuffled["records"][0].questions):
         assert target[: len(question.option_ids)].tolist() == by_name[question.question_id]
-    torch.testing.assert_close(shuffled["pixel_values"], items[2]["record"].media["pixel_values"])
+    torch.testing.assert_close(shuffled["pixel_values"], collator(items[2:3])["pixel_values"])
+
+
+def test_image_columns_read_like_mlx(processor, row):
+    import io
+
+    image = row["images"][0]
+    buffer = io.BytesIO()
+    image.save(buffer, format = "PNG")
+    forms = [[image], image, [{"bytes": buffer.getvalue(), "path": None}]]
+    items, report = build([{**row, "images": form} for form in forms], processor)
+    assert report["skipped"] == 0
+    collator = decision.ClefDataCollator(processor.tokenizer.pad_token_id, tokenizer = processor)
+    first = collator(items[:1])
+    for item in items[1:]:
+        assert item["input_ids"] == items[0]["input_ids"]
+        torch.testing.assert_close(collator([item])["pixel_values"], first["pixel_values"])
 
 
 def test_image_rows_require_a_processor(processor, row):
@@ -119,7 +137,7 @@ def model():
 
 def test_images_reach_forward_gradients_prediction_and_evaluation(processor, row, model):
     items, _ = build([row], processor)
-    batch = decision.ClefDataCollator(processor.tokenizer.pad_token_id)(items)
+    batch = decision.ClefDataCollator(processor.tokenizer.pad_token_id, tokenizer = processor)(items)
     calls = []
     hook = model.encoder.model.visual.register_forward_hook(lambda *args: calls.append(1))
     try:
@@ -145,7 +163,9 @@ def test_images_reach_forward_gradients_prediction_and_evaluation(processor, row
         )
         assert calls and set(answers) == set(row["questions"])
         calls.clear()
-        evaluated, _ = decision._clef_logits(model, items, processor.tokenizer.pad_token_id)
+        evaluated, _ = decision._clef_logits(
+            model, items, processor.tokenizer.pad_token_id, processor = processor
+        )
         assert calls and len(evaluated) == len(row["questions"])
         for expected, actual in zip(logits.detach(), evaluated):
             torch.testing.assert_close(expected, actual)
