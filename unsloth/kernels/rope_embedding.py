@@ -453,6 +453,7 @@ def register_split_model(model, device_map = None):
 
 def _register_splits_on_dispatch():
     import sys
+
     try:
         import accelerate.big_modeling as big_modeling
     except Exception:

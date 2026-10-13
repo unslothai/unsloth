@@ -86,7 +86,14 @@ def test_one_visible_device_never_syncs(monkeypatch, synced):
 
 def test_split_model_syncs_from_the_first_call(monkeypatch, synced):
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
-    model = _Model({"model.embed_tokens": 0, "model.layers.0": "cuda:0", "model.layers.1": "1", "lm_head": "cpu"})
+    model = _Model(
+        {
+            "model.embed_tokens": 0,
+            "model.layers.0": "cuda:0",
+            "model.layers.1": "1",
+            "lm_head": "cpu",
+        }
+    )
     assert RE.register_split_model(model)
     layers = [0, 0, 1, 1]
     for _ in range(3):
@@ -132,7 +139,9 @@ def test_unregistered_split_syncs_once_seen(monkeypatch, synced):
 def test_index_less_entries_mean_the_current_device(monkeypatch, synced, current):
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
     current[0] = 1
-    assert not RE.register_split_model(_Model({"model.layers.0": "cuda", "model.layers.1": "cuda:1"}))
+    assert not RE.register_split_model(
+        _Model({"model.layers.0": "cuda", "model.layers.1": "cuda:1"})
+    )
     assert RE.register_split_model(_Model({"model.layers.0": "cuda", "model.layers.1": "cuda:0"}))
 
 
