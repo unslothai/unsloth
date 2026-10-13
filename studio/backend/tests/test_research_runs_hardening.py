@@ -228,6 +228,8 @@ def test_sanitize_query_redacts_every_auth_param_after_an_authorization_scheme()
         f'Authorization: Digest username = "bob", nonce = "{nonce}", response = "{digest}"',
         f'curl -H "Authorization: Bearer {digest}{nonce}"',
         f"(Authorization: Basic {digest}{nonce}==)",
+        f"“Authorization: Basic {digest}{nonce}”",
+        f"Authorization: Basic {digest}{nonce}KEY=",
     ):
         cleaned = _sanitize_public_query(f"why does {header} get a 401")
         assert nonce not in cleaned and digest not in cleaned, header
