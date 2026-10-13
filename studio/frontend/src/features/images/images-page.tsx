@@ -234,6 +234,7 @@ import {
   type DiffusionLoadProgress,
   type DiffusionLoadRequest,
   type DiffusionLoraInfo,
+  type DiffusionSamplerOption,
   type DiffusionStatus,
   type LocalizedEditMode,
   type GalleryImage,
@@ -273,6 +274,17 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import {
+  AUTOMATIC_SCHEDULE,
+  DEFAULT_SAMPLER,
+  normalizeSamplerChoice,
+  readSamplerChoices,
+  type SamplerChoice,
+  samplerRecipeLabel,
+  samplerRequestFields,
+  SCHEDULE_LABELS,
+  withSamplerChoice,
+} from "./lib/sampler-choice";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -706,6 +718,8 @@ function loadToastArgs(
     classNames: LOAD_TOAST_CLASSNAMES,
   };
 }
+
+const NO_SAMPLERS: DiffusionSamplerOption[] = [];
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -1278,6 +1292,12 @@ function RecipePopover({
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
           <RecipeRow label="Steps" value={String(image.steps)} />
           <RecipeRow label="Guidance" value={String(image.guidance)} />
+          {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
+            <RecipeRow
+              label="Sampler"
+              value={samplerRecipeLabel(image.sampler, image.schedule_type) ?? ""}
+            />
+          ) : null}
           <RecipeRow label="Seed" value={String(image.seed)} mono />
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
@@ -1483,6 +1503,9 @@ export function ImagesPage({
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
+  const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
+  // A recipe restored while unloaded: Generate recalls the model, uses this, and stores it for that model.
+  const [restoredSampler, setRestoredSampler] = useState<Partial<SamplerChoice> | null>(null);
   // Whether the user has taken the recipe since the pick still waiting for its status: a preset
   // selected while the model downloaded is newer than that pick.
   const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
@@ -1939,6 +1962,26 @@ export function ImagesPage({
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
   const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
   const negativeCapable = status?.supports_negative_prompt !== false;
+  const samplerOptions = (status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
+  // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
+  const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
+  const samplerChoice = normalizeSamplerChoice(
+    samplerOptions,
+    restoredSampler ?? samplerChoices[samplerModelKey],
+  );
+  const changeSamplerChoice = useCallback(
+    (next: Partial<SamplerChoice>) => {
+      setRestoredSampler(null);
+      setSamplerChoices((all) =>
+        withSamplerChoice(
+          all,
+          samplerModelKey,
+          normalizeSamplerChoice(samplerOptions, { ...samplerChoice, ...next }),
+        ),
+      );
+    },
+    [samplerChoice, samplerModelKey, samplerOptions],
+  );
   useEffect(() => {
     if (!controlnetCapable) {
       setAvailableControlNets([]);
@@ -2456,6 +2499,12 @@ export function ImagesPage({
     if (restoredNegative) setNegativeOpen(true);
     setSteps(image.steps);
     setGuidance(image.guidance);
+    const restoredChoice = {
+      sampler: image.sampler ?? DEFAULT_SAMPLER,
+      scheduleType: image.schedule_type ?? AUTOMATIC_SCHEDULE,
+    };
+    if (samplerOptions.length > 0) changeSamplerChoice(restoredChoice);
+    else setRestoredSampler(restoredChoice);
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
     setSeed(String(image.batch_seed ?? image.seed));
@@ -2520,7 +2569,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [setPromptFor, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setPromptFor, setWorkflow, sizeLimits]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -4220,6 +4269,10 @@ export function ImagesPage({
       toast.error("Prompt is empty");
       return;
     }
+    if (restoredSampler && samplerOptions.length > 0) {
+      setRestoredSampler(null);
+      setSamplerChoices((all) => withSamplerChoice(all, samplerModelKey, samplerChoice));
+    }
     const isTransform = workflow === "transform";
     const isInpaint = workflow === "inpaint";
     const isExtend = workflow === "extend";
@@ -4441,6 +4494,7 @@ export function ImagesPage({
             upscale: condUpscale,
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
+            ...samplerRequestFields(samplerOptions, samplerChoice),
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
@@ -4527,7 +4581,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -5676,6 +5730,49 @@ export function ImagesPage({
               onChange={setCount}
             />
             {/* A slider row ends flush with its track, so the label below needs room. */}
+            {samplerOptions.length > 1 && (
+              <Field
+                label="Sampler"
+                hint="How each denoising step is taken. Model default keeps the scheduler the model ships with. Community checkpoints often name one, such as DPM++ 2M with Karras."
+                className="pt-2"
+              >
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={samplerChoice.sampler}
+                    onValueChange={(v) => changeSamplerChoice({ sampler: v })}
+                  >
+                    <SelectTrigger className="h-8 flex-1 text-xs" aria-label="Sampler">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {samplerOptions.map((o) => (
+                        <SelectItem key={o.id} value={o.id}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={samplerChoice.scheduleType}
+                    onValueChange={(v) => changeSamplerChoice({ scheduleType: v })}
+                  >
+                    <SelectTrigger className="h-8 w-32 text-xs" aria-label="Schedule type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(
+                        samplerOptions.find((o) => o.id === samplerChoice.sampler)
+                          ?.schedule_types ?? [AUTOMATIC_SCHEDULE]
+                      ).map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {SCHEDULE_LABELS[t] ?? t}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </Field>
+            )}
             <Field
               label="Seed"
               hint="Leave empty for a fresh random seed each run."

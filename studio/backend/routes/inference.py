@@ -46981,6 +46981,22 @@ def _live_preview_kwarg(generate: Any, requested: Optional[bool]) -> dict:
     return {}
 
 
+def _sampler_kwargs(generate: Any, sampler: Optional[str], schedule_type: Optional[str]) -> dict:
+    """``sampler`` / ``schedule_type`` for an engine whose generate() takes them (diffusers only).
+
+    A real choice sent to another engine is refused (ValueError -> 400) rather than ignored, so a
+    recipe never records a sampler that did not run."""
+    try:
+        import inspect
+        if "sampler" in inspect.signature(generate).parameters:
+            return {"sampler": sampler, "schedule_type": schedule_type}
+    except (TypeError, ValueError):
+        pass
+    if sampler not in (None, "default") or schedule_type not in (None, "automatic"):
+        raise ValueError("Choosing a sampler is supported on the diffusers engine only.")
+    return {}
+
+
 # Count of finished generations still writing their PNG/gallery records; generate-progress reports active while above 0. Mutated only on the event loop, so no lock.
 _diffusion_persist_active = 0
 
@@ -47118,6 +47134,7 @@ async def generate_diffusion_image(
                         else None
                     ),
                     **_live_preview_kwarg(backend.generate, request.live_preview),
+                    **_sampler_kwargs(backend.generate, request.sampler, request.schedule_type),
                 )
             break
         except ImageActivationShortfallError as exc:
@@ -47226,6 +47243,8 @@ async def generate_diffusion_image(
                         # From the engine, not the request: an omitted resolution resolves to the family default.
                         "reference_resolution": result.get("reference_resolution"),
                         "localized_edit": result.get("localized_edit"),
+                        "sampler": result.get("sampler"),
+                        "schedule_type": result.get("schedule_type"),
                         "created_at": created_at,
                     },
                 )
