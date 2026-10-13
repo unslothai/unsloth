@@ -203,11 +203,7 @@ def test_the_baked_int8_excludes_are_this_runtimes():
 
 @pytest.mark.parametrize(
     "scheme, rotated, fmt",
-    [
-        ("fp8", False, PREQUANT_FORMAT),
-        ("int8", False, PREQUANT_FORMAT),
-        ("int8", True, PREQUANT_FORMAT_ROTATED),
-    ],
+    [("fp8", False, PREQUANT_FORMAT), ("int8", False, PREQUANT_FORMAT), ("int8", True, PREQUANT_FORMAT_ROTATED)],
 )
 def test_the_baked_metadata_passes_the_loader(scheme, rotated, fmt):
     meta = _meta(scheme, rotated)
@@ -241,9 +237,7 @@ def _api(siblings = None, missing = False):
         if missing:
             raise RuntimeError(f"404 Client Error: {repo_id}")
         return types.SimpleNamespace(
-            siblings = [
-                types.SimpleNamespace(rfilename = n, size = s) for n, s in (siblings or {}).items()
-            ]
+            siblings = [types.SimpleNamespace(rfilename = n, size = s) for n, s in (siblings or {}).items()]
         )
 
     return types.SimpleNamespace(token = None, model_info = model_info, asked = asked)
@@ -262,9 +256,7 @@ def _planning(monkeypatch):
     import core.inference.diffusion_prequant as pq
     from core.inference import video_denoiser_prequant as vdp
 
-    monkeypatch.setattr(
-        pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True
-    )
+    monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda scheme = None, filename = None: True)
     monkeypatch.setattr(vdp, "hosted_denoiser_refused", lambda *a, **k: False)
 
 
@@ -276,9 +268,7 @@ def _planning(monkeypatch):
         ("fp8", None, "LTX-2.5-FP8.safetensors"),
     ],
 )
-def test_once_published_the_plan_credits_the_hosted_file(
-    fam, monkeypatch, _planning, scheme, env, expected
-):
+def test_once_published_the_plan_credits_the_hosted_file(fam, monkeypatch, _planning, scheme, env, expected):
     from core.inference.video import VideoBackend
 
     if env is not None:
@@ -294,10 +284,7 @@ def test_until_published_the_plan_keeps_the_dense_shards(fam, _planning):
     # renders are pixel-identical to that, so nothing but load time and the download changes).
     from core.inference.video import VideoBackend
 
-    assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", PACK, _api(missing = True)) == (
-        None,
-        [],
-    )
+    assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", PACK, _api(missing = True)) == (None, [])
     # A listing without the rotated file still serves int8 from the plain one.
     plain = {k: v for k, v in _PUBLISHED.items() if "ConvRot" not in k}
     assert VideoBackend._denoiser_prequant_hub_files(fam, "int8", PACK, _api(plain)) == (
