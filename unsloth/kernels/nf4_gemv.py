@@ -8,6 +8,7 @@
 # Every weight row must start a new quantization block (K % blocksize == 0); callers check.
 
 import functools
+import os
 from typing import Optional
 
 import torch
@@ -415,7 +416,7 @@ def gemv_nf4_planned(
 
 # Most decode rows gemv_nf4_rows takes: each row costs about one batch-1 GEMV, and at 8 rows
 # dequantize + matmul decoded faster end to end on A100 and RTX PRO 6000.
-GEMV_MAX_ROWS = 4
+GEMV_MAX_ROWS = int(os.environ.get("UNSLOTH_GEMV_MAX_ROWS", "4"))  # 1 = always dequantize
 
 
 @torch.library.triton_op("unsloth::gemv_nf4_rows", mutates_args = ())
