@@ -1127,9 +1127,9 @@ def test_the_h3_preflight_runs_before_the_start_route_evicts_anything():
 
 
 def test_the_augmentation_knobs_record_what_h3_actually_does():
-    """Every frame goes through the same centre cover-crop and nothing is flipped, but the
-    schema defaults say the opposite (center_crop=False, random_flip=True), so an untouched
-    request described augmentation that never happened. Normalised rather than refused: a
+    """Every frame goes through the same centre cover-crop and nothing is flipped, but a request
+    can say otherwise (center_crop defaults to False, random_flip can be turned on), so the run
+    record described augmentation that never happened. Normalised rather than refused: a
     refusal would 422 every default request."""
     from dataclasses import replace as _replace
 
@@ -1316,15 +1316,24 @@ def test_the_persisted_h3_recipe_is_the_one_the_loop_runs():
         # cached-with-one anyway and the record said otherwise.
         "cache_latents": True,
         "cache_variants": 1,
+        # One packed clip canvas: no image buckets, whatever the request said.
+        "bucketing": False,
     }
-    # Config-only, and no other family's loop disagrees with its request.
+    # Config-only: the other flow-matching loops disagree only on min-SNR, and SDXL on nothing.
     other = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev",
         data_dir = "/tmp/d",
         output_dir = "/tmp/o",
         instance_prompt = "p",
     ).normalized()
-    assert train_recipe_overrides(other) == {}
+    assert train_recipe_overrides(other) == {"snr_gamma": None}
+    sdxl = DiffusionLoraConfig(
+        base_model = "stabilityai/stable-diffusion-xl-base-1.0",
+        data_dir = "/tmp/d",
+        output_dir = "/tmp/o",
+        instance_prompt = "p",
+    ).normalized()
+    assert train_recipe_overrides(sdxl) == {}
 
     # The two appliers: the trainer for what runs, the service for what is recorded.
     from core.training import diffusion_h3_trainer

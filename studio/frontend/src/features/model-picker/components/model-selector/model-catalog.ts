@@ -25,6 +25,7 @@ import {
   ggufPerfSuffix,
   h3PerfSuffix,
   hostRunsDenseQuant,
+  videoDensePerfSuffix,
 } from "./host-artifact-policy.ts";
 import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
@@ -479,6 +480,21 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
 ];
 
+// LTX-2.5 measured on a B200 capped to the tier's GiB, default 1280x704, 121 frames. Host RAM is the server's peak
+// RSS plus the Gemma 4 encoder worker's.
+// Diffusers pack: the plan quantises the DiT to int8, so both tiers need a host that runs a dense quant. Encoder on
+// the CPU in both. 24 GiB: DiT streamed by group offload, 21.0 GB card peak, 47.7 + 25.3 GiB host. 48 GiB: DiT
+// resident, 43.8 GB card peak, 20.1 + 25.9 GiB host.
+const LTX25_OFFLOAD_TIERS: readonly OffloadFitTier[] = [
+  { gpuGb: 24, systemRamGb: 80, requiresQuantisedStreaming: true, requiresDenseQuant: true },
+  { gpuGb: 48, systemRamGb: 48, requiresDenseQuant: true },
+];
+
+// The single file keeps its bf16 DiT (no runtime quant on single-file loads), streamed by group offload in both
+// tiers. 24 GiB: encoder on the CPU, 21.3 GB card peak, 72.0 + 25.3 GiB host. 48 GiB: encoder on the card, 37.2 GB
+// card peak, 72.1 + 23.6 GiB host. Both need about 97 GiB of RAM, so one tier covers them.
+const LTX25_SINGLE_FILE_OFFLOAD_TIERS: readonly OffloadFitTier[] = [{ gpuGb: 24, systemRamGb: 100 }];
+
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "MiniMaxAI/MiniMax-H3",
@@ -543,6 +559,34 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // LTX-2.5 distilled: the Diffusers pack (its Gemma 4 encoder runs in Studio's transformers 5.10 sidecar) plus
+    // the official split single-file DiT, which loads against the companion files beside it in the same repo. The
+    // pack's fp8 / int8 loads seed the hosted unsloth/LTX-2.5-FP8 DiT (backend prequant_variant_repos); the alias
+    // keeps a pasted prequant repo id finding this group. Video rows carry no prequantRepo (image-only field).
+    canonicalId: "Lightricks/LTX-2.5-Diffusers",
+    displayName: "LTX 2.5 distilled",
+    description: "Text- and image-to-video with audio",
+    scope: "video",
+    aliases: ["unsloth/LTX-2.5-FP8"],
+    capabilities: { audio: true },
+    artifacts: [
+      // Both repos are gated on the Hub (license + token).
+      bf16Pipeline("Lightricks/LTX-2.5-Diffusers", 75, {
+        label: "BF16 - Diffusers",
+        gated: true,
+        offloadFitTiers: LTX25_OFFLOAD_TIERS,
+        // The DiT's 37,975,718,400 bf16 bytes (transformer/ shard index).
+        totalParams: 18_987_859_200,
+      }),
+      bf16Single(
+        "Lightricks/LTX-2.5",
+        "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+        75,
+        { label: "BF16 - Single file", gated: true, offloadFitTiers: LTX25_SINGLE_FILE_OFFLOAD_TIERS },
+      ),
+    ],
+  },
+  {
     canonicalId: "Lightricks/LTX-2",
     displayName: "LTX 2 (base)",
     description: "Text-to-video with audio",
@@ -563,6 +607,20 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video, dual-expert",
     scope: "video",
     artifacts: [bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, { totalParams: 14288491584 })],
+  },
+  {
+    canonicalId: "Wan-AI/Wan2.1-T2V-1.3B",
+    displayName: "Wan 2.1 T2V 1.3B",
+    description: "Text-to-video 480p, small",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 15, { totalParams: 1418996800 })],
+  },
+  {
+    canonicalId: "Wan-AI/Wan2.1-T2V-14B",
+    displayName: "Wan 2.1 T2V 14B",
+    description: "Text-to-video 480p / 720p",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-14B-Diffusers", 41, { totalParams: 14288491584 })],
   },
   {
     canonicalId: "hunyuanvideo-community/HunyuanVideo-1.5",
@@ -1024,7 +1082,10 @@ function curatedPerfSuffix(
   if (artifactUsesDenseQuant(hit.group, hit.artifact, host)) {
     return densePerfSuffix(denseQuantSchemes);
   }
-  return h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes);
+  return (
+    h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes) ??
+    videoDensePerfSuffix(hit.artifact.repoId, host, denseQuantSchemes)
+  );
 }
 
 /** A curated row as name plus chips. The name used to carry the artifact in brackets ("MiniMax H3
@@ -1155,10 +1216,13 @@ export interface OffloadFitTier {
   systemRamGb: number;
   /** Only offered where `/api/system.quantised_streaming` says group offload streams torchao weights. */
   requiresQuantisedStreaming?: boolean;
+  /** Measured with a runtime dense quant (int8 / fp8) DiT: only offered where the host runs one. */
+  requiresDenseQuant?: boolean;
 }
 
 function offloadTierMet(tier: OffloadFitTier, budget: DeviceBudget): boolean {
   if (tier.requiresQuantisedStreaming && budget.quantisedStreaming !== true) return false;
+  if (tier.requiresDenseQuant && !budget.denseQuantSchemes?.length) return false;
   return budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb;
 }
 

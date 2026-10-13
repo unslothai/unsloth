@@ -283,6 +283,19 @@ def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
     return False
 
 
+def assert_not_ltx25_checkpoint(checkpoint_path: Path | str) -> None:
+    """Catch a renamed LTX-2.5 file by header: ``is_ltx23_checkpoint`` counts modulation rows, and 2.5 keeps 2.3's nine."""
+    from .diffusion_content import is_ltx25_checkpoint
+    from .video_families import LTX2_FAMILY, wrong_ltx_family_message
+
+    if is_ltx25_checkpoint(str(checkpoint_path)):
+        raise ValueError(
+            wrong_ltx_family_message(
+                "2.5", LTX2_FAMILY, f"'{Path(str(checkpoint_path)).name}' (by its tensors)"
+            )
+        )
+
+
 def _apply_rename(state: dict[str, Any], rename: dict[str, str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in state.items():
