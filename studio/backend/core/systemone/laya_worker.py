@@ -38,7 +38,9 @@ def run_laya_worker(conn, root: str, checkpoint, device: str) -> None:
             return
         _, state, questions = message
         try:
-            conn.send(("ok", laya_runtime._predict(agent, state, questions)))
+            # The device rides along: an out-of-memory decision moves the model to CPU here, not in the parent.
+            answer = laya_runtime._predict(agent, state, questions)
+            conn.send(("ok", (answer, agent.device.type)))
         except ValueError as exc:
             conn.send(("invalid", str(exc)))
         except BaseException as exc:
@@ -48,14 +50,24 @@ def run_laya_worker(conn, root: str, checkpoint, device: str) -> None:
 class LayaWorker:
     def __init__(self, root: Path, checkpoint, device: str, cancelled: Callable[[], bool]):
         self._broken: str | None = None
-        self._conn, child = _CTX.Pipe()
-        self._process = _CTX.Process(
-            target = run_laya_worker,
-            args = (child, str(root), checkpoint, device),
-            name = "systemone-laya",
-            daemon = True,
+        from utils.native_path_leases import (
+            native_path_secret_removed_for_child_start,
+            run_without_native_path_secret,
         )
-        self._process.start()
+        from utils.process_lifetime import adopt_pid, spawn_on_lifetime_thread
+
+        self._conn, child = _CTX.Pipe()
+        with native_path_secret_removed_for_child_start():
+            self._process = _CTX.Process(
+                # The shim binds the child to this process's death, so a crashed Studio does not leave it on the GPU.
+                target = run_without_native_path_secret,
+                args = (run_laya_worker, child, str(root), checkpoint, device),
+                name = "systemone-laya",
+                daemon = True,
+            )
+            # Linux PDEATHSIG follows the spawning thread, and this runs on a loader thread that ends after the load.
+            spawn_on_lifetime_thread(self._process.start)
+        adopt_pid(self._process.pid)
         child.close()
         try:
             deadline = time.monotonic() + LOAD_TIMEOUT_S
@@ -104,7 +116,8 @@ class LayaWorker:
             raise ValueError(payload)
         if kind != "ok":
             raise LayaWorkerError(payload)
-        return payload
+        answer, self.device = payload
+        return answer
 
     def close(self) -> None:
         try:
@@ -116,3 +129,6 @@ class LayaWorker:
             self._process.kill()
             self._process.join(CLOSE_TIMEOUT_S)
         self._conn.close()
+        if not self._process.is_alive():
+            from utils.process_lifetime import forget_pid
+            forget_pid(self._process.pid)

@@ -2178,7 +2178,7 @@ def _decide(
     questions: dict[str, dict[str, Any]],
     images: list[str] | None = None,
 ) -> dict[str, Any]:
-    global _last_used
+    global _last_used, _device_name
     agent = _agent_for(checkpoint, LOAD_WAIT_S)
     if not _run_lock.acquire(timeout = RUN_WAIT_S):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
@@ -2207,6 +2207,7 @@ def _decide(
         try:
             if isinstance(agent, LayaWorker):
                 result, truncated = agent.predict(state, laya_questions)
+                _device_name = agent.device
             else:
                 result, truncated = _predict(agent, state, laya_questions)
         except ValueError as exc:
@@ -2316,7 +2317,7 @@ def unload() -> bool:
 
 
 def shutdown() -> None:
-    """Studio shutdown: end a llama.cpp decision server (in-process models go with the process)."""
+    """Studio shutdown: end a llama.cpp decision server or Laya worker (in-process models go with the process)."""
     global _agent, _loaded, _device_name, _generation, _unloads
     with _state_lock:
         timer = _idle_timer
@@ -2324,7 +2325,7 @@ def shutdown() -> None:
         timer.cancel()
     with _run_lock:
         _unloads += 1
-        if not _is_native(_loaded):
+        if not _is_native(_loaded) and not isinstance(_agent, LayaWorker):
             return
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1

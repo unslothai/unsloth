@@ -5,6 +5,7 @@ import asyncio
 import os
 import sys
 import threading
+import time
 import weakref
 from types import SimpleNamespace
 
@@ -778,9 +779,21 @@ def test_laya_worker_answers_like_laya_in_process(tmp_path):
     expected = _REAL_PREDICT(
         laya_runtime._build_laya(folder, checkpoint, "cpu")[0], "w1 w2 w3", questions
     )
-    worker = LayaWorker(folder, checkpoint, "cpu", cancelled = lambda: False)
+    started = []
+    # Built on a thread that then ends, as the runtime's loader does: the child must outlive that thread.
+    loader = threading.Thread(
+        target = lambda: started.append(
+            LayaWorker(folder, checkpoint, "cpu", cancelled = lambda: False)
+        )
+    )
+    loader.start()
+    loader.join()
+    worker = started[0]
+    time.sleep(1)
     try:
+        assert worker._process.is_alive()
         assert worker.predict("w1 w2 w3", questions) == expected
+        assert worker.device == "cpu"
     finally:
         worker.close()
     assert not worker._process.is_alive()
