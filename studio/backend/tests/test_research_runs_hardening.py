@@ -290,6 +290,13 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     assert "YTpi" not in _sanitize_public_query("Authorization: Basic YTpi returned received=YTpi")
     assert _sanitize_public_query("Authorization: design patterns") == "patterns"
     assert _sanitize_public_query("Authorization: RBAC role=admin") == "role=admin"
+    for text in (
+        "Authorization: Bearer\r\n abcdefghijklmnop why",
+        "Authorization: ApiKey abcdefghijklmnop why",
+        "Authorization: Basic YTpi request /debug/YTpi/status failed",
+    ):
+        cleaned = _sanitize_public_query(text)
+        assert "abcdefghijklmnop" not in cleaned and "YTpi" not in cleaned, text
     public = "Authorization: RBAC cancellationToken=none"
     assert _sanitize_public_query(public) == "cancellationToken=none"
     assert "kzvqmtprxwjyhfn" not in _sanitize_public_query(
