@@ -91,7 +91,8 @@ class LayaWorker:
             if cancelled():
                 raise LayaWorkerError("A training run took the GPU while Laya loaded.")
         except BaseException:
-            self.close()
+            # A child still building cannot read "close", and training may already be claiming the GPU.
+            self.close(grace = 0)
             raise
         self.device = payload
 
@@ -126,12 +127,12 @@ class LayaWorker:
         answer, self.device = payload
         return answer
 
-    def close(self) -> None:
+    def close(self, grace: float | None = None) -> None:
         try:
             self._conn.send(("close",))
         except (OSError, ValueError):
             pass
-        self._process.join(CLOSE_TIMEOUT_S)
+        self._process.join(CLOSE_TIMEOUT_S if grace is None else grace)
         if self._process.is_alive():
             self._process.kill()
             self._process.join(CLOSE_TIMEOUT_S)

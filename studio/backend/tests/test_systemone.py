@@ -799,6 +799,23 @@ def test_laya_worker_answers_like_laya_in_process(tmp_path):
     assert not worker._process.is_alive()
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "a FIFO holds the child inside its load")
+def test_a_cancelled_laya_load_ends_its_child_at_once(tmp_path, monkeypatch):
+    from core.systemone import laya_worker
+
+    # The child blocks opening the weights, as a long GPU load would, so it never reads "close".
+    os.mkfifo(tmp_path / "model.safetensors")
+    monkeypatch.setattr(laya_worker, "CLOSE_TIMEOUT_S", 60.0)
+    checkpoint = catalog.Checkpoint(catalog.LOCAL_NAME, str(tmp_path), None, "")
+    polls = []
+    started = time.monotonic()
+    with pytest.raises(laya_worker.LayaWorkerError, match = "training run"):
+        laya_worker.LayaWorker(
+            tmp_path, checkpoint, "cpu", cancelled = lambda: polls.append(1) or len(polls) > 2
+        )
+    assert time.monotonic() - started < 30
+
+
 def test_gpu_laya_answers_from_its_own_process_that_unload_ends(client, monkeypatch, tmp_path):
     torch = pytest.importorskip("torch")
     if not torch.cuda.is_available():
