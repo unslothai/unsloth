@@ -961,11 +961,19 @@ def _cut_attachment_bodies(text: str, keep_chars: int) -> str:
         else:
             kept = ""
         shown, total = kept.count("\n"), body.count("\n") + (0 if body.endswith("\n") else 1)
-        out.append(
-            f"{kept}[{note.group('name')} is too long for the context window: only its first {shown} of "
-            f"{total} lines are above. The whole file is at path = {note.group('path')} in the python tool's "
-            "working directory, so read the part you need with python instead of answering from this excerpt.]\n"
+        where = (
+            f"The whole file is at path = {note.group('path')} in the python tool's working directory, so read "
+            "the part you need with python"
         )
+        if shown:
+            out.append(
+                f"{kept}[{note.group('name')} is too long for the context window: only its first {shown} of "
+                f"{total} lines are above. {where} instead of answering from this excerpt.]\n"
+            )
+        else:
+            out.append(
+                f"[{note.group('name')} ({total} lines) is too long for the context window to show. {where}.]\n"
+            )
     return "".join(out)
 
 
@@ -1014,42 +1022,47 @@ def fit_oversized_attachments(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
 ) -> list[dict]:
-    """Cut the newest user turn's sandbox-backed attachments when that turn cannot fit even alone.
+    """Cut sandbox-backed attachments too big for the window even alone, keeping the copy's path.
 
-    Compaction always keeps the newest turn whole, so an attached file larger than the window was
-    refused outright. The python tool already holds the file, so the turn keeps the start of it and
-    points at the rest. Anything that fits, or has no copy to point at, is returned unchanged.
+    Compaction keeps the newest turn whole, so such a file was refused outright; that turn now keeps
+    the start of it. Older turns keep only the path: dropped whole, the model lost the file. Decided
+    per message, so a turn renders the same on every later request and the prompt prefix is reused.
     """
     if not context_length or context_length <= 1:
         return messages
-    latest = next(
-        (
-            index
-            for index in range(len(messages) - 1, -1, -1)
-            if messages[index].get("role") == "user"
-        ),
-        None,
-    )
-    if latest is None:
-        return messages
-    longest = _attachment_body_chars(messages[latest])
-    if not longest:
+    attached = [
+        index
+        for index, message in enumerate(messages)
+        if message.get("role") == "user" and _attachment_body_chars(message)
+    ]
+    if not attached:
         return messages
     target = int(prompt_budget(context_length, max_tokens) * (1 - _ATTACHMENT_FIT_MARGIN))
-    base = [message for message in messages[:latest] if message.get("role") == "system"]
-
-    def fits(keep_chars: int) -> bool:
-        return count_tokens([*base, _with_cut_attachments(messages[latest], keep_chars)]) <= target
-
-    if fits(longest) or not fits(0):
+    if count_tokens(messages) <= target:
         return messages
-    low, high = 0, longest
-    while high - low > 64:
-        middle = (low + high) // 2
-        if fits(middle):
-            low = middle
-        else:
-            high = middle
+    latest = max(index for index, message in enumerate(messages) if message.get("role") == "user")
+    base = [message for message in messages if message.get("role") == "system"]
     cut = list(messages)
-    cut[latest] = _with_cut_attachments(messages[latest], low)
-    return cut
+    for index in attached:
+        message = messages[index]
+        longest = _attachment_body_chars(message)
+
+        def fits(keep_chars: int) -> bool:
+            return count_tokens([*base, _with_cut_attachments(message, keep_chars)]) <= target
+
+        if fits(longest):
+            continue
+        if index != latest:
+            cut[index] = _with_cut_attachments(message, 0)
+            continue
+        if not fits(0):
+            continue
+        low, high = 0, longest
+        while high - low > 64:
+            middle = (low + high) // 2
+            if fits(middle):
+                low = middle
+            else:
+                high = middle
+        cut[index] = _with_cut_attachments(message, low)
+    return cut if cut != messages else messages

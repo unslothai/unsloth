@@ -104,3 +104,53 @@ def test_the_compaction_fit_serves_the_turn_instead_of_refusing_it(monkeypatch):
 
     assert "of 2000 lines are above" in fitted[-1]["content"]
     assert truncation is None or truncation.get("fits") is not False
+
+
+def _follow_up():
+    return _messages() + [
+        {
+            "role": "assistant",
+            "content": "Line 1000 reads: line 1000: the quick brown fox jumps over the lazy dog",
+        },
+        {"role": "user", "content": "And line 1500?"},
+    ]
+
+
+def test_an_earlier_oversized_attachment_keeps_only_its_path():
+    fitted = _fit(_follow_up())
+    earlier = fitted[3]["content"]
+
+    assert earlier.startswith("What does line 1000 say?\n" + NOTE)
+    assert "line 1: " not in earlier
+    assert (
+        f"(2000 lines) is too long for the context window to show. The whole file is at path = {PATH}"
+        in earlier
+    )
+    assert fitted[-1] == _follow_up()[-1]
+    # Small enough that the follow-up fits without dropping the turn that names the file.
+    assert count(fitted) <= 2048 - 512
+
+
+def test_an_earlier_turn_renders_the_same_on_every_later_request():
+    later = _follow_up() + [
+        {
+            "role": "assistant",
+            "content": "Line 1500 reads: line 1500: the quick brown fox jumps over the lazy dog",
+        },
+        {"role": "user", "content": "And line 2000?"},
+    ]
+
+    assert _fit(later)[3] == _fit(_follow_up())[3]
+
+
+def test_a_conversation_that_fits_skips_the_attachment_checks():
+    calls = []
+
+    def counting(messages):
+        calls.append(len(messages))
+        return count(messages)
+
+    messages = _messages(attachment = "line 1: short\n")
+    fit_oversized_attachments(messages, context_length = 2048, max_tokens = 512, count_tokens = counting)
+
+    assert calls == [len(messages)]
