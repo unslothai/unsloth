@@ -70,6 +70,16 @@ class _Build:
         self.build_env = {"TORCH_CUDA_ARCH_LIST": arch_list}
 
 
+class _Flash3:
+    def __init__(
+        self,
+        version = "2.8.0",
+        loaded = True,
+    ):
+        self.FLASH_VERSION = version
+        self._C_flashattention3 = object() if loaded else None
+
+
 @pytest.mark.parametrize(
     "arch_list, capability, expect",
     [
@@ -88,13 +98,24 @@ class _Build:
 )
 def test_fa3_lacks_sm90a(arch_list, capability, expect):
     from unsloth.models._utils import _xformers_fa3_lacks_sm90a
-    assert _xformers_fa3_lacks_sm90a(_Build(arch_list), capability) is expect
+    assert _xformers_fa3_lacks_sm90a(_Build(arch_list), capability, _Flash3()) is expect
+
+
+def test_fa3_lacks_sm90a_ignores_external_or_missing_fa3():
+    from unsloth.models._utils import _xformers_fa3_lacks_sm90a
+
+    conda = _Build("8.0;8.9;10.0;12.0+PTX")
+    # xformers >= 0.0.35 loads FA3 from a separate flash_attn_3 package, which its build metadata does not describe.
+    assert _xformers_fa3_lacks_sm90a(conda, (9, 0), _Flash3(version = "pip_pkg")) is False
+    # No FA3 provider at all: xformers never dispatches FA3.
+    assert _xformers_fa3_lacks_sm90a(conda, (9, 0), _Flash3(loaded = False)) is False
+    assert _xformers_fa3_lacks_sm90a(conda, (9, 0), None) is False
 
 
 def test_fa3_lacks_sm90a_fails_open_on_unreadable_metadata():
     from unsloth.models._utils import _xformers_fa3_lacks_sm90a
-    assert _xformers_fa3_lacks_sm90a(None, (9, 0)) is False
-    assert _xformers_fa3_lacks_sm90a(object(), (9, 0)) is False
+    assert _xformers_fa3_lacks_sm90a(None, (9, 0), _Flash3()) is False
+    assert _xformers_fa3_lacks_sm90a(object(), (9, 0), _Flash3()) is False
 
 
 @pytest.mark.skipif(
