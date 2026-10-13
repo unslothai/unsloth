@@ -590,11 +590,11 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
-    # The run peak is the conditioning phase (UMT5-XXL 11.4 GB bf16 + the fp32 VAE 2.8 GB), freed before the nf4
-    # transformer (~3 GB) loads.
+    # Measured on a B200 (nf4, 704px stills, rank 32): the training LOOP peaks at 4.25 GB allocated, the RUN at 12.5 GB
+    # process-wide while UMT5-XXL (11.4 GB bf16) + the fp32 VAE are resident for the one-time encode.
     "wan2.2-ti2v-5b": {
         "params": "5B",
-        "qlora_vram_gb": 16,
+        "qlora_vram_gb": 14,
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
