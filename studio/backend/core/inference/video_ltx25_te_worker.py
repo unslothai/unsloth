@@ -232,9 +232,7 @@ def _empty_device_cache(device: Any) -> None:
 
 
 def _quantize_off_card(weight: Any, work: Any) -> tuple[Any, Any, Any]:
-    """``(codes, scale, work)`` for a host-kept projection. The accelerator only speeds the rotation up: a non-resident
-    encoder shares a card the plan did not size for it, so an out-of-memory there moves this and every later projection
-    to the host instead of failing the load."""
+    """``(codes, scale, work)``; the card only speeds this up, so its OOM moves this and later projections to the host."""
     import torch
 
     from core.inference.diffusion_convrot import quantize_convrot_int8_weight
@@ -245,7 +243,7 @@ def _quantize_off_card(weight: Any, work: Any) -> tuple[Any, Any, Any]:
             return (*quantize_convrot_int8_weight(weight.detach().to(work), CONVROT_GROUP), work)
         except oom:
             pass
-        # Outside the handler, so the failed attempt's tensors are already unreferenced.
+        # Outside the handler: the failed attempt's tensors are unreferenced by now.
         _empty_device_cache(work)
         work = torch.device("cpu")
     return (*quantize_convrot_int8_weight(weight.detach(), CONVROT_GROUP), work)
@@ -306,7 +304,7 @@ def quantize_int8_convrot_(
     if swapped == 0:
         raise RuntimeError("no Gemma 4 decoder projection could be quantized")
     if not on_card and work.type != "cpu":
-        # The plan never priced this transient: hand the cached blocks back before the DiT needs them.
+        # The plan never priced this transient.
         _empty_device_cache(work)
     if not on_card and not released_all:
         with torch.no_grad():

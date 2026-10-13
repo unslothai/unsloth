@@ -181,8 +181,7 @@ def test_worker_load_quantizes_only_when_asked(monkeypatch):
         def from_pretrained(cls, *args, **kwargs):
             return _TinyGemma()
 
-    # A stand-in module, not attributes patched onto the real one: touching the real Gemma 4 class lazily imports
-    # its modeling stack, which on some installs re-registers sys.modules["transformers"] and drops the patches.
+    # A stand-in module: the real Gemma 4 lazy import can re-register sys.modules['transformers'], dropping patches.
     monkeypatch.setitem(
         sys.modules,
         "transformers",
