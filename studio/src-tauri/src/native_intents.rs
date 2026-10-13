@@ -848,7 +848,6 @@ fn read_attachment_payload(entry: &NativePathEntry) -> Result<NativeAttachmentFi
             "Compiled Fortran .mod modules are not supported as text attachments.".to_string(),
         );
     }
-    // A Word or PowerPoint template under .dot/.pot goes to the composer, which reads it on the server.
     let mime_type = if is_binary_office_template(path, &bytes) {
         office_template_mime_type(path)
     } else {

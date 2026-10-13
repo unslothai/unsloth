@@ -637,7 +637,6 @@ pub fn office_template_mime_type(path: &Path) -> &'static str {
     }
 }
 
-/// .dot/.pot, which hold either text (Graphviz, gettext) or a Word/PowerPoint template.
 pub fn has_office_template_extension(path: &Path) -> bool {
     has_extension(path, "dot") || has_extension(path, "pot")
 }
