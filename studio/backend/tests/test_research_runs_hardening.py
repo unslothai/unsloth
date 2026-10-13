@@ -255,6 +255,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     assert (
         _sanitize_public_query("password: hunter2 language=python docs") == "language=python docs"
     )
+    assert "X1234567" not in _sanitize_public_query("Authorization: Custom. Passport X1234567 why")
 
 
 def test_shield_untrusted_neutralizes_delimiters():

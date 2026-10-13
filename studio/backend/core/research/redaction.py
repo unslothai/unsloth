@@ -31,14 +31,20 @@ _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 _AUTH_TOKEN = r"[\w!#$%&'*+.^`|~-]+"
 _AUTH_VALUE = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,":]+(?=[\s,]|$))"""
 _AUTH_PARAM = rf"{_AUTH_TOKEN}={_AUTH_VALUE}"
-# Stops before a following label, which the credential passes below redact on their own.
-_QUERY_AUTHORIZATION = re.compile(
-    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*[A-Za-z]{_AUTH_TOKEN}?[ \t]+
-    (?!(?:api[\s_-]?key|access[\s_-]?(?:key|token)|auth[\s_-]?token|bearer[\s_-]?token
+_AUTH_NOT_A_LABEL = r"""(?!(?:api[\s_-]?key|access[\s_-]?(?:key|token)|auth[\s_-]?token|bearer[\s_-]?token
     |client[\s_-]?secret|private[\s_-]?key|refresh[\s_-]?token|session[\s_-]?token
-    |authorization|password|secret|token)[ \t]*[:=]|[^\s:,;]+[ \t]*:)
-    (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|(?!(?:basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t])[\w.~+/-]+=*(?=[\s,;]|$)(?![ \t]*=)
-    (?<!key=)(?<!token=)(?<!secret=)(?<!password=)(?<!authorization=))"""
+    |authorization|password|secret|token)[ \t]*[:=]|[^\s:,;]+[ \t]*:)"""
+# A token68 cannot be a scheme word or the start of a spaced assignment.
+_AUTH_TOKEN68 = r"""(?!(?:basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t])[\w.~+/-]+=*(?=[\s,;]|$)(?![ \t]*=)
+    (?<!key=)(?<!token=)(?<!secret=)(?<!password=)(?<!authorization=)"""
+_AUTH_PARAMS = rf"{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*"
+# Any input it declines falls through to the credential passes below, as before.
+_QUERY_AUTHORIZATION = re.compile(
+    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*
+    (?:(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t]+{_AUTH_NOT_A_LABEL}
+    (?:{_AUTH_PARAMS}|{_AUTH_TOKEN68})
+    |[A-Za-z]{_AUTH_TOKEN}?[ \t]+{_AUTH_NOT_A_LABEL}
+    (?:{_AUTH_PARAMS}|(?=[^\s,;]*[\d+/=]|[\w.~+/-]{{20}}){_AUTH_TOKEN68}))"""
 )
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
