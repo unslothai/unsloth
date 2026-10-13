@@ -17720,7 +17720,11 @@ def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
         != str(source[1] or "").strip().lower()
     ):
         return None
-    return list(stored)
+    from core.inference.spark_serving import strip_layer_split_extra_args
+
+    # The split block is ours, appended by before_load; inheriting it would read our own --rpc as
+    # a caller override and skip rebuilding the split.
+    return strip_layer_split_extra_args(stored)
 
 
 def _hub_access_warnings(token_rejections) -> list[str]:

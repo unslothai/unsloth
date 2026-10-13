@@ -1937,6 +1937,25 @@ def layer_split_extra_args(
     return out
 
 
+def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
+    """``extra`` without the block ``layer_split_extra_args`` appended to it, so a reload that
+    inherits a split's extras is planned afresh instead of reading our own --rpc as the caller's."""
+    tokens = [str(t) for t in extra]
+    fixed = ["--device", "RPC0,CUDA0", "-sm", "layer", "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN]
+    fixed += ["--cache-ram", "0"]
+    for start in range(len(tokens) - 1, -1, -1):
+        if tokens[start] != "--rpc":
+            continue
+        end = start + 2 + len(fixed)
+        if tokens[start + 2 : end] != fixed:
+            return tokens
+        tail = tokens[end:]
+        if not tail or (len(tail) == 2 and tail[0] == PIPELINE_GROUPS_FLAG):
+            return tokens[:start]
+        return tokens
+    return tokens
+
+
 try:
     import ctypes as _ctypes
     _LIBC = _ctypes.CDLL("libc.so.6", use_errno = True)
@@ -2204,6 +2223,8 @@ class SparkServing:
         # (backend, process) of a split this load tore down before the route accepted it, see
         # load_failed.
         self._retired_split: Optional[tuple] = None
+        # The current load is a model kept alongside, which this state does not describe.
+        self._passthrough: bool = False
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
         self._cancel_event: Any = None
@@ -3290,6 +3311,13 @@ async def before_load(
     if not enabled():
         return request
     st = state()
+    # A model kept alongside lands in an extra slot of its own, while this state describes the
+    # primary's topology: planning it would detach the split the primary is still serving through.
+    st._passthrough = bool(getattr(request, "alongside", False)) or bool(
+        getattr(request, "force_alongside", False)
+    )
+    if st._passthrough:
+        return request
     st._cancel_event = cancel_event
     return await st.before_load(request, n_parallel, inherited_extra_args = inherited_extra_args)
 
@@ -3303,6 +3331,9 @@ async def after_load(
     if not enabled():
         return
     st = state()
+    if st._passthrough:
+        st._passthrough = False
+        return
     if cancel_event is not None:
         st._cancel_event = cancel_event
     try:
@@ -3313,6 +3344,9 @@ async def after_load(
 
 async def load_failed() -> None:
     if _STATE is None or not enabled():
+        return
+    if _STATE._passthrough:
+        _STATE._passthrough = False
         return
     await _STATE.load_failed()
 

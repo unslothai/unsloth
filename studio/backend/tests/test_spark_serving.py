@@ -3355,6 +3355,17 @@ def test_extras_are_inherited_on_exact_requested_identity_and_never_on_a_shared_
     )
     assert ri._spark_inherited_extra_args(_Req("org/m", None, lea = [])) is None
 
+    # A forced reload of a running split must not inherit the split block we appended: before_load
+    # would read our own --rpc as a caller override and skip restarting the rpc-server.
+    split = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = 2)
+    assert run("org/m", "Q4", "org/m", "Q4", extras = ["--lora", "a.gguf", *split]) == [
+        "--lora",
+        "a.gguf",
+    ]
+    # A caller's own --rpc, not ours, is kept.
+    own = ["--rpc", "10.0.0.5:50052"]
+    assert run("org/m", "Q4", "org/m", "Q4", extras = own) == own
+
 
 def test_a_peer_holding_a_different_file_at_the_same_path_does_not_become_a_replica(
     cluster, monkeypatch, tmp_path
@@ -4371,3 +4382,37 @@ def test_the_replica_drops_the_flags_the_mtp_fallback_dropped(monkeypatch, tmp_p
     started = events[1][1]
     assert "--spec-type" not in started and started[0] == "/peer/llama-server"
     assert "8081" in started
+
+
+def test_a_model_loaded_alongside_leaves_the_primary_split_alone(monkeypatch):
+    """The alongside load gets an extra slot of its own; planning it on the one shared state
+    detached the split the primary was still serving through."""
+    state = ss.SparkServing()
+    calls = []
+
+    async def _before(*a, **k):
+        calls.append("before")
+        return a[0]
+
+    async def _after(*a, **k):
+        calls.append("after")
+
+    async def _failed():
+        calls.append("failed")
+
+    state.before_load, state.after_load, state.load_failed = _before, _after, _failed
+    monkeypatch.setattr(ss, "_STATE", state)
+    monkeypatch.setattr(ss, "state", lambda: state)
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+    req = SimpleNamespace(alongside = True, force_alongside = False)
+    assert run(ss.before_load(req, 4)) is req
+    run(ss.after_load(object(), 4))
+    assert calls == []
+    run(ss.before_load(req, 4))
+    run(ss.load_failed())
+    assert calls == []
+
+    primary = SimpleNamespace(alongside = False, force_alongside = False)
+    run(ss.before_load(primary, 4))
+    run(ss.after_load(object(), 4))
+    assert calls == ["before", "after"]
