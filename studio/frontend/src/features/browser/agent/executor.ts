@@ -477,6 +477,9 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   }
 
   if (action.op === "history") return readHistory(action, signal);
+  if (action.op === "evaluate" && useBrowserAgentStore.getState().scriptAccess === "never") {
+    return { ok: false, error: SCRIPTS_OFF };
+  }
 
   const tab = agentTab();
   if (!tab) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
@@ -823,7 +826,8 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
 function opaqueGate(info: ElementInfo, pageUrl: string): (Gate & { kind: "ask" }) | null {
   if (info.role !== "element" || info.name.trim() || info.href) return null;
   const host = hostOfUrl(pageUrl);
-  if (!host || opaqueHosts.has(host) || ruleFor(pageUrl, permissions()).rule.actions === "allow") return null;
+  const rule = ruleFor(pageUrl, permissions()).rule;
+  if (!host || opaqueHosts.has(host) || rule.actions === "allow" || rule.unlabelled === "allow") return null;
   return { kind: "ask", ask: "pointer", host, name: "", detail: info.tag, prompt: `Click unlabelled parts of ${host}?` };
 }
 
@@ -835,6 +839,7 @@ async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: 
 }
 
 const SCRIPT_WAIT_MS = 15_000;
+const SCRIPTS_OFF = "The user doesn't let the agent run scripts on pages.";
 
 /** A script bypasses every rule above, so it is shown verbatim and asked every time, whatever the site permissions. */
 async function runScript(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
@@ -847,6 +852,8 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Action
   const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, signal);
   if (refused) return { ok: false, error: refused };
   if (signal?.aborted) return { ok: false, error: STOPPED };
+  // Settings can change while the question is open.
+  if (useBrowserAgentStore.getState().scriptAccess === "never") return { ok: false, error: SCRIPTS_OFF };
   const current = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id);
   if (!current || current.loading || tabUrl(current) !== before) {
     return { ok: false, error: "the page changed while the user was asked, so the script did not run; take a snapshot." };
