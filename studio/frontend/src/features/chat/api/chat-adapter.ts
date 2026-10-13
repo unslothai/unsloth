@@ -3064,7 +3064,6 @@ async function resolveAutoLoadCandidate(
       : `Loaded ${source.id}`,
   });
   if (!source.listVariants) {
-    // A remembered MLX precision folder (6-bit) first, then the repo root.
     const variants =
       source.kind === "model" && rememberedVariant
         ? [rememberedVariant, null]

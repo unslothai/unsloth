@@ -10,7 +10,6 @@ import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
 import { CardDivider, ModelRunActionButton } from "./download-card";
 
-/** An MLX repo's precision folders (2-bit/, 6-bit/); nothing for a repo without them. */
 export function MlxPrecisionCard({
   repoId,
   onRun,

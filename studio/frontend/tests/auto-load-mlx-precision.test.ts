@@ -8,8 +8,6 @@ import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
 
-// Lifted out of chat-adapter.ts, as in auto-load-target-key.test.ts: importing the module
-// would drag in the stores and the toast layer.
 const adapterPath = fileURLToPath(
   new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
 );

@@ -9612,7 +9612,6 @@ def test_a_turboquant_load_turns_a_pin_into_a_request_budget(monkeypatch):
 
 
 def test_mlx_precision_folder_loads_from_its_own_download(monkeypatch, tmp_path):
-    # #13418: a repo keeping each precision in a folder loads the picked folder, named by the repo.
     from core.inference.mlx_inference import MLXInferenceBackend
 
     _install_fake_mlx(monkeypatch)
@@ -9642,7 +9641,6 @@ def test_mlx_precision_folder_loads_from_its_own_download(monkeypatch, tmp_path)
     assert backend.active_model_name == repo
     assert backend.models[repo]["gguf_variant"] == "6-bit"
 
-    # Without a folder the repo id loads as before.
     assert backend.load_model(SimpleNamespace(identifier = repo, is_vision = False))
     assert calls[-1][0] == (repo,)
     assert backend.models[repo]["gguf_variant"] is None

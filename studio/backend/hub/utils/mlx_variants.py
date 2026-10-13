@@ -60,8 +60,7 @@ def precision_folder_config_dir(
             hf_token,
         )
     except EntryNotFoundError as exc:
-        # Only a Hub that answered "no such file" means no folder. Any other failure must not
-        # quietly load the root, which is a different precision.
+        # Only "no such file" means no folder: any other failure must not load the root instead.
         if isinstance(exc, LocalEntryNotFoundError):
             raise
         return None

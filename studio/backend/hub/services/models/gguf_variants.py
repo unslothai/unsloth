@@ -1232,7 +1232,6 @@ async def _mlx_precision_variants_answer(
             ),
             key = lambda row: row.size_bytes,
         )
-        # The folder the root duplicates is what a plain load serves.
         default = next(
             (
                 folder

@@ -1911,7 +1911,6 @@ function GgufVariantExpander({
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinnedQuant = usePinnedModelsStore((s) => s.togglePinned);
   const [variantsAreGguf, setVariantsAreGguf] = useState(true);
-  // Update and delete act on GGUF files; an MLX precision folder has neither.
   const onUpdateVariant = variantsAreGguf ? variantActions?.onUpdate : undefined;
   const updateVariantTitle =
     variantActions?.updateTitle ?? "Update cached model?";
@@ -2232,8 +2231,7 @@ function GgufVariantExpander({
     let cancelled = false;
     setCompanionBytesByKey(new Map());
     // A local path is resolved too: only the CHECKPOINT is on disk, and its remote base is the
-    // larger half, so suppressing the request understated a local row by many gigabytes. An MLX
-    // precision folder has no companions.
+    // larger half, so suppressing the request understated a local row by many gigabytes.
     if (!resolveDownloadFootprint || !variantsAreGguf) {
       return () => {
         cancelled = true;
@@ -3241,7 +3239,6 @@ export function HubModelPicker({
     [modelGgufIds, resultGgufIds],
   );
 
-  // MLX repos in the listings, and those confirmed to keep precisions in folders.
   const resultMlxIds = useMemo(() => {
     const ids = new Set<string>();
     for (const result of [
@@ -5918,7 +5915,6 @@ export function HubModelPicker({
         select();
         return;
       }
-      // An MLX repo without precision folders loads as before.
       void listGgufVariants(id, hfToken || undefined)
         .then((res) => {
           if (res.variant_format === "mlx" && res.variants.length > 0) {

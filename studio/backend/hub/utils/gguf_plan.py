@@ -512,7 +512,6 @@ def plan_from_expected_files(
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
     all_main = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
-    # A manifest recorded for an MLX precision folder: every file is under <variant>/.
     from hub.utils.snapshot_filters import PRECISION_FOLDER_RE
 
     folder = (variant or "").strip()

@@ -15185,7 +15185,6 @@ def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
             return False
         return _complete(directory, shards)
 
-    # A precision folder pick (6-bit/) loads that folder, never the root checkpoint.
     folder = None if getattr(config, "is_gguf", False) else getattr(config, "gguf_variant", None)
 
     def _pick(path) -> Optional[str]:

@@ -16,7 +16,6 @@ pytestmark = [
         sys.platform != "darwin" or platform.machine() != "arm64",
         reason = "MLX runs on Apple Silicon only",
     ),
-    # Fetches a 75 MB MLX checkpoint to lay out as a precision folder.
     pytest.mark.allow_network,
 ]
 
@@ -34,7 +33,6 @@ def test_precision_folder_loads_and_generates(monkeypatch, tmp_path):
     from utils.models.model_config import ModelConfig
 
     tiny = snapshot_download(_TINY)
-    # The repo as a precision pick leaves it in the cache: only 4bit/ downloaded, nothing at the root.
     hub = tmp_path / "hub"
     repo_dir = hub / f"models--{_REPO.replace('/', '--')}"
     snapshot = repo_dir / "snapshots" / ("a" * 40)

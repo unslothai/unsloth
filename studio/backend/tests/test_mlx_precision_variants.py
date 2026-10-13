@@ -35,7 +35,6 @@ def _folder(folder: str, shards: list[int]) -> dict[str, int]:
     return files
 
 
-# Shape of the repo in the issue: a root copy of the 4-bit, four precision folders and a drafter.
 _SIZES = {
     **_folder("", [5 * GB, 5 * GB, 6 * GB]),
     **_folder("2-bit", [5 * GB, 4 * GB]),
@@ -67,7 +66,6 @@ def test_precision_folders_are_whole_checkpoints_with_a_precision_name():
         assert precision_variant_subfolders(
             {f"{name}/config.json": 1, f"{name}/model.safetensors": 1}
         )
-    # Components, drafters and shards are not precisions; a folder without config or weights is no checkpoint.
     for name in ("mtp", "vae", "text_encoder", "transformer", "dflash", "layers-0-24", "merged-hf"):
         assert not precision_variant_subfolders(
             {f"{name}/config.json": 1, f"{name}/model.safetensors": 1}
@@ -83,12 +81,9 @@ def test_root_download_skips_the_other_precisions():
     ignore = resolve_snapshot_ignore_patterns_for_files(_SIZES)
     assert {"2-bit/*", "4-bit/*", "6-bit/*", "8-bit/*"} <= set(ignore)
     assert "mtp/*" not in ignore
-    # 94 GB of every precision before, the 16 GB the root load reads (plus the drafter) after.
     assert snapshot_download_size(_siblings()) < 18 * GB
-    # Without a root checkpoint the folders are the model, so nothing is skipped.
     no_root = {k: v for k, v in _SIZES.items() if "/" in k}
     assert not any(p.endswith("bit/*") for p in resolve_snapshot_ignore_patterns_for_files(no_root))
-    # A stray root tensor without a root config.json is not a checkpoint either.
     stray = {**no_root, "model.safetensors": GB}
     assert not any(p.endswith("bit/*") for p in resolve_snapshot_ignore_patterns_for_files(stray))
 
@@ -136,7 +131,6 @@ def _fake_hub(
             )
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
-    # Nothing on disk, so no folder reads as downloaded.
     monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
     return calls
 
@@ -167,12 +161,10 @@ def test_mlx_repo_lists_its_precision_folders_as_variants(monkeypatch):
     sizes = {v.quant: v.size_bytes for v in response.variants}
     assert sizes["6-bit"] == 23 * GB + 103_000
     assert sizes["8-bit"] == 30 * GB + 103_000
-    # The root is a copy of the 4-bit, which is what a plain load of the repo serves today.
     assert response.default_variant == "4-bit"
     assert response.has_vision is True
     assert not any(v.downloaded for v in response.variants)
     assert response.variant_format == "mlx"
-    # No GGUF metadata to read a context window from.
     assert answer.cache_authorized is False
 
 
@@ -225,7 +217,6 @@ def test_download_fetches_only_the_picked_folder(monkeypatch, tmp_path):
     assert path == str(snapshot / "6-bit")
     assert calls == [(_REPO, ["6-bit/*"])]
 
-    # A complete cached folder is reused without asking the Hub, so a repeat load is a no-op.
     monkeypatch.setattr(
         mlx_variants, "cached_precision_folder", lambda repo, folder: snapshot / folder
     )
@@ -251,7 +242,6 @@ def test_cached_precision_folder_needs_every_shard(monkeypatch, tmp_path):
     assert mlx_variants.cached_precision_folder(_REPO, "8-bit") is None
     (folder / "model-00002-of-00002.safetensors").write_bytes(b"x")
     assert mlx_variants.cached_precision_folder(_REPO, "8-bit") == folder
-    # Not a precision name, so never a lookup.
     assert mlx_variants.cached_precision_folder(_REPO, "../8-bit") is None
 
 
@@ -286,7 +276,6 @@ def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path
             raise FileNotFoundError(filename)
         return str(folder / "config.json")
 
-    # Only the folder's config.json is fetched to classify it; its weights wait for the load.
     monkeypatch.setattr("huggingface_hub.hf_hub_download", _hf_hub_download)
     monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
     monkeypatch.setattr(model_config, "detect_gguf_model_remote", lambda *a, **k: None)
@@ -355,8 +344,7 @@ def test_a_downloaded_precision_folder_loads_offline(monkeypatch, tmp_path):
 
 
 def test_the_download_manager_plans_a_precision_folder(monkeypatch):
-    # The chat picker and the Hub stage an uncached pick through the download manager, which only
-    # knew GGUF variants and exited with "No GGUF shards matching variant '6-bit'".
+    # Was: "No GGUF shards matching variant '6-bit'" when the picker staged an uncached folder.
     from hub.workers import hf_download
 
     monkeypatch.setattr(
@@ -392,12 +380,10 @@ def test_a_failed_folder_probe_never_falls_back_to_the_root(monkeypatch):
 
         return _download
 
-    # A Hub that answered "no such file": the repo has no such folder.
     from huggingface_hub.errors import EntryNotFoundError
 
     monkeypatch.setattr("huggingface_hub.hf_hub_download", _raise(EntryNotFoundError("404")))
     assert mlx_variants.precision_folder_config_dir(_REPO, "6-bit", None) is None
-    # Offline or unreachable: loading the root instead would serve another precision.
     for error in (LocalEntryNotFoundError("offline"), ConnectionError("reset")):
         monkeypatch.setattr("huggingface_hub.hf_hub_download", _raise(error))
         with pytest.raises(type(error)):
@@ -438,21 +424,17 @@ def test_a_rejected_token_still_downloads_a_public_folder(monkeypatch, tmp_path)
 
 
 def test_the_root_duplicate_is_found_by_content_not_size(monkeypatch):
-    # 4-bit/ and 4bit-dwq/ are the same size; only the one holding the root's bytes is its copy.
     sizes = {**_SIZES, **_folder("4bit-dwq", [5 * GB, 5 * GB, 6 * GB])}
     _no_gguf_rows(monkeypatch)
     _fake_hub(monkeypatch, sizes = sizes)
     response = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response
     assert response.default_variant == "4-bit"
-    # Without a folder holding the root's bytes there is no default, whatever the sizes say.
     _fake_hub(monkeypatch, sizes = sizes, content = lambda name: name)
     response = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response
     assert response.default_variant is None
 
 
 def test_a_resumed_folder_download_rebuilds_its_plan_from_the_manifest():
-    # With the Hub unreachable the worker resumes from the saved manifest; a plan with no main
-    # hashes made it refuse the partial download instead of resuming it.
     from hub.utils.gguf_plan import plan_from_expected_files, resolve_variant_plan
 
     siblings = _siblings({"m-Q4_K_M.gguf": 5 * GB, **_SIZES})
@@ -474,12 +456,10 @@ def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
     config = SimpleNamespace(
         path = _REPO, identifier = _REPO, is_local = False, is_lora = False, is_gguf = False
     )
-    # Only 6-bit/ is on disk: the root alone is not downloaded, the pick is.
     assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = None)) is None
     assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit")) == str(
         folder
     )
-    # With the root checkpoint there too, the pick still prices its own folder.
     (folder.parent / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     (folder.parent / "model.safetensors").write_bytes(b"x")
     assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit")) == str(
@@ -526,7 +506,6 @@ def test_a_root_request_never_reuses_a_resident_precision_folder(
         inference, "_resolve_model_identifier_for_request", lambda *a, **k: (_REPO, _REPO, False)
     )
     monkeypatch.setattr(account_access, "require_model_access", lambda *a, **k: None)
-    # Every runtime setting matches, so only the resident folder can tell the two apart.
     for name in (
         "_mlx_runtime_settings_match",
         "_non_gguf_runtime_settings_match",
@@ -556,11 +535,9 @@ def test_a_caller_refused_the_cache_learns_nothing_from_it(monkeypatch, tmp_path
     _no_gguf_rows(monkeypatch)
     rows = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response.variants
     assert [v.quant for v in rows if v.downloaded] == ["2-bit", "4-bit", "6-bit", "8-bit"]
-    # The GGUF scan refused this caller the cache: the Hub listing stays, the on-device state goes.
     _no_gguf_rows(monkeypatch, cache_authorized = False)
     rows = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response.variants
     assert rows and not any(v.downloaded for v in rows)
-    # Offline, the cache is the only source, so nothing is listed.
     answer = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO, offline = True))
     assert not answer.response.variants
 
@@ -575,7 +552,6 @@ def test_offline_lists_a_cached_precision_folder(monkeypatch, tmp_path):
     answer = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO, offline = True))
     assert [(v.quant, v.downloaded) for v in answer.response.variants] == [("6-bit", True)]
     assert answer.response.variant_format == "mlx"
-    # A repo with nothing usable cached still answers 404, as before.
     with pytest.raises(HTTPException) as missing:
         asyncio.run(gguf_variants.get_gguf_variants_answer("org/absent", offline = True))
     assert missing.value.status_code == 404

@@ -481,7 +481,6 @@ test("invalid format and variant combinations fail closed", () => {
 });
 
 test("an MLX precision folder runs before the repo is on device, through MLX", () => {
-  // #13418: a 6-bit/ folder is fetched by the load itself, so the repo need not be downloaded.
   const notDownloaded = selectedModel({
     id: "orcarouter/Qwen3.8-27B-Uncensored-MLX",
     hubRepoId: "orcarouter/Qwen3.8-27B-Uncensored-MLX",
@@ -506,7 +505,6 @@ test("an MLX precision folder runs before the repo is on device, through MLX", (
   assert.equal(request?.meta.isDownloaded, false);
   assert.equal(request?.meta.expectedBytes, 22_800_000_000);
 
-  // The same repo without a precision pick still needs to be on device, as before.
   assert.equal(
     createHubModelConfigHandoff({
       requestId: "request-2",

@@ -4765,7 +4765,6 @@ class MLXInferenceBackend:
             else:
                 load_kwargs["tensor_group"] = distributed_group
 
-        # A precision folder (``6-bit/``) loads from disk under the repo id.
         precision_folder = (
             None if getattr(config, "is_gguf", False) else getattr(config, "gguf_variant", None)
         )
