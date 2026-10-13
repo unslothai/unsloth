@@ -159,7 +159,9 @@ def test_hopper_auto_width_gate_reads_text_config_and_restores(fake, monkeypatch
     multimodal = types.SimpleNamespace(
         config = types.SimpleNamespace(
             text_config = _config(hidden_size = wide),
-            vision_config = types.SimpleNamespace(hidden_size = 1152, num_attention_heads = 16, head_dim = 72),
+            vision_config = types.SimpleNamespace(
+                hidden_size = 1152, num_attention_heads = 16, head_dim = 72
+            ),
         ),
         dtype = torch.bfloat16,
     )
@@ -167,7 +169,10 @@ def test_hopper_auto_width_gate_reads_text_config_and_restores(fake, monkeypatch
     # A later narrow model restores torch's bundled flash.
     assert fi.maybe_activate_flash_attention_impl(_model(hidden_size = 1024)) is None
     assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
-    assert fi._hidden_size(types.SimpleNamespace(config = types.SimpleNamespace(hidden_size = True))) is None
+    assert (
+        fi._hidden_size(types.SimpleNamespace(config = types.SimpleNamespace(hidden_size = True)))
+        is None
+    )
 
 
 def test_hopper_auto_tries_fa4_when_fa3_fails_its_probe(fake, monkeypatch):
@@ -646,3 +651,21 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(
         assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before + 1
     else:
         assert out == ("orig", None) and not used
+
+
+@pytest.mark.parametrize("key", ["llm_config", "language_config"])
+def test_hidden_size_reads_a_decoder_exposed_only_as_llm_or_language_config(key):
+    # InternVL / Nemotron-style: a narrow vision tower, the wide decoder only under llm_config / language_config.
+    config = types.SimpleNamespace(vision_config = types.SimpleNamespace(hidden_size = 1024))
+    setattr(config, key, types.SimpleNamespace(hidden_size = 4096))
+    assert fi._hidden_size(types.SimpleNamespace(config = config)) == 4096
+
+
+def test_hidden_size_follows_get_text_config():
+    class Config:
+        vision_config = types.SimpleNamespace(hidden_size = 1152)
+
+        def get_text_config(self):
+            return types.SimpleNamespace(hidden_size = 3072)
+
+    assert fi._hidden_size(types.SimpleNamespace(config = Config())) == 3072

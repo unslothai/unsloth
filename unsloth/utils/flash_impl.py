@@ -34,7 +34,16 @@ _DROPOUT_KEYS = (
     "attention_probs_dropout_prob",
     "attention_dropout_prob",
 )
-_SUBCONFIG_KEYS = ("text_config", "vision_config", "audio_config", "encoder", "decoder")
+# llm_config / language_config: InternVL / Nemotron-style wrappers expose the decoder only there.
+_SUBCONFIG_KEYS = (
+    "text_config",
+    "vision_config",
+    "audio_config",
+    "encoder",
+    "decoder",
+    "llm_config",
+    "language_config",
+)
 FLASH_IMPL_STATE = {"active": None, "reason": None, "verdicts": {}, "logged": set()}
 # H100, torch 2.14.1: FA3 / FA4 run faster kernels than torch's bundled flash but cost ~60 / ~110 us more host
 # time per forward call. Packed LoRA SFT at 8K tokens / step: hidden 1024 (Qwen3-0.6B) is launch bound and
@@ -172,6 +181,10 @@ def _configs(model):
         out.append(cfg)
         for key in _SUBCONFIG_KEYS:
             stack.append(getattr(cfg, key, None))
+        try:
+            stack.append(cfg.get_text_config())
+        except Exception:
+            pass
         sub = getattr(cfg, "sub_configs", None)
         if isinstance(sub, dict):
             stack.extend(getattr(cfg, key, None) for key in sub)
