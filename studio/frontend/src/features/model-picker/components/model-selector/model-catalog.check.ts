@@ -194,6 +194,18 @@ assert.equal(
 assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "accelerated")?.name, "LTX 2.5 distilled (Diffusers)");
 assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "gguf-only")?.name, "LTX 2.5 distilled (Diffusers)");
 assert.equal(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name, "LTX 2 (base)");
+// The GGUF quants join the same group, never 2.3.
+assert.equal(groupForRepoId("unsloth/LTX-2.5-GGUF", VIDEO_CATALOG), ltx25);
+assert.equal(groupForRepoId("unsloth/ltx-2.5-gguf", VIDEO_CATALOG), ltx25);
+assert.notEqual(groupForRepoId("unsloth/LTX-2.5-GGUF", VIDEO_CATALOG), ltx23);
+assert.deepEqual(
+  ltx25.artifacts.map((a) => [a.repoId, a.loadKind]),
+  [
+    ["Lightricks/LTX-2.5-Diffusers", "pipeline"],
+    ["Lightricks/LTX-2.5", "single_file"],
+    ["unsloth/LTX-2.5-GGUF", "gguf"],
+  ],
+);
 // SDXL Turbo and Base stay separate groups (different checkpoints).
 assert.notEqual(
   groupForRepoId("stabilityai/sdxl-turbo", IMAGE_CATALOG),
@@ -295,6 +307,8 @@ for (const id of [
 const videoOptionIds = new Set(catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id));
 for (const id of [
   "unsloth/LTX-2.3-GGUF",
+  "unsloth/LTX-2.5-GGUF",
+  "Lightricks/LTX-2.5-Diffusers",
   "unsloth/MiniMax-H3-GGUF",
   ...OLD_PIPELINE_MODELS,
 ]) {

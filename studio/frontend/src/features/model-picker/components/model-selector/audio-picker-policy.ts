@@ -415,6 +415,17 @@ export function allowedHiddenModelIdMatches(
   );
 }
 
+/** An audio.cpp umbrella folder row lists only on a task page that passed its exact id. */
+export function umbrellaFolderRowAllowed(
+  row: { repoId: string; umbrellaFolder?: boolean },
+  allowedHiddenModelIds: ReadonlySet<string> | undefined,
+): boolean {
+  return (
+    !row.umbrellaFolder ||
+    allowedHiddenModelIdMatches(allowedHiddenModelIds, row.repoId)
+  );
+}
+
 /** Backend tag for a diffusion GGUF the Images backend cannot assemble; both pickers hide these rows. */
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 

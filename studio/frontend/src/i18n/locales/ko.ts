@@ -554,7 +554,6 @@ export const ko = {
     queueingHintShared: "대기열은 유지됩니다.",
   },
   rewind: {
-    menuItem: "되감기…",
     title: "되감기",
     pickDescription: "되돌아갈 메시지를 선택하세요.",
     pickEmpty: "아직 되돌아갈 메시지가 없습니다.",
@@ -2000,6 +1999,8 @@ export const ko = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} 주간 · {tokens}",
+        chartToggle: "차트",
+        chartToggleHint: "주별 및 누적을 축 레이블이 있는 차트로 표시",
         less: "적음",
         more: "많음",
         insightsTitle: "활동 분석",

@@ -642,6 +642,7 @@ export interface CachedGgufRepo {
   task?: string | null;
   audio_type?: string | null;
   audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
   /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
@@ -2049,7 +2050,8 @@ export async function* streamChatCompletions(
           (parsed.type === "tool_start" ||
             parsed.type === "tool_end" ||
             parsed.type === "tool_output" ||
-            parsed.type === "tool_args")
+            parsed.type === "tool_args" ||
+            parsed.type === "tool_model_note")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);

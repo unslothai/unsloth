@@ -63,6 +63,8 @@ export interface CachedGgufRepo {
   pipeline_tag?: string | null;
   task?: string | null;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
   tags?: string[];
   library_name?: string | null;
 }
