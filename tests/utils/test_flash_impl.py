@@ -536,9 +536,12 @@ def test_fa4_hd256_window_keeps_segments_route(real_fa4):
     not has_real_cuda(), reason = "needs CUDA tensors (the wrapper only takes CUDA rows)"
 )
 @pytest.mark.skipif(torch.version.hip is not None, reason = "torch varlen is off on ROCm")
+@pytest.mark.parametrize("efficient", [True, False])
 @pytest.mark.parametrize("window", [None, 2])
 @pytest.mark.parametrize("allowed", [True, False])
-def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, allowed, window):
+def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(
+    monkeypatch, allowed, window, efficient
+):
     from unsloth.utils import hf_packed_attention as hpa
     from unsloth.utils import attention_dispatch as ad
 
@@ -569,8 +572,11 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, al
     monkeypatch.setattr(hpa, "_TORCH_VARLEN", [fake_varlen])
     monkeypatch.setattr(hpa, "_TORCH_VARLEN_DEVICES", {})
     monkeypatch.setattr(hpa, "_sdpa_requested", lambda q, k: False)
-    # No FA2 / xformers either, so a refused torch varlen goes back to the wrapped sdpa.
+    # No FA2 / xformers either: a refused torch varlen takes the efficient kernel, else the wrapped sdpa.
     monkeypatch.setattr(ad, "select_attention_backend", lambda use_varlen = False: ad.SDPA)
+    if not efficient:
+        monkeypatch.setattr(hpa, "_EFFICIENT_VARLEN", [False])
+    before = hpa.HF_PACKED_ATTENTION_STATS.get("efficient", 0)
     monkeypatch.setattr(
         fi, "flash_impl_allows", lambda head_dim, window, device: asked.append(window) or allowed
     )
@@ -596,5 +602,8 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(monkeypatch, al
     assert asked == [window]
     if allowed:
         assert used and not seen
+    elif efficient:
+        assert not used and not seen
+        assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before + 1
     else:
         assert out == ("orig", None) and not used

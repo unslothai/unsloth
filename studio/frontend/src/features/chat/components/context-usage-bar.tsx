@@ -101,18 +101,21 @@ const Face: FC<{ face: string }> = ({ face }) => {
 };
 
 export const ContextUsageBar: FC<
-  ContextUsageBarInput & { className?: string }
-> = ({ className, ...input }) => {
+  ContextUsageBarInput & { className?: string; compactUnknownAsIcon?: boolean }
+> = ({ className, compactUnknownAsIcon = false, ...input }) => {
   const state = deriveContextUsageBar(input);
   if (!state) return null;
 
   const { cached, cacheWrites, promptTokens, completionTokens } = input.estimated
     ? {}
     : input;
-  const { percent, advice, face, compactFace } = state;
+  const { percent, advice, face } = state;
+  // A narrow chat header needs the icon fallback even when a provider has no known window.
+  // The tooltip and accessible label still carry the full token count.
+  const compactFace = compactUnknownAsIcon ? null : state.compactFace;
   const severity = getSeverityColor(percent ?? 0);
   // The ring shows whenever there is a window to fill, even before anything is counted.
-  const showRing = compactFace === null;
+  const showRing = state.compactFace === null;
   // Mono text, so widths are exact in ch. Full: padding, face, and the gap and ring. Compact: an icon button.
   const fullWidth = showRing
     ? `calc(${faceWidthCh(face)}ch + var(--icon-size) + 7 * var(--spacing))`

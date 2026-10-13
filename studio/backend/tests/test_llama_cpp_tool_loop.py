@@ -2214,6 +2214,40 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
     assert len(payloads) == 3
 
 
+def test_browser_turns_get_a_post_tool_nudge_per_step(monkeypatch):
+    """A browser task announces many steps; each tool turn earns its own nudge, not one per request."""
+
+    def call(name, arguments, call_id):
+        return [_tool_call_sse(name, arguments, call_id), _done()]
+
+    streams = [
+        call("browser_snapshot", {}, "call_1"),
+        [_sse({"content": "Let me click the Code panel."}), _done()],
+        call("browser_click", {"ref": "r4"}, "call_2"),
+        [_sse({"content": "Let me take a screenshot to see it."}), _done()],
+        call("browser_snapshot", {}, "call_3"),
+        [_sse({"content": "The panel shows the CSS."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "Done.")
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in ("browser_snapshot", "browser_click")
+    ]
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Fix the CSS."}],
+        tools,
+        max_tool_iterations = 10,
+        nudge_tool_calls = True,
+    )
+
+    assert len(calls) == 3 and len(payloads) == 6
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts[-1] == "The panel shows the CSS."
+
+
 def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
     """A tool execution opens a new phase, so the same intent text is nudged again.
 
@@ -5575,6 +5609,30 @@ def test_gguf_textual_fallback_keeps_identical_calls_when_deduplication_is_off(
     )
 
     assert len(calls) == (1 if deduplicate else 3), [c[0] for c in calls]
+
+
+def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch):
+    # Each acts on the page as it is then, so the second scroll is not a repeat of the first.
+    blocks = '<tool_call>{"name":"browser_scroll","arguments":{"direction":"down"}}</tool_call>' * 2
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "Done.",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "scroll"}],
+            tools = [{"type": "function", "function": {"name": "browser_scroll"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert [name for name, _ in calls] == ["browser_scroll", "browser_scroll"]
 
 
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):
