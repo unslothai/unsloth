@@ -116,7 +116,7 @@ export function pngRecipe(bytes: Uint8Array): EmbeddedRecipe {
   return { recipe: text[RECIPE_KEY], parameters: text[PARAMETERS_KEY] };
 }
 
-// ---- EXIF (big-endian TIFF, the layout piexif writes, so AUTOMATIC1111 reads it back) ----
+// EXIF is big-endian TIFF, the layout piexif writes, so AUTOMATIC1111 reads it back.
 
 interface IfdEntry {
   tag: number;
@@ -434,7 +434,6 @@ function webpTiff(webp: Uint8Array): Uint8Array | null {
     : data;
 }
 
-/** Recipe text from a PNG, JPEG or WebP file; empty when it carries none. */
 export function readEmbeddedRecipe(bytes: Uint8Array): EmbeddedRecipe {
   if (isPng(bytes)) {
     return pngRecipe(bytes);
@@ -443,8 +442,6 @@ export function readEmbeddedRecipe(bytes: Uint8Array): EmbeddedRecipe {
     bytes[0] === 0xff && bytes[1] === 0xd8 ? jpegTiff(bytes) : webpTiff(bytes);
   return tiff ? readTiff(tiff) : {};
 }
-
-// ---- turning embedded text back into settings ----
 
 /** Settings read from a file: untrusted, so every field but the prompt stays `unknown` until
  *  `recipeSettings` checks it. */

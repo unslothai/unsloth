@@ -146,7 +146,6 @@ test("JPEG export carries the recipe as EXIF after the JFIF header, idempotently
     recipe: RECIPE,
     parameters: PARAMETERS,
   });
-  // The image data after the headers is the canvas's, untouched.
   assert.ok(
     Buffer.from(out).subarray(-200).equals(Buffer.from(jpeg).subarray(-200)),
   );

@@ -590,7 +590,6 @@ async function downloadImage(
       }
       output = await fetchGalleryBlob(image.url);
     } else {
-      // The authenticated original: its recipe chunks are what every export carries.
       const original = await fetchGalleryBlob(image.url);
       const source = src ?? (ownedUrl = URL.createObjectURL(original));
       try {
@@ -2434,7 +2433,6 @@ export function ImagesPage({
     },
     [resyncWindow, loadGallery],
   );
-  // One-click PNG download, stamped unless the info stamp is off in Settings.
   const handleQuickDownload = useCallback(
     (image: GalleryImage) => downloadImage(image, "png", srcById[image.id]),
     [srcById],

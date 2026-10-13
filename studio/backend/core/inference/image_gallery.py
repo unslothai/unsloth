@@ -45,7 +45,6 @@ def gallery_dir() -> Path:
     return ensure_account_dir(account_path("images"))
 
 
-# Workflows whose strength is AUTOMATIC1111's img2img "Denoising strength".
 _IMG2IMG_WORKFLOWS = ("img2img", "inpaint", "outpaint", "edit")
 
 
