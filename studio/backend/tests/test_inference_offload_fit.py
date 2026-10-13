@@ -80,3 +80,32 @@ def test_checkpoint_with_room_loads_as_before():
 def test_nothing_changes_where_the_guess_cannot_apply(device_map, cuda, size):
     fit, _ = _fit(free = 7 * _GiB, size = size, cuda = cuda)
     assert fit("m", device_map, True) == {}
+
+
+def _local_bytes():
+    tree = ast.parse(_SRC.read_text(encoding = "utf-8"))
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "_complete_local_safetensors_bytes"
+    )
+    scope = {"json": __import__("json"), "Path": Path, "Optional": object}
+    exec(compile(ast.Module([node], []), str(_SRC), "exec"), scope)
+    return scope["_complete_local_safetensors_bytes"]
+
+
+def test_partial_snapshot_is_not_sized_locally(tmp_path):
+    # An interrupted download leaves some shards: the Hub has to size the rest.
+    (tmp_path / "model.safetensors.index.json").write_text(
+        '{"weight_map": {"a": "model-00001-of-00002.safetensors", "b": "model-00002-of-00002.safetensors"}}',
+        encoding = "utf-8",
+    )
+    (tmp_path / "model-00001-of-00002.safetensors").write_bytes(b"x" * 10)
+    assert _local_bytes()(tmp_path) is None
+    (tmp_path / "model-00002-of-00002.safetensors").write_bytes(b"x" * 5)
+    assert _local_bytes()(tmp_path) == 15
+
+
+def test_single_file_snapshot_is_sized_locally(tmp_path):
+    (tmp_path / "model.safetensors").write_bytes(b"x" * 7)
+    assert _local_bytes()(tmp_path) == 7

@@ -106,6 +106,22 @@ def _loader_repo(path: str, load_in_4bit: bool) -> str:
         return path
 
 
+def _complete_local_safetensors_bytes(folder: Path) -> Optional[int]:
+    """Top-level safetensors bytes in `folder`, or None while a shard the index names is missing (an interrupted download)."""
+    try:
+        index = folder / "model.safetensors.index.json"
+        if index.is_file():
+            shards = set(json.loads(index.read_text(encoding = "utf-8"))["weight_map"].values())
+            files = [folder / shard for shard in shards]
+            if not all(f.is_file() for f in files):
+                return None
+        else:
+            files = list(folder.glob("*.safetensors"))
+        return sum(f.stat().st_size for f in files) or None
+    except Exception:
+        return None
+
+
 def _checkpoint_bytes(name: str, hf_token = None) -> Optional[int]:
     """Bytes of the top-level safetensors `name` holds: a local folder, the HF cache, then the Hub."""
     folder = Path(name)
@@ -116,7 +132,7 @@ def _checkpoint_bytes(name: str, hf_token = None) -> Optional[int]:
         except Exception:
             folder = None
     if folder is not None:
-        local = sum(f.stat().st_size for f in folder.glob("*.safetensors"))
+        local = _complete_local_safetensors_bytes(folder)
         if local:
             return local
     if Path(name).is_dir():
