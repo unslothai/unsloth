@@ -4,11 +4,11 @@
 import os
 from pathlib import Path
 import shutil
-import subprocess
 import sys
 import json
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 
 def _setup_source():
@@ -105,7 +105,7 @@ def _run_node_probe(
         PROBE_RETRY = "1" if retry else "0",
         PROBE_NATIVE_ERRORS = "1" if native_errors else "0",
     )
-    process = subprocess.run(
+    process = run_pwsh(
         [
             executable,
             "-NoLogo",
