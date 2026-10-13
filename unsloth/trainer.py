@@ -1992,7 +1992,8 @@ def _patch_sft_trainer_auto_packing(trl_module):
             setattr(trainer_args, "padding_free", False)
 
         collator = getattr(self, "data_collator", None)
-        if getattr(collator, "padding_free", False):
+        # TRL's text collator also has `padding_free`; it must keep its wrapped, per-document eval batches.
+        if isinstance(collator, UnslothVisionDataCollator) and collator.padding_free:
             reason = _collator_packing_conflict(self, eval_logits_wanted, forward_rejects_packing)
             if reason is not None:
                 collator._padding_free = False
