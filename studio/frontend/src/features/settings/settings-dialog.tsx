@@ -475,6 +475,7 @@ export function SettingsDialog() {
           data-settings-dialog
           showCloseButton={false}
           overlayClassName="bg-black/40"
+          overlayTone="strong"
           onCloseAutoFocus={(e) => {
             // radix loses its previous-focus reference when the tab focus runs in requestAnimationFrame.
             const focusTarget = [opener, openerFallback].find(

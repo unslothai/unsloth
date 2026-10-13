@@ -51,9 +51,27 @@ test("lightboxes, the browser panel and the titlebar backdrop do not blur", () =
 });
 
 test("Settings dims a step darker, titlebar included", () => {
-  assert.match(read("features/settings/settings-dialog.tsx"), /overlayClassName="bg-black\/40"/);
+  assert.match(
+    read("features/settings/settings-dialog.tsx"),
+    /overlayClassName="bg-black\/40"\s*overlayTone="strong"/,
+  );
+  assert.match(read("components/ui/dialog.tsx"), /data-viewport-backdrop-tone=\{overlayTone\}/);
+  assert.match(
+    read("components/tauri/window-titlebar.tsx"),
+    /data-viewport-backdrop-tone=\{backdropTone \?\? undefined\}/,
+  );
   assert.match(
     read("index.css"),
-    /html:has\(\[data-settings-dialog\]\[data-state="open"\]\) \[data-slot="window-titlebar"\]::after \{\s*background: rgb\(0 0 0 \/ 40%\);/,
+    /\[data-slot="window-titlebar"\]\[data-viewport-backdrop-tone="strong"\]::after \{\s*background: rgb\(0 0 0 \/ 40%\);/,
+  );
+});
+
+test("every popup surface carries the faint shadow without losing its ring", () => {
+  const css = read("index.css");
+  assert.match(css, /--popup-shadow: 0 12px 32px -12px rgb\(0 0 0 \/ 0\.16\)/);
+  assert.match(css, /--popup-shadow: 0 16px 40px -12px rgb\(0 0 0 \/ 0\.5\)/);
+  assert.match(
+    css,
+    /:is\(\[data-slot="dialog-content"\], \[data-slot="alert-dialog-content"\], \[data-slot="sheet-content"\]\) \{\s*box-shadow:\s*var\(--tw-ring-offset-shadow, 0 0 #0000\),\s*var\(--tw-ring-shadow, 0 0 #0000\),\s*var\(--popup-shadow\);/,
   );
 });

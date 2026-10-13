@@ -81,6 +81,7 @@ function DialogContent({
   position = "fixed",
   overlayClassName,
   overlayPosition,
+  overlayTone,
   onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
@@ -89,6 +90,8 @@ function DialogContent({
   position?: "fixed" | "absolute";
   overlayClassName?: string;
   overlayPosition?: "fixed" | "absolute";
+  /** A darker overlay names it, so the custom titlebar dims to match. */
+  overlayTone?: "strong";
 }) {
   const resolvedContainer = container ?? null;
   const inheritedGlow = useContext(DropdownGlowContext);
@@ -102,6 +105,7 @@ function DialogContent({
         <DialogOverlay
           className={overlayClassName}
           position={overlayPosition ?? position}
+          data-viewport-backdrop-tone={overlayTone}
         />
         <DialogPrimitive.Content
           data-slot="dialog-content"
