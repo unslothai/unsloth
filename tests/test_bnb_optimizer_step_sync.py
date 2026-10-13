@@ -121,7 +121,6 @@ def test_step_on_a_side_stream_keeps_every_sync():
     patched = _run("patched", "AdamW8bit", "stream")
     if not patched["wrapped"]:
         pytest.skip("this bitsandbytes inlines torch.cuda.synchronize; the patch leaves it alone")
-    # Step 0 runs on the default stream (see the runner), so only the side-stream steps must keep every sync.
     assert patched["syncs"][1:] == stock["syncs"][1:] and min(stock["syncs"][1:]) >= 4
     assert patched["params"] == stock["params"]
 
