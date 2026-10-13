@@ -490,3 +490,36 @@ def test_a_bare_quant_two_cached_sizes_share_names_nothing(hub, monkeypatch):
         asyncio.run(deletion.delete_cached_model_response(moon, "Q8_0"))
     assert err.value.status_code == 404
     assert len(_left(hub)) == 5
+
+
+def test_a_folder_delete_reserves_every_variant_before_removing_any(hub, monkeypatch):
+    from hub.services.models import deletion
+    from hub.utils import download_registry
+
+    _idle(monkeypatch)
+    moon = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    tiny = "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0"
+    small = "Moonshine-Streaming-GGUF/moonshine-streaming-small-q8_0"
+    files = {f"{tiny}.gguf": "moonshine_asr", f"{small}.gguf": "moonshine_asr"}
+    _add_snapshot(hub, "a" * 40, files, main = True)
+    acm.forget()
+    registry = download_registry.DownloadRegistry()
+    monkeypatch.setattr(deletion.downloads, "registry", registry)
+    keys = acm.cached_folder_target(moon, None)[1]
+    assert sorted(keys) == sorted([tiny, small])
+    later = keys[-1]
+    # A re-download of the folder's second variant is running.
+    registry.claim(
+        f"{AUDIO_CPP_REPO}::{later.lower()}",
+        download_registry.TRANSPORT_HTTP,
+        repo_type = "model",
+        repo_id = AUDIO_CPP_REPO,
+        variant = later,
+        blob_hashes = frozenset({"later"}),
+        progress_blob_hashes = frozenset({"later"}),
+    )
+    with pytest.raises(HTTPException) as err:
+        asyncio.run(deletion.delete_cached_model_response(moon, None))
+    assert err.value.status_code == 400
+    assert len(_left(hub)) == 5
+    assert not registry._deleting

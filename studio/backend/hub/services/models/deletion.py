@@ -945,15 +945,30 @@ async def delete_cached_model_response(
         umbrella, keys = folder
         if not keys:
             raise HTTPException(status_code = 404, detail = "Model not found in cache")
-        result: dict = {}
-        for key in keys:
-            result = await delete_cached_model_response(
-                umbrella,
-                key,
-                hf_token,
-                cache_path,
-                only_if_orphan = only_if_orphan,
-            )
+        # Every key is reserved before the first goes, so a download of a later one cannot start
+        # midway and leave the folder half deleted.
+        repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, umbrella, repo_type = "model")
+        reserved: list[str] = []
+        try:
+            for key in keys:
+                if not downloads.registry.begin_delete(repo_key, key):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Cancel the active downloads before deleting.",
+                    )
+                reserved.append(key)
+            result: dict = {}
+            for key in keys:
+                result = await delete_cached_model_response(
+                    umbrella,
+                    key,
+                    hf_token,
+                    cache_path,
+                    only_if_orphan = only_if_orphan,
+                )
+        finally:
+            for key in reserved:
+                downloads.registry.end_delete(repo_key, key)
         return {**result, "repo_id": repo_id, "variant": variant}
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
