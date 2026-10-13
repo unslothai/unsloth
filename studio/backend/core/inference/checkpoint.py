@@ -491,9 +491,7 @@ def fit_checkpoint_context(
     # Signature compatibility with `fit_rolling_context`. A checkpoint reset already drops to the latest turn plus X; an
     # extra bite of the window would only shrink the standing-instruction block, which is the half worth keeping.
     headroom_ratio: Optional[float] = None,
-    # The user asked for a compaction (/compact): start a new epoch even though the prompt fits.
     force_reset: bool = False,
-    # The epoch in force was started that way, so it replays even while the prompt fits.
     sticky_manual: bool = False,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """Fit a chat by resetting the epoch, keeping the newest turn and a carried-forward X.

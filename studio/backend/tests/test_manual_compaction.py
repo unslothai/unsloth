@@ -27,7 +27,6 @@ def _thread(pad = 4, chars = 200):
 
 
 def _fit(messages, **kwargs):
-    # A window the thread fits in many times over: nothing here overflows.
     kwargs.setdefault("context_length", 100_000)
     kwargs.setdefault("max_tokens", 512)
     kwargs.setdefault("count_tokens", count)
@@ -81,7 +80,6 @@ def test_a_manual_epoch_keeps_replaying_while_the_chat_still_fits():
         "Carrying on.",
         "and the next part",
     ]
-    # An overflow-driven boundary on the same chat still un-compacts once it fits again.
     assert _fit(later, sticky_dropped = first["dropped_messages"]) == (later, None)
 
 

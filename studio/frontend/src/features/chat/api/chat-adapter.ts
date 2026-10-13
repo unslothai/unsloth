@@ -8855,7 +8855,6 @@ export function createOpenAIStreamAdapter(
           }
         }
 
-        // The server may still decline (rolling policy, archive unavailable): say so rather than drop it quietly.
         if (
           compactNow &&
           !compactionMarkers?.some(

@@ -104,7 +104,6 @@ test("a compaction inside a tool loop is drawn after the call it followed", () =
     },
   ];
 
-  // Not above the first prompt, where nothing older existed to compact.
   assert.equal(compactionDividerRows(messages).size, 0);
   assert.deepEqual(compactionToolCallDividers(messages).get("a1"), {
     afterToolCallId: "call-2",
@@ -174,19 +173,15 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   assert.match(submit, /requestThreadCompaction\(referenceThreadId\)/);
   assert.match(submit, /resumesThought\(\{/);
   assert.match(submit, /!runtime\.supportsTools \|\|/);
-  // A temporary chat is never saved, so its turns have no archive to go to.
   assert.match(submit, /runtime\.incognito \|\| isThreadIncognito\(referenceThreadId\)/);
   const adapter = await readSrc("features/chat/api/chat-adapter.ts");
-  // Taken whatever model sends next, so a switch to an API model cannot leave it armed for later.
   assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
   assert.match(adapter, /compactNow,\n\s+\}\),/);
-  // A request the server declined is reported, not dropped.
   // Only a reset started by this request counts; a replayed manual epoch is not one.
   assert.match(
     adapter,
     /marker\.truncation\.manual === true &&\s+marker\.truncation\.checkpoint_started === true/,
   );
-  // Stopped runs never reach the check, and a reply cut at max tokens still reports it.
   assert.match(adapter, /compactNow &&\n\s+!compactionMarkers\?\.some\(/);
   assert.match(adapter, /"This chat was not compacted"/);
 });
@@ -195,10 +190,8 @@ test("a fit that recalled anchors before the recall it already emitted", () => {
   const recalled = fit(4, { checkpoint_started: true, recalled_chunks: 3 });
   const search = { toolCallId: "recall", toolName: "search_conversation" };
   const terminal = { toolCallId: "call-1", toolName: "terminal" };
-  // At the start of a reply the recall is the only call so far: the cut goes above the prompt.
   assert.equal(compactionAnchorToolCallId([search], recalled), null);
   assert.equal(compactionAnchorToolCallId([terminal, search], recalled), "call-1");
-  // Without a recall, a search the model ran itself is just the last call.
   assert.equal(compactionAnchorToolCallId([terminal, search], fit(4)), "recall");
   assert.equal(compactionAnchorToolCallId([], fit(4)), null);
 });

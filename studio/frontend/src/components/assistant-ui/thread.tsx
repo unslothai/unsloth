@@ -1869,13 +1869,11 @@ const ThreadMessage: FC = () => {
   );
 };
 
-// /compact waits for the next request, but the transcript shows where it will cut right away.
 const PendingCompactionRule: FC = () => {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const pending = useCompactRequestStore((s) =>
     threadId === null ? false : s.requested[threadId] === true,
   );
-  // A reply, not the prompt about to compact: that one gets the divider the server reports.
   const endsWithReply = useAuiState(
     ({ message }) => message.isLast && message.role === "assistant",
   );
@@ -5426,7 +5424,6 @@ const Composer: FC<{
           toast.info("/compact works with GGUF and MLX models that support tools");
           return;
         }
-        // Applied by the next request, which is the first one the compaction can change.
         requestThreadCompaction(referenceThreadId);
         clearStoredDraft();
         aui.composer().setText("");
@@ -8043,7 +8040,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
   );
 };
 
-// A tool loop compacts between rounds, so its divider follows the call it ran after.
 const ToolGroupThenCompaction = memo<
   PropsWithChildren<{ startIndex: number; endIndex: number }>
 >(({ startIndex, endIndex, children }) => {

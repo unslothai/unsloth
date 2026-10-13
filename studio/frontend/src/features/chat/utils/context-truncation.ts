@@ -52,14 +52,13 @@ export function shouldShowCompactionNotice(
   );
 }
 
-/** One compaction during a reply: the tool call it followed (null: before the reply began) and that fit's own record. */
+/** afterToolCallId is null when the fit ran before the reply began. */
 export interface CompactionMarker {
   afterToolCallId: string | null;
   truncation: ContextTruncation;
 }
 
-/** The call a fit followed. A fit that recalled has already emitted its `search_conversation` exchange,
- *  which belongs after the cut, not before it. */
+/** A fit that recalled already emitted its `search_conversation`, which belongs after the cut. */
 export function compactionAnchorToolCallId(
   toolCalls: ReadonlyArray<{ toolCallId?: unknown; toolName?: unknown }>,
   truncation: ContextTruncation,
@@ -75,7 +74,7 @@ export function compactionAnchorToolCallId(
   return typeof id === "string" ? id : null;
 }
 
-/** Adds a fit that cut something new. A tool loop refits every round and replays the same cut. */
+/** Skips the cut a tool loop replays every round. */
 export function appendCompactionMarker(
   markers: CompactionMarker[] | undefined,
   truncation: ContextTruncation,

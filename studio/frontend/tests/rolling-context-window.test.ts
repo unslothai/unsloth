@@ -219,7 +219,6 @@ test("the compaction notice renders from persisted metadata, not from a message"
   // Read off metadata.custom so it can never become part of the conversation.
   assert.match(DERIVED, /\.custom\.contextTruncation/);
   assert.match(THREAD, /<CompactionDivider truncation=\{truncation\} \/>/);
-  // A tool loop's compaction is drawn after the call it followed, inside the reply.
   assert.match(THREAD, /compactionToolCallDividers\(thread\.messages\)/);
   assert.match(THREAD, /ToolGroup: ToolGroupThenCompaction,/);
   assert.match(COMPACTION_DIVIDER, /Context compacted/);
