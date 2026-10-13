@@ -565,6 +565,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             ),
             untiled_vae = _LTX2_VAE_UNTILED,
             # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
+            compile_static = True,
+            stg_compile_adapter = True,
             preview_factors = "ltx2",
             # The split single-file repo next to the Diffusers pack (safetensors, no remote code).
             trusted_repos = ("lightricks/ltx-2.5",),
@@ -612,6 +614,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             # 2.3 is the same audiovisual DiT, and builders spell it by its version.
             quant_names = ("ltx-2.3",),
             untiled_vae = _LTX2_VAE_UNTILED,
+            compile_static = True,
+            stg_compile_adapter = True,
             preview_factors = "ltx2",
             trusted_repos = ("lightricks/ltx-2.3-fp8",),
         ),

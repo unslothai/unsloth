@@ -99,6 +99,11 @@ class FamilyProfile:
     # preferences) answer to, besides ``name``: a builder spelling a family by a version name ("ltx-2.3"). Not general
     # alias resolution, which would hand a family's artifact policy to every alias substring.
     quant_names: tuple[str, ...] = ()
+    # Compile the denoiser with static shapes (token counts depend only on (w, h, frames): one recompile per shape,
+    # ~1.3x faster); read by the diffusion_autoopt ``ltx_static_compile`` family hook.
+    compile_static: bool = False
+    # Install the LTX-2 STG compile adapter after a successful compile (``ltx_stg_compile_adapter`` family hook).
+    stg_compile_adapter: bool = False
 
 
 DEFAULT_PROFILE = FamilyProfile()
@@ -125,6 +130,20 @@ def profile_table(attr: str, *, quant: bool = False) -> dict[str, Any]:
             for name in profile.quant_names:
                 table.setdefault(name, value)
     return table
+
+
+def profile_for(family: Any) -> FamilyProfile:
+    """``family.profile``, else the registry row's profile for its exact ``name`` (a stand-in family object), else the
+    empty profile."""
+    profile = getattr(family, "profile", None)
+    if isinstance(profile, FamilyProfile):
+        return profile
+    name = getattr(family, "name", None)
+    if name:
+        for fam in _families():
+            if fam.name == name:
+                return fam.profile
+    return DEFAULT_PROFILE
 
 
 def trusted_repo_ids(families: Any) -> frozenset[str]:
