@@ -6107,6 +6107,8 @@ def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
 
 _VSCODE_GROUP = "Unsloth"
 _VSCODE_DEFAULT_CONTEXT = 32768
+# Copilot's Agent prompt (instructions + tool schemas) measured ~19K tokens in VS Code 1.141.
+_VSCODE_AGENT_MIN_CONTEXT = 32768
 
 
 def _vscode_models_path() -> Path:
@@ -6307,6 +6309,15 @@ def _add_vscode_provider(
         typer.echo(
             f"{entry['id']} has no tool-calling chat template, so it is offered in Ask mode, "
             "not Agent mode."
+        )
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if tool_calling and window and int(window) < _VSCODE_AGENT_MIN_CONTEXT:
+        typer.echo(
+            f"Warning: {entry['id']} is loaded with {int(window):,} tokens of context, too few "
+            "for Copilot's Agent mode, which sends about 20,000 tokens of instructions before "
+            "your message. Load it with --context-length "
+            f"{_VSCODE_AGENT_MIN_CONTEXT} and re-run unsloth start vscode.",
+            err = True,
         )
     if key_id is not None:
         typer.echo(

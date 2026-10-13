@@ -889,3 +889,16 @@ def test_vscode_over_ssh_skips_the_tunnel_hint_for_a_reachable_server(studio, mo
 
     assert result.exit_code == 0, result.output
     assert "ssh -L" not in result.output and f"can reach {remote}" in result.output
+
+
+@pytest.mark.parametrize("window, warned", [(8192, True), (32768, False)])
+def test_vscode_warns_when_the_context_is_too_small_for_agent_mode(
+    studio, monkeypatch, window, warned
+):
+    _vscode_config(studio, monkeypatch)
+    monkeypatch.setitem(MODEL, "context_length", window)
+
+    result = CliRunner().invoke(start.start_app, ["vscode"])
+
+    assert result.exit_code == 0, result.output
+    assert ("--context-length 32768" in result.output) is warned
