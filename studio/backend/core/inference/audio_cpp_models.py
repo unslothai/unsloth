@@ -2554,9 +2554,9 @@ def download_target(
         row = (model.id, model.variant.key)
         with _job_rows_lock:
             _job_rows[(model.repo_id.lower(), key.lower())] = row
-            # Status polls come through here too: write only what the file does not hold yet.
-            if _saved_job_rows().get(key.lower()) != row:
-                _update_saved_job_rows(key, row)
+        # Status polls come through here too: write only what the file does not hold yet.
+        if _saved_job_row(key) != row:
+            _save_job_row(key, row)
     return model.repo_id, key
 
 
@@ -2565,62 +2565,62 @@ def download_target(
 _job_rows: dict[tuple[str, str], tuple[str, str]] = {}
 _job_rows_lock = threading.Lock()
 # The same records on disk, so a backend restarted mid-download (or another backend on this install)
-# still names the job by row. Only umbrella jobs, keyed by lowercased planner key.
-_JOB_ROWS_FILE = "audio_cpp_job_rows.json"
-_MAX_SAVED_JOB_ROWS = 256
+# still names the job by row. One file per planner key, so concurrent writers never merge a map.
+_JOB_ROWS_DIR = "audio_cpp_job_rows"
 
 
-def _job_rows_path(create: bool = False) -> Optional[Path]:
+def _job_row_path(key: str, create: bool = False) -> Optional[Path]:
     from hub.utils.state_dir import state_root
 
     root = state_root(create = create)
-    return root / _JOB_ROWS_FILE if root is not None else None
+    if root is None:
+        return None
+    folder = root / _JOB_ROWS_DIR
+    if create:
+        try:
+            folder.mkdir(exist_ok = True)
+        except OSError:
+            return None
+    return folder / f"{hashlib.sha256(key.lower().encode()).hexdigest()[:32]}.json"
 
 
-def _saved_job_rows() -> dict[str, tuple[str, str]]:
-    """The persisted records; anything unreadable or malformed reads as absent."""
+def _saved_job_row(key: str) -> Optional[tuple[str, str]]:
+    """The persisted row of ``key``; anything unreadable or malformed reads as absent."""
     try:
-        path = _job_rows_path()
-        data = json.loads(path.read_text(encoding = "utf-8")) if path is not None else {}
-    except (OSError, ValueError):
-        return {}
-    rows: dict[str, tuple[str, str]] = {}
-    for key, row in (data.items() if isinstance(data, dict) else ()):
-        if not (isinstance(key, str) and isinstance(row, list) and len(row) == 2):
-            continue
-        row_id, quant = row
-        folder = key.split("/", 1)[0]
-        # A record must name its own folder's row, so a damaged file cannot rename another model.
-        if (
-            isinstance(row_id, str)
-            and isinstance(quant, str)
-            and quant
-            and row_id.lower() == f"{AUDIO_CPP_REPO}/{folder}".lower()
-        ):
-            rows[key.lower()] = (row_id, quant)
-    return rows
+        path = _job_row_path(key)
+        data = json.loads(path.read_text(encoding = "utf-8")) if path is not None else None
+    except Exception:  # noqa: BLE001 - unreadable, malformed or absurdly nested: no saved row
+        return None
+    if not (isinstance(data, list) and len(data) == 3 and all(isinstance(v, str) for v in data)):
+        return None
+    saved_key, row_id, quant = data
+    # A record must name its own key and its own folder's row, so a damaged file cannot rename
+    # another model.
+    folder = key.split("/", 1)[0]
+    if saved_key.lower() != key.lower() or not quant:
+        return None
+    if row_id.lower() != f"{AUDIO_CPP_REPO}/{folder}".lower():
+        return None
+    return row_id, quant
 
 
-def _update_saved_job_rows(key: str, row: Optional[tuple[str, str]]) -> None:
+def _save_job_row(key: str, row: Optional[tuple[str, str]]) -> None:
     """Record (or with None drop) ``key``'s row on disk. Best effort: a failed write keeps the old file."""
-    path = _job_rows_path(create = row is not None)
+    path = _job_row_path(key, create = row is not None)
     if path is None:
         return
-    rows = _saved_job_rows()
     if row is None:
-        if rows.pop(key.lower(), None) is None:
-            return
-    else:
-        rows.pop(key.lower(), None)
-        rows[key.lower()] = row
-        while len(rows) > _MAX_SAVED_JOB_ROWS:
-            rows.pop(next(iter(rows)))
+        try:
+            path.unlink(missing_ok = True)
+        except OSError as exc:
+            logger.debug("audio.cpp: could not drop the row of %s: %s", key, exc)
+        return
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        tmp.write_text(json.dumps({k: list(v) for k, v in rows.items()}), encoding = "utf-8")
+        tmp.write_text(json.dumps([key, *row]), encoding = "utf-8")
         os.replace(tmp, path)
     except OSError as exc:
-        logger.debug("audio.cpp: could not save download rows: %s", exc)
+        logger.debug("audio.cpp: could not save the row of %s: %s", key, exc)
         try:
             tmp.unlink(missing_ok = True)
         except OSError:
@@ -2631,8 +2631,7 @@ def forget_job_row(repo_id: Optional[str], variant: Optional[str]) -> None:
     """Drop an umbrella job's saved row once the job has ended; this process keeps its own copy."""
     if str(repo_id or "").lower() != AUDIO_CPP_REPO.lower() or not variant:
         return
-    with _job_rows_lock:
-        _update_saved_job_rows(variant.replace("\\", "/"), None)
+    _save_job_row(variant.replace("\\", "/"), None)
 
 
 def folder_row_for_download(repo_id: str, variant: Optional[str]) -> Optional[tuple[str, str]]:
@@ -2645,7 +2644,7 @@ def folder_row_for_download(repo_id: str, variant: Optional[str]) -> Optional[tu
     with _job_rows_lock:
         started = _job_rows.get((repo_id.lower(), variant.replace("\\", "/").lower()))
     if started is None:
-        started = _saved_job_rows().get(variant.replace("\\", "/").lower())
+        started = _saved_job_row(variant.replace("\\", "/"))
     if started is not None:
         return started
     parts = variant.replace("\\", "/").split("/")

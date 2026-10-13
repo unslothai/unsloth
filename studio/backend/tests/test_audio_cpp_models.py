@@ -2138,16 +2138,41 @@ def test_a_damaged_saved_record_falls_back_to_the_path(hub, monkeypatch):
     folder = "Moonshine-Streaming-GGUF"
     key = f"{folder}/moonshine-streaming-small-q8_0"
     row = f"{AUDIO_CPP_REPO}/{folder}"
-    path = acm._job_rows_path(create = True)
+    path = acm._job_row_path(key, create = True)
     for text in (
         "{not json",
         "[]",
-        json.dumps({key.lower(): "small/Q8_0"}),
-        json.dumps({key.lower(): [f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", "small/Q8_0"]}),
+        json.dumps({key: [row, "small/Q8_0"]}),
+        json.dumps([f"{folder}/moonshine-streaming-tiny-q8_0", row, "small/Q8_0"]),
+        json.dumps([key, f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", "small/Q8_0"]),
+        json.dumps([key, row, ""]),
+        "[" * 100_000,
     ):
         path.write_text(text, encoding = "utf-8")
         _restarted_offline(monkeypatch)
         assert acm.folder_row_for_download(AUDIO_CPP_REPO, key) == (row, "Q8_0")
+
+
+def test_backends_saving_rows_at_once_keep_each_others(hub, monkeypatch):
+    # Each record is its own file: a writer never rewrites a map another backend just changed.
+    folder = "Samsone-GGUF"
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    quants = sorted(_rows(row))
+    real = acm._saved_job_row
+    stale = {}
+
+    def read_before_any_write(key):
+        # Every writer looks before any other has saved, as two processes racing would.
+        return stale.setdefault(key.lower(), real(key))
+
+    monkeypatch.setattr(acm, "_saved_job_row", read_before_any_write)
+    targets = {quant: acm.download_target(row, quant) for quant in quants}
+    monkeypatch.setattr(acm, "_saved_job_row", real)
+    _restarted_offline(monkeypatch)
+    for quant, target in targets.items():
+        assert acm._saved_job_row(target[1]) == (row, quant)
+        assert acm.folder_row_for_download(*target) == (row, quant)
 
 
 def test_an_ended_job_drops_its_saved_record(hub, monkeypatch):
@@ -2161,7 +2186,8 @@ def test_an_ended_job_drops_its_saved_record(hub, monkeypatch):
     row = f"{AUDIO_CPP_REPO}/{folder}"
     small = acm.download_target(row, "small/Q8_0")
     tiny = acm.download_target(row, "tiny/Q8_0")
-    assert set(acm._saved_job_rows()) == {small[1].lower(), tiny[1].lower()}
+    assert acm._saved_job_row(small[1]) == (row, "small/Q8_0")
+    assert acm._saved_job_row(tiny[1]) == (row, "tiny/Q8_0")
     monkeypatch.setattr(local_model_resolver, "note_downloaded", lambda *a: None)
     monkeypatch.setattr(local_model_resolver, "invalidate_index", lambda **k: None)
     monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
@@ -2187,11 +2213,12 @@ def test_an_ended_job_drops_its_saved_record(hub, monkeypatch):
         repo_type = "model",
         repo_id = AUDIO_CPP_REPO,
     )
-    assert set(acm._saved_job_rows()) == {tiny[1].lower()}
+    assert acm._saved_job_row(small[1]) is None
+    assert acm._saved_job_row(tiny[1]) == (row, "tiny/Q8_0")
     # This process keeps its own copy, and a restarted download records it again.
     assert acm.folder_row_for_download(*small) == (row, "small/Q8_0")
     acm.download_target(row, "small/Q8_0")
-    assert set(acm._saved_job_rows()) == {small[1].lower(), tiny[1].lower()}
+    assert acm._saved_job_row(small[1]) == (row, "small/Q8_0")
 
 
 def test_folder_rows_without_crowding_keep_their_keys(hub, monkeypatch):
