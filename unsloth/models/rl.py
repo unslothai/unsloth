@@ -2055,8 +2055,7 @@ def _unsloth_average_gradients(ddp, bucket_bytes = 64 << 20):
             pieces = [
                 x.view_as(g) for x, g in zip(torch.split(flat, [g.numel() for g in chunk]), chunk)
             ]
-            # The fused CUDA route needs matching strides; one mismatch sends the whole list down the slow
-            # path, so grads whose strides differ from their piece (non-contiguous, or a size-1 dim) go alone.
+            # The fused route needs matching strides (one mismatch slows the whole list), so mismatched grads go alone.
             dst, src = [], []
             for g, x in zip(chunk, pieces):
                 if g.stride() == x.stride():
