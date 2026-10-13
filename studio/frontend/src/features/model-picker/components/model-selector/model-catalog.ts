@@ -25,6 +25,7 @@ import {
   ggufPerfSuffix,
   h3PerfSuffix,
   hostRunsDenseQuant,
+  videoDensePerfSuffix,
 } from "./host-artifact-policy.ts";
 import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
@@ -559,11 +560,14 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
   },
   {
     // LTX-2.5 distilled: the Diffusers pack (its Gemma 4 encoder runs in Studio's transformers 5.10 sidecar) plus
-    // the official split single-file DiT, which loads against the companion files beside it in the same repo.
+    // the official split single-file DiT, which loads against the companion files beside it in the same repo. The
+    // pack's fp8 / int8 loads seed the hosted unsloth/LTX-2.5-FP8 DiT (backend prequant_variant_repos); the alias
+    // keeps a pasted prequant repo id finding this group. Video rows carry no prequantRepo (image-only field).
     canonicalId: "Lightricks/LTX-2.5-Diffusers",
     displayName: "LTX 2.5 distilled",
     description: "Text- and image-to-video with audio",
     scope: "video",
+    aliases: ["unsloth/LTX-2.5-FP8"],
     capabilities: { audio: true },
     artifacts: [
       // Both repos are gated on the Hub (license + token).
@@ -571,6 +575,8 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
         label: "BF16 - Diffusers",
         gated: true,
         offloadFitTiers: LTX25_OFFLOAD_TIERS,
+        // The DiT's 37,975,718,400 bf16 bytes (transformer/ shard index).
+        totalParams: 18_987_859_200,
       }),
       bf16Single(
         "Lightricks/LTX-2.5",
@@ -1076,7 +1082,10 @@ function curatedPerfSuffix(
   if (artifactUsesDenseQuant(hit.group, hit.artifact, host)) {
     return densePerfSuffix(denseQuantSchemes);
   }
-  return h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes);
+  return (
+    h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes) ??
+    videoDensePerfSuffix(hit.artifact.repoId, host, denseQuantSchemes)
+  );
 }
 
 /** A curated row as name plus chips. The name used to carry the artifact in brackets ("MiniMax H3
