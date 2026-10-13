@@ -10742,7 +10742,11 @@ class DiffusionBackend:
                     # reconciles.
                     self._make_vae_encode_dtype_safe(pipe)
 
-                swapped, resolved_schedule = build_scheduler(pipe.scheduler, sampler, schedule_type)
+                # getattr like the status poll: a pipeline without a scheduler offers no samplers, so the default
+                # request keeps it as is and any other sampler is refused by build_scheduler.
+                swapped, resolved_schedule = build_scheduler(
+                    getattr(pipe, "scheduler", None), sampler, schedule_type
+                )
                 if swapped is not None:
                     restore_scheduler = (pipe, pipe.scheduler)
                     pipe.scheduler = swapped
@@ -11944,7 +11948,6 @@ def _pipeline_components_from_index(
             raise ValueError(f"{repo_id}/model_index.json is not an object")
         if explicit_components is None:
             from .diffusion_component_sizes import manifest_entry_loaded
-
             selected = {
                 str(name) for name, spec in payload.items() if manifest_entry_loaded(name, spec)
             }
