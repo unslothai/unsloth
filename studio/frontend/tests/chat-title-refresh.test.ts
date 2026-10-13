@@ -157,6 +157,11 @@ test("a refresh follows the connection that answered, and asks a local model onl
     body,
     /\(serving \? await titleFromModel\(checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
   );
+  // One deadline over the whole regeneration releases the busy mark whichever step stalls.
+  assert.match(body, /return await Promise\.race\(\[regenerateChatTitleNow\(item\), deadline\]\);/);
+  assert.match(body, /finally \{ clearTimeout\(timer\); regeneratingTitles\.delete\(item\.id\); \}/);
+  // Unchanged only when every pane already has the title.
+  assert.match(body, /if \(panes \? panes\.every\(\(pane\) => pane\.title === title\) : title === startTitle\) return "unchanged";/);
   // Each pane is guarded with its own starting title: a comparison's panes can differ.
   assert.match(body, /item\.type === "single" \? Promise\.resolve\(null\) : listStoredChatThreads\(\{ pairId: item\.id, includeArchived: true \}\)/);
   assert.match(body, /updateChatThread\(id, \{ title \}, before === undefined \? \{\} : \{ expectedTitle: before \}\)/);

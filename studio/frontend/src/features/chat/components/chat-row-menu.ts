@@ -147,6 +147,8 @@ const regeneratingTitles = new Set<string>();
 const TITLE_MODEL_WAIT_MS = 15_000;
 // A stalled status check would otherwise hold the loading toast and the busy mark for good.
 const TITLE_STATUS_WAIT_MS = 5_000;
+// Past the model's wait and the status check, with room for the reads and the write.
+const TITLE_REGENERATE_DEADLINE_MS = 30_000;
 
 async function titleFromModel(checkpoint: string, excerpt: string): Promise<string | null> {
   const controller = new AbortController();
@@ -202,6 +204,21 @@ export async function regenerateChatTitle(
 ): Promise<RegenerateTitleOutcome> {
   if (regeneratingTitles.has(item.id)) return "busy";
   regeneratingTitles.add(item.id);
+  // One deadline over every step (history reads, token refresh, status, model): whichever stalls,
+  // the busy mark and the loading toast are released.
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<RegenerateTitleOutcome>((resolve) => {
+    timer = setTimeout(() => resolve("failed"), TITLE_REGENERATE_DEADLINE_MS);
+  });
+  try {
+    return await Promise.race([regenerateChatTitleNow(item), deadline]);
+  } finally {
+    clearTimeout(timer);
+    regeneratingTitles.delete(item.id);
+  }
+}
+
+async function regenerateChatTitleNow(item: SidebarItem): Promise<RegenerateTitleOutcome> {
   try {
     const threadId = getSidebarItemThreadIds(item)[0];
     const liveBranch = liveThreadBranch(threadId);
@@ -237,7 +254,8 @@ export async function regenerateChatTitle(
     const title =
       (serving ? await titleFromModel(checkpoint, excerpt) : null) ?? heuristicChatTitle(branch);
     if (!title) return "empty";
-    if (title === startTitle) return "unchanged";
+    // Every pane already has it: a comparison's panes can differ, so the first one alone can't say.
+    if (panes ? panes.every((pane) => pane.title === title) : title === startTitle) return "unchanged";
     const targets = panes
       ? [...new Map(panes.map((pane) => [pane.id, pane.title])).entries()]
       : [[threadId, startTitle] as const];
@@ -254,8 +272,6 @@ export async function regenerateChatTitle(
     return "renamed";
   } catch {
     return "failed";
-  } finally {
-    regeneratingTitles.delete(item.id);
   }
 }
 
