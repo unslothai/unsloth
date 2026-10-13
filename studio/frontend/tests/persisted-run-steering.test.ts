@@ -35,6 +35,7 @@ function pendingRun(hasReservation = true) {
   let released = 0;
   let calls = 0;
   let notified = 0;
+  let cancels = 0;
   let resolve!: (id: string) => void;
   let reject!: (error: Error) => void;
   const preflight = new Promise<string>((yes, no) => {
@@ -59,6 +60,9 @@ function pendingRun(hasReservation = true) {
     adoptPreStreamRunReservation: () => {},
     notifyReplyFinished: () => {
       notified += 1;
+    },
+    cancelReplyFinishedNotification: () => {
+      cancels += 1;
     },
   };
   const factory = new Function(
@@ -89,6 +93,7 @@ function pendingRun(hasReservation = true) {
     released: () => released,
     calls: () => calls,
     notified: () => notified,
+    cancels: () => cancels,
   };
 }
 
@@ -149,6 +154,7 @@ test("successful history persistence starts the adapter once", async () => {
   assert.deepEqual(await next, { value: { content: "answer" }, done: false });
   assert.equal((await w.run.next()).done, true);
   assert.equal(w.calls(), 1);
+  assert.equal(w.cancels(), 1, "a starting run cancels a pending reply notification");
   assert.equal(w.notified(), 1);
   assert.deepEqual(w.stops, []);
   assert.deepEqual(w.failures, []);

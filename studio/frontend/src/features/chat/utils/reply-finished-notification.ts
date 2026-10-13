@@ -10,11 +10,15 @@ import { useChatPreferencesStore } from "../stores/chat-preferences-store.ts";
 
 const TITLE = "Reply finished";
 const BODY = "Your reply in Unsloth Studio is ready.";
-// One tag, so a burst of finished replies (compare mode, a prompt queue) replaces one browser
-// notification instead of stacking.
+// One tag, so a later reply replaces the earlier browser notification instead of stacking.
 const BROWSER_TAG = "unsloth-reply-finished";
 
+// A reply cut at Max Tokens resumes as a new run (auto-continue), and a queued prompt starts the
+// next one; any run starting cancels this wait, so one notification fires once replies settle.
+export const REPLY_SETTLE_MS = 3_000;
+
 let sequence = 0;
+let pending: ReturnType<typeof setTimeout> | null = null;
 
 function browserNotificationApi(): typeof Notification | null {
   if (typeof window === "undefined" || !("Notification" in window)) {
@@ -33,13 +37,32 @@ function windowIsInBackground(): boolean {
   );
 }
 
+// Called when a run starts, never per token.
+export function cancelReplyFinishedNotification(): void {
+  if (pending !== null) {
+    clearTimeout(pending);
+    pending = null;
+  }
+}
+
 // Runs once when a reply ends, never per token. Off by default, and silent while the user is
 // looking at the window: the reply on screen already says it finished.
 export function notifyReplyFinished(): void {
   if (!useChatPreferencesStore.getState().notifyWhenReplyFinishes) {
     return;
   }
-  if (!windowIsInBackground()) {
+  cancelReplyFinishedNotification();
+  pending = setTimeout(() => {
+    pending = null;
+    sendReplyFinished();
+  }, REPLY_SETTLE_MS);
+}
+
+function sendReplyFinished(): void {
+  if (
+    !useChatPreferencesStore.getState().notifyWhenReplyFinishes ||
+    !windowIsInBackground()
+  ) {
     return;
   }
   sequence += 1;

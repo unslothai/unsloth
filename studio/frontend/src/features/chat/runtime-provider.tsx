@@ -185,7 +185,10 @@ import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
 import { mergeContextTruncation } from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
-import { notifyReplyFinished } from "./utils/reply-finished-notification";
+import {
+  cancelReplyFinishedNotification,
+  notifyReplyFinished,
+} from "./utils/reply-finished-notification";
 import {
   extractDeltaText,
   parseAssistantContent,
@@ -2376,6 +2379,7 @@ function createPersistedRunAdapter(
   return {
     ...adapter,
     async *run(options) {
+      cancelReplyFinishedNotification();
       const trackedRunStartThreadIds = runStartThreadIdsForMessages(
         options.messages,
       );

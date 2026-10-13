@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
-import test from "node:test";
+import test, { mock } from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 
@@ -119,12 +119,22 @@ async function load(env: Env) {
   store.useChatPreferencesStore.setState({ notifyWhenReplyFinishes: enabled });
   const mod = (await import(`${MODULE}?bust=${generation}`)) as {
     notifyReplyFinished: () => void;
+    cancelReplyFinishedNotification: () => void;
     requestReplyFinishedPermission: () => Promise<boolean>;
+    REPLY_SETTLE_MS: number;
   };
   return { mod, control, created };
 }
 
-const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+mock.timers.enable({ apis: ["setTimeout"] });
+
+// Past the settle window, then a real turn of the event loop for notifyNative's awaits.
+async function settle() {
+  mock.timers.tick(3_000);
+  for (let i = 0; i < 5; i += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+}
 
 test("off by default, including installs that never saw the setting", async () => {
   const { useChatPreferencesStore } = await import(
@@ -165,9 +175,53 @@ test("Desktop sends one native notification per reply finished in the background
   await settle();
   mod.notifyReplyFinished();
   await settle();
-  assert.equal(control.sent.length, 2);
+  assert.equal(control.sent.length, 2, "one per settled reply");
   assert.equal(control.sent[0].title, "Reply finished");
   assert.equal(control.requests, 0, "a finished reply never prompts");
+});
+
+test("nothing fires until the settle window passes", async () => {
+  const { mod, control } = await load({
+    tauri: true,
+    enabled: true,
+    pluginGranted: true,
+  });
+  assert.equal(mod.REPLY_SETTLE_MS, 3_000);
+  mod.notifyReplyFinished();
+  mock.timers.tick(2_999);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(control.sent.length, 0);
+  await settle();
+  assert.equal(control.sent.length, 1);
+});
+
+test("a run starting inside the window, like auto-continue after Max Tokens, cancels it", async () => {
+  const { mod, control } = await load({
+    tauri: true,
+    enabled: true,
+    pluginGranted: true,
+  });
+  mod.notifyReplyFinished();
+  mock.timers.tick(1_000);
+  mod.cancelReplyFinishedNotification();
+  await settle();
+  assert.equal(control.sent.length, 0, "the cut reply never notifies");
+  mod.notifyReplyFinished();
+  await settle();
+  assert.equal(control.sent.length, 1, "the continuation that settles does");
+});
+
+test("replies finishing together send one notification", async () => {
+  const { mod, control } = await load({
+    tauri: true,
+    enabled: true,
+    pluginGranted: true,
+  });
+  mod.notifyReplyFinished();
+  mock.timers.tick(500);
+  mod.notifyReplyFinished();
+  await settle();
+  assert.equal(control.sent.length, 1);
 });
 
 test("an unfocused but visible window still counts as the background", async () => {
@@ -207,6 +261,7 @@ test("the browser notifies only with permission already granted", async () => {
     permission: "granted",
   });
   granted.mod.notifyReplyFinished();
+  await settle();
   assert.equal(granted.created.length, 1);
   assert.equal(granted.created[0].title, "Reply finished");
   assert.equal(granted.created[0].options?.tag, "unsloth-reply-finished");
@@ -214,6 +269,7 @@ test("the browser notifies only with permission already granted", async () => {
   for (const permission of ["default", "denied", "absent"] as const) {
     const env = await load({ tauri: false, enabled: true, permission });
     env.mod.notifyReplyFinished();
+    await settle();
     assert.equal(env.created.length, 0, permission);
   }
 });
@@ -248,7 +304,7 @@ test("turning the switch on asks for permission and reports the answer", async (
   assert.equal(await desktop.mod.requestReplyFinishedPermission(), true);
 });
 
-test("the run adapter notifies once after the stream ends, never on a stop", () => {
+test("the run adapter cancels on start and notifies once after the stream ends, never on a stop", () => {
   const source = readSrc("features/chat/runtime-provider.tsx");
   const start = source.indexOf("function createPersistedRunAdapter(");
   assert.notEqual(start, -1, "createPersistedRunAdapter is gone");
@@ -258,6 +314,7 @@ test("the run adapter notifies once after the stream ends, never on a stop", () 
     /yield\* result;\n\s*\} else \{\n\s*yield await result;\n\s*\}\n\s*if \(!options\.abortSignal\?\.aborted\) \{\n\s*notifyReplyFinished\(\);/,
   );
   assert.equal(body.match(/notifyReplyFinished\(\)/g)?.length, 1);
+  assert.match(body, /async \*run\(options\) \{\n\s*cancelReplyFinishedNotification\(\);/);
 });
 
 test("the setting is a searchable switch in Chat settings that reverts when refused", async () => {
