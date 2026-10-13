@@ -147,6 +147,9 @@ def _default_output_dir(model_name: str) -> str:
     # Ranks of one launch must agree on the folder: rank 0 reserves it and hands it to the rest.
     store = _torchelastic_store()
     if store is None:
+        # Without a store (mlx.launch, mpirun) only rank 0 writes to the folder, so it alone reserves one.
+        if rank == 0:
+            return _reserve_run_dir(name)
         return str(resolve_output_dir(f"{name}_{_launcher_start_time()}"))
     key = "unsloth_cli/output_dir"
     if rank == 0 and not store.check([key]):
