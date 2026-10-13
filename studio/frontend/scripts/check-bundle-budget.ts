@@ -67,8 +67,11 @@ export const BUDGET = {
   // growth so main's margin stays where it was.
   // Sidebar server paging adds 17.4 KB raw / 5.6 KB transfer to the first screen (6,544.5 -> 6,561.9
   // KB raw, 1,967.1 -> 1,972.7 KB transfer against b73110c6f, one machine and build), raised by that.
-  transferBytes: 2_021_100,
-  rawBytes: 6_728_100,
+  // /compact and the in-loop compaction divider add 3.6 KB raw / 1.4 KB transfer to the eager startup
+  // JS (6,563.4 -> 6,567.0 KB raw, 1,973.0 -> 1,974.4 KB transfer against 280c45695, one machine
+  // and build), raised by that.
+  transferBytes: 2_022_600,
+  rawBytes: 6_731_800,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
