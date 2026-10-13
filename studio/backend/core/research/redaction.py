@@ -31,7 +31,7 @@ _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*[:=,]|\]?[ \t]*[:=])(?:[ \t]*\r?\n)?[ \t]*\[?[ \t]*\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
+    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*[:=,]|\]?[ \t]*[:=])(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
     (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)"""
 )
 _AUTH_PARAM_PAIR = re.compile(
