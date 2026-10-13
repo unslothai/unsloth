@@ -103,6 +103,21 @@ def _tiny(transformers, builder: str):
                 sliding_window = 8,
             )
         )
+    if builder == "gemma2":
+        # A tiny cap so the missing tanh shows far above the tolerance.
+        return transformers.Gemma2ForCausalLM(
+            transformers.Gemma2Config(
+                vocab_size = 64,
+                hidden_size = 32,
+                intermediate_size = 64,
+                num_hidden_layers = 2,
+                num_attention_heads = 4,
+                num_key_value_heads = 4,
+                head_dim = 8,
+                sliding_window = 8,
+                final_logit_softcapping = 0.5,
+            )
+        )
     if builder == "opt":
         return transformers.OPTForCausalLM(
             transformers.OPTConfig(
@@ -140,7 +155,7 @@ def _build_stage(pipeline, model, **kwargs):
     )
 
 
-@pytest.mark.parametrize("builder", ["llama", "gpt_neox", "gemma3"])
+@pytest.mark.parametrize("builder", ["llama", "gpt_neox", "gemma3", "gemma2"])
 def test_a_stage_computes_the_same_model_it_was_split_from(builder: str) -> None:
     """The contract is not that the names resolve, it is that the arithmetic agrees."""
     torch = pytest.importorskip("torch")
@@ -246,3 +261,21 @@ def test_the_legacy_backend_actually_checkpoints_when_asked() -> None:
         f"checkpointing saved {on_saved} tensors against {off_saved} without it, "
         f"which is not a reduction: the option is inert"
     )
+
+
+def test_gemma_embeddings_are_scaled_when_the_embedding_does_not_scale_itself() -> None:
+    """transformers 4.x multiplies Gemma 1/2 embeddings by sqrt(hidden_size) in the model forward,
+    which a stage skips; 5.x moved the scale into the embedding module."""
+    torch = pytest.importorskip("torch")
+    pipeline = _pipeline_module()
+
+    class Cfg:
+        model_type = "gemma2"
+        hidden_size = 16
+
+    plain = torch.nn.Embedding(4, 16)
+    assert pipeline._embed_scale(Cfg, plain) == 4.0
+    plain.embed_scale = 4.0
+    assert pipeline._embed_scale(Cfg, plain) is None
+    Cfg.model_type = "llama"
+    assert pipeline._embed_scale(Cfg, torch.nn.Embedding(4, 16)) is None

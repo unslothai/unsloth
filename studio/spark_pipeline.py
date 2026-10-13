@@ -34,6 +34,33 @@ def _first_attr(owner, names: Sequence[str]):
     return _first_named(owner, names)[1]
 
 
+def _embed_scale(config, embed) -> Optional[float]:
+    """sqrt(hidden_size) for Gemma 1/2 on transformers 4.x, which scale in the model forward a stage
+    never calls; newer releases scale inside the embedding (embed_scale) and need nothing here."""
+    if getattr(config, "model_type", None) not in ("gemma", "gemma2") or hasattr(
+        embed, "embed_scale"
+    ):
+        return None
+    return float(config.hidden_size) ** 0.5
+
+
+def _scale_embeddings(h, scale):
+    if scale is None:
+        return h
+    import torch
+    return h * torch.tensor(scale, dtype = h.dtype, device = h.device)
+
+
+def _softcap_logits(config, logits):
+    # Gemma 2/3 cap logits in ForCausalLM.forward, which a stage never calls.
+    cap = getattr(config, "final_logit_softcapping", None)
+    if not cap:
+        return logits
+    import torch
+
+    return torch.tanh(logits / cap) * cap
+
+
 def _first_named(owner, names: Sequence[str]):
     for name in names:
         found = getattr(owner, name, None)
@@ -520,6 +547,7 @@ class _Stage:
         # decoder stack, so `.model` raised AttributeError before the first step of any
         # --full-finetune run on this backend. get_base_model() is the PEFT discriminator.
         self.base, self.inner = unwrap_stack(model)
+        self.embed_scale = _embed_scale(self.base.config, self.inner.embed_tokens)
         self.hidden = self.base.config.hidden_size
         # Set by the caller.
         self.grad_checkpoint = False
@@ -539,7 +567,11 @@ class _Stage:
         import torch
 
         layers = self.chunk_layers[chunk]
-        h = self.inner.embed_tokens(ids) if chunk == 0 else hidden
+        h = (
+            _scale_embeddings(self.inner.embed_tokens(ids), self.embed_scale)
+            if chunk == 0
+            else hidden
+        )
         pos = self.inner.rotary_emb(h, posid)
         for i in layers:
             h = self._run_layer(self.inner.layers[i], h, pos)
@@ -547,7 +579,7 @@ class _Stage:
             return h, None
         import torch.nn.functional as F
 
-        logits = self.base.lm_head(self.inner.norm(h))
+        logits = _softcap_logits(self.base.config, self.base.lm_head(self.inner.norm(h)))
         loss = (
             F.cross_entropy(
                 logits[:, :-1].reshape(-1, logits.size(-1)).float(),
@@ -560,7 +592,11 @@ class _Stage:
     def forward(self, ids, hidden, posid):
         import torch
 
-        h = self.inner.embed_tokens(ids) if self.is_first else hidden
+        h = (
+            _scale_embeddings(self.inner.embed_tokens(ids), self.embed_scale)
+            if self.is_first
+            else hidden
+        )
         pos = self.inner.rotary_emb(h, posid)
         for layer in self.inner.layers:
             if isinstance(layer, torch.nn.Identity):
@@ -570,7 +606,7 @@ class _Stage:
             return h, None
         import torch.nn.functional as F
 
-        logits = self.base.lm_head(self.inner.norm(h))
+        logits = _softcap_logits(self.base.config, self.base.lm_head(self.inner.norm(h)))
         loss = (
             F.cross_entropy(
                 logits[:, :-1].reshape(-1, logits.size(-1)).float(),
@@ -1134,6 +1170,8 @@ def stage_module_cls():
             self.embed_tokens = embed if is_first else None
             self.norm = norm if is_last else None
             self.lm_head = _first_attr(top, ("lm_head", "embed_out")) if is_last else None
+            self.config = getattr(top, "config", None)
+            self.embed_scale = _embed_scale(self.config, embed) if is_first else None
             self.pass_position_embeddings = True
             if len(self.layers):
                 try:
@@ -1189,7 +1227,7 @@ def stage_module_cls():
             return out[0] if isinstance(out, tuple) else out
 
         def forward(self, x):
-            h = self.embed_tokens(x) if self.is_first else x
+            h = _scale_embeddings(self.embed_tokens(x), self.embed_scale) if self.is_first else x
             if self.sliding_window is not None and h.shape[1] > self.sliding_window:
                 raise RuntimeError(
                     f"this model attends over a {self.sliding_window}-token sliding window and "
@@ -1220,7 +1258,7 @@ def stage_module_cls():
                 else:
                     h = self._call_layer(layer, h, pos, mask)
             if self.is_last:
-                h = self.lm_head(self.norm(h))
+                h = _softcap_logits(self.config, self.lm_head(self.norm(h)))
             return h
 
     _STAGE_MODULE_CLS = _PPStageModule
