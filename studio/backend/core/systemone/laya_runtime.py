@@ -1027,9 +1027,12 @@ def _load_checkpoint(checkpoint: Checkpoint):
 
         _evict()
         unloads = _unloads
-        agent = ClefAgent(root, cancelled = lambda: _training_active() or _unloads != unloads)
+        agent = ClefAgent(
+            root,
+            cancelled = lambda: _training_active() or _unloads != unloads or _reload_lost_gpu(),
+        )
         # Training may have started while this loaded, and Clef has no CPU fallback.
-        if _training_active():
+        if _training_active() or _reload_lost_gpu():
             agent.close()
             raise ClefWorkerError(
                 f"{checkpoint.name} needs the GPU, which a training run took while it loaded."
@@ -2323,6 +2326,12 @@ def unload(reload_after_training: bool = False) -> bool:
     return was_loaded
 
 
+def _reload_lost_gpu() -> bool:
+    # A reload nobody asked for yields to a chat, image or video model that claims the GPU meanwhile.
+    from core.inference.gpu_arbiter import current_owner
+    return _reloading is not None and current_owner() is not None
+
+
 def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
     global _reloading, _failure
     from core.inference.gpu_arbiter import current_owner
@@ -2348,17 +2357,26 @@ def _reload_after_training(checkpoint: Checkpoint, unloads: int) -> None:
         finally:
             with _state_lock:
                 _reloading = None
-        if not _training_active():
+        training = _training_active()
+        if training or current_owner() is not None:
+            # Another run, or a chat, image or video model, took the GPU while this loaded: not a failure to report.
+            with _state_lock:
+                if _failure is not None and _failure[0] == checkpoint:
+                    _failure = None
+        if not training:
             break
-        # Another run took the GPU while this loaded: wait for that one too instead of reporting a failure.
-        with _state_lock:
-            if _failure is not None and _failure[0] == checkpoint:
-                _failure = None
     agent = _agent
     if agent is not None and _loaded == checkpoint:
+        from .clef_runtime import ClefWorkerError
+
         # The first decision builds the GPU kernels; done now, a request does not wait for it.
         try:
             agent.decide("ready", {"ready": {"type": "noul"}})
+        except ClefWorkerError:
+            logger.info(
+                "Retiring %s: its worker failed the warm-up", checkpoint.name, exc_info = True
+            )
+            _evict_agent(agent)
         except Exception:
             logger.debug("Could not warm up %s", checkpoint.name, exc_info = True)
 

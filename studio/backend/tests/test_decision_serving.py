@@ -570,6 +570,62 @@ def test_a_run_that_starts_during_the_reload_is_waited_out(home, client, clef, m
     assert len(clef.agents) == 3
 
 
+def test_a_chat_model_that_takes_the_gpu_stops_the_reload(home, client, clef, monkeypatch):
+    from core.inference import gpu_arbiter
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    started = threading.Event()
+    agent = clef_runtime.ClefAgent
+
+    def loading(folder, cancelled = None):
+        agent(folder, cancelled)
+        started.set()
+        while not cancelled():
+            time.sleep(0.01)
+        raise clef_runtime.ClefWorkerError("stopped")
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", loading)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    assert started.wait(5)
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    _reload_finished()
+    settings = client.get("/api/settings/systemone").json()
+    assert settings["loaded_model"] is settings["loading_model"] is settings["error"] is None
+    assert len(clef.agents) == 2
+
+
+def test_a_clef_worker_that_fails_the_warm_up_is_retired(home, client, clef, monkeypatch):
+    from core.systemone import clef_runtime
+
+    monkeypatch.setattr(laya_runtime, "TRAINING_POLL_S", 0.01, raising = False)
+    served = _clef_fine_tune(home, "clef_served_1")
+    assert _put(client, enabled = True, model = served).status_code == 200
+    assert _post(client).status_code == 200
+    agent = clef_runtime.ClefAgent
+
+    class Dying(agent):
+        def decide(self, state_, questions):
+            if state_ == "ready":
+                raise clef_runtime.ClefWorkerError("The Clef worker exited (code -9)")
+            return super().decide(state_, questions)
+
+    monkeypatch.setattr(clef_runtime, "ClefAgent", Dying)
+    clef.training = True
+    laya_runtime.unload(reload_after_training = True)
+    clef.training = False
+    _reload_finished()
+    assert clef.agents[1].closed
+    assert client.get("/api/settings/systemone").json()["loaded_model"] is None
+    assert _post(client).status_code == 200
+    assert len(clef.agents) == 3
+
+
 @pytest.mark.parametrize("meanwhile", ["unloaded", "chat_on_gpu"])
 def test_no_reload_after_training_once_the_user_moved_on(
     home, client, clef, monkeypatch, meanwhile
