@@ -1658,7 +1658,6 @@ _WAN_TARGETS = (
     "ffn.net.0.proj",
     "ffn.net.2",
 )
-# WanPipeline.__call__'s default zero-pad length for UMT5 embeddings.
 _WAN_MAX_SEQUENCE_LENGTH = 512
 
 
@@ -1733,7 +1732,6 @@ def _wan_latent_affine(vae, ref):
 
 
 def _wan_pixels(vae, pixel_values):
-    # [B,3,H,W] -> [B,3,1,H,W]: a still is a 1-frame clip.
     return pixel_values.to(dtype = next(vae.parameters()).dtype).unsqueeze(2)
 
 
@@ -1778,8 +1776,7 @@ def _wan_collate(
 
 def _wan_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
     (prompt_embeds,) = embeds_batch
-    # [B] timestep equals the pipeline's per-token expand_timesteps form for T2V (all tokens at t); see
-    # test_forward_matches_the_pipelines_expand_timesteps_call.
+    # [B] timestep == the pipeline's per-token expand_timesteps form for T2V.
     return transformer(
         hidden_states = noisy,
         timestep = timesteps.to(device = noisy.device).reshape(-1),
@@ -1805,7 +1802,6 @@ def _wan_save(pipe_cls, out_dir, transformer_lora_layers, adapter_metadata = Non
 
 
 def _lora_adapter_metadata(transformer) -> Optional[dict]:
-    """The attached adapter's LoraConfig as a plain dict (diffusers' ``_collate_lora_metadata`` shape), or None."""
     try:
         return transformer.peft_config["default"].to_dict()
     except Exception:  # noqa: BLE001 -- metadata is best-effort; the weights still save
@@ -1813,7 +1809,6 @@ def _lora_adapter_metadata(transformer) -> Optional[dict]:
 
 
 def _adapter_saver(spec, transformer):
-    """``spec.save`` with the adapter metadata bound when the family's saver records it."""
     if not spec.save_takes_metadata:
         return spec.save
     import functools
@@ -1991,7 +1986,6 @@ _SPECS: dict[str, _FamilySpec] = {
     "wan2.2-ti2v-5b": _FamilySpec(
         family = "wan2.2-ti2v-5b",
         lora_targets = _WAN_TARGETS,
-        # fp16 is unvalidated.
         force_bf16 = True,
         dense_bf16_gb = 10.0,
         load_conditioners = _wan_load_conditioners,

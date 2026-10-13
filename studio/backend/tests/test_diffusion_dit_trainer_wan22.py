@@ -53,7 +53,6 @@ UNIPC_CONFIG = {
 
 
 def _wan_classes():
-    """The diffusers Wan classes, or a skip on an environment whose diffusers cannot import them."""
     try:
         from diffusers import WanPipeline, WanTransformer3DModel
     except Exception as exc:  # noqa: BLE001 -- diffusers too old, or a broken optional dep
@@ -62,8 +61,7 @@ def _wan_classes():
 
 
 def _tiny_transformer():
-    """A random 2-block WanTransformer3DModel with TI2V-5B's layout: patch (1, 2, 2), 48 latent channels,
-    rms_norm_across_heads qk norm, no image cross-attention projections."""
+    """A random 2-block WanTransformer3DModel with TI2V-5B's layout."""
     _, WanTransformer3DModel = _wan_classes()
     torch.manual_seed(0)
     return WanTransformer3DModel(
@@ -82,18 +80,15 @@ def _tiny_transformer():
     ).eval()
 
 
-# ── the spec + gating ────────────────────────────────────────────────────────
 def test_wan_spec_is_registered_and_bf16_only():
     spec = _SPECS[FAMILY]
     assert spec.family == FAMILY
     assert spec.force_bf16 is True
     assert FAMILY in _FORCE_BF16_FAMILIES
-    # 5B params, bf16 resident ~10 GB: "auto" sizes the dense modes off this.
     assert 8.0 < spec.dense_bf16_gb < 12.0
     assert spec.lora_targets == _WAN_TARGETS
     # Wan ships UniPC, so the spec must build its own FlowMatchEuler table.
     assert spec.training_scheduler is dit._wan_training_scheduler
-    # Video previews are not wired (SAMPLE_FAMILIES is image-only), like LTX-2.
     assert spec.decode_latents is None and spec.latent_shape is None
 
 
@@ -134,7 +129,6 @@ def test_wan_defaults_sit_on_the_32_grid():
     d = train_defaults(FAMILY)
     assert d["resolution"] % 32 == 0  # 16x VAE x 2x patch
     assert d["lora_rank"] >= 16 and 0 < d["learning_rate"] <= 2e-4
-    # constant_with_warmup, so lr_warmup_steps is honoured.
     assert d["lr_scheduler"] == "constant_with_warmup" and d["lr_warmup_steps"] > 0
 
 
@@ -166,7 +160,6 @@ def test_wan_rejects_fp16_before_loading(tmp_path):
 
 
 def test_wan_default_flow_shift_stays_the_models_own_schedule(tmp_path):
-    # None = the model's own schedule, i.e. the spec's shift-5 table.
     cfg = _cfg(tmp_path, resolution = 704).normalized()
     assert cfg.flow_shift is None
 
@@ -199,14 +192,12 @@ def test_family_train_infos_offers_wan(dit_train_host):
     assert "ltx-2" in infos and "sdxl" in infos
 
 
-# ── LoRA targets ─────────────────────────────────────────────────────────────
 def test_generic_default_targets_resolve_to_the_wan_set():
     assert _select_lora_targets(DEFAULT_LORA_TARGETS, _WAN_TARGETS) == _WAN_TARGETS
     explicit = ("to_q", "to_v")
     assert _select_lora_targets(explicit, _WAN_TARGETS) == explicit
 
 
-# ── the scheduler: Wan ships UniPC ───────────────────────────────────────────
 @pytest.fixture
 def unipc_base(tmp_path):
     root = tmp_path / "wan_base"
@@ -223,7 +214,6 @@ def test_training_scheduler_bakes_in_the_inference_flow_shift(unipc_base):
     expected = 5.0 * u / (1.0 + 4.0 * u)
     assert sched.config.shift == 5.0
     assert torch.allclose(sched.sigmas[:n].float(), expected, atol = 1e-6)
-    # Wan conditions on sigma * 1000, the scheduler's own timesteps.
     assert torch.allclose(sched.timesteps.float(), expected * n, atol = 1e-3)
     # None (the default) trains on exactly this table; a number re-shifts from the unshifted u.
     assert _training_sigma_table(sched, None) is sched.sigmas
@@ -244,7 +234,6 @@ def test_the_generic_scheduler_load_would_drop_the_shift(unipc_base):
     assert ours.sigmas[mid] > generic.sigmas[mid] + 0.2
 
 
-# ── text conditioning ────────────────────────────────────────────────────────
 class _FakeWanPipe:
     """encode_prompt returns what WanPipeline._get_t5_prompt_embeds does: real rows then zeros to max_sequence_length."""
 
@@ -280,7 +269,6 @@ def test_trim_keeps_one_row_for_an_all_zero_embed():
     assert out.shape == (1, 1, 4)
 
 
-# ── latents ──────────────────────────────────────────────────────────────────
 class _FakeDist:
     def __init__(self, mean, std):
         self.mean, self.std = mean, std
@@ -290,7 +278,6 @@ class _FakeDist:
 
 
 class _FakeWanVae(torch.nn.Module):
-    """AutoencoderKLWan's surface: 16x spatial, 1 latent frame per still, latents_mean / latents_std on its config."""
 
     def __init__(self):
         super().__init__()
@@ -330,9 +317,7 @@ def test_encode_latent_stats_returns_the_posterior_affine_pair():
     assert torch.allclose(a, dit._wan_encode_latents(vae, torch.zeros(1, 3, 32, 32)))
 
 
-# ── the real diffusers transformer, tiny + random ────────────────────────────
 def test_forward_matches_the_pipelines_expand_timesteps_call():
-    """The trainer's [B] timestep must match WanPipeline's per-token expand_timesteps call for T2V."""
     transformer = _tiny_transformer()
     noisy = torch.randn(2, Z_DIM, 1, 8, 12)
     t = torch.tensor([937.5, 120.0])
@@ -385,7 +370,6 @@ def test_targets_adapt_every_block_linear_and_nothing_else():
         )
     }
     assert adapted == block_linears
-    # The condition embedder and output head stay frozen.
     assert not any(n.startswith(("condition_embedder", "proj_out", "patch_embedding")) for n in adapted)
 
 
@@ -428,7 +412,6 @@ def test_saved_lora_has_diffusers_keys_and_loads_through_wanpipeline(tmp_path):
     assert math.isfinite(float(with_lora.abs().max()))
 
 
-# ── the step loop keeps host work off the per-step path ──────────────────────
 def test_collate_copies_only_the_trimmed_rows_and_pads_on_the_device(monkeypatch):
     """The pad to 512 must happen AFTER the move: padding on the host is a 4 MB pageable copy plus a multi-threaded
     host fill + cat every step."""
@@ -459,7 +442,6 @@ def test_cached_latent_sampling_moves_before_joining_and_keeps_the_values():
     assert one is cache[1][0][0] or torch.equal(one, cache[1][0][0])
 
 
-# ── lora_alpha survives the save ─────────────────────────────────────────────
 def test_a_non_default_alpha_reloads_at_the_trained_strength(tmp_path):
     """diffusers' loader assumes lora_alpha == rank unless the safetensors header carries the adapter config, so a
     rank-4 / alpha-16 adapter (scale 4) used to come back at scale 1."""
@@ -501,7 +483,6 @@ def test_families_without_the_flag_keep_their_three_argument_saver():
             assert dit._adapter_saver(spec, object()) is spec.save, name
 
 
-# ── the text encoder and the VAE never share the device ──────────────────────
 def test_load_conditioners_leaves_the_vae_on_the_host(monkeypatch):
     moved = []
 
