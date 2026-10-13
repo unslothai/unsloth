@@ -23548,7 +23548,6 @@ async def _run_music_workflow(
             seconds = max(low, min(high, float(wanted if wanted is not None else low)))
             work_s = seconds
         variations = body.variations if body.mode != "edit" else 1
-        cpu = model_info.get("audio_cpp_backend") == "cpu"
         music = {
             "mode": body.mode,
             "text": body.text,
@@ -23557,7 +23556,9 @@ async def _run_music_workflow(
             "duration_s": seconds,
             "variations": variations,
             "edit": body.edit.model_dump() if body.edit is not None else None,
-            "timeout_s": timeout_seconds(family, work_s, variations, cpu),
+            "timeout_s": timeout_seconds(
+                family, work_s, variations, model_info.get("audio_cpp_backend")
+            ),
         }
         run_dir.mkdir(parents = True, exist_ok = True)
         payload = ChatCompletionRequest(
