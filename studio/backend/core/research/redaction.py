@@ -29,8 +29,8 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 _AUTH_TOKEN = r"[\w!#$%&'*+.^`|~-]+"
-_AUTH_VALUE = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,"':][^\s,":]*(?=[\s,]|$))"""
-_AUTH_PARAM = rf"{_AUTH_TOKEN}[ \t]*=[ \t]*{_AUTH_VALUE}"
+_AUTH_VALUE = r"""(?:"(?:[^"\\]|\\.)*"|'[^']*'|“[^”]*”|‘[^’]*’|[^\s,":]+(?=[\s,]|$))"""
+_AUTH_PARAM = rf"{_AUTH_TOKEN}={_AUTH_VALUE}"
 # Stops before a following label, which the credential passes below redact on their own.
 _QUERY_AUTHORIZATION = re.compile(
     rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*{_AUTH_TOKEN}[ \t]+

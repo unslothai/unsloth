@@ -240,6 +240,8 @@ def test_sanitize_query_scheme_word_value_does_not_swallow_the_next_credential()
         f"password: basic oauth.token: {secret} why",
         f"Authorization: Bearer sk-1234567890abcdef123456= token: {secret} why",
         f"Authorization: Custom oauthAccessToken='{secret} horse' why",
+        f"Authorization: Bearer sk-1234567890abcdef123456= api key: {secret} why",
+        f"Authorization: Custom myToken='{secret} why",
     ):
         cleaned = _sanitize_public_query(text)
         assert secret not in cleaned, text
