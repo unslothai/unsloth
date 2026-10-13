@@ -165,8 +165,10 @@ def test_stale_world_size_without_a_rank_still_reserves_per_run(tmp_path, monkey
 
 def test_launches_without_a_store_reserve_on_rank_zero(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
-    monkeypatch.setenv("WORLD_SIZE", "2")
-    monkeypatch.setenv("RANK", "0")
+    for name in ("RANK", "WORLD_SIZE"):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setenv("OMPI_COMM_WORLD_RANK", "0")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "2")
     monkeypatch.delenv("TORCHELASTIC_USE_AGENT_STORE", raising = False)
     # Two launches whose rank 0 starts in the same second.
     monkeypatch.setattr(train_module, "time", SimpleNamespace(time = lambda: 1000))
@@ -177,3 +179,24 @@ def test_launches_without_a_store_reserve_on_rank_zero(tmp_path, monkeypatch):
 
     first, second = trainer.output_dirs
     assert first != second
+
+
+def test_torch_ranks_without_a_store_share_the_launcher_folder(tmp_path, monkeypatch):
+    import psutil
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.delenv("TORCHELASTIC_USE_AGENT_STORE", raising = False)
+    # Each rank finishes its model load at a different second; the launcher started once.
+    clock = iter([1000, 1048])
+    monkeypatch.setattr(train_module, "time", SimpleNamespace(time = lambda: next(clock)))
+    monkeypatch.setattr(psutil, "Process", lambda pid: SimpleNamespace(create_time = lambda: 900.5))
+    trainer = _SavingTrainer()
+
+    for rank in ("0", "1"):
+        monkeypatch.setenv("RANK", rank)
+        assert _train(monkeypatch, trainer).exit_code == 0
+
+    first, second = trainer.output_dirs
+    assert first == second
+    assert first.name.endswith("_900")

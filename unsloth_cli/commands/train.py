@@ -115,7 +115,7 @@ def _torchelastic_store():
 
 def _launcher_start_time() -> int:
     # Ranks reach this after their own model load, seconds apart, so their clocks disagree; the
-    # launcher (mlx.launch, mpirun) that spawned every rank on this node does not.
+    # launcher that spawned every rank on this node does not.
     try:
         import psutil
         return int(psutil.Process(os.getppid()).create_time())
@@ -147,8 +147,9 @@ def _default_output_dir(model_name: str) -> str:
     # Ranks of one launch must agree on the folder: rank 0 reserves it and hands it to the rest.
     store = _torchelastic_store()
     if store is None:
-        # Without a store (mlx.launch, mpirun) only rank 0 writes to the folder, so it alone reserves one.
-        if rank == 0:
+        # mlx.launch / mpirun ranks never write the folder, so rank 0 reserves one; every torch DDP rank
+        # writes checkpoints, so they all take the launcher's start time instead.
+        if rank == 0 and "RANK" not in os.environ:
             return _reserve_run_dir(name)
         return str(resolve_output_dir(f"{name}_{_launcher_start_time()}"))
     key = "unsloth_cli/output_dir"
