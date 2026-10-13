@@ -518,6 +518,7 @@ function looksLikeMathBody(body: string): boolean {
  * currency tokens on a line (e.g. "$5 to $10"). Bold-wrapped spans
  * (`**$X$**`, `__$X$__`) are always math: LLMs use that for "bold math"
  * and the heuristic would otherwise reject prose-shaped bodies like "90 - x".
+ * A bare number (`$3$`) is math unless a shell variable starts at the closer (`$1$HOME`).
  */
 function hasInlineMathCloser(
   content: string,
@@ -545,7 +546,9 @@ function hasInlineMathCloser(
       continue;
     }
     const body = content.slice(offset + 1, i);
-    if (BARE_NUMBER_RE.test(body)) return true;
+    if (BARE_NUMBER_RE.test(body) && !startsLikeVariable(content, i + 1)) {
+      return true;
+    }
     if (offset >= 2) {
       const op = content[offset - 1];
       if (
