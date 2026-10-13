@@ -2699,6 +2699,13 @@ export const he = {
         "הצג לחצן לקפיצה חזרה להודעה האחרונה לאחר גלילה למעלה.",
       scrollToBottomButtonKeywords:
         "scroll bottom jump latest newest arrow down button floating hide show גלילה תחתית לחצן חץ",
+      replyNotification: "התראה כשתשובה מסתיימת",
+      replyNotificationDescription:
+        "הצגת התראת מערכת כשתשובה מסתיימת בזמן ש-Unsloth ממוזער או ברקע.",
+      replyNotificationBlocked:
+        "ההתראות חסומות. יש לאפשר אותן ל-Unsloth בהגדרות הדפדפן או המערכת ולנסות שוב.",
+      replyNotificationKeywords:
+        "notify notification alert done finished reply background minimized התראה הודעה הסתיים מוכן תשובה רקע ממוזער",
       showResponseModel: "מודל המענה",
       showResponseModelDescription: "הצג פרטי מודל בתשובות העוזר.",
       inlineEditResponse: "עריכת תגובה על גבי התגובות",

@@ -2612,6 +2612,13 @@ export const ptBR = {
         "Mostra um botão para voltar à mensagem mais recente depois de rolar para cima.",
       scrollToBottomButtonKeywords:
         "rolar final baixo pular recente seta botão ocultar scroll bottom button",
+      replyNotification: "Avisar quando uma resposta terminar",
+      replyNotificationDescription:
+        "Mostra uma notificação do sistema quando uma resposta termina enquanto o Unsloth está minimizado ou em segundo plano.",
+      replyNotificationBlocked:
+        "As notificações estão bloqueadas. Permita-as para o Unsloth nas configurações do navegador ou do sistema e tente novamente.",
+      replyNotificationKeywords:
+        "notificação avisar alerta terminou concluído pronto resposta segundo plano minimizado notify notification alert done finished reply background",
       showResponseModel: "Mostrar o modelo da resposta",
       showResponseModelDescription:
         "Mostra os metadados do modelo nas respostas do assistente.",

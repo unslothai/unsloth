@@ -2780,6 +2780,13 @@ export const sv = {
         "Visa en knapp för att hoppa tillbaka till senaste meddelandet efter att du har rullat uppåt.",
       scrollToBottomButtonKeywords:
         "rulla botten hoppa senaste nyaste pil ner knapp flytande dölj visa scroll bottom jump latest newest arrow down button floating hide show",
+      replyNotification: "Avisera när ett svar är klart",
+      replyNotificationDescription:
+        "Visa en systemavisering när ett svar blir klart medan Unsloth är minimerat eller i bakgrunden.",
+      replyNotificationBlocked:
+        "Aviseringar är blockerade. Tillåt dem för Unsloth i webbläsarens eller systemets inställningar och försök igen.",
+      replyNotificationKeywords:
+        "avisering notis meddelande klar färdig svar bakgrund minimerad notify notification alert done finished reply background",
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",

@@ -2631,6 +2631,13 @@ export const fr = {
         "Afficher un bouton pour revenir au dernier message après avoir fait défiler vers le haut.",
       scrollToBottomButtonKeywords:
         "défiler bas sauter dernier flèche bouton masquer scroll bottom button",
+      replyNotification: "Notifier quand une réponse est terminée",
+      replyNotificationDescription:
+        "Affiche une notification système quand une réponse se termine alors qu'Unsloth est réduit ou en arrière-plan.",
+      replyNotificationBlocked:
+        "Les notifications sont bloquées. Autorisez-les pour Unsloth dans les réglages du navigateur ou du système, puis réessayez.",
+      replyNotificationKeywords:
+        "notification notifier alerte terminé fini prêt réponse arrière-plan réduit notify notification alert done finished reply background",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",

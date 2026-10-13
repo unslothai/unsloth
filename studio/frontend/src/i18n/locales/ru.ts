@@ -2608,6 +2608,13 @@ export const ru = {
         "Показывать кнопку для возврата к последнему сообщению после прокрутки вверх.",
       scrollToBottomButtonKeywords:
         "прокрутка вниз последнее стрелка кнопка скрыть scroll bottom button",
+      replyNotification: "Уведомлять о готовом ответе",
+      replyNotificationDescription:
+        "Показывать системное уведомление, когда ответ готов, а Unsloth свернут или в фоне.",
+      replyNotificationBlocked:
+        "Уведомления заблокированы. Разрешите их для Unsloth в настройках браузера или системы и попробуйте снова.",
+      replyNotificationKeywords:
+        "уведомление оповещение готово завершено ответ фон свернут notify notification alert done finished reply background",
       showResponseModel: "Показывать модель в ответах",
       showResponseModelDescription:
         "Показывать метаданные модели в ответах ассистента.",

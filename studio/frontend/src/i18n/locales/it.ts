@@ -2542,6 +2542,13 @@ export const it = {
         "Mostra un pulsante per tornare all'ultimo messaggio dopo aver scorso verso l'alto.",
       scrollToBottomButtonKeywords:
         "scorrere fondo saltare ultimo freccia pulsante nascondere scroll bottom button",
+      replyNotification: "Avvisa quando una risposta è finita",
+      replyNotificationDescription:
+        "Mostra una notifica di sistema quando una risposta finisce mentre Unsloth è ridotto a icona o in background.",
+      replyNotificationBlocked:
+        "Le notifiche sono bloccate. Consentile per Unsloth nelle impostazioni del browser o del sistema, poi riprova.",
+      replyNotificationKeywords:
+        "notifica avvisare avviso finito completato pronto risposta background ridotto notify notification alert done finished reply background",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",

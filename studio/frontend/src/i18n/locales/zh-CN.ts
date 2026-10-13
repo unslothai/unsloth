@@ -2556,6 +2556,13 @@ export const zhCN = {
         "向上滚动后显示一个按钮，用于跳回最新消息。",
       scrollToBottomButtonKeywords:
         "滚动 底部 跳转 最新 箭头 按钮 隐藏 scroll bottom button",
+      replyNotification: "回复完成时通知",
+      replyNotificationDescription:
+        "当 Unsloth 最小化或在后台时，回复完成后显示系统通知。",
+      replyNotificationBlocked:
+        "通知已被阻止。请在浏览器或系统设置中允许 Unsloth 发送通知，然后重试。",
+      replyNotificationKeywords:
+        "通知 提醒 完成 结束 就绪 回复 后台 最小化 notify notification alert done finished reply background",
       showResponseModel: "显示回复模型",
       showResponseModelDescription: "在助手回复中显示模型元数据。",
       inlineEditResponse: "在回复上显示编辑回复",
