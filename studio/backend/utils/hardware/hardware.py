@@ -6722,7 +6722,9 @@ def get_visible_gpu_count() -> int:
                     # Documented wildcard: all physical XPUs visible.
                     _visible_gpu_count = get_physical_gpu_count()
                 else:
-                    roots = _parse_ze_mask_roots(xpu_visible, _intel_root_device_bound())
+                    # FLAT entries are tile handles (one PVC card exposes two), so only COMPOSITE ids are bounded by cards.
+                    bound = _intel_root_device_bound() if _xpu_hierarchy_is_composite() else None
+                    roots = _parse_ze_mask_roots(xpu_visible, bound)
                     # Non-parseable masks (",,,", "GPU-abc") yield an empty roots list, treated as 0 visible devices rather than "all visible": no evidence the whole fleet was intended.
                     _visible_gpu_count = len(roots)
             else:

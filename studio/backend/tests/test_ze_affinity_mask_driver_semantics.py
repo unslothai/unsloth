@@ -116,6 +116,13 @@ def test_without_a_sysfs_bound_out_of_range_ids_are_kept(xpu_host):
     assert hw._get_parent_visible_gpu_spec()["numeric_ids"] == [0, 5]
 
 
+def test_flat_tile_ids_are_not_bounded_by_cards(xpu_host, monkeypatch):
+    """One two-tile card exposes ids 0 and 1 under FLAT."""
+    xpu_host("0,1", roots = 1)
+    monkeypatch.setenv("ZE_FLAT_DEVICE_HIERARCHY", "FLAT")
+    assert hw.get_visible_gpu_count() == 2
+
+
 def test_torch_still_wins_the_visible_count(xpu_host):
     xpu_host("", torch_count = 3)
     assert hw.get_visible_gpu_count() == 3
