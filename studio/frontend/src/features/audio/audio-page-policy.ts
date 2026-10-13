@@ -456,7 +456,7 @@ export function settledDeleteMarkers(
   const { refreshStartedAt } = inventory;
   if (!inventory.settled || inventory.error || refreshStartedAt === null) return [];
   return [...markers]
-    .filter(([, deletedAt]) => refreshStartedAt >= deletedAt)
+    .filter(([, deletedAt]) => refreshStartedAt > deletedAt)
     .map(([repoId]) => repoId);
 }
 

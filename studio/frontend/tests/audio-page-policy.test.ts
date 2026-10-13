@@ -975,14 +975,16 @@ test("a delete marker is spent once a settled listing fetched after the delete w
   assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt - 1 }), []);
   assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: null }), []);
   assert.deepEqual(
-    settledDeleteMarkers(markers, { settled: false, error: false, refreshStartedAt: deletedAt }),
+    settledDeleteMarkers(markers, { settled: false, error: false, refreshStartedAt: deletedAt + 1 }),
     [],
   );
   assert.deepEqual(
-    settledDeleteMarkers(markers, { settled: true, error: true, refreshStartedAt: deletedAt }),
+    settledDeleteMarkers(markers, { settled: true, error: true, refreshStartedAt: deletedAt + 1 }),
     [],
   );
-  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt }), [
+  // A fetch sent in the delete's own millisecond may still have read the old cache.
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt }), []);
+  assert.deepEqual(settledDeleteMarkers(markers, { ...settled, refreshStartedAt: deletedAt + 1 }), [
     "audio-cpp/audio.cpp-gguf",
   ]);
   assert.match(
