@@ -12,7 +12,10 @@ import {
 import {
   type GgufVariantDetail,
   deleteCachedDataset,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
   formatLocalUpdated,
   listGgufVariants,
   useGgufVariantsCacheVersion,
@@ -627,6 +630,14 @@ export const InventoryRow = memo(function InventoryRow({
         ? row.repoId
         : null;
   const canDelete = cacheDeletableRepoId !== null;
+  // On-device rows outside the HF cache act on their path through /api/hub/local/*.
+  const localActionPath =
+    !isDataset &&
+    row.kind === "local" &&
+    row.source !== "hf_cache" &&
+    row.path
+      ? row.path
+      : null;
   const partialRepoId =
     row.partial && !row.companionPrefetch
       ? row.kind === "cache"
@@ -797,6 +808,34 @@ export const InventoryRow = memo(function InventoryRow({
           },
           onDeleted: onChange,
         } : undefined}
+      />
+    ) : localActionPath && row.kind === "local" ? (
+      <ModelRowMenu
+        ariaLabel={`More options for ${rowModelId}`}
+        buttonClassName="pointer-events-auto hub-modal-pe-guard size-8 opacity-0 transition-opacity group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 [@media(pointer:coarse)]:opacity-100"
+        iconClassName="size-4"
+        onReveal={() => revealLocalModel(localActionPath)}
+        del={
+          DELETABLE_LOCAL_SOURCES.has(row.source)
+            ? {
+                title: "Delete local model?",
+                description: (
+                  <>
+                    This will permanently remove{" "}
+                    <span className="font-medium text-foreground">{title}</span>{" "}
+                    from{" "}
+                    <span className="break-all font-mono text-xs">
+                      {localActionPath}
+                    </span>
+                    .
+                  </>
+                ),
+                successMessage: `Deleted ${title}`,
+                onConfirm: () => deleteLocalModel(localActionPath),
+                onDeleted: onChange,
+              }
+            : undefined
+        }
       />
     ) : null;
 

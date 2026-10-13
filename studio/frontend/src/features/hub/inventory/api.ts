@@ -432,6 +432,37 @@ export async function deleteCachedModel(
   }
 }
 
+/** Sources `/api/hub/local/delete` accepts; Ollama blobs and Hermes / oMLX folders stay read-only. */
+export const DELETABLE_LOCAL_SOURCES: ReadonlySet<string> = new Set([
+  "models_dir",
+  "lmstudio",
+  "custom",
+]);
+
+/** Reveal an on-device model outside the HF cache; the server only accepts a path it lists. */
+export async function revealLocalModel(path: string): Promise<void> {
+  const response = await authFetch("/api/hub/local/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  await throwIfNotOk(response);
+}
+
+export async function deleteLocalModel(path: string): Promise<void> {
+  const response = await authFetch("/api/hub/local/delete", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
+  });
+  try {
+    await throwIfNotOk(response);
+    bumpInventoryVersion();
+  } finally {
+    invalidateGgufVariantsCache(path);
+  }
+}
+
 export async function listScanFolders(): Promise<ScanFolderInfo[]> {
   const response = await authFetch("/api/hub/scan-folders");
   const data = await parseJsonOrThrow<{ folders: ScanFolderInfo[] }>(response);
