@@ -2098,12 +2098,19 @@ def _pipeline_device_mib(pipe: Any, ordinal: Optional[int] = None) -> int:
     return total // (1024 * 1024)
 
 
-def _auto_seed_yields_to_resident_bf16(scheme: Optional[str], requested: Optional[str]) -> bool:
+def _auto_seed_yields_to_resident_bf16(
+    scheme: Optional[str], requested: Optional[str], fam: Any = None
+) -> bool:
     """Whether an AUTO seed of ``scheme`` is bound by "auto keeps a resident bf16 DiT".
 
     nvfp4 is exempt: it reaches auto only through a gated family preference (``_FAMILY_AUTO_PREFER``) that is
-    measured to be worth taking on a card that holds bf16. An explicit scheme is a request, honored as asked."""
+    measured to be worth taking on a card that holds bf16. So is a scheme in the family's
+    ``auto_prequant_when_resident`` (LTX-2.5's int8: ComfyUI's own templates run the int8-convrot DiT). An explicit
+    scheme is a request, honored as asked."""
     if scheme is None or scheme == DENOISER_SEED_DECLINED or scheme == TQ_NVFP4:
+        return False
+    profile = getattr(fam, "profile", None)
+    if scheme in (getattr(profile, "auto_prequant_when_resident", None) or ()):
         return False
     return requested is None or normalize_transformer_quant(requested) == TQ_AUTO
 
@@ -4932,7 +4939,7 @@ class VideoBackend:
                     ordinal = _target_ordinal(target),
                 )
                 if _auto_seed_yields_to_resident_bf16(
-                    scheme, transformer_quant
+                    scheme, transformer_quant, fam
                 ) and _video_seed_stays_resident(
                     fam,
                     target = target,
@@ -6994,7 +7001,7 @@ class VideoBackend:
             denoiser_seed_gb = None
             plan, bf16_plan, quant_replanned = _plan_for_te_scale(te_scale, log = False)
         if _auto_seed_yields_to_resident_bf16(
-            denoiser_seed_scheme, transformer_quant
+            denoiser_seed_scheme, transformer_quant, fam
         ) and _auto_keeps_resident_bf16(_plan_for_te_scale(te_scale, log = False)[1], target):
             # Auto keeps a resident bf16 DiT; seeding would change auto's precision wherever bf16 fits.
             logger.info(

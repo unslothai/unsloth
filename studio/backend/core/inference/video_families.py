@@ -568,6 +568,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
                 variant_repos = ("unsloth/LTX-2.5-FP8",),
                 default_on = True,
             ),
+            # ComfyUI's LTX-2.5 templates (video_ltx2_5_t2v / i2v / flf2v, UNETLoader) run the distilled DiT as
+            # ltx-2.5-22b-distilled-transformer-comfy-int8-convrot, so auto seeds the hosted INT8-ConvRot DiT even where
+            # bf16 fits resident: LPIPS 0.265 vs compiled bf16 on 4 clips, equal to the compile floor (0.265; FP8 0.366).
+            # Where int8 does not run, the auto ladder's next scheme (fp8) still yields to a resident bf16 DiT.
+            auto_prequant_when_resident = frozenset({"int8"}),
             untiled_vae = _LTX2_VAE_UNTILED,
             # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
             compile_static = True,

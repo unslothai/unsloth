@@ -304,3 +304,54 @@ def test_until_published_the_plan_keeps_the_dense_shards(fam, _planning):
         REPO,
         [("LTX-2.5-INT8.safetensors", plain["LTX-2.5-INT8.safetensors"])],
     )
+
+
+# ComfyUI's LTX-2.5 templates (video_ltx2_5_t2v / i2v / flf2v) load ltx-2.5-22b-distilled-transformer-comfy-int8-convrot,
+# so auto seeds the hosted INT8-ConvRot DiT even on a card where the bf16 DiT fits resident. Any other scheme the auto
+# ladder lands on (fp8 where int8 does not run) still yields to a resident bf16 DiT, as for every other video family.
+@pytest.mark.parametrize(
+    "requested, scheme, expected",
+    [
+        ("auto", "int8", "int8"),
+        (None, "int8", "int8"),
+        ("auto", "fp8", None),
+        ("fp8", "fp8", "fp8"),
+        ("int8", "int8", "int8"),
+    ],
+)
+def test_auto_seeds_int8_where_bf16_fits_like_comfyui(fam, monkeypatch, requested, scheme, expected):
+    import types
+
+    import core.inference.video as vid
+
+    backend = vid.VideoBackend()
+    backend._state = types.SimpleNamespace(pipe = None)
+    monkeypatch.setattr(vid, "_video_auto_denoiser_scheme", lambda fam, **kw: scheme)
+    monkeypatch.setattr(vid, "_pipeline_device_mib", lambda pipe, ordinal = None: 0)
+    # bf16 fits resident on this card, and so does the artifact.
+    monkeypatch.setattr(vid, "_video_seed_stays_resident", lambda fam, **kw: True)
+    monkeypatch.setattr(
+        vid,
+        "resolve_diffusion_device_target",
+        lambda **_k: types.SimpleNamespace(device = "cuda", dtype = None, ordinal = None),
+    )
+    assert (
+        backend._video_planned_auto_denoiser_scheme(
+            fam, base = PACK, kind = "pipeline", transformer_quant = requested, speed_mode = None
+        )
+        == expected
+    )
+
+
+def test_only_ltx25_int8_skips_the_resident_bf16_rule(fam):
+    import core.inference.video as vid
+
+    assert fam.profile.auto_prequant_when_resident == frozenset({"int8"})
+    assert not vid._auto_seed_yields_to_resident_bf16("int8", "auto", fam)
+    assert vid._auto_seed_yields_to_resident_bf16("fp8", "auto", fam)
+    # LTX-2.3 and the other video families keep a resident bf16 DiT under auto.
+    for repo in ("Lightricks/LTX-2", "Wan-AI/Wan2.2-TI2V-5B-Diffusers"):
+        other = detect_video_family(repo)
+        assert other.name != fam.name
+        assert vid._auto_seed_yields_to_resident_bf16("int8", "auto", other)
+    assert vid._auto_seed_yields_to_resident_bf16("int8", "auto")
