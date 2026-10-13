@@ -135,11 +135,3 @@ def runner_for(base: Any, runner: Optional[Any] = None) -> Any:
     """The pipeline that executes a call: ``runner`` when a workflow swapped one in (from_pipe img2img / inpaint,
     the I2V class swap, LTX-2.5's condition pipe), else ``base``."""
     return runner if runner is not None else base
-
-
-def shares_denoiser(base: Any, runner: Any) -> bool:
-    """Whether ``runner`` drives the same denoiser module(s) as ``base`` (from_pipe / class swaps do)."""
-    if runner is None or runner is base:
-        return True
-    a, b = denoiser_dits(base), denoiser_dits(runner)
-    return bool(a) and any(m is n for m in a for n in b)
