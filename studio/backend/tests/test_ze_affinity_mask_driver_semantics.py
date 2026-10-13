@@ -67,6 +67,11 @@ def xpu_host(monkeypatch):
         ("0,5", [0]),
         ("0x1", [1]),
         ("01", [1]),
+        ("+1", [1]),
+        ("+0x1", [1]),
+        ("-0", [0]),
+        ("+2,0", [0, 2]),
+        ("-1,1", [1]),
     ],
 )
 def test_composite_roots_match_the_driver(xpu_host, mask, roots):

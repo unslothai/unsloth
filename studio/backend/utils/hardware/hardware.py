@@ -2664,20 +2664,21 @@ def _xpu_hierarchy_is_composite() -> bool:
     return hierarchy == "COMPOSITE"
 
 
-# The prefix C stoul(entry, nullptr, 0) consumes: hex, octal, decimal ("08" -> 0, "1abc" -> 1).
-_ZE_MASK_ROOT_RE = re.compile(r"0[xX]([0-9a-fA-F]+)|(0[0-7]*)|([1-9][0-9]*)")
+# The prefix C stoul(entry, nullptr, 0) consumes: sign, then hex, octal or decimal ("08" -> 0, "+1abc" -> 1).
+_ZE_MASK_ROOT_RE = re.compile(r"([+-]?)(?:0[xX]([0-9a-fA-F]+)|(0[0-7]*)|([1-9][0-9]*))")
 
 
 def _parse_ze_mask_roots(mask: str, root_count: Optional[int] = None) -> list[int]:
-    """Root device IDs a ZE_AFFINITY_MASK selects, filtered the way Level Zero does: in root order with duplicates collapsed ("2,0,0" -> [0, 2]), entries parsed base 0 ("0x1" and "01" -> 1), ids at or past ``root_count`` dropped. Only meaningful in COMPOSITE hierarchy, which callers must gate on."""
+    """Root device IDs a ZE_AFFINITY_MASK selects, filtered the way Level Zero does: in root order with duplicates collapsed ("2,0,0" -> [0, 2]), entries parsed like stoul base 0 ("0x1", "01" and "+1" -> 1), ids at or past ``root_count`` dropped. Only meaningful in COMPOSITE hierarchy, which callers must gate on."""
     roots: set = set()
     for token in (mask or "").split(","):
         match = _ZE_MASK_ROOT_RE.match(token.strip().split(".", 1)[0])
         if match:
-            hex_digits, octal, decimal = match.groups()
-            roots.add(
-                int(hex_digits, 16) if hex_digits else int(octal, 8) if octal else int(decimal)
-            )
+            sign, hex_digits, octal, decimal = match.groups()
+            root = int(hex_digits, 16) if hex_digits else int(octal, 8) if octal else int(decimal)
+            # stoul negates in unsigned arithmetic: "-1" wraps past every root, "-0" is 0.
+            if not (sign == "-" and root):
+                roots.add(root)
     return sorted(root for root in roots if root_count is None or root < root_count)
 
 
