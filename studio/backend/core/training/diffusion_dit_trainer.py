@@ -323,6 +323,11 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
             transformer = transformer.to(device)
         return transformer
 
+    if base_precision == "fp8":
+        transformer = _load_fp8_prequant_transformer(transformer_cls, cfg, device)
+        if transformer is not None:
+            return transformer
+
     # int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear, whose peft-0.18
     # constructor rejects the torchao-0.16 config API (peft 0.19+ accepts it; the order works for both).
     return transformer_cls.from_pretrained(
@@ -331,6 +336,32 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     ).to(device)
+
+
+def _load_fp8_prequant_transformer(transformer_cls, cfg, device):
+    """The family's hosted fp8 denoiser (the file Studio inference uses) as the fp8 base, skipping the bf16 transformer
+    download; None (load bf16 and quantize, as before) when none is mapped for this exact base or it fails to load."""
+    import logging
+
+    from core.training.diffusion_fp8_prequant import load_fp8_transformer, resolve_fp8_checkpoint
+
+    log = logging.getLogger(__name__)
+    path = resolve_fp8_checkpoint(
+        getattr(cfg, "resolved_family", None), cfg.base_model, cfg.hf_token, logger = log
+    )
+    if path is None:
+        return None
+    try:
+        transformer = load_fp8_transformer(
+            transformer_cls, cfg.base_model, path, device, hf_token = cfg.hf_token
+        )
+    except Exception as exc:  # noqa: BLE001 -- the dense path still works
+        log.warning("fp8 prequant: %s did not load (%s); loading bf16", path, exc)
+        gc.collect()
+        return None
+    transformer._studio_fp8_prequant_path = path
+    log.info("fp8 base loaded from the pre-quantized checkpoint %s", path)
+    return transformer
 
 
 def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
@@ -491,9 +522,12 @@ def _apply_fp8_training(
     family: Optional[str] = None,
 ) -> bool:
     """fp8 compute + storage for the frozen base, after add_adapter. Never fatal: falls back to bf16."""
+    from core.training.diffusion_fp8_prequant import dequantize_placeholders
     try:
         _probe_lowp(_convert_fp8, transformer)
         converted = _convert_fp8(transformer, family)
+        # A prequant base's fp8 layers the conversion did not take stay bf16, as on the dense path.
+        dequantize_placeholders(transformer)
         failed = getattr(transformer, "_studio_fp8_failed", 0)
         if failed:
             _emit(
@@ -511,6 +545,7 @@ def _apply_fp8_training(
             torch.xpu.empty_cache()
         return converted
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
+        dequantize_placeholders(transformer)
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
 

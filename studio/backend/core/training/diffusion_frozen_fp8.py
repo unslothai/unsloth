@@ -72,7 +72,9 @@ class FrozenFp8Linear(nn.Module):
         if in_f % 16 or out_f % 16:
             raise ValueError(f"fp8 needs 16-aligned dims, got {out_f}x{in_f}")
         self.in_features, self.out_features = in_f, out_f
-        q, s = _quantize_weight(linear.weight.detach())
+        # A Linear loaded from a hosted fp8 checkpoint carries its per-row codes already (diffusion_fp8_prequant).
+        pre = getattr(linear, "_studio_fp8_prequant", None)
+        q, s = pre if pre is not None else _quantize_weight(linear.weight.detach())
         self.register_buffer("weight", q)
         self.register_buffer("weight_scale", s.reshape(1, out_f).contiguous())
         self.bias = (
