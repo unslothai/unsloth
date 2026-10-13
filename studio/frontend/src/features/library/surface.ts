@@ -7,6 +7,11 @@ export const RAISED_SURFACE =
 export const CARD_SHADOW =
   "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
 
+// Light mode only: white thumbnails on a near-white page hid the old bg-only hover. Dark mode already
+// reads through its accent fill.
+export const CARD_HOVER =
+  "relative after:pointer-events-none after:absolute after:inset-0 after:rounded-[inherit] after:transition-colors group-hover/library-card:after:bg-[rgb(0_0_0_/_calc(0.06*var(--contrast-wash-gain,1)))] dark:group-hover/library-card:after:bg-transparent";
+
 export const OVERLAY_CONTROL =
   "bg-white shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-neutral-700 dark:shadow-none";
 

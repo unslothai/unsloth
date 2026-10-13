@@ -22,6 +22,7 @@ import { useColumnCount, useLibraryThumbnail, useSeen } from "../hooks";
 import { useLibraryActions } from "../actions-context";
 import { CARD_COLUMNS, useLibrarySettingsStore } from "../settings-store";
 import {
+  CARD_HOVER,
   CARD_SHADOW,
   GLASS_CONTROL,
   GLASS_SURFACE,
@@ -152,8 +153,9 @@ function CardFrame({
         }
         className={cn(
           "block w-full overflow-hidden rounded-xl text-left outline-none transition focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-          selected && "ring-2 ring-foreground",
           className,
+          CARD_HOVER,
+          selected && "ring-2 ring-foreground group-hover/library-card:ring-foreground",
         )}
       >
         {children}
@@ -236,7 +238,7 @@ export function ItemCard({ item }: { item: LibraryItem }) {
             <span
               className={cn(
                 GLASS_SURFACE,
-                "pointer-events-none absolute bottom-2 left-2 rounded-full px-2 py-0.5 text-ui-12 opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
+                "pointer-events-none absolute bottom-2 left-2 inline-flex h-6 items-center rounded-full px-2 text-ui-12 leading-none opacity-0 transition-opacity group-hover/library-card:opacity-100 group-has-[:focus-visible]/library-card:opacity-100 pointer-coarse:opacity-100",
               )}
             >
               {formatCardTime(item.updatedAt, locale)}
