@@ -2017,7 +2017,10 @@ def _video_seed_stays_resident(
 
     ``scheme=None`` sizes the released bf16 DiT instead, and then also requires a measured budget (see
     ``_auto_keeps_resident_bf16``)."""
-    components = getattr(fam, "bf16_components_gb", None)
+    from .diffusion_component_sizes import video_components_gb
+
+    # pre-download: headers of the repo about to load (ranged Hub reads only where the table does not describe it)
+    components = video_components_gb(fam, base_repo, allow_hub = True)
     if not components:
         return scheme is not None
     import torch
@@ -2480,11 +2483,16 @@ def video_offload_shortfall_message(
     height: Optional[int] = None,
     frames: Optional[int] = None,
     decode_floor_mib: Optional[int] = None,
+    measured_extra_mib: Optional[int] = None,
 ) -> Optional[str]:
     """Refusal when co-resident weights plus the activation headroom exceed the device, else None.
+    ``measured_extra_mib``: a recorded peak (above the request's start) of a completed request at least this large
+    under the same load; it replaces the estimated headroom when it asks for less (margin and slack as the Wan
+    residency fit uses).
     Denoise and VAE decode are separate phases: the decoded-clip share is held only beside the weights still on the
     device during the decode (``decode_floor_mib``, the full floor when unknown), never beside the streamed DiT."""
     headroom = DEFAULT_BASE_OVERHEAD_MIB
+    full_floor_mib = int(floor_mib)
     required = int(floor_mib) + headroom
     if width and height and frames:
         # decoded-clip share of the runtime estimate; its fixed 4 GiB denoise base over-refuses measured cells
@@ -2499,6 +2507,14 @@ def video_offload_shortfall_message(
         if decode_floor + headroom + clip_mib > required:
             floor_mib, headroom = decode_floor, headroom + clip_mib
             required = decode_floor + headroom
+    if measured_extra_mib is not None and measured_extra_mib > 0:
+        from .video_stream_residency import MEASURED_PEAK_MARGIN, MEASURED_SLACK_MIB
+
+        measured_headroom = int(measured_extra_mib * MEASURED_PEAK_MARGIN) + MEASURED_SLACK_MIB
+        measured_floor = full_floor_mib
+        if measured_floor + measured_headroom < required:
+            floor_mib, headroom = measured_floor, measured_headroom
+            required = measured_floor + measured_headroom
     if int(available_mib) >= required:
         return None
     shape = f" for {width}x{height} at {frames} frames" if width and height and frames else ""
@@ -6321,7 +6337,12 @@ class VideoBackend:
         # read as occupied.
         # ── memory plan: family-table resident estimate + frames-aware headroom.
         device_memory = settled_snapshot_device_memory(target)
-        components = fam.bf16_components_gb
+        from .diffusion_component_sizes import video_components_gb
+
+        # Safetensors headers of the pipeline repo, reconciled with the family table (the offline fallback).
+        components = video_components_gb(
+            fam, repo_id if kind == "pipeline" else None, allow_hub = True
+        )
         mib_per_gb = 1000.0**3 / (1024.0 * 1024.0)
         # bf16_components_gb is (transformer, text_encoder, vae) at bf16. When this pick takes its encoder PRE-CAST from
         # a hosted fp8 checkpoint, the bf16 entry over-states what is loaded by ~11 GB for ltx-2's Gemma3-12B, which
@@ -6470,7 +6491,6 @@ class VideoBackend:
             vae_gb = components[2] if components is not None else 0.0
             if components is not None and fam.name == "ltx-2.5":
                 from .video_ltx25 import (
-                    LTX25_LATENT_UPSAMPLER_GB,
                     LTX25_WORKER_RESIDENT_GB,
                     ltx25_uses_upsampler,
                 )
@@ -6482,7 +6502,11 @@ class VideoBackend:
                 if not ltx25_uses_upsampler(
                     _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
                 ):
-                    vae_gb -= LTX25_LATENT_UPSAMPLER_GB
+                    from .video_ltx25 import ltx25_latent_upsampler_gb
+
+                    vae_gb -= ltx25_latent_upsampler_gb(
+                        repo_id if kind == "pipeline" else None
+                    )
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
@@ -9860,12 +9884,13 @@ class VideoBackend:
                     )
                     from . import video_stream_residency
 
-                    if video_stream_residency.applies(
+                    residency_fit = video_stream_residency.applies(
                         fam.name,
                         is_moe = bool(getattr(fam, "is_moe", False)),
                         offload_policy = state.offload_policy,
                         device = state.device,
-                    ):
+                    )
+                    if residency_fit:
                         # Resident groups are allocated, so the reserved term below still counts them as available.
                         video_stream_residency.fit_for_request(
                             state.pipe,
@@ -9876,6 +9901,25 @@ class VideoBackend:
                             frames = frames,
                             logger = logger,
                         )
+                    # Runtime calibration for every family: this request's peak is recorded after export and sizes
+                    # the next request of its size (the refusal below, and the Wan residency fit).
+                    calibration = video_stream_residency.calibration_key(
+                        fam.name,
+                        getattr(state, "repo_id", None),
+                        state.offload_policy,
+                        device_obj,
+                        transformer_quant = getattr(state, "transformer_quant", None),
+                        text_encoder_quant = getattr(state, "text_encoder_quant", None),
+                    )
+                    video_stream_residency.arm_request(
+                        state.pipe,
+                        key = calibration,
+                        width = width,
+                        height = height,
+                        frames = frames,
+                        device = device_obj,
+                        rearm = not residency_fit,
+                    )
                     free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
                     reserved_bytes = (
                         torch.cuda.memory_reserved(device_obj)
@@ -9891,6 +9935,9 @@ class VideoBackend:
                         height = height,
                         frames = frames,
                         decode_floor_mib = getattr(state, "vram_decode_floor_mib", None),
+                        measured_extra_mib = video_stream_residency.measured_extra_mib(
+                            calibration, int(width) * int(height) * int(frames)
+                        ),
                     )
                     if shortfall is not None:
                         raise RuntimeError(shortfall)

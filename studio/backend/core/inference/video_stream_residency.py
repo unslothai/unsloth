@@ -8,6 +8,10 @@ or, for a request no larger (pixels x frames) than a completed one, that request
 estimate stays the lower bound. Resident groups keep their host copy, so streaming them again is a pointer swap.
 Kill switches: UNSLOTH_VIDEO_DIT_RESIDENT=0, UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top-level group only),
 UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0 (estimate only).
+
+Calibration is not Wan-only: ``arm_request`` arms the same peak measurement for any video family, and every recorded
+peak also lands in a process-wide table keyed by the loaded model (``calibration_key``), so a reload of the same model
+and the offload refusal (``measured_extra_mib``) reuse it. ``UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0`` turns reuse off.
 """
 
 from __future__ import annotations
@@ -133,11 +137,66 @@ def measured_room_mib(
     return max(0, available - need)
 
 
+# calibration key -> {work (pixels x frames): peak MiB above the request's start}; survives a reload of the same model
+_PEAKS: dict = {}
+
+
+def calibration_key(
+    family: Any, repo: Any = None, offload_policy: Any = None, device: Any = None, **extra: Any
+) -> tuple:
+    """What a measured peak is valid for: the model, its placement and the device kind."""
+    return (
+        str(family or ""),
+        str(repo or ""),
+        str(offload_policy or ""),
+        str(getattr(device, "type", device) or ""),
+        tuple(sorted((k, str(v)) for k, v in extra.items())),
+    )
+
+
+def _covering(peaks: dict, work: int) -> Optional[int]:
+    covering = [extra for w, extra in (peaks or {}).items() if w >= work]
+    return max(covering) if covering else None
+
+
+def measured_extra_mib(key: Any, work: int) -> Optional[int]:
+    """The largest peak recorded under ``key`` by a completed request at least as large as ``work``, or None."""
+    if key is None or not measured_enabled():
+        return None
+    return _covering(_PEAKS.get(key) or {}, int(work))
+
+
 def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
     """The largest recorded peak among completed requests at least as large as ``work``; None when none covers it."""
-    peaks = getattr(module, "_unsloth_video_peaks", None) or {}
-    covering = [extra for w, extra in peaks.items() if w >= work]
-    return max(covering) if covering else None
+    own = _covering(getattr(module, "_unsloth_video_peaks", None) or {}, work)
+    if own is not None:
+        return own
+    return _covering(_PEAKS.get(getattr(module, "_unsloth_video_calibration_key", None)) or {}, work)
+
+
+def arm_request(
+    pipe: Any, *, key: Any, width: int, height: int, frames: int, device: Any, rearm: bool = True
+) -> bool:
+    """Tag the denoiser with ``key`` and arm the peak measurement ``record_request_peak`` closes. ``rearm=False``
+    after ``fit_for_request`` (which armed this request itself) only tags. CUDA only; never raises."""
+    module = getattr(pipe, "transformer", None)
+    if module is None:
+        return False
+    try:
+        import torch
+
+        dev = torch.device(device)
+        if dev.type != "cuda":
+            return False
+        module._unsloth_video_calibration_key = key
+        if not rearm:
+            return True
+        torch.cuda.reset_peak_memory_stats(dev)
+        work = int(width) * int(height) * int(frames)
+        module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
+        return True
+    except Exception:  # noqa: BLE001 -- an unarmed request keeps the estimate
+        return False
 
 
 def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
@@ -159,6 +218,10 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             peaks = {}
             module._unsloth_video_peaks = peaks
         peaks[work] = max(extra, peaks.get(work, 0))
+        key = getattr(module, "_unsloth_video_calibration_key", None)
+        if key is not None:
+            shared = _PEAKS.setdefault(key, {})
+            shared[work] = max(extra, shared.get(work, 0))
         _COUNTS["recorded"] += 1
         if logger is not None:
             logger.info("video.dit_resident: request peak %d MiB above its start recorded", extra)

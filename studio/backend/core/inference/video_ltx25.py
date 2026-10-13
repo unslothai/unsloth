@@ -476,6 +476,18 @@ def is_ltx25_single_file_listing(names: Any) -> bool:
     return all(name in present for name in LTX25_SINGLE_COMPANIONS)
 
 
+def ltx25_latent_upsampler_gb(repo: Optional[str] = None) -> float:
+    """The latent upsampler's resident GB: its safetensors header when ``repo`` (default the Diffusers pack) is cached,
+    reconciled with ``LTX25_LATENT_UPSAMPLER_GB`` (the offline fallback, kept where the two agree within rounding)."""
+    from .diffusion_component_sizes import component_gb, reconcile_scalar
+
+    header = component_gb(repo or "Lightricks/LTX-2.5-Diffusers", LATENT_UPSAMPLER_SUBFOLDER)
+    is_base = repo is None or str(repo).lower() == "lightricks/ltx-2.5-diffusers"
+    return reconcile_scalar(
+        header, LTX25_LATENT_UPSAMPLER_GB, is_base = is_base, key = ("ltx-2.5", "latent_upsampler", repo)
+    )
+
+
 def ltx25_uses_upsampler(dev: bool) -> bool:
     """Whether a load attaches the latent upsampler: only the two-stage distilled recipe runs it."""
     return not dev and two_stage_enabled()
