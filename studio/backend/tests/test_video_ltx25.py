@@ -987,11 +987,10 @@ def test_client_caches_recent_encodes_and_reports_a_dead_worker(monkeypatch):
     a = client.encode(["p"], 2)
     b = client.encode(["p"], 2)
     assert client._seq == 1 and torch.equal(a[0], b[0])
-    # A read-only hit hands back the cached tensors (pinned under CUDA); the default still returns private copies.
+    # A read-only hit hands back the cached tensors; the default still returns private copies.
     shared = client.encode(["p"], 2, copy = False)
     assert shared is client._cache[-1][1] and client.encode(["p"], 2, copy = False)[0] is shared[0]
     assert a[0] is not shared[0] and b[0] is not shared[0]
-    assert shared[0].is_pinned() == torch.cuda.is_available()
     client._proc = SimpleNamespace(is_alive = lambda: False, exitcode = -9)
     client._cmd.put = lambda msg: None
     monkeypatch.setattr(client, "start", lambda: None)
@@ -1322,6 +1321,47 @@ def test_stage_two_fit_counts_the_connectors_and_the_upsampler(monkeypatch):
     # Off CUDA (the DiT's parameters on the host) there is nothing to hold.
     assert v25._stage_two_fits_beside_dit(pipe, None) is False
     assert v25._module_bytes(torch.nn.Linear(4, 4)) == (16 + 4) * 4 and v25._module_bytes(None) == 0
+
+
+class _EncodingPipe(_FakePipe):
+    """Calls encode_prompt like the LTX-2 pipelines (keywords only) and records what each stage got."""
+
+    def __init__(self, scheduler):
+        super().__init__(scheduler)
+        self.encodes = 0
+        self.got = []
+
+    def encode_prompt(self, **kw):
+        import torch
+
+        self.encodes += 1
+        return torch.full((1, 2, 3), float(self.encodes)), torch.ones(1, 2), None, None
+
+    def __call__(self, prompt = None, **kw):
+        embeds = self.encode_prompt(prompt = prompt, negative_prompt = None, device = "cpu", prompt_embeds = None)
+        self.got.append(embeds[0].clone())
+        embeds[0].add_(100)  # a stage editing its own tensors in place must not reach the next stage
+        return super().__call__(prompt = prompt, **kw)
+
+
+def test_both_stages_share_one_encode():
+    import torch
+
+    pipe = _EncodingPipe(SimpleNamespace(keep_tokens = None))
+    v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler())
+    assert pipe.encodes == 1 and len(pipe.got) == 2
+    assert torch.equal(pipe.got[0], pipe.got[1]) and torch.equal(pipe.got[1], torch.full((1, 2, 3), 1.0))
+    assert "encode_prompt" not in pipe.__dict__
+    # A later request encodes again (the memo lives for one render), and a dev render never memoises.
+    v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler())
+    assert pipe.encodes == 2
+    v25.render(pipe, dict(_kwargs(), num_inference_steps = 30), dev = True)
+    assert pipe.encodes == 3
+    # An instance-level encode_prompt (the remote encoder / prompt cache wrapper) is restored as it was.
+    own = pipe.encode_prompt
+    pipe.encode_prompt = own
+    v25.render(pipe, _kwargs(), dev = False, upsampler = _Upsampler())
+    assert pipe.__dict__["encode_prompt"] is own and pipe.encodes == 4
 
 
 def test_two_stage_i2v_conditions_both_stages(monkeypatch):
