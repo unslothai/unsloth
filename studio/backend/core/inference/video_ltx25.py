@@ -84,18 +84,11 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# Gemma 4 encoder precision. ComfyUI's LTX-2.5 workflows (video_ltx2_5_t2v / i2v / flf2v, CLIPLoader) load
-# ``gemma4-12b-with-proj-ltx-2.5-comfy-int8-convrot.safetensors``: the decoder projections INT8 in a block-Hadamard
-# rotated basis (group 256, per-row float32 scales), the rest bf16. The worker makes that same quantization from the
-# bf16 weights at load (video_ltx25_te_worker.quantize_int8_convrot_) when asked for ``int8``. It is NOT the unset
-# default: on the Diffusers pack encoder Studio loads, int8 renders scored LPIPS 0.310 vs bf16 over 4 clips, above the
-# 0.256 compile floor on 3 of them. A host-resident (streamed) int8 encoder peaks at 16.1 GB host RSS, under the 25.2 GB
-# of bf16. Unset / ``none`` / ``off`` keep bf16; UNSLOTH_LTX25_TE_INT8=1 makes int8 the unset default.
+# int8 ConvRot encoder is opt-in, NOT the unset default: on the Diffusers pack encoder it scored LPIPS 0.310 vs bf16,
+# above the 0.256 compile floor. UNSLOTH_LTX25_TE_INT8=1 makes int8 the unset default.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
-# Encoder weights the worker holds with the int8 ConvRot projections, decimal GB: 12,424 MiB measured (13.03 GB; the
-# embedding table, norms and vision / audio towers stay bf16), against 22,811 MiB for bf16 (the family table's 23.9).
-# The worker quantizes one projection at a time, so the card never holds more than this plus one bf16 layer.
+# Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
 LTX25_TE_INT8_GB = 13.1
 # The pack's latent_upsampler/ (995,743,320 bytes), part of the family table's companions; only two-stage loads hold it.
 LTX25_LATENT_UPSAMPLER_GB = 1.0
@@ -680,11 +673,7 @@ def encoder_resident_for_plan(plan: Any) -> bool:
 
 
 def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
-    """The Gemma 4 encoder precision a raw ``text_encoder_quant`` asks for: ``"int8"`` (ConvRot INT8) or None (bf16).
-
-    Unset / "auto" keeps bf16 unless ``UNSLOTH_LTX25_TE_INT8=1`` (then int8); "none" / "off" keep bf16; "int8" pins
-    it. Any other scheme raises ValueError: the worker has only the ConvRot INT8 build, and an fp8 / nvfp4
-    request answered at another precision would be the wrong encoder under the requested label."""
+    """``"int8"`` or None (bf16); any other scheme raises ValueError (the worker has only the ConvRot INT8 build)."""
     from .diffusion_precision import normalize_te_quant, te_quant_is_auto
 
     if te_quant_is_auto(text_encoder_quant):
@@ -701,8 +690,7 @@ def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
 
 
 def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
-    """Scale on the family table's bf16 encoder size ``bf16_gb`` for the encoder this request loads. The worker
-    quantizes one projection at a time, so its card peak is the int8 size too. Unresolvable requests price bf16."""
+    """Scale on the bf16 encoder size for this request; unresolvable requests price bf16."""
     try:
         scheme = ltx25_te_quant_scheme(text_encoder_quant)
     except ValueError:
@@ -713,7 +701,6 @@ def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> 
 
 
 def ltx25_te_outcome(client: Any) -> Any:
-    """The status record for the encoder the worker runs (the in-process text encoder pass never sees it)."""
     from .diffusion_precision import TEQuantOutcome
 
     scheme = (getattr(client, "config", None) or {}).get("te_quant")
@@ -804,7 +791,6 @@ class Ltx25TextEncoderClient:
             "venv_dir": venv_dir,
             # The load's memory budget: a non-resident encoder onloads only into what the server leaves of it.
             "budget_mib": budget_mib,
-            # "int8": the worker swaps the decoder projections for ConvRot INT8 at load; None keeps bf16.
             "te_quant": te_quant,
         }
         self.cancel_event = cancel_event

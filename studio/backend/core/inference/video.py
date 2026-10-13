@@ -692,8 +692,7 @@ def _assert_video_precision_for_target(
         and h3_te_quant_scheme(te_mode) is not None
     ):
         return
-    # LTX-2.5's encoder worker quantizes its own Gemma 4 (ConvRot INT8: plain tensors and an F.linear, no torchao);
-    # validate_load_request already refused every other scheme.
+    # LTX-2.5's worker quantizes its own encoder (plain tensors, no torchao).
     if getattr(fam, "name", None) == "ltx-2.5":
         return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))
@@ -2111,8 +2110,7 @@ def _auto_seed_yields_to_resident_bf16(
 
     nvfp4 is exempt: it reaches auto only through a gated family preference (``_FAMILY_AUTO_PREFER``) that is
     measured to be worth taking on a card that holds bf16. So is a scheme in the family's
-    ``auto_prequant_when_resident`` (LTX-2.5's int8: ComfyUI's own templates run the int8-convrot DiT). An explicit
-    scheme is a request, honored as asked."""
+    ``auto_prequant_when_resident``. An explicit scheme is a request, honored as asked."""
     if scheme is None or scheme == DENOISER_SEED_DECLINED or scheme == TQ_NVFP4:
         return False
     profile = getattr(fam, "profile", None)
@@ -3346,7 +3344,6 @@ class VideoBackend:
         if fam.name == "ltx-2.5":
             from .video_ltx25 import ltx25_te_quant_scheme
 
-            # int8 (ConvRot, opt-in) or bf16 (unset); any other scheme is refused here.
             ltx25_te_quant_scheme(text_encoder_quant)
         _ensure_mp4_encoder_available()
         return fam
@@ -7138,7 +7135,6 @@ class VideoBackend:
         # an fp8 budget under-states the resident requirement by ~11 GB for ltx-2, which is the direction that OOMs.
         # Placement is applied post-assembly (apply_memory_plan below), so re-plan at bf16 here, exactly as the
         # dense-quant fallback below restores bf16_plan.
-        # LTX-2.5's scale is its worker's own int8 encoder, never an injected one.
         if te_scale != 1.0 and not te_injected and fam.name != "ltx-2.5":
             logger.warning(
                 "video.te_prequant_budget: no pre-cast encoder was injected; re-planning "
@@ -7720,7 +7716,6 @@ class VideoBackend:
         if ltx25_client is not None:
             from .video_ltx25 import ltx25_te_outcome
 
-            # LTX-2.5's encoder lives in its worker, which quantized it (or not) at load.
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
             text_encoder_outcome = quantize_text_encoders(

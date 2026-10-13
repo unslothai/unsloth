@@ -83,9 +83,7 @@ class FamilyProfile:
     auto_prefer: Optional[AutoPrefer] = None
     # Reason auto keeps bf16 while bf16 fits (INT8 still picked once bf16 would offload); None = not this family.
     auto_bf16_when_resident: Optional[str] = None
-    # Video: hosted pre-quantized DiT schemes AUTO seeds even where the bf16 DiT fits resident (elsewhere auto keeps a
-    # resident bf16 DiT). For a family whose reference workflow itself runs that precision, measured inside the compile
-    # noise floor; any other scheme the ladder picks (fp8 where int8 does not run) still yields to a resident bf16.
+    # Video: prequant DiT schemes AUTO seeds even where bf16 fits resident (else auto keeps resident bf16).
     auto_prequant_when_resident: frozenset[str] = frozenset()
     # Text-encoder int8 keep-bf16 schedule (skip_first, skip_last) decoder blocks; None = int8 falls back to fp8.
     te_int8_skip: Optional[tuple[int, int]] = None

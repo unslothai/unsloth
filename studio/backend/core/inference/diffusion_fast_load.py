@@ -374,12 +374,8 @@ def _upload_candidates(modules: Sequence[Any], device: Any) -> list[Any]:
 
 
 def _wrapper_subclass_parts(tensor: Any) -> Optional[tuple[list[str], Any, list[Any]]]:
-    """``(inner names, flatten context, inner tensors)`` of a CPU traceable wrapper subclass (torchao ``Int8Tensor`` /
-    ``Float8Tensor``: a hosted pre-quantized denoiser's weights) whose inner tensors are all plain, dense, contiguous CPU
-    tensors; None for anything else (nested subclasses included).
-
-    Its own ``.to`` copies each inner tensor with a plain pageable copy from inside ``__torch_dispatch__``, where the
-    staging mode below never sees it, so without this the quantized half of a hosted checkpoint bypasses the ring."""
+    """``(inner names, flatten context, inner tensors)`` of a CPU torchao-style wrapper subclass with plain dense
+    contiguous CPU inner tensors; else None. Its own ``.to`` copies inside ``__torch_dispatch__``, bypassing the ring."""
     import torch
 
     try:
@@ -408,8 +404,6 @@ def _wrapper_subclass_parts(tensor: Any) -> Optional[tuple[list[str], Any, list[
 
 
 def _subclass_candidates(modules: Sequence[Any], plain_seen: set[int]) -> list[tuple[Any, list[str], Any, list[Any]]]:
-    """``(subclass tensor, inner names, context, inner tensors)`` for every stageable wrapper-subclass parameter / buffer,
-    each once."""
     out: list[tuple[Any, list[str], Any, list[Any]]] = []
     seen: set[int] = set()
     for module in modules:
@@ -584,7 +578,6 @@ def _staged_to_class():
             self.wrapped = wrapped or {}
 
         def _wrapped_copy(self, tensor: Any, device: Any, dtype: Any) -> Any:
-            """The device twin of a staged wrapper subclass, rebuilt from its staged inner copies; None = not staged."""
             hit = self.wrapped.get(id(tensor))
             if hit is None or hit[0] is not tensor:
                 return None

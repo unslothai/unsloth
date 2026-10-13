@@ -389,7 +389,6 @@ def test_fast_upload_stages_torchao_int8_weights_byte_for_byte(monkeypatch):
     with fl.fast_upload([got], "cuda") as staged:
         got.to("cuda")
     assert staged >= 6  # 2 biases + 2 x (qdata, scale)
-    # The weights ARE the ring's copies, not a second pageable copy made by the subclass's own .to.
     ring_ptrs = {c.data_ptr() for c in copies}
     assert all(lin.weight.qdata.data_ptr() in ring_ptrs for lin in got)
     for a, b in zip(ref, got):

@@ -163,14 +163,8 @@ def rotate_convrot_weight_(module: Any, group_size: int) -> None:
 
 
 def quantize_convrot_int8_weight(weight: Any, group_size: int) -> tuple[Any, Any]:
-    """``(int8 codes [out, in], float32 per-row scale [out, 1])`` of ``W @ blockdiag(H).T``.
-
-    The weight half of ComfyUI's ``int8_tensorwise`` + ``convrot`` layout (comfy-kitchen
-    ``quantize_int8_convrot_weight``): rotate in float32, per-output-row absmax / 127, round half to
-    even, clamp to [-128, 127]. Checked against Lightricks' own ``*-comfy-int8-convrot`` LTX-2.5
-    text encoder: the same codes up to float32 rounding ties (at most 1 code in ~1e-7 of the
-    entries) and the same scales to 1 ulp. Float32 on purpose: rotating in bfloat16 changes ~9% of
-    the codes. TF32 is switched off for the rotation for the same reason."""
+    """``(int8 codes, float32 per-row scale)`` of ``W @ blockdiag(H).T``, matching comfy-kitchen
+    ``quantize_int8_convrot_weight``. Float32 with TF32 off on purpose: bf16 rotation changes ~9% of the codes."""
     import torch
 
     out_features, in_features = weight.shape

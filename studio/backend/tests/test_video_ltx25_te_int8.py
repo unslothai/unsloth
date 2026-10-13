@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""LTX-2.5's Gemma 4 encoder runs int8 ConvRot by default, the precision ComfyUI's LTX-2.5 workflows load."""
+"""LTX-2.5's opt-in int8 ConvRot Gemma 4 encoder."""
 
 from __future__ import annotations
 
@@ -95,7 +95,6 @@ def test_worker_swaps_every_decoder_projection_and_keeps_the_math():
     assert type(swapped).__name__ == "Int8ConvRotLinear"
     assert swapped.weight.dtype == torch.int8 and swapped.weight_scale.dtype == torch.float32
     assert not any(isinstance(m, nn.Linear) for m in model.model.language_model.layers.modules())
-    # Embeddings and norms are untouched.
     assert model.model.language_model.embed_tokens.weight.dtype == torch.bfloat16
     got = swapped(x).float()
     rel = (got - want).norm() / want.norm()
@@ -135,7 +134,6 @@ def test_host_quantize_reads_projections_out_of_the_map_without_keeping_them(tmp
 
     assert worker.quantize_int8_convrot_(mapped, "cpu", resident = False) == 12
     worker.quantize_int8_convrot_(dense, "cpu", resident = False)
-    # Every projection released: the embedding was not copied out of the map.
     assert mapped.model.language_model.embed_tokens.weight.data_ptr() == embed_ptr
     for a, b in zip(mapped.model.language_model.layers, dense.model.language_model.layers):
         for name in ("q_proj", "k_proj", "o_proj"):
