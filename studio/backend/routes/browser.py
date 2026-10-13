@@ -1220,7 +1220,8 @@ def _prepare_page(page: str, url: str) -> tuple[str, Optional[str], Optional[dic
     base_url = None
     for tag in _BASE_TAG_RE.findall(page):
         href = _attr(_ATTR_HREF_RE.search(tag))
-        if href:
+        # href="" is a base too, frozen at the document's URL (HTML: the base element).
+        if href is not None:
             base_url = _join(url, href) or url
             break
     page = _BASE_TAG_RE.sub("", page)

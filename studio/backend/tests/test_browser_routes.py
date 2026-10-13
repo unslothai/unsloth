@@ -243,6 +243,10 @@ def test_a_page_base_equal_to_its_url_is_still_its_own(monkeypatch):
     payload = json.loads(_call(url = "example.com").body)
     assert payload["url"] == payload["base"] == "https://example.com/"
     assert payload["ownBase"] is True
+    assert browser_mod._prepare_page('<base href="">', "https://example.com/a")[1] == (
+        "https://example.com/a"
+    )
+    assert browser_mod._prepare_page('<base target="_blank">', "https://example.com/a")[1] is None
 
 
 def test_raw_text_is_transcoded_from_its_charset(monkeypatch):
