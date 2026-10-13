@@ -128,7 +128,6 @@ from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_
 from ..tokenizer_utils import *
 from .vision import FastBaseModel, _is_text_seq2seq_config
 from .vision import (
-    _offload_embedding_unsupported_platform,
     _resolve_offload_embedding,
     offload_input_embedding,
     restore_input_embedding,
@@ -3182,9 +3181,7 @@ class FastLlamaModel:
                 requested_device_map(device_map),
                 model_name,
                 max_seq_length = max_seq_length,
-                offload_embedding = bool(offload_embedding)
-                and num_labels is None
-                and _offload_embedding_unsupported_platform() is None,
+                offload_embedding = bool(offload_embedding) and num_labels is None,
                 planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
                 skip_reason = _planner_skip_reason,
                 **planner_config_overrides(kwargs),
