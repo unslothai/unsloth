@@ -31,9 +31,10 @@ _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=(?:[ \t]*(?:"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’)|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?ix)(?<![A-Za-z0-9])authorization["']?[ \t]*[:=][ \t]*["']?[\w!#$%&'*+.^`|~-]+[ \t]+
+    rf"""(?ix)(?<![A-Za-z0-9])authorization["'”’]?[ \t]*[:=][ \t]*["'“‘]?[\w!#$%&'*+.^`|~-]+[ \t]+
     (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|(?P<token68>[\w.~+/-]+=*))"""
 )
+_AUTH_PARAM_VALUE = re.compile(r"""=[ \t]*([^\s,]+)""")
 _TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
@@ -158,11 +159,11 @@ def _sanitize_public_query(query: str) -> str:
     plain = _redact_public_query(query, authorization = False)
     with_authorization = _redact_public_query(query, authorization = True)
     # An echoed copy of an identified credential (an error repeating it) goes too.
-    credentials = {
-        match["token68"]
-        for match in _QUERY_AUTHORIZATION.finditer(query)
-        if match["token68"] and len(match["token68"]) >= 8
-    }
+    credentials = set()
+    for match in _QUERY_AUTHORIZATION.finditer(query):
+        values = [match["token68"]] if match["token68"] else _AUTH_PARAM_VALUE.findall(match[0])
+        credentials.update(value.strip(_TOKEN_PUNCTUATION) for value in values)
+    credentials = {value for value in credentials if len(value) >= 8}
     if credentials:
         plain = [token for token in plain if token.strip(_TOKEN_PUNCTUATION) not in credentials]
     tokens = plain
