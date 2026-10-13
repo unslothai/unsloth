@@ -521,9 +521,22 @@ def _rms_backward(
 _eager_kernel = lambda kernel: kernel
 
 
-def _rms_weight_grad(dY, X, W, r):
+def _rms_weight_grad(
+    dY,
+    X,
+    W,
+    r,
+    chunk_rows = None,
+):
     # Only for a trainable weight (full finetuning); must run before the non-Gemma kernel overwrites dY.
-    return (dY.float() * (X.float() * r.view(-1, 1))).sum(0).to(W.dtype)
+    # Eager chunks rows so the fp32 temporaries stay ~64 MB; Inductor fuses the unchunked form.
+    if chunk_rows is None:
+        return (dY.float() * (X.float() * r.view(-1, 1))).sum(0).to(W.dtype)
+    dW = torch.zeros(dY.shape[1], dtype = torch.float32, device = dY.device)
+    for s in range(0, dY.shape[0], chunk_rows):
+        e = s + chunk_rows
+        dW += (dY[s:e].float() * (X[s:e].float() * r[s:e, None])).sum(0)
+    return dW.to(W.dtype)
 
 
 class Fast_RMS_Layernorm(torch.autograd.Function):
@@ -553,7 +566,9 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
-        dW = _rms_weight_grad(dY, X, W, r) if ctx.needs_input_grad[1] else None
+        dW = None
+        if ctx.needs_input_grad[1]:
+            dW = _rms_weight_grad(dY, X, W, r, chunk_rows = max(1, (1 << 24) // dim))
         dX = torch.empty_like(dY) if ctx.GEMMA else dY
         with torch_gpu_device(dY.device):
             _rms_backward(dY, dX, X, W, r, ctx.eps, ctx.GEMMA, _eager_kernel)

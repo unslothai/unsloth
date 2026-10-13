@@ -92,3 +92,18 @@ def test_rmsnorm_frozen_weight_stays_gradless():
     w = torch.rand(64, device = "cuda")
     Fast_RMS_Layernorm.apply(x, w, 1e-6, False).sum().backward()
     assert x.grad is not None and w.grad is None
+
+
+@pytest.mark.skipif(not has_real_cuda(), reason = "CUDA Triton kernels required")
+@pytest.mark.parametrize("chunk_rows", [1, 7, 64, 1000])
+def test_rmsnorm_weight_grad_chunked_matches_unchunked(chunk_rows):
+    from unsloth.kernels.rms_layernorm import _rms_weight_grad
+
+    torch.manual_seed(3407)
+    dY = torch.randn(203, 96, device = "cuda", dtype = torch.bfloat16)
+    X = torch.randn(203, 96, device = "cuda", dtype = torch.bfloat16)
+    W = torch.rand(96, device = "cuda", dtype = torch.bfloat16)
+    r = torch.rsqrt(X.float().square().mean(-1) + 1e-6)
+    expected = _rms_weight_grad(dY, X, W, r)
+    actual = _rms_weight_grad(dY, X, W, r, chunk_rows = chunk_rows)
+    torch.testing.assert_close(actual, expected)
