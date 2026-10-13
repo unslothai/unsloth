@@ -318,7 +318,7 @@ function ToolFallbackArgs({
       className={cn("aui-tool-fallback-args", className)}
       {...props}
     >
-      <pre className="aui-tool-fallback-args-value whitespace-pre-wrap">
+      <pre className="aui-tool-fallback-args-value whitespace-pre-wrap text-xs">
         {argsText}
       </pre>
     </div>
@@ -403,7 +403,7 @@ function ToolFallbackResult({
       {imageResult ? (
         <>
           {imageResult.text && (
-            <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
+            <pre className="aui-tool-fallback-result-content whitespace-pre-wrap text-xs">
               {stripAnsi(imageResult.text)}
             </pre>
           )}
@@ -420,7 +420,7 @@ function ToolFallbackResult({
           </div>
         </>
       ) : (
-        <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
+        <pre className="aui-tool-fallback-result-content whitespace-pre-wrap text-xs">
           {resultText}
         </pre>
       )}
