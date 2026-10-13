@@ -62,7 +62,7 @@ export function DownloadLocationPicker() {
   if (dir && !options.includes(dir)) {
     options.unshift(dir);
   }
-  const label = dir ? folderName(dir) : "Models folder";
+  const label = dir ? folderName(dir) : null;
 
   return (
     <>
@@ -87,7 +87,7 @@ export function DownloadLocationPicker() {
               strokeWidth={1.75}
               className="size-3.5 shrink-0"
             />
-            <span className="truncate">{label}</span>
+            {dir ? <span className="truncate">{label}</span> : null}
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent
