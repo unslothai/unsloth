@@ -554,7 +554,6 @@ export const ar = {
     queueingHintShared: "يبقى الطابور كما هو.",
   },
   rewind: {
-    menuItem: "إرجاع…",
     title: "إرجاع",
     pickDescription: "اختر رسالة للرجوع إليها.",
     pickEmpty: "لا توجد رسائل للرجوع إليها بعد.",
