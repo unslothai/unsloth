@@ -902,6 +902,19 @@ def test_frame_relay_throttles_and_never_raises_into_the_sampler():
     )
 
 
+def test_frame_relay_sends_zero_based_steps_and_honours_stop_sequences():
+    from core.inference.inference import _diffusion_frame_relay
+
+    sent = []
+    relay = _diffusion_frame_relay(_CanvasTokenizer(), sent.append, interval_s = 0, stop = ["<2>"])
+    relay({"block": 0, "step": 0, "total": 2, "tokens": [1], "mask_id": None})
+    relay({"block": 0, "step": 2, "total": 2, "tokens": [1, 2, 3], "mask_id": None})
+    # The canvas renders step + 1 of total: the block-end frame reads 2/2, not 3/2.
+    assert [f["step"] for f in sent] == [0, 1]
+    # Nothing past a stop sequence is shown, as the final reply is cut there too.
+    assert sent[-1]["text"] == "<1>"
+
+
 def test_worker_installs_the_frame_sink_only_for_the_requesting_generation():
     from core.inference import worker as worker_mod
     class _Backend:
@@ -994,3 +1007,14 @@ def test_plain_stream_forwards_frames_only_to_event_clients():
         )
     ]
     assert "payload.stream" in gate and "_sf_ui_events" in gate and "(payload.n or 1) == 1" in gate
+
+
+def test_adapter_controlled_stream_forwards_frames_too():
+    from routes import inference as routes_mod
+
+    src = inspect.getsource(routes_mod)
+    start = src.index("if payload.use_adapter is not None:", src.index("_sf_frame_kwargs = ("))
+    adapter_branch = src[start : src.index("else:", start)]
+    assert (
+        "generate_with_adapter_control" in adapter_branch and "**_sf_frame_kwargs" in adapter_branch
+    )

@@ -34540,6 +34540,7 @@ async def produce_openai_chat_completions(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
+                **_sf_frame_kwargs,
                 **kw,
             )
     else:

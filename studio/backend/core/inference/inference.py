@@ -625,9 +625,11 @@ def _diffusion_frame_relay(
     tokenizer,
     sink,
     interval_s = None,
+    stop = None,
 ):
     """on_frame for the core sampler: renders and hands one frame per interval to ``sink``, dropping the rest.
-    Never raises into the sampler, so a broken consumer cannot fail the generation."""
+    Never raises into the sampler, so a broken consumer cannot fail the generation. Each frame is cut at the
+    request's stop sequences, as the final reply will be."""
     import time
 
     last = [0.0]
@@ -642,15 +644,20 @@ def _diffusion_frame_relay(
             return
         last[0] = now
         try:
+            text = _render_canvas(tokenizer, frame.get("tokens") or (), frame.get("mask_id"))
+            for sequence in stop or ():
+                if sequence and sequence in text:
+                    text = text[: text.index(sequence)]
+            total = int(frame.get("total", 0))
             sink(
                 {
                     "type": "diffusion_frame",
                     "block": int(frame.get("block", 0)),
-                    "step": int(frame.get("step", 0)),
-                    "total": int(frame.get("total", 0)),
-                    "text": _render_canvas(
-                        tokenizer, frame.get("tokens") or (), frame.get("mask_id")
-                    ),
+                    # The event's step is zero-based (the canvas shows step + 1 of total); the sampler's
+                    # block-end frame is step == total.
+                    "step": max(min(int(frame.get("step", 0)), total - 1), 0),
+                    "total": total,
+                    "text": text,
                 }
             )
         except Exception as exc:
@@ -2584,7 +2591,9 @@ class InferenceBackend:
         frame_kwargs = {}
         sink = getattr(self, "diffusion_frame_sink", None)
         if sink is not None and _accepts_on_frame(generate_text):
-            frame_kwargs["on_frame"] = _diffusion_frame_relay(model_info["tokenizer"], sink)
+            frame_kwargs["on_frame"] = _diffusion_frame_relay(
+                model_info["tokenizer"], sink, stop = stop
+            )
         with self._generation_lock:
             if _adapter_state is not None:
                 self._apply_adapter_state(_adapter_state)
