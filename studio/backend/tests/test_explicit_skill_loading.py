@@ -42,8 +42,7 @@ def mention_client(tmp_path, monkeypatch):
     root = tmp_path / "skills"
     manifest = root / "skill-creator" / "SKILL.md"
     manifest.parent.mkdir(parents = True)
-    # Compared as the bytes on disk: write_text stores CRLF on Windows, and the backend
-    # loads the file as written while read_text would turn it back into LF.
+    # Compared as bytes: write_text stores CRLF on Windows, read_text would turn it back to LF.
     manifest.write_text(
         "---\nname: skill-creator\ndescription: Test instructions.\n---\n"
         "Complete manifest sentinel: do not execute or create anything.\n",
