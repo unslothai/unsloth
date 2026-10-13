@@ -43,9 +43,10 @@ function Redact-InstallOutput($t) { $t }
 function Get-UsableMemoryMb { if ($env:FAKE_MB -eq "throw") { throw "no probe" }; [long]$env:FAKE_MB }
 '@
 Set-Content -LiteralPath $helpers -Value ($prelude + "`n" + ($src -join "`n")) -Encoding utf8
+# A script-scope trap would turn errors the script tolerates under ErrorActionPreference
+# Continue into fatal ones; a rerun recovers a build left running instead (Wait-FrontendBuildOwner).
 $setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$null, [ref]$null)
-$trapLine = @($setupAst.EndBlock.Traps | Where-Object { $_.Extent.Text -like '*FrontendBuildProc*' } | ForEach-Object { $_.Extent.Text })
-Check "setup.ps1 has the frontend build trap at script scope" ($trapLine.Count -eq 1)
+Check "setup.ps1 has no script-scope trap" (-not $setupAst.EndBlock.Traps)
 $pwshExe = (Get-Process -Id $PID).Path
 $mark = Join-Path $fe ".unsloth-build.local"
 
@@ -124,37 +125,6 @@ Check "the build's child process is gone" ($gc -ne 0 -and -not $alive)
 if ($alive) { Stop-Process -Id $gc -Force -ErrorAction SilentlyContinue }
 Check "hidden .gitignore restored" (Test-Path -LiteralPath (Join-Path $work "outer/.gitignore"))
 Check "build mark kept, so the next run rebuilds" (Test-Path -LiteralPath $mark)
-
-Write-Host "== a terminating error anywhere stops the build too =="
-Reset-Tree
-Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
-$r = Invoke-Case @"
-$($trapLine[0])
-`$null = Start-FrontendBuildBackground -WorkingDirectory '$fe' -HiddenGitignores $hidden -FilePath `$Build -ArgumentList @('-NoProfile', '-Command', '`$p = $sleeper; Set-Content -LiteralPath ''$pidFile'' -Value `$p.Id; Start-Sleep 300')
-Start-Sleep 3
-if (`$true) { throw "unexpected" }
-Write-Output "not-reached"
-"@
-Check "setup still fails" ($r.Code -ne 0 -and $r.Out -notmatch "not-reached")
-$gc = if (Test-Path -LiteralPath $pidFile) { [int](Get-Content -LiteralPath $pidFile) } else { 0 }
-$alive = $false
-if ($gc) { $alive = $null -ne (Get-Process -Id $gc -ErrorAction SilentlyContinue | Where-Object { -not $_.HasExited }) }
-Check "the build's child process is gone" ($gc -ne 0 -and -not $alive)
-if ($alive) { Stop-Process -Id $gc -Force -ErrorAction SilentlyContinue }
-Check "hidden .gitignore restored" (Test-Path -LiteralPath (Join-Path $work "outer/.gitignore"))
-
-Write-Host "== the trap still removes the WoA override file =="
-$overrides = Join-Path $work "overrides.merged.txt"
-Set-Content -LiteralPath $overrides -Value "secret"
-$woa = Get-FunctionSource -Path $setupPath -Name "Remove-WoaMergedOverrides"
-$r = Invoke-Case @"
-$woa
-`$script:WoaMergedOverrides = '$overrides'
-$($trapLine[0])
-throw "unexpected"
-"@
-Check "setup still fails" ($r.Code -ne 0)
-Check "override file removed" (-not (Test-Path -LiteralPath $overrides))
 
 Write-Host "== a build that cannot start leaves no temp files and stays serial =="
 $before = @(Get-ChildItem -LiteralPath ([System.IO.Path]::GetTempPath()) -Filter "tmp*.tmp" -ErrorAction SilentlyContinue).Count

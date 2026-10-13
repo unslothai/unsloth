@@ -250,6 +250,26 @@ if [ "$waited" -le 10 ]; then ok "stopped waiting once the owner cleared its mar
 kill "$owner" 2>/dev/null; wait "$owner" 2>/dev/null
 rm -f "$MARK"
 
+echo "== a zombie owner nobody reaps is not waited for =="
+python3 -c 'import os, sys, time
+pid = os.fork()
+if pid == 0:
+    os._exit(0)
+print(pid, flush=True)
+sys.stdout.close()
+time.sleep(30)' > "$WORK/zombie" &
+zparent=$!
+i=0; while [ ! -s "$WORK/zombie" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+zpid=$(cat "$WORK/zombie")
+sleep 0.5
+ps -o pid= -o lstart= -p "$zpid" | sed 's/^ *//' > "$MARK"
+start=$(date +%s)
+run_case '_frontend_build_begin' >/dev/null
+waited=$(( $(date +%s) - start ))
+if [ -s "$WORK/zombie" ] && [ "$waited" -le 5 ]; then ok "zombie owner skipped (${waited}s)"; else bad "waited ${waited}s for zombie $zpid"; fi
+kill "$zparent" 2>/dev/null; wait "$zparent" 2>/dev/null
+rm -f "$MARK"
+
 echo "== a new build also waits for a child its stopped owner left in the group =="
 prime
 python3 -c 'import os, subprocess as s

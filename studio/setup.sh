@@ -176,8 +176,8 @@ _frontend_proc_id() {
     ps -o pid= -o lstart= -p "$1" 2>/dev/null | sed 's/^ *//'
 }
 
-# Mark set before a build touches the tree, cleared only on success. Wait for a live marked
-# build (then 30 s for its group) and undo what it hid, so two builds never share the tree.
+# Mark set before a build touches the tree, cleared only on success. Wait (up to 10 min, zombies
+# excluded) for a live marked build, then 30 s for its group, and undo what it hid.
 _frontend_build_begin() {
     local _owner="" _pid _n=0 _self
     _self=$(exec sh -c 'echo "$PPID"')
@@ -185,7 +185,8 @@ _frontend_build_begin() {
     _pid=${_owner%% *}
     while [ -n "$_owner" ] && [ "$_pid" != "$_self" ] &&
         [ "$(head -c 200 "$_FRONTEND_BUILD_MARK" 2>/dev/null)" = "$_owner" ] &&
-        [ "$(_frontend_proc_id "$_pid")" = "$_owner" ]; do
+        [ "$(_frontend_proc_id "$_pid")" = "$_owner" ] && [ "$_n" -lt 600 ] &&
+        [ "$(ps -o stat= -p "$_pid" 2>/dev/null | cut -c1)" != Z ]; do
         [ "$_n" -ne 10 ] || substep "waiting for another frontend build in this checkout (pid $_pid)..."
         sleep 1
         _n=$((_n + 1))

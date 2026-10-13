@@ -256,12 +256,13 @@ function Start-FrontendBuildBackground {
     return $true
 }
 
-# Wait for a build a killed setup left running (marker = id + start time).
+# Wait (up to 10 min) for a build a killed setup left running (marker = id + start time).
 function Wait-FrontendBuildOwner {
     try { $owner = @(([System.IO.File]::ReadAllText($FrontendBuildMark)).Trim() -split ' ') } catch { return }
     if ($owner.Count -ne 2) { return }
     $said = $false
-    while ($true) {
+    $deadline = (Get-Date).AddMinutes(10)
+    while ((Get-Date) -lt $deadline) {
         try {
             $p = Get-Process -Id ([int]$owner[0]) -ErrorAction Stop
             # Within 1 s: .NET on Linux derives StartTime from boot time and drifts by microseconds.
@@ -270,13 +271,6 @@ function Wait-FrontendBuildOwner {
         if (-not $said) { substep "waiting for an earlier frontend build in this checkout (pid $($owner[0]))..."; $said = $true }
         Start-Sleep -Seconds 1
     }
-}
-
-# Frontend build in the background: stop it on any terminating error, then fail as before.
-trap {
-    if ($script:FrontendBuildProc) { Stop-FrontendBuildBackground }
-    if (Get-Command Remove-WoaMergedOverrides -CommandType Function -ErrorAction SilentlyContinue) { Remove-WoaMergedOverrides }
-    break
 }
 
 function Restore-FrontendBuildGitignores {
