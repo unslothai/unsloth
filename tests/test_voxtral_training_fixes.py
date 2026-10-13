@@ -83,7 +83,6 @@ def test_patched_voxtral_processor_saves(tmp_path):
     patch_saving_functions(processor)
     patch_saving_functions(processor.tokenizer)
     processor.save_pretrained(str(tmp_path / "processor"))
-    # save_pretrained_merged's call shape.
     processor.tokenizer.save_pretrained(
         save_directory = str(tmp_path / "tokenizer"), legacy_format = None, filename_prefix = None
     )
