@@ -393,6 +393,7 @@ function selectedRepoMatchesRuntime(
   selectedModel: SelectedModelView | null,
   runtimeId: string | null,
   ggufVariant: string | null,
+  runtimeIsMlx = false,
 ): boolean {
   if (!selectedModel || !runtimeId) return false;
   if (
@@ -411,7 +412,8 @@ function selectedRepoMatchesRuntime(
     const localPath = selectedModel.path ?? "";
     return ggufVariant !== null || localPath.toLowerCase().endsWith(".gguf");
   }
-  return ggufVariant === null;
+  // An MLX load of a precision folder (6-bit/) reports the folder as its variant.
+  return ggufVariant === null || runtimeIsMlx;
 }
 
 export function ModelsPage() {
@@ -461,6 +463,7 @@ export function ModelsPage() {
       ? checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const loadingModel = useChatRuntimeStore((s) => s.loadingModelPick);
   const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
     useState(false);
@@ -1480,8 +1483,9 @@ export function ModelsPage() {
         selectedModel,
         activeCheckpoint,
         activeGgufVariant,
+        loadedIsMlx === true,
       ),
-    [activeCheckpoint, activeGgufVariant, selectedModel],
+    [activeCheckpoint, activeGgufVariant, loadedIsMlx, selectedModel],
   );
 
   const isLoadingThisModel = useMemo(() => {

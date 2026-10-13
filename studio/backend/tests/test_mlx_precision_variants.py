@@ -48,8 +48,14 @@ _SIZES = {
 }
 
 
-def _siblings(sizes = _SIZES):
-    return [SimpleNamespace(rfilename = name, size = size) for name, size in sizes.items()]
+def _siblings(sizes = _SIZES, content = None):
+    """Hub siblings whose LFS hash stands for the file's bytes: by default the root and 4-bit/ hold
+    the same files, as in the issue's repo."""
+    content = content or (lambda name: name.replace("4-bit/", "", 1))
+    return [
+        SimpleNamespace(rfilename = name, size = size, lfs = {"sha256": f"sha-{content(name)}"})
+        for name, size in sizes.items()
+    ]
 
 
 def test_precision_folders_are_whole_checkpoints_with_a_precision_name():
@@ -104,6 +110,7 @@ def _fake_hub(
     tags = ("mlx", "safetensors"),
     library = "mlx",
     sizes = _SIZES,
+    content = None,
 ):
     calls = []
 
@@ -122,7 +129,7 @@ def _fake_hub(
                 tags = list(tags),
                 library_name = library,
                 pipeline_tag = "image-text-to-text",
-                siblings = _siblings(sizes),
+                siblings = _siblings(sizes, content),
             )
 
     monkeypatch.setattr("huggingface_hub.HfApi", _Api)
@@ -423,3 +430,16 @@ def test_a_rejected_token_still_downloads_a_public_folder(monkeypatch, tmp_path)
         tmp_path / "6-bit"
     )
     assert tokens == ["expired", False]
+
+
+def test_the_root_duplicate_is_found_by_content_not_size(monkeypatch):
+    # 4-bit/ and 4bit-dwq/ are the same size; only the one holding the root's bytes is its copy.
+    sizes = {**_SIZES, **_folder("4bit-dwq", [5 * GB, 5 * GB, 6 * GB])}
+    _no_gguf_rows(monkeypatch)
+    _fake_hub(monkeypatch, sizes = sizes)
+    response = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response
+    assert response.default_variant == "4-bit"
+    # Without a folder holding the root's bytes there is no default, whatever the sizes say.
+    _fake_hub(monkeypatch, sizes = sizes, content = lambda name: name)
+    response = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response
+    assert response.default_variant is None

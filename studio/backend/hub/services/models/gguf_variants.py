@@ -67,6 +67,7 @@ from hub.utils.gguf_plan import (
     is_main_gguf_variant_path,
     plan_from_expected_files,
     precision_folder_plans,
+    sibling_sha256,
 )
 from utils.paths.path_utils import is_appledouble_metadata
 
@@ -1162,6 +1163,7 @@ async def _mlx_precision_variants_answer(
 
     def _listing() -> Optional[GgufVariantsResponse]:
         sizes: dict[str, int] = {}
+        hashes: dict[str, Optional[str]] = {}
         has_vision = False
         if not offline:
             from huggingface_hub import HfApi
@@ -1179,6 +1181,7 @@ async def _mlx_precision_variants_answer(
                 if "mlx" not in tags and str(info.library_name or "").lower() != "mlx":
                     return None
                 sizes = {s.rfilename: int(s.size or 0) for s in (info.siblings or [])}
+                hashes = {s.rfilename: sibling_sha256(s) for s in (info.siblings or [])}
                 has_vision = str(info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
         if not sizes:
             snapshot = hf_cache_snapshot_dir_for_repo(repo_id)
@@ -1199,13 +1202,15 @@ async def _mlx_precision_variants_answer(
         if not folders:
             return None
 
-        def _weight_bytes(names) -> int:
-            return sum(sizes[name] for name in names if name.lower().endswith(".safetensors"))
+        def _weights(names) -> Optional[tuple[str, ...]]:
+            # Content hashes: two folders of one architecture and dtype can match in size alone.
+            found = [hashes.get(name) for name in names if name.lower().endswith(".safetensors")]
+            return tuple(sorted(found)) if found and all(found) else None
 
         root_weights = (
-            _weight_bytes(name for name in sizes if "/" not in name)
+            _weights([name for name in sizes if "/" not in name])
             if repo_ships_root_safetensors(sizes)
-            else 0
+            else None
         )
         rows = sorted(
             (
@@ -1225,7 +1230,7 @@ async def _mlx_precision_variants_answer(
             (
                 folder
                 for folder, names in folders.items()
-                if root_weights and _weight_bytes(names) == root_weights
+                if root_weights and _weights(names) == root_weights
             ),
             None,
         )
