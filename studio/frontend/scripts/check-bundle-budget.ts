@@ -79,8 +79,11 @@ export const BUDGET = {
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
   // raised by that.
-  transferBytes: 2_024_600,
-  rawBytes: 6_736_400,
+  // The exact concurrency setting, its chat chip and their strings in every eager locale add 4.5 KB
+  // raw / 1.2 KB transfer to the eager settings and chat chunks (6,572.9 -> 6,577.4 KB raw,
+  // 1,976.5 -> 1,977.7 KB transfer against bfab55021, one machine and build), raised by that.
+  transferBytes: 2_025_900,
+  rawBytes: 6_741_100,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
