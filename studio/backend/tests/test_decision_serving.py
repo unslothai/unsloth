@@ -1242,6 +1242,7 @@ def test_images_in_the_state_route_like_the_images_field(home, monkeypatch):
         questions = None,
         preference = None,
         state_images = False,
+        audio = None,
     ):
         seen.append(state_images and not images)
         raise laya_runtime.Unavailable(400, "api_usage_error", "stop")
@@ -1334,6 +1335,60 @@ def test_a_clef_with_its_vision_tower_reads_images_through_the_mlx_engine(
     assert engine.read == ("s", ([image],))
     assert laya_runtime._route(tuned, "s", questions, None)["_backend"] == "mlx"
     assert engine.read == ("s", ())
+
+
+def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
+    home, client, engine, monkeypatch
+):
+    served, folder = _clef_fine_tune(home, "clef_mlx_4"), home / "clef_mlx_4"
+    tuned, kev = catalog.fine_tune(served), catalog.CHECKPOINTS["kev-4b"]
+    zoo, clip = sys.modules["unsloth_zoo.mlx.decision"], "data:audio/wav;base64,AA=="
+    image, questions = "data:image/png;base64,AA==", {"q": {"type": "noul", "instructions": "i"}}
+    (folder / "processor_config.json").write_text("{}", encoding = "utf-8")
+
+    def hears(checkpoint):
+        try:
+            routed = laya_runtime.select(checkpoint, audio = [clip])[0].backend == "mlx"
+        except laya_runtime.Unavailable as refused:
+            routed = "does not hear audio here" not in refused.message
+        assert routed == ("audio" in laya_runtime.input_modalities(checkpoint))
+        return routed
+
+    # An audio tower in the folder and an unsloth-zoo that hears: neither alone, and no other entry.
+    zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
+    (folder / "config.json").write_text('{"vision_config": {}}', encoding = "utf-8")
+    assert not hears(tuned)
+    omni = {"thinker_config": {"audio_config": {}, "vision_config": {}}}
+    (folder / "config.json").write_text(json.dumps(omni), encoding = "utf-8")
+    assert hears(tuned) and not hears(kev) and not hears(catalog.CHECKPOINTS["clef-flash"])
+    assert laya_runtime.input_modalities(tuned) == ["text", "image", "audio"]
+    zoo.ClefModel = SimpleNamespace(takes_images = True)
+    assert not hears(tuned)
+    zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
+    # No other runtime answers a request that carries clips.
+    for runtime in ("pytorch", "llama.cpp"):
+        with pytest.raises(laya_runtime.Unavailable, match = "Audio is served only by MLX"):
+            laya_runtime.select(tuned, audio = [clip], preference = runtime)
+    # The clips reach the engine after the images.
+    assert _put(client, enabled = True, model = served).status_code == 200
+    body = {"model": "default", "state": "s", "questions": questions, "audio": [clip]}
+    assert client.post("/v1/systemone", json = body).headers["x-unsloth-decision-backend"] == "mlx"
+    assert engine.read == ("s", (None, [clip]))
+    assert client.post("/v1/systemone", json = {**body, "model": "kev-4b"}).status_code == 400
+    assert laya_runtime._route(tuned, "s", questions, [image], [clip])["_backend"] == "mlx"
+    assert engine.read == ("s", ([image], [clip]))
+    monkeypatch.setattr(systemone, "MAX_AUDIO_BYTES", 6)
+    for audio, message in (
+        ([clip] * 9, "At most 8 audio clips"),
+        ([clip, image], "audio[1] must be a base64 audio data URL"),
+        ([clip, "data:audio/wav;base64,@@@@"], "audio[1] is not valid base64"),
+        ([clip] * 3, "All audio clips together"),
+    ):
+        refused = client.post("/v1/systemone", json = {**body, "audio": audio})
+        assert refused.status_code == 422 and message in refused.json()["detail"]["message"]
+    asked, connection = {"q": systemone.QuestionIn(type = "noul")}, catalog.Connection("p", "m")
+    with pytest.raises(systemone.HTTPException, match = "Audio is not forwarded"):
+        asyncio.run(systemone._decide(connection, "s", asked, None, [clip]))
 
 
 def test_auto_keeps_images_in_the_state_off_mlx(home, engine, monkeypatch):
