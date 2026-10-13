@@ -71,3 +71,11 @@ test("a page that moves away hands back to the caller", async () => {
   const wait = { ...p.wait(0, 3000, 3000), moved: () => p.now() > 300 };
   assert.equal(await waitForPage(wait), "moved");
 });
+
+test("the DOM a slow response sets off still gets its quiet time after the request closes", async () => {
+  // The list's request is open past changingMaxMs; drawing it takes 100 ms after it lands.
+  const drawing = Array.from({ length: 6 }, (_, i) => 1500 + i * 20);
+  const p = page([{ start: 0, end: 1500 }], [0, ...drawing]);
+  assert.equal(await waitForPage(p.wait(0, 3000, 1000)), "settled");
+  assert.ok(p.now() >= 1600 + QUIET, `read at ${p.now()}, while the list was still being drawn`);
+});
