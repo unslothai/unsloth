@@ -1236,6 +1236,10 @@ function ModelRow({
   const capabilityScope = useContext(CapabilityScope);
   const capabilityBadges = visibleCapabilityBadges(caps, capabilityScope);
   const showCaps = capabilityBadges.length > 0;
+  // Pinned, sole-quant and collapsed rows pass metadata's has_vision straight in; an audio scope hides it.
+  const visionShown =
+    showVision === true &&
+    (capabilityScope === null || capabilityScope.includes("vision"));
   const aligned = alignMeta !== undefined;
   // Reserve only what this picker's scope can draw: Images and Audio draw no glyph and Video
   // draws one, so holding the chat row's slot open there is dead space.
@@ -1464,7 +1468,7 @@ function ModelRow({
               )}
             >
               {showCaps && <CapabilityIcons caps={caps} />}
-              {showVision && <VisionBadge />}
+              {visionShown && <VisionBadge />}
               {partial && alignMeta !== "device" ? (
                 <PartialBadge resumable={partialResumable} />
               ) : null}
@@ -1473,7 +1477,7 @@ function ModelRow({
           ) : (
             <>
               {showCaps && <CapabilityIcons caps={caps} />}
-              {showVision && <VisionBadge />}
+              {visionShown && <VisionBadge />}
               {loaded && (
                 <DotTag
                   tone="success"

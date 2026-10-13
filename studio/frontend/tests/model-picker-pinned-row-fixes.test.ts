@@ -66,3 +66,15 @@ test("the quant list's Vision badge and relay follow the picker's capability sco
   );
   assert.doesNotMatch(pickers, /!onDevice &&\s*hasVision &&/);
 });
+
+test("collapsed, pinned and sole-quant rows hide has_vision outside a vision scope too", () => {
+  // Only the expander honoured the scope, so a one-quant audio row still drew Vision.
+  const rowStart = pickers.indexOf("function ModelRow(");
+  const row = pickers.slice(rowStart, pickers.indexOf("\nfunction ", rowStart + 10));
+  assert.match(
+    row,
+    /const visionShown =\s*showVision === true &&\s*\(capabilityScope === null \|\| capabilityScope\.includes\("vision"\)\);/,
+  );
+  assert.doesNotMatch(row, /\{showVision && <VisionBadge \/>\}/);
+  assert.equal(row.match(/\{visionShown && <VisionBadge \/>\}/g)?.length, 2);
+});
