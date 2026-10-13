@@ -1128,9 +1128,9 @@ def test_the_h3_preflight_runs_before_the_start_route_evicts_anything():
 
 
 def test_the_augmentation_knobs_record_what_h3_actually_does():
-    """Every frame goes through the same centre cover-crop and nothing is flipped, but the
-    schema defaults say the opposite (center_crop=False, random_flip=True), so an untouched
-    request described augmentation that never happened. Normalised rather than refused: a
+    """Every frame goes through the same centre cover-crop and nothing is flipped, but a request
+    can say otherwise (center_crop defaults to False, random_flip can be turned on), so the run
+    record described augmentation that never happened. Normalised rather than refused: a
     refusal would 422 every default request."""
     from dataclasses import replace as _replace
 
