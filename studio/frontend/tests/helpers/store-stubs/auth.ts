@@ -27,3 +27,7 @@ export async function prepareHfTokenForUse(): Promise<null> {
 export function useIsAccountOwner(): boolean {
   return true;
 }
+
+export function isAccountOwner(): boolean {
+  return true;
+}

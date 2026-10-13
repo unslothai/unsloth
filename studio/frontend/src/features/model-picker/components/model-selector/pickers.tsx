@@ -61,9 +61,12 @@ import {
   HubOptionMenu,
   TrainIcon,
   TransportConflictDialog,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
   invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
+  revealLocalModel,
   useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
   isHuggingFaceOffline,
@@ -157,6 +160,10 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
+import {
+  audioCppHubPath,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
 import { audioPickSearch } from "../../../audio/route-search.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import {
@@ -169,6 +176,7 @@ import {
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
   localAudioRowIsUndecodableGguf,
+  macMlxSttRowIsRunnable,
   macTtsHubRowIsRunnable,
   nativeAudioCheckpointIsLoadable,
   shouldDiscoverCommunityModels,
@@ -246,7 +254,9 @@ import {
 } from "./row-identity";
 import {
   type FormatTone,
+  isFeaturedOnDeviceRepoId,
   isUnslothOwner,
+  onDeviceRepoLabel,
   parseMetaTokens,
   splitRepoLabel,
 } from "./row-meta";
@@ -296,7 +306,7 @@ function isUnslothRepoId(repoId: string): boolean {
 
 /** Official publisher namespaces used only for visual On Device grouping. */
 function isUnslothPublisherRepoId(repoId: string): boolean {
-  return isUnslothOwner(splitRepoLabel(repoId).owner);
+  return isFeaturedOnDeviceRepoId(repoId);
 }
 
 function normalizeForSearch(s: string): string {
@@ -2963,7 +2973,9 @@ function localDirectGgufMeta(
  *  row shows no empty address line. */
 function hubRepoUrl(id: string | null | undefined): string | undefined {
   const trimmed = id?.trim();
-  return trimmed ? `huggingface.co/${trimmed}` : undefined;
+  return trimmed
+    ? `huggingface.co/${audioCppHubPath(trimmed) ?? trimmed}`
+    : undefined;
 }
 
 /** Whether a local model is an MLX build (name hint). MLX runs on Mac only, so callers gate
@@ -4342,7 +4354,7 @@ export function HubModelPicker({
               (isUnslothRepoId(c.repo_id) && !c.single_file) ||
               ((c.task === "automatic-speech-recognition" ||
                 c.task === "text-to-speech") &&
-                communityAudioRowIsRunnable({
+                (communityAudioRowIsRunnable({
                   isStt: c.task === "automatic-speech-recognition",
                   isTts: c.task === "text-to-speech",
                   isGguf: false,
@@ -4350,7 +4362,13 @@ export function HubModelPicker({
                   tags: c.tags,
                   libraryName: c.library_name,
                   audioType: c.audio_type,
-                }) &&
+                }) ||
+                  macMlxSttRowIsRunnable({
+                    isMac,
+                    isStt: c.task === "automatic-speech-recognition",
+                    isGguf: false,
+                    libraryName: c.library_name,
+                  })) &&
                 macTtsHubRowIsRunnable({
                   isMac,
                   isTts: c.task === "text-to-speech",
@@ -4651,6 +4669,12 @@ export function HubModelPicker({
               meta.source === "exported" ||
               meta.source === "local",
             ...(hubEvidenceById.get(id) ?? {}),
+          }) &&
+          !macMlxSttRowIsRunnable({
+            isMac,
+            isStt: pickedTask === "automatic-speech-recognition",
+            isGguf: Boolean(meta.isGguf || meta.ggufFilename),
+            libraryName: cachedModels.find((c) => c.repo_id === id)?.library_name,
           })
         ) {
           // Loading it here would evict the chat model for a repo neither surface can run.
@@ -4674,7 +4698,7 @@ export function HubModelPicker({
       }
       onSelectProp(id, meta);
     },
-    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp],
+    [task, diffusionTaskById, hubEvidenceById, navigateToPage, onSelectProp, isMac, cachedModels],
   );
 
   // Fine-tuned models for the On Device section: flat, query-filtered, newest first.
@@ -6473,7 +6497,7 @@ export function HubModelPicker({
       >
         <div className="min-w-0 flex-1">
           <ModelRow
-            label={c.repo_id}
+            label={onDeviceRepoLabel(c.repo_id)}
             tooltipText={localPathTooltip(
               c.repo_id,
               c.cache_path,
@@ -6511,12 +6535,12 @@ export function HubModelPicker({
         <span className={ROW_ACTIONS_CLASS}>
           {onConfigure && (
             <ModelLoadSettingsAction
-              ariaLabel={`Inference settings for ${c.repo_id} ${variant.quant}`}
+              ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
               onConfigure={() => onConfigure(c.repo_id, selectMeta)}
             />
           )}
           <ModelRowMenu
-            ariaLabel={`More options for ${c.repo_id} ${variant.quant}`}
+            ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
             cachePath={{ repoId: c.repo_id, variant: variant.quant }}
             items={ejectMenuItems(c.repo_id)}
             pin={{
@@ -6539,12 +6563,12 @@ export function HubModelPicker({
                 <>
                   This will remove{" "}
                   <span className="font-medium text-foreground">
-                    {c.repo_id} ({variant.quant})
+                    {onDeviceRepoLabel(c.repo_id)} ({variant.quant})
                   </span>{" "}
                   from disk. You can re-download it later.
                 </>
               ),
-              successMessage: `Deleted ${c.repo_id} ${variant.quant}`,
+              successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`,
               disabled: deleteDisabled,
               onConfirm: async () => {
                 await deleteCachedModel(
@@ -6592,7 +6616,7 @@ export function HubModelPicker({
         <div className={downloadedRowShellClassName(isSelected)}>
           <div className="min-w-0 flex-1">
             <ModelRow
-              label={c.repo_id}
+              label={onDeviceRepoLabel(c.repo_id)}
               tooltipText={localPathTooltip(c.repo_id, c.cache_path)}
               meta="GGUF"
               quantChip={loadedQuants.map(ggufQuantChipLabel).join(", ") || undefined}
@@ -6629,7 +6653,7 @@ export function HubModelPicker({
           {isPartialRepo ? (
             <span className={ROW_ACTIONS_PINNED_CLASS}>
               <ModelRowMenu
-                ariaLabel={`More options for ${c.repo_id}`}
+                ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)}`}
                 cachePath={{ repoId: c.repo_id }}
                 del={{
                   title: "Delete cached model?",
@@ -6641,13 +6665,13 @@ export function HubModelPicker({
                     <>
                       This will remove{" "}
                       <span className="font-medium text-foreground">
-                        {c.repo_id}
+                        {onDeviceRepoLabel(c.repo_id)}
                       </span>{" "}
                       and everything downloaded under it from disk. You can
                       download it again later.
                     </>
                   ),
-                  successMessage: `Deleted ${c.repo_id}`,
+                  successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)}`,
                   disabled: deleteDisabled,
                   onConfirm: async () => {
                     await deleteCachedModel(
@@ -6831,6 +6855,35 @@ export function HubModelPicker({
     );
   };
 
+  const renderLocalRowMenu = (m: LocalModelInfo) => {
+    const name = m.model_id ?? m.display_name;
+    return (
+      <ModelRowMenu
+        ariaLabel={`More options for ${name}`}
+        onReveal={() => revealLocalModel(m.path, m.id)}
+        del={
+          DELETABLE_LOCAL_SOURCES.has(m.source)
+            ? {
+                title: "Delete local model?",
+                description: (
+                  <>
+                    This will permanently remove{" "}
+                    <span className="font-medium text-foreground">{name}</span>{" "}
+                    from{" "}
+                    <span className="break-all font-mono text-xs">{m.path}</span>.
+                  </>
+                ),
+                successMessage: `Deleted ${name}`,
+                disabled: deleteDisabled,
+                onConfirm: () => deleteLocalModel(m.path, m.id),
+                onDeleted: refreshLocalModelsList,
+              }
+            : undefined
+        }
+      />
+    );
+  };
+
   const renderAdditionalOnDeviceModelRow = (model: ModelOption) => {
     const optionKey = makeModelOptionKey("additional-on-device", model.id);
     const isSelected = value === model.id;
@@ -6841,7 +6894,7 @@ export function HubModelPicker({
       <div key={model.id} className={downloadedRowShellClassName(isSelected)}>
         <div className="min-w-0 flex-1">
           <ModelRow
-            label={isLocalPath ? model.name : model.id}
+            label={isLocalPath ? model.name : onDeviceRepoLabel(model.id)}
             hubUrl={isLocalPath ? undefined : hubRepoUrl(model.id)}
             meta={
               isLocalPath
@@ -6871,7 +6924,35 @@ export function HubModelPicker({
             className={downloadedRowButtonClassName}
           />
         </div>
-        <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
+        {isAudioCppFolderId(model.id) ? (
+          <span className={ROW_ACTIONS_CLASS}>
+            <ModelRowMenu
+              ariaLabel={`More options for ${onDeviceRepoLabel(model.id)}`}
+              cachePath={{ repoId: model.id }}
+              del={{
+                title: "Delete cached model?",
+                impact: { repoId: model.id },
+                description: (
+                  <>
+                    This will remove{" "}
+                    <span className="font-medium text-foreground">
+                      {onDeviceRepoLabel(model.id)}
+                    </span>{" "}
+                    from disk. You can re-download it later.
+                  </>
+                ),
+                successMessage: `Deleted ${onDeviceRepoLabel(model.id)}`,
+                disabled: deleteDisabled,
+                onConfirm: async () => {
+                  await deleteCachedModel(model.id, undefined, hfToken || undefined);
+                },
+                onDeleted: refreshCachedLists,
+              }}
+            />
+          </span>
+        ) : (
+          <span aria-hidden="true" className={cn(ROW_ACTIONS_CLASS, "h-6")} />
+        )}
       </div>
     );
   };
@@ -7706,7 +7787,11 @@ export function HubModelPicker({
                         );
                         return (
                           <div key={m.id}>
-                            <div className="group flex items-center">
+                            <div
+                              className={downloadedRowShellClassName(
+                                value === m.id,
+                              )}
+                            >
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -7759,8 +7844,7 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
-                                  className="pr-1"
+                                  className={downloadedRowButtonClassName}
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -7790,6 +7874,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalRowMenu(m)}
                               </span>
                             </div>
                             {isGguf &&
@@ -7850,7 +7935,11 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("lm-studio", m.id);
                         return (
                           <div key={m.id}>
-                            <div className="group flex items-center">
+                            <div
+                              className={downloadedRowShellClassName(
+                                value === m.id,
+                              )}
+                            >
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -7902,8 +7991,7 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
-                                  className="pr-1"
+                                  className={downloadedRowButtonClassName}
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -7933,6 +8021,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalRowMenu(m)}
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (
@@ -7984,7 +8073,11 @@ export function HubModelPicker({
                         const optionKey = makeModelOptionKey("local-dir", m.id);
                         return (
                           <div key={m.id}>
-                            <div className="group flex items-center">
+                            <div
+                              className={downloadedRowShellClassName(
+                                value === m.id,
+                              )}
+                            >
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
@@ -8032,8 +8125,7 @@ export function HubModelPicker({
                                   }
                                   alignMeta="device"
                                   vramStatus={null}
-                                  // The downloaded rows' inset, so columns line up across sections.
-                                  className="pr-1"
+                                  className={downloadedRowButtonClassName}
                                 />
                               </div>
                               <span className={ROW_ACTIONS_CLASS}>
@@ -8063,6 +8155,7 @@ export function HubModelPicker({
                                     }
                                   />
                                 )}
+                                {renderLocalRowMenu(m)}
                               </span>
                             </div>
                             {isGguf && !isGgufFile && isGgufExpanded(m.id) && (

@@ -62,6 +62,8 @@ export interface CachedGgufRepo {
   pipeline_tag?: string | null;
   task?: string | null;
   audio_type?: string | null;
+  audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
   tags?: string[];
   library_name?: string | null;
 }
@@ -429,6 +431,39 @@ export async function deleteCachedModel(
     bumpInventoryVersion();
   } finally {
     invalidateGgufVariantsCache(repoId);
+  }
+}
+
+export const DELETABLE_LOCAL_SOURCES: ReadonlySet<string> = new Set([
+  "models_dir",
+  "lmstudio",
+  "custom",
+  "ollama",
+  "hermes",
+  "omlx",
+]);
+
+/** `id` (the row's load id) picks between Ollama tags that share one blob path. */
+export async function revealLocalModel(path: string, id?: string): Promise<void> {
+  const response = await authFetch("/api/hub/local/reveal", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, id }),
+  });
+  await throwIfNotOk(response);
+}
+
+export async function deleteLocalModel(path: string, id?: string): Promise<void> {
+  const response = await authFetch("/api/hub/local/delete", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, id }),
+  });
+  try {
+    await throwIfNotOk(response);
+    bumpInventoryVersion();
+  } finally {
+    invalidateGgufVariantsCache(path);
   }
 }
 
