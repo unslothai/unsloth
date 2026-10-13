@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import math
 import os
 import random
 import time
@@ -53,18 +54,32 @@ from core.training.diffusion_train_common import (  # noqa: F401
     _config_from_dict,
     _CONFIG_ALIASES,
     _emit,
+    resolve_train_device,
     _latent_cache_forced,
     _latent_cache_over_budget,
     _plan_cache_variants,
     _publish_to_lora_catalog,
     _restore_perf_flags,
+    bucket_groups,
     discover_image_caption_pairs,
     get_trainer,
     PermutationBatchSampler,
+    plan_image_canvases,
+    resolve_bucketing,
     resolve_train_steps,
     restore_resume_state,
     write_resume_checkpoint,
 )
+from core.training.diffusion_samples import (
+    discard_samples,
+    initial_noise,
+    isolated_sampling,
+    plan_samples,
+    run_sample_round,
+    sample_seed,
+    SampleRoundStopped,
+)
+from core.training.diffusion_train_extras import BucketBatchSampler, cover_resize_dims
 from core.training.diffusion_checkpoint import (
     clear_own_checkpoints,
     discard_preexisting_checkpoints,
@@ -86,70 +101,74 @@ def compute_sdxl_add_time_ids(resolution: int) -> tuple[int, int, int, int, int,
     return (resolution, resolution, 0, 0, resolution, resolution)
 
 
-def _load_image_tensor(
-    path: str, resolution: int, center_crop: bool, random_flip: bool, rng: random.Random
+def _canvas(resolution: Any) -> tuple[int, int]:
+    """(w, h) of the training canvas: a bucket tuple, or the legacy square ``resolution``."""
+    if isinstance(resolution, (tuple, list)):
+        return int(resolution[0]), int(resolution[1])
+    return int(resolution), int(resolution)
+
+
+def _crop_to_canvas(
+    path: str, resolution: Any, center_crop: bool, pick: Any, flip: Any
 ) -> tuple[Any, tuple[int, int, int, int, int, int]]:
-    """CxHxW pixels in [-1, 1] with SDXL time ids for the EXIF-oriented crop."""
+    """Cover-resize to the canvas, crop at ``pick(range_x, range_y)``, optionally mirror. Returns
+    CxHxW pixels in [-1, 1] and SDXL time ids (original_h, original_w, crop_top, crop_left,
+    target_h, target_w); a square canvas reproduces the legacy short-side geometry exactly."""
     import numpy as np
     import torch
     from PIL import Image, ImageOps
 
     from core.inference.mcp_images import flattened_rgb
 
+    cw, ch = _canvas(resolution)
     # apply EXIF orientation before geometry so rotated photos train upright.
     img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
     original_w, original_h = img.size
-    scale = resolution / min(original_w, original_h)
-    resized_w = max(resolution, round(original_w * scale))
-    resized_h = max(resolution, round(original_h * scale))
+    resized_w, resized_h = cover_resize_dims(original_w, original_h, cw, ch)
     img = img.resize((resized_w, resized_h), Image.LANCZOS)
     if center_crop:
-        left, top = (resized_w - resolution) // 2, (resized_h - resolution) // 2
+        left, top = (resized_w - cw) // 2, (resized_h - ch) // 2
     else:
-        left = rng.randint(0, max(0, resized_w - resolution))
-        top = rng.randint(0, max(0, resized_h - resolution))
-    img = img.crop((left, top, left + resolution, top + resolution))
+        left, top = pick(resized_w - cw, resized_h - ch)
+    img = img.crop((left, top, left + cw, top + ch))
     crop_left = left
-    if random_flip and rng.random() < 0.5:
+    if flip():
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
         # mirror the crop origin after a flip to match diffusers.
-        crop_left = max(0, resized_w - resolution - left)
+        crop_left = max(0, resized_w - cw - left)
     arr = np.asarray(img, dtype = np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
-    time_ids = (original_h, original_w, top, crop_left, resolution, resolution)
+    time_ids = (original_h, original_w, top, crop_left, ch, cw)
     return tensor, time_ids
+
+
+def _load_image_tensor(
+    path: str, resolution: Any, center_crop: bool, random_flip: bool, rng: random.Random
+) -> tuple[Any, tuple[int, int, int, int, int, int]]:
+    """CxHxW pixels in [-1, 1] with SDXL time ids for the EXIF-oriented crop."""
+    return _crop_to_canvas(
+        path,
+        resolution,
+        center_crop,
+        lambda rx, ry: (rng.randint(0, max(0, rx)), rng.randint(0, max(0, ry))),
+        lambda: random_flip and rng.random() < 0.5,
+    )
 
 
 def _load_image_tensor_planned(
-    path: str, resolution: int, center_crop: bool, u_left: float, u_top: float, flip: bool
+    path: str, resolution: Any, center_crop: bool, u_left: float, u_top: float, flip: bool
 ) -> tuple[Any, tuple[int, int, int, int, int, int]]:
     """cache loader preserving ``_load_image_tensor`` crop, flip, and legacy center semantics."""
-    import numpy as np
-    import torch
-    from PIL import Image, ImageOps
-
-    from core.inference.mcp_images import flattened_rgb
-
-    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
-    original_w, original_h = img.size
-    scale = resolution / min(original_w, original_h)
-    resized_w = max(resolution, round(original_w * scale))
-    resized_h = max(resolution, round(original_h * scale))
-    img = img.resize((resized_w, resized_h), Image.LANCZOS)
-    if center_crop:
-        left, top = (resized_w - resolution) // 2, (resized_h - resolution) // 2
-    else:
-        left = min(int(u_left * (resized_w - resolution + 1)), max(0, resized_w - resolution))
-        top = min(int(u_top * (resized_h - resolution + 1)), max(0, resized_h - resolution))
-    img = img.crop((left, top, left + resolution, top + resolution))
-    crop_left = left
-    if flip:
-        img = img.transpose(Image.FLIP_LEFT_RIGHT)
-        crop_left = max(0, resized_w - resolution - left)
-    arr = np.asarray(img, dtype = np.float32) / 255.0
-    tensor = torch.from_numpy(arr).permute(2, 0, 1) * 2.0 - 1.0
-    time_ids = (original_h, original_w, top, crop_left, resolution, resolution)
-    return tensor, time_ids
+    return _crop_to_canvas(
+        path,
+        resolution,
+        center_crop,
+        lambda rx, ry: (
+            min(int(u_left * (rx + 1)), max(0, rx)),
+            min(int(u_top * (ry + 1)), max(0, ry)),
+        ),
+        lambda: flip,
+    )
 
 
 def _encode_sdxl_prompts(
@@ -180,7 +199,16 @@ def _encode_sdxl_prompts(
 
 
 def _build_sdxl_latent_cache(
-    vae, vae_scale, image_paths, cfg, device, weight_dtype, on_event, check_stop
+    vae,
+    vae_scale,
+    image_paths,
+    cfg,
+    device,
+    weight_dtype,
+    on_event,
+    check_stop,
+    canvases = None,
+    plan = None,
 ):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant,
     encode once and store ``(A, B, time_ids)`` on CPU in fp32. ``A`` and ``B`` are the affine
@@ -190,12 +218,14 @@ def _build_sdxl_latent_cache(
     per-step sample happens in fp32 and only the RESULT is cast to weight_dtype, matching the
     in-loop path (encode fp32 -> sample fp32 -> scale -> .to(weight_dtype)); fp32 doubles the
     cache RAM over bf16 but the cache is tiny (a handful of latents per image). Returns None if
-    the build was interrupted by a stop request. ``vae_scale`` is read before the VAE is freed."""
+    the build was interrupted by a stop request. ``vae_scale`` is read before the VAE is freed.
+    ``canvases`` holds each image's bucket for a bucketed run (None: the square resolution)."""
     import torch
 
-    plan = _plan_cache_variants(
-        len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
-    )
+    if plan is None:
+        plan = _plan_cache_variants(
+            len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
+        )
 
     def _hold(t):
         t = t.to(torch.float32).cpu()
@@ -215,7 +245,12 @@ def _build_sdxl_latent_cache(
         variants = []
         for u_left, u_top, flip in plan[i]:
             tensor, time_ids = _load_image_tensor_planned(
-                path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
+                path,
+                cfg.resolution if canvases is None else canvases[i],
+                cfg.center_crop,
+                u_left,
+                u_top,
+                flip,
             )
             pixel_values = tensor.unsqueeze(0).to(device, dtype = torch.float32)
             with torch.no_grad():
@@ -273,6 +308,14 @@ def _sample_sdxl_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
     return latents, batch_time_ids
 
 
+def _mps_available() -> bool:
+    import torch
+    try:
+        return bool(torch.backends.mps.is_available())
+    except Exception:  # noqa: BLE001 -- an unprobeable backend is not one we train on
+        return False
+
+
 def run_diffusion_lora_training(
     config: DiffusionLoraConfig,
     *,
@@ -308,7 +351,7 @@ def run_diffusion_lora_training(
     except Exception:  # noqa: BLE001 - never let log tidying stop a training run
         pass
 
-    cfg = config.normalized()
+    cfg = resolve_bucketing(config.normalized())
     rng = random.Random(cfg.seed)
     torch.manual_seed(cfg.seed)
 
@@ -345,7 +388,11 @@ def run_diffusion_lora_training(
         )
         # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every
         # downstream read agrees.
-        cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
+        cfg = replace(
+            cfg,
+            train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
+            num_epochs = 0,
+        )
         # Validate a resume request against this run's identity BEFORE the multi-GB base model load, so a
         # mismatch fails in seconds instead of after the download.
         identity = identity_for_config(cfg, dataset_pairs = pairs)
@@ -354,6 +401,15 @@ def run_diffusion_lora_training(
                 cfg.resume_from_checkpoint,
                 identity = identity,
                 target_steps = cfg.train_steps,
+            )
+        if device == "cpu" and (resolve_train_device() == "xpu" or _mps_available()):
+            _emit(
+                on_event,
+                "warning",
+                message = (
+                    "SDXL training runs on the CPU in fp32 on this host: the SDXL trainer uses CUDA / ROCm "
+                    "GPUs only, so expect slow steps and previews."
+                ),
             )
         _emit(on_event, "model_load_started", num_images = len(pairs))
 
@@ -417,6 +473,8 @@ def run_diffusion_lora_training(
 
         lora_params = [p for p in unet.parameters() if p.requires_grad]
         optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
+        # A frozen fp16 UNet (pre-Ampere / RDNA2 fallback) underflows the LoRA gradients without loss scaling.
+        scaler = torch.amp.GradScaler("cuda", enabled = weight_dtype is torch.float16)
         # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
         # accumulation factor would stretch warmup.
         lr_sched = get_scheduler(
@@ -433,6 +491,14 @@ def run_diffusion_lora_training(
         # CLIP encoders are freed afterwards.
         precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
         caption_embeds: dict[str, tuple] = {}
+        sample_plan = plan_samples(cfg, "sdxl", [c for _, c in pairs])
+        # Kept past a failed round (which drops sample_plan) so a discard still removes what was written.
+        sample_owner = sample_plan
+        sample_embeds: dict[str, tuple] = {}
+        if sample_plan is not None:
+            for text in sample_plan.encode_texts:
+                pe, pooled_c = _encode_sdxl_prompts([text], tokenizers, text_encoders, device)
+                sample_embeds[text] = (pe.cpu(), pooled_c.cpu())
         if precompute:
             for cap in sorted({c for _, c in pairs}):
                 pe, pooled_c = _encode_sdxl_prompts([cap], tokenizers, text_encoders, device)
@@ -450,6 +516,7 @@ def run_diffusion_lora_training(
         ) not in ("1", "true")
         # Over the host-memory budget; keep the VAE resident and encode in-loop.
         latent_cache = None
+        canvases, crop_room = plan_image_canvases(cfg, [p for p, _ in pairs])
         if use_cache:
             latent_cache = _build_sdxl_latent_cache(
                 vae,
@@ -460,6 +527,15 @@ def run_diffusion_lora_training(
                 weight_dtype,
                 on_event,
                 _check_stop,
+                canvases = canvases,
+                plan = _plan_cache_variants(
+                    len(pairs),
+                    cfg.cache_variants,
+                    cfg.center_crop,
+                    cfg.random_flip,
+                    cfg.seed,
+                    crop_room = crop_room,
+                ),
             )
             if latent_cache is LATENT_CACHE_OVER_BUDGET:
                 latent_cache = None
@@ -477,6 +553,8 @@ def run_diffusion_lora_training(
                 )
                 return str(out_dir)
             else:
+                if sample_plan is not None:
+                    sample_vae = vae.to("cpu")
                 try:
                     pipe.vae = None
                 except Exception:  # noqa: BLE001 -- a pipeline without a settable vae keeps it
@@ -486,6 +564,8 @@ def run_diffusion_lora_training(
                 gc.collect()
                 if device == "cuda":
                     torch.cuda.empty_cache()
+        if sample_plan is not None and vae is not None:
+            sample_vae = vae
         # Variant picks use their own stream so the loop index/noise draws stay seed-deterministic whether
         # or not the cache is enabled.
         variant_rng = random.Random(cfg.seed + 1)
@@ -500,12 +580,19 @@ def run_diffusion_lora_training(
 
         # Permutation-cycle index sampler: each image is visited once per cycle before any repeat, so a
         # short run does not leave a small dataset partly unseen.
-        index_sampler = PermutationBatchSampler(len(pairs), rng)
+        # Bucketed runs draw each batch from one bucket so its latents stack into one shape.
+        index_sampler = (
+            PermutationBatchSampler(len(pairs), rng)
+            if canvases is None
+            else BucketBatchSampler(bucket_groups(canvases), rng)
+        )
 
         def _next_batch() -> tuple[list[int], list[str], list[str]]:
             # Draw the full configured batch, not min(batch, n): the sampler refills across cycles so a small
             # dataset still yields that many indices.
             idx = index_sampler.next_batch(cfg.train_batch_size)
+            if canvases is not None:
+                idx = idx[1]
             chosen = [pairs[i] for i in idx]
             return idx, [c[0] for c in chosen], [c[1] for c in chosen]
 
@@ -523,6 +610,10 @@ def run_diffusion_lora_training(
             rng_streams = rng_streams,
         )
         resumed = restored.step if restored is not None else 0
+        scaler_state = restored.progress.get("grad_scaler") if restored is not None else None
+        if scaler.is_enabled() and isinstance(scaler_state, dict) and scaler_state:
+            # Continue at the scale the run had backed off to, not 2**16, which would overflow again.
+            scaler.load_state_dict(scaler_state)
         # Bound HERE: the checkpoint scan and the periodic saves both need it, and the two earlier
         # assignments live inside early-return branches.
         out_dir = Path(cfg.output_dir).expanduser()
@@ -540,6 +631,7 @@ def run_diffusion_lora_training(
         peak_gb = 0.0
         t_start = time.time()
         t_steady = None
+        t_rate = t_start
         # Starts at the resumed step so a no-op resume (nothing left to train) still reports the real step.
         done = resumed
 
@@ -557,7 +649,7 @@ def run_diffusion_lora_training(
                 on_event = on_event,
                 sampler = index_sampler,
                 rng_streams = rng_streams,
-                progress = {"running_loss": running_loss},
+                progress = {"running_loss": running_loss, "grad_scaler": scaler.state_dict()},
                 # NOT discard_existing: deleting the previous run's bundles at the FIRST periodic save spends them
                 # before this run produced anything, so cancelling a retrain destroyed the thing being retrained.
                 discard_existing = False,
@@ -565,8 +657,93 @@ def run_diffusion_lora_training(
                 preexisting = preexisting_checkpoints,
             )
 
+        def _interrupt_on_stop(p, _i, _t, _kwargs):
+            # The pipeline skips its remaining steps once _interrupt is set (pipeline_stable_diffusion_xl.py).
+            if _stop_during_sample():
+                p._interrupt = True
+            return {}
+
+        def _render_sdxl(index, prompt):
+            res = sample_plan.resolution
+            pe, pooled_c = (t.to(device, dtype = weight_dtype) for t in sample_embeds[prompt])
+            npe = npooled = None
+            if sample_plan.uses_cfg:
+                npe, npooled = (t.to(device, dtype = weight_dtype) for t in sample_embeds[""])
+                # Studio inference sends no negative, so the pipeline zeros it on SDXL base (force_zeros_for_empty_prompt).
+                if pipe.config.get("force_zeros_for_empty_prompt", False):
+                    npe, npooled = torch.zeros_like(npe), torch.zeros_like(npooled)
+            noise = initial_noise(sample_plan, index, (1, 4, res // 8, res // 8), device)
+            latents = pipe(
+                prompt_embeds = pe,
+                pooled_prompt_embeds = pooled_c,
+                negative_prompt_embeds = npe,
+                negative_pooled_prompt_embeds = npooled,
+                num_inference_steps = sample_plan.steps,
+                guidance_scale = sample_plan.guidance,
+                height = res,
+                width = res,
+                latents = noise.to(weight_dtype),
+                generator = torch.Generator(device = "cpu").manual_seed(
+                    sample_seed(sample_plan, index)
+                ),
+                output_type = "latent",
+                return_dict = False,
+                callback_on_step_end = _interrupt_on_stop,
+            )[0]
+            if stop_latched:
+                raise SampleRoundStopped()
+            return sample_vae.decode(latents.float() / vae_scale).sample
+
+        # The stop poll drains the request, so one seen mid-round is latched here for the loop to act on.
+        stop_latched = False
+
+        def _stop_during_sample() -> bool:
+            nonlocal stop_latched
+            if not stop_latched and _check_stop():
+                stop_latched = True
+            return stop_latched
+
+        def _sample(step: int) -> None:
+            nonlocal sample_plan, t_rate, t_steady
+            if sample_plan is None:
+                return
+            t_round = time.time()
+            parked = next(sample_vae.parameters()).device.type == "cpu"
+            try:
+                with isolated_sampling(device, compiled):
+                    unet.eval()
+                    if parked:
+                        sample_vae.to(device)
+                    run_sample_round(
+                        sample_plan, step, _render_sdxl, on_event, _emit, _stop_during_sample
+                    )
+            except Exception as exc:  # noqa: BLE001 -- previews never cost the run
+                _emit(on_event, "warning", message = f"Sample images disabled after an error: {exc}")
+                sample_plan = None
+            finally:
+                unet.train()
+                if parked:
+                    sample_vae.to("cpu")
+                    if device == "cuda":
+                        torch.cuda.empty_cache()
+                spent = time.time() - t_round
+                t_rate += spent
+                if t_steady is not None:
+                    t_steady += spent
+
+        if sample_plan is not None:
+            try:
+                pipe.set_progress_bar_config(disable = True)
+            except Exception:  # noqa: BLE001
+                pass
+            if resumed < cfg.train_steps:
+                _sample(resumed)
+
         compile_watch = _dynamo_compile_counters() if compiled else None
         for opt_step in range(resumed, cfg.train_steps):
+            if stop_latched:
+                stopped = True
+                break
             optimizer.zero_grad(set_to_none = True)
             step_loss = 0.0
             for _ in range(cfg.gradient_accumulation_steps):
@@ -578,8 +755,14 @@ def run_diffusion_lora_training(
                     )
                 else:
                     loaded = [
-                        _load_image_tensor(p, cfg.resolution, cfg.center_crop, cfg.random_flip, rng)
-                        for p in img_paths
+                        _load_image_tensor(
+                            p,
+                            cfg.resolution if canvases is None else canvases[i],
+                            cfg.center_crop,
+                            cfg.random_flip,
+                            rng,
+                        )
+                        for i, p in zip(idx, img_paths)
                     ]
                     pixel_values = torch.stack([t for t, _ in loaded]).to(
                         device, dtype = torch.float32
@@ -632,18 +815,25 @@ def run_diffusion_lora_training(
                 else:
                     loss = F.mse_loss(model_pred.float(), target.float(), reduction = "mean")
 
-                (loss / cfg.gradient_accumulation_steps).backward()
+                scaler.scale(loss / cfg.gradient_accumulation_steps).backward()
                 step_loss += float(loss.detach()) / cfg.gradient_accumulation_steps
                 micro += 1
 
             # max_grad_norm at or below 0 disables clipping (Unsloth sends 0.0); passing 0.0 to clip_grad_norm_
             # would zero every gradient.
             grad_norm = None
+            scaler.unscale_(optimizer)
             if cfg.max_grad_norm and cfg.max_grad_norm > 0:
                 # Returned value is the total PRE-clip norm, reported to the UI chart.
                 grad_norm = float(torch.nn.utils.clip_grad_norm_(lora_params, cfg.max_grad_norm))
-            optimizer.step()
-            lr_sched.step()
+                if not math.isfinite(grad_norm):
+                    grad_norm = None
+            scale_before = scaler.get_scale() if scaler.is_enabled() else None
+            scaler.step(optimizer)
+            scaler.update()
+            # An overflow step lowers the scale and skips the update; the schedule must not run ahead of the weights.
+            if scale_before is None or scaler.get_scale() >= scale_before:
+                lr_sched.step()
 
             running_loss += step_loss
             done = opt_step + 1
@@ -669,7 +859,7 @@ def run_diffusion_lora_training(
                         (ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3
                     )
                 else:
-                    samples_per_second = round(ran_here * per_step / max(now - t_start, 1e-6), 3)
+                    samples_per_second = round(ran_here * per_step / max(now - t_rate, 1e-6), 3)
                 _emit(
                     on_event,
                     "progress",
@@ -684,6 +874,9 @@ def run_diffusion_lora_training(
                 )
 
             stop_now = _check_stop()
+            if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+                _sample(done)
+                stop_now = stop_latched
             # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
             if (
                 not stop_now
@@ -729,6 +922,7 @@ def run_diffusion_lora_training(
             # save_total_limit copies of the optimizer state in a directory the user got no artifact from:
             # invisible to every scanner, unresumable, with no delete path in the UI.
             clear_own_checkpoints(out_dir, preexisting_checkpoints)
+            discard_samples(sample_owner)
             try:
                 out_dir.rmdir()
             except OSError:

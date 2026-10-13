@@ -14,7 +14,7 @@ export function pinBrowserPage(handle: Element): () => void {
   const right = handle.getBoundingClientRect().left < rect.left;
   Object.assign(page.style, {
     position: "absolute",
-    top: "0",
+    top: `${rect.top - box.top}px`,
     bottom: "0",
     margin: "0",
     width: `${rect.width}px`,

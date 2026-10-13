@@ -762,7 +762,7 @@ export interface OpenAIChatCompletionsRequest {
    *  container. OpenAI cloud and the gpt-5.5 family only. */
   openai_code_exec_container_id?: string | null;
   /** Anthropic code_execution container id from the prior response in this thread. When set and the
-   *  Code pill is on, the backend forwards a top-level `container` on /v1/messages so filesystem
+   *  Tools pill is on, the backend forwards a top-level `container` on /v1/messages so filesystem
    *  state persists; unset is auto-created. */
   anthropic_code_exec_container_id?: string | null;
   /** Anthropic fast-mode toggle. Opus 4.6 / 4.7 only; dropped silently elsewhere. */

@@ -491,7 +491,7 @@ _FRAME_HTML = r"""<!doctype html>
         // Annotate: the panel marks parts of the page to ask about (_ANNOTATE_JS). Its code comes from
         // the panel when annotate mode turns on, so pages never annotated don't parse it. Until then
         // only the latest on/off and numbering are kept, to apply once it is installed.
-        let annotation = null, wanted = null, numbers = null;
+        let annotation = null, wanted = null, numbers = null, agent = null;
         const install = (code) => {
           if (annotation || typeof code !== "string" || code.length > 262144) return;
           try { annotation = compile("post", code)(post); } catch { return; }
@@ -664,6 +664,14 @@ _FRAME_HTML = r"""<!doctype html>
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
           else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
+          else if (data.command === "agent" && typeof data.id === "string") {
+            // Browser use: the panel's agent code (agent/page-agent.ts), installed on first use.
+            if (!agent && typeof data.code === "string" && data.code.length <= 262144) {
+              // Its own return value, not window's key: a page script can set that key first.
+              try { agent = compile("return " + data.code)() || null; } catch {}
+            }
+            post({ type: "agent", id: data.id, installed: Boolean(agent), result: agent ? agent.run(data.op || {}) : null });
+          }
         });
         // The panel may have asked for annotate before this page could hear it.
         post({ type: "annotate", event: "ready" });
