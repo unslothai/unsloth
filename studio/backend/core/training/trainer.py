@@ -978,7 +978,9 @@ class UnslothTrainer:
     def _attach_early_stopping(self, training_args):
         from core.training.early_stopping import attach_early_stopping
         self._early_stopping = attach_early_stopping(
-            self.trainer, training_args.get("early_stopping_patience")
+            self.trainer,
+            training_args.get("early_stopping_patience"),
+            user_stopped = lambda: self.should_stop,
         )
 
     def _early_stopping_summary(self) -> str:

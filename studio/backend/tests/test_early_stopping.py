@@ -340,3 +340,40 @@ def test_mlx_early_stop_is_named_in_the_final_status():
     assert finish(True)[1]["status_message"] == (
         "Training completed (stopped early: eval loss stopped improving)"
     )
+
+
+def test_steps_after_the_best_evaluation_roll_back_like_load_best_model_at_end(tmp_path):
+    # Zoo's MLX trainer restores the best adapters whenever the run finishes; the CUDA path keeps the same contract.
+    trainer = _trainer(tmp_path, eval_target = 1.0, max_steps = 5, eval_steps = 2)
+    callback = attach_early_stopping(trainer, 3)
+    trainer.train()
+
+    # transformers 5 also evaluates the final step, leaving no tail; older releases stop evaluating at step 4.
+    assert trainer.state.global_step == 5 and callback.best_step in (4, 5)
+    assert callback.restored == (callback.best_step == 4)
+    assert trainer.model.w.item() == pytest.approx(_w_after_steps(tmp_path, callback.best_step))
+
+
+def test_a_user_stop_on_the_step_patience_runs_out_still_keeps_the_current_weights(tmp_path):
+    trainer = _trainer(tmp_path)
+    callback = attach_early_stopping(trainer, 2, user_stopped = lambda: True)
+    trainer.train()
+
+    assert trainer.state.global_step == 3 and callback.stopped_at == 3 and not callback.restored
+    assert trainer.model.w.item() == pytest.approx(_w_after_steps(tmp_path, 3))
+
+
+def test_a_finished_run_rolls_back_unevaluated_steps():
+    callback = es.create_early_stopping_callback(3)
+    model = _Line()
+
+    class _State:
+        global_step = 4
+        max_steps = 5
+
+    callback.on_evaluate(None, _State(), None, metrics = {"eval_loss": 1.0}, model = model)
+    with torch.no_grad():
+        model.w.fill_(7.0)
+    _State.global_step = 5
+    callback.on_train_end(None, _State(), None, model = model)
+    assert callback.restored and model.w.item() == 0.0 and callback._best_weights is None

@@ -30,10 +30,10 @@ def early_stopping_patience(value: Any) -> int:
     return min(int(patience), MAX_EARLY_STOPPING_PATIENCE)
 
 
-def create_early_stopping_callback(patience: int):
+def create_early_stopping_callback(patience: int, user_stopped = None):
     """HF TrainerCallback: counts evaluations whose eval_loss is not below the best so far, stops the run after
-    ``patience`` of them in a row, and copies the best evaluation's trainable weights back at train end whenever
-    the last evaluation was worse, so the final save holds the best ones.
+    ``patience`` of them in a row, and, like load_best_model_at_end (and zoo's MLX trainer), copies the best
+    evaluation's trainable weights back when the run finishes, so the final save holds them.
     Its own bookkeeping, not EarlyStoppingCallback, which needs metric_for_best_model and restores nothing without
     load_best_model_at_end, and that needs checkpoints Studio does not write by default."""
     from transformers import TrainerCallback
@@ -86,22 +86,24 @@ def create_early_stopping_callback(patience: int):
             model = None,
             **kwargs,
         ):
-            # bad_evals == 0 means the last evaluation was the best, so the final weights already are. A run that
-            # ends on its own after worse evaluations restores too, as MLX's load_best_model_at_end does. A user
-            # stop does not: stop-and-save writes a resume checkpoint, whose optimizer state is the current step's.
+            # A user stop never restores, even on the step patience ran out: stop-and-save writes a resume
+            # checkpoint whose optimizer state is the current step's.
             best, self._best_weights = self._best_weights, None
             finished = self.stopped_at is not None or state.global_step >= state.max_steps
-            if not finished or self.bad_evals == 0 or best is None or model is None:
+            if user_stopped is not None and user_stopped():
+                finished = False
+            if not finished or self.best_step == state.global_step or best is None or model is None:
                 return
             try:
                 import torch
 
-                # Convert every tensor before touching the model, so a failure leaves the final weights whole.
+                # Check every shape before touching the model, so a mismatch leaves the final weights whole. copy_
+                # casts and moves one tensor at a time, so nothing is staged on the GPU.
                 pairs = [
-                    (param, best[name].to(device = param.device, dtype = param.dtype))
-                    for name, param in model.named_parameters()
-                    if name in best
+                    (param, best[name]) for name, param in model.named_parameters() if name in best
                 ]
+                if any(param.shape != saved.shape for param, saved in pairs):
+                    raise ValueError("a saved tensor no longer matches its parameter's shape")
                 with torch.no_grad():
                     for param, saved in pairs:
                         param.copy_(saved)
@@ -143,7 +145,11 @@ def create_early_stopping_callback(patience: int):
     return EvalLossEarlyStopping()
 
 
-def attach_early_stopping(trainer, value: Any):
+def attach_early_stopping(
+    trainer,
+    value: Any,
+    user_stopped = None,
+):
     """Add the callback to an HF trainer that evaluates; returns it, or None when off or there is nothing to watch."""
     patience = early_stopping_patience(value)
     if patience == 0:
@@ -155,7 +161,7 @@ def attach_early_stopping(trainer, value: Any):
     ):
         logger.info("Early stopping is off: this run has no evaluation to watch\n")
         return None
-    callback = create_early_stopping_callback(patience)
+    callback = create_early_stopping_callback(patience, user_stopped = user_stopped)
     trainer.add_callback(callback)
     logger.info(f"Early stopping on: patience of {patience} evaluations\n")
     return callback
