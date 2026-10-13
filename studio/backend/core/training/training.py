@@ -268,6 +268,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "is_dataset_image": values.get("is_dataset_image", False),
         "is_dataset_audio": values.get("is_dataset_audio", False),
         "is_embedding": values.get("is_embedding", False),
+        "is_decision": values.get("is_decision", False),
+        "model_subfolder": values.get("model_subfolder"),
+        "decision_layout": values.get("decision_layout"),
         "num_epochs": values.get("num_epochs", 3),
         "learning_rate": values.get("learning_rate", "2e-4"),
         "embedding_learning_rate": values.get("embedding_learning_rate"),
@@ -300,6 +303,10 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "lora_dropout": values.get("lora_dropout", 0.0),
         "target_modules": values.get("target_modules"),
         "gradient_checkpointing": values.get("gradient_checkpointing", "unsloth"),
+        "offload_layers": values.get("offload_layers") or 0,
+        "offload_vram_gb": values.get("offload_vram_gb"),
+        "offload_vram_gb_per_device": values.get("offload_vram_gb_per_device"),
+        "prefetch_depth": values.get("prefetch_depth") or 2,
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
@@ -318,6 +325,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "require_exact_model_resource": values.get("require_exact_model_resource", False),
         "require_exact_dataset_resource": values.get("require_exact_dataset_resource", False),
         "require_validated_model_snapshot": values.get("require_validated_model_snapshot", False),
+        "adapter_base_pin": values.get("adapter_base_pin"),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -356,6 +364,7 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
             "require_exact_dataset_resource",
             "require_validated_model_snapshot",
             "resume_model_load_mode",
+            "adapter_base_pin",
         }
     }
     s3_config = config.get("s3_config")
@@ -436,7 +445,8 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
 def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     resume = bool(config.get("resume_from_checkpoint"))
     model_name = config["model_name"]
-    if is_local_path(model_name):
+    # The decision trainer resolves its own Laya cache, which holds no config.json to pin.
+    if is_local_path(model_name) or config.get("is_decision"):
         config["actual_model_repo_id"] = None
         config["model_snapshot_path"] = None
         config["model_revision"] = None
@@ -692,6 +702,8 @@ class TrainingProgress:
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    # BlockSwap.stats() from the last logged step, for the live offload panel.
+    offload: Optional[dict] = None
     output_dir: Optional[str] = None
     # The end-of-run record has no step loss, so the progress filter would drop it, and with it the only
     # elapsed time that includes the final evaluation, checkpoint save and best-model reload.
@@ -1240,6 +1252,7 @@ class TrainingBackend:
         self._model_download_repo_id: Optional[str] = None
         self._xet_fallback_used: bool = False
         self._needs_xet_respawn: bool = False
+        self._stderr_capture = None
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
@@ -1817,7 +1830,10 @@ class TrainingBackend:
             if before_spawn is not None:
                 try:
                     before_spawn()
-                except Exception:
+                except Exception as exc:
+                    # Best effort, except a resident that still holds the GPUs.
+                    if getattr(exc, "blocks_training", False):
+                        raise
                     logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
             if defer_auto_selection:
@@ -1838,16 +1854,19 @@ class TrainingBackend:
                 ):
                     event_queue = _CTX.Queue()
                     stop_queue = _CTX.Queue()
+                    self._open_worker_stderr_capture()
 
                     process_args, process_kwargs = account_process_spec(
                         "core.training.worker",
                         "run_training_process",
                         cache_env,
-                        {
-                            "event_queue": event_queue,
-                            "stop_queue": stop_queue,
-                            "config": config,
-                        },
+                        self._with_stderr_mirror(
+                            {
+                                "event_queue": event_queue,
+                                "stop_queue": stop_queue,
+                                "config": config,
+                            }
+                        ),
                     )
                     proc = _CTX.Process(
                         target = run_without_native_path_secret,
@@ -2610,15 +2629,18 @@ class TrainingBackend:
                     ):
                         event_queue = _CTX.Queue()
                         stop_queue = _CTX.Queue()
+                        self._open_worker_stderr_capture()
                         process_args, process_kwargs = account_process_spec(
                             "core.training.worker",
                             "run_training_process",
                             cache_env,
-                            {
-                                "event_queue": event_queue,
-                                "stop_queue": stop_queue,
-                                "config": config,
-                            },
+                            self._with_stderr_mirror(
+                                {
+                                    "event_queue": event_queue,
+                                    "stop_queue": stop_queue,
+                                    "config": config,
+                                }
+                            ),
                         )
                         new_proc = _CTX.Process(
                             target = run_without_native_path_secret,
@@ -2880,6 +2902,45 @@ class TrainingBackend:
             etype = event.get("type") if isinstance(event, dict) else type(event).__name__
             logger.exception("Training event pump: failed to handle %s event; skipping", etype)
 
+    def _open_worker_stderr_capture(self) -> None:
+        previous = self._stderr_capture
+        self._stderr_capture = None
+        if previous is not None:
+            try:
+                previous.close()
+            except Exception:
+                logger.debug("Could not close the previous training stderr sink", exc_info = True)
+        try:
+            from utils.worker_stderr import WorkerStderrCapture
+            self._stderr_capture = WorkerStderrCapture(prefix = "unsloth-training-worker-")
+        except Exception as exc:
+            logger.debug("Could not open a training worker stderr mirror: %s", exc)
+
+    def _with_stderr_mirror(self, kwargs: dict) -> dict:
+        capture = self._stderr_capture
+        if capture is None:
+            return kwargs
+        from utils.native_path_leases import STDERR_MIRROR_KWARG
+
+        # Popped by run_without_native_path_secret. It must not reach run_training_process.
+        return {**kwargs, STDERR_MIRROR_KWARG: capture.path}
+
+    def _unexpected_exit_message(self, proc) -> str:
+        from utils.worker_stderr import unexpected_exit_message
+
+        text = ""
+        capture = self._stderr_capture
+        if capture is not None:
+            try:
+                text = capture.text()
+            except Exception:
+                logger.debug("Could not read the training worker stderr sink", exc_info = True)
+        return unexpected_exit_message(
+            getattr(proc, "pid", None),
+            getattr(proc, "exitcode", None),
+            text,
+        )
+
     @job_pump
     def _pump_loop(self) -> None:
         """Background thread: consume subprocess events and update state.
@@ -2935,6 +2996,15 @@ class TrainingBackend:
                     return
 
                 with self._lock:
+                    report_exit = (
+                        self._progress.is_training
+                        and not self._should_stop
+                        and not self._progress.error
+                    )
+                exit_message = self._unexpected_exit_message(proc) if report_exit else None
+                if exit_message:
+                    logger.error("%s", exit_message)
+                with self._lock:
                     if self._progress.is_training:
                         if self._should_stop:
                             self._progress.is_training = False
@@ -2942,7 +3012,9 @@ class TrainingBackend:
                         else:
                             self._progress.is_training = False
                             self._progress.error = (
-                                self._progress.error or "Training process exited unexpectedly"
+                                self._progress.error
+                                or exit_message
+                                or "Training process exited unexpectedly"
                             )
 
                 self._ensure_db_run_created()
@@ -3128,6 +3200,9 @@ class TrainingBackend:
                         self._progress.peak_memory_gb = float(_peak)
                     except (TypeError, ValueError):
                         pass
+                # A step without stats (eval, status) keeps the last snapshot, so the panel does not blank.
+                if event.get("offload"):
+                    self._progress.offload = event["offload"]
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:

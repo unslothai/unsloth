@@ -110,7 +110,12 @@ test("the Vision row exists only in the GGUF half of Advanced Settings", () => {
   const gateAbove = (index: number): string => {
     for (let i = index; i >= 0; i--) {
       const line = lines[i].trim();
-      if (line === "{target.isGguf && (") return "isGguf";
+      // An audio-runtime GGUF launches no llama-server, so its half is gated off too.
+      if (
+        line === "{target.isGguf && (" ||
+        line === "{target.isGguf && !audioRuntimeGguf && ("
+      )
+        return "isGguf";
       if (line === "{!target.isGguf && (") return "!isGguf";
     }
     return "none";

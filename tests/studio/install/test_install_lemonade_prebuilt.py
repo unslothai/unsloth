@@ -112,6 +112,8 @@ def test_install_verifies_and_pins_fastflowlm(tmp_path, served):
         "fastflowlm.tar.gz": "sha256:" + "ab" * 32
     }
     assert "other/repo" in versions["checksums"]["github"]
+    assert lp.installed_version(binary) == "9.9.9"
+    assert lp.installed_version(tmp_path / "elsewhere" / "lemond") is None
 
 
 def test_a_complete_install_is_not_downloaded_again(tmp_path, served):

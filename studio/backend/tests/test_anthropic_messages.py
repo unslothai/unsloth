@@ -621,6 +621,29 @@ class TestToolActionNudge:
 
         assert "- guided: Guide this task." in nudge
         assert "create_skill" not in nudge
+        # without python or terminal, a skill's bundled scripts cannot run here.
+        assert "bundled scripts cannot run" in nudge
+        assert "Unsloth Studio's local Tools" in nudge
+
+    @pytest.mark.parametrize("code_tool", ["python", "terminal"])
+    def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(self, monkeypatch, code_tool):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "read_skill"}},
+                {"type": "function", "function": {"name": code_tool}},
+            ],
+            model_name = "test",
+        )
+
+        assert "- guided: Guide this task." in nudge
+        assert "bundled scripts cannot run" not in nudge
 
 
 # =====================================================================
@@ -3388,6 +3411,63 @@ class TestAnthropicMessagesToolRouting:
             == 200
         )
 
+    def test_count_tokens_prices_the_preserve_thinking_generation_resolves(self, monkeypatch):
+        from routes.inference import anthropic_count_tokens
+
+        import routes.inference as inf_mod
+
+        seen: list = []
+
+        class _Backend:
+            is_loaded = True
+            is_vision = False
+            model_identifier = "qwen"
+            context_length = 4096
+            supports_tools = False
+            supports_tool_passthrough = False
+
+            def _request_reasoning_kwargs(
+                self, enable_thinking, reasoning_effort, preserve_thinking
+            ):
+                return {"enable_thinking": enable_thinking, "preserve_thinking": preserve_thinking}
+
+            def _replay_preserve_thinking(
+                self,
+                preserve,
+                messages,
+                enable_thinking = None,
+                effort = None,
+            ):
+                return True if preserve is False and enable_thinking is False else preserve
+
+            def count_chat_tokens(
+                self,
+                *args,
+                chat_template_kwargs = None,
+                **kwargs,
+            ):
+                seen.append(chat_template_kwargs)
+                return 2
+
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: _Backend())
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "user", "content": "again"},
+            ],
+            thinking = {"type": "disabled"},
+            preserve_thinking = False,
+        )
+
+        response = _drive(
+            anthropic_count_tokens(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert response.status_code == 200
+        assert seen == [{"enable_thinking": False, "preserve_thinking": True}]
+
     def test_count_tokens_rejects_the_catalog_messages_rejects(self, monkeypatch):
         # The template renders no schemas, so the count matched with and without them
         # (27 either way on a real gemma-3-270m) and handed an SDK a budget /messages 400s.
@@ -3761,6 +3841,35 @@ class TestAnthropicMessagesToolRouting:
         [entry] = monitor.snapshot()
         assert entry["status"] == "completed"
         assert entry["reply_preview"] == 'Tool call: lookup({"query": "weather"})'
+
+    def test_client_tool_non_streaming_expected_cancel_returns_anthropic_499(self, monkeypatch):
+        import routes.inference as inf_mod
+
+        async def _cancelled(*_args, **_kwargs):
+            raise inf_mod._NonStreamingRequestCancelled("Request cancelled.")
+
+        _mock_backend(monkeypatch, base_url = "http://llama.test")
+        monitor = ApiMonitor(max_entries = 3)
+        monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _cancelled)
+        payload = _basic_payload(
+            tools = [
+                {
+                    "name": "lookup",
+                    "description": "Look something up",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ]
+        )
+
+        with pytest.raises(HTTPException) as exc:
+            _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert exc.value.status_code == 499
+        assert exc.value.detail["type"] == "error"
+        [entry] = monitor.snapshot()
+        assert entry["status"] == "cancelled"
+        assert monitor.active_count() == 0
 
     def test_plain_streaming_records_active_and_completed_monitor_entry(self, monkeypatch):
         import routes.inference as inf_mod

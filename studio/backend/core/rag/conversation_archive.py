@@ -588,6 +588,9 @@ def archive_turns(
                 written += 1
             if _INGEST_FAILED:
                 globals()["_INGEST_FAILED"] = False
+    except embeddings.EmbeddingModelDownloadRequiredError as exc:
+        globals()["_INGEST_FAILED"] = True
+        _log_embedder_pending(model, exc)
     except Exception:
         # A chat that cannot archive still beats one that raises. Whatever was written before the failure stays
         # searchable.
@@ -610,6 +613,17 @@ def archive_turns(
         delete_for_thread(thread_id)
         return 0
     return written
+
+
+# A Settings pick whose download has not finished is not a fault; logged once, not per compaction.
+_EMBEDDER_PENDING_LOGGED: set = set()
+
+
+def _log_embedder_pending(model, exc: Exception) -> None:
+    if model in _EMBEDDER_PENDING_LOGGED:
+        return
+    _EMBEDDER_PENDING_LOGGED.add(model)
+    logger.info("conversation_archive.embedder_pending: %s", exc)
 
 
 # Set when an archive write fails, cleared by the next one that succeeds. Process-wide on purpose: what fails here is
@@ -911,8 +925,8 @@ _EMPTY_TOOL_RESULT = '{"result":""}'
 # legitimately be called `web_search`, so the marker or a Gemini native part has to be there too, as the frontend also
 # requires.
 _SERVER_BUILTIN_NAMES = frozenset({"web_search", "web_fetch", "code_execution", "image_generation"})
-# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._SANDBOX_TOOLS`. Only these two wrap.
-_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal"})
+# `SANDBOX_FILE_TOOLS`, and `tool_loop_controller._FILE_SENTINEL_TOOLS`. Only these wrap.
+_SANDBOX_TOOL_NAMES = frozenset({"python", "terminal", "edit_file"})
 
 # `search-images.ts`. `re.ASCII` on the scheme because Python's IGNORECASE folds Unicode, so `http\u017f://` would
 # match where JavaScript's `/i` does not.
@@ -2299,6 +2313,8 @@ def _candidates(conn, scope: str, query: str, model, fetch: int, thread_id: str)
                     seen.add(hit.chunk_id)
                 if len(hits) >= fetch:
                     break
+        except embeddings.EmbeddingModelDownloadRequiredError as exc:
+            _log_embedder_pending(model, exc)
         except Exception:
             # Dense retrieval raises rather than degrading when no embedder can start. The lexical hits stand on their
             # own, so this top-up may fail.

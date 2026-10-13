@@ -260,6 +260,54 @@ def _variant_keys_to_delete(target_repo, variant: str) -> set[str]:
     return aliased if len(aliased) == 1 else {wanted}
 
 
+def _audio_cpp_package_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
+    """``(own files, protected files)`` of an audio.cpp package mix being deleted.
+
+    A package mix (MiniMax Music 3, YuE2) is several GGUFs plus configs, some of them shared with
+    other mixes, so the quant key alone neither finds all of its files nor knows which a sibling
+    still needs. Own files are the mix's whole file list; protected files are every file of the
+    other mixes still fully on disk. Both empty for any other repo.
+    """
+    try:
+        from core.inference.audio_cpp_models import package_variant_files
+    except Exception:  # noqa: BLE001 - no audio.cpp support, no package layout
+        return frozenset(), frozenset()
+    names = [name for _snap, _blob, name in _repo_file_matches(target_repo, lambda name: True)]
+    packages = package_variant_files(names)
+    if not packages:
+        return _umbrella_variant_scope(target_repo, variant)
+    wanted = (variant or "").strip().lower()
+    own = next((files for key, files in packages.items() if key.lower() == wanted), ())
+    protected = {path for key, files in packages.items() if key.lower() != wanted for path in files}
+    return frozenset(own), frozenset(protected)
+
+
+def _umbrella_variant_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
+    """``(own files, protected files)`` of one umbrella folder variant (``<Folder>/<file>`` key): its
+    voice embeddings and configs go with it, unless another cached variant of the folder lists them.
+    A sibling in the same directory still downloading is not listed yet, so its extras stay."""
+    from core.inference.audio_cpp_models import folder_row_for_download, resolve
+
+    repo_id = str(getattr(target_repo, "repo_id", ""))
+    row = folder_row_for_download(repo_id, variant)
+    model = resolve(row[0], network = False) if row else None
+    if model is None:
+        return frozenset(), frozenset()
+    # Every umbrella folder downloads on the same repo, so only a peer under this directory counts.
+    sibling_active = downloads.registry.has_active_peer_variant(
+        repo_id, variant, prefix = variant.rsplit("/", 1)[0] + "/"
+    )
+    own: set[str] = set()
+    protected: set[str] = set()
+    for candidate in model.variants:
+        files = {f.path for f in candidate.files}
+        if candidate.primary and gguf_variant_key(candidate.primary).lower() == variant.lower():
+            own |= files if not sibling_active else {candidate.primary}
+        else:
+            protected |= files
+    return frozenset(own - protected), frozenset(protected)
+
+
 def _delete_gguf_variant_from_repos(
     repo_id: str,
     variant: str,
@@ -278,11 +326,18 @@ def _delete_gguf_variant_from_repos(
     for target_repo in target_repos:
         repo_dir = Path(target_repo.repo_path) if getattr(target_repo, "repo_path", None) else None
         wanted_keys = _variant_keys_to_delete(target_repo, variant)
-        matched = _repo_file_matches(
-            target_repo,
-            lambda name, keys = wanted_keys: _is_main_gguf_filename(name)
-            and gguf_variant_key(name).lower() in keys,
-        )
+        package_files, protected = _audio_cpp_package_scope(target_repo, variant)
+        matched = [
+            match
+            for match in _repo_file_matches(
+                target_repo,
+                lambda name, keys = wanted_keys: name in package_files
+                or (_is_main_gguf_filename(name) and gguf_variant_key(name).lower() in keys),
+            )
+            # A component another downloaded mix still loads (MiniMax's Q4_0 and Q8_0 share one
+            # depth decoder) stays.
+            if match[2] not in protected
+        ]
 
         for snap, _blob, name in matched:
             try:
@@ -591,6 +646,13 @@ def _loaded_id_matches_repo(loaded_id: str, repo_id: str) -> bool:
         loaded_path = Path(loaded_id).expanduser().resolve(strict = False)
     except (OSError, RuntimeError, ValueError):
         return False
+    # An on-device model outside the cache is named by its path (local_model_actions).
+    if Path(repo_id).is_absolute():
+        try:
+            held = Path(repo_id).resolve(strict = False)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return loaded_path == held or loaded_path.is_relative_to(held)
     for repo_dir in iter_repo_cache_dirs("model", repo_id):
         try:
             resolved_repo = repo_dir.resolve(strict = False)
@@ -622,27 +684,26 @@ _LOAD_STATE_UNVERIFIABLE_DETAIL = (
 def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
     """Whether the llama.cpp backend holds *repo_id* (/variant). Acquiring fails open (import error means nothing loaded); reading load state is unguarded so a raise propagates and the caller fails closed rather than delete a live model."""
     try:
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
-        backend = get_llama_cpp_backend()
+
+        backends = [get_llama_cpp_backend(), *(slot.llama for slot in model_slots.resident())]
+        filling = model_slots.filling_model()
     except Exception as e:
         logger.debug(f"llama.cpp backend unavailable during delete guard for {repo_id}: {e}")
         return False
-    loaded_id = backend.model_identifier
-    loaded_variant = getattr(backend, "hf_variant", None)
-    if backend.is_active and not backend.is_loaded and loaded_id:
-        return _loaded_repo_variant_blocks_delete(
-            loaded_id,
-            repo_id,
-            variant,
-            loaded_variant,
-        )
-    if backend.is_loaded and loaded_id:
-        return _loaded_repo_variant_blocks_delete(
-            loaded_id,
-            repo_id,
-            variant,
-            loaded_variant,
-        )
+    if filling and _loaded_id_matches_repo(filling, repo_id):
+        return True
+    for backend in backends:
+        loaded_id = backend.model_identifier
+        if (backend.is_active or backend.is_loaded) and loaded_id:
+            if _loaded_repo_variant_blocks_delete(
+                loaded_id,
+                repo_id,
+                variant,
+                getattr(backend, "hf_variant", None),
+            ):
+                return True
     return False
 
 
@@ -650,14 +711,23 @@ def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
         from core.inference.orchestrator import peek_inference_backend
-        backend = peek_inference_backend()
+        from core.inference import model_slots
+
+        primary = peek_inference_backend()
+        kept = [slot.orchestrator for slot in model_slots.resident()]
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
         return False
-    if backend is None:
-        return False
-    active_name = backend.active_model_name
-    return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
+    for backend in (primary, *kept):
+        if backend is None:
+            continue
+        active_name = backend.active_model_name
+        if active_name and _loaded_id_matches_repo(active_name, repo_id):
+            return True
+    for backend in kept:
+        if any(_loaded_id_matches_repo(m, repo_id) for m in getattr(backend, "loading_models", ())):
+            return True
+    return False
 
 
 def _diffusion_blocks_delete(repo_id: str) -> Optional[str]:
@@ -700,13 +770,24 @@ def any_model_load_blocks_cache_clear() -> Optional[str]:
     different matter, and the caller fails closed on it rather than unlink weights blindly.
     """
     try:
+        from core.inference import model_slots
         from routes.inference import get_llama_cpp_backend
+
         backend = get_llama_cpp_backend()
+        kept = model_slots.resident()
+        kept_loading = model_slots.any_loading()
     except Exception as exc:  # noqa: BLE001 - unavailable is not "in use"
         logger.debug(f"llama.cpp backend unavailable during the cache-clear guard: {exc}")
     else:
         if (backend.is_loaded or backend.is_active) and backend.model_identifier:
             return "Unload the model before clearing the model cache"
+        if any(
+            model_slots.in_use(slot) or slot.llama.is_loaded or slot.llama.is_active
+            for slot in kept
+        ):
+            return "Unload the model before clearing the model cache"
+        if kept_loading:
+            return "A model load is using the cache; wait for it to finish"
 
     # is_active above only covers a live llama-server process, which an HF-backed chat load does
     # not have until its GGUF finished downloading: minutes, per chat_load_active's own docstring.
@@ -862,6 +943,38 @@ async def delete_cached_model_response(
     become an installed checkpoint since the list the caller is acting on was built.
     """
     account_access.require_installation_owner()
+    from core.inference.audio_cpp_models import cached_folder_target, folder_row_for_download
+
+    # Delete an umbrella folder's own variant keys, never the repo, which holds every other folder.
+    folder = await asyncio.to_thread(cached_folder_target, repo_id, (variant or "").strip() or None)
+    if folder is not None:
+        umbrella, keys = folder
+        if not keys:
+            raise HTTPException(status_code = 404, detail = "Model not found in cache")
+        # Reserve every key first, so a later key's download cannot start midway.
+        repo_key = await asyncio.to_thread(resolve_cached_repo_id_case, umbrella, repo_type = "model")
+        reserved: list[str] = []
+        try:
+            for key in keys:
+                if not downloads.registry.begin_delete(repo_key, key):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Cancel the active downloads before deleting.",
+                    )
+                reserved.append(key)
+            result: dict = {}
+            for key in keys:
+                result = await delete_cached_model_response(
+                    umbrella,
+                    key,
+                    hf_token,
+                    cache_path,
+                    only_if_orphan = only_if_orphan,
+                )
+        finally:
+            for key in reserved:
+                downloads.registry.end_delete(repo_key, key)
+        return {**result, "repo_id": repo_id, "variant": variant}
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
@@ -870,14 +983,17 @@ async def delete_cached_model_response(
             status_code = 400,
             detail = f"Invalid gguf_variant: {variant!r}",
         )
+    guard_id = (await asyncio.to_thread(folder_row_for_download, repo_id, variant) or (repo_id,))[0]
 
     # Fail closed with 503 rather than unlink weights under a running process.
     def _load_state_blocks_delete() -> Optional[str]:
-        if _llama_cpp_blocks_delete(repo_id, variant) or (
-            _inference_backend_blocks_delete(repo_id)
+        if _llama_cpp_blocks_delete(guard_id, variant) or (
+            _inference_backend_blocks_delete(guard_id)
         ):
             return "Unload the model before deleting"
-        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+        if _audio_cpp_blocks_delete(guard_id):
+            return "Unload the audio model before deleting"
+        return _diffusion_blocks_delete(guard_id) or _video_blocks_delete(guard_id)
 
     try:
         blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
@@ -916,7 +1032,7 @@ async def delete_cached_model_response(
                 status_code = 400,
                 detail = blocks_detail,
             )
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             _delete_cached_model_blocking,
             repo_id,
             variant,
@@ -924,9 +1040,68 @@ async def delete_cached_model_response(
             cache_path,
             only_if_orphan = only_if_orphan,
         )
+        # The audio.cpp link farm hardlinks the deleted blobs; without this they keep their disk space.
+        # Any GGUF repo can be an audio.cpp model, and pruning an absent or current farm is a no-op.
+        from core.inference.audio_cpp_files import prune_link_farm
+        from hub.utils.hf_cache_state import hf_cache_roots
+
+        # Every remembered root, not one recomputed from cache_path: an omitted path deletes from
+        # the sole owning cache, which need not be the active one. Pruning drops only stale entries.
+        def _prune_all() -> None:
+            for root in hf_cache_roots():
+                prune_link_farm(root)
+
+        await asyncio.to_thread(_prune_all)
+        from core.inference.audio_cpp_models import forget
+
+        forget()
+        return result
     finally:
         downloads.registry.end_delete(repo_key, variant)
         cache_inventory.invalidate_hf_cache_scans()
+
+
+def _audio_cpp_blocks_delete(repo_id: str) -> bool:
+    """Whether an audio.cpp model from this repo is resident or loading. An umbrella id names a
+    subfolder of the repo, so the id comparisons of the other guards never match it."""
+    from core.inference.audio_cpp_models import (
+        is_umbrella_id,
+        parse_identifier,
+        resolve,
+        split_variant_ref,
+    )
+    from core.inference.orchestrator import peek_inference_backend
+    from core.inference.stt_audiocpp_sidecar import QWEN3_ALIGNER, get_audio_cpp_stt_sidecar
+
+    wanted = (repo_id or "").strip().lower()
+
+    def holds(name) -> bool:
+        if not isinstance(name, str):
+            return False
+        base = split_variant_ref(name)[0]
+        ref = parse_identifier(base) if not base.lower().endswith(".gguf") else None
+        if ref is None or not ref.repo_id:
+            return False
+        # A folder is also held by a model loading it as a companion (MioTTS opens MioCodec).
+        if wanted in (ref.repo_id.lower(), ref.id.lower()):
+            return True
+        if not is_umbrella_id(wanted):
+            return False
+        model = resolve(base, network = False)
+        return bool(model and any(c.id.lower() == wanted for c in model.companions))
+
+    backend = peek_inference_backend()
+    active = getattr(backend, "active_model_name", None) if backend is not None else None
+    loading = tuple(getattr(backend, "loading_models", ()) or ()) if backend is not None else ()
+    sidecar = get_audio_cpp_stt_sidecar()
+    if wanted == QWEN3_ALIGNER.id.lower() and sidecar.holds_timestamp_aligner:
+        return True
+    return (
+        holds(active)
+        or any(holds(name) for name in loading)
+        or holds(sidecar.loaded_model)
+        or holds(sidecar.loading_model)
+    )
 
 
 def _delete_cached_model_blocking(

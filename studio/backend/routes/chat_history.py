@@ -8,6 +8,7 @@ handlers explicitly send their database transaction through Starlette's threadpo
 """
 
 import asyncio
+import os
 import re
 import sqlite3
 from typing import Annotated, Any, Literal, Optional, Union
@@ -38,6 +39,7 @@ from core.inference.llama_server_args import (
 from loggers import get_logger
 from utils.reasoning_budget import validate_reasoning_budget_message
 from utils.api_errors import safe_validation_errors
+from utils.account_context import is_owner_context
 from utils.utils import safe_curated_detail, log_and_http_error
 from storage.studio_db import (
     ChatForkActiveGenerationError,
@@ -67,6 +69,10 @@ from storage.studio_db import (
     get_chat_message,
     list_chat_attachments_page,
     list_chat_projects,
+    list_chat_sidebar_rows,
+    lookup_chat_sidebar_row_ids,
+    SidebarCursorError,
+    SIDEBAR_ROWS_MAX_LIMIT,
     list_chat_legacy_imports,
     list_chat_settings,
     list_chat_messages,
@@ -74,6 +80,7 @@ from storage.studio_db import (
     count_chat_messages_for_threads,
     list_chat_threads,
     remap_chat_thread_document_ids,
+    set_chat_project_working_folder,
     sync_chat_messages,
     update_chat_project,
     update_chat_thread,
@@ -282,6 +289,8 @@ class ChatThreadPatch(BaseModel):
     title: Optional[str] = None
     # Apply only while the row still holds this title, so a rename beats a background rewrite.
     expectedTitle: Optional[str] = None
+    # Title regeneration must not move an old conversation up in Last modified.
+    preserveTitleModifiedAt: bool = False
     # Apply only while this is still the opening user message, so a title from a deleted one is rejected.
     expectedOpeningMessageId: Optional[str] = None
     modelType: Optional[Literal["base", "lora", "model1", "model2"]] = None
@@ -322,9 +331,21 @@ class ChatProject(BaseModel):
     instructions: str = ""
     rootPath: Optional[str] = None
     sandboxPath: Optional[str] = None
+    # Read only: a saved record cannot set the folder.
+    workingFolder: Optional[str] = None
     archived: bool = False
     createdAt: int
     updatedAt: int
+    lastActivityAt: Optional[int] = None
+
+
+class ChatProjectWorkingFolder(BaseModel):
+    model_config = ConfigDict(extra = "forbid", populate_by_name = True)
+    native_path_lease: str = Field(alias = "nativePathLease", min_length = 1)
+
+
+class ChatAgentsMd(BaseModel):
+    text: str = ""
 
 
 class ChatProjectDeleted(ChatProject):
@@ -347,6 +368,47 @@ class ChatThreadListResponse(BaseModel):
 
 class ChatProjectListResponse(BaseModel):
     projects: list[ChatProject]
+
+
+class ChatSidebarRowsRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    archived: bool = False
+    projectId: Optional[str] = None
+    unfiledOnly: bool = False
+    includeIds: Optional[list[str]] = None
+    excludeIds: list[str] = Field(default_factory = list)
+    sort: Literal["updated", "manual"] = "updated"
+    manualOrder: Optional[list[str]] = None
+    limit: int = Field(default = 20, ge = 1, le = SIDEBAR_ROWS_MAX_LIMIT)
+    cursor: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class ChatSidebarRow(BaseModel):
+    """One sidebar row, shaped as the frontend's SidebarItem."""
+
+    id: str
+    type: Literal["single", "compare"]
+    threadIds: list[str]
+    title: str
+    createdAt: int
+    updatedAt: int
+    modifiedAt: Optional[int] = None
+    modelIds: Optional[list[str]] = None
+    isFork: Optional[bool] = None
+    threadTitles: Optional[list[str]] = None
+    projectId: Optional[str] = None
+
+
+class ChatSidebarRowsResponse(BaseModel):
+    rows: list[ChatSidebarRow]
+    nextCursor: Optional[str] = None
+    hasMore: bool
+    total: int
+
+
+class ChatSidebarThreadRowsResponse(BaseModel):
+    rowIdByThreadId: dict[str, str]
 
 
 class ChatMessageListResponse(BaseModel):
@@ -468,6 +530,13 @@ class ChatResearchWebsitePolicy(BaseModel):
     )
 
 
+class ChatResearchMcpSource(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    serverId: str = Field(min_length = 1, max_length = 200)
+    tool: str = Field(min_length = 1, max_length = 500)
+
+
 class ChatSettingsPayload(BaseModel):
     model_config = ConfigDict(extra = "forbid", allow_inf_nan = False)
 
@@ -490,6 +559,7 @@ class ChatSettingsPayload(BaseModel):
     searchImages: Optional[bool] = None
     autoHealToolCalls: Optional[bool] = None
     nudgeToolCalls: Optional[bool] = None
+    deduplicateToolCalls: Optional[bool] = None
     maxToolCallsPerMessage: Optional[int] = Field(default = None, ge = 0)
     toolCallTimeout: Optional[int] = Field(default = None, ge = 1)
 
@@ -502,6 +572,7 @@ class ChatSettingsPayload(BaseModel):
     webFetchToolsEnabled: Optional[bool] = None
     deepResearchEnabled: Optional[bool] = None
     researchWebsitePolicy: Optional[ChatResearchWebsitePolicy] = None
+    researchMcpSources: Optional[list[ChatResearchMcpSource]] = Field(default = None, max_length = 20)
     # Seconds per Deep Research model request; zero leaves the total wall clock off. Bounded
     # like the run route so a value it would reject cannot be persisted and replayed.
     researchModelTimeoutSeconds: Optional[int] = Field(default = None, ge = 0, le = 365 * 24 * 3600)
@@ -511,6 +582,7 @@ class ChatSettingsPayload(BaseModel):
     confirmToolCalls: Optional[bool] = None
     # "full" (Full access) is session-only by design and never persisted.
     permissionMode: Optional[Literal["ask", "auto", "off"]] = None
+    sandboxLevel: Optional[Literal["high", "low"]] = None
     ragSource: Optional[
         Annotated[
             Union[ChatRagThreadSource, ChatRagKnowledgeBaseSource],
@@ -647,6 +719,48 @@ def list_threads(
     return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
 
 
+@router.post(
+    "/sidebar/rows",
+    response_model = ChatSidebarRowsResponse,
+    response_model_exclude_unset = True,
+)
+def list_sidebar_rows(
+    payload: ChatSidebarRowsRequest, current_subject: str = Depends(get_current_subject)
+):
+    """One page of sidebar rows, compare pairs grouped before the limit."""
+    try:
+        page = list_chat_sidebar_rows(
+            archived = payload.archived,
+            project_id = payload.projectId,
+            unfiled_only = payload.unfiledOnly,
+            include_ids = payload.includeIds,
+            exclude_ids = payload.excludeIds,
+            sort = payload.sort,
+            manual_order = payload.manualOrder,
+            limit = payload.limit,
+            cursor = payload.cursor,
+        )
+    except SidebarCursorError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return ChatSidebarRowsResponse(**page)
+
+
+_SIDEBAR_THREAD_ROWS_MAX = 500
+
+
+@router.get("/sidebar/thread-rows", response_model = ChatSidebarThreadRowsResponse)
+def sidebar_thread_rows(
+    thread_ids: list[str] = Query(default_factory = list),
+    current_subject: str = Depends(get_current_subject),
+):
+    if len(thread_ids) > _SIDEBAR_THREAD_ROWS_MAX:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"At most {_SIDEBAR_THREAD_ROWS_MAX} thread ids per request",
+        )
+    return ChatSidebarThreadRowsResponse(rowIdByThreadId = lookup_chat_sidebar_row_ids(thread_ids))
+
+
 def _missing_project_error(project_id: Optional[str]) -> HTTPException:
     """The row references a project that is gone, whether the check or the write noticed it."""
     return HTTPException(status_code = 404, detail = f"Project {project_id} not found")
@@ -692,6 +806,7 @@ def patch_thread(
 ):
     patch = payload.model_dump(exclude_unset = True)
     expected_title = patch.pop("expectedTitle", None)
+    preserve_title_modified_at = patch.pop("preserveTitleModifiedAt", False)
     expected_opening_message_id = patch.pop("expectedOpeningMessageId", None)
     for field in ("title", "modelType", "modelId", "archived", "createdAt", "updatedAt"):
         if field in patch and patch[field] is None:
@@ -704,6 +819,7 @@ def patch_thread(
             thread_id,
             patch,
             expected_title = expected_title,
+            preserve_title_modified_at = preserve_title_modified_at,
             expected_opening_message_id = expected_opening_message_id,
             settings_write = settings_write,
         )
@@ -929,6 +1045,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             # with a tool call possibly running in here, so its folder is not this delete's to take.
             if get_chat_thread(thread_id) is not None:
                 continue
+            _drop_file_history(thread_id)
             # A fork clones the message content, cards and all, so the source
             # chat's files are still on screen in a chat the user kept.
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
@@ -992,7 +1109,8 @@ def _decode_attachment_base64(payload: str) -> bytes:
         raise HTTPException(status_code = 422, detail = "Attachment data is corrupt") from exc
 
 
-_ATTACHMENT_TAG_RE = re.compile(r"<attachment name=[^\n]*>\n(.*)\n</attachment>", re.DOTALL)
+# A long paste is attached as text under its own tag (attachmentContentText in pasted-text.ts).
+_ATTACHMENT_TAG_RE = re.compile(r"<(attachment|pasted_text) name=[^\n]*>\n(.*)\n</\1>", re.DOTALL)
 _ATTACHMENT_LABEL_RE = re.compile(r"\[(?:PDF|DOCX|HTML|ODS|ODT|XLSX|PPTX|RTF): [^\n]*\]\n")
 
 
@@ -1000,7 +1118,7 @@ def _attachment_body_text(text: str) -> str:
     """An attachment's text without its chat wrapper, as the file itself reads."""
     tagged = _ATTACHMENT_TAG_RE.fullmatch(text)
     if tagged:
-        return tagged.group(1)
+        return tagged.group(2)
     labelled = _ATTACHMENT_LABEL_RE.match(text)
     return text[labelled.end() :] if labelled else text
 
@@ -1152,7 +1270,12 @@ def list_projects(
 ):
     return ChatProjectListResponse(
         projects = [
-            ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
+            ChatProject(
+                **{
+                    **(ensure_chat_project_workspace(project["id"]) or project),
+                    "lastActivityAt": project["lastActivityAt"],
+                }
+            )
             for project in list_chat_projects(include_archived = include_archived)
         ]
     )
@@ -1187,6 +1310,15 @@ def get_project(project_id: str, current_subject: str = Depends(get_current_subj
     return ChatProject(**project)
 
 
+@router.get("/agents-md", response_model = ChatAgentsMd)
+def get_agents_md(
+    project_id: Optional[str] = Query(None), current_subject: str = Depends(get_current_subject)
+):
+    from core.agents_md import agents_md_text
+    project = get_chat_project(project_id) if project_id else None
+    return ChatAgentsMd(text = agents_md_text(project))
+
+
 @router.patch("/projects/{project_id}", response_model = ChatProject)
 def patch_project(
     project_id: str,
@@ -1205,6 +1337,88 @@ def patch_project(
             status_code = 404,
             detail = f"Project {project_id} not found",
         )
+    return ChatProject(**project)
+
+
+def _resolve_project_working_folder(lease: str) -> tuple[str, tuple[int, int]]:
+    """Studio's own roots are reserved: they hold every account's data."""
+    from core.inference.tools import shared_sandbox_root
+    from core.rag import folder_sync
+    from utils.native_path_leases import NativePathLeaseError, verify_native_path_lease
+    from utils.paths.path_utils import is_path_within
+    from utils.paths.storage_roots import (
+        shared_project_workspaces_root,
+        shared_tmp_root,
+        studio_root,
+    )
+
+    try:
+        grant = verify_native_path_lease(
+            lease,
+            operation = "link-documents",
+            expected_kind = "document-folder",
+            expected_path_type = "directory",
+        )
+        path = folder_sync.validate_folder_path(str(grant.canonical_path))
+    except (NativePathLeaseError, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    for reserved in (
+        studio_root(),
+        shared_project_workspaces_root(),
+        shared_sandbox_root(),
+        shared_tmp_root(),
+    ):
+        reserved = os.path.realpath(str(reserved))
+        if is_path_within(path, reserved, allow_root = True) or is_path_within(
+            reserved, path, allow_root = True
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Studio's own folders cannot be used as a project folder.",
+            )
+    if not os.access(path, os.W_OK):
+        raise HTTPException(status_code = 400, detail = "The folder is not writable.")
+    st = os.stat(path)
+    return path, (st.st_dev, st.st_ino)
+
+
+@router.put("/projects/{project_id}/working-folder", response_model = ChatProject)
+def set_project_working_folder(
+    project_id: str,
+    payload: ChatProjectWorkingFolder,
+    current_subject: str = Depends(get_current_subject),
+):
+    if not is_owner_context():
+        raise HTTPException(status_code = 403, detail = "Only the owner can use a local folder.")
+    if get_chat_project(project_id) is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+    try:
+        path, identity = _resolve_project_working_folder(payload.native_path_lease)
+        project = set_chat_project_working_folder(project_id, path, identity)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # HTTPException keeps CORS so the webview does not resend a spent grant (#13131).
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not use the folder.",
+            event = "chat_history.project_working_folder_failed",
+            log = logger,
+        ) from exc
+    if project is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
+    return ChatProject(**project)
+
+
+@router.delete("/projects/{project_id}/working-folder", response_model = ChatProject)
+def clear_project_working_folder(
+    project_id: str, current_subject: str = Depends(get_current_subject)
+):
+    # The user's folder is never touched.
+    project = set_chat_project_working_folder(project_id, None)
+    if project is None:
+        raise HTTPException(status_code = 404, detail = f"Project {project_id} not found")
     return ChatProject(**project)
 
 
@@ -1229,7 +1443,7 @@ def _delete_project_rag_sources(project_id: str) -> None:
             return
         folder_sync.retire_scope(scope, owned)
         # The purge takes the whole scope, `owned` or not, so bounding retirement buys nothing
-        # unless the purge is skipped too.
+        # unless the purge is skipped too. A recreate racing this is unretired by upsert_chat_project.
         if rag_db.rag_available():
             folder_sync.delete_retired_scope(scope)
 
@@ -1728,6 +1942,66 @@ class ChatForkCountResponse(BaseModel):
 
 class ChatThreadForkCountsResponse(BaseModel):
     counts: dict[str, int]
+
+
+def _drop_file_history(thread_id: str) -> None:
+    try:
+        from core.inference import file_history
+        file_history.store().delete_chat(thread_id)
+    except Exception:
+        logger.warning("Could not remove the file history of %s", thread_id, exc_info = True)
+
+
+class ChatRewindRequest(BaseModel):
+    # The user messages being rewound, from the chosen one to the tip of the selected branch.
+    turn_ids: list[Annotated[str, Field(min_length = 1, max_length = 256)]] = Field(max_length = 5000)
+    dry_run: bool = False
+    force: bool = False
+
+
+@router.post("/threads/{thread_id}/rewind")
+def rewind_thread_files(
+    thread_id: str,
+    payload: ChatRewindRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Put back the files this chat's tool calls changed during ``turn_ids``. Moving the
+    conversation itself is the client's: it edits the chosen message, which keeps the old branch."""
+    from core.inference import file_history, tools
+    from hub.services.models import account_access
+    from state import active_generations
+
+    if get_chat_thread(thread_id) is None:
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    if not payload.dry_run and thread_id in active_generations.active_thread_ids(
+        account_access.account_scope()
+    ):
+        raise HTTPException(
+            status_code = 409, detail = "This chat is still generating. Rewind it once it finishes."
+        )
+
+    def walk(workdir: str):
+        return tools._history_snapshot(tools._snapshot_workdir_files(workdir))
+
+    def busy(workdir: str) -> bool:
+        with tools._calls_lock:
+            return any(os.path.realpath(w) == workdir for w in tools._workdir_calls)
+
+    try:
+        report = file_history.store().rewind(
+            thread_id,
+            payload.turn_ids,
+            walk,
+            dry_run = payload.dry_run,
+            force = payload.force,
+            busy = busy,
+        )
+    except file_history.RewindBusy as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    if report.undo_turn_id:
+        from core import library
+        library.invalidate_listing()
+    return report.as_dict()
 
 
 @router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)

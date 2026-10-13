@@ -92,6 +92,42 @@ def test_subclass_weights_are_not_kept():
     assert not dm._keepable(lin.weight)
 
 
+def _gguf_utils():
+    pytest.importorskip("gguf")
+    return pytest.importorskip("diffusers.quantizers.gguf.utils")
+
+
+def _gguf_linear(
+    utils,
+    out_features = 8,
+    in_features = 64,
+):
+    """A diffusers GGUFLinear holding a real Q8_0 weight: per 32-value block, an fp16 scale then 32 int8 codes."""
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    blocks = out_features * in_features // 32
+    scale = np.full((blocks, 1), 0.01, dtype = np.float16).view(np.uint8)
+    codes = rng.integers(-127, 128, size = (blocks, 32), dtype = np.int8).view(np.uint8)
+    raw = torch.from_numpy(np.concatenate([scale, codes], axis = 1).reshape(out_features, -1).copy())
+    lin = utils.GGUFLinear(in_features, out_features, bias = True, compute_dtype = torch.float32)
+    lin.weight = utils.GGUFParameter(raw, quant_type = utils.gguf.GGMLQuantizationType.Q8_0)
+    return lin
+
+
+def test_gguf_weights_are_kept_but_other_subclasses_are_not():
+    utils = _gguf_utils()
+    lin = _gguf_linear(utils)
+    assert type(lin.weight) is utils.GGUFParameter
+    assert dm._keepable(lin.weight) and dm._keepable(lin.bias)
+
+    class Sub(torch.Tensor):
+        pass
+
+    other = torch.nn.Parameter(torch.zeros(2).as_subclass(Sub))
+    assert not dm._keepable(other)
+
+
 def test_an_all_subclass_module_is_not_rescanned_every_forward():
     class Sub(torch.Tensor):
         pass
@@ -225,6 +261,53 @@ def test_a_non_contiguous_weight_keeps_its_layout(monkeypatch):
 
 
 @cuda
+@pytest.mark.parametrize(
+    "conv, fmt, shape",
+    [
+        (torch.nn.Conv2d, torch.channels_last, (1, 4, 6, 6)),
+        (torch.nn.Conv3d, torch.channels_last_3d, (1, 4, 3, 6, 6)),
+    ],
+)
+def test_a_channels_last_conv_weight_is_pinned_in_its_layout(monkeypatch, conv, fmt, shape):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "1")
+    x = torch.randn(*shape)
+    seen = []
+
+    def build():
+        torch.manual_seed(0)
+        module = conv(4, 4, 3, padding = 1).to(memory_format = fmt)
+        module.register_forward_pre_hook(
+            lambda mod, args: seen.append(mod.weight.is_contiguous(memory_format = fmt))
+        )
+        pipe = types.SimpleNamespace(components = {"vae": module}, vae = module)
+
+        def enable_model_cpu_offload(device = "cuda"):
+            hooks.remove_hook_from_module(module)
+            module.to("cpu")
+            hooks.add_hook_to_module(module, hooks.CpuOffload(execution_device = device))
+
+        pipe.enable_model_cpu_offload = enable_model_cpu_offload
+        pipe.enable_model_cpu_offload()
+        return pipe
+
+    def render(pipe):
+        out = pipe.vae(x).detach().cpu()
+        pipe.vae._hf_hook.init_hook(pipe.vae)
+        pipe.enable_model_cpu_offload()
+        return out
+
+    ref = render(build())
+    pipe = build()
+    dm.keep_cpu_weights_on_offload(pipe)
+    for _ in range(2):
+        assert torch.equal(render(pipe), ref)
+    weight = pipe.vae.weight
+    assert weight.device.type == "cpu" and weight.is_pinned()
+    assert weight.is_contiguous(memory_format = fmt)
+    assert all(seen)
+
+
+@cuda
 def test_a_parameter_replaced_on_the_device_is_copied_back():
     pipe = _pipe("cuda", "transformer")
     pipe.enable_model_cpu_offload()
@@ -249,23 +332,17 @@ def _host_of(module):
 
 @cuda
 def test_the_ram_gate_counts_the_chunks_really_allocated(monkeypatch):
-    psutil = pytest.importorskip("psutil")
     # Weight 256 B and bias 32 B (256 aligned) do not share a 384 B chunk: 384 + 256 B are allocated for 512.
     monkeypatch.setattr(dm, "_PIN_CHUNK_BYTES", 384)
-    reserve = 4 << 30
+    # The gate reads MiB (system available capped by the cgroup headroom), so pin the readings and move the
+    # reserve by bytes instead: 600 B of room is short of the 640 B allocated, 640 B is enough.
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 5 << 10)
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 16 << 10)
     lin = torch.nn.Linear(8, 8)
-    monkeypatch.setattr(
-        psutil,
-        "virtual_memory",
-        lambda: types.SimpleNamespace(total = 16 << 30, available = reserve + 600),
-    )
+    monkeypatch.setattr(dm, "_PIN_RESERVE_MIN_BYTES", (5 << 30) - 600)
     assert dm._pin_host_weights(lin, _host_of(lin)) == 0
     assert not lin.weight.is_pinned()
-    monkeypatch.setattr(
-        psutil,
-        "virtual_memory",
-        lambda: types.SimpleNamespace(total = 16 << 30, available = reserve + 640),
-    )
+    monkeypatch.setattr(dm, "_PIN_RESERVE_MIN_BYTES", (5 << 30) - 640)
     assert dm._pin_host_weights(lin, _host_of(lin)) == 640
     assert lin.weight.is_pinned() and lin.bias.is_pinned()
 
@@ -402,6 +479,25 @@ def test_the_ram_gate_is_sized_from_the_container(
     assert bool(allocated) is pinned
 
 
+def _gguf_pipe(device):
+    utils = _gguf_utils()
+    pipe = _pipe(device, "text_encoder", "transformer", "vae")
+    comps = pipe.components
+    comps["text_encoder"] = pipe.text_encoder = torch.nn.Linear(8, 64)
+    comps["transformer"] = pipe.transformer = _gguf_linear(utils)
+    return pipe, utils
+
+
+def _run(pipe, x):
+    """One call the way a diffusers pipeline makes it: the last module stays onloaded until the re-enable."""
+    out = x
+    for module in pipe.components.values():
+        out = module(out)
+    out = out.detach().cpu()
+    pipe.enable_model_cpu_offload()
+    return out
+
+
 class _BufferLinear(torch.nn.Module):
     """A weight held as plain buffers, as the torchao-free int8 linear stores it."""
 
@@ -424,6 +520,46 @@ def _buffer_pipe(device):
 
 def _buffer_ptrs(module):
     return [b.data_ptr() for b in module.buffers()]
+
+
+@cuda
+@pytest.mark.parametrize("pin", ["0", "1"])
+def test_a_gguf_transformer_keeps_its_host_bytes_and_quant_type(monkeypatch, pin):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, pin)
+    x = torch.randn(4, 8)
+    stock, _ = _gguf_pipe("cuda")
+    stock.enable_model_cpu_offload()
+    ref = _run(stock, x)
+    pipe, utils = _gguf_pipe("cuda")
+    raw = pipe.transformer.weight.detach().clone()
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    _run(pipe, x)  # the first onload pins
+    # Held, so a stock copy can never land back at a freed address and pass for the kept tensor.
+    held = [p.data for p in pipe.transformer.parameters()]
+    host = [t.data_ptr() for t in held]
+    for _ in range(3):
+        assert torch.equal(_run(pipe, x), ref)
+        weight = pipe.transformer.weight
+        assert weight.device.type == "cpu" and _ptrs(pipe.transformer) == host
+        assert type(weight) is utils.GGUFParameter
+        assert weight.quant_type == utils.gguf.GGMLQuantizationType.Q8_0
+        assert torch.equal(weight.detach().view(torch.uint8), raw.view(torch.uint8))
+        assert weight.is_pinned() is (pin == "1")
+
+
+@cuda
+def test_the_module_left_onloaded_by_a_call_is_offloaded_through_its_kept_hook(monkeypatch):
+    monkeypatch.setenv(dm.OFFLOAD_PIN_ENV, "0")
+    pipe = _pipe("cuda", "text_encoder", "transformer", "vae")
+    pipe.enable_model_cpu_offload()
+    dm.keep_cpu_weights_on_offload(pipe)
+    held = {n: [p.data for p in m.parameters()] for n, m in pipe.components.items()}
+    host = {n: [t.data_ptr() for t in ts] for n, ts in held.items()}
+    for _ in range(3):
+        _run(pipe, torch.randn(4, 8))
+        assert pipe.vae.weight.device.type == "cpu"
+        assert {n: _ptrs(m) for n, m in pipe.components.items()} == host
 
 
 @cuda

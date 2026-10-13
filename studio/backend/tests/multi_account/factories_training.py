@@ -10,12 +10,29 @@ EDITED = "training-matrix-edited"
 START_REQUEST_ID = "training-matrix-start-request"
 START_JOB_ID = "training-matrix-job"
 DIFFUSION_JOB_ID = "a1b2c3d4e5f607182930a4b5c6d7e8f9"
+SAMPLE_JOB_ID = "b2c3d4e5f607182930a4b5c6d7e8f9a1"
+SAMPLE_PATH = "samples/20260101-000000-abcdef/step-0-0.png"
 DATASET_NAME = "training-matrix-dataset"
 IMAGE_NAME = "training-matrix-image.png"
 RECIPE_JOB_ID = "f9e8d7c6b5a40312092a8b7c6d5e4f30"
 BLOCK_ID = "0123456789abcdef0123456789abcdef"
 FILE_ID = "fedcba9876543210fedcba9876543210"
 SCAN_FOLDER_DIRNAME = "training-matrix-scan-folder"
+SAVED_RECIPE_ID = "training-matrix-recipe"
+RECIPE_EXECUTION_ID = "training-matrix-execution"
+SAVED_RECIPE_BODY = {
+    "id": SAVED_RECIPE_ID,
+    "name": EDITED,
+    "payload": {"recipe": {}},
+    "createdAt": 1000,
+    "updatedAt": 2000,
+}
+RECIPE_EXECUTION_BODY = {
+    "id": RECIPE_EXECUTION_ID,
+    "recipeId": SAVED_RECIPE_ID,
+    "createdAt": 1000,
+    "status": EDITED,
+}
 
 PNG_1X1 = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmM"
@@ -34,6 +51,17 @@ _PUBLISH_REASON = (
 _BLOCK_REASON = (
     "Removing an upload block is an idempotent delete under the caller's own uploads root, so a "
     "foreign account is told ok with deleted false."
+)
+_SAVED_RECIPE_UPSERT_REASON = (
+    "PUT is an upsert keyed only by id inside the caller's own studio.db, so a foreign caller "
+    "writes its own row and never sees alice's; the snapshot proves hers is untouched."
+)
+_SAVED_RECIPE_DELETE_REASON = (
+    "DELETE is idempotent in the caller's own studio.db, so a foreign caller gets 204 after "
+    "tombstoning an id it never had; the snapshot proves alice's recipe survived."
+)
+_RECIPE_EXECUTIONS_READ_REASON = (
+    "Run history is read from the caller's own studio.db, so a foreign caller gets an empty list."
 )
 _EVENTS_REASON = (
     "The owning account's SSE stream ends only when the client disconnects, which an in-process "
@@ -106,6 +134,39 @@ def seed_diffusion_run(account) -> dict[str, str]:
     return {"job_id": DIFFUSION_JOB_ID}
 
 
+@seeder("training-diffusion-sample")
+def seed_diffusion_sample(account) -> dict[str, str]:
+    import base64
+    import json
+
+    from utils.account_context import run_as
+    from utils.paths import outputs_root
+    from utils.paths.storage_roots import tensorboard_root
+
+    def install() -> None:
+        out_dir = outputs_root() / "training-matrix-diffusion"
+        image = out_dir / SAMPLE_PATH
+        image.parent.mkdir(parents = True, exist_ok = True)
+        image.write_bytes(base64.b64decode(PNG_1X1))
+        folder = tensorboard_root() / "diffusion"
+        folder.mkdir(parents = True, exist_ok = True)
+        (folder / f"{SAMPLE_JOB_ID}.json").write_text(
+            json.dumps(
+                {
+                    "job_id": SAMPLE_JOB_ID,
+                    "status": "completed",
+                    "output_dir": str(out_dir),
+                    "samples": [{"step": 0, "index": 0, "path": SAMPLE_PATH}],
+                    "config": {},
+                }
+            ),
+            encoding = "utf-8",
+        )
+
+    run_as(account, install)
+    return {"job_id": SAMPLE_JOB_ID}
+
+
 @seeder("training-diffusion-dataset")
 def seed_diffusion_dataset(account) -> dict[str, str]:
     import base64
@@ -137,6 +198,19 @@ def seed_scan_folder(account) -> dict[str, str]:
         return str(row["id"])
 
     return {"folder_id": run_as(account, install)}
+
+
+@seeder("training-saved-recipe")
+def seed_saved_recipe(account) -> dict[str, str]:
+    from storage import data_recipes_db
+    from utils.account_context import run_as
+
+    def install() -> None:
+        data_recipes_db.upsert_recipe({**SAVED_RECIPE_BODY, "name": SENTINEL})
+        data_recipes_db.upsert_execution({**RECIPE_EXECUTION_BODY, "status": SENTINEL})
+
+    run_as(account, install)
+    return {"recipe_id": SAVED_RECIPE_ID, "execution_id": RECIPE_EXECUTION_ID}
 
 
 @seeder("training-recipe-job")
@@ -203,6 +277,9 @@ FACTORIES = {
     "routes.training:GET:/diffusion/runs/{job_id}": Factory(
         "training-diffusion-run", fragment = SENTINEL
     ),
+    "routes.training:GET:/diffusion/runs/{job_id}/sample": Factory(
+        "training-diffusion-sample", fragment = "IHDR", query = {"path": SAMPLE_PATH}
+    ),
     "routes.training:GET:/diffusion/dataset/{name}/images": Factory(
         "training-diffusion-dataset", fragment = SENTINEL
     ),
@@ -247,6 +324,37 @@ FACTORIES = {
         owner = (400,),
         wrong = (400,),
         reason = _PUBLISH_REASON,
+    ),
+    "routes.data_recipe.library:GET:/recipes/{recipe_id}": Factory(
+        "training-saved-recipe", fragment = SENTINEL
+    ),
+    "routes.data_recipe.library:PUT:/recipes/{recipe_id}": Factory(
+        "training-saved-recipe",
+        SAVED_RECIPE_BODY,
+        fragment = EDITED,
+        owner = (200,),
+        wrong = (200,),
+        reason = _SAVED_RECIPE_UPSERT_REASON,
+    ),
+    "routes.data_recipe.library:DELETE:/recipes/{recipe_id}": Factory(
+        "training-saved-recipe",
+        success = 204,
+        owner = (204,),
+        wrong = (204,),
+        reason = _SAVED_RECIPE_DELETE_REASON,
+    ),
+    "routes.data_recipe.library:GET:/recipes/{recipe_id}/executions": Factory(
+        "training-saved-recipe",
+        fragment = SENTINEL,
+        absent = SENTINEL,
+        owner = (200,),
+        wrong = (200,),
+        reason = _RECIPE_EXECUTIONS_READ_REASON,
+    ),
+    "routes.data_recipe.library:PUT:/recipes/{recipe_id}/executions/{execution_id}": Factory(
+        "training-saved-recipe",
+        RECIPE_EXECUTION_BODY,
+        success = 204,
     ),
     "routes.data_recipe.seed:DELETE:/seed/unstructured-block/{block_id}": Factory(
         "training-unstructured-upload",

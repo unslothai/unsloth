@@ -8,6 +8,7 @@ import {
   persist,
 } from "zustand/middleware";
 import { COLOR_THEMES, type ColorThemeId } from "../lib/color-themes.ts";
+import { remeasureSkippedContent } from "../lib/interface-scale-runtime.ts";
 import type { ResolvedTheme } from "./theme-store";
 
 // Best-effort persistence: localStorage can be blocked (private browsing) and
@@ -39,7 +40,6 @@ const guardedLocalStorage: StateStorage = {
 
 export type ReduceMotionSetting = "system" | "on" | "off";
 export type ChatWidthSetting = "standard" | "wide" | "full";
-export type ComposerAttachmentsSetting = "cards" | "compact";
 export type SentAttachmentsSetting = "auto" | "list" | "chips";
 
 export type CustomModeColors = {
@@ -238,7 +238,6 @@ export type AppearanceCustomization = {
   headingFont: string | null;
   chatFont: string | null;
   chatWidth: ChatWidthSetting;
-  composerAttachments: ComposerAttachmentsSetting;
   sentAttachments: SentAttachmentsSetting;
   codeFont: string | null;
   importedFonts: ImportedFont[];
@@ -273,7 +272,6 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   headingFont: null,
   chatFont: null,
   chatWidth: "standard",
-  composerAttachments: "cards",
   sentAttachments: "auto",
   codeFont: null,
   importedFonts: [],
@@ -295,7 +293,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
 };
 
 export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
-export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
+export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 12 } as const;
 const UI_FONT_SIZE_CSS_BASE = 16;
 
 /**
@@ -322,6 +320,7 @@ export const CONTRAST_PANEL_TARGET_VAR = "--contrast-panel-target";
 /** Multipliers for the hand-written washes that stand in for those tokens. */
 export const CONTRAST_WASH_GAIN_VAR = "--contrast-wash-gain";
 export const CONTRAST_EDGE_GAIN_VAR = "--contrast-edge-gain";
+export const CONTRAST_SEAM_GAIN_VAR = "--contrast-seam-gain";
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -489,8 +488,6 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
       source.chatWidth === "wide" || source.chatWidth === "full"
         ? source.chatWidth
         : "standard",
-    composerAttachments:
-      source.composerAttachments === "compact" ? "compact" : "cards",
     sentAttachments:
       source.sentAttachments === "list" || source.sentAttachments === "chips"
         ? source.sentAttachments
@@ -882,6 +879,8 @@ const ACCENT_FG_VARS = [
   "--primary-foreground",
 ] as const;
 
+let appliedTypography: string | null = null;
+
 /**
  * Push the customization onto <html> as inline CSS variables, attributes, and
  * classes. Everything is keyed off explicit hooks (inline vars beat every
@@ -1007,6 +1006,19 @@ export function applyCustomizationToDocument(
     setVar("--custom-code-font-size", null);
   }
 
+  const typography = JSON.stringify([
+    c.uiFont,
+    c.headingFont,
+    c.codeFont,
+    c.chatFont,
+    effectiveUiFontSize,
+    c.codeFontSize,
+  ]);
+  if (appliedTypography !== null && appliedTypography !== typography) {
+    remeasureSkippedContent();
+  }
+  appliedTypography = typography;
+
   if (c.contrast !== 50) {
     // Distance from the default, then one color-mix percentage per group of
     // tokens. Everything mixes toward --contrast-target: the foreground above
@@ -1063,6 +1075,10 @@ export function applyCustomizationToDocument(
     // chrome you aim at. Raising doubles it, level with the state tokens.
     setVar(CONTRAST_WASH_GAIN_VAR, gain(raising ? 1 : 0.4));
     setVar(CONTRAST_EDGE_GAIN_VAR, gain(raising ? 0.9 : 0.8));
+    setVar(
+      CONTRAST_SEAM_GAIN_VAR,
+      (1 - distance * (raising ? 0.9 : 0.15)).toFixed(3),
+    );
   } else {
     el.removeAttribute("data-contrast-adjust");
     setVar("--contrast-target", null);
@@ -1078,6 +1094,7 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_INK_MIX_VAR, null);
     setVar(CONTRAST_WASH_GAIN_VAR, null);
     setVar(CONTRAST_EDGE_GAIN_VAR, null);
+    setVar(CONTRAST_SEAM_GAIN_VAR, null);
   }
 
   el.classList.toggle("pointer-cursors", c.pointerCursors);

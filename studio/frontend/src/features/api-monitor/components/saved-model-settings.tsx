@@ -31,6 +31,26 @@ function plural(count: number, noun: string): string {
 /** Summary of the fields the loader will apply, in load order. */
 function describeOverride(override: ApiModelOverride): string[] {
   const parts: string[] = [];
+  if (override.engine && override.engine !== "auto") {
+    parts.push(`engine ${override.engine}`);
+  }
+  if (override.engine_precision && override.engine_precision !== "auto") {
+    parts.push(override.engine_precision);
+  }
+  if (override.engine_parallelism && override.engine_parallelism !== "tensor") {
+    parts.push(`${override.engine_parallelism} parallel`);
+  }
+  if (override.engine_kv_cache_dtype === "fp8") {
+    parts.push("FP8 KV cache");
+  }
+  if (override.engine_seed != null) {
+    parts.push(`seed ${override.engine_seed}`);
+  }
+  if (override.engine_gpu_memory_utilization != null) {
+    parts.push(
+      `${Math.round(override.engine_gpu_memory_utilization * 100)}% GPU memory`,
+    );
+  }
   if (override.custom_context_length) {
     parts.push(`${override.custom_context_length.toLocaleString()} context`);
   }

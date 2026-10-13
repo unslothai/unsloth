@@ -38,6 +38,7 @@ test("a prompt setting change clears local usage even during a run", async () =>
         useChatRuntimeStore: { getState: () => state },
       },
       "./message-order": messageOrder,
+      "./branch-head": { savedBranchHead: () => undefined },
       "./chat-history-storage": {},
     },
   );
@@ -74,6 +75,7 @@ test("a prompt setting change leaves external usage intact", async () => {
         useChatRuntimeStore: { getState: () => state },
       },
       "./message-order": messageOrder,
+      "./branch-head": { savedBranchHead: () => undefined },
       "./chat-history-storage": {},
     },
   );

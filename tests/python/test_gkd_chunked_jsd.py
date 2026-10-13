@@ -661,3 +661,54 @@ def test_left_padded_rows_score_as_if_unpadded(shift, monkeypatch):
         width = int(keep.sum())
         assert torch.equal(liger["labels"][i, :width], labels[i, keep])
         assert torch.equal(liger["input_ids"][i, :width], input_ids[i, keep])
+
+
+class _Scaler:
+    def __init__(self, enabled):
+        self.enabled = enabled
+
+    def is_enabled(self):
+        return self.enabled
+
+    def get_scale(self):
+        return 65536.0
+
+
+def _spy_jsd(calls, accepts_scaler):
+    real = rl.distillation_chunked_jsd
+
+    def call(*args, **kwargs):
+        calls.append(dict(kwargs))
+        kwargs.pop("scaler", None)
+        return real(*args, **kwargs)
+
+    if accepts_scaler:
+        return lambda *args, scaler = None, **kwargs: call(*args, scaler = scaler, **kwargs)
+    return lambda *args, **kwargs: call(*args, **kwargs)
+
+
+@pytest.mark.parametrize("enabled", [True, False, None])
+@pytest.mark.parametrize("accepts_scaler", [True, False])
+def test_fp16_grad_scaler_reaches_the_chunked_jsd(enabled, accepts_scaler, monkeypatch):
+    # The zoo differentiates inside its forward: an unscaled FP16 grad underflows before scaler.scale(loss).backward().
+    vocab = 97
+    student, teacher = _TinyLM(vocab, 16, 0.0, 1), _TinyLM(vocab, 24, 0.0, 2)
+    trainer, inputs = _trainer(0.5, student, teacher), _inputs(vocab)
+    scaler = None if enabled is None else _Scaler(enabled)
+    trainer.accelerator = types.SimpleNamespace(unwrap_model = lambda m: m, scaler = scaler)
+    calls = []
+    monkeypatch.setattr(rl, "distillation_chunked_jsd", _spy_jsd(calls, accepts_scaler))
+    forwards = []
+    student.register_forward_hook(lambda *a: forwards.append(1))
+    got = rl._unsloth_gkd_chunked_loss(
+        trainer, student, inputs, None, {"shift": "prompt", "num_items_in_batch": False}
+    )
+    if enabled and not accepts_scaler:
+        assert got is None and not calls and not forwards
+        assert "unsloth_zoo JSD has no GradScaler support" in trainer._unsloth_gkd_chunked_fallbacks
+        return
+    assert got is not None and len(calls) == 1
+    if enabled:
+        assert calls[0]["scaler"] is scaler
+    else:
+        assert calls[0].get("scaler") is None

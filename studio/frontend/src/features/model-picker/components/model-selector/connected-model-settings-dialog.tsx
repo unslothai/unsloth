@@ -27,6 +27,8 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { ProviderApiType } from "@/features/chat/api/providers-api";
+// eslint-disable-next-line no-restricted-imports -- Connection contract has no React dependencies.
+import type { CustomReasoningConfig } from "@/features/chat/custom-reasoning";
 import {
   modelCatalogVersion,
   reconcilePinnedReasoningEffort,
@@ -56,6 +58,7 @@ export function ConnectedModelSettingsDialog({
   apiType,
   baseUrl,
   isReasoningProvider,
+  reasoningConfig,
   connectionMaxOutputTokens,
 }: {
   open: boolean;
@@ -70,6 +73,7 @@ export function ConnectedModelSettingsDialog({
   baseUrl?: string | null;
   /** A vLLM connection flagged as serving a reasoning model. */
   isReasoningProvider?: boolean;
+  reasoningConfig?: CustomReasoningConfig;
   /** The connection's own output cap, which lowers the model's documented one. */
   connectionMaxOutputTokens?: number | null;
 }) {
@@ -100,6 +104,7 @@ export function ConnectedModelSettingsDialog({
   // levels offered here are the ones the provider actually accepts. "none" is the off switch.
   const reasoning = getExternalReasoningCapabilities(providerType, modelId, {
     isReasoningProvider,
+    reasoningConfig,
     baseUrl,
     apiType,
   });

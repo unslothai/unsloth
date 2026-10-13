@@ -17,7 +17,21 @@ import {
   formatMcpToolName,
   mcpServerFromProvenance,
   mcpToolFromProvenance,
+  splitMcpToolName,
 } from "@/features/chat/utils/mcp-tool-name";
+import { McpAppFrame } from "@/features/chat/mcp-apps/mcp-app-frame";
+import {
+  type McpUiToolResult,
+  isMcpUiToolResult,
+} from "@/features/chat/mcp-apps/mcp-ui";
+import {
+  SANDBOX_FILE_TOOLS,
+  type SandboxFile,
+  isSandboxToolResult,
+  sandboxSessionIdFor,
+} from "@/components/assistant-ui/sandbox-files";
+import { SandboxFiles } from "@/components/assistant-ui/sandbox-files-view";
+import { useChatProjectScope } from "@/features/chat/chat-project-scope";
 import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
@@ -29,10 +43,10 @@ import {
   AlertCircleIcon,
   ChevronDownIcon,
   LoaderIcon,
+  WrenchIcon,
   XCircleIcon,
 } from "lucide-react";
-import { Tick02Icon } from "@/lib/tick-icon";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { InternetGlyph } from "@/lib/internet-icon";
 import {
   type CSSProperties,
   type ComponentProps,
@@ -152,15 +166,13 @@ function ToolFallbackRoot({
 
 type ToolStatus = ToolCallMessagePartStatus["type"];
 
-// The shared app tick is icon data, not a component; wrap it to slot into the
-// status map alongside the lucide icons.
-function CompleteTickIcon(props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">) {
-  return <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} {...props} />;
+// Not a tick: "Used tool" already says it finished.
+function completeToolIcon(name: string): ElementType {
+  return name.startsWith("browser_") ? InternetGlyph : WrenchIcon;
 }
 
-const statusIconMap: Record<ToolStatus, ElementType> = {
+const statusIconMap: Record<Exclude<ToolStatus, "complete">, ElementType> = {
   running: LoaderIcon,
-  complete: CompleteTickIcon,
   incomplete: XCircleIcon,
   "requires-action": AlertCircleIcon,
 };
@@ -187,9 +199,12 @@ function ToolFallbackTrigger({
   const isRunning = isToolCallRunning(status);
   const isCancelled = isToolCallCancelled(status);
 
-  const StatusIcon = statusIconMap[statusType];
   const label = toolFallbackLabel(status);
   const name = toolArgText(toolName);
+  const StatusIcon =
+    statusType === "complete"
+      ? completeToolIcon(name)
+      : statusIconMap[statusType];
   const displayName = formatMcpToolName(name, mcpServer, mcpTool) ?? name;
 
   return (
@@ -198,7 +213,7 @@ function ToolFallbackTrigger({
       className={cn(
         // Brightens on hover like the Thinking trigger. The icon inherits this; the label
         // sets its own colour and picks it up through the group below.
-        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-sm transition-colors hover:text-foreground",
+        "aui-tool-fallback-trigger group/trigger flex w-full cursor-pointer items-center gap-2 text-trace-foreground text-sm transition-colors hover:text-foreground",
         className,
       )}
       {...props}
@@ -208,28 +223,20 @@ function ToolFallbackTrigger({
       ) : ToolIcon ? (
         <ToolIcon
           data-slot="tool-fallback-trigger-icon"
-          className={cn(
-            "aui-tool-fallback-trigger-icon size-4 shrink-0",
-            isCancelled && "text-muted-foreground",
-          )}
+          className="aui-tool-fallback-trigger-icon size-4 shrink-0"
         />
       ) : (
         <StatusIcon
           data-slot="tool-fallback-trigger-icon"
-          className={cn(
-            "aui-tool-fallback-trigger-icon size-4 shrink-0",
-            isCancelled && "text-muted-foreground",
-          )}
+          className="aui-tool-fallback-trigger-icon size-4 shrink-0"
         />
       )}
       <span
         data-slot="tool-fallback-trigger-label"
         className={cn(
-          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-muted-foreground transition-colors",
+          "aui-tool-fallback-trigger-label-wrapper relative min-w-0 text-left leading-none text-trace-foreground transition-colors",
           // A cancelled row stays muted: the strikethrough is the point, not the name.
-          isCancelled
-            ? "text-muted-foreground line-through"
-            : "group-hover/trigger:text-foreground",
+          isCancelled ? "line-through" : "group-hover/trigger:text-foreground",
         )}
       >
         <span
@@ -277,7 +284,7 @@ function ToolFallbackContent({
     <CollapsibleContent
       data-slot="tool-fallback-content"
       className={cn(
-        "aui-tool-fallback-content relative overflow-hidden text-sm outline-none",
+        "aui-tool-fallback-content relative overflow-hidden text-trace-foreground text-sm outline-none",
         "group/collapsible-content ease-out",
         "data-[state=closed]:animate-collapsible-up",
         "data-[state=open]:animate-collapsible-down",
@@ -311,7 +318,7 @@ function ToolFallbackArgs({
       className={cn("aui-tool-fallback-args", className)}
       {...props}
     >
-      <pre className="aui-tool-fallback-args-value whitespace-pre-wrap">
+      <pre className="aui-tool-fallback-args-value whitespace-pre-wrap text-xs">
         {argsText}
       </pre>
     </div>
@@ -342,6 +349,34 @@ function isMcpImageResult(val: unknown): val is McpImageResult {
   );
 }
 
+/** Outside ToolFallbackContent so it stays on screen with the card collapsed. */
+function ToolFallbackMcpApp({
+  toolName,
+  result,
+  argsText,
+}: {
+  toolName: string;
+  result: McpUiToolResult;
+  argsText?: string;
+}) {
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  // The provider's project (the store's lags a thread switch): the adapter keys the run's session on it.
+  const projectId = useChatProjectScope();
+  const parts = splitMcpToolName(toolName);
+  if (!parts) return null;
+  return (
+    <McpAppFrame
+      serverId={parts.serverId}
+      toolName={parts.tool}
+      ui={result.ui}
+      argsText={argsText}
+      resultImages={result.images}
+      threadId={threadId}
+      sessionId={sandboxSessionIdFor(threadId, projectId)}
+    />
+  );
+}
+
 function ToolFallbackResult({
   result,
   className,
@@ -368,7 +403,7 @@ function ToolFallbackResult({
       {imageResult ? (
         <>
           {imageResult.text && (
-            <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
+            <pre className="aui-tool-fallback-result-content whitespace-pre-wrap text-xs">
               {stripAnsi(imageResult.text)}
             </pre>
           )}
@@ -385,7 +420,7 @@ function ToolFallbackResult({
           </div>
         </>
       ) : (
-        <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
+        <pre className="aui-tool-fallback-result-content whitespace-pre-wrap text-xs">
           {resultText}
         </pre>
       )}
@@ -446,6 +481,18 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
   // thread.tsx, so this renderer stays purely presentational.
   const provenance = (rest as { provenance?: unknown }).provenance;
   const isCancelled = isToolCallCancelled(status);
+  // A widget result's pane shows the text (and images) the model saw, never its UI seed.
+  const widget = isMcpUiToolResult(result, toolName) ? result : null;
+  // edit_file comes wrapped when it created a file: the pane shows its text, the file row sits below.
+  const created =
+    SANDBOX_FILE_TOOLS.has(toolName) && isSandboxToolResult(result)
+      ? (result as { text: string; sessionId: string; files?: SandboxFile[] })
+      : null;
+  const shown = created
+    ? created.text
+    : widget?.images?.length
+      ? { text: widget.text, images: widget.images }
+      : (widget?.text ?? result);
 
   return (
     <ToolFallbackRoot
@@ -458,14 +505,29 @@ const ToolFallbackImpl: ToolCallMessagePartComponent = ({
         mcpTool={mcpToolFromProvenance(provenance)}
         status={status}
       />
+      {!isCancelled && widget && (
+        <ToolFallbackMcpApp
+          toolName={toolName}
+          result={widget}
+          argsText={argsText}
+        />
+      )}
       <ToolFallbackContent>
         <ToolFallbackError status={status} />
         <ToolFallbackArgs
           argsText={argsText}
           className={cn(isCancelled && "opacity-60")}
         />
-        {!isCancelled && <ToolFallbackResult result={result} />}
+        {!isCancelled && <ToolFallbackResult result={shown} />}
       </ToolFallbackContent>
+      {/* Files stay outside even when the card is collapsed (#10425) */}
+      {created && (
+        <SandboxFiles
+          className="ml-5"
+          sessionId={created.sessionId}
+          files={created.files ?? []}
+        />
+      )}
     </ToolFallbackRoot>
   );
 };

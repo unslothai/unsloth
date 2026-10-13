@@ -24,6 +24,11 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
+  /** Live readings from the same probe as vram_used_gb; absent where the backend has none. */
+  gpu_utilization_pct?: number | null;
+  temperature_c?: number | null;
+  power_draw_w?: number | null;
+  power_limit_w?: number | null;
 }
 
 export interface SystemGpuInfo {
@@ -61,8 +66,19 @@ export interface SystemInfoResponse {
   dense_quant_schemes?: string[];
   /** Absent on older backends, where readers treat it as off. */
   nvfp4_diffusion?: boolean;
+  /** Prequantized LLM checkpoint formats ("fp8", "nvfp4") every card runs natively. Absent on older backends. */
+  checkpoint_quant_formats?: string[];
   /** Whether group offload can stream torchao weights. Absent on older backends. */
   quantised_streaming?: boolean;
+  /** Extra Diffusers offload fit tiers per lower-cased repo id, GiB VRAM / GiB available RAM. Absent on older backends. */
+  diffusers_offload_tiers?: Record<
+    string,
+    Array<{
+      gpu_gb: number;
+      system_ram_gb: number;
+      requires_quantised_streaming?: boolean;
+    }>
+  >;
   uptime_seconds: number | null;
   cpu: {
     logical_count: number;
@@ -81,6 +97,12 @@ export interface SystemInfoResponse {
     free_gb: number;
     percent_used: number;
   };
+  /** The models (HF cache) volume; null or absent when it is the system disk. */
+  models_disk?: {
+    total_gb: number;
+    free_gb: number;
+    percent_used: number;
+  } | null;
   gpu: SystemGpuInfo;
   /** Devices available to GGUF inference; differs when llama.cpp uses Vulkan. */
   inference_gpu?: SystemGpuInfo;

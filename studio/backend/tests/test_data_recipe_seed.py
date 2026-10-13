@@ -2,7 +2,10 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import base64
 import importlib.util
+import io
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -102,21 +105,40 @@ def test_local_csv_seed_keeps_its_values_as_written(monkeypatch, tmp_path):
     ]
 
 
+@pytest.mark.parametrize("filename", ["seed.jsonl", "seed.json"])
+def test_local_json_seed_preview_keeps_its_values_as_written(monkeypatch, tmp_path, filename):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    records = [
+        {"zip": "01234", "qty": 3, "created_at": 1700000000, "date": "2024-01-01"},
+        {"zip": "90210", "qty": 4, "created_at": 1700000001, "date": "2024-01-02"},
+    ]
+    path = tmp_path / filename
+    if filename.endswith(".jsonl"):
+        path.write_text("\n".join(json.dumps(record) for record in records), encoding = "utf-8")
+    else:
+        path.write_text(json.dumps(records), encoding = "utf-8")
+
+    rows = seed_route._read_preview_rows_from_local_file(path, 10)
+
+    assert rows == records
+
+
 @pytest.mark.parametrize(
-    ("filename", "package"),
+    ("filename", "module", "package"),
     [
-        ("paper.pdf", "pymupdf4llm"),
-        ("notes.docx", "mammoth"),
+        ("paper.pdf", "pymupdf4llm", "pymupdf4llm"),
+        ("notes.docx", "docx", "python-docx"),
     ],
 )
 def test_unstructured_upload_names_missing_extractor_dependency(
-    monkeypatch, tmp_path, filename, package
+    monkeypatch, tmp_path, filename, module, package
 ):
     seed_route = _load_seed_route(monkeypatch, tmp_path)
     monkeypatch.setattr(
         seed_route,
         "_extract_text_from_file",
-        _raise(ModuleNotFoundError(f"No module named {package!r}", name = package)),
+        _raise(ModuleNotFoundError(f"No module named {module!r}", name = module)),
     )
 
     result = _run_upload(seed_route, filename, b"%PDF-1.7")
@@ -138,6 +160,39 @@ def test_unstructured_upload_keeps_txt_path_working(monkeypatch, tmp_path):
     assert result.error is None
     assert any(name.endswith(".txt") for name in _block_files(seed_route))
     assert any(name.endswith(".extracted.txt") for name in _block_files(seed_route))
+
+
+_PNG_1X1 = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
+
+
+def test_unstructured_docx_upload_extracts_plain_text(monkeypatch, tmp_path):
+    docx = pytest.importorskip("docx")
+    seed_route = _load_seed_route(monkeypatch, tmp_path, inline_extraction = False)
+    document = docx.Document()
+    document.add_heading("Refunds", 1)
+    document.add_paragraph("Within 30 days (see section 4.2) - email support@example.com!")
+    address = document.add_paragraph("Ship to:")
+    address.add_run().add_break()
+    address.add_run("221B Baker Street")
+    document.add_paragraph("Prices: $5.99 + tax. Use file_name.py")
+    saved = document.add_paragraph(r"Saved to C:\data\file_1.txt")
+    saved.add_run().add_picture(io.BytesIO(_PNG_1X1))
+    source = tmp_path / "policy.docx"
+    document.save(source)
+
+    result = _run_upload(seed_route, "policy.docx", source.read_bytes())
+
+    assert result.status == "ok"
+    extracted = seed_route.UNSTRUCTURED_UPLOAD_ROOT / "block" / f"{result.file_id}.extracted.txt"
+    assert extracted.read_text(encoding = "utf-8").strip() == (
+        "Refunds\n"
+        "Within 30 days (see section 4.2) - email support@example.com!\n"
+        "Ship to:\n221B Baker Street\n"
+        "Prices: $5.99 + tax. Use file_name.py\n"
+        r"Saved to C:\data\file_1.txt"
+    )
 
 
 @pytest.mark.parametrize(
@@ -1386,6 +1441,91 @@ def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
 
     assert seen[0] == "fr/train.parquet"
     assert response.resolved_path == "datasets/org/repo/fr/train*.parquet"
+
+
+def _seed_inspect_as(monkeypatch, tmp_path, *, managed):
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "managed_account", lambda: managed)
+    monkeypatch.setattr(seed_route, "refuse_unauthorized_dataset_preview", lambda *a, **k: None)
+    monkeypatch.setattr(seed_route, "_list_hf_repo_files", lambda **kwargs: ["train.csv"])
+    monkeypatch.setattr(seed_route, "_list_hf_dataset_configs", lambda **kwargs: [])
+    read = []
+
+    def fake_preview(*, load_dataset_fn, load_kwargs, preview_size):
+        read.append(load_kwargs)
+        return [{"secret": "owner-only"}]
+
+    monkeypatch.setattr(seed_route, "_load_preview_rows", fake_preview)
+
+    def inspect(name):
+        return seed_route.inspect_seed_dataset(
+            SimpleNamespace(
+                dataset_name = name, split = "train", subset = None, hf_token = None, preview_size = 1
+            ),
+            allow_ambient_token = False,
+        )
+
+    return inspect, read
+
+
+def _seed_folders(tmp_path):
+    owner_rows = tmp_path / "owner" / "uploads"
+    owner_rows.mkdir(parents = True)
+    (owner_rows / "train.csv").write_text("secret\nowner-only\n")
+    own = tmp_path / "accounts" / "alice" / "seeds"
+    own.mkdir(parents = True)
+    (own / "train.csv").write_text("a\n1\n")
+    # load_dataset honours a card's data_files, so a folder of its own can still point elsewhere.
+    (own / "README.md").write_text(
+        f"---\nconfigs:\n- config_name: default\n  data_files: {owner_rows / 'train.csv'}\n---\n"
+    )
+    linked = tmp_path / "accounts" / "alice" / "linked"
+    linked.mkdir()
+    (linked / "train.csv").symlink_to(owner_rows / "train.csv")
+    return owner_rows, own, linked
+
+
+# A managed account previews Hub ids only (what the UI's Hugging Face mode sends); every local
+# folder is refused before load_dataset, whatever its card, links or later swaps say.
+@pytest.mark.parametrize(
+    "name", ["owner", "own", "linked", "org/\x00repo", "../repo", "~nobody/repo", "a/b/c"]
+)
+def test_a_managed_account_inspects_hub_ids_only(monkeypatch, tmp_path, name):
+    owner_rows, own, linked = _seed_folders(tmp_path)
+    # Forward slashes, which Windows accepts too: a backslash path is refused earlier, as not org/repo.
+    folders = {"owner": owner_rows, "own": own, "linked": linked}
+    name = folders[name].as_posix() if name in folders else name
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = True)
+
+    with pytest.raises(HTTPException) as refused:
+        inspect(name)
+
+    assert refused.value.status_code == 403
+    assert read == []
+    inspect("org/repo")
+    assert read
+
+
+@pytest.mark.parametrize("name", ["//attacker/share", "\\\\attacker\\share", "org/repo/extra"])
+def test_a_malformed_id_never_reaches_the_filesystem(monkeypatch, tmp_path, name):
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = True)
+    probed = []
+    monkeypatch.setattr(Path, "exists", lambda self: probed.append(str(self)) or False)
+
+    with pytest.raises(HTTPException) as refused:
+        inspect(name)
+
+    assert refused.value.status_code in (400, 403)
+    assert probed == [] and read == []
+
+
+def test_the_owner_still_inspects_a_local_folder(monkeypatch, tmp_path):
+    _owner_rows, own, _linked = _seed_folders(tmp_path)
+    inspect, read = _seed_inspect_as(monkeypatch, tmp_path, managed = False)
+
+    inspect(own.as_posix())
+
+    assert read
 
 
 def test_seed_hf_path_treats_an_unnamed_config_as_the_default(monkeypatch, tmp_path):

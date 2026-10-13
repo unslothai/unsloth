@@ -12,6 +12,7 @@ import type { ReactElement } from "react";
 import { useEffect, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { ChartsSection } from "./sections/charts-section";
+import { OffloadPanel } from "./sections/offload-panel";
 import { ProgressSection } from "./sections/progress-section";
 import {
   type RunConfigOverride,
@@ -74,6 +75,7 @@ export function LiveTrainingView(): ReactElement {
       selectedModel: state.selectedModel,
       projectName: state.projectName,
       trainingMethod: state.trainingMethod,
+      modelType: state.modelType,
     })),
   );
 
@@ -157,6 +159,8 @@ export function LiveTrainingView(): ReactElement {
     // run started, which would relabel the run and hide its saved LoRA rows in the popover.
     trainingMethod:
       runConfigOverride?.trainingMethod ?? config.trainingMethod ?? "",
+    isDecision:
+      runConfigOverride?.isDecision ?? config.modelType === "decision",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,
     gradNormHistory: runtime.gradNormHistory,
@@ -186,11 +190,13 @@ export function LiveTrainingView(): ReactElement {
       >
         <div data-tour="studio-training-progress">
           <ProgressSection
+            runId={runtime.jobId}
             key={runtime.jobId ?? "no-job"}
             data={viewData}
             configOverride={runConfigOverride}
           />
         </div>
+        <OffloadPanel isTrainingRunning={viewData.isTrainingRunning} />
         <ChartsSection
           currentStep={viewData.currentStep}
           totalSteps={viewData.totalSteps}

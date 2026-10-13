@@ -5,6 +5,9 @@ import { useDeferredValue, type ComponentProps } from "react";
 import { Streamdown } from "streamdown";
 import { useChatPreferencesStore } from "@/features/chat";
 import { useT } from "@/i18n";
+import { withLiteralUnknownTags } from "@/lib/markdown-data-images";
+
+const REHYPE_PLUGINS = withLiteralUnknownTags();
 
 // Render draft URLs without navigation or image requests.
 const components: NonNullable<ComponentProps<typeof Streamdown>["components"]> =
@@ -37,7 +40,7 @@ export function ComposerDraftPreview({ text }: { text: string }) {
         mode="static"
         controls={false}
         components={components}
-        skipHtml
+        rehypePlugins={REHYPE_PLUGINS}
         className="min-w-0 space-y-2 [overflow-wrap:anywhere] [&_pre]:whitespace-pre-wrap [&_table]:block [&_table]:overflow-x-auto"
       >
         {draft}

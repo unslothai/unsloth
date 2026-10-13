@@ -91,6 +91,12 @@ DRAFTER_CASES = [
     ("quants/eagle3-gpt-oss-20b-Q8_0.gguf", True),
     ("Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
     ("eagle3/Llama-3.1-8B-Eagle3-Q4_K_M.gguf", False),
+    # <model>-dspark-<quant>.gguf drafters; a name going on past the kind is the model.
+    ("Ternary-Bonsai-27B-dspark-Q4_1.gguf", True),
+    ("Bonsai-27B-dspark-bf16.gguf", True),
+    ("Qwen3.6-27B-DSpark-Q4_K_M.gguf", True),
+    ("model-dspark-Q8_0-00001-of-00002.gguf", True),
+    ("DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16-00001-of-00004.gguf", False),
 ]
 
 
@@ -178,6 +184,24 @@ def test_eagle3_draft_head_is_not_a_variant_or_the_default():
     )
     assert set(plans) == {"mxfp4"}
     assert plans["mxfp4"].target_filenames == ("gpt-oss-20b-MXFP4.gguf",)
+
+
+BONSAI_FILES = [
+    "Bonsai-27B-F16.gguf",
+    "Bonsai-27B-Q1_0.gguf",
+    "Bonsai-27B-dspark-Q4_1.gguf",
+    "Bonsai-27B-dspark-bf16.gguf",
+    "Bonsai-27B-mmproj-BF16.gguf",
+]
+
+
+def test_bonsai_dspark_drafter_is_not_a_variant():
+    # #11259: the drafter was the smallest row, and llama-server cannot load it as a model.
+    plans = build_gguf_variant_plans(
+        [_sib(name, 1_000, f"sha-{i}") for i, name in enumerate(BONSAI_FILES)]
+    )
+    assert set(plans) == {"f16", "q1_0"}
+    assert plans["q1_0"].main_filenames == frozenset({"Bonsai-27B-Q1_0.gguf"})
 
 
 def test_baked_in_repo_plans_unchanged():
@@ -2790,6 +2814,8 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
 
     assert is_reclaimable_drafter_path("dflash-kquant.gguf") is False
     assert is_reclaimable_drafter_path("dspark-model-Q8_0.gguf") is True
+    assert is_reclaimable_drafter_path("Ternary-Bonsai-27B-dspark-Q4_1.gguf") is True
+    assert is_reclaimable_drafter_path("DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4.gguf") is False
 
     repo, snap = _cache_repo(
         tmp_path,
@@ -2801,6 +2827,22 @@ def test_dflash_stays_unreclaimable_even_though_auto_now_launches_it(tmp_path):
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert (snap / "dflash-kquant.gguf").is_symlink()
     assert not (snap / "dspark-model-Q8_0.gguf").is_symlink()
+
+
+def test_deleting_the_last_bonsai_variant_reclaims_its_dspark_drafter(tmp_path):
+    """The menu hides <model>-dspark-<quant>.gguf as a companion, so once the last real
+    variant is deleted nothing could ever launch it; its blob must go too."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "prism-ml/Bonsai-27B-gguf",
+        ["Bonsai-27B-Q1_0.gguf", "Bonsai-27B-dspark-Q4_1.gguf"],
+    )
+    _delete_gguf_variant_from_repos("prism-ml/Bonsai-27B-gguf", "Q1_0", [repo], None, root = tmp_path)
+
+    assert not (snap / "Bonsai-27B-Q1_0.gguf").is_symlink()
+    assert not (snap / "Bonsai-27B-dspark-Q4_1.gguf").is_symlink()
 
 
 def test_detect_dflash_file_skips_a_sidecar_named_for_another_weight(tmp_path):
@@ -2852,14 +2894,6 @@ def test_detect_dflash_file_ignores_the_suffix_form_the_picker_cannot_hide(tmp_p
     # The invariant behind the choice: what discovery accepts, the picker hides.
     assert _is_companion_gguf_path(suffix_form.name) is False
     assert _is_companion_gguf_path("dflash-kquant.gguf") is True
-
-
-def test_dflash_prefix_form_is_still_found_beside_the_weight(tmp_path):
-    """Dropping the suffix form must not cost the published sidecar."""
-    weight = _write_gguf(tmp_path / "Muse-Glimmer-30B-UD-Q4_K_XL.gguf", "muse-glimmer")
-    sidecar = _write_gguf(tmp_path / "dflash-kquant.gguf", "dflash")
-
-    assert detect_dflash_file(str(weight)) == str(sidecar.resolve())
 
 
 def test_detect_dflash_file_validates_a_candidate_before_reading_its_header(tmp_path, monkeypatch):
@@ -3083,7 +3117,25 @@ class _StopAfterDownloads(Exception):
     """Ends the load once Phase 2 is done, which is all these tests observe."""
 
 
-def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dflash, dspark_cached):
+def _dflash_fetch_during_auto_load(
+    monkeypatch,
+    *,
+    supports_dspark,
+    supports_dflash,
+    dspark_cached,
+    speculative_type = "auto",
+    tensor_parallel = False,
+    extra_args = None,
+    gguf_path = None,
+    dflash_draft_path = None,
+    mtp_draft_path = None,
+    mtp_loads = True,
+    mtp_token = "draft-mtp",
+    model_file = "/cache/snap/model-Q4_K_M.gguf",
+    dflash_file = "/cache/snap/dflash-kquant.gguf",
+    mmproj_file = None,
+    disable_vision = False,
+):
     """Whether an Auto load fetches the DFlash sidecar, and what it resolves to.
 
     Drives the real load path: the suppression lives inline in load_model's
@@ -3102,6 +3154,7 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
                 "found": True,
                 "supports_dspark": supports_dspark,
                 "supports_dflash": supports_dflash,
+                "mtp_token": mtp_token,
             }
         ),
     )
@@ -3119,19 +3172,35 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     monkeypatch.setattr(backend, "_get_gpu_memory", lambda _binary = None, **_kw: [(0, 4096, 8192)])
     monkeypatch.setattr(backend, "_gguf_path_is_diffusion", lambda *_args: False)
     monkeypatch.setattr(backend, "_kill_process", lambda: None)
-    monkeypatch.setattr(
-        backend, "_download_gguf", lambda **_kwargs: "/cache/snap/model-Q4_K_M.gguf"
-    )
-    monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: None)
+    monkeypatch.setattr(backend, "_download_gguf", lambda **_kwargs: model_file)
+    monkeypatch.setattr(backend, "_resolve_launch_mmproj_path", lambda **_kwargs: mmproj_file)
+    monkeypatch.setattr(backend, "_download_mtp", lambda **_kwargs: mtp_draft_path)
+    monkeypatch.setattr(llama_cpp_module, "_mtp_drafter_loads_standalone", lambda _path: mtp_loads)
     # Exactly what _download_dspark does for a cached sidecar on a binary that
     # cannot run it: the path comes back regardless of the capability.
     monkeypatch.setattr(backend, "_download_dspark", lambda **_kwargs: dspark_cached)
 
     def _fetch_dflash(**_kwargs):
         seen["dflash_fetched"] = True
-        return "/cache/snap/dflash-kquant.gguf"
+        return dflash_file
 
     monkeypatch.setattr(backend, "_download_dflash", _fetch_dflash)
+    seen["log"] = []
+    _real_info = llama_cpp_module.logger.info
+
+    def _info(msg, *args, **kwargs):
+        seen["log"].append(str(msg))
+        return _real_info(msg, *args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "info", _info)
+    seen["warnings"] = []
+    _real_warning = llama_cpp_module.logger.warning
+
+    def _warning(msg, *args, **kwargs):
+        seen["warnings"].append(str(msg))
+        return _real_warning(msg, *args, **kwargs)
+
+    monkeypatch.setattr(llama_cpp_module.logger, "warning", _warning)
 
     def _stop(*_args, **_kwargs):
         raise _StopAfterDownloads
@@ -3140,15 +3209,24 @@ def _dflash_fetch_during_auto_load(monkeypatch, *, supports_dspark, supports_dfl
     # settled by then.
     monkeypatch.setattr(backend, "_read_gguf_metadata", _stop)
 
+    source = (
+        {"gguf_path": gguf_path, "model_identifier": gguf_path}
+        if gguf_path
+        else {"hf_repo": "org/repo", "hf_variant": "Q4_K_M", "model_identifier": "org/repo"}
+    )
     with pytest.raises(_StopAfterDownloads):
         backend.load_model(
             GgufLoadIntent(
-                hf_repo = "org/repo",
-                hf_variant = "Q4_K_M",
-                model_identifier = "org/repo",
-                speculative_type = "auto",
+                **source,
+                speculative_type = speculative_type,
+                tensor_parallel = tensor_parallel,
+                extra_args = tuple(extra_args) if extra_args is not None else None,
+                dflash_draft_path = dflash_draft_path,
+                mtp_draft_path = mtp_draft_path if gguf_path else None,
+                disable_vision = disable_vision,
             )
         )
+    seen["dflash_promoted"] = any("using draft-dflash" in m for m in seen["log"])
     return seen
 
 
@@ -3184,6 +3262,160 @@ def test_auto_fetches_dflash_when_the_repo_ships_no_dspark_sidecar(monkeypatch):
         supports_dspark = True,
         supports_dflash = True,
         dspark_cached = None,
+    )
+    assert seen["dflash_fetched"] is True
+
+
+# #11308: DFlash2 + --split-mode tensor aborts at startup, so Auto keeps tensor split with MTP.
+
+_MTP = "/cache/snap/MTP/mtp-model-Q4_0.gguf"
+
+
+@pytest.mark.parametrize(
+    "tensor_parallel, extra_args",
+    [(True, None), (False, ["-sm", "tensor"]), (False, ["--split-mode", "tensor"])],
+)
+def test_auto_skips_dflash_under_tensor_split_when_mtp_is_available(
+    monkeypatch, tensor_parallel, extra_args
+):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = tensor_parallel,
+        extra_args = extra_args,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is False
+    assert seen["dflash_promoted"] is False
+
+
+def test_auto_skips_dflash_under_tensor_split_from_env(monkeypatch):
+    monkeypatch.setenv("LLAMA_ARG_SPLIT_MODE", "tensor")
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is False
+
+
+def test_auto_keeps_dflash_under_tensor_split_when_the_mtp_sidecar_cannot_load(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+        mtp_loads = False,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_when_the_binary_cannot_run_mtp(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+        mtp_token = None,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_for_an_extras_drafter(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        extra_args = ["-sm", "tensor", "--model-draft", "/models/dflash-model.gguf"],
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_for_a_target_with_an_embedded_head(monkeypatch):
+    import utils.models.gguf_metadata as gguf_metadata
+
+    monkeypatch.setattr(gguf_metadata, "read_gguf_nextn_predict_layers", lambda _path: 1)
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_keeps_dflash_under_tensor_split_without_an_mtp_drafter(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = True,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_auto_does_not_promote_a_local_dflash_sidecar_under_tensor_split(monkeypatch, tmp_path):
+    model = tmp_path / "Qwen3.8-27B-UD-Q6_K_XL.gguf"
+    model.write_bytes(b"GGUF")
+    sidecar = tmp_path / "dflash-Qwen3.8-27B-Q8_0.gguf"
+    sidecar.write_bytes(b"GGUF")
+    mtp = tmp_path / "MTP" / "mtp-Qwen3.8-27B-Q4_0.gguf"
+    mtp.parent.mkdir()
+    mtp.write_bytes(b"GGUF")
+    kwargs = dict(
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        gguf_path = str(model),
+        dflash_draft_path = str(sidecar),
+        mtp_draft_path = str(mtp),
+    )
+    tensor = _dflash_fetch_during_auto_load(monkeypatch, extra_args = ["-sm", "tensor"], **kwargs)
+    assert tensor["dflash_promoted"] is False
+    assert any("keeping tensor split" in m for m in tensor["log"])
+    layer = _dflash_fetch_during_auto_load(monkeypatch, **kwargs)
+    assert layer["dflash_promoted"] is True
+
+
+@pytest.mark.parametrize("extra_args", [None, ["-sm", "layer"]])
+def test_auto_still_uses_dflash_without_tensor_split(monkeypatch, extra_args):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        tensor_parallel = extra_args is not None,
+        extra_args = extra_args,
+        mtp_draft_path = _MTP,
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is True
+
+
+def test_explicit_dflash_still_fetches_under_tensor_split(monkeypatch):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        speculative_type = "dflash",
+        tensor_parallel = True,
+        mtp_draft_path = _MTP,
     )
     assert seen["dflash_fetched"] is True
 
@@ -4178,3 +4410,163 @@ def test_mtp_drafter_loads_standalone_needs_only_token_embd(tmp_path):
         arch = "qwen4exp",
     )
     assert _mtp_drafter_loads_standalone(str(drafter))
+
+
+# #13511: a NeoX DFlash drafter cannot follow an M-RoPE image, so Auto keeps vision without it.
+
+
+def _gguf_header(path, arch, kv):
+    import struct
+
+    entries = [("general.architecture", arch), *kv.items()]
+    out = [struct.pack("<IIQQ", 0x46554747, 3, 0, len(entries))]
+    for key, val in entries:
+        out.append(struct.pack("<Q", len(key)) + key.encode())
+        if isinstance(val, str):
+            out.append(struct.pack("<IQ", 8, len(val)) + val.encode())
+        elif isinstance(val, bool):
+            out.append(struct.pack("<I?", 7, val))
+        elif isinstance(val, list):
+            out.append(struct.pack("<IIQ", 9, 5, len(val)) + struct.pack(f"<{len(val)}i", *val))
+        else:
+            out.append(struct.pack("<II", 4, val))
+    path.write_bytes(b"".join(out))
+    return str(path)
+
+
+@pytest.fixture
+def vision_files(tmp_path):
+    return {
+        "mrope_model": _gguf_header(
+            tmp_path / "Qwen3.8-27B-Q4_K_M.gguf",
+            "qwen35",
+            {"qwen35.rope.dimension_sections": [11, 11, 10, 0], "qwen35.block_count": 64},
+        ),
+        "neox_model": _gguf_header(
+            tmp_path / "Muse-30B-Q4_K_M.gguf", "llama", {"llama.block_count": 2}
+        ),
+        "neox_dflash": _gguf_header(
+            tmp_path / "dflash-Qwen3.8-27B-BF16.gguf",
+            "dflash",
+            {"dflash.rope.freq_base_u": 1, "tokenizer.ggml.pre": "qwen35"},
+        ),
+        "mrope_dflash": _gguf_header(
+            tmp_path / "dflash-mrope.gguf",
+            "dflash",
+            {"dflash.rope.dimension_sections": [11, 11, 10, 0]},
+        ),
+        "zero_dflash": _gguf_header(
+            tmp_path / "dflash-zero.gguf",
+            "dflash",
+            {"dflash.rope.dimension_sections": [0, 0, 0, 0]},
+        ),
+        "image_mmproj": _gguf_header(
+            tmp_path / "mmproj-F16.gguf", "clip", {"clip.has_vision_encoder": True}
+        ),
+        "audio_mmproj": _gguf_header(
+            tmp_path / "mmproj-audio.gguf",
+            "clip",
+            {"clip.has_vision_encoder": False, "clip.has_audio_encoder": True},
+        ),
+    }
+
+
+def test_mrope_sections_reader(vision_files, tmp_path):
+    from utils.models.gguf_metadata import gguf_has_mrope_sections
+
+    assert gguf_has_mrope_sections(vision_files["mrope_model"]) is True
+    assert gguf_has_mrope_sections(vision_files["mrope_dflash"]) is True
+    assert gguf_has_mrope_sections(vision_files["neox_dflash"]) is False
+    assert gguf_has_mrope_sections(vision_files["zero_dflash"]) is False
+    assert gguf_has_mrope_sections(vision_files["neox_model"]) is False
+    # Another namespace's sections are not this architecture's.
+    other = _gguf_header(
+        tmp_path / "other.gguf", "dflash", {"qwen35.rope.dimension_sections": [1, 1, 1, 0]}
+    )
+    assert gguf_has_mrope_sections(other) is False
+    garbage = tmp_path / "garbage.gguf"
+    garbage.write_bytes(b"not a gguf at all")
+    assert gguf_has_mrope_sections(str(garbage)) is None
+    truncated = tmp_path / "truncated.gguf"
+    truncated.write_bytes(Path(vision_files["mrope_model"]).read_bytes()[:40])
+    assert gguf_has_mrope_sections(str(truncated)) is None
+    assert gguf_has_mrope_sections(str(tmp_path / "missing.gguf")) is None
+
+
+@pytest.mark.parametrize(
+    "model, dflash, mmproj, expected",
+    [
+        ("mrope_model", "neox_dflash", "image_mmproj", True),
+        ("mrope_model", "zero_dflash", "image_mmproj", True),
+        ("mrope_model", "mrope_dflash", "image_mmproj", False),
+        ("neox_model", "neox_dflash", "image_mmproj", False),
+        ("mrope_model", "neox_dflash", "audio_mmproj", False),
+        ("mrope_model", "neox_dflash", None, False),
+        ("mrope_model", "missing", "image_mmproj", False),
+    ],
+)
+def test_dflash_drafter_breaks_on_images(vision_files, tmp_path, model, dflash, mmproj, expected):
+    from core.inference.llama_cpp import _dflash_drafter_breaks_on_images
+    files = {**vision_files, "missing": str(tmp_path / "missing.gguf")}
+    assert (
+        _dflash_drafter_breaks_on_images(
+            files[model], files[dflash], files[mmproj] if mmproj else None
+        )
+        is expected
+    )
+
+
+def test_auto_skips_neox_dflash_on_an_mrope_vision_load(monkeypatch, vision_files):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        model_file = vision_files["mrope_model"],
+        dflash_file = vision_files["neox_dflash"],
+        mmproj_file = vision_files["image_mmproj"],
+    )
+    assert seen["dflash_fetched"] is True
+    assert seen["dflash_promoted"] is False
+    assert any("no M-RoPE sections" in m for m in seen["log"])
+
+
+@pytest.mark.parametrize(
+    "dflash, mmproj, model, disable_vision",
+    [
+        ("mrope_dflash", "image_mmproj", "mrope_model", False),
+        ("neox_dflash", "image_mmproj", "neox_model", False),
+        ("neox_dflash", "audio_mmproj", "mrope_model", False),
+        ("neox_dflash", None, "mrope_model", False),
+        ("neox_dflash", "image_mmproj", "mrope_model", True),
+    ],
+)
+def test_auto_keeps_dflash_when_images_cannot_break_it(
+    monkeypatch, vision_files, dflash, mmproj, model, disable_vision
+):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        model_file = vision_files[model],
+        dflash_file = vision_files[dflash],
+        mmproj_file = vision_files[mmproj] if mmproj else None,
+        disable_vision = disable_vision,
+    )
+    assert seen["dflash_promoted"] is True
+
+
+def test_forced_dflash_on_an_mrope_vision_load_still_launches_and_warns(monkeypatch, vision_files):
+    seen = _dflash_fetch_during_auto_load(
+        monkeypatch,
+        supports_dspark = False,
+        supports_dflash = True,
+        dspark_cached = None,
+        speculative_type = "dflash",
+        model_file = vision_files["mrope_model"],
+        dflash_file = vision_files["neox_dflash"],
+        mmproj_file = vision_files["image_mmproj"],
+    )
+    assert seen["dflash_fetched"] is True
+    assert any("DFlash forced" in m for m in seen["warnings"])

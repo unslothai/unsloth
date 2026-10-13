@@ -45,6 +45,7 @@ import {
   buildLocalInventoryRows,
   cachedInventoryId,
   defaultCapabilities,
+  withUmbrellaFolderRows,
 } from "./view-models";
 import { normalizeTimestamp } from "./inventory-timestamps";
 import {
@@ -72,6 +73,7 @@ type HubInventoryOptions = {
   kind?: HubInventoryKind;
   enabled?: boolean;
   includeLocal?: boolean;
+  includeUmbrellaFolders?: boolean;
 };
 
 const MODEL_HUB_CACHE_SOURCES = [
@@ -290,6 +292,7 @@ export function useHubInventory(
   const isDatasetMode = (options.kind ?? "models") === "datasets";
   const enabled = options.enabled ?? true;
   const includeLocal = options.includeLocal ?? true;
+  const includeUmbrellaFolders = options.includeUmbrellaFolders ?? false;
   const modelInventory = useDeviceInventorySources(MODEL_HUB_CACHE_SOURCES, {
     hfToken,
     enabled: enabled && !isDatasetMode,
@@ -501,12 +504,21 @@ export function useHubInventory(
     () =>
       [
         ...(isDatasetMode ? [] : liveDownloadRows),
-        ...cachedGguf.map((row) => buildCachedInventoryRow(row, "gguf")),
+        ...withUmbrellaFolderRows(
+          cachedGguf.map((row) => buildCachedInventoryRow(row, "gguf")),
+          includeUmbrellaFolders,
+        ),
         ...cachedModels.map((row) =>
           buildCachedInventoryRow(row, "safetensors"),
         ),
       ].sort(compareCachedRows),
-    [cachedGguf, cachedModels, isDatasetMode, liveDownloadRows],
+    [
+      cachedGguf,
+      cachedModels,
+      includeUmbrellaFolders,
+      isDatasetMode,
+      liveDownloadRows,
+    ],
   );
 
   const cachedDatasetRows = useMemo<CachedInventoryRow[]>(
@@ -544,6 +556,7 @@ export function useHubInventory(
           isGguf: false,
           loadId: ds.id,
           modelFormat: "unknown" as const,
+          artifact: "unknown" as const,
           formatVariant: null,
           capabilities: defaultCapabilities("unknown"),
           updatedAt: normalizeTimestamp(ds.updated_at),

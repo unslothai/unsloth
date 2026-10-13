@@ -15,7 +15,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_runtime
+from . import mxc_adapter, mxc_drive_alias, mxc_policy, mxc_read_grants, mxc_runtime
 
 _lock = threading.Lock()
 _cache: dict[tuple, tuple[float, bool, str]] = {}
@@ -28,6 +28,9 @@ MSYS_NAMESPACE_REASON = (
     "Git Bash (MSYS2) cannot start in the MXC container, which denies the global named-object "
     "directory it creates (microsoft/mxc#1061)."
 )
+NO_BUILTIN_CONTAINER_REASON = (
+    "This Windows has no built-in container (BaseContainer), and the fallback sandbox is off."
+)
 
 
 _host_prep_cache: dict[str, tuple[float, str | None]] = {}
@@ -37,6 +40,21 @@ def invalidate_cache() -> None:
     with _lock:
         _cache.clear()
         _host_prep_cache.clear()
+    # Only when already loaded: the MXC child paths import this module without the tool stack.
+    os_sandbox = sys.modules.get(f"{__package__}.os_sandbox")
+    if os_sandbox is not None:
+        os_sandbox.forget_tool_isolation()
+
+
+def host_prep_command() -> list[str]:
+    """The elevated host preparation, as argv; Settings > Sandbox runs exactly this."""
+    return [
+        sys.executable,
+        str(Path(__file__).resolve().parents[3] / "install_mxc_prebuilt.py"),
+        "--prepare-host",
+        "--install-dir",
+        str(mxc_runtime._installed_package_root()),
+    ]
 
 
 def host_prep_remediation() -> str | None:
@@ -52,15 +70,7 @@ def host_prep_remediation() -> str | None:
     steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
     advice = None
     if steps:
-        command = subprocess.list2cmdline(
-            [
-                sys.executable,
-                str(Path(__file__).resolve().parents[3] / "install_mxc_prebuilt.py"),
-                "--prepare-host",
-                "--install-dir",
-                str(mxc_runtime._installed_package_root()),
-            ]
-        )
+        command = subprocess.list2cmdline(host_prep_command())
         reboot = (
             " (prepare-null-device is undone by every reboot)"
             if ("prepare-null-device" in steps)
@@ -68,7 +78,8 @@ def host_prep_remediation() -> str | None:
         )
         advice = (
             f"MXC reports missing host preparation: {', '.join(steps)}{reboot}. "
-            f"Run {command} and approve the administrator prompt."
+            f"Run {command} and approve the administrator prompt, or use Settings > Sandbox > "
+            "Prepare this PC."
         )
     with _lock:
         _host_prep_cache[identity] = (time.monotonic() + NEGATIVE_TTL, advice)
@@ -240,7 +251,10 @@ def _probe(
                 )
             except Exception:
                 lease = None
+        grant_lease = None
         try:
+            # The probe reads Python through the same grants, so a revocation waits for it too.
+            grant_lease = mxc_read_grants.hold_if_needed()
             request = (
                 mxc_policy.build_launch_request(probe_plan, cwd_alias = lease.root)
                 if lease
@@ -284,6 +298,8 @@ def _probe(
                 mxc_adapter.release_runtime(proc)
             if lease is not None:
                 lease.release()
+            if grant_lease is not None:
+                grant_lease.release()
         if (
             proc.returncode != 0
             or result.get("exitCode") != 0
@@ -293,6 +309,8 @@ def _probe(
                 selected_executable, execution_kind, output
             ):
                 return False, MSYS_NAMESPACE_REASON
+            if "BaseContainer is unavailable" in (output or ""):
+                return False, NO_BUILTIN_CONTAINER_REASON
             return False, "the live MXC probe did not complete cleanly"
         if execution_kind == "terminal":
             captured = workdir / "outside-read.txt"

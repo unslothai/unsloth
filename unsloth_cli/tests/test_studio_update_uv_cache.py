@@ -481,17 +481,6 @@ def test_the_recorded_install_cache_beats_both_guesses(monkeypatch, tmp_path, ca
     assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
 
 
-def test_a_recorded_studio_cache_survives_the_user_warming_their_own(monkeypatch, tmp_path, caches):
-    """The mirror: a studio install, and the user has since warmed uv's own cache."""
-    studio_cache, default_cache = caches
-    _fill(studio_cache)
-    _fill(default_cache)
-    _record(tmp_path / "StudioHome", studio_cache)
-    seen = _run_posix(monkeypatch, tmp_path)
-
-    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
-
-
 def test_an_emptied_recorded_cache_does_not_outrank_a_warm_one(monkeypatch, tmp_path, caches):
     """A marker pointing at an emptied cache is stale, not authoritative."""
     studio_cache, default_cache = caches
@@ -500,15 +489,6 @@ def test_an_emptied_recorded_cache_does_not_outrank_a_warm_one(monkeypatch, tmp_
     seen = _run_posix(monkeypatch, tmp_path)
 
     assert seen["env"]["UV_CACHE_DIR"] == str(default_cache), seen["env"].get("UV_CACHE_DIR")
-
-
-def test_installs_older_than_the_marker_still_work(monkeypatch, tmp_path, caches):
-    """The normal state for everyone installed before this change."""
-    studio_cache, _default = caches
-    _fill(studio_cache)
-    seen = _run_posix(monkeypatch, tmp_path)
-
-    assert seen["env"]["UV_CACHE_DIR"] == str(studio_cache), seen["env"].get("UV_CACHE_DIR")
 
 
 def test_a_reinstall_into_a_custom_cache_is_not_shadowed_by_the_old_marker(

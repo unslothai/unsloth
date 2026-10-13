@@ -48,13 +48,21 @@ export function loadedConfigSignature(
     return "none";
   }
   return [
+    config.engine ?? "auto",
+    config.enginePrecision ?? "auto",
+    config.engineParallelism ?? "tensor",
+    config.engineKvCacheDtype ?? "auto",
+    config.engineSeed ?? "",
+    config.engineGpuMemoryUtilization ?? "",
     config.customContextLength ?? "",
     config.maxSeqLength ?? "",
     config.kvCacheDtype ?? "",
     config.mlxKvQuant ?? "",
+    config.mlxInt8Prefill ? "1" : "0",
     config.speculativeType ?? "",
     config.specDraftNMax ?? "",
     config.specDraftCacheDtype ?? "",
+    config.specDraftModel ?? "",
     config.nParallel ?? "",
     config.reasoningBudget ?? "",
     `${(config.reasoningBudgetMessage ?? "").length}:${hashString(config.reasoningBudgetMessage ?? "")}`,
@@ -68,6 +76,9 @@ export function loadedConfigSignature(
     config.chatTemplateOverride == null
       ? ""
       : `${config.chatTemplateOverride.length}:${hashString(config.chatTemplateOverride)}`,
+    config.llamaExtraArgs == null
+      ? ""
+      : `${config.llamaExtraArgs.length}:${hashString(config.llamaExtraArgs.join("\u0000"))}`,
     gpuFieldsSignature(config),
   ].join("|");
 }

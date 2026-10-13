@@ -289,7 +289,7 @@ test("dialog actions and reconciliation stop when the dialog closes", () => {
   );
   assert.match(
     CHAT_MCP_SERVERS_DIALOG,
-    /<Button size="sm" onClick=\{startCreate\} disabled=\{importing \|\| blenderBusy\}>/,
+    /<Button size="sm" onClick=\{startCreate\} disabled=\{importing\}>/,
   );
 });
 
@@ -325,12 +325,12 @@ test("dialog closure is blocked while a CRUD mutation is in flight", () => {
 
   assert.match(
     closeHandler,
-    /if \(!next && \(blenderBusy \|\| \(saving && !codecPending\) \|\| busyIdsRef\.current\.size > 0\)\)[\s\S]*return;[\s\S]*if \(!next\) \{[\s\S]*formGenerationRef\.current \+= 1;/,
+    /if \(!next && \(\(saving && !codecPending\) \|\| busyIdsRef\.current\.size > 0\)\)[\s\S]*return;[\s\S]*if \(!next\) \{[\s\S]*formGenerationRef\.current \+= 1;/,
     "the in-flight mutation guard must run before close invalidates the form generation",
   );
   assert.match(
     CHAT_MCP_SERVERS_DIALOG,
-    /<DialogContent[\s\S]*?showCloseButton=\{!blenderBusy && !\(saving && !codecPending\) && busyIds\.size === 0\}[\s\S]*?>/,
+    /<DialogContent[\s\S]*?showCloseButton=\{!\(saving && !codecPending\) && busyIds\.size === 0\}[\s\S]*?>/,
     "the built-in close control must disappear during the same mutation window",
   );
   assert.match(
@@ -748,6 +748,7 @@ test("every list consumer uses the shared pending-mutation read barrier", () => 
     "api/mcp-servers-api.ts",
     "chat-mcp-servers-dialog.tsx",
     "mcp-composer-button.tsx",
+    "runtime-provider.tsx",
   ]);
 
   assert.equal(

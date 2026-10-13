@@ -102,6 +102,9 @@ def _items_for_caller(items: list[dict], via_api_key: bool) -> list[dict]:
         # A fine-tune of a local model names that folder; a Hub repo id is kept.
         if isinstance(base, str) and os.path.isabs(base):
             item["model"] = {**item["model"], "baseModel": cache_reference(base)}
+        made_with = (item.get("audio") or {}).get("model")
+        if isinstance(made_with, str) and os.path.isabs(made_with):
+            item["audio"] = {**item["audio"], "model": cache_reference(made_with)}
         shown.append(item)
     return redact_inventory_host_paths(shown, via_api_key = via_api_key)
 
@@ -162,10 +165,12 @@ async def get_library(
 
     items = await run_in_threadpool(library.list_items)
     disk = await run_in_threadpool(library.disk_usage)
+    unlisted = await run_in_threadpool(library.unlisted_bytes, items)
     return {
         "items": _items_for_caller(items, via_api_key),
         "folders": library_db.list_folders(),
         "disk": redact_inventory_host_paths(disk, via_api_key = via_api_key),
+        "unlistedBytes": unlisted,
     }
 
 
@@ -195,20 +200,21 @@ def _still_there(item_id: str, fingerprint: Optional[str]) -> bool:
 
 @router.patch("/items")
 def patch_item(body: ItemPatch, current_subject: str = Depends(get_current_subject)) -> dict:
-    fingerprint = library.fingerprint(body.id)
-    if fingerprint is None and library.path_derived(body.id):
-        raise HTTPException(status_code = 404, detail = "Item not found")
-    try:
-        library_db.update_entry(
-            body.id,
-            name = body.name.strip() if body.name else None,
-            favorite = body.favorite,
-            folder_id = body.folderId,
-            move = "folderId" in body.model_fields_set,
-            fingerprint = fingerprint,
-        )
-    except KeyError:
-        raise HTTPException(status_code = 404, detail = "Folder not found")
+    with library.overlay_write():
+        fingerprint = library.fingerprint(body.id)
+        if fingerprint is None and library.path_derived(body.id):
+            raise HTTPException(status_code = 404, detail = "Item not found")
+        try:
+            library_db.update_entry(
+                body.id,
+                name = body.name.strip() if body.name else None,
+                favorite = body.favorite,
+                folder_id = body.folderId,
+                move = "folderId" in body.model_fields_set,
+                fingerprint = fingerprint,
+            )
+        except KeyError:
+            raise HTTPException(status_code = 404, detail = "Folder not found")
     return {"ok": True}
 
 
@@ -266,7 +272,7 @@ async def add_item_to_project(
     from core.inference.gallery_projects import ProjectNotFound, copy_into_project
 
     def _copy() -> dict:
-        with library.open_item(body.id) as item:
+        with library.project_item(body.id) as item:
             copied = copy_into_project(item.handle, body.projectId, item.folder, item.project_name)
         library.invalidate_listing()
         return copied
@@ -277,7 +283,7 @@ async def add_item_to_project(
         raise HTTPException(status_code = 404, detail = "Project not found")
     except LookupError:
         raise HTTPException(status_code = 404, detail = "Item not found")
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     except OSError as exc:
         logger.warning("library.add_to_project_failed: %s", exc)

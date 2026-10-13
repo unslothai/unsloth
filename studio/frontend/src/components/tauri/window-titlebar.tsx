@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  getViewportBackdropOpen,
+  getViewportBackdropTone,
+  subscribeViewportBackdrop,
+} from "@/components/tauri/viewport-backdrop";
 import { useIsMobileShell } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
 import { Z_LAYER } from "@/lib/z-layers";
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
+import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import { ArrowLeft, ArrowRight } from "lucide-react";
@@ -20,9 +25,22 @@ import {
   useEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 
 const CUSTOM_TITLEBAR_PLATFORMS = ["win", "linux", "x11"] as const;
+
+function subscribeNever(): () => void {
+  return () => undefined;
+}
+
+function noBackdropTone(): null {
+  return null;
+}
+
+function backdropClosed(): boolean {
+  return false;
+}
 
 type WindowResizeDirection =
   | "East"
@@ -88,48 +106,66 @@ function CaptionGlyph({
     return () => window.removeEventListener("resize", update);
   }, []);
   const pixels = Math.round(10 * scale);
-  const stroke = (Math.max(1, Math.round(scale)) * 10) / pixels;
+  const strokePixels = Math.max(1, Math.round(scale));
+  const stroke = (strokePixels * 10) / pixels;
   const inset = stroke / 2;
   const edge = 10 - inset;
+  // minimize sits on whole device pixel rows, so its line stays one solid row
+  const middle =
+    ((Math.round((pixels - strokePixels) / 2) + strokePixels / 2) * 10) /
+    pixels;
+  const corner = Math.min(2, 2.5 - inset);
+  // round caps overshoot their endpoints, so the x ends pull in to keep its old size
+  const tip = inset * 1.5;
+  // the x's tapered tips read 0.365 strokes narrower than the others' ends, so those shift right by that in whole device pixels
+  const nudge =
+    kind === "close" ? 0 : (Math.round(0.365 * strokePixels) * 10) / pixels;
   return (
     <svg
       aria-hidden="true"
       width={pixels / scale}
       height={pixels / scale}
       viewBox="0 0 10 10"
+      overflow="visible"
       fill="none"
       stroke="currentColor"
       strokeWidth={stroke}
+      strokeLinecap="round"
+      strokeLinejoin="round"
       className="shrink-0"
     >
-      {kind === "minimize" && <path d="M0 5h10" />}
-      {kind === "maximize" && (
-        <rect
-          x={inset}
-          y={inset}
-          width={10 - stroke}
-          height={10 - stroke}
-          rx="0.7"
-        />
-      )}
-      {/* Windows puts the front window bottom-left. */}
-      {kind === "restore" && (
-        <>
-          <path d={`M2.5 2.5V${inset}H${edge}V7.5H7.5`} />
+      <g transform={`translate(${nudge} 0)`}>
+        {kind === "minimize" && <path d={`M${inset} ${middle}H${edge}`} />}
+        {kind === "maximize" && (
           <rect
             x={inset}
-            y="2.5"
-            width={7.5 - inset}
-            height={7.5 - inset}
-            rx="0.7"
+            y={inset}
+            width={10 - stroke}
+            height={10 - stroke}
+            rx="2"
           />
-        </>
-      )}
-      {kind === "close" && (
-        <path
-          d={`M${inset} ${inset}L${edge} ${edge}M${edge} ${inset}L${inset} ${edge}`}
-        />
-      )}
+        )}
+        {/* Windows puts the front window bottom-left. */}
+        {kind === "restore" && (
+          <>
+            <path
+              d={`M2.5 2.5V${inset + corner}A${corner} ${corner} 0 0 1 ${2.5 + corner} ${inset}H${edge - corner}A${corner} ${corner} 0 0 1 ${edge} ${inset + corner}V${7.5 - corner}A${corner} ${corner} 0 0 1 ${edge - corner} 7.5H7.5`}
+            />
+            <rect
+              x={inset}
+              y="2.5"
+              width={7.5 - inset}
+              height={7.5 - inset}
+              rx="2"
+            />
+          </>
+        )}
+        {kind === "close" && (
+          <path
+            d={`M${tip} ${tip}L${10 - tip} ${10 - tip}M${10 - tip} ${tip}L${tip} ${10 - tip}`}
+          />
+        )}
+      </g>
     </svg>
   );
 }
@@ -208,8 +244,9 @@ export function DesktopTitlebarNavigation({
           }}
           className={buttonClass}
         >
+          {/* The open sidebar as a panel; closed, Studio's own glyph. */}
           <HugeiconsIcon
-            icon={LayoutAlignLeftIcon}
+            icon={expanded ? PanelLeftIcon : LayoutAlignLeftIcon}
             strokeWidth={1.75}
             className={iconClass}
           />
@@ -267,6 +304,16 @@ export function WindowTitlebar({
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const [focused, setFocused] = useState(true);
+  const backdropOpen = useSyncExternalStore(
+    enabled ? subscribeViewportBackdrop : subscribeNever,
+    enabled ? getViewportBackdropOpen : backdropClosed,
+    backdropClosed,
+  );
+  const backdropTone = useSyncExternalStore(
+    enabled ? subscribeViewportBackdrop : subscribeNever,
+    enabled ? getViewportBackdropTone : noBackdropTone,
+    noBackdropTone,
+  );
   const { pinned, togglePinned } = useSidebarPin();
   // Outside SidebarProvider, so read the same media query the provider does.
   const isMobile = useIsMobileShell();
@@ -439,16 +486,22 @@ export function WindowTitlebar({
               style={{ left: cornerLeft }}
             />
           )}
-          {/* One border for edge and corner: it snaps to device pixels where a 1px box blurs. Pinned, it
-              is also the sidebar's full-height edge (app-sidebar drops border-r; dark has none). */}
+          {/* Borders for edge and corner: they snap to device pixels where a 1px box blurs. Pinned, they
+              are also the sidebar's full-height edge (app-sidebar drops border-r; dark has none). Dark
+              hides them: any visible border there is lighter than both surfaces and reads as a white seam. */}
           <div
             className={cn(
-              "absolute top-0 right-0 h-[12px] border-t border-sidebar-border",
-              pinned &&
-                "h-[calc(100dvh-var(--studio-custom-titlebar-height))] rounded-tl-[12px] border-l border-sidebar-border/80 border-t-sidebar-border/90 dark:border-white/10 dark:border-t-white/15",
+              "absolute top-0 right-0 h-[12px] border-t border-sidebar-edge dark:border-transparent",
+              pinned && "rounded-tl-[12px] border-l",
             )}
             style={{ left: pinned ? cornerLeft : 0 }}
           />
+          {pinned && (
+            <div
+              className="absolute top-[12px] h-[calc(100dvh-var(--studio-custom-titlebar-height)-12px)] w-0 border-l border-sidebar-edge dark:border-transparent"
+              style={{ left: cornerLeft }}
+            />
+          )}
         </div>
       )}
       <header
@@ -457,6 +510,9 @@ export function WindowTitlebar({
           showSidebarSurface && "bg-sidebar text-sidebar-foreground",
         )}
         data-titlebar-live-width-scope=""
+        data-slot="window-titlebar"
+        data-viewport-backdrop-open={backdropOpen ? "" : undefined}
+        data-viewport-backdrop-tone={backdropTone ?? undefined}
         aria-label="Window titlebar"
       >
         {showSidebarSurface && (
@@ -486,7 +542,8 @@ export function WindowTitlebar({
         />
         <div
           className={cn(
-            "pointer-events-auto absolute right-0 top-0 flex h-full",
+            // Keep native window actions crisp above the visual modal backdrop.
+            "pointer-events-auto absolute right-0 top-0 z-[100] flex h-full",
             focused ? "text-foreground" : "text-muted-foreground",
           )}
           role="toolbar"

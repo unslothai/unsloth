@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import type { BaseModelSource } from "./api";
+import type { BaseModelSource, LocalArtifactKind } from "./api";
 import type { InventoryHintKind, LocalSource } from "./constants";
 
 export type ModelInventoryFormat =
@@ -37,6 +37,7 @@ export interface CachedInventoryRow {
   repo: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
+  artifact: LocalArtifactKind;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   bytes: number;
@@ -55,6 +56,8 @@ export interface CachedInventoryRow {
   // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
   task?: string | null;
   audioType?: string | null;
+  audioWorkflows?: string[] | null;
+  umbrellaFolder?: boolean;
   // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
   singleFile?: boolean;
   // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
@@ -84,6 +87,7 @@ export interface LocalInventoryRow {
   path: string;
   isGguf: boolean;
   modelFormat: ModelInventoryFormat;
+  artifact: LocalArtifactKind;
   formatVariant?: string | null;
   capabilities: ModelInventoryCapabilities;
   baseModel?: string | null;

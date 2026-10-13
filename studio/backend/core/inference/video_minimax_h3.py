@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import math
+import os
 import tempfile
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Must stay equal to the minimax-h3 family's `gguf_repo`. They are the same one-click pick, and main's
 # test_curated_gguf_repos_are_unsloth_mirrors only checks the family field, so a divergence here would let that test
@@ -103,6 +105,7 @@ def estimate_h3_diffusers_vram_gb(
     transformer_gb: Optional[float] = None,
     transformer_pinned: bool = False,
     transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
 ) -> float:
     """Measured available-VRAM floor for an H3 Diffusers generation.
 
@@ -111,6 +114,20 @@ def estimate_h3_diffusers_vram_gb(
     keeps the released-bfloat16 floor this shipped with.
     ``transformer_streamed``: no two large components are ever resident together."""
     volume_mpixel_frames = width * height * num_frames / 1_000_000
+    if text_encoder_streamed:
+        from .video_minimax_h3_te import H3_TE_STREAMED_GB
+        text_encoder_gb = H3_TE_STREAMED_GB
+        if transformer_streamed:
+            # Nothing big is resident: the largest phase plus the top-level group.
+            from .video_minimax_h3_residency import H3_TOP_LEVEL_GB, h3_phase_need_gb
+            return h3_phase_need_gb(
+                width,
+                height,
+                num_frames,
+                te_streamed_gb = H3_TE_STREAMED_GB,
+                fragmentation = False,
+                top_gb = H3_TOP_LEVEL_GB,
+            )
     if transformer_streamed:
         text_encoder = (
             H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
@@ -141,12 +158,79 @@ H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB = 85.0
 H3_DIFFUSERS_HOST_RAM_HEADROOM_GB = 5.9
 
 
+# Kill switch for the held-memory accounting below; "0" restores MemAvailable + whole RSS.
+H3_HOST_GUARD_HELD_ENV = "UNSLOTH_H3_HOST_GUARD_HELD"
+
+
+def _proc_status_kb(fields: tuple[str, ...]) -> Optional[dict[str, int]]:
+    """``/proc/self/status`` fields in kB, or None off Linux / when unreadable."""
+    try:
+        with open("/proc/self/status", encoding = "utf-8") as handle:
+            found = {}
+            for line in handle:
+                key, _, value = line.partition(":")
+                if key in fields:
+                    found[key] = int(value.split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+    return found if len(found) == len(fields) else None
+
+
+def h3_native_host_available_bytes() -> int:
+    """Host RAM a native (sd-cli / sd-server) render can still take: available RAM, cgroup-capped. Unlike
+    ``h3_host_capacity_bytes`` nothing this process holds is added back: the render is a separate process and
+    reuses none of it."""
+    from utils import host_memory
+
+    usable_mib = host_memory.usable_host_ram_mib()
+    if usable_mib is None:
+        raise RuntimeError("available host RAM could not be read")
+    return max(int(usable_mib), 0) << 20
+
+
+def h3_process_held_host_bytes() -> int:
+    """Host bytes this process holds that a render reuses: RssAnon + RssShmem (pinned copies are shmem). File-backed
+    pages are left out: MemAvailable already counts them as reclaimable. Off Linux, the whole RSS."""
+    import psutil
+
+    fields = _proc_status_kb(("RssAnon", "RssShmem"))
+    if fields is None or str(os.environ.get(H3_HOST_GUARD_HELD_ENV, "1")).strip() == "0":
+        return int(psutil.Process().memory_info().rss)
+    return (fields["RssAnon"] + fields["RssShmem"]) * 1024
+
+
+def h3_host_capacity_bytes() -> int:
+    """Usable host RAM (cgroup-capped) plus what this process already holds and the render reuses,
+    capped at the cgroup limit."""
+    import psutil
+    from utils import host_memory
+
+    available = int(psutil.virtual_memory().available)
+    budgets = host_memory.cgroup_memory_budgets()
+    headroom_mib = host_memory.cgroup_headroom_mib(budgets)
+    if headroom_mib is not None:
+        available = min(available, int(headroom_mib) << 20)
+    capacity = available + h3_process_held_host_bytes()
+    limit_mib = host_memory.cgroup_limit_mib(budgets)
+    if limit_mib is not None:
+        capacity = min(capacity, int(limit_mib) << 20)
+    return capacity
+
+
+# Streamed int8 conditioner + int8 / fp8 denoiser floor, measured as non-reclaimable memory (not RSS, which counts
+# mmap'd checkpoint pages the kernel reclaims under a limit): highest MemoryMax kill on main, 34 GiB, plus ~10% margin.
+H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB = 40.0
+# RSS-based floor for streamed sets larger than the measured one (not re-measured).
+H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB = 70.0
+
+
 def estimate_h3_diffusers_host_ram_gb(
     available_vram_gb: float,
     *,
     text_encoder_gb: Optional[float] = None,
     transformer_gb: Optional[float] = None,
     transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
 ) -> float:
     """Host-RAM floor for the offload tier selected at the available VRAM.
 
@@ -162,15 +246,133 @@ def estimate_h3_diffusers_host_ram_gb(
     A pinned denoiser is still counted here. It lives on the device during the generation, but it
     was built on the host to get there, and keeping it in the sum errs toward refusing a load that
     would have fitted rather than admitting one that will not.
-    A streamed denoiser counts twice (pinned staging copy; measured 80.2 GB peak vs 64.5 GB single count)."""
+    ``transformer_streamed``: the streamed denoiser keeps a pageable source beside its pinned copy and counts twice
+    (80.2 GB measured peak). A slab-arena pin holds one copy and passes False."""
     # A streamed load keeps its staging copy even when free VRAM later climbs past the tier.
     if available_vram_gb >= H3_DIFFUSERS_HOST_RAM_TIER_VRAM_GB and not transformer_streamed:
         return H3_DIFFUSERS_HOST_RAM_HIGH_VRAM_GB
     text_encoder = H3_TEXT_ENCODER_BF16_GB if text_encoder_gb is None else float(text_encoder_gb)
     transformer = H3_TRANSFORMER_BF16_GB if transformer_gb is None else float(transformer_gb)
+    if (
+        text_encoder_streamed
+        and not transformer_streamed
+        and _within_measured_streamed_set(text_encoder, transformer)
+    ):
+        # Both stream from reclaimable page cache, so the component sum overstates the floor.
+        return H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB
     if transformer_streamed:
         transformer *= 2
-    return text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
+    total = text_encoder + transformer + H3_VAE_RESIDENT_GB + H3_DIFFUSERS_HOST_RAM_HEADROOM_GB
+    if text_encoder_streamed:
+        total = max(total, H3_DIFFUSERS_HOST_RAM_STREAMED_RSS_GB)
+    return total
+
+
+def _within_measured_streamed_set(text_encoder_gb: float, transformer_gb: float) -> bool:
+    """Whether a streamed load is no larger than the set ``H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB`` was measured on."""
+    from .video_minimax_h3_te import H3_TE_QUANT_RESIDENT_GB
+    return (
+        text_encoder_gb <= H3_TE_QUANT_RESIDENT_GB["int8"] + 1e-6
+        and transformer_gb <= max(H3_TRANSFORMER_PREQUANT_GB.values()) + 1e-6
+    )
+
+
+def h3_host_ram_shortfall(
+    available_vram_gb: float,
+    *,
+    text_encoder_gb: Optional[float] = None,
+    transformer_gb: Optional[float] = None,
+    transformer_streamed: bool = False,
+    text_encoder_streamed: bool = False,
+) -> Optional[str]:
+    """The refusal message when the host-RAM floor exceeds ``h3_host_capacity_bytes`` (free + already held), else
+    None."""
+    required_host_gb = estimate_h3_diffusers_host_ram_gb(
+        available_vram_gb,
+        text_encoder_gb = text_encoder_gb,
+        transformer_gb = transformer_gb,
+        transformer_streamed = transformer_streamed,
+        text_encoder_streamed = text_encoder_streamed,
+    )
+    host_capacity_gb = h3_host_capacity_bytes() / 1_000_000_000
+    if host_capacity_gb + 0.5 < required_host_gb:
+        return (
+            f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
+            f"system RAM at this VRAM tier; {host_capacity_gb:.1f} GB is "
+            "available. Load the GGUF artifact instead."
+        )
+    return None
+
+
+# Extra picker tiers for the H3 Diffusers row, published on /api/system and unioned with the catalog's (widen only).
+# Picker units: total VRAM GiB, available RAM GiB. Each follows the kill switch of the behaviour it relies on:
+#   - VRAM (UNSLOTH_H3_TE_STREAM): the generate guard's floor for the page's default request, so the selected row
+#     renders it; 960x544 still renders on 12 GB when chosen. Without it, the catalog's 30.
+#   - RAM (UNSLOTH_DIFFUSION_PIN_ARENA): the single-copy host floor (64.5 GB, or the measured
+#     H3_DIFFUSERS_HOST_RAM_STREAMED_SET_GB with the conditioner streamed).
+#     Without it, the catalog's 80.
+H3_DIFFUSERS_FIT_TIERS_ENV = "UNSLOTH_H3_DIFFUSERS_WIDE_TIERS"
+H3_DIFFUSERS_CATALOG_TIER_GPU_GIB = 30.0
+H3_DIFFUSERS_CATALOG_TIER_RAM_GIB = 80.0
+
+
+def _h3_streamed_default_request_gpu_gib() -> float:
+    from .video_families import detect_video_family
+
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    width, height = fam.resolution_presets[0]
+    floor_gb = estimate_h3_diffusers_vram_gb(
+        width,
+        height,
+        fam.default_num_frames,
+        transformer_streamed = True,
+        text_encoder_streamed = True,
+    )
+    # Total VRAM in GiB, rounded up to half a GiB.
+    return math.ceil(floor_gb * 1e9 / 2**30 * 2) / 2
+
+
+def _h3_streamed_host_floor_gib(
+    single_host_copy: bool, text_encoder_streamed: bool = False
+) -> float:
+    from .video_minimax_h3_te import H3_TE_QUANT_RESIDENT_GB
+    floor_gb = estimate_h3_diffusers_host_ram_gb(
+        0.0,
+        text_encoder_gb = H3_TE_QUANT_RESIDENT_GB["int8"],
+        transformer_gb = H3_TRANSFORMER_PREQUANT_GB["int8"],
+        transformer_streamed = not single_host_copy,
+        text_encoder_streamed = text_encoder_streamed,
+    )
+    # The picker reads available RAM in GiB; round up to the next whole GiB.
+    return float(math.ceil(floor_gb * 1e9 / 2**30))
+
+
+def h3_diffusers_fit_tiers() -> list[dict]:
+    """The extra picker tiers this backend admits for the H3 Diffusers row, or [] when
+    ``UNSLOTH_H3_DIFFUSERS_WIDE_TIERS=0`` turns them off, or when neither widening behaviour is
+    active (the picker then keeps the catalog's own tiers, i.e. today's routing). Torch-free: read
+    on the polled /api/system route."""
+    import os
+
+    flag = os.environ.get(H3_DIFFUSERS_FIT_TIERS_ENV, "1").strip().lower()
+    if flag in ("0", "false", "no", "off"):
+        return []
+    from .diffusion_pinned_arena import pin_arena_enabled
+    from .video_minimax_h3_te import h3_te_stream_enabled
+
+    te_streamed = h3_te_stream_enabled()
+    single_copy = pin_arena_enabled()
+    if not te_streamed and not single_copy:
+        return []
+    gpu_gib = (
+        _h3_streamed_default_request_gpu_gib() if te_streamed else H3_DIFFUSERS_CATALOG_TIER_GPU_GIB
+    )
+    ram_gib = (
+        _h3_streamed_host_floor_gib(True, text_encoder_streamed = te_streamed)
+        if single_copy
+        else H3_DIFFUSERS_CATALOG_TIER_RAM_GIB
+    )
+    return [{"gpu_gb": gpu_gib, "system_ram_gb": ram_gib, "requires_quantised_streaming": True}]
 
 
 # torch.autocast casts the weight and bias of these module types to the autocast dtype on entry. Norms sit on
@@ -282,10 +484,9 @@ def h3_canvas_for_aspect(aspect_width: float, aspect_height: float) -> tuple[int
     if area > H3_CANVAS_MAX_PIXELS:
         scale = math.sqrt(H3_CANVAS_MAX_PIXELS / area)
         width, height = width * scale, height * scale
-    snap = lambda v: max(  # noqa: E731
-        H3_CANVAS_MULTIPLE, round(v / H3_CANVAS_MULTIPLE) * H3_CANVAS_MULTIPLE
-    )
-    return snap(width), snap(height)
+    from .video_families import snap_canvas_within_cap
+
+    return snap_canvas_within_cap(width, height, H3_CANVAS_MULTIPLE, H3_CANVAS_MAX_PIXELS)
 
 
 def fit_h3_keyframe(image: Any, width: int, height: int, *, anchor: str) -> Any:
@@ -1102,6 +1303,428 @@ def h3_component_metadata_repo(repo_id: str) -> str:
     return H3_COMPONENT_REPO if repo_id == H3_LEGACY_COMPONENT_REPO else repo_id
 
 
+# Resident peak is the four files plus ~1 GiB (sd.cpp frees the text encoder before the denoiser's compute buffer);
+# the estimate still adds that buffer on top of every file, plus a margin.
+H3_NATIVE_RESIDENT_ENV = "UNSLOTH_H3_NATIVE_RESIDENT"
+# Unsloth sd.cpp fork: quantized matmuls with >= this many rows run BF16 cuBLAS instead of int8 MMQ. Unset/0 = MMQ.
+H3_QUANT_CUBLAS_ENV = "GGML_CUDA_QUANT_CUBLAS_MIN_BATCH"
+H3_QUANT_CUBLAS_MIN_BATCH = "1024"
+# The fork's own floor (bf16_mma_hardware_available); below it the env changes nothing.
+H3_QUANT_CUBLAS_MIN_CC = (8, 0)
+
+
+def h3_quant_cublas_env(
+    cuda_cc: "Optional[tuple[int, int]]",
+    *,
+    sage: bool,
+    environ: Optional[dict] = None,
+) -> tuple[tuple[str, str], ...]:
+    """sd-cli env for the BF16 cuBLAS route: known sm80+ always, known older never, unknown
+    (``cuda_cc`` None) only with sage. A user-exported value (0 included) always wins."""
+    environ = os.environ if environ is None else environ
+    if H3_QUANT_CUBLAS_ENV in environ:
+        return ()
+    if cuda_cc is not None:
+        take = tuple(cuda_cc) >= H3_QUANT_CUBLAS_MIN_CC
+    else:
+        take = sage
+    return ((H3_QUANT_CUBLAS_ENV, H3_QUANT_CUBLAS_MIN_BATCH),) if take else ()
+
+
+# Denoiser compute buffer at 960x544x124, from sd-cli's log; scaled by pixel volume.
+H3_NATIVE_DIT_COMPUTE_BYTES_H1 = int(5.4 * 1024**3)
+H3_NATIVE_H1_PIXEL_VOLUME = 960 * 544 * 124
+H3_NATIVE_RESIDENT_MARGIN_BYTES = 2 * 1024**3
+_H3_STREAM_ONLY_FLAGS = ("--offload-to-cpu", "--stream-layers")
+
+
+def h3_native_resident_bytes(file_bytes: int, width: int, height: int, frames: int) -> int:
+    volume = max(1, int(width)) * max(1, int(height)) * max(1, int(frames))
+    compute = math.ceil(
+        H3_NATIVE_DIT_COMPUTE_BYTES_H1 * max(1.0, volume / H3_NATIVE_H1_PIXEL_VOLUME)
+    )
+    return int(file_bytes) + compute + H3_NATIVE_RESIDENT_MARGIN_BYTES
+
+
+def h3_native_render_flags(
+    offload_flags: "tuple[str, ...] | list[str]",
+    *,
+    memory_mode: Optional[str],
+    free_bytes: Optional[int],
+    need_bytes: Optional[int],
+    env: Optional[dict] = None,
+) -> tuple[list[str], bool]:
+    """Flags for one render and whether it runs resident: only memory auto, only when the live free VRAM covers
+    the estimate; anything unknown keeps the committed flags."""
+    flags = list(offload_flags)
+    environ = env if env is not None else os.environ
+    if str(environ.get(H3_NATIVE_RESIDENT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
+        return flags, False
+    if (memory_mode or "auto") != "auto" or "--offload-to-cpu" not in flags:
+        return flags, False
+    if free_bytes is None or need_bytes is None or int(free_bytes) < int(need_bytes):
+        return flags, False
+    return [f for f in flags if f not in _H3_STREAM_ONLY_FLAGS], True
+
+
+# --offload-to-cpu pins GPU-run weights in the device host buffer (GTT on Vulkan/radv, capped by TTM pages_limit,
+# overflow = "device lost"); --clip-on-cpu modules use plain RAM. Measured Q4_K, 864x480x124: 31.35 vs 15.49 GiB pinned.
+H3_NATIVE_PINNED_MARGIN_BYTES = 1 << 30
+# sd-cli's own host use beyond the weights (CPU compute buffers, decoded frames, audio), and Studio itself.
+H3_NATIVE_HOST_OVERHEAD_BYTES = 3 << 30
+H3_NATIVE_FIT_ENV = "UNSLOTH_H3_NATIVE_FIT_CHECK"
+# Published sizes of the smallest pair (minimax_h3_fl2va_pruned-Q2_K + its Q2_K_M encoder), for the refusal text.
+H3_NATIVE_Q2_PAIR_BYTES = (int(6.26 * 1024**3), int(12.2 * 1024**3))
+
+
+def _sysfs_int(path: Path) -> Optional[int]:
+    try:
+        return int(path.read_text(encoding = "utf-8").strip(), 0)
+    except (OSError, ValueError):
+        return None
+
+
+def _sysfs_pci_slot(device_dir: Path) -> Optional[str]:
+    """``DDDD:BB:DD.F`` of a DRM card's PCI device, lower-cased, or None."""
+    try:
+        for line in (device_dir / "uevent").read_text(encoding = "utf-8").splitlines():
+            if line.startswith("PCI_SLOT_NAME="):
+                return line.split("=", 1)[1].strip().lower() or None
+    except OSError:
+        pass
+    try:
+        name = Path(os.path.realpath(device_dir)).name.lower()
+    except OSError:
+        return None
+    return name if name.count(":") == 2 else None
+
+
+def h3_native_fit_check_enabled(env: Optional[dict] = None) -> bool:
+    """The one kill switch for every H3 native memory guard (UNSLOTH_H3_NATIVE_FIT_CHECK=0 turns them all off)."""
+    environ = env if env is not None else os.environ
+    return str(environ.get(H3_NATIVE_FIT_ENV, "")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def amdgpu_gtt_reading(
+    pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
+) -> "tuple[Optional[int], bool]":
+    """``(free GTT, use known)`` from ONE pass over sysfs, so both halves describe the same reading.
+
+    TTM's page limit is shared by every amdgpu device, so what is left is the pool's size less the GTT used on ALL
+    amdgpu cards, not only on the selected one. The pool's size is the ``mem_info_gtt_total`` of the card at
+    ``pci_slot`` (``DDDD:BB:DD.F``, or ``DDDD:BB:DD`` for any function), or the smallest total when the slot is
+    unknown; that bound is never above the selected card's own ``total - used``. A card whose use cannot be read
+    makes ``use known`` False. ``(None, True)`` when no amdgpu card, or none at that slot, reports a total."""
+    want = pci_slot.lower() if pci_slot else None
+    selected_total: Optional[int] = None
+    smallest_total: Optional[int] = None
+    used_all = 0
+    known = True
+    for total_path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_gtt_total"):
+        device = total_path.parent
+        if _sysfs_int(device / "vendor") != 0x1002:
+            continue
+        total = _sysfs_int(total_path)
+        if not total or total <= 0:
+            continue
+        used = _sysfs_int(device / "mem_info_gtt_used")
+        if used is None or used < 0:
+            known = False
+            used = 0
+        used_all += used
+        smallest_total = total if smallest_total is None else min(smallest_total, total)
+        if want is not None:
+            slot = _sysfs_pci_slot(device)
+            if slot == want or (slot or "").startswith(want + "."):
+                selected_total = total if selected_total is None else min(selected_total, total)
+    pool = selected_total if want is not None else smallest_total
+    if pool is None:
+        return None, True
+    return max(pool - used_all, 0), known
+
+
+def amdgpu_gtt_free_bytes(
+    pci_slot: Optional[str] = None, sysfs_root: str = "/sys"
+) -> Optional[int]:
+    return amdgpu_gtt_reading(pci_slot, sysfs_root)[0]
+
+
+def amdgpu_gtt_used_unknown(pci_slot: Optional[str] = None, sysfs_root: str = "/sys") -> bool:
+    return not amdgpu_gtt_reading(pci_slot, sysfs_root)[1]
+
+
+def vulkan_device_is_amd(description: Optional[str]) -> bool:
+    """Whether a ggml Vulkan device description names an AMD GPU (RADV, AMDVLK, or the Radeon marketing name)."""
+    text = (description or "").lower()
+    return any(token in text for token in ("radv", "amd", "radeon"))
+
+
+class H3NativeMemoryRefusal(RuntimeError):
+    """A render refused because it cannot fit; its message is built only from fixed text and sizes."""
+
+
+def h3_native_offloaded_render_flags(
+    render_flags: "list[str]",
+    *,
+    render_resident: bool,
+    offloaded_flags: Optional["tuple[str, ...]"],
+    offload_refusal: Optional[str],
+) -> list[str]:
+    """The flags a render runs with once Auto has chosen between resident and offloaded: a resident render keeps
+    its own, an offloaded one takes the GTT-fitted set the load prepared, or is refused when none fits."""
+    if render_resident or "--offload-to-cpu" not in render_flags:
+        return list(render_flags)
+    if offload_refusal:
+        raise H3NativeMemoryRefusal(offload_refusal)
+    return list(offloaded_flags) if offloaded_flags else list(render_flags)
+
+
+@dataclass(frozen = True)
+class H3NativeFit:
+    flags: tuple[str, ...]
+    # Why the flags changed, for the log and the resolved record; None when they did not.
+    note: Optional[str] = None
+    # A user-facing reason to refuse the load, or None.
+    refusal: Optional[str] = None
+
+
+def _gib(value: int) -> str:
+    return f"{value / 1024**3:.1f} GiB"
+
+
+def h3_native_memory_fit(
+    flags: "tuple[str, ...] | list[str]",
+    *,
+    accelerator: Optional[str],
+    memory_mode: Optional[str],
+    dit_bytes: int,
+    te_bytes: int,
+    vae_bytes: int,
+    pinned_free_bytes: Optional[int],
+    host_ram_bytes: Optional[int],
+    host_swap_bytes: int = 0,
+    pinned_used_unknown: bool = False,
+    env: Optional[dict] = None,
+) -> H3NativeFit:
+    """Fit offloaded sd-cli flags to the host: pinned weights must fit RAM alone (swap covers only CPU-run modules)
+    and ``pinned_free_bytes`` (free GTT, None skips). ``auto`` may move the text encoder to the CPU; else refuse."""
+    flags = tuple(flags)
+    if not h3_native_fit_check_enabled(env):
+        return H3NativeFit(flags)
+    if "--offload-to-cpu" not in flags:
+        return H3NativeFit(flags)
+    mode = memory_mode or "auto"
+    vae_on_cpu = "--vae-on-cpu" in flags
+    te_given = "--clip-on-cpu" in flags
+    total = dit_bytes + te_bytes + vae_bytes
+    overhead = H3_NATIVE_HOST_OVERHEAD_BYTES
+    swap = max(int(host_swap_bytes or 0), 0)
+    vulkan_gtt = (accelerator or "").strip().lower() == "vulkan" and pinned_free_bytes is not None
+    budget = int(pinned_free_bytes) - H3_NATIVE_PINNED_MARGIN_BYTES if vulkan_gtt else None
+
+    def pinned(te_on_cpu: bool) -> int:
+        return dit_bytes + (0 if te_on_cpu else te_bytes) + (0 if vae_on_cpu else vae_bytes)
+
+    def host_problem(te_on_cpu: bool) -> Optional[str]:
+        if host_ram_bytes is None:
+            return None
+        if pinned(te_on_cpu) + overhead > host_ram_bytes:
+            return "pinned"
+        if total + overhead > host_ram_bytes + swap:
+            return "total"
+        return None
+
+    def gtt_ok(te_on_cpu: bool) -> bool:
+        if budget is None:
+            return True
+        # Unreadable GTT use: the pool is only an upper bound, so admit only a user-chosen small set (Low VRAM).
+        return pinned(te_on_cpu) <= budget and (te_given or not pinned_used_unknown)
+
+    def ok(te_on_cpu: bool) -> bool:
+        return host_problem(te_on_cpu) is None and gtt_ok(te_on_cpu)
+
+    if ok(te_given):
+        return H3NativeFit(flags)
+    ram = _gib(int(host_ram_bytes)) if host_ram_bytes is not None else "unknown"
+    limit = _gib(int(pinned_free_bytes)) if vulkan_gtt else None
+    if (
+        pinned_used_unknown
+        and budget is not None
+        and not te_given
+        and host_problem(True) is None
+        and pinned(True) <= budget
+    ):
+        # Fail closed (Auto included) while the encoder stays on the GPU: free GTT is unknowable.
+        return H3NativeFit(
+            flags,
+            refusal = (
+                f"MiniMax-H3 GGUF could not read how much of this card's GPU-accessible system memory (GTT) is in "
+                f"use, so it cannot check that the {_gib(pinned(False))} it maps here fits the {limit} pool. Set "
+                f"Memory mode to Low VRAM, which runs the text encoder on the CPU ({_gib(pinned(True))})."
+            ),
+        )
+    if not te_given and ok(True):
+        if not gtt_ok(False):
+            note = (
+                f"text encoder on the CPU: the Vulkan build keeps GPU-run weights in GPU-mapped system memory "
+                f"(GTT), {_gib(pinned(False))} here against {limit} free"
+            )
+            refusal = (
+                f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: it maps "
+                f"{_gib(pinned(False))} of weights into GPU-accessible system memory (GTT), and {limit} of it is "
+                f"free. Set Memory mode to Auto or Low VRAM, which runs the text encoder on the CPU "
+                f"({_gib(pinned(True))})."
+            )
+        else:
+            note = (
+                f"text encoder on the CPU: GPU-run weights are held in page-locked system RAM that cannot be "
+                f"swapped, {_gib(pinned(False) + overhead)} here against {ram} of RAM available"
+            )
+            refusal = (
+                f"MiniMax-H3 GGUF cannot run in this memory mode: it locks {_gib(pinned(False) + overhead)} of "
+                f"weights in system RAM, which cannot be swapped, and {ram} of RAM is available. Set Memory mode "
+                f"to Auto or Low VRAM, which runs the text encoder on the CPU ({_gib(pinned(True) + overhead)} "
+                f"locked)."
+            )
+        if mode == "auto":
+            return H3NativeFit(flags + ("--clip-on-cpu",), note = note)
+        return H3NativeFit(flags, refusal = refusal)
+    q2_dit, q2_te = H3_NATIVE_Q2_PAIR_BYTES
+    q2_pinned = q2_dit + (0 if vae_on_cpu else vae_bytes)
+    q2_total = q2_dit + q2_te + vae_bytes + overhead
+    problem = host_problem(True)
+    if problem == "total":
+        smaller = (
+            f" The Q2_K denoiser (with its Q2_K_M encoder) needs about {_gib(q2_total)}."
+            if q2_total < total + overhead
+            else ""
+        )
+        return H3NativeFit(
+            flags,
+            refusal = (
+                f"MiniMax-H3 GGUF keeps its denoiser, text encoder and VAEs in system RAM while it renders: about "
+                f"{_gib(total + overhead)} for this quant, and {ram} of RAM plus {_gib(swap)} of swap is "
+                f"available. Close other applications or load a smaller quant.{smaller}"
+            ),
+        )
+    if problem == "pinned":
+        smaller = (
+            f" The Q2_K denoiser locks about {_gib(q2_pinned + overhead)} with Memory mode Low VRAM."
+            if q2_pinned < pinned(True)
+            else ""
+        )
+        return H3NativeFit(
+            flags,
+            refusal = (
+                f"MiniMax-H3 GGUF locks the weights of its GPU-run parts in system RAM, which cannot be swapped: "
+                f"about {_gib(pinned(True) + overhead)} even with the text encoder on the CPU, and {ram} of RAM "
+                f"is available. Close other applications or load a smaller quant.{smaller}"
+            ),
+        )
+    smaller = (
+        f" The Q2_K denoiser needs about {_gib(q2_pinned)} with Memory mode Low VRAM."
+        if budget is not None and q2_pinned <= budget
+        else ""
+    )
+    return H3NativeFit(
+        flags,
+        refusal = (
+            f"MiniMax-H3 GGUF does not fit this system on the Vulkan build: even with the text encoder on the CPU it "
+            f"maps {_gib(pinned(True))} of weights into GPU-accessible system memory (GTT), and {limit} of it is free "
+            f"(the pool is half of system RAM by default; raise it with the ttm.pages_limit kernel parameter).{smaller}"
+        ),
+    )
+
+
+@dataclass(frozen = True)
+class H3NativeFitInputs:
+    """What ``h3_native_live_fit`` needs that does not change between renders, resolved once at load (the device
+    listing and torch PCI reading included), so a re-fit reads only files."""
+
+    base_flags: tuple[str, ...]  # the committed offload flags BEFORE the device pin
+    accelerator: Optional[str]
+    check_gtt: bool
+    gtt_pci_slot: Optional[str]
+    dit_bytes: int
+    te_bytes: int
+    vae_bytes: int
+    device_name: Optional[str]
+
+
+def h3_native_host_budgets() -> "tuple[Optional[int], int]":
+    """(RAM, swap) a native render may still take: RAM cgroup-capped, without Studio's own RSS, and on cgroup v1 no
+    more than the RAM+swap (memsw) headroom; swap bounded by the cgroup against that RAM budget, so the two never
+    sum past what the cgroup can charge. (None, 0) only when RAM cannot be read; unreadable swap is 0 swap."""
+    try:
+        ram = h3_native_host_available_bytes()
+    except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
+        return None, 0
+    from utils.host_memory import cgroup_swap_allowance_bytes, cgroup_v1_memsw_headroom_bytes
+
+    try:
+        combined = cgroup_v1_memsw_headroom_bytes()
+    except Exception:  # noqa: BLE001
+        combined = None
+    if combined is not None:
+        ram = min(ram, combined)
+    try:
+        import psutil
+        free_swap = int(psutil.swap_memory().free)
+    except Exception:  # noqa: BLE001 - no swap reading: count none, keep the RAM check
+        free_swap = 0
+    try:
+        swap = cgroup_swap_allowance_bytes(free_swap, ram_budget = ram)
+    except Exception:  # noqa: BLE001
+        swap = 0
+    return ram, swap
+
+
+def h3_native_live_fit(inputs: H3NativeFitInputs, memory_mode: Optional[str]) -> H3NativeFit:
+    """``h3_native_memory_fit`` on live RAM, swap and GTT readings: /proc, cgroup and sysfs files only."""
+    ram, swap = h3_native_host_budgets()
+    gtt_free, gtt_known = (
+        amdgpu_gtt_reading(inputs.gtt_pci_slot) if inputs.check_gtt else (None, True)
+    )
+    if inputs.check_gtt and gtt_free is None and inputs.gtt_pci_slot:
+        # The device is AMD but its slot matched no amdgpu card: read the tightest card rather than skip the check.
+        gtt_free, gtt_known = amdgpu_gtt_reading(None)
+    return h3_native_memory_fit(
+        inputs.base_flags,
+        accelerator = inputs.accelerator,
+        memory_mode = memory_mode,
+        dit_bytes = inputs.dit_bytes,
+        te_bytes = inputs.te_bytes,
+        vae_bytes = inputs.vae_bytes,
+        pinned_free_bytes = gtt_free,
+        pinned_used_unknown = not gtt_known,
+        host_ram_bytes = ram,
+        host_swap_bytes = swap,
+    )
+
+
+def h3_native_render_overhead_refusal() -> Optional[str]:
+    """Why a render that places no new weights (a reused server, or a resident render) cannot start: live
+    available RAM (``h3_native_host_budgets``) below the per-render host overhead. None when it fits or RAM cannot
+    be read. File reads only."""
+    if not h3_native_fit_check_enabled():
+        return None
+    ram, _swap = h3_native_host_budgets()
+    if ram is None or ram >= H3_NATIVE_HOST_OVERHEAD_BYTES:
+        return None
+    return (
+        f"A MiniMax-H3 render needs about {_gib(H3_NATIVE_HOST_OVERHEAD_BYTES)} of free system RAM for its frames, "
+        f"audio and CPU buffers, and {_gib(ram)} is available. Close other applications and try again."
+    )
+
+
+H3_NATIVE_RENDER_RUNNING_HINT = " A render on the model being replaced is still running and holds that memory; try again after it finishes."
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (
@@ -1125,6 +1748,344 @@ class MiniMaxH3NativeRuntime:
     binary_identity: Optional[tuple[int, int]] = None
     # The card the load resolved, kept for failure records: re-resolving at failure time can read None.
     selected_card: Optional[str] = None
+    env: tuple[tuple[str, str], ...] = ()
+    # sd_cpp_cudnn.CudnnAttention; its env is already in ``env``.
+    cudnn: Any = None
+    # H3NativeServerSlot, or None for one-shot sd-cli only.
+    server_slot: Any = None
+    # Auto only: the GTT-fitted flags an OFFLOADED render runs with, and the refusal when none fits.
+    offloaded_flags: Optional[tuple[str, ...]] = None
+    offload_refusal: Optional[str] = None
+    # Auto only: re-fit inputs, so an offloaded render is judged on live readings rather than the load's.
+    fit_inputs: Any = None
+
+
+# 0 / false / off: every render on a fresh one-shot sd-cli.
+H3_NATIVE_SERVER_ENV = "UNSLOTH_H3_NATIVE_SERVER"
+H3_NATIVE_SERVER_IDLE_ENV = "UNSLOTH_H3_NATIVE_SERVER_IDLE_S"
+# Covers watching a clip and editing the next prompt; an absent user gets the memory back within 3 minutes.
+H3_NATIVE_SERVER_IDLE_DEFAULT_S = 180.0
+# Free VRAM and available host RAM must each keep max(4 GiB, 15%) for an idle server to stay; same reserve as
+# diffusion_memory's _PIN_RESERVE_*.
+H3_NATIVE_SERVER_RESERVE_MIN_BYTES = 4 << 30
+H3_NATIVE_SERVER_RESERVE_FRACTION = 0.15
+
+
+def h3_native_server_enabled() -> bool:
+    value = os.environ.get(H3_NATIVE_SERVER_ENV, "").strip().lower()
+    return value not in ("0", "false", "no", "off")
+
+
+def h3_native_server_idle_s(env: Optional[dict] = None) -> float:
+    """The idle window in seconds; an unreadable or negative value falls back to the default."""
+    environ = env if env is not None else os.environ
+    raw = str(environ.get(H3_NATIVE_SERVER_IDLE_ENV, "") or "").strip()
+    if not raw:
+        return H3_NATIVE_SERVER_IDLE_DEFAULT_S
+    try:
+        value = float(raw)
+    except ValueError:
+        return H3_NATIVE_SERVER_IDLE_DEFAULT_S
+    if value != value or value < 0:  # NaN or negative
+        return H3_NATIVE_SERVER_IDLE_DEFAULT_S
+    return value
+
+
+def h3_native_server_reserve_bytes(total_bytes: Optional[int]) -> int:
+    total = int(total_bytes or 0)
+    return max(H3_NATIVE_SERVER_RESERVE_MIN_BYTES, int(total * H3_NATIVE_SERVER_RESERVE_FRACTION))
+
+
+def h3_native_server_pressure(
+    *,
+    vram_free: Optional[int],
+    vram_total: Optional[int],
+    host_available: Optional[int],
+    host_total: Optional[int],
+) -> Optional[str]:
+    """Why an idle server must not be kept, or None. An unknown reading decides nothing for its side."""
+    if vram_free is not None and vram_total:
+        floor = h3_native_server_reserve_bytes(vram_total)
+        if int(vram_free) < floor:
+            return f"free VRAM {int(vram_free) >> 20} MiB below the {floor >> 20} MiB reserve"
+    if host_available is not None and host_total:
+        floor = h3_native_server_reserve_bytes(host_total)
+        if int(host_available) < floor:
+            return f"available host RAM {int(host_available) >> 20} MiB below the {floor >> 20} MiB reserve"
+    return None
+
+
+def h3_sibling_server_binary(cli_binary: Optional[str]) -> Optional[str]:
+    """The ``sd-server`` beside the vetted ``sd-cli``, or None. Not ``find_sd_server_binary``: that may resolve an
+    unvetted build from ``SD_SERVER_PATH`` / ``PATH``."""
+    if not cli_binary:
+        return None
+    cli = Path(cli_binary)
+    suffix = ".exe" if cli.suffix.lower() == ".exe" else ""
+    candidate = cli.with_name("sd-server" + suffix)
+    return str(candidate) if candidate.is_file() else None
+
+
+_LIVE_SLOTS: "weakref.WeakSet[H3NativeServerSlot]" = weakref.WeakSet()
+
+
+def release_h3_native_servers(reason: str) -> int:
+    """Stop every resident H3 sd-server (a busy one after its render). Returns how many; never raises."""
+    count = 0
+    for slot in list(_LIVE_SLOTS):
+        try:
+            if slot.release(reason):
+                count += 1
+        except Exception:  # noqa: BLE001 -- a release must never break the caller that needs the memory
+            continue
+    return count
+
+
+class H3NativeServerSlot:
+    """At most one resident ``sd-server`` for a loaded MiniMax-H3 native runtime, so renders skip the ~32 GB reload.
+
+    Spawned with exactly the flags and env the one-shot sd-cli would get; another signature respawns it. Stopped by
+    the idle timer, ``pressure_probe`` after a render, ``release`` (busy: at render end) and ``stop`` on unload.
+    Registered as a managed-tree holder while alive so an install stands down.
+    """
+
+    def __init__(
+        self,
+        server_binary: str,
+        files: Any,
+        offload_flags: "tuple[str, ...] | list[str]" = (),
+        *,
+        pressure_probe: Optional[Callable[[], Optional[str]]] = None,
+    ) -> None:
+        import threading
+
+        self.server_binary = server_binary
+        self.files = files
+        self.offload_flags = tuple(offload_flags)
+        self.pressure_probe = pressure_probe
+        self.disabled_reason: Optional[str] = None
+        self.last_release_reason: Optional[str] = None
+        self._server: Any = None
+        self._stopping: Any = None
+        self._signature: Optional[tuple] = None
+        self._lock = threading.RLock()
+        self._busy = 0
+        self._release_pending: Optional[str] = None
+        self._timer: Any = None
+        # Bumped on every arm / cancel so a timer that fired as it was cancelled sees it is stale.
+        self._timer_token = 0
+        _LIVE_SLOTS.add(self)
+
+    def is_alive(self) -> bool:
+        # A server mid-stop still runs out of the managed tree.
+        return any(s is not None and s.is_alive() for s in (self._server, self._stopping))
+
+    @property
+    def signature(self) -> Optional[tuple]:
+        return self._signature
+
+    def _signature_for(self, flags: "tuple[str, ...]", env: "tuple[tuple[str, str], ...]") -> tuple:
+        files = self.files
+        file_key = tuple(
+            getattr(files, name, None)
+            for name in ("diffusion_model", "llm", "vae", "audio_vae", "llm_vision")
+        )
+        return (self.server_binary, file_key, tuple(flags), tuple(sorted(env)))
+
+    def alive_signature(self) -> Optional[tuple]:
+        with self._lock:
+            return self._signature if self.is_alive() else None
+
+    def get(
+        self,
+        flags: "Optional[tuple[str, ...] | list[str]]" = None,
+        env: "Optional[dict[str, str] | tuple[tuple[str, str], ...]]" = None,
+        *,
+        cancel_event: Any = None,
+        pre_spawn: "Optional[Callable[[], Any]]" = None,
+    ) -> Any:
+        """The live server for this (flags, env), (re)spawning one if needed. ``cancel_event`` aborts a start: the
+        render holds the generate lock through the model load, so unload and Cancel would otherwise wait it out.
+        ``pre_spawn`` runs only when a process is about to start, under the slot lock and after any old server has
+        stopped: it returns the flags to start with (a live memory fit) or raises to refuse the start."""
+        import threading
+
+        from .sd_cpp_backend import register_tree_holder, unregister_tree_holder
+        from .sd_cpp_engine import SdCppCancelled, is_managed_binary
+        from .sd_cpp_server import SdCppServer
+
+        flag_tuple = tuple(self.offload_flags if flags is None else flags)
+        env_pairs = tuple((env or {}).items()) if isinstance(env, dict) else tuple(env or ())
+        wanted = self._signature_for(flag_tuple, env_pairs)
+        with self._lock:
+            self._cancel_timer_locked()
+            if self._server is not None and self._server.is_alive() and self._signature == wanted:
+                return self._server
+            if self._server is not None:
+                self._stop_locked(
+                    "signature changed" if self._server.is_alive() else "server exited"
+                )
+            if cancel_event is not None and cancel_event.is_set():
+                raise SdCppCancelled("sd-server start was cancelled before launch.")
+            if pre_spawn is not None:
+                # Reuse was decided above, under this lock: from here a process starts, so it is fitted now.
+                flag_tuple = tuple(pre_spawn())
+                wanted = self._signature_for(flag_tuple, env_pairs)
+            server = SdCppServer(self.server_binary)
+            managed = is_managed_binary(self.server_binary)
+            self._server = server
+            self._signature = wanted
+            if managed:
+                register_tree_holder(self)
+            started = threading.Event()
+            if cancel_event is not None:
+
+                def abort_on_cancel() -> None:
+                    # stop() sets the abort before taking the lifecycle lock, so start() leaves its readiness wait.
+                    while not started.is_set():
+                        if cancel_event.wait(0.2):
+                            if not started.is_set():
+                                server.stop()
+                            return
+
+                threading.Thread(
+                    target = abort_on_cancel, daemon = True, name = "h3-sd-server-start-cancel"
+                ).start()
+            try:
+                server.start(
+                    self.files,
+                    offload = list(flag_tuple),
+                    env = dict(env_pairs) or None,
+                    # A context flag on sd-server (per-run on sd-cli); same RNG keeps seeds identical across paths.
+                    extra_args = ["--rng", "cpu"],
+                )
+            except BaseException:
+                started.set()
+                self._server = None
+                self._signature = None
+                self._stopping = server
+                try:
+                    server.stop()
+                finally:
+                    self._stopping = None
+                    unregister_tree_holder(self)
+                raise
+            started.set()
+            if cancel_event is not None and cancel_event.is_set() and not server.is_alive():
+                self._stop_locked("cancelled")
+                raise SdCppCancelled("sd-server start was cancelled.")
+            return server
+
+    def begin_render(self) -> None:
+        with self._lock:
+            self._busy += 1
+            self._cancel_timer_locked()
+
+    def end_render(self) -> Optional[str]:
+        """Stop the server (pending release, memory pressure, idle 0) or arm the idle timer. Returns the stop reason."""
+        with self._lock:
+            self._busy = max(0, self._busy - 1)
+            if self._busy or self._server is None:
+                return None
+            reason = self._release_pending
+        if reason is None and self.pressure_probe is not None:
+            try:
+                reason = self.pressure_probe()
+            except Exception:  # noqa: BLE001 -- an unreadable probe keeps the idle timeout as the bound
+                reason = None
+            if reason:
+                reason = f"memory pressure: {reason}"
+        idle_s = h3_native_server_idle_s()
+        if reason is None and idle_s <= 0:
+            reason = "idle timeout 0"
+        with self._lock:
+            if self._busy or self._server is None:
+                return None
+            if reason is not None:
+                self._stop_locked(reason)
+                return reason
+            self._arm_timer_locked(idle_s)
+        return None
+
+    def release(self, reason: str) -> bool:
+        """Stop the server for another consumer; a busy one stops at ``end_render``. True when there was one.
+
+        Never waits on a server start (minutes under the lock, and the caller may hold the GPU arbiter): the release is
+        left pending for that render instead."""
+        if not self._lock.acquire(timeout = 0.5):
+            self._release_pending = reason
+            return True
+        try:
+            if self._server is None:
+                return False
+            if self._busy:
+                self._release_pending = reason
+                return True
+            self._stop_locked(reason)
+            return True
+        finally:
+            self._lock.release()
+
+    def stop(self, reason: str = "stopped") -> None:
+        with self._lock:
+            self._stop_locked(reason)
+
+    def disable(self, reason: str) -> None:
+        self.disabled_reason = reason
+        self.stop(reason)
+
+    def _stop_locked(self, reason: str) -> None:
+        from .sd_cpp_backend import unregister_tree_holder
+
+        self._cancel_timer_locked()
+        server, self._server = self._server, None
+        self._signature = None
+        self._release_pending = None
+        if server is None:
+            return
+        self._stopping = server
+        self.last_release_reason = reason
+        try:
+            import logging
+            logging.getLogger(__name__).info("h3 native sd-server stopped: %s", reason)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            server.stop()
+        finally:
+            self._stopping = None
+            unregister_tree_holder(self)
+
+    def _cancel_timer_locked(self) -> None:
+        self._timer_token += 1
+        timer, self._timer = self._timer, None
+        if timer is not None:
+            timer.cancel()
+
+    def _arm_timer_locked(self, idle_s: float) -> None:
+        import threading
+
+        self._cancel_timer_locked()
+        token = self._timer_token
+        ref = weakref.ref(self)
+
+        def fire() -> None:
+            slot = ref()
+            if slot is not None:
+                slot._on_idle(token)
+
+        timer = threading.Timer(idle_s, fire)
+        timer.daemon = True
+        timer.name = "h3-sd-server-idle"
+        self._timer = timer
+        timer.start()
+
+    def _on_idle(self, token: int) -> None:
+        with self._lock:
+            if token != self._timer_token or self._busy:
+                return
+            self._timer = None
+            self._stop_locked("idle timeout")
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:

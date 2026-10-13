@@ -709,9 +709,20 @@ OWN_TURN_TEXT = "one more"
 
 #: Remove the throwaway turn: assistant first, then the user turn, because deleting the user
 #: message can take the reply with it and leave the count ambiguous. Reports rather than asserts.
+#: The cleanup waits for the reply's Delete button (on the action bar since #13615) to mount after
+#: the hover. A paint or two in practice; the bound matters only when the bar is slow or never
+#: comes. `stop_generation` passes what is left of its slot after the settle, clamped to these, so a
+#: slow menu cannot carry the turn into the next action's window. The floor is a few paints, so a
+#: slot already spent still tries once rather than leaving the turn in the thread.
+CLEANUP_MENU_MAX_MS = 1000
+CLEANUP_MENU_MIN_MS = 100
+#: What the slot still owes after the menu opens: the 200 ms settle and the delete itself.
+CLEANUP_AFTER_MENU_MS = 300
+
 STOP_CLEANUP_JS = """
-async (timeoutMs) => {
+async (opts) => {
   const D = window.__sb.dom;
+  const timeoutMs = opts.timeoutMs;
   // threadTotal, not messageCount. Identical on the shipped build; under a windowed mount the
   // window refills as the message leaves it, so a cleanup that worked reports after == before.
   const before = D.threadTotal();
@@ -719,7 +730,8 @@ async (timeoutMs) => {
     const target = D.lastAssistantMessage();
     if (!target) return false;
     target.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
-    const button = D.actionButton("Delete message");
+    // Delete is a button on the reply's action bar since #13615; see DELETE_JS.
+    const button = (await D.waitForActionButton("Delete", opts.menuWaitMs)).el;
     if (!button) return false;
     const started = performance.now();
     button.click();
@@ -814,7 +826,15 @@ def _reclaim_pending_turn(
         and isinstance(messages_after, int)
         and messages_after > messages_before
     )
-    removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS) if grew else None
+    removed = (
+        _ev(
+            ctx,
+            STOP_CLEANUP_JS,
+            {"timeoutMs": SETTLE_TIMEOUT_MS, "menuWaitMs": CLEANUP_MENU_MAX_MS},
+        )
+        if grew
+        else None
+    )
     if removed is not None:
         ctx.page.wait_for_timeout(200)
 
@@ -957,7 +977,15 @@ def stop_generation(ctx: ActionContext) -> ActionResult:
     # comparison all measure.
     removed = None
     if own_generation:
-        removed = _ev(ctx, STOP_CLEANUP_JS, SETTLE_TIMEOUT_MS)
+        menu_wait_ms = min(
+            CLEANUP_MENU_MAX_MS,
+            max(CLEANUP_MENU_MIN_MS, remaining_ms() - CLEANUP_AFTER_MENU_MS),
+        )
+        removed = _ev(
+            ctx,
+            STOP_CLEANUP_JS,
+            {"timeoutMs": SETTLE_TIMEOUT_MS, "menuWaitMs": menu_wait_ms},
+        )
         ctx.page.wait_for_timeout(200)
     return ActionResult(
         ran = True,
@@ -1718,17 +1746,23 @@ def image_upload(ctx: ActionContext) -> ActionResult:
     _ev(ctx, _MARK_MENUS_BEFORE_JS)
     started = time.monotonic()
     # Bounded by what is left of the slot, never by Playwright's 30s default.
+    click_overran = False
     try:
         plus.click(timeout = max(500, min(ctx.budget_ms // 3, 5000)))
     except Exception as exc:  # noqa: BLE001
-        # A click can open the menu and still time out: Radix opens it on pointerdown. Left open, it
-        # blocked the next action's New chat button (thread_reopen NOT RUN, "no point on the control
-        # hit-tests to it") on a run that allowed only this action not to run.
-        closed = _close_open_menu(ctx)
-        return not_run(
-            f"the attachments button could not be clicked: {type(exc).__name__}"
-            + _left_menu_note(closed)
-        )
+        # Radix opens the menu on pointerdown, so the click can time out on the modal open after it
+        # took effect (that open grows with DOM size). The menu this attempt opened is the click's
+        # effect: carry on with it.
+        if _ev(ctx, _NEW_MENU_OPEN_JS) is True:
+            click_overran = True
+        else:
+            # Left open, a menu blocked the next action's New chat button (thread_reopen NOT RUN, "no
+            # point on the control hit-tests to it") on a run that allowed only this action not to run.
+            closed = _close_open_menu(ctx)
+            return not_run(
+                f"the attachments button could not be clicked: {type(exc).__name__}"
+                + _left_menu_note(closed)
+            )
     ctx.page.wait_for_timeout(200)
     try:
         with ctx.page.expect_file_chooser(timeout = 6000) as fc:
@@ -1771,6 +1805,8 @@ def image_upload(ctx: ActionContext) -> ActionResult:
             "attachments_before": before,
             "attachments_after": after,
             "attachment_containers": containers,
+            # The click opened the menu but Playwright's bounded click timed out on the open.
+            "click_overran": click_overran,
         },
         timings = {"upload_ms": round(elapsed, 1)},
         reason = reason,
@@ -2339,10 +2375,13 @@ async (opts) => {
   // "a running message hides it" was already the diagnosis in the line this replaced, and the
   // action still reported NOT RUN on the first sample rather than waiting for the running message
   // to stop running. Same wait, same bound and same reporting as `message_menu`.
-  const found = await D.waitForActionButton("Delete message", opts.waitForButtonMs);
-  const button = found.el;
+  //
+  // Delete is a button on the reply's action bar since #13615 (#12735 had moved it into the More
+  // menu), so the wait is for that button, found BEFORE the clock starts: what this action times is
+  // the delete.
+  const found = await D.waitForActionButton("Delete", opts.waitForButtonMs);
   const waitedMs = found.waitedMs;
-  if (!button) {
+  if (!found.el) {
     return {
       ran: false,
       waitedMs,
@@ -2352,6 +2391,7 @@ async (opts) => {
         (found.running ? ": the thread was still generating, which unmounts the action bar" : ""),
     };
   }
+  const button = found.el;
   const target = D.lastAssistantMessage();
   const before = D.threadTotal();
   const mountedBefore = D.messageCount();
@@ -2375,7 +2415,8 @@ async (opts) => {
   // alongside rather than replacing it: on a windowed mount `messageCount()` is the size of the
   // window and a recycled node would read as a delete. `waitedMs` is how long the bar was waited
   // for, which the row reports so a slot that opened too early is visible.
-  return { ran: true, waitedMs, ms: ms === null ? null : Math.round(ms * 10) / 10,
+  return { ran: true, waitedMs,
+           ms: ms === null ? null : Math.round(ms * 10) / 10,
            before, after: D.threadTotal(),
            mountedBefore, mountedAfter: D.messageCount() };
 }

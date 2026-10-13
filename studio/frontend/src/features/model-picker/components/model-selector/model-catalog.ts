@@ -7,6 +7,13 @@
 
 import { normalizeDenseQuantSchemes } from "../../../../lib/dense-quant-schemes.ts";
 import {
+  AUDIO_CPP_MODELS,
+  type AudioCppModel,
+  type AudioCppTask,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../../../audio/audio-cpp-catalog.ts";
+import {
   type GgufFitClass,
   type GgufVariantSizes,
   classifyGgufFit as classifyGgufFitForDevice,
@@ -19,6 +26,7 @@ import {
   ggufPerfSuffix,
   h3PerfSuffix,
   hostRunsDenseQuant,
+  videoDensePerfSuffix,
 } from "./host-artifact-policy.ts";
 import type { ModelCapabilities } from "./model-capabilities";
 import type { ModelOption } from "./types";
@@ -168,6 +176,39 @@ const bf16Single = (
   ...extra,
 });
 
+const AUDIO_GGUF_DESCRIPTIONS: Record<AudioCppTask, string> = {
+  tts: "Text-to-speech",
+  music: "Text-to-music",
+  asr: "Speech-to-text",
+  sep: "Source separation",
+};
+
+function audioGgufDescription(model: AudioCppModel): string {
+  const workflows = model.workflows;
+  if (!workflows || workflows.includes("speak")) {
+    return AUDIO_GGUF_DESCRIPTIONS[model.task];
+  }
+  const clones = workflows.includes("clone");
+  const converts = workflows.includes("convert");
+  if (clones && converts) return "Voice cloning and conversion";
+  if (converts) return "Voice conversion";
+  if (clones) return "Voice cloning";
+  return AUDIO_GGUF_DESCRIPTIONS[model.task];
+}
+
+// Recommended audio GGUFs the backend runs on its audio runtime. They are plain GGUF rows, so the
+// quant ladder, fit and downloads work as for any other; the backend routes them by GGUF header.
+// Music lives in Speak like MiniMax Music 3, since both load into the main audio slot.
+const audioGgufGroups = (tasks: readonly AudioCppTask[]): CatalogGroup[] =>
+  AUDIO_CPP_MODELS.filter((model) => tasks.includes(model.task)).map((model) => ({
+    canonicalId: model.id,
+    displayName: audioCppDisplayName(model.id),
+    description: audioGgufDescription(model),
+    scope: "audio",
+    task: model.task === "asr" ? "stt" : "tts",
+    artifacts: [gguf(model.id)],
+  }));
+
 // Sizes are steady resident estimates (GB) used only for routing; missing = never auto-pick
 // unless downloaded. GGUF entries carry none: pickDefaultQuant sizes the .gguf files.
 
@@ -212,6 +253,25 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
         prequantSizeGb: { fp8: 7.12, int8: 7.26 },
       }),
       gguf("unsloth/Qwen-Image-2.1-GGUF"),
+    ],
+  },
+  {
+    // A different denoiser with its own FP8/INT8 checkpoints; no unsloth mirror, so the vendor pipeline is the row.
+    canonicalId: "Qwen/Qwen-Image-2.1-Turbo",
+    displayName: "Qwen-Image 2.1 Turbo",
+    description: "Text-to-image and image editing in 8 steps",
+    scope: "image",
+    // Same reason as 2.1's alias: the int8 half of the prequant repo has no artifact row.
+    aliases: ["unsloth/Qwen-Image-2.1-Turbo-FP8"],
+    // Right after 2.1's group, so its "Fast FP8" row sits directly under 2.1's at the top.
+    pinToTop: true,
+    artifacts: [
+      bf16Pipeline("Qwen/Qwen-Image-2.1-Turbo", 33, {
+        totalParams: 7115124736,
+        prequantRepo: "unsloth/Qwen-Image-2.1-Turbo-FP8",
+        prequantSizeGb: { fp8: 7.12, int8: 7.26 },
+      }),
+      gguf("unsloth/Qwen-Image-2.1-Turbo-GGUF"),
     ],
   },
   {
@@ -421,6 +481,21 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
   },
 ];
 
+// LTX-2.5 measured on a B200 capped to the tier's GiB, default 1280x704, 121 frames. Host RAM is the server's peak
+// RSS plus the Gemma 4 encoder worker's.
+// Diffusers pack: the plan quantises the DiT to int8, so both tiers need a host that runs a dense quant. Encoder on
+// the CPU in both. 24 GiB: DiT streamed by group offload, 21.0 GB card peak, 47.7 + 25.3 GiB host. 48 GiB: DiT
+// resident, 43.8 GB card peak, 20.1 + 25.9 GiB host.
+const LTX25_OFFLOAD_TIERS: readonly OffloadFitTier[] = [
+  { gpuGb: 24, systemRamGb: 80, requiresQuantisedStreaming: true, requiresDenseQuant: true },
+  { gpuGb: 48, systemRamGb: 48, requiresDenseQuant: true },
+];
+
+// The single file keeps its bf16 DiT (no runtime quant on single-file loads), streamed by group offload in both
+// tiers. 24 GiB: encoder on the CPU, 21.3 GB card peak, 72.0 + 25.3 GiB host. 48 GiB: encoder on the card, 37.2 GB
+// card peak, 72.1 + 23.6 GiB host. Both need about 97 GiB of RAM, so one tier covers them.
+const LTX25_SINGLE_FILE_OFFLOAD_TIERS: readonly OffloadFitTier[] = [{ gpuGb: 24, systemRamGb: 100 }];
+
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
     canonicalId: "MiniMaxAI/MiniMax-H3",
@@ -485,6 +560,36 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     ],
   },
   {
+    // LTX-2.5 distilled: the Diffusers pack (its Gemma 4 encoder runs in Studio's transformers 5.10 sidecar) plus
+    // the official split single-file DiT, which loads against the companion files beside it in the same repo. The
+    // pack's fp8 / int8 loads seed the hosted unsloth/LTX-2.5-FP8 DiT (backend prequant_variant_repos); the alias
+    // keeps a pasted prequant repo id finding this group. Video rows carry no prequantRepo (image-only field).
+    canonicalId: "Lightricks/LTX-2.5-Diffusers",
+    displayName: "LTX 2.5 distilled",
+    description: "Text- and image-to-video with audio",
+    scope: "video",
+    aliases: ["unsloth/LTX-2.5-FP8"],
+    capabilities: { audio: true },
+    artifacts: [
+      // Both repos are gated on the Hub (license + token).
+      bf16Pipeline("Lightricks/LTX-2.5-Diffusers", 75, {
+        label: "BF16 - Diffusers",
+        gated: true,
+        offloadFitTiers: LTX25_OFFLOAD_TIERS,
+        // The DiT's 37,975,718,400 bf16 bytes (transformer/ shard index).
+        totalParams: 18_987_859_200,
+      }),
+      bf16Single(
+        "Lightricks/LTX-2.5",
+        "diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors",
+        75,
+        { label: "BF16 - Single file", gated: true, offloadFitTiers: LTX25_SINGLE_FILE_OFFLOAD_TIERS },
+      ),
+      // 21.0B is every tensor of the single-file DiT the quants are cut from.
+      gguf("unsloth/LTX-2.5-GGUF", { totalParams: 21_004_025_600 }),
+    ],
+  },
+  {
     canonicalId: "Lightricks/LTX-2",
     displayName: "LTX 2 (base)",
     description: "Text-to-video with audio",
@@ -505,6 +610,20 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
     description: "Text-to-video, dual-expert",
     scope: "video",
     artifacts: [bf16Pipeline("Wan-AI/Wan2.2-T2V-A14B-Diffusers", 114, { totalParams: 14288491584 })],
+  },
+  {
+    canonicalId: "Wan-AI/Wan2.1-T2V-1.3B",
+    displayName: "Wan 2.1 T2V 1.3B",
+    description: "Text-to-video 480p, small",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", 15, { totalParams: 1418996800 })],
+  },
+  {
+    canonicalId: "Wan-AI/Wan2.1-T2V-14B",
+    displayName: "Wan 2.1 T2V 14B",
+    description: "Text-to-video 480p / 720p",
+    scope: "video",
+    artifacts: [bf16Pipeline("Wan-AI/Wan2.1-T2V-14B-Diffusers", 41, { totalParams: 14288491584 })],
   },
   {
     canonicalId: "hunyuanvideo-community/HunyuanVideo-1.5",
@@ -634,6 +753,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
+  ...audioGgufGroups(["tts", "music", "sep"]),
   // Llasa is deliberately absent: it speaks XCodec2 (65,536 <|s_N|> tokens), which is in neither
   // _AUDIO_TOKEN_PATTERNS nor AudioCodecManager, so a curated row loaded then failed at generation.
   // Training still works (unsloth_Llasa-3B.yaml). Re-add both rows with an xcodec2 decoder.
@@ -703,6 +823,7 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     task: "stt",
     artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
   },
+  ...audioGgufGroups(["asr"]),
 ];
 
 
@@ -964,7 +1085,10 @@ function curatedPerfSuffix(
   if (artifactUsesDenseQuant(hit.group, hit.artifact, host)) {
     return densePerfSuffix(denseQuantSchemes);
   }
-  return h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes);
+  return (
+    h3PerfSuffix(hit.artifact.repoId, host, denseQuantSchemes) ??
+    videoDensePerfSuffix(hit.artifact.repoId, host, denseQuantSchemes)
+  );
 }
 
 /** A curated row as name plus chips. The name used to carry the artifact in brackets ("MiniMax H3
@@ -990,7 +1114,21 @@ export function curatedRowLabelFor(
   // GGUF reads like a text model's row: the repo name already ends in -GGUF, so a chip would only repeat the suffix.
   if (hit.artifact.format === "gguf") {
     const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
-    return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
+    // A hub repo named like a bundled folder ("Qwen3-ASR-0.6B-GGUF") would read as its twin.
+    const twin =
+      !isAudioCppFolderId(hit.artifact.repoId) &&
+      catalog.some((group) =>
+        group.artifacts.some(
+          (artifact) =>
+            artifact.format === "gguf" &&
+            artifact.repoId.toLowerCase() !== hit.artifact.repoId.toLowerCase() &&
+            artifact.repoId.split("/").pop()?.toLowerCase() === leaf.toLowerCase(),
+        ),
+      );
+    return {
+      name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`),
+      tags: twin ? ["llama.cpp"] : [],
+    };
   }
   // A group with one artifact has nothing to distinguish, so it stays bare.
   if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
@@ -1023,13 +1161,16 @@ export function catalogToModelOptions(
       // A host that can only run the native engine is not offered pipeline rows it would be refused at
       // load. The `models` prop is built only here, so this covers the trigger name and seed ids both.
       if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
+      const name =
+        curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
+        group.displayName;
       options.push({
         id: artifact.repoId,
-        name:
-          curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
-          group.displayName,
+        name,
         description: group.description,
-        descriptionSuffix: artifact.label,
+        // "Kokoro-82M-GGUF - GGUF" would only repeat the name.
+        descriptionSuffix:
+          artifact.format === "gguf" && GGUF_SUFFIX_RE.test(name) ? undefined : artifact.label,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
       });
@@ -1095,10 +1236,13 @@ export interface OffloadFitTier {
   systemRamGb: number;
   /** Only offered where `/api/system.quantised_streaming` says group offload streams torchao weights. */
   requiresQuantisedStreaming?: boolean;
+  /** Measured with a runtime dense quant (int8 / fp8) DiT: only offered where the host runs one. */
+  requiresDenseQuant?: boolean;
 }
 
 function offloadTierMet(tier: OffloadFitTier, budget: DeviceBudget): boolean {
   if (tier.requiresQuantisedStreaming && budget.quantisedStreaming !== true) return false;
+  if (tier.requiresDenseQuant && !budget.denseQuantSchemes?.length) return false;
   return budget.gpuGb >= tier.gpuGb && budget.systemRamGb >= tier.systemRamGb;
 }
 
@@ -1115,6 +1259,21 @@ export interface DeviceBudget {
   denseQuantSchemes?: readonly string[];
   /** Group offload can stream torchao weights; absent = unknown, so streamed tiers are not offered. */
   quantisedStreaming?: boolean;
+  /** Backend-reported extra offload tiers per lower-cased repo id (`/api/system.diffusers_offload_tiers`).
+   *  Unioned with an artifact's own `offloadFitTiers`, so they can only widen; ignored for artifacts
+   *  without catalog tiers, whose size rule they must not replace. */
+  extraOffloadFitTiers?: Readonly<Record<string, readonly OffloadFitTier[]>>;
+}
+
+/** The artifact's catalog tiers plus any the backend reports for it. Empty when the catalog has none. */
+function artifactOffloadTiers(
+  artifact: ModelArtifact,
+  budget: DeviceBudget,
+): readonly OffloadFitTier[] {
+  const own = artifact.offloadFitTiers ?? [];
+  if (!own.length) return own;
+  const extra = budget.extraOffloadFitTiers?.[artifact.repoId.trim().toLowerCase()];
+  return extra?.length ? [...own, ...extra] : own;
 }
 
 /** GGUF fit, delegated to the one formula the Hub badge already uses. Its old private rule
@@ -1307,7 +1466,7 @@ function fitsArtifactBudget(
   budget: DeviceBudget,
 ): boolean {
   if (artifact.offloadFitTiers?.length) {
-    return artifact.offloadFitTiers.some(
+    return artifactOffloadTiers(artifact, budget).some(
       (tier) => offloadTierMet(tier, budget),
     );
   }
@@ -1428,7 +1587,7 @@ export function catalogGroupFitsDevice(
     // matching pickDefaultArtifact.
     if (a.format === "gguf") return true;
     if (a.offloadFitTiers?.length) {
-      return a.offloadFitTiers.some(
+      return artifactOffloadTiers(a, budget).some(
         (tier) => offloadTierMet(tier, budget),
       );
     }

@@ -23,7 +23,7 @@ os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 os.environ.setdefault("TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL", "1")
 
 # The desktop app hands this process a GUI environment, and a GUI environment has
-# no ~/.bashrc in it. `fix_path_env::fix()` in src-tauri/src/main.rs spawns the
+# no ~/.bashrc in it. `shell_path::fix_path()` in src-tauri spawns the
 # login shell and then takes PATH out of it and nothing else, so an AMD host's
 # HSA_OVERRIDE_GFX_VERSION / ROCM_PATH / USE_CK are dropped on the desktop path
 # and kept on the `unsloth studio` one. #9926 is that difference: identical model
@@ -41,6 +41,16 @@ try:
     _import_rocm_env()
 except Exception:
     pass
+
+# normalize allocator booleans before torch parses them; spawned workers inherit the environment.
+from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
+
+for _name, _old, _new in _normalize_allocator_conf():
+    print(
+        f"Unsloth: {_name}={_old!r} has noncanonical boolean casing, which PyTorch rejects; "
+        f"using {_new!r}.",
+        file = sys.stderr,
+    )
 
 # Windows terminals default to the active system code page. Reconfigure stdout/stderr
 # before the startup banner so non-ASCII output cannot crash the backend process.
@@ -193,8 +203,10 @@ if _backend_dir not in sys.path:
 # OS trust store for TLS before anything opens a connection: behind a
 # TLS-inspecting proxy certifi alone rejects every Hub request.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 # `uvicorn main:app` bypasses run.py; seed thread caps here too.
 from utils.cpu_threads import configure_cpu_threads
@@ -256,6 +268,11 @@ from utils.hub_settings import apply_hub_settings as _apply_hub_settings
 _apply_hub_settings()
 del _apply_hub_settings
 
+from utils.security.hub_data_files import install as _guard_hub_data_files
+
+_guard_hub_data_files()
+del _guard_hub_data_files
+
 # The studio bundles unsloth_zoo; declare unsloth present (as `import unsloth` does) so its
 # lazy submodule imports and the DiffusionGemma runner don't trip the install guard.
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
@@ -271,7 +288,6 @@ _no_sentencepiece()
 del _no_sentencepiece
 
 import hashlib
-import ipaddress
 import mimetypes
 import re as _re
 import shutil
@@ -331,6 +347,7 @@ from routes import (
     data_recipe_router,
     datasets_router,
     export_router,
+    external_import_router,
     inference_router,
     inference_studio_router,
     mcp_servers_router,
@@ -347,7 +364,9 @@ from routes import (
     video_openai_router,
     youtube_router,
 )
+import routes.browser as _browser_routes
 from routes.llama import router as llama_router
+from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
 from routes.npu import router as npu_router
@@ -366,6 +385,7 @@ from hub.utils.download_registry import (
     terminate_active_downloads as terminate_hub_downloads,
 )
 from routes.settings import router as settings_router
+from routes.sandbox_capability import router as sandbox_capability_router
 from routes.systemone import MCP_PATH as DECISIONS_MCP_PATH, RequireStudioAuth, decisions_mcp
 from routes.systemone import router as systemone_router
 from routes.prompts import router as prompts_router
@@ -384,6 +404,7 @@ import utils.hardware.hardware as _hw_module
 
 from utils.torch_warmup import (
     DISABLE_ENV_VAR,
+    background_media_import,
     join_background_warm,
     prewarm_diffusers_if_image_models_exist,
     reset_background_warm,
@@ -655,18 +676,23 @@ def _post_warm_background_work(generation: Optional[int] = None) -> None:
     # _dense_quant_supported). Gated on torch being up rather than assumed, since
     # UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 exists precisely to keep the ML stack cold.
     if "torch" in sys.modules:
-        try:
-            _refresh_dense_quant_capability()
-        except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
-            import structlog as _structlog
-            _structlog.get_logger(__name__).debug("dense quant capability skipped: %s", _dq_exc)
-        try:
-            _refresh_quantised_streaming_capability()
-        except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
-            import structlog as _structlog
-            _structlog.get_logger(__name__).debug(
-                "quantised streaming capability skipped: %s", _qs_exc
-            )
+        # Inside the media import window: skipped once a load claimed it; /api/system resolves both later.
+        with background_media_import() as _window_open:
+            if _window_open:
+                try:
+                    _refresh_dense_quant_capability()
+                except Exception as _dq_exc:  # noqa: BLE001 -- a picker label must never break the warm
+                    import structlog as _structlog
+                    _structlog.get_logger(__name__).debug(
+                        "dense quant capability skipped: %s", _dq_exc
+                    )
+                try:
+                    _refresh_quantised_streaming_capability()
+                except Exception as _qs_exc:  # noqa: BLE001 -- a picker tier must never break the warm
+                    import structlog as _structlog
+                    _structlog.get_logger(__name__).debug(
+                        "quantised streaming capability skipped: %s", _qs_exc
+                    )
 
     if _post_warm_retired(generation):
         return
@@ -717,7 +743,8 @@ def banner_autofill_available(app_state, environ) -> bool:
     api_only = getattr(app_state, "api_only", None)
     if api_only is None:
         api_only = environ.get("UNSLOTH_API_ONLY") == "1"
-    return not api_only
+    # Desktop-owned api-only still serves the UI (and the autofill) to a loopback browser.
+    return not api_only or _desktop_owner() is not None
 
 
 def bootstrap_banner_lines(
@@ -776,6 +803,20 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
+    # Warm the OS sandbox probe so the "off" gate has an answer.
+    try:
+        from core.inference.os_sandbox import start_tool_isolation_warmup
+        start_tool_isolation_warmup()
+    except Exception:  # noqa: BLE001 -- the first tool call probes instead
+        _lifespan_log.warning("could not start the sandbox warm-up", exc_info = True)
+
+    # Windows AMD driver with the ROCm/TheRock#7221 idle-eviction bug: one log line, plus gpu.driver_warning.
+    try:
+        from utils.hardware.hardware import start_amd_driver_check
+        start_amd_driver_check()
+    except Exception:  # noqa: BLE001 -- a warning, never a startup failure
+        _lifespan_log.debug("could not start the AMD driver check", exc_info = True)
+
     try:
         from hub.services.models.account_access import adopt_unnamed_public_proofs
         from utils.hub_settings import operator_hf_endpoint
@@ -833,6 +874,12 @@ async def lifespan(app: FastAPI):
             _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     try:
+        from hub.services.models.local_inventory import register_launch_scan_folders
+        _run_as(_owner_account, register_launch_scan_folders)
+    except Exception as exc:
+        _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
+
+    try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
         # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
         # expired.
@@ -863,6 +910,10 @@ async def lifespan(app: FastAPI):
     # Embeddings stay cold until ingestion or retrieval actually requests vectors.
     _start_helper_precache_if_enabled()
 
+    from core.inference.audio_inputs import start_sweeper as _start_audio_input_sweeper
+
+    _start_audio_input_sweeper()
+
     from core.research_runs import ResearchSupervisor
 
     app.state.research_supervisor = ResearchSupervisor(app)
@@ -882,6 +933,12 @@ async def lifespan(app: FastAPI):
     from core.inference.key_exchange import init_key_pair
 
     init_key_pair()
+
+    # Stall thread-dump watchdog (#9712), only with UNSLOTH_STUDIO_STALL_WATCHDOG=1.
+    from utils.stall_watchdog import stand_down_for_the_warm, start_stall_watchdog
+
+    start_stall_watchdog(asyncio.get_running_loop(), suppress = stand_down_for_the_warm)
+
     _lifespan_log.info(
         "lifespan pre-auth setup completed in %.1fms",
         (_time.perf_counter() - _lifespan_started) * 1000,
@@ -944,6 +1001,11 @@ async def lifespan(app: FastAPI):
     # Before any shutdown await: a warm finishing during one would still read the lifespan as current.
     _stop_post_warm_thread()
 
+    # Before teardown blocks the loop, or shutdown dumps as a stall.
+    from utils.stall_watchdog import stop_stall_watchdog
+
+    stop_stall_watchdog()
+
     # Retire the coordinated warm at shutdown entry too. run_lifespan_shutdown() repeats this after
     # cleanup, but its awaits would otherwise let startup imports continue for a stopped lifespan.
     _invalidate_detection = getattr(_hw_module, "invalidate_detection", None)
@@ -981,6 +1043,10 @@ async def lifespan(app: FastAPI):
 
     await _close_llama_http()
 
+    from core.systemone.laya_runtime import shutdown as shutdown_decisions
+
+    await asyncio.to_thread(shutdown_decisions)
+
     await run_lifespan_shutdown(
         terminate_hub_downloads,
         lambda: clear_compiled_cache_unless_shared(app),
@@ -1015,20 +1081,15 @@ _decisions_mcp_app = decisions_mcp.http_app(path = "/", stateless_http = True, j
 app.router.lifespan_context = combine_lifespans(lifespan, _decisions_mcp_app.lifespan)
 app.mount(DECISIONS_MCP_PATH, RequireStudioAuth(_decisions_mcp_app))
 
-# The MCP surface is opt-in: it can start GPU jobs and write model artifacts.
-if os.environ.get("UNSLOTH_STUDIO_ENABLE_MCP") == "1":
-    from mcp_server import BearerTokenMiddleware, create_studio_mcp
+# Always mounted; the gate answers 404 until the owner turns agent access on.
+from mcp_server import create_studio_mcp  # noqa: E402
+from studio_mcp.gate import StudioMcpGate  # noqa: E402
 
-    _studio_mcp_app = create_studio_mcp().http_app(path = "/")
-    _studio_mcp_lifespan = _studio_mcp_app.lifespan
-    _mcp_token = os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN")
-    if not _mcp_token:
-        raise RuntimeError("UNSLOTH_STUDIO_MCP_TOKEN is required when MCP is enabled")
-    _studio_mcp_app = BearerTokenMiddleware(_studio_mcp_app, _mcp_token)
-    app.router.lifespan_context = combine_lifespans(
-        app.router.lifespan_context, _studio_mcp_lifespan
-    )
-    app.mount("/mcp", _studio_mcp_app)
+_studio_mcp_app = create_studio_mcp().http_app(path = "/", stateless_http = True)
+app.router.lifespan_context = combine_lifespans(
+    app.router.lifespan_context, _studio_mcp_app.lifespan
+)
+app.mount("/mcp", StudioMcpGate(_studio_mcp_app))
 
 from loggers.config import LogConfig
 from loggers.handlers import LoggingMiddleware
@@ -1039,6 +1100,12 @@ logger = LogConfig.setup_logging(
 )
 
 app.add_middleware(LoggingMiddleware)
+
+if os.environ.get("UNSLOTH_STUDIO_MCP_TOKEN", "").strip():
+    logger.warning(
+        "UNSLOTH_STUDIO_MCP_TOKEN is no longer used and /mcp refuses it. "
+        "Agents connect with an Unsloth Studio API key (sk-unsloth-…) from Settings > API."
+    )
 
 
 class ResearchPortMiddleware:
@@ -1066,6 +1133,15 @@ from starlette.datastructures import MutableHeaders  # noqa: E402
 
 _CSP_SCRIPT_NONCE_HEADER = "x-internal-script-nonce"
 _ARTIFACT_PREVIEW_FRAME_PATH = "/api/inference/artifact-preview-frame"
+# Framed shells: their own CSP frame-ancestors governs embedding, so no X-Frame-Options DENY.
+_FRAME_SHELL_PATHS = frozenset(
+    {
+        _ARTIFACT_PREVIEW_FRAME_PATH,
+        "/api/inference/mcp-app-frame",
+        _browser_routes.BROWSER_FRAME_PATH,
+        _browser_routes.BROWSER_PRINT_PATH,
+    }
+)
 _DOCS_FONT_CSS = "https://fonts.googleapis.com"
 _DOCS_FONT_FILES = "https://fonts.gstatic.com"
 _DOCS_PATHS = frozenset({"/docs", "/docs/oauth2-redirect", "/redoc"})
@@ -1209,7 +1285,7 @@ class SecurityHeadersMiddleware:
                     _build_csp(nonce, docs = path in _DOCS_PATHS),
                 )
                 # Omit X-Frame-Options in Colab: DENY would block serve_kernel_port_as_iframe regardless of CSP.
-                if not _IS_COLAB and path != _ARTIFACT_PREVIEW_FRAME_PATH:
+                if not _IS_COLAB and path not in _FRAME_SHELL_PATHS:
                     headers.setdefault("X-Frame-Options", "DENY")
                 headers.setdefault("X-Content-Type-Options", "nosniff")
                 headers.setdefault("Referrer-Policy", "no-referrer")
@@ -1311,9 +1387,11 @@ if _DOCS_ASSETS_DIR.is_dir():
 # Cap request bodies on protected POSTs; upload routes get explicit multipart headroom.
 import json as _json_for_413  # noqa: E402
 from utils.upload_limits import (  # noqa: E402
+    AUDIO_INPUT_MAX_BYTES,
     STT_AUDIO_JSON_MAX_BYTES,
     STT_AUDIO_RAW_MAX_BYTES,
     LIBRARY_UPLOAD_MAX_BYTES,
+    SANDBOX_UPLOAD_MAX_BYTES,
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
@@ -1336,7 +1414,16 @@ _BODY_PROTECTED_PREFIXES = (
     "/api/train",
     "/api/export",
     "/api/library",
+    "/api/browser",
+    # Unauthenticated (login, refresh): every route takes a few hundred bytes of JSON.
+    "/api/auth",
     "/mcp",
+    # llama-server passthrough POSTs; keyless inference scope admits them.
+    "/tokenize",
+    "/detokenize",
+    # Everything else under /api. FastAPI reads a body before the route's auth dependency runs, so an unlisted
+    # prefix let an unauthenticated client stream an unbounded body into memory.
+    "/api/",
 )
 _DATASET_UPLOAD_PASSTHROUGH_PREFIXES = (
     "/api/datasets/upload",
@@ -1351,12 +1438,26 @@ _DIFFUSION_DATASET_UPLOAD_PATH = "/api/train/diffusion/dataset"
 _STT_MULTIPART_UPLOAD_PATHS = (
     "/v1/audio/transcriptions",
     "/api/inference/audio/transcriptions",
+    "/v1/audio/translations",
+    "/api/inference/audio/translations",
 )
 _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/v1/videos",
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+# RAG document uploads (knowledge base, thread, project, extract-text): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
+_RAG_DOCUMENT_UPLOAD_RE = _re.compile(
+    r"^/api/rag/(?:(?:knowledge-bases|threads|projects)/[^/]+/documents|extract-text)/?$"
+)
+# One file into a chat's sandbox folder (multipart, capped by the route), on both mounts of the router.
+_SANDBOX_UPLOAD_RE = _re.compile(r"^/(?:api/inference|v1)/sandbox/[^/]+/upload/?$")
+_UPLOAD_PASSTHROUGH_RE = _re.compile(
+    f"(?:{_RAG_DOCUMENT_UPLOAD_RE.pattern})|(?:{_SANDBOX_UPLOAD_RE.pattern})"
+)
+# Streamed to disk and capped by the route itself; buffering here would hold 200 MiB in memory.
+_AUDIO_INPUT_UPLOAD_PATHS = ("/api/inference/audio/inputs", "/v1/audio/inputs")
 _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
     *_DATASET_UPLOAD_PASSTHROUGH_PREFIXES,
     _DATA_RECIPE_UNSTRUCTURED_UPLOAD_PASSTHROUGH_PREFIX,
@@ -1364,6 +1465,7 @@ _BODY_UPLOAD_PASSTHROUGH_PREFIXES = (
 # Matched by EXACT path (multipart uploads only), so sibling JSON sub-routes keep the normal cap.
 _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     _DIFFUSION_DATASET_UPLOAD_PATH,
+    *_AUDIO_INPUT_UPLOAD_PATHS,
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
@@ -1387,6 +1489,17 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         )
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
+        return AUDIO_INPUT_MAX_BYTES
+    if _SANDBOX_UPLOAD_RE.match(path):
+        return upload_request_limit_bytes(SANDBOX_UPLOAD_MAX_BYTES)
+    if _RAG_DOCUMENT_UPLOAD_RE.match(path):
+        from core.rag import config as _rag_config
+
+        # RAG_MAX_UPLOAD_BYTES=0 means no cap, as the route treats it.
+        if _rag_config.MAX_UPLOAD_BYTES <= 0:
+            return sys.maxsize
+        return upload_request_limit_bytes(_rag_config.MAX_UPLOAD_BYTES)
     # The trailing-slash variant reaches this middleware BEFORE the router's redirect_slashes
     # 307, so it must resolve to the same cap. JSON sub-routes keep extra path components.
     if (
@@ -1402,7 +1515,7 @@ def _get_request_body_max_bytes(path: str) -> int:
         return STT_AUDIO_RAW_MAX_BYTES
     if path.startswith("/api/inference/audio/transcribe"):
         return STT_AUDIO_JSON_MAX_BYTES
-    # multipart headroom over the raw stt cap for the openai transcription route on both mounts
+    # multipart headroom over the raw stt cap for the openai transcription/translation routes
     if path.rstrip("/") in _STT_MULTIPART_UPLOAD_PATHS:
         return upload_request_limit_bytes(STT_AUDIO_RAW_MAX_BYTES)
     if path.rstrip("/") in _VIDEO_MULTIPART_UPLOAD_PATHS:
@@ -1460,6 +1573,7 @@ class MaxBodyMiddleware:
         upload_passthrough_max_bytes_getter = None,
         upload_passthrough_exact_paths: tuple = (),
         chunked_upload_exact_paths: tuple = (),
+        upload_passthrough_pattern = None,
     ):
         self.app = app
         self.max_bytes_getter = max_bytes_getter
@@ -1471,11 +1585,18 @@ class MaxBodyMiddleware:
         self.upload_passthrough_exact_paths = upload_passthrough_exact_paths
         # The subset of those allowed to omit Content-Length; the rest still get a 411.
         self.chunked_upload_exact_paths = chunked_upload_exact_paths
+        # Uploads whose path carries an id (RAG documents), matched by a compiled pattern.
+        self.upload_passthrough_pattern = upload_passthrough_pattern
 
     def _is_upload_passthrough(self, path: str) -> bool:
         # Exact paths also match their trailing-slash variant (this runs before redirect_slashes).
-        return path.rstrip("/") in self.upload_passthrough_exact_paths or any(
-            path.startswith(p) for p in self.upload_passthrough_prefixes
+        return (
+            path.rstrip("/") in self.upload_passthrough_exact_paths
+            or any(path.startswith(p) for p in self.upload_passthrough_prefixes)
+            or (
+                self.upload_passthrough_pattern is not None
+                and self.upload_passthrough_pattern.match(path) is not None
+            )
         )
 
     def _upload_passthrough_max_bytes(self, path: str) -> int:
@@ -1505,7 +1626,12 @@ class MaxBodyMiddleware:
             return
         method = scope.get("method", "").upper()
         path = scope.get("path", "")
-        if method not in ("POST", "PUT", "PATCH") or not any(
+        # Under `--root-path /x`, uvicorn keeps the prefix in `path`; match on the route path the router sees.
+        root_path = scope.get("root_path") or ""
+        if root_path and path.startswith(root_path):
+            path = path[len(root_path) :] or "/"
+        # DELETE too: several routes take a JSON body on DELETE (delete-cached, bulk thread delete).
+        if method not in ("POST", "PUT", "PATCH", "DELETE") or not any(
             path.startswith(p) for p in self.protected_prefixes
         ):
             await self.app(scope, receive, send)
@@ -1521,7 +1647,7 @@ class MaxBodyMiddleware:
                     declared = None
                 break
 
-        if self._is_upload_passthrough(path):
+        if method != "DELETE" and self._is_upload_passthrough(path):
             upload_max_bytes = self._upload_passthrough_max_bytes(path)
             if declared is not None:
                 if declared > upload_max_bytes:
@@ -1583,6 +1709,7 @@ app.add_middleware(
     upload_passthrough_max_bytes_getter = _get_upload_passthrough_request_max_bytes,
     upload_passthrough_exact_paths = _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS,
     chunked_upload_exact_paths = _CHUNKED_UPLOAD_EXACT_PATHS,
+    upload_passthrough_pattern = _UPLOAD_PASSTHROUGH_RE,
 )
 
 # Tracks in-flight inference requests for idle auto-unload; off -> passthrough.
@@ -1601,7 +1728,10 @@ async def _recipes_redirect(rest: str = ""):
     return _RedirectResponse(url = target, status_code = 308)
 
 
-from utils.host_policy import cors_origins_for_mode  # noqa: E402
+from utils.host_policy import (
+    cors_origin_regex_for_mode,
+    cors_origins_for_mode,
+)  # noqa: E402
 
 
 class RemoteAccessCORSMiddleware(CORSMiddleware):
@@ -1628,11 +1758,16 @@ _cors_origins = cors_origins_for_mode(
     api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
     secure = os.environ.get("UNSLOTH_SECURE") == "1",
 )
+_cors_origin_regex = cors_origin_regex_for_mode(
+    api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
+    secure = os.environ.get("UNSLOTH_SECURE") == "1",
+)
 
 app.add_middleware(
     RemoteAccessCORSMiddleware,
     remote_access_state = app.state,
     allow_origins = _cors_origins,
+    allow_origin_regex = _cors_origin_regex,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
@@ -1644,6 +1779,7 @@ app.add_middleware(
         "x-typesafe-request-id",
         "X-Unsloth-Monitor-ID",
         *_hub_endpoint_proxy.EXPOSED_HEADERS,
+        *_browser_routes.EXPOSED_HEADERS,
     ],
     # is_allowed_origin closes the moment the tunnel URL clears, but a preflight already cached by the browser
     # does not. Measured in WebKit: with Starlette's 600s default, a state-changing request still REACHED the
@@ -1698,6 +1834,7 @@ app.include_router(
 app.include_router(openai_codex_auth_router, prefix = "/api/providers", tags = ["providers"])
 
 app.include_router(settings_router, prefix = "/api/settings", tags = ["settings"])
+app.include_router(sandbox_capability_router, prefix = "/api/sandbox", tags = ["sandbox"])
 app.include_router(mcp_servers_router, prefix = "/api/mcp/servers", tags = ["mcp"])
 app.include_router(skills_router, prefix = "/api/skills", tags = ["skills"])
 app.include_router(prompts_router, prefix = "/api/prompts", tags = ["prompts"])
@@ -1706,9 +1843,11 @@ app.include_router(profile_stats_router, prefix = "/api/profile", tags = ["profi
 app.include_router(datasets_router, prefix = "/api/datasets", tags = ["datasets"])
 app.include_router(data_recipe_router, prefix = "/api/data-recipe", tags = ["data-recipe"])
 app.include_router(llama_router, prefix = "/api/llama", tags = ["llama"])
+app.include_router(engines_router, prefix = "/api/engines", tags = ["engines"])
 app.include_router(whisper_router, prefix = "/api/whisper", tags = ["whisper"])
 app.include_router(npu_router, prefix = "/api/npu", tags = ["npu"])
 app.include_router(export_router, prefix = "/api/export", tags = ["export"])
+app.include_router(external_import_router, prefix = "/api/import", tags = ["import"])
 app.include_router(rag_router, prefix = "/api/rag", tags = ["rag"])
 app.include_router(training_history_router, prefix = "/api/train", tags = ["training-history"])
 app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
@@ -1730,6 +1869,7 @@ for _prefix, _upstream, _pages in (
         tags = ["hub"],
     )
 app.include_router(youtube_router, prefix = "/api/youtube", tags = ["youtube"])
+app.include_router(_browser_routes.router, prefix = "/api/browser", tags = ["browser"])
 
 # Re-wrap /v1/* client errors into OpenAI/Anthropic envelopes; non-/v1 keeps {"detail": ...}.
 install_api_error_handlers(app)
@@ -1888,6 +2028,7 @@ _MEDIA_BACKEND_MODULES = (
     "core.inference.video",
     "core.inference.diffusion",
     "core.inference.sd_cpp_backend",
+    "core.inference.mlx_diffusion_backend",
     "routes.inference",
 )
 
@@ -2165,12 +2306,27 @@ async def desktop_shutdown_server(request: Request):
     return _schedule_shutdown(request)
 
 
+_shutdown_thread_lock = threading.Lock()
+
+
 def _schedule_shutdown(request: Request) -> dict:
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            trigger()
+            # On its own thread, like the signal path: the cleanup waits seconds on subprocesses
+            # (llama-server alone up to 5 s SIGTERM + 5 s SIGKILL), and run on this loop it kept
+            # uvicorn from closing the port until all of it was done. The main thread still waits
+            # for it (_shutdown_event) before the process exits. One cleanup per launch: keyed by
+            # the trigger, since an embedded host's next run_server() installs a new one.
+            with _shutdown_thread_lock:
+                state = request.app.state
+                if getattr(state, "_shutdown_trigger", None) is not trigger:
+                    state._shutdown_trigger = trigger
+                    state._shutdown_thread = threading.Thread(
+                        target = trigger, name = "studio-shutdown"
+                    )
+                    state._shutdown_thread.start()
         else:
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal
@@ -2187,6 +2343,8 @@ def _get_cached_system_gpu_info(
     """Return training and inference GPU info with bounded live-probe churn."""
     import time
     from utils.hardware import (
+        LIVE_GPU_TELEMETRY_KEYS,
+        amd_driver_warning_report,
         get_backend_visible_gpu_info,
         get_cross_vendor_inference_gpu_info,
         get_visible_gpu_utilization,
@@ -2260,6 +2418,7 @@ def _get_cached_system_gpu_info(
             enriched_dev["vram_utilization_pct"] = util.get(
                 "vram_utilization_pct", dev.get("vram_utilization_pct")
             )
+            enriched_dev.update({k: util[k] for k in LIVE_GPU_TELEMETRY_KEYS if k in util})
             enriched_devices.append(enriched_dev)
 
         # The tile divides the aggregate by the SUMMED per-device totals, so both must describe the same cards. The
@@ -2301,6 +2460,7 @@ def _get_cached_system_gpu_info(
             "vram_used_gb_aggregate": utilization_info.get("vram_used_gb_aggregate")
             if aggregate_basis_matches
             else None,
+            **amd_driver_warning_report(),
         }
 
         # Keep inference placement separate on train-capable hosts where a forced Vulkan llama.cpp bundle can
@@ -2450,15 +2610,35 @@ def _probe_quantised_streaming(supported: Any) -> bool:
 
 def _quantised_streaming() -> bool:
     """The streaming bit for ``/api/system``. Resolved here only once a load has already loaded every
-    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it."""
+    module it reads, since a cold warm (UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1) never resolves it.
+    Needs each module initialised (probing mid-load races the load), not core.inference.video (image loads skip it)."""
     if _quantised_streaming_capability is None and all(
-        name in sys.modules for name in ("torch", "diffusers", "torchao", "core.inference.video")
+        (module := sys.modules.get(name)) is not None
+        and not getattr(getattr(module, "__spec__", None), "_initializing", False)
+        for name in (
+            "torch",
+            "torchao",
+            "diffusers",
+            "diffusers.hooks",
+            "diffusers.hooks.group_offloading",
+        )
     ):
         try:
             return _refresh_quantised_streaming_capability()
         except Exception:  # noqa: BLE001 -- the picker then keeps the tier hidden
             return False
     return bool(_quantised_streaming_capability)
+
+
+def _diffusers_offload_tiers() -> dict:
+    """Extra picker fit tiers per curated Diffusers repo (lower-cased id), in the picker's GiB units.
+    Torch-free; the picker unions them with the catalog's own tiers, so they can only widen."""
+    try:
+        from core.inference.video_minimax_h3 import h3_diffusers_fit_tiers
+        tiers = h3_diffusers_fit_tiers()
+    except Exception:  # noqa: BLE001 -- a picker hint must never break the polled route
+        return {}
+    return {"minimaxai/minimax-h3": tiers} if tiers else {}
 
 
 def _nvfp4_diffusion_enabled() -> bool:
@@ -2468,6 +2648,23 @@ def _nvfp4_diffusion_enabled() -> bool:
         return nvfp4_diffusion_enabled()
     except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
         return False
+
+
+def _checkpoint_quant_formats() -> list[str]:
+    """FP8 / NVFP4 checkpoint formats the Hub's Recommended filter may list. Torch-free.
+
+    Only on a CUDA backend: nvidia-smi still sees the cards under a CPU-only torch or a
+    CUDA_VISIBLE_DEVICES mask that hides them all, and neither can load these checkpoints."""
+    try:
+        from utils.hardware import get_device
+        from utils.hardware.hardware import _backend_label
+        from utils.hardware.nvidia import get_checkpoint_quant_formats
+
+        if _backend_label(get_device()) != "cuda":
+            return []
+        return get_checkpoint_quant_formats()
+    except Exception:  # noqa: BLE001 -- a capability read must never fail a status request
+        return []
 
 
 def _dense_quant_schemes() -> list[str]:
@@ -2506,6 +2703,29 @@ def get_system_info(
     )
 
     memory = psutil.virtual_memory()
+    memory_total = memory.total
+    memory_available = memory.available
+    memory_percent = memory.percent
+    # The picker's RAM tiers compare against available_gb: publish the cgroup-capped view.
+    try:
+        from utils import host_memory
+
+        _budgets = host_memory.cgroup_memory_budgets()
+        _headroom_mib = host_memory.cgroup_headroom_mib(_budgets)
+        _limit_mib = host_memory.cgroup_limit_mib(_budgets)
+        if _limit_mib is not None:
+            memory_total = min(memory_total, _limit_mib * 1024**2)
+        if _headroom_mib is not None:
+            memory_available = min(memory_available, _headroom_mib * 1024**2)
+        if _limit_mib is not None or _headroom_mib is not None:
+            memory_available = min(memory_available, memory_total)
+            memory_percent = (
+                round((memory_total - memory_available) / memory_total * 100, 1)
+                if memory_total
+                else memory_percent
+            )
+    except Exception as e:
+        logger.debug(f"Failed to read the cgroup memory limit: {e}")
 
     # Corrects psutil's 1000x-too-small Apple Silicon M4+ reading (issue #8519).
     cpu_freq_mhz = cpu_frequency_mhz()
@@ -2515,6 +2735,10 @@ def get_system_info(
     except Exception as e:
         logger.debug(f"Failed to get disk usage: {e}")
         disk = None
+
+    from utils.system_disk import cached_models_disk_usage
+
+    models_disk = cached_models_disk_usage()
 
     try:
         current_process = psutil.Process(os.getpid())
@@ -2555,9 +2779,9 @@ def get_system_info(
             "frequency_mhz": cpu_freq_mhz,
         },
         "memory": {
-            "total_gb": round(memory.total / 1024**3, 2),
-            "available_gb": round(memory.available / 1024**3, 2),
-            "percent_used": memory.percent,
+            "total_gb": round(memory_total / 1024**3, 2),
+            "available_gb": round(memory_available / 1024**3, 2),
+            "percent_used": memory_percent,
             "process_used_mb": process_used_mb,
         },
         "disk": {
@@ -2565,6 +2789,8 @@ def get_system_info(
             "free_gb": round(disk.free / 1e9, 2) if disk else 0,
             "percent_used": disk.percent if disk else 0,
         },
+        # Additive: null unless the HF cache sits on another volume (e.g. a symlinked drive).
+        "models_disk": models_disk,
         "gpu": gpu_info,
         "inference_gpu": inference_gpu_info,
         "ml_packages": ml_packages,
@@ -2578,8 +2804,12 @@ def get_system_info(
         "dense_quant_schemes": _dense_quant_schemes(),
         # The streamed MiniMax-H3 tier needs group offload that swaps torchao weights.
         "quantised_streaming": _quantised_streaming(),
+        # Backend-measured offload tiers the picker unions with the catalog's. Additive key.
+        "diffusers_offload_tiers": _diffusers_offload_tiers(),
         # Torch-free env read, safe on this polled route.
         "nvfp4_diffusion": _nvfp4_diffusion_enabled(),
+        # Prequantized FP8 / NVFP4 LLM checkpoints this host runs natively. Additive key.
+        "checkpoint_quant_formats": _checkpoint_quant_formats(),
     }
 
 
@@ -2828,107 +3058,19 @@ def _inject_bootstrap(html_bytes: bytes, app: FastAPI):
     return html.encode("utf-8"), nonce
 
 
-_DEFAULT_PORTS = {"http": 80, "https": 443, "ws": 80, "wss": 443}
-
-
-def _canonical_origin(scheme: str, netloc: str) -> Optional[tuple[str, str, int]]:
-    """Canonicalise an Origin to ``(scheme, host, port)`` for equality. Browsers strip default ports (RFC 6454
-    sec 6.1) and scheme/host are case-insensitive (RFC 3986), so a bare string compare misclassifies
-    same-origin requests as cross-origin. Returns ``None`` on unparseable input so callers fall to the safer
-    cross-origin default."""
-    scheme = (scheme or "").strip().lower()
-    if not scheme or not netloc:
-        return None
-    # Strip userinfo (RFC 3986); Origin never carries credentials.
-    if "@" in netloc:
-        netloc = netloc.rsplit("@", 1)[1]
-    # IPv6 hosts use brackets (RFC 3986 3.2.2): bare partition(":") breaks `-H ::1`.
-    if netloc.startswith("["):
-        close = netloc.find("]")
-        if close == -1:
-            return None
-        host = netloc[1:close]
-        rest = netloc[close + 1 :]
-        if rest.startswith(":"):
-            port_str = rest[1:]
-        elif rest == "":
-            port_str = ""
-        else:
-            return None
-    else:
-        host, _, port_str = netloc.partition(":")
-    host = host.strip().lower()
-    if not host:
-        return None
-    if port_str:
-        try:
-            port = int(port_str)
-        except ValueError:
-            return None
-    else:
-        port = _DEFAULT_PORTS.get(scheme, 0)
-    return (scheme, host, port)
-
-
-def _origin_of(url: Optional[str]) -> Optional[tuple[str, str, int]]:
-    """Canonical origin of a URL or of an Origin header value, or ``None`` when it is neither."""
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return None
-    return _canonical_origin(parsed.scheme, parsed.netloc)
-
-
-def _is_loopback_ip(host: Optional[str]) -> bool:
-    """Return whether ``host`` is a loopback IP, including IPv4-mapped IPv6."""
-    if not host or "%" in host:  # a scope id (::1%eth0) is never a plain loopback
-        return False
-    try:
-        ip = ipaddress.ip_address(host)
-    except (TypeError, ValueError):
-        return False
-    mapped = getattr(ip, "ipv4_mapped", None)
-    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
-
-
-# A loopback peer carrying any of these is a proxy/tunnel relaying a remote client, so the peer is the
-# proxy, not the caller: cloudflared sets cf-connecting-ip, reverse proxies set the rest.
-_PROXIED_CLIENT_HEADERS = (
-    "cf-connecting-ip",
-    "forwarded",
-    "x-forwarded-for",
-    "x-forwarded-host",
-    "x-real-ip",
+# Also used by the /mcp gate, which cannot import main.
+from utils.origin_policy import (  # noqa: E402
+    canonical_origin as _canonical_origin,
+    origin_of as _origin_of,
 )
 
 
-def _host_header_is_loopback(host_header: Optional[str]) -> bool:
-    """Loopback/localhost check on the raw Host header, read directly so a malformed or absent Host
-    cannot fall back to ``request.url.hostname``'s (loopback) ASGI server address."""
-    if not host_header:
-        return False
-    host = host_header.strip()
-    if host.startswith("["):  # [IPv6] or [IPv6]:port
-        end = host.find("]")
-        if end == -1 or (host[end + 1 :] and not host[end + 1 :].startswith(":")):
-            return False  # unclosed bracket or junk after ] (e.g. [::1]evil)
-        host = host[1:end]
-    elif host.count(":") == 1:  # host:port
-        host = host.split(":", 1)[0]
-    host = host.lower().rstrip(".")
-    return host == "localhost" or _is_loopback_ip(host)
-
-
-def _is_local_bootstrap_request(request: Request) -> bool:
-    """Allow bootstrap injection only through a direct loopback authority."""
-    client = request.client
-    if client is None or not _is_loopback_ip(client.host):
-        return False
-    if any(request.headers.get(h) is not None for h in _PROXIED_CLIENT_HEADERS):
-        return False
-    return _host_header_is_loopback(request.headers.get("host"))
+# Shared with the routes that must only answer the person at this computer (Settings > Sandbox).
+from utils.client_ip import (  # noqa: E402
+    _PROXIED_CLIENT_HEADERS,
+    _is_loopback_ip,
+    is_direct_local_request as _is_local_bootstrap_request,
+)
 
 
 def _is_same_origin_request(request: Request) -> bool:
@@ -3044,12 +3186,24 @@ def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
     return bool(expected_host) and request_host == expected_host
 
 
+def _is_direct_loopback_frontend_request(scope) -> bool:
+    # Loopback is a browser secure context (mic dictation needs it, #10786); same gate as bootstrap injection.
+    server = scope.get("server")
+    if not server or not _is_loopback_ip(server[0]):
+        return False
+    return _is_local_bootstrap_request(Request(scope))
+
+
 def _is_remote_frontend_request(scope, app_state) -> bool:
-    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, or one
-    of the sockets the runtime LAN listener bound, both identified by the connection itself rather than a
-    client header the caller controls."""
+    """True for a request the desktop backend may answer with its packaged web UI: Cloudflare's own edge, one
+    of the sockets the runtime LAN listener bound (both keyed on the connection, not a client header), or a
+    direct unproxied browser on the loopback listener."""
     from lan_access import request_on_lan_listener
-    return _is_live_cloudflare_frontend_request(scope, app_state) or request_on_lan_listener(scope)
+    return (
+        _is_live_cloudflare_frontend_request(scope, app_state)
+        or request_on_lan_listener(scope)
+        or _is_direct_loopback_frontend_request(scope)
+    )
 
 
 class _TunnelOnlyFrontend:
@@ -3070,8 +3224,8 @@ def setup_frontend(
     *,
     tunnel_only: bool = False,
 ):
-    """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to remote callers:
-    the Cloudflare edge, or a socket the runtime LAN listener bound."""
+    """Mount frontend static files (optional). ``tunnel_only`` restricts the mount to the callers
+    `_is_remote_frontend_request` admits."""
     if not build_path.exists():
         return False
 
@@ -3122,6 +3276,10 @@ def setup_frontend(
         # for /v1/* ({"detail": ...} for /api/*). The request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+        # MCP clients probe these before connecting; the app shell with a 200 reads as an OAuth server, and
+        # they would start a login Unsloth Studio does not offer instead of sending the API key.
+        if full_path.startswith(".well-known/oauth-"):
+            raise HTTPException(status_code = 404, detail = "Not Found")
         if not _frontend_request_allowed(request):
             return Response(status_code = 404)
 

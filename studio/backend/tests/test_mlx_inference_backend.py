@@ -24,18 +24,71 @@ def native_vlm_generation_context():
     return mlx_inference._vlm_generation_context
 
 
+FUSIONS = (
+    "moe_gate_up",
+    "decode_conv_silu",
+    "residual_norm",
+    "moe_router",
+    "moe_routed_experts",
+    "residual_norm_handoff",
+    "packed_gated_delta",
+)
+
+
 @pytest.fixture(autouse = True)
 def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
     from core.inference import mlx_inference
 
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
-    module.fused_moe_gate_up = contextlib.nullcontext
-    module.fused_decode_conv_silu = contextlib.nullcontext
-    module.fused_residual_norm = contextlib.nullcontext
-    module.fused_moe_router = contextlib.nullcontext
+    for name in FUSIONS:
+        setattr(module, f"fused_{name}", _neutral_scope)
+    for name, helper in PLAIN_HELPERS.items():
+        setattr(module, name, helper)
+    module.__getattr__ = _neutral_zoo_helper
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.inference", module)
     return module
+
+
+def _neutral_scope(
+    model = None,
+    *_args,
+    **_kwargs,
+):
+    """A scope that does nothing and yields the model, whatever else zoo passes.
+
+    contextlib.nullcontext takes one argument, so it stood in only while every helper took just the
+    model. unsloth_zoo #1546 calls nax_quantized_linear(model, int8_prefill), and the stub raised
+    TypeError inside generation_mode on every macOS vision batch test.
+    """
+    return contextlib.nullcontext(model)
+
+
+def _fusion_modules(model, modules):
+    """zoo's own body (unsloth_zoo.mlx.inference): the modules a fusion scope walks."""
+    return (
+        modules
+        if modules is not None
+        else (model.named_modules() if hasattr(model, "named_modules") else ())
+    )
+
+
+# Helpers zoo imports from mlx.inference that are plain functions, not scopes, so the neutral
+# scope cannot stand in for them. unsloth_zoo #1565 made generate.py import _fusion_modules and
+# call tuple(_fusion_modules(model, None)); private names are otherwise refused below.
+PLAIN_HELPERS = {"_fusion_modules": _fusion_modules}
+
+
+def _neutral_zoo_helper(name):
+    """Every other public helper zoo's generate.py enters around a model is neutral too.
+
+    unsloth_zoo #1541 added nax_quantized_linear to that import list, and a stub holding only the
+    fused_* names failed every real-model test on macOS with an ImportError. fused_* stay explicit,
+    so a test that deletes one still sees it missing.
+    """
+    if name.startswith("_") or name.startswith("fused_"):
+        raise AttributeError(name)
+    return _neutral_scope
 
 
 @pytest.fixture
@@ -48,9 +101,7 @@ def mlx_decode(mlx_inference_patches):
     return mlx_inference_patches
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 @pytest.mark.parametrize(
     "error",
     [
@@ -86,9 +137,7 @@ def test_mlx_fusion_import_never_fails_the_request(monkeypatch, error, feature):
         assert active is model
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_fusion_that_cannot_be_entered_keeps_native(
     monkeypatch, mlx_inference_patches, feature
 ):
@@ -108,9 +157,7 @@ def test_mlx_fusion_that_cannot_be_entered_keeps_native(
         assert active is model
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 @pytest.mark.parametrize(
     "message",
     [
@@ -139,9 +186,7 @@ def test_mlx_dead_gpu_queue_is_not_reported_as_a_working_fallback(
     assert mlx_inference._MLX_FUSION_UNAVAILABLE == set()
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_packing_that_runs_out_of_memory_still_keeps_native(
     monkeypatch, mlx_inference_patches, feature
 ):
@@ -219,7 +264,7 @@ def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe
 
         return refuse
 
-    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+    for name in FUSIONS:
         monkeypatch.setattr(mlx_moe, f"fused_{name}", _refusing(name))
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
@@ -229,9 +274,7 @@ def test_mlx_fusion_that_refuses_everywhere_still_generates(monkeypatch, mlx_moe
     stream = backend.generate_chat_response(messages = [{"role": "user", "content": "p"}])
     assert next(stream) == "7"
     stream.close()
-    assert Counter(refused) == Counter(
-        moe_gate_up = 2, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter({**dict.fromkeys(FUSIONS, 1), "moe_gate_up": 2})
 
 
 def _all_fusions_refuse(monkeypatch, patches):
@@ -248,7 +291,7 @@ def _all_fusions_refuse(monkeypatch, patches):
 
         return refuse
 
-    for name in ("moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"):
+    for name in FUSIONS:
         monkeypatch.setattr(patches, f"fused_{name}", _refusing(name))
     monkeypatch.setattr(mlx_inference, "_MLX_FUSION_UNAVAILABLE", set())
     return refused
@@ -292,9 +335,7 @@ def test_mlx_vlm_generation_survives_every_fusion_refusing(monkeypatch, mlx_infe
         None,
     )
     assert list(backend._generate_vlm(*args)) == ["ok"]
-    assert Counter(refused) == Counter(
-        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
 
 
 def test_mlx_audio_input_generation_survives_every_fusion_refusing(
@@ -330,14 +371,135 @@ def test_mlx_audio_input_generation_survives_every_fusion_refusing(
             max_new_tokens = 64,
         )
     ) == ["H", "e", "l"]
-    assert Counter(refused) == Counter(
-        moe_gate_up = 1, decode_conv_silu = 1, residual_norm = 1, moe_router = 1
-    )
+    assert Counter(refused) == Counter(dict.fromkeys(FUSIONS, 1))
+
+
+def _zoo_inference_imports():
+    """Names zoo's own modules import from unsloth_zoo.mlx.inference, read from source without importing zoo."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    root = Path(next(iter(spec.submodule_search_locations))) / "mlx"
+    names = set()
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (
+                (node.level == 1 and node.module == "inference")
+                or node.module == "unsloth_zoo.mlx.inference"
+            ):
+                names.update(alias.name for alias in node.names)
+    if not names:
+        pytest.skip("this unsloth_zoo imports nothing from mlx.inference")
+    return names
+
+
+def test_the_stub_answers_every_helper_zoo_imports_from_inference(mlx_inference_patches):
+    import importlib
+
+    stub = importlib.import_module("unsloth_zoo.mlx.inference")
+    assert stub is mlx_inference_patches
+    missing = sorted(name for name in _zoo_inference_imports() if not hasattr(stub, name))
+    assert not missing, f"zoo imports {missing} from mlx.inference and the stub cannot answer them"
+
+
+def test_an_unknown_zoo_helper_is_neutral_but_a_deleted_fusion_stays_missing(
+    monkeypatch, mlx_inference_patches
+):
+    from unsloth_zoo.mlx.inference import nax_quantized_linear  # noqa: F401
+
+    model = object()
+    with mlx_inference_patches.some_future_helper(model) as active:
+        assert active is model
+    monkeypatch.delattr(mlx_inference_patches, "fused_moe_router")
+    with pytest.raises(ImportError):
+        from unsloth_zoo.mlx.inference import fused_moe_router  # noqa: F401
+    assert not hasattr(mlx_inference_patches, "_private")
 
 
 @pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
+    "args, kwargs",
+    [((), {}), ((object(),), {}), ((object(), True), {}), ((object(),), {"int8_prefill": False})],
 )
+def test_every_stub_scope_takes_any_arguments_and_yields_the_model(
+    mlx_inference_patches, args, kwargs
+):
+    for name in [*(f"fused_{f}" for f in FUSIONS), "nax_quantized_linear", "some_future_helper"]:
+        with getattr(mlx_inference_patches, name)(*args, **kwargs) as active:
+            assert active is (args[0] if args else None), name
+
+
+def test_the_stub_accepts_every_call_zoo_makes_to_an_inference_helper(mlx_inference_patches):
+    """Read zoo's calls to the helpers it imports from mlx.inference and replay each one's shape
+    against the stub, so a new argument fails here on Linux, not only in the macOS job."""
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    imported = _zoo_inference_imports()
+    root = Path(next(iter(spec.submodule_search_locations))) / "mlx"
+    calls = []
+    for path in sorted(root.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding = "utf-8"))):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in imported
+            ):
+                calls.append((path.name, node))
+    if not calls:
+        pytest.skip("this unsloth_zoo calls no mlx.inference helper by name")
+    for filename, call in calls:
+        args = [object() for _ in call.args]
+        kwargs = {kw.arg: object() for kw in call.keywords if kw.arg}
+        helper = getattr(mlx_inference_patches, call.func.id)
+        if call.func.id in PLAIN_HELPERS:
+            # A plain function, not a scope: it only has to accept the call's shape.
+            helper(*args, **kwargs)
+            continue
+        with helper(*args, **kwargs):
+            pass
+
+
+def _without_docstring(body):
+    """The body minus a leading docstring only: any other bare expression (a call, a log line) is
+    behaviour, and dropping it would let the copy miss it."""
+    first = body[0] if body else None
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
+    ):
+        return body[1:]
+    return body
+
+
+def test_each_plain_helper_stub_matches_zoos_body():
+    """A plain helper is not neutral, so the stub copies zoo's body; it must stay a copy."""
+    import importlib.util
+    import inspect
+    import textwrap
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or not spec.submodule_search_locations:
+        pytest.skip("unsloth_zoo source is not available")
+    source = (Path(next(iter(spec.submodule_search_locations))) / "mlx" / "inference.py").read_text(
+        encoding = "utf-8"
+    )
+    zoo = {n.name: n for n in ast.parse(source).body if isinstance(n, ast.FunctionDef)}
+    for name, helper in PLAIN_HELPERS.items():
+        if name not in zoo:
+            continue
+        ours = ast.parse(textwrap.dedent(inspect.getsource(helper))).body[0]
+        ours_body, zoo_body = (
+            [ast.dump(n) for n in _without_docstring(f.body)] for f in (ours, zoo[name])
+        )
+        assert ours_body == zoo_body, f"{name} no longer matches unsloth_zoo.mlx.inference"
+
+
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_missing_inference_export_keeps_native(monkeypatch, mlx_inference_patches, feature):
     from core.inference import mlx_inference
 
@@ -1038,9 +1200,7 @@ def test_vlm_iterator_restores_each_callers_stream_and_closes_on_generation_stre
     assert closed == [generation]
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_vlm_reemits_think_prefill_inside_adapter_context(
     monkeypatch, mlx_moe, mlx_decode, feature
 ):
@@ -1300,9 +1460,7 @@ def test_mlx_vlm_model_config_prefers_config_with_model_type():
     )
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_generate_text_forwards_kwargs_into_template_helper(
     monkeypatch, mlx_moe, mlx_decode, feature
 ):
@@ -1453,6 +1611,102 @@ def test_mlx_generate_text_forwards_kwargs_into_template_helper(
     assert render["kwargs"]["enable_thinking"] is True
     assert render["kwargs"]["reasoning_effort"] == "medium"
     assert render["kwargs"]["preserve_thinking"] is True
+
+
+def _byte_level_mlx_backend(monkeypatch, pieces):
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_args, **_kwargs: "prompt",
+        raising = True,
+    )
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.render_with_native_template_fallback",
+        lambda formatted_prompt, **_kwargs: SimpleNamespace(
+            prompt = formatted_prompt,
+            reasoning_channel_markers = None,
+        ),
+        raising = True,
+    )
+    mlx_lm_pkg = types.ModuleType("mlx_lm")
+    mlx_lm_sample = types.ModuleType("mlx_lm.sample_utils")
+    mlx_lm_sample.make_sampler = lambda **_kwargs: object()
+    mlx_lm_sample.make_logits_processors = lambda **_kwargs: None
+
+    def _stream_generate(_model, _tokenizer, **_kwargs):
+        for token_id in range(len(pieces)):
+            yield SimpleNamespace(token = token_id)
+
+    mlx_lm_pkg.stream_generate = _stream_generate
+    monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm_pkg)
+    monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx_lm_sample)
+
+    class _ByteLevelTokenizer:
+        chat_template = "x"
+        all_special_ids = []
+
+        def decode(self, ids, **_kwargs):
+            return b"".join(pieces[int(i)] for i in ids).decode("utf-8", "replace")
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = object()
+    backend._tokenizer = _ByteLevelTokenizer()
+    backend._is_vlm = False
+    return backend
+
+
+def _delivered(snapshots):
+    # What the chat routes stream: each snapshot's growth past the previous one's length.
+    text = prev = ""
+    for snapshot in snapshots:
+        text += snapshot[len(prev) :]
+        prev = snapshot
+    return text
+
+
+@pytest.mark.parametrize(
+    "pieces, expected",
+    [
+        # 🎉 and ✨ are byte-fallback pairs in Qwen3's vocab (unslothai/unsloth#8594).
+        (
+            [b"Party ", b"\xf0\x9f\x8e", b"\x89", b" sparkle ", b"\xe2\x9c", b"\xa8", b" done"],
+            "Party \U0001f389 sparkle \u2728 done",
+        ),
+        ([b"\xf0\x9f", b"\x8e", b"\x89"], "\U0001f389"),
+        # A turn cut mid-character still delivers what it decoded to.
+        ([b"ok ", b"\xf0\x9f\x8e"], "ok \ufffd"),
+    ],
+)
+def test_mlx_plain_stream_keeps_characters_split_across_tokens(monkeypatch, pieces, expected):
+    _install_fake_mlx(monkeypatch)
+    backend = _byte_level_mlx_backend(monkeypatch, pieces)
+    snapshots = list(
+        backend.generate_chat_response(
+            messages = [{"role": "user", "content": "emoji please"}],
+            max_new_tokens = len(pieces),
+        )
+    )
+    assert _delivered(snapshots) == expected
+
+
+@pytest.mark.parametrize(
+    "pieces, expected",
+    [
+        ([b"Party ", b"\xf0\x9f\x8e", b"\x89", b" done"], "Party \U0001f389 done"),
+        ([b"ok ", b"\xf0\x9f\x8e"], "ok \ufffd"),
+    ],
+)
+def test_mlx_batched_row_keeps_characters_split_across_tokens(monkeypatch, pieces, expected):
+    _install_fake_mlx(monkeypatch)
+    from core.inference import mlx_inference
+
+    stream = mlx_inference._RowStream(
+        decode = lambda ids: b"".join(pieces[i] for i in ids).decode("utf-8", "replace"),
+    )
+    snapshots = [snap for i in range(len(pieces)) for snap in stream.feed(token = i)]
+    snapshots += stream.settle()
+    assert _delivered(snapshots) == expected
 
 
 def test_mlx_tool_turn_preserves_native_gemma_special_token_ids(monkeypatch):
@@ -2895,9 +3149,7 @@ def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch)
     ) == ["<think>"]
 
 
-@pytest.mark.parametrize(
-    "feature", ["moe_gate_up", "decode_conv_silu", "residual_norm", "moe_router"]
-)
+@pytest.mark.parametrize("feature", FUSIONS)
 def test_mlx_audio_input_honors_adapter_selection(monkeypatch, mlx_moe, mlx_decode, feature):
     """Base-vs-LoRA compare sends audio_base64 and use_adapter in one body.
 
@@ -3125,6 +3377,91 @@ def _tiny_lm(
     return _LM()
 
 
+def test_an_explicit_speculative_mode_loads_through_mlx_vlm_and_attaches_what_fits(monkeypatch):
+    pytest.importorskip("mlx.core")
+    drafters = pytest.importorskip("unsloth_zoo.mlx.speculative")
+
+    from core.inference import mlx_inference, mlx_speculative
+
+    attempts, fits = [], []
+    failing = []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            if not kwargs["text_only"] and failing:
+                raise ValueError("mlx-vlm has no such architecture")
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    source = mlx_speculative.DrafterSource("dflash", "/drafter", False)
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(
+        mlx_speculative,
+        "resolve_speculation",
+        lambda mode, *_a, **_k: mlx_speculative.SpecResolution(mode, (source,)),
+    )
+    monkeypatch.setattr(
+        mlx_inference, "mlx_drafter_fit", lambda *a, **k: fits.append(a[1:4]) or (True, 4096)
+    )
+    monkeypatch.setattr(drafters, "companion_drafter", lambda path, target: SimpleNamespace())
+    config = SimpleNamespace(identifier = "org/text", is_vision = False, is_lora = False)
+
+    backend = mlx_inference.MLXInferenceBackend()
+    backend.load_model(config, max_seq_length = 0, speculative_type = "dflash", spec_draft_n_max = 5)
+    entry = backend.models["org/text"]
+    assert attempts == [False] and fits == [(8192, None, source)]
+    assert (entry["spec_drafter_kind"], entry["spec_fallback_reason"]) == ("dflash", None)
+    assert entry["context_length"] == 4096 and entry["spec_draft_n_max"] == 5
+    assert backend._speculative_draft.controller.max_depth == 5
+
+    attempts.clear(), failing.append(True)
+    backend.load_model(config, speculative_type = "dflash")
+    entry = backend.models["org/text"]
+    assert attempts == [False, True] and backend._speculative_draft is None
+    assert entry["spec_fallback_reason"] == mlx_speculative.RUNTIME_ERROR
+    attempts.clear()
+    backend.load_model(config)
+    assert attempts == [True] and backend.models["org/text"]["speculative_type"] == "auto"
+    failing.clear()
+    fit = lambda *a, **kw: fits.append(kw.get("vision")) or (None, None)
+    monkeypatch.setattr(mlx_inference, "_fitted_context", fit)
+    monkeypatch.setattr(mlx_inference, "mlx_drafter_fit", lambda *a, **k: (False, None))
+    backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
+    assert fits[-1] is True  # copies alone still load through mlx-vlm, so the fit prices that route
+    backend.load_model(config, max_seq_length = 0, spec_draft_model = "org/d")
+    assert fits[-2:] == [True, True]  # a named drafter enters the speculative route under Auto
+    # ... and is a request, so a load that cannot honour it says why.
+    failing.append(True)
+    backend.load_model(config, spec_draft_model = "org/d")
+    monkeypatch.setattr(
+        mlx_speculative, "speculation_refusal", lambda **_k: mlx_speculative.KV_QUANT
+    )
+    reasons = [
+        entry["spec_fallback_reason"]
+        for entry in (
+            dict(backend.models["org/text"]),
+            backend.load_model(config, spec_draft_model = "org/d") and backend.models["org/text"],
+        )
+    ]
+    assert reasons == [mlx_speculative.RUNTIME_ERROR, mlx_speculative.KV_QUANT]
+    # A diffusion model gets no draft at load, so the resident batch cannot speculate on it either.
+    failing.clear()
+    monkeypatch.setattr(mlx_speculative, "speculation_refusal", lambda **_k: None)
+    monkeypatch.setattr(mlx_inference, "_vlm_generation_is_diffusion", lambda model: True)
+    backend.load_model(config, max_seq_length = 0, speculative_type = "ngram")
+    entry = backend.models["org/text"]
+    assert backend._speculative_draft is None and entry["spec_drafter_kind"] is None
+    assert entry["spec_fallback_reason"] == mlx_speculative.RUNTIME_ERROR
+
+
 def test_a_text_model_mlx_vlm_cannot_load_is_served_without_turboquant(monkeypatch):
     pytest.importorskip("mlx.core")
     from core.inference import mlx_inference
@@ -3280,6 +3617,16 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
         "chat_template_override_reason": "it could not render a conversation",
     }
     assert _mlx_runtime_settings_match(be, req(chat_template_override = "{{ refused }}"))
+    # Speculation compares canonically: an absent mode is the resident auto.
+    be.models["m"] = {"mlx_kv_quant_requested": "auto", "speculative_type": "auto"}
+    assert _mlx_runtime_settings_match(be, req(speculative_type = "default"))
+    assert not _mlx_runtime_settings_match(be, req(speculative_type = "mtp"))
+    be.models["m"].update(speculative_type = "mtp", spec_draft_n_max = 4)
+    assert _mlx_runtime_settings_match(be, req(speculative_type = "draft-mtp", spec_draft_n_max = 4))
+    assert not _mlx_runtime_settings_match(be, req(speculative_type = "mtp"))
+    assert not _mlx_runtime_settings_match(
+        be, req(speculative_type = "mtp", spec_draft_n_max = 4, spec_draft_model = "org/drafter")
+    )
 
     resp = LoadResponse(
         status = "loaded",
@@ -3291,6 +3638,129 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
         mlx_kv_quant_note = "n",
     )
     assert resp.mlx_kv_quant == "8" and resp.mlx_kv_quant_note == "n"
+
+
+def _int8_zoo(
+    module,
+    available = True,
+    events = None,
+):
+    events = [] if events is None else events
+
+    @contextmanager
+    def nax_quantized_linear(model, int8_prefill = None):
+        events.append(("int8", int8_prefill))
+        yield
+        events.append(("int8_exit", int8_prefill))
+
+    module.nax_quantized_linear = nax_quantized_linear
+    reason = "" if available else "no_eligible_projections"
+    verdict = SimpleNamespace(available = available, reason = reason)
+    module.int8_prefill_available = lambda m: verdict
+    return events
+
+
+def test_int8_prefill_reloads_on_change_and_reports_why_it_is_off(mlx_inference_patches):
+    from core.inference import mlx_inference
+    from models.inference import LoadRequest
+    from routes.inference import _mlx_runtime_settings_match
+
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    entry = {"mlx_kv_quant_requested": "auto"}
+    be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+    assert _mlx_runtime_settings_match(be, req())
+    assert not _mlx_runtime_settings_match(be, req(mlx_int8_prefill = True))
+    be.models["m"]["mlx_int8_prefill_requested"] = True
+    assert _mlx_runtime_settings_match(be, req(mlx_int8_prefill = True))
+    assert not _mlx_runtime_settings_match(be, req())
+
+    from core.inference import orchestrator
+
+    assert "mlx_int8_prefill_requested" in orchestrator._MLX_RUNTIME_MIRROR_FIELDS
+    status = mlx_inference._int8_prefill_status
+    _int8_zoo(mlx_inference_patches)
+    mlx_inference_patches.nax_quantized_linear = lambda model: contextlib.nullcontext()
+    assert status(True, object())["reason"] == "unsupported_zoo"
+    _int8_zoo(mlx_inference_patches, available = False)
+    assert status(True, object())["reason"] == "no_eligible_projections"
+    _int8_zoo(mlx_inference_patches)
+    assert status(True, object())["active"] and status(False, object())["scope"] is None
+
+
+@pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
+def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inactive(
+    monkeypatch, mlx_inference_patches, requested, available
+):
+    from core.inference import mlx_inference
+
+    events = _int8_zoo(mlx_inference_patches, available = available)
+
+    @contextmanager
+    def fusion(_model):
+        events.append(("fusion", None))
+        yield
+
+    for name in FUSIONS:
+        monkeypatch.setattr(mlx_inference_patches, f"fused_{name}", fusion)
+    mlx_vlm = types.ModuleType("mlx_vlm")
+    mlx_vlm.prompt_utils = SimpleNamespace(
+        MODEL_CONFIG = {}, apply_chat_template = lambda *_a, **_k: "<image> prompt"
+    )
+
+    def stream(*_a, **_k):
+        events.append(("stream", None))
+        yield SimpleNamespace(text = "ok", prompt_tokens = 1, generation_tokens = 1)
+
+    mlx_vlm.stream_generate = stream
+    monkeypatch.setitem(sys.modules, "mlx_vlm", mlx_vlm)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda *_a, **_k: "<image> prompt",
+    )
+    monkeypatch.setattr(
+        mlx_inference, "_temporary_mlx_adapter_state", lambda *_a, **_k: contextlib.nullcontext()
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = SimpleNamespace(config = {"model_type": "generic_vlm"})
+    backend._processor = SimpleNamespace(chat_template = "template")
+    backend._is_vlm = backend._reads_vision = True
+    backend._int8_prefill = mlx_inference._int8_prefill_status(requested, backend._model)
+    args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0.7, 0.9, 40, 0.01, 4)
+    assert list(backend._generate_vlm(*args, 1.0, None)) == ["ok"]
+
+    active = requested and available
+    assert events == [("int8", active)] + [("fusion", None)] * len(FUSIONS) + [
+        ("stream", None),
+        ("int8_exit", active),
+    ]
+
+    def broken(model, int8_prefill = None):
+        raise ImportError("skewed zoo")
+
+    mlx_inference_patches.nax_quantized_linear = broken
+    if not active:  # an inactive load never asked for the scope, so its failure costs no request
+        with backend._int8_prefill_scope():
+            pass
+
+
+def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):
+    from core.inference import mlx_inference
+
+    events = _int8_zoo(mlx_inference_patches)
+    engine = _batch_engine(monkeypatch)
+    monkeypatch.setattr(engine, "GenerationDefaults", SimpleNamespace, raising = False)
+    stream = SimpleNamespace(close = lambda: events.append(("close", None)))
+    built = lambda *a, **k: events.append(("stream", None)) or stream
+    monkeypatch.setattr(engine, "BatchStream", built, raising = False)
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model = backend._processor = object()
+    for requested in (True, False):
+        events.clear()
+        backend._int8_prefill = mlx_inference._int8_prefill_status(requested, backend._model)
+        mlx_inference._VisionBatchSession(backend, width = 2).close()
+        # Off is pinned too, or Zoo's own scopes would read UNSLOTH_MLX_INT8_PREFILL.
+        want = [("int8", requested), ("stream", None), ("close", None), ("int8_exit", requested)]
+        assert events == want
 
 
 def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
@@ -4656,6 +5126,15 @@ _TOOL_TEMPLATE = (
     "{% if m.tool_calls %}<tool_call>{{ m.tool_calls[0].function.name }}</tool_call>{% endif %}"
     "{% endfor %}"
 )
+_DEFAULT_TOOL_TEMPLATE = (
+    "{% if messages[0]['role'] == 'system' %}{% set system = messages[0]['content'] %}"
+    "{% set rest = messages[1:] %}{% else %}{% set system = 'You are Qwen.' %}"
+    "{% set rest = messages %}{% endif %}{{ system }}"
+    "{% if tools %}{% for tool in tools %}{{ tool.function.name }}{% endfor %}{% endif %}"
+    "{% for message in rest %}{{ message['content'] }}"
+    "{% if message.tool_calls %}<tool_call>{{ message.tool_calls[0].function.name }}"
+    "</tool_call>{% endif %}{% endfor %}"
+)
 _NAMED_TOOL_TEMPLATE = {"default": _PLAIN_TEMPLATE, "tool_use": _TOOL_TEMPLATE}
 
 
@@ -4985,6 +5464,8 @@ def _drive_vlm_generation(
     max_new_tokens = 1,
     session = None,
     video = None,
+    on_stream = None,
+    **request,
 ):
     import sys
     import types
@@ -4998,6 +5479,8 @@ def _drive_vlm_generation(
     def _stream(*_a, **kwargs):
         seen.clear()
         seen.update(kwargs)
+        if on_stream is not None:
+            on_stream()
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _stream
@@ -5020,9 +5503,94 @@ def _drive_vlm_generation(
             image = image,
             video = video,
             max_new_tokens = max_new_tokens,
+            **request,
         )
     )
     return seen
+
+
+def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
+    pytest.importorskip("mlx_lm")
+    import sys
+    import types
+
+    from core.inference import mlx_inference
+
+    class _Ids(list):
+        def tolist(self):
+            return list(self)
+
+    utils = types.ModuleType("mlx_vlm.utils")
+    utils.prepare_inputs = lambda *_a, **_k: {"input_ids": [_Ids([7, 8, 9])], "extra": 1}
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
+    prepared, verify_scope, scopes = [], [], []
+    # A Zoo without the scope leaves the reply drafted and unfused.
+    with monkeypatch.context() as patch:
+        patch.setattr(mlx_inference, "_mlx_inference_patch", lambda name: verify_scope.append(name))
+        with mlx_inference._mlx_exact_speculative_verify(utils) as active:
+            assert active is utils and verify_scope.pop() == "exact_speculative_verify"
+
+    @contextmanager
+    def exact_verify(model):
+        verify_scope.append("open")
+        try:
+            yield model
+        finally:
+            verify_scope.append("closed")
+
+    monkeypatch.setattr(mlx_inference, "_mlx_exact_speculative_verify", exact_verify)
+    draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
+    draft.prepare = (
+        lambda ids, sampling, given: prepared.append((ids, sampling.temperature, sampling.top_k))
+        or setattr(draft, "given", given)
+        or scopes.append(list(verify_scope))
+    )
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._speculative_draft = draft
+
+    # top_k -1 is the API's "disabled", which the drafter's sampling settings spell 0.
+    seen = _drive_vlm_generation(
+        backend,
+        monkeypatch,
+        temperature = 0.5,
+        top_k = -1,
+        repetition_penalty = 1.1,
+        on_stream = lambda: scopes.append(list(verify_scope)),
+    )
+    assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5, 0)]
+    # The draft is told every processor the reply runs: none reaches mlx-vlm as a shortcut.
+    assert "repetition_penalty" not in seen and draft.given == seen["logits_processors"] != []
+    monkeypatch.setattr(
+        mlx_inference, "_mlx_sampling_processors", lambda **_: [lambda tokens, logits: logits]
+    )
+    timings = backend.last_generation_stats["timings"]
+    assert (timings["draft_n"], timings["draft_n_accepted"]) == (6, 4)
+    for request in (
+        {"repetition_penalty": 1.1},
+        {"tools": [{"type": "function"}]},
+        {"tool_protocol_active": True},
+    ):
+        seen = _drive_vlm_generation(backend, monkeypatch, **request)
+        assert "max_tokens" in seen and "draft_model" not in seen
+        assert "draft_n" not in backend.last_generation_stats["timings"]
+    # Only the drafted reply entered the verify scope: open from preparing the draft through decoding.
+    assert len(prepared) == 1 and scopes == [["open"]] * 2 and verify_scope == ["open", "closed"]
+    opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r: None
+    backend._vlm_resident_unavailable_reason = lambda r, gaps = iter(["no stream"]): next(gaps, None)
+    assert backend.batch_unavailable_reason([{}, {}]) == "no stream"
+    monkeypatch.setattr(
+        _batch_engine(monkeypatch), "BatchStream", lambda *a, **k: opened.append(k["speculative"])
+    )
+    backend._generate_session_batch = lambda r, kind, **_: opened.append(kind) or ()
+    mlx_inference._VisionBatchSession(backend, width = 2)
+    list(backend.generate_chat_batch([{}, {}]))
+    assert opened == [draft, mlx_inference._VisionBatchSession]
+    del backend._generate_session_batch
+    steps, cancel = [], threading.Event()
+    step = lambda waiting: steps.append(waiting) or setattr(session, "rows_in_flight", 0) or ()
+    session = SimpleNamespace(admit = lambda *a: None, rows_in_flight = 1, step = step, close = list)
+    list(backend._generate_session_batch([{}], lambda *a, **k: session, cancel_event = cancel))
+    assert steps == [cancel.is_set]  # a cancelled reply ends its speculative step early
 
 
 def _stub_prepare_inputs(monkeypatch, per_medium = 520):
@@ -5393,9 +5961,49 @@ def test_an_mlx_count_prices_the_current_date_the_completion_prepends(monkeypatc
 
     line = current_date_prompt_line(request = interactive)
     assert line, "the harness must actually produce a date line"
-    assert backend.system.startswith(
-        line
-    ), f"the count dropped the date line the completion prepends: {backend.system!r}"
+    assert (
+        backend.system == line
+    ), f"the count dropped the date the completion adds: {backend.system!r}"
+    assert backend.messages == [{"role": "user", "content": "hi"}]
+
+
+def test_an_mlx_client_tool_count_keeps_the_template_default_after_the_date(monkeypatch):
+    from starlette.datastructures import Headers
+
+    from routes import inference as route
+
+    monkeypatch.setattr(
+        route,
+        "_local_template_system_turn",
+        lambda _today, image = False, tools = False, controls = (): (
+            True,
+            "You are Qwen." if tools else "",
+        ),
+    )
+    interactive = SimpleNamespace(headers = Headers({}), query_params = {}, cookies = {})
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _DEFAULT_TOOL_TEMPLATE,
+        request = interactive,
+        enable_tools = False,
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Look up a value.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    from routes.inference import current_date_prompt_line
+
+    line = current_date_prompt_line(request = interactive)
+    assert backend.system == ""
+    assert backend.messages[0] == {"role": "system", "content": f"{line}\n\nYou are Qwen."}
 
 
 def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypatch):
@@ -5456,15 +6064,56 @@ def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatc
     ), f"the count dropped the date the tool-loop completion adds: {backend.system!r}"
 
 
-def test_an_mlx_count_reports_the_advertised_model_id(monkeypatch):
-    """The caller drops a count naming a different model, so one loaded from a resolved
-    path must still answer as the repo id."""
+@pytest.mark.parametrize(
+    ("active", "advertised"),
+    [
+        ("/Users/alice/outputs/my-finetune-mlx", None),
+        ("/hf/hub/models--org--repo/snapshots/abc123", "org/repo"),
+        ("mlx-community/Qwen3.5-2B-4bit", None),
+    ],
+    ids = ["local_folder", "auto_switch_snapshot", "hub_repo_id"],
+)
+def test_an_mlx_count_reports_the_id_status_publishes(monkeypatch, active, advertised):
+    """/status publishes the raw active name as model_identifier and the client adopts it as its
+    checkpoint, dropping any count that names another model; a cleaned or advertised id here
+    left a local-folder or auto-switched MLX / vLLM model on the estimate forever."""
+    backend = _RenderRecordingBackend()
+    backend.active_model_name = active
+    backend._openai_advertised_id = advertised
+    models = {active: next(iter(_mirror(_TOOL_TEMPLATE).values()))}
+    served = _count_route(
+        monkeypatch, backend, models = models, messages = [{"role": "user", "content": "hello"}]
+    )
+    assert json.loads(served.body)["model"] == active
+
+
+@pytest.mark.parametrize("via_api_key", [True, False], ids = ["api_key", "ui_session"])
+def test_an_mlx_count_redacts_a_local_folder_for_an_api_key_caller(monkeypatch, via_api_key):
+    """/status hides host paths from API-key callers; the count must not hand the same path back."""
+    from hub.utils.host_paths import redact_host_paths
     from routes import inference as route
 
+    active = "/Users/alice/outputs/my-finetune-mlx"
     backend = _RenderRecordingBackend()
-    monkeypatch.setattr(route, "_orchestrator_public_model_id", lambda _b: "org/advertised-repo-id")
-    served = _count_route(monkeypatch, backend, messages = [{"role": "user", "content": "hello"}])
-    assert json.loads(served.body)["model"] == "org/advertised-repo-id"
+    backend.active_model_name = active
+    backend.models = {active: next(iter(_mirror(_TOOL_TEMPLATE).values()))}
+    monkeypatch.setattr(route, "get_inference_backend", lambda: backend)
+    monkeypatch.setattr(route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False))
+    monkeypatch.setattr(route.active_generations, "count", lambda: 0)
+    served = asyncio.run(
+        route.chat_count_tokens(
+            route.ChatCountTokensRequest(messages = [{"role": "user", "content": "hi"}]),
+            current_subject = "tester",
+            via_api_key = via_api_key,
+        )
+    )
+    model = json.loads(served.body)["model"]
+    if via_api_key:
+        assert "/Users/alice" not in model
+        status_view = redact_host_paths({"model_identifier": active}, via_api_key = True)
+        assert model == status_view["model_identifier"]
+    else:
+        assert model == active
 
 
 def test_an_mlx_count_is_dropped_when_a_same_model_reload_lands_under_it(monkeypatch):
@@ -5594,6 +6243,7 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
             "dir": str(tmp_path),
         }
     ]
+    assert fit(vision = True) and priced[0]["vision"] is True
     # The width the cache will take is the width the fit is priced at.
     for answer, bits in ((("full", "", True), 4), (("partial", "w", True), 4)):
         verdict["answer"] = answer
@@ -5898,14 +6548,19 @@ class _TwoRowStream:
     ):
         self._events, self._retired, self.withdrawn = events, set(retired), []
 
-    def step(self):
-        return iter(self._events)
+    def iter_step(self, waiting):
+        yield from self._events
+        self.exhausted = True
 
     def withdraw(self, row):
+        assert self.exhausted, "the batch cannot change mid-step"
         self.withdrawn.append(row)
         if row in self._retired:
             return None
-        return SimpleNamespace(prompt_token_count = 3, token_ids = [1, 2])
+        return SimpleNamespace(prompt_token_count = 3, token_ids = [1, 2], **_DRAFTS)
+
+
+_DRAFTS = {"draft_tokens": 8, "accepted_draft_tokens": 3}
 
 
 def _open_vision_session(rows):
@@ -5915,6 +6570,7 @@ def _open_vision_session(rows):
     session = mlx_inference._VisionBatchSession.__new__(mlx_inference._VisionBatchSession)
     session._rows = {row.handle: row for row in rows}
     session._by_row, session._settled = {row.row: row for row in rows}, {}
+    session._speculative = None
     return session
 
 
@@ -5936,8 +6592,9 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
             for number, handle in enumerate(handles)
         ]
     )
-    other = 1 - stopping
+    other, session._speculative = 1 - stopping, "draft"
     result = SimpleNamespace(finish_reason = "length", prompt_token_count = 3, token_ids = [1, 2])
+    vars(result).update(_DRAFTS)
     session.stream = _TwoRowStream(
         [
             SimpleNamespace(
@@ -5952,6 +6609,8 @@ def test_a_vision_row_cut_by_its_stop_sequence_leaves_the_batch(monkeypatch, sto
 
     assert (handles[stopping], None) in reported, "the stopped row is reported finished"
     assert session._settled[handles[stopping]]["finish_reason"] == "stop"
+    timings = session._settled[handles[stopping]]["timings"]
+    assert (timings["draft_n"], timings["draft_n_accepted"]) == (8, 3)
     assert handles[stopping] not in session._rows, "and it has left the batch"
     assert handles[other] in session._rows, "its neighbour is still in the batch"
     assert (handles[other], "still going") in reported
@@ -8988,3 +9647,39 @@ def test_a_turboquant_load_turns_a_pin_into_a_request_budget(monkeypatch):
     assert policy(8192, 8192) == (3.5, None, False, 8192)
     assert policy(0, 262144) == (3.5, None, False, None)
     assert policy(8192, 8192, "refused") == (None, 8192, True, None)
+
+
+def test_mlx_precision_folder_loads_from_its_own_download(monkeypatch, tmp_path):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
+    calls = []
+    _install_fake_fast_mlx(monkeypatch, calls)
+    fetched = []
+
+    def _snapshot_download(
+        repo_id,
+        allow_patterns = None,
+        **_,
+    ):
+        fetched.append((repo_id, allow_patterns))
+        (tmp_path / "6-bit").mkdir(exist_ok = True)
+        (tmp_path / "6-bit" / "config.json").write_text("{}")
+        return str(tmp_path)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
+    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
+
+    backend = MLXInferenceBackend()
+    repo = "orcarouter/Qwen3.8-27B-Uncensored-MLX"
+    config = SimpleNamespace(identifier = repo, is_vision = False, gguf_variant = "6-bit")
+    assert backend.load_model(config)
+    assert calls[-1][0] == (str(tmp_path / "6-bit"),)
+    assert fetched == [(repo, ["6-bit/*"])]
+    assert backend.active_model_name == repo
+    assert backend.models[repo]["gguf_variant"] == "6-bit"
+
+    assert backend.load_model(SimpleNamespace(identifier = repo, is_vision = False))
+    assert calls[-1][0] == (repo,)
+    assert backend.models[repo]["gguf_variant"] is None
+    assert len(fetched) == 1

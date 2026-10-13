@@ -349,6 +349,44 @@ def test_materialized_branch_is_handed_the_same_transforms(
     assert calls[0]["logit_softcapping"] == pytest.approx(softcapping)
 
 
+@pytest.mark.parametrize("grad", [True, False], ids = ["grad", "no_grad"])
+@pytest.mark.parametrize(
+    "module,forward",
+    [(llama_module, None), (mistral_module, MistralForCausalLM_fast_forward)],
+    ids = ["llama", "mistral"],
+)
+@pytest.mark.parametrize("config,scale,softcapping", _SCALE_CASES, ids = _SCALE_IDS)
+def test_labeled_call_returns_the_transformed_logits(
+    config, scale, softcapping, module, forward, grad, monkeypatch
+):
+    """The kernel transforms the raw logits itself, so the returned ones are transformed
+    separately, and only after the kernel has read them: without grad that is in place."""
+    raw = F.linear(_hidden_states(), _lm_head_weight())
+    expected = raw * scale
+    if softcapping:
+        expected = softcapping * torch.tanh(expected / softcapping)
+    seen = []
+
+    def spy(**kwargs):
+        seen.append(kwargs["logits"].detach().clone())
+        return torch.zeros((), requires_grad = True)
+
+    monkeypatch.setattr(module, "fast_cross_entropy_loss", spy)
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "1")
+    extra = {"input_ids": torch.zeros(BSZ, Q_LEN, dtype = torch.long)} if forward else {}
+    with torch.set_grad_enabled(grad):
+        output = (forward or CausalLM_fast_forward(None))(
+            _FakeCausalLM(config()),
+            labels = LABELS.clone(),
+            return_dict = True,
+            **extra,
+        )
+
+    assert torch.allclose(seen[0], raw, atol = 1e-5), "the kernel would transform these twice"
+    assert torch.allclose(output.logits, expected, atol = 1e-5)
+    assert output.logits.requires_grad == grad
+
+
 def test_transforms_are_applied_scale_first_then_soft_cap():
     """tanh does not commute with scaling, and no shipped family does both, so nothing
     above separates the two orders."""

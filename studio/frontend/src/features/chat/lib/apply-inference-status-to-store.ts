@@ -44,6 +44,8 @@ import { sameGpuSelection } from "@/hooks/gpu-selection";
 import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 import { resolveCtxPinSeed } from "./resolve-ctx-pin-seed";
+import { engineLaunchFieldsFrom } from "./engine-launch-fields";
+import { resolveLlamaExtraArgsSeed } from "./resolve-llama-extra-args-seed";
 import { shouldSeedVisionSwitch } from "./resolve-vision-switch-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -147,6 +149,18 @@ export type ApplyInferenceStatusOptions = {
   adoptingExistingServerModel?: boolean;
 };
 
+/** The resident engine launch settings, in the store's params shape. */
+function residentEngineParams(status: InferenceStatusResponse) {
+  return {
+    engine: status.engine ?? "auto",
+    enginePrecision: status.engine_precision ?? "auto",
+    engineParallelism: status.engine_parallelism ?? "tensor",
+    engineKvCacheDtype: status.engine_kv_cache_dtype ?? "auto",
+    engineSeed: status.engine_seed ?? null,
+    engineGpuMemoryUtilization: status.engine_gpu_memory_utilization ?? null,
+  } as const;
+}
+
 /** Mirror refresh() hydration so adopted CLI models get reasoning/tools flags. */
 export function applyActiveModelStatusToStore(
   status: InferenceStatusResponse,
@@ -157,18 +171,32 @@ export function applyActiveModelStatusToStore(
 
   // Only reached with a model active, so this is the one place both the status poll and the
   // readopt path can publish residency from. Without it a load looks unloaded for up to 10s.
-  useChatRuntimeStore.setState({ residentCheckpoint: checkpointId });
+  useChatRuntimeStore.setState({
+    residentCheckpoint: checkpointId,
+    loadedEngine: status.engine ?? "auto",
+    loadedEnginePrecision: status.engine_precision ?? "auto",
+    loadedEngineParallelism: status.engine_parallelism ?? "tensor",
+    loadedEngineLaunch: engineLaunchFieldsFrom(status),
+  });
   // Before the settings panel can open on it, which reads only the repo id.
   adoptCachedRepoConfig(checkpointId, status.gguf_variant ?? null);
 
   const store = useChatRuntimeStore.getState();
+  const residentEngine = residentEngineParams(status);
+  if (
+    (Object.keys(residentEngine) as (keyof typeof residentEngine)[]).some(
+      (key) => (store.params[key] ?? null) !== residentEngine[key],
+    )
+  ) {
+    store.setParams({ ...store.params, ...residentEngine });
+  }
   const previousCheckpoint =
     options.previousCheckpoint ?? store.params.checkpoint;
 
   if (status.inference) {
     store.setParams(
       mergeBackendRecommendedInference({
-        current: store.params,
+        current: { ...store.params, ...residentEngine },
         response: status,
         modelId: checkpointId,
         presetSource: store.activePresetSource,
@@ -488,6 +516,14 @@ export function applyActiveModelStatusToStore(
         }),
       }),
     ...(seedLoadParams &&
+      status.spec_draft_model !== undefined && {
+        loadedSpecDraftModel: status.spec_draft_model ?? null,
+        ...((hydratingExistingModel ||
+          prevState.specDraftModel === prevState.loadedSpecDraftModel) && {
+          specDraftModel: status.spec_draft_model ?? null,
+        }),
+      }),
+    ...(seedLoadParams &&
       status.cache_type_kv !== undefined && {
         loadedKvCacheDtype: status.cache_type_kv,
         ...((prevState.loadedKvCacheDtype === null ||
@@ -543,6 +579,9 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason:
               status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+            mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
+            loadedMlxInt8PrefillRequested:
+              status.mlx_int8_prefill_requested === true,
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
@@ -550,6 +589,7 @@ export function applyActiveModelStatusToStore(
             mlxKvQuantReason: null,
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
+            loadedMlxInt8PrefillRequested: false,
           })),
     // Recovery for a hydration this tab never saw, and only when nothing is staged: re-seeding
     // over an earlier edit would discard it.
@@ -560,12 +600,16 @@ export function applyActiveModelStatusToStore(
       prevState.mlxKvQuant === null &&
       prevState.loadedMlxKvQuantRequested === null &&
       prevState.mlxKvQuantReason === null &&
-      prevState.chatTemplateOverrideReason === null && {
+      prevState.chatTemplateOverrideReason === null &&
+      !prevState.mlxInt8Prefill && {
         mlxKvQuant: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
         loadedMlxKvQuantRequested: normalizeMlxKvQuant(status.mlx_kv_quant_requested),
         mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
         chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
+        mlxInt8Prefill: status.mlx_int8_prefill_requested === true,
+        loadedMlxInt8PrefillRequested:
+          status.mlx_int8_prefill_requested === true,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would pin a blank
     ...(seedLoadParams &&
@@ -621,11 +665,12 @@ export function applyActiveModelStatusToStore(
     // status, not just the first: another client can reload the SAME model with different
     // arguments, and a pinned baseline would resurrect arguments that are not running.
     // seedLoadParams still guards it, so a mid-switch poll cannot overwrite performLoad.
-    ...(status.requested_llama_extra_args !== undefined &&
-      (status.is_gguf ?? true) &&
-      seedLoadParams && {
-        loadedLlamaExtraArgs: status.requested_llama_extra_args ?? null,
-      }),
+    ...resolveLlamaExtraArgsSeed({
+      incoming: status.requested_llama_extra_args,
+      isGguf: status.is_gguf ?? true,
+      hydratingExistingModel,
+      seedLoadParams,
+    }),
     // one rule per batch pair, see resolveBatchSizeSeed
     ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
     ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),

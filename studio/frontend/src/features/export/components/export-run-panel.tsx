@@ -104,6 +104,7 @@ export interface ExportRunPanelProps {
   destination: ExportDestination;
   onDestinationChange: (v: ExportDestination) => void;
   saveDirectory: string;
+  saveDirectoryInput: string;
   defaultSaveDirectory: string;
   saveDirectoryOverridden: boolean;
   onSaveDirectoryChange: (v: string | null) => void;
@@ -119,6 +120,8 @@ export interface ExportRunPanelProps {
   onStart: () => void;
   /** Collapse the panel; only offered before a run or after a terminal one. */
   onClose: () => void;
+  /** Decision model: output goes to the run folder's gguf/ only; this note replaces the destination picker. */
+  decisionNote?: string;
 }
 
 export function ExportRunPanel(props: ExportRunPanelProps) {
@@ -131,9 +134,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     destination,
     onDestinationChange,
     saveDirectory,
+    saveDirectoryInput,
     defaultSaveDirectory,
     saveDirectoryOverridden,
     onSaveDirectoryChange,
+    decisionNote,
     hfUsername,
     onHfUsernameChange,
     modelName,
@@ -242,7 +247,12 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
       </div>
 
       {/* Destination configuration (only before a run starts) */}
-      {showConfig && (
+      {showConfig && decisionNote && (
+        <p className="break-all rounded-lg border p-3 text-xs text-muted-foreground">
+          {decisionNote}
+        </p>
+      )}
+      {showConfig && !decisionNote && (
         <>
           <div className="flex gap-2">
             <Button
@@ -281,7 +291,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               <div className="flex items-stretch gap-2">
                 <Input
                   className="min-w-0 flex-1 font-mono text-ui-12"
-                  value={saveDirectory}
+                  value={saveDirectoryInput}
                   onChange={(e) => onSaveDirectoryChange(e.target.value)}
                   spellCheck={false}
                   title={saveDirectory}
@@ -417,7 +427,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   : run.result?.outputPath
                     ? [{ label: "", path: run.result.outputPath }]
                     : [];
-              const showLabels = items.length > 1;
+              const showLabels = items.length > 1 || !!decisionNote;
               return items.map((o, i) => (
                 <div
                   key={`${o.path}-${i}`}
@@ -578,7 +588,7 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
               <div
                 ref={logScrollRef}
                 onScroll={handleLogScroll}
-                className="h-56 w-full overflow-auto rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
+                className="h-56 w-full overflow-auto scroll-rounded rounded-lg border border-border/40 bg-black/85 p-3 font-mono text-ui-11 leading-[1.45] text-emerald-200/90"
               >
                 {run.logLines.length === 0 ? (
                   <div className="flex h-full items-center justify-center text-muted-foreground/70">

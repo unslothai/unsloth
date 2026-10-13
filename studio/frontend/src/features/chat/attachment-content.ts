@@ -6,6 +6,7 @@ import {
   MAX_TEXT_ATTACHMENT_BYTES,
   TEXT_ATTACHMENT_ACCEPT,
   decodeTextAttachmentBytes,
+  isBinaryOfficeTemplate,
   isTextAttachmentName,
 } from "./text-attachment-accept";
 
@@ -19,6 +20,7 @@ import {
   OPEN_DOCUMENT_TEXT_MIME,
   RTF_MIMES,
   isRtfAttachmentName,
+  isServerDocumentAttachmentName,
   isToolOnlyAttachmentName,
 } from "./open-document-accept";
 import { readRtfAttachmentContent } from "./rtf";
@@ -44,9 +46,11 @@ export type AttachmentText = {
 };
 
 const AUDIO_ATTACHMENT_RE =
-  /\.(wav|mp3|mp2|m4a|ogg|oga|opus|flac|webm|mp4|aac|aiff|aif|aifc|caf|wma|amr)$/i;
+  /\.(wav|mp3|mp2|m4a|ogg|oga|opus|flac|webm|mp4|aac|aiff|aif|aifc|caf|wma|amr|m4b|weba|mka)$/i;
 const AUDIO_MIME_RE = /^audio\//i;
 const PDF_ATTACHMENT_RE = /\.pdf$/i;
+// Tested first so every other file starts its read without waiting on a sniff.
+const OFFICE_TEMPLATE_NAME_RE = /\.(?:dot|pot)$/i;
 const DOCX_ATTACHMENT_RE = /\.docx$/i;
 const HTML_ATTACHMENT_RE = /\.x?html?$/i;
 const OPEN_DOCUMENT_ATTACHMENT_RE = /\.(ods|odt)$/i;
@@ -122,6 +126,9 @@ const AUDIO_EXTENSION_MIMES: Record<string, string> = {
   caf: "audio/x-caf",
   wma: "audio/x-ms-wma",
   amr: "audio/amr",
+  m4b: "audio/mp4",
+  weba: "audio/webm",
+  mka: "audio/x-matroska",
   webm: "audio/webm",
 };
 // Node.TEXT_NODE and Node.ELEMENT_NODE, spelled out so the extractor runs where the DOM globals do not.
@@ -757,6 +764,683 @@ export function repackDocxAttachmentArchive(
   return zipSync(archive.entries, { level: 0 });
 }
 
+const WORDPROCESSINGML_NAMESPACES = new Set([
+  "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+  "http://purl.oclc.org/ooxml/wordprocessingml/main",
+]);
+const DOCX_NOTE_BREAKS = new Set(["p", "tab", "br", "cr"]);
+const DOCX_NOTE_SKIP = new Set(["del", "moveFrom", "rt", "Fallback"]);
+
+function childElements(node: Node, ns: string, name: string): Element[] {
+  return Array.from(node.childNodes).filter(
+    (child): child is Element =>
+      child.nodeType === 1 &&
+      (child as Element).localName === name &&
+      (child as Element).namespaceURI === ns,
+  );
+}
+
+/** An unfilled content control holds Word's prompt, not a value. */
+function isDocxPlaceholder(element: Element, ns: string): boolean {
+  const flag = childElements(element, ns, "sdtPr").flatMap((pr) =>
+    childElements(pr, ns, "showingPlcHdr"),
+  )[0];
+  return (
+    flag !== undefined &&
+    !["0", "false", "off"].includes(flag.getAttributeNS(ns, "val") ?? "")
+  );
+}
+
+function docxNoteText(node: Node, ns: string): string {
+  let text = "";
+  for (const child of Array.from(node.childNodes)) {
+    if (child.nodeType !== 1) continue;
+    const element = child as Element;
+    const name = element.localName;
+    if (DOCX_NOTE_SKIP.has(name)) continue;
+    if (name === "sdt" && isDocxPlaceholder(element, ns)) continue;
+    if (name === "t" && element.namespaceURI === ns) {
+      text += element.textContent ?? "";
+    } else if (name === "noBreakHyphen") {
+      text += "-";
+    } else {
+      text +=
+        (DOCX_NOTE_BREAKS.has(name) ? " " : "") + docxNoteText(element, ns);
+    }
+  }
+  return text;
+}
+
+const OMML_NAMESPACES = new Set([
+  "http://schemas.openxmlformats.org/officeDocument/2006/math",
+  "http://purl.oclc.org/ooxml/officeDocument/math",
+]);
+const OMML_ROWS: Record<string, [string, string]> = {
+  oMathPara: ["oMath", "\n"],
+  eqArr: ["e", "\n"],
+  m: ["mr", " \\\\ "],
+  mr: ["e", " & "],
+};
+
+/** Linear LaTeX-style text for an equation; mirrors the backend's _docx_math_text. */
+function docxMathText(element: Element, w: string): string {
+  const name = element.localName;
+  const ns = element.namespaceURI ?? "";
+  if (DOCX_NOTE_SKIP.has(name) || (name === "sdt" && isDocxPlaceholder(element, w))) return "";
+  if (ns === w && name === "r") return docxNoteText(element, w);
+  if (OMML_NAMESPACES.has(ns) && name === "t") return element.textContent ?? "";
+  const children = (key: string) => childElements(element, ns, key);
+  const join = (nodes: Element[], sep = "") => nodes.map((node) => docxMathText(node, w)).join(sep);
+  const arg = (key: string) =>
+    ["0", "false", "off"].includes(prop(`${key}Hide`, "off")) ? join(children(key).slice(0, 1)) : "";
+  const prop = (key: string, fallback: string) => {
+    const node = children(`${name}Pr`).flatMap((pr) => childElements(pr, ns, key))[0];
+    return node ? (node.getAttributeNS(ns, "val") ?? "") : fallback;
+  };
+  const scripts = (sub: string, sup: string) => (sub ? `_{${sub}}` : "") + (sup ? `^{${sup}}` : "");
+  const all = Array.from(element.childNodes).filter((node): node is Element => node.nodeType === 1);
+  if (!OMML_NAMESPACES.has(ns)) return join(all);
+  switch (name) {
+    case "f":
+      return prop("type", "bar") === "noBar"
+        ? `{${arg("num")} \\atop ${arg("den")}}`
+        : `\\frac{${arg("num")}}{${arg("den")}}`;
+    case "phant":
+      return ["0", "false", "off"].includes(prop("show", "on")) ? "" : join(all);
+    case "sSub":
+    case "sSup":
+    case "sSubSup":
+      return arg("e") + scripts(arg("sub"), arg("sup"));
+    case "sPre":
+      return `{}${scripts(arg("sub"), arg("sup"))}${arg("e")}`;
+    case "limLow":
+      return arg("e") + scripts(arg("lim"), "");
+    case "limUpp":
+      return arg("e") + scripts("", arg("lim"));
+    case "nary":
+      return prop("chr", "∫") + scripts(arg("sub"), arg("sup")) + arg("e");
+    case "rad": {
+      const deg = arg("deg");
+      return deg ? `\\sqrt[${deg}]{${arg("e")}}` : `\\sqrt{${arg("e")}}`;
+    }
+    case "acc":
+      return arg("e") + prop("chr", "̂");
+    case "bar":
+    case "groupChr": {
+      const side = prop("pos", "bot") === "top" ? "over" : "under";
+      if (name === "bar") return `\\${side}line{${arg("e")}}`;
+      const mark = prop("chr", "⏟");
+      if (mark === "⏞" || mark === "⏟") return `\\${side}brace{${arg("e")}}`;
+      return `\\${side}set{${mark}}{${arg("e")}}`;
+    }
+    case "func":
+      return `${arg("fName")} ${arg("e")}`;
+    case "d":
+      return prop("begChr", "(") + join(children("e"), prop("sepChr", "|")) + prop("endChr", ")");
+  }
+  const row = OMML_ROWS[name];
+  return row ? join(children(row[0]), row[1]) : join(all);
+}
+
+/** Each equation becomes a plain run where it sits; extractRawText drops OMML. */
+export function linearizeDocxMath(archive: Uint8Array): Uint8Array {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!xml.includes("oMath")) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    // Chromium keeps the root of malformed XML and drops everything after the error.
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const tag = (local: string) => (root.prefix ? `${root.prefix}:${local}` : local);
+    let found = false;
+    const visit = (node: Node) => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType !== 1) continue;
+        const element = child as Element;
+        if (
+          !OMML_NAMESPACES.has(element.namespaceURI ?? "") ||
+          (element.localName !== "oMath" && element.localName !== "oMathPara")
+        ) {
+          visit(element);
+          continue;
+        }
+        const run = doc.createElementNS(w, tag("r"));
+        const text = doc.createElementNS(w, tag("t"));
+        text.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+        text.appendChild(doc.createTextNode(docxMathText(element, w)));
+        run.appendChild(text);
+        node.replaceChild(run, element);
+        found = true;
+      }
+    };
+    visit(doc);
+    if (found) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  if (!Object.keys(rewritten).length) return archive;
+  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+}
+
+const W14_NAMESPACE = "http://schemas.microsoft.com/office/word/2010/wordml";
+const DOCX_BREAK_OR_CHECKBOX_RE = /<(?:[\w.-]+:)?(?:br|cr|checkbox|checkBox)[\s/>]/;
+
+export function writeDocxBreaksAndCheckboxes(archive: Uint8Array): Uint8Array {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!DOCX_BREAK_OR_CHECKBOX_RE.test(xml)) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const tag = (local: string) => (root.prefix ? `${root.prefix}:${local}` : local);
+    const text = (value: string) => {
+      const t = doc.createElementNS(w, tag("t"));
+      t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+      t.appendChild(doc.createTextNode(value));
+      return t;
+    };
+    const isOn = (flag: Element | undefined, ns: string) =>
+      flag !== undefined && !["0", "false", "off"].includes(flag.getAttributeNS(ns, "val") ?? "");
+    // [anchor, checked, inRun]: a legacy field's glyph goes inside its run, before the fldChar.
+    const boxes: [Element, boolean, boolean][] = [];
+    for (const box of Array.from(doc.getElementsByTagNameNS(W14_NAMESPACE, "checkbox"))) {
+      const sdt = box.parentNode?.parentNode as Element | null;
+      if ((box.parentNode as Element).localName === "sdtPr" && sdt?.localName === "sdt") {
+        boxes.push([sdt, isOn(childElements(box, W14_NAMESPACE, "checked")[0], W14_NAMESPACE), false]);
+      }
+    }
+    for (const box of Array.from(doc.getElementsByTagNameNS(w, "checkBox"))) {
+      const fldChar = box.parentNode?.parentNode as Element | null;
+      if (fldChar?.localName === "fldChar" && fldChar.parentNode) {
+        const flag = childElements(box, w, "checked")[0] ?? childElements(box, w, "default")[0];
+        boxes.push([fldChar, isOn(flag, w), true]);
+      }
+    }
+    for (const [anchor, checked, inRun] of boxes) {
+      const glyph = text(checked ? "☒" : "☐");
+      const node = inRun ? glyph : doc.createElementNS(w, tag("r"));
+      if (!inRun) node.appendChild(glyph);
+      anchor.parentNode?.insertBefore(node, anchor);
+    }
+    // mammoth drops page and column breaks, which would join surrounding words.
+    const breaks = [
+      ...Array.from(doc.getElementsByTagNameNS(w, "br")),
+      ...Array.from(doc.getElementsByTagNameNS(w, "cr")),
+    ];
+    for (const br of breaks) br.parentNode?.replaceChild(text("\n"), br);
+    if (boxes.length || breaks.length) rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  if (!Object.keys(rewritten).length) return archive;
+  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+}
+
+const DOCX_TABLE_RE = /<(?:[\w.-]+:)?tbl[\s>]/;
+
+export function writeDocxTableRows(archive: Uint8Array): Uint8Array {
+  const rewritten: Record<string, Uint8Array> = {};
+  const parts = unzipSync(archive, { filter: (entry) => entry.name.endsWith(".xml") });
+  for (const [name, bytes] of Object.entries(parts)) {
+    const xml = strFromU8(bytes);
+    if (!DOCX_TABLE_RE.test(xml)) continue;
+    const doc = new DOMParser().parseFromString(xml, "application/xml");
+    const root = doc.documentElement;
+    const w = root?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(w) || doc.getElementsByTagName("parsererror").length) continue;
+    const tag = (local: string) => (root.prefix ? `${root.prefix}:${local}` : local);
+    const run = (child: Element) => {
+      const r = doc.createElementNS(w, tag("r"));
+      r.appendChild(child);
+      return r;
+    };
+    const space = () => {
+      const t = doc.createElementNS(w, tag("t"));
+      t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+      t.appendChild(doc.createTextNode(" "));
+      return t;
+    };
+    const tab = () => run(doc.createElementNS(w, tag("tab")));
+    const grid = (node: Element, pr: string, name: string) =>
+      Math.min(Number(childElements(node, w, pr).flatMap((e) => childElements(e, w, name))[0]?.getAttributeNS(w, "val")) || 0, 1000);
+    const outermost = (p: Element, cell: Element) => {
+      for (let node = p.parentNode; node && node !== cell; node = node.parentNode) {
+        if ((node as Element).localName === "p") return false;
+      }
+      return true;
+    };
+    // flatten nested tables before joining their paragraphs into the cell.
+    for (const table of Array.from(doc.getElementsByTagNameNS(w, "tbl")).reverse()) {
+      for (const row of Array.from(table.getElementsByTagNameNS(w, "tr"))) {
+        const cells = Array.from(row.getElementsByTagNameNS(w, "tc"));
+        const before = grid(row, "trPr", "gridBefore");
+        const after = grid(row, "trPr", "gridAfter");
+        if (cells.length + before + after < 2) {
+          for (const cell of cells) {
+            for (const child of Array.from(cell.childNodes)) {
+              if ((child as Element).localName !== "tcPr") table.parentNode?.insertBefore(child, table);
+            }
+          }
+          continue;
+        }
+        const line = doc.createElementNS(w, tag("p"));
+        for (let i = 0; i < before; i++) line.appendChild(tab());
+        cells.forEach((cell, index) => {
+          if (index) line.appendChild(tab());
+          // cell tabs and line breaks, including those in nested tables, would look like column or row separators.
+          for (const local of ["tab", "br", "cr"]) {
+            for (const mark of Array.from(cell.getElementsByTagNameNS(w, local))) {
+              if ((mark.parentNode as Element | null)?.localName === "r") mark.parentNode?.replaceChild(space(), mark);
+            }
+          }
+          for (const t of Array.from(cell.getElementsByTagNameNS(w, "t"))) {
+            for (const text of Array.from(t.childNodes)) {
+              if (text.nodeValue?.includes("\n")) t.replaceChild(doc.createTextNode(text.nodeValue.replace(/\n/g, " ")), text);
+            }
+          }
+          Array.from(cell.getElementsByTagNameNS(w, "p"))
+            .filter((p) => outermost(p, cell))
+            .forEach((p, i) => {
+              if (i) line.appendChild(run(space()));
+              for (const child of Array.from(p.childNodes)) {
+                if ((child as Element).localName !== "pPr") line.appendChild(child);
+              }
+            });
+          for (let i = 1; i < (grid(cell, "tcPr", "gridSpan") || 1); i++) line.appendChild(tab());
+        });
+        for (let i = 0; i < after; i++) line.appendChild(tab());
+        table.parentNode?.insertBefore(line, table);
+      }
+      table.parentNode?.removeChild(table);
+    }
+    rewritten[name] = strToU8(new XMLSerializer().serializeToString(doc));
+  }
+  if (!Object.keys(rewritten).length) return archive;
+  return zipSync({ ...unzipSync(archive), ...rewritten }, { level: 0 });
+}
+
+function listNumber(n: number, format: string | undefined): string {
+  if (format === "none") return "";
+  if (format === "ordinal" && Number.isSafeInteger(n) && n >= 1) {
+    const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : (["th", "st", "nd", "rd"][n % 10] ?? "th");
+    return `${n}${suffix}`;
+  }
+  const lower = format?.startsWith("lower");
+  // Out-of-range counters read as decimals, like CSS (roman stops at 3999); this also bounds the loops below.
+  const limit = format?.endsWith("Roman") ? 3999 : format?.endsWith("Alpha") ? Number.MAX_SAFE_INTEGER : 26 * 256;
+  if (n < 1 || n > limit || !Number.isInteger(n) || !(lower || format?.startsWith("upper"))) {
+    return format === "decimalZero" && n >= 0 && n < 10 ? `0${n}` : String(n);
+  }
+  let text = "";
+  if (format!.endsWith("Roman")) text = romanNumeral(n);
+  // CSS lower-alpha is bijective (z, aa, ab); Word's lowerLetter repeats the letter (z, aa, bb).
+  else if (format!.endsWith("Alpha")) for (let k = n; k > 0; k = Math.floor((k - 1) / 26)) text = String.fromCharCode(97 + ((k - 1) % 26)) + text;
+  else text = String.fromCharCode(97 + ((n - 1) % 26)).repeat(Math.ceil(n / 26));
+  return lower ? text : text.toUpperCase();
+}
+
+function wordValue(node: Element | undefined, name: string): string | undefined {
+  const ns = node?.namespaceURI ?? "";
+  return (node && childElements(node, ns, name)[0]?.getAttributeNS(ns, "val")) || undefined;
+}
+
+// Labels are an extra: a numbering part this cannot read leaves the text as Mammoth reads it.
+export function writeDocxListNumbers(archive: Uint8Array): Uint8Array {
+  try {
+    return injectDocxListNumbers(archive);
+  } catch {
+    return archive;
+  }
+}
+
+function injectDocxListNumbers(archive: Uint8Array): Uint8Array {
+  const parts = unzipSync(archive, { filter: (entry) => /\.(?:xml|rels)$/.test(entry.name) });
+  const resolve = (targets: string[] | undefined, fallback: string) =>
+    targets?.find((path) => Object.hasOwn(parts, path)) ?? fallback;
+  const main = resolve(readDocxXmlTargets(parts[DOCX_PACKAGE_RELATIONSHIPS], "").get(DOCX_MAIN_DOCUMENT_TYPE), DOCX_MAIN_DOCUMENT_FALLBACK);
+  const targets = readDocxXmlTargets(parts[docxRelationshipsPath(main)], main.slice(0, Math.max(0, main.lastIndexOf("/"))));
+  const parse = (path: string) => {
+    const bytes = Object.hasOwn(parts, path) ? parts[path] : undefined;
+    if (!bytes) return null;
+    const doc = new DOMParser().parseFromString(strFromU8(bytes), "application/xml");
+    const root = doc.documentElement;
+    if (!WORDPROCESSINGML_NAMESPACES.has(root?.namespaceURI ?? "") || doc.getElementsByTagName("parsererror").length) return null;
+    return { doc, root, w: root.namespaceURI ?? "" };
+  };
+  const related = (name: string) => parse(resolve(targets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${name}`), `word/${name}.xml`));
+  const numbering = related("numbering");
+  const body = numbering && parse(main);
+  if (!numbering || !body) return archive;
+
+  const byId = (parent: Element, ns: string, name: string, id: string) =>
+    new Map(childElements(parent, ns, name).map((node) => [node.getAttributeNS(ns, id) ?? "", node]));
+  const n = numbering.w;
+  const abstracts = byId(numbering.root, n, "abstractNum", "abstractNumId");
+  const nums = byId(numbering.root, n, "num", "numId");
+  const styles = related("styles");
+  const styleById = styles ? byId(styles.root, styles.w, "style", "styleId") : new Map<string, Element>();
+  const styleNumbering = new Map<string, Element | undefined>();
+  const styleNumPr = (id: string | undefined, depth = 0): Element | undefined => {
+    if (id === undefined) return undefined;
+    if (styleNumbering.has(id)) return styleNumbering.get(id);
+    const style = styleById.get(id);
+    if (!style || depth > 20) return undefined;
+    const pPr = childElements(style, style.namespaceURI ?? "", "pPr")[0];
+    const numPr = (pPr && childElements(pPr, style.namespaceURI ?? "", "numPr")[0]) ?? styleNumPr(wordValue(style, "basedOn"), depth + 1);
+    styleNumbering.set(id, numPr);
+    return numPr;
+  };
+
+  type Level = { lvl?: Element; start: number; format?: string; restart?: string; legal: boolean; text: string };
+  const firstByLevel = (nodes: Element[]) => {
+    const byLevel = new Map<string, Element>();
+    for (const node of nodes) {
+      const at = node.getAttributeNS(n, "ilvl") ?? "";
+      if (!byLevel.has(at)) byLevel.set(at, node);
+    }
+    return byLevel;
+  };
+  const definedLevels = new Map<string, Map<string, Element>>();
+  type Instance = { abstractId: string; levels: Level[]; restarts: number[]; byStyle: Map<string, number> };
+  const instances = new Map<string, Instance | undefined>();
+  // A list defined through a numbering style (numStyleLink) takes its levels from that style's list.
+  const linkedAbstract = (id: string, depth = 0): string => {
+    const numPr = styleNumPr(wordValue(abstracts.get(id), "numStyleLink"));
+    if (!numPr || depth > 5) return id;
+    const target = wordValue(nums.get(wordValue(numPr, "numId") ?? ""), "abstractNumId");
+    return target === undefined || target === id ? id : linkedAbstract(target, depth + 1);
+  };
+  const instance = (numId: string): Instance | undefined => {
+    if (instances.has(numId)) return instances.get(numId);
+    const num = nums.get(numId);
+    const abstractId = linkedAbstract(wordValue(num, "abstractNumId") ?? "");
+    const abstract = abstracts.get(abstractId);
+    let resolved: Instance | undefined;
+    if (num && abstract) {
+      const overrides = firstByLevel(childElements(num, n, "lvlOverride"));
+      const defined = definedLevels.get(abstractId) ?? firstByLevel(childElements(abstract, n, "lvl"));
+      definedLevels.set(abstractId, defined);
+      const levels = Array.from({ length: 9 }, (_, index): Level => {
+        const override = overrides.get(String(index));
+        const lvl = (override && childElements(override, n, "lvl")[0]) ?? defined.get(String(index));
+        return {
+          lvl,
+          start: Number(wordValue(override, "startOverride") ?? wordValue(lvl, "start") ?? 0) || 0,
+          format: wordValue(lvl, "numFmt"),
+          restart: wordValue(lvl, "lvlRestart"),
+          // isLgl (legal numbering) shows every level's number in Arabic digits: "Section 1.01" under "Article I".
+          legal: !!lvl && childElements(lvl, n, "isLgl").some((node) => !/^(?:0|false|off)$/.test(node.getAttributeNS(n, "val") ?? "")),
+          text: wordValue(lvl, "lvlText") ?? "",
+        };
+      });
+      const restarts = Array.from(overrides.entries())
+        .filter(([at, node]) => /^[0-8]$/.test(at) && childElements(node, n, "startOverride").length)
+        .map(([at]) => Number(at));
+      const byStyle = new Map<string, number>();
+      levels.forEach(({ lvl }, index) => {
+        const style = wordValue(lvl, "pStyle");
+        if (style !== undefined && !byStyle.has(style)) byStyle.set(style, index);
+      });
+      resolved = { abstractId, levels, restarts, byStyle };
+    }
+    instances.set(numId, resolved);
+    return resolved;
+  };
+  const W15 = "http://schemas.microsoft.com/office/word/2012/wordml";
+  const restartsAfterBreak = new Set(
+    Array.from(abstracts.entries())
+      .filter(([, node]) => /^(?:1|true|on)$/.test(node.getAttributeNS(W15, "restartNumberingAfterBreak") ?? ""))
+      .map(([id]) => linkedAbstract(id)),
+  );
+
+  const counters = new Map<string, (number | undefined)[]>();
+  const restartable = new Set<string>();
+  const started = new Set<string>();
+  const { doc, w } = body;
+  const tag = (local: string) => (body.root.prefix ? `${body.root.prefix}:${local}` : local);
+  let found = false;
+  let budget = 1 << 20;
+  const label = (p: Element, pPr: Element | undefined) => {
+    // A tracked-deleted paragraph mark removes the item; Mammoth folds its text into the next paragraph.
+    const mark = pPr && childElements(pPr, w, "rPr")[0];
+    if (mark && (childElements(mark, w, "del").length || childElements(mark, w, "moveFrom").length)) return;
+    const direct = pPr && childElements(pPr, w, "numPr")[0];
+    const styled = styleNumPr(wordValue(pPr, "pStyle"));
+    const numId = wordValue(direct, "numId") ?? wordValue(styled, "numId");
+    const list = numId === undefined ? undefined : instance(numId);
+    if (!list) return;
+    const { abstractId, levels, restarts, byStyle } = list;
+    // A heading style's numPr often names only the list; the level linked to its style supplies ilvl.
+    let linked: number | undefined;
+    for (let style = wordValue(pPr, "pStyle"), depth = 0; style !== undefined && linked === undefined && depth <= 20; depth++) {
+      linked = byStyle.get(style);
+      style = wordValue(styleById.get(style), "basedOn");
+    }
+    const ilvl = Math.min(8, Math.max(0, Math.trunc(Number(wordValue(direct, "ilvl") ?? wordValue(styled, "ilvl") ?? linked ?? 0) || 0)));
+    const { lvl, format, legal, text } = levels[ilvl];
+    if (!lvl) return;
+    // Word shares counters across instances of one abstract; a startOverride restarts them once.
+    const counts = counters.get(abstractId) ?? [];
+    counters.set(abstractId, counts);
+    if (restartsAfterBreak.has(abstractId)) restartable.add(abstractId);
+    if (!started.has(numId!)) {
+      started.add(numId!);
+      for (const at of restarts) if (at < counts.length) counts.length = at;
+    }
+    for (let i = 0; i < ilvl; i++) counts[i] ??= levels[i].start;
+    const current = counts[ilvl];
+    counts[ilvl] = current === undefined ? levels[ilvl].start : current + 1;
+    // A deeper level restarts after any shallower one unless lvlRestart (1-based, 0 = never) says otherwise.
+    for (let i = ilvl + 1; i < counts.length; i++) {
+      const restart = levels[i].restart;
+      if (restart === undefined || ilvl < Number(restart)) counts[i] = undefined;
+    }
+    if (format === "bullet" || text.length > 256) return;
+    let value = "";
+    for (const [index, piece] of text.split(/%([1-9])/).entries()) {
+      if (index % 2 === 0) value += piece;
+      else {
+        const { start, format } = levels[Number(piece) - 1];
+        value += listNumber(counts[Number(piece) - 1] ?? start, legal && format !== "none" && !format?.startsWith("decimal") ? "decimal" : format);
+      }
+      if (value.length > 256) return;
+    }
+    if (!value.trim()) return;
+    budget -= value.length;
+    if (budget < 0) return;
+    const run = doc.createElementNS(w, tag("r"));
+    const t = doc.createElementNS(w, tag("t"));
+    t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+    t.appendChild(doc.createTextNode(`${value} `));
+    run.appendChild(t);
+    p.insertBefore(run, pPr ? pPr.nextSibling : p.firstChild);
+    found = true;
+  };
+  // Mammoth reads only mc:Fallback, so paragraphs under mc:Choice must not count twice.
+  const MC = "http://schemas.openxmlformats.org/markup-compatibility/2006";
+  const paragraphs: Element[] = [];
+  const stack: Element[] = [doc.documentElement];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node.localName === "Choice" && node.namespaceURI === MC) continue;
+    if (node.localName === "p" && node.namespaceURI === w) paragraphs.push(node);
+    const kids = Array.from(node.childNodes).filter((child): child is Element => child.nodeType === ELEMENT_NODE);
+    for (let i = kids.length - 1; i >= 0; i--) stack.push(kids[i]);
+  }
+  for (const p of paragraphs) {
+    const pPr = childElements(p, w, "pPr")[0];
+    label(p, pPr);
+    if (budget < 0) return archive;
+    // w15:restartNumberingAfterBreak
+    if (pPr && restartable.size && childElements(pPr, w, "sectPr").length) {
+      for (const id of restartable) counters.delete(id);
+      restartable.clear();
+    }
+  }
+  if (!found) return archive;
+  return zipSync({ ...unzipSync(archive), [main]: strToU8(new XMLSerializer().serializeToString(doc)) }, { level: 0 });
+}
+
+const DOCX_NOTE_REFERENCE_RE =
+  /<(?:([\w.-]+):)?(footnote|endnote)Reference\b([^>]*?)(\/?)>(\s*<\/(?:[\w.-]+:)?\2Reference\s*>)?/g;
+const DOCX_NOTE_ID_RE = /(?:^|\s)(?:[\w.-]+:)?id\s*=\s*["']([^"']*)["']/;
+
+function romanNumeral(n: number): string {
+  let out = "";
+  for (const [value, digits] of [
+    [1000, "m"],
+    [900, "cm"],
+    [500, "d"],
+    [400, "cd"],
+    [100, "c"],
+    [90, "xc"],
+    [50, "l"],
+    [40, "xl"],
+    [10, "x"],
+    [9, "ix"],
+    [5, "v"],
+    [4, "iv"],
+    [1, "i"],
+  ] as const) {
+    for (; n >= value; n -= value) out += digits;
+  }
+  return out;
+}
+
+
+/** Sentinels after note references; `label` numbers those extractRawText kept (1, 2 / i, ii) and appends the notes. */
+export function markDocxNotes(archive: Uint8Array): {
+  archive: Uint8Array;
+  label: (text: string) => string;
+} {
+  const names = new Set<string>();
+  const read = (name: string) =>
+    unzipSync(archive, {
+      filter: (entry) => {
+        names.add(entry.name);
+        return entry.name === name;
+      },
+    })[name];
+  const targetsOf = (path: string) =>
+    readDocxXmlTargets(
+      read(docxRelationshipsPath(path)),
+      path.slice(0, Math.max(0, path.lastIndexOf("/"))),
+    );
+  const resolve = (targets: string[] | undefined, fallback: string) =>
+    targets?.find((path) => names.has(path)) ?? fallback;
+  const main = resolve(
+    targetsOf("").get(DOCX_MAIN_DOCUMENT_TYPE),
+    DOCX_MAIN_DOCUMENT_FALLBACK,
+  );
+  const mainTargets = targetsOf(main);
+  const notesOf = (heading: string, label: (n: number) => string) => ({
+    heading,
+    label,
+    ns: "",
+    bodies: new Map<string, string>(),
+    referenced: new Set<string>(),
+  });
+  const kinds = {
+    footnote: notesOf("Footnotes", String),
+    endnote: notesOf("Endnotes", romanNumeral),
+  };
+  for (const [kind, notes] of Object.entries(kinds)) {
+    const xml = read(
+      resolve(
+        mainTargets.get(`${DOCX_RELATIONSHIP_NAMESPACE}${kind}s`),
+        `word/${kind}s.xml`,
+      ),
+    );
+    if (!xml) continue;
+    const doc = new DOMParser().parseFromString(
+      strFromU8(xml),
+      "application/xml",
+    );
+    const ns = doc.documentElement?.namespaceURI ?? "";
+    if (!WORDPROCESSINGML_NAMESPACES.has(ns)) continue;
+    notes.ns = ns;
+    for (const note of Array.from(doc.getElementsByTagNameNS(ns, kind))) {
+      const type = note.getAttributeNS(ns, "type");
+      if (type && type !== "normal") continue;
+      notes.bodies.set(
+        note.getAttributeNS(ns, "id") ?? "",
+        docxNoteText(note, ns).replace(/\s+/g, " ").trim(),
+      );
+    }
+  }
+  if (!kinds.footnote.bodies.size && !kinds.endnote.bodies.size) {
+    return { archive, label: (text) => text };
+  }
+
+  const refs: { kind: keyof typeof kinds; id: string }[] = [];
+  // Nonce: document text shaped like a sentinel stays as written.
+  const nonce = Math.random().toString(36).slice(2, 10);
+  const sentinel = new RegExp(`\\uE000${nonce}\\.(\\d+)\\uE001`, "g");
+  const mainXml = read(main);
+  const markedXml = mainXml
+    ? strFromU8(mainXml).replace(
+        DOCX_NOTE_REFERENCE_RE,
+        (
+          reference,
+          _prefix: string | undefined,
+          kind: keyof typeof kinds,
+          attributes: string,
+          selfClosing: string,
+          endTag: string | undefined,
+        ) => {
+          const id = DOCX_NOTE_ID_RE.exec(attributes)?.[1];
+          const notes = kinds[kind];
+          // Never write inside a reference whose end tag is not right after its start.
+          if (!selfClosing && !endTag) return reference;
+          if (id === undefined || !notes.bodies.has(id)) return reference;
+          notes.referenced.add(id);
+          refs.push({ kind, id });
+          const marker = `\uE000${nonce}.${refs.length - 1}\uE001`;
+          // Own xmlns: the reference's prefix may be declared on the reference alone.
+          return `${reference}<t xmlns="${notes.ns}">${marker}</t>`;
+        },
+      )
+    : "";
+  const label = (text: string) => {
+    const numbers = {
+      footnote: new Map<string, number>(),
+      endnote: new Map<string, number>(),
+    };
+    const body = text.replace(sentinel, (match, index: string) => {
+      const ref = refs[Number(index)];
+      if (!ref) return match;
+      const { kind, id } = ref;
+      const seen = numbers[kind];
+      if (!seen.has(id)) seen.set(id, seen.size + 1);
+      return `[${kinds[kind].label(seen.get(id)!)}]`;
+    });
+    const sections: string[] = [];
+    for (const [kind, notes] of Object.entries(kinds)) {
+      const seen = numbers[kind as keyof typeof kinds];
+      // Unreferenced notes stay; ones referenced only from deleted or moved text go.
+      for (const id of notes.bodies.keys()) {
+        if (!notes.referenced.has(id) && !seen.has(id)) {
+          seen.set(id, seen.size + 1);
+        }
+      }
+      const lines = [...seen]
+        .sort((a, b) => a[1] - b[1])
+        .filter(([id]) => notes.bodies.get(id))
+        .map(
+          ([id, number]) => `[${notes.label(number)}] ${notes.bodies.get(id)}`,
+        );
+      if (lines.length) sections.push([notes.heading, ...lines].join("\n"));
+    }
+    return body + sections.join("\n\n");
+  };
+  if (!refs.length) return { archive, label };
+  const entries = unzipSync(archive);
+  entries[main] = strToU8(markedXml);
+  return { archive: zipSync(entries, { level: 0 }), label };
+}
+
 const XML_TOKEN_RE =
   /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<[?!][\s\S]*?>|<(\/?)([^\s/>]+)(?:\s+[^\s=/>]+\s*=\s*(?:"[^"]*"|'[^']*'))*\s*(\/?)>/g;
 const PARAGRAPH_RE = /<(?:[\w.-]+:)?p[\s/>]/;
@@ -952,6 +1636,52 @@ export function getPdfAttachmentTextError(
     : `PDF has no readable text: ${fileName}. Scanned pages can't be read.`;
 }
 
+function pdfFormFieldLines(
+  annotations: {
+    fieldType?: string;
+    fieldName?: string;
+    fieldValue?: unknown;
+    alternativeText?: string;
+    radioButton?: boolean;
+    hidden?: boolean;
+    password?: boolean;
+    options?: { exportValue?: unknown; displayValue?: unknown }[];
+  }[],
+): string[] {
+  const fields = new Map<string, string>();
+  for (const {
+    fieldType,
+    fieldName,
+    fieldValue,
+    alternativeText,
+    radioButton,
+    hidden,
+    password,
+    options,
+  } of annotations) {
+    const value = [fieldValue]
+      .flat()
+      .filter((part) => typeof part === "string")
+      .map((part) => {
+        const shown = options?.find((option) => option.exportValue === part);
+        return typeof shown?.displayValue === "string"
+          ? shown.displayValue
+          : part;
+      })
+      .join(", ");
+    const unchecked = fieldType === "Btn" && value === "Off";
+    if (!fieldName || !value.trim() || unchecked || hidden || password) {
+      continue;
+    }
+    // The tooltip (/TU) is the human label behind codes like f1_01[0]; a radio
+    // widget's tooltip names one option, not the group's selected value.
+    const tooltip = radioButton ? "" : alternativeText;
+    const label = tooltip?.replace(/\s+/g, " ").trim() || fieldName;
+    fields.set(fieldName, `${label}: ${value}`);
+  }
+  return [...fields.values()];
+}
+
 export async function extractPdfAttachmentText(file: File): Promise<string> {
   assertDocumentAttachmentSize(file, "PDF");
   const [{ extractText, getDocumentProxy }, buffer] = await Promise.all([
@@ -962,7 +1692,21 @@ export async function extractPdfAttachmentText(file: File): Promise<string> {
   try {
     // per page rather than merged: mergePages folds every newline pdf.js marks into one space
     const { text } = await extractText(pdf);
-    return normalizeExtractedText(text.join("\n\n"));
+    // getAnnotations re-reads the text under each link, so only forms call it
+    const hasFields = await pdf.getFieldObjects().then(Boolean, () => false);
+    const pages = await Promise.all(
+      text.map(async (pageText, index) => {
+        const annotations = hasFields
+          ? await pdf
+              .getPage(index + 1)
+              .then((page) => page.getAnnotations())
+              .catch(() => [])
+          : [];
+        const fields = pdfFormFieldLines(annotations);
+        return [pageText, ...fields].filter(Boolean).join("\n");
+      }),
+    );
+    return normalizeExtractedText(pages.join("\n\n"));
   } finally {
     await pdf.destroy();
   }
@@ -1064,10 +1808,11 @@ export async function extractDocxAttachmentText(file: File): Promise<string> {
     file.name,
     new Uint8Array(buffer),
   );
+  const marked = markDocxNotes(linearizeDocxMath(repacked));
   const { value } = await mammoth.extractRawText({
-    arrayBuffer: toArrayBuffer(repacked),
+    arrayBuffer: toArrayBuffer(writeDocxTableRows(writeDocxBreaksAndCheckboxes(writeDocxListNumbers(marked.archive)))),
   });
-  return value;
+  return marked.label(value);
 }
 
 const HTML_PRESCAN_BYTES = 1024;
@@ -1185,11 +1930,11 @@ export function extractHtmlAttachmentText(html: string): string {
     .join("");
 }
 
-/** Text with the line structure the source had. `textContent` runs a whole page together, so
- *  every block-level element and every `<br>` contributes a break of its own. */
+/** preserves breaks because `textContent` omits block and `<br>` boundaries. */
 function collectHtmlBlockText(
   node: Node | null,
   preformatted?: string[],
+  rowSpans?: number[],
 ): string {
   if (!node) {
     return "";
@@ -1220,13 +1965,89 @@ function collectHtmlBlockText(
     return "\n\u0000\n";
   }
 
+  if (tag === "tr" && preformatted) {
+    const cells = Array.from(element.childNodes).filter(
+      (child): child is Element =>
+        child.nodeType === ELEMENT_NODE &&
+        ["td", "th"].includes((child as Element).tagName.toLowerCase()),
+    );
+    const covered = rowSpans ?? [];
+    const slots: (Element | null)[] = [];
+    const skipCovered = () => {
+      while (covered[slots.length] > 0) {
+        covered[slots.length]--;
+        slots.push(null);
+      }
+    };
+    const span = (value: string | null, max: number) =>
+      Math.min(Math.max(Number(value) || 1, 1), max);
+    for (const cell of cells) {
+      skipCovered();
+      const rowspan = cell.getAttribute("rowspan");
+      const rows =
+        rowspan !== null && /^0+$/.test(rowspan)
+          ? Number.POSITIVE_INFINITY
+          : span(rowspan, 65534);
+      for (let i = 0; i < span(cell.getAttribute("colspan"), 1000); i++) {
+        covered[slots.length] = rows - 1;
+        slots.push(i ? null : cell);
+      }
+    }
+    for (let i = slots.length; i < covered.length; i++) {
+      if (covered[i] > 0) covered[i]--;
+    }
+    // preformatted code keeps its line breaks on the fallback path.
+    if (slots.length > 1 && !cells.some(containsPre)) {
+      const row = slots
+        .map((cell) => (cell ? collectHtmlBlockText(cell).replace(/\s+/g, " ").trim() : ""))
+        .join("\t");
+      if (!row.trim()) {
+        return "\n";
+      }
+      preformatted.push(row);
+      return "\n\u0000\n";
+    }
+  }
+
+  const groupSpans = HTML_ROW_GROUP_TAGS.has(tag) ? [] : rowSpans;
+  const isItem = (child: Node) =>
+    tag === "ol" && child.nodeType === ELEMENT_NODE && (child as Element).tagName.toLowerCase() === "li";
+  const reversed = tag === "ol" && element.getAttribute("reversed") !== null;
+  const start = tag === "ol" ? Number.parseInt(element.getAttribute("start") ?? "", 10) : Number.NaN;
+  let number = Number.isNaN(start) ? (reversed ? Array.from(element.childNodes).filter(isItem).length : 1) : start;
+  const format = tag === "ol" ? lookUp(HTML_LIST_FORMATS, element.getAttribute("type") ?? "") : undefined;
   const text = Array.from(element.childNodes)
-    .map((child) => collectHtmlBlockText(child, preformatted))
+    .map((child) => {
+      const inner = collectHtmlBlockText(child, preformatted, groupSpans);
+      if (!isItem(child)) return inner;
+      const value = Number.parseInt((child as Element).getAttribute("value") ?? "", 10);
+      if (!Number.isNaN(value)) number = value;
+      const label = listNumber(number, lookUp(HTML_LIST_FORMATS, (child as Element).getAttribute("type") ?? "") ?? format);
+      number += reversed ? -1 : 1;
+      return `\n${label}. ${inner.trimStart()}`;
+    })
     .join("");
   return HTML_BLOCK_TAGS.has(tag) ? `\n${text}\n` : text;
 }
 
-/** Collapses the spaces an extractor leaves between positioned runs while keeping the line breaks the source marked. */
+const HTML_ROW_GROUP_TAGS = new Set(["table", "thead", "tbody", "tfoot"]);
+const HTML_LIST_FORMATS: Record<string, string> = {
+  "1": "decimal",
+  a: "lowerAlpha",
+  A: "upperAlpha",
+  i: "lowerRoman",
+  I: "upperRoman",
+};
+
+function containsPre(node: Node): boolean {
+  return Array.from(node.childNodes).some(
+    (child) =>
+      child.nodeType === ELEMENT_NODE &&
+      ((child as Element).tagName.toLowerCase() === "pre" || containsPre(child)),
+  );
+}
+
+/** collapses extractor spacing while keeping source line breaks. */
 function normalizeExtractedText(text: string): string {
   return text
     .replace(/[^\S\n]+/g, " ")
@@ -1241,6 +2062,15 @@ export async function readAttachmentText(
   name: string,
   contentType: string | undefined,
 ): Promise<AttachmentText> {
+  // Before text, which claims a .mht sent as message/rfc822; a large .odt/.ods reuses its server read.
+  if (
+    isServerDocumentAttachmentName(name) ||
+    (file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES && isOpenDocumentAttachment(name, contentType)) ||
+    (OFFICE_TEMPLATE_NAME_RE.test(name) && (await isBinaryOfficeTemplate(file)))
+  ) {
+    const { extractServerDocumentText } = await import("./server-document");
+    return { label: null, text: await extractServerDocumentText(file), truncated: false };
+  }
   if (isTextAttachment(name, contentType)) {
     return { label: null, ...(await readBoundedText(file)) };
   }

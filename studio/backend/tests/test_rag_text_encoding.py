@@ -108,3 +108,71 @@ def test_a_declared_charset_decodes_as_its_browser_superset(tmp_path):
     ):
         page = f'<html><head><meta charset="{charset}"></head><body><p>{text}</p></body></html>'
         assert _text(tmp_path, f"{charset}.html", page.encode(codec)) == text, charset
+
+
+def test_a_chinese_japanese_korean_or_russian_text_file_is_read_in_its_own_encoding(tmp_path):
+    for codec, text in (
+        ("gbk", "退货政策：收到商品后三十天内可以退货。请保留原始包装和发票。\n"),
+        ("shift_jis", "返品ポリシー：商品到着後三十日以内に返品できます。\n"),
+        ("euc_kr", "반품 정책: 상품 수령 후 30일 이내에 반품할 수 있습니다.\n"),
+        ("big5", "退貨政策：收到商品後三十天內可以退貨。請保留原始包裝和發票。\n"),
+        ("cp1251", "Политика возврата: товар можно вернуть в течение тридцати дней.\n"),
+        (
+            "cp1253",
+            "Πολιτική επιστροφών: μπορείτε να επιστρέψετε το προϊόν εντός τριάντα ημερών.\n",
+        ),
+        ("cp1255", "מדיניות החזרות: ניתן להחזיר את המוצר תוך שלושים יום.\n"),
+        ("cp1256", "سياسة الإرجاع: يمكنك إرجاع المنتج خلال ثلاثين يومًا.\n"),
+    ):
+        assert _text(tmp_path, f"{codec}.txt", text.encode(codec)) == text, codec
+
+
+def test_a_chinese_japanese_korean_or_russian_file_with_code_in_it_is_read_in_its_own_encoding(
+    tmp_path,
+):
+    for codec, text in (
+        (
+            "gbk",
+            "# Unsloth 微调指南\n\n本文档介绍如何使用 Unsloth 在单张 GPU 上微调 Llama 3 模型。\n\n```bash\npip install unsloth\npip install --upgrade transformers datasets\n```\n\n注意：如果显存不足，请将 `max_seq_length` 调小，或者使用 `load_in_4bit = True`。\n",
+        ),
+        (
+            "shift_jis",
+            "このドキュメントでは、Docker を使って PostgreSQL サーバーを起動する方法を説明します。\n```\ndocker run -d --name pg -e POSTGRES_PASSWORD=secret postgres:16\n```\n",
+        ),
+        (
+            "euc_kr",
+            "이 문서는 Kubernetes 클러스터에서 nginx ingress controller 를 설정하는 방법을 설명합니다.\n```yaml\napiVersion: networking.k8s.io/v1\nkind: Ingress\n```\n",
+        ),
+        (
+            "cp1251",
+            "Установите пакет командой `pip install requests` и выполните скрипт `python main.py --config config.yaml`.\n",
+        ),
+    ):
+        assert _text(tmp_path, f"{codec}.md", text.encode(codec)) == text, codec
+
+
+def test_a_short_windows_1252_line_is_not_mistaken_for_another_language(tmp_path):
+    for line in (
+        "Copyright © 2024 Acme Inc. All rights reserved ®",
+        "Price: 25 € – shipping included.",
+        "Temperature: 25°C ± 2°C",
+        "naïve résumé",
+        "Jürgen Weiß",
+        "São Paulo",
+        "café",
+        "é",
+        "€ 12,50",
+        "£50",
+        "½ ¼ ¾",
+        "“”",
+        "1. Ä\n2. Ö\n3. Ü",
+        "é" * 8,
+        "Ü Ö Ä ß ü ö ä é",
+        "° ± µ ½ ¼ ¾ © ®",
+        "é è ê ë à â ä ô ö û ü ç",
+        "Æ Ø Å æ ø å Æ Ø",
+        "élève, für, está, bênção, égalité, âgé, forêt, café",
+        "à é è ù â ê î ô û ë ï ü ç œ æ",
+        "À É È Ê Ë Ù Û Ü Ô Ö Î Ï Â Ä Ç Œ Æ à é è ê ë ù û ü ô ö î ï â ä ç œ æ",
+    ):
+        assert _text(tmp_path, "short.txt", line.encode("cp1252")) == line, line

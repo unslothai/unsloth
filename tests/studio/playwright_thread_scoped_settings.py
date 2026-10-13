@@ -375,7 +375,7 @@ def choose_permission(page, label):
 
 
 def expect_pills(page, where, search, code, permission):
-    for label, wanted in (("Search", search), ("Code", code)):
+    for label, wanted in (("Search", search), ("Tools", code)):
         expect(pill(page, label)).to_have_attribute(
             "data-active", "true" if wanted else "false", timeout = TIMEOUT_MS
         )
@@ -500,6 +500,16 @@ def main():
         browser = playwright.chromium.launch(args = ["--no-sandbox", "--disable-dev-shm-usage"])
         context = browser.new_context(viewport = {"width": 1280, "height": 900})
         context.add_init_script(CHAT_TRAFFIC_JS)
+        # "Run automatically" only switches straight away when the OS sandbox works; answer
+        # for the host so this test does not depend on the runner's user namespaces.
+        context.route(
+            "**/api/sandbox/capability*",
+            lambda route: route.fulfill(
+                status = 200,
+                content_type = "application/json",
+                body = json.dumps({"python_os_isolated": True, "terminal_os_isolated": True}),
+            ),
+        )
         page = context.new_page()
         page.set_default_timeout(TIMEOUT_MS)
         page_errors = []
@@ -567,8 +577,8 @@ def main():
         open_thread(page, thread_b)
         expect_pills(page, "B on first open", False, False, "Approve for me")
 
-        step("set Chat B to Code on, Run automatically")
-        pill(page, "Code").click()
+        step("set Chat B to Tools on, Run automatically")
+        pill(page, "Tools").click()
         choose_permission(page, "Run automatically")
         expect_pills(page, "B after editing", False, True, "Run automatically")
         shoot(page, "02-chat-b-edited")

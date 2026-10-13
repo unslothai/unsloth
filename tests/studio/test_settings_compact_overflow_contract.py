@@ -1,5 +1,6 @@
 """Responsive overflow contracts for the settings dialog."""
 
+import re
 from pathlib import Path
 
 
@@ -34,7 +35,15 @@ def test_api_monitor_entries_and_expanded_text_can_shrink():
     assert '"flex w-full min-w-0 flex-col gap-1 border-b border-border/50' in source
     assert '<section className="flex min-w-0 flex-col gap-1.5">' in source
     # Prompt and reply are unbounded user text: height-capped, scrollable, wrapped.
-    assert "max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-muted/50" in source
+    # Read as tokens: #12431 added scroll-rounded to these boxes, which changes none of this.
+    text_boxes = [
+        set(literal.split())
+        for literal in re.findall(r'"([^"\n]*)"', source)
+        if {"whitespace-pre-wrap", "rounded-lg"} <= set(literal.split())
+    ]
+    assert text_boxes, "no wrapped, rounded text box in the API monitor"
+    for tokens in text_boxes:
+        assert {"max-h-72", "overflow-auto", "break-words"} <= tokens, sorted(tokens)
     # A model id or path has no spaces to wrap on, so it needs break-all.
     assert 'className="min-w-0 break-all font-mono' in source
 
@@ -71,7 +80,9 @@ def test_embedding_model_controls_stack_on_the_narrowest_viewports():
         str(path.relative_to(REPO))
         for path in owners
         if not (
-            'className="max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
+            # The quoted class string, whether it is the whole className or one argument of
+            # cn(...) beside a conditional class, which is how #12875 writes it.
+            '"max-[360px]:flex-col max-[360px]:items-stretch max-[360px]:gap-3"'
             in (source := path.read_text(encoding = "utf-8"))
             # The fixed width has to give way at the breakpoint: flex-1 for the
             # combobox, a full row for the picker trigger.

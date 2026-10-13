@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { skillLoadCardEvent } from "../src/features/chat/api/skill-load-event.ts";
 
 register("./helpers/toast-resolver.mjs", import.meta.url);
 
@@ -29,6 +30,11 @@ function chatApi(body: Record<string, unknown>) {
   const module = loadWithStubs<ChatApi>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
+      "./skill-load-event": { skillLoadCardEvent },
+      "./thread-read-cache.ts": loadWithStubs(
+        new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
+        {},
+      ),
       "@/features/auth": {
         authFetch: async () => ({
           status: 200,

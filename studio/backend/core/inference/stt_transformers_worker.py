@@ -45,6 +45,7 @@ _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 _CANCEL_GRACE_SECONDS = 10.0
 _SHUTDOWN_TIMEOUT_SECONDS = 10.0
 _POLL_SECONDS = 0.1
+_TIMESTAMPS_PER_SECOND = 50
 
 # Errors the child may report that the parent must re-raise as themselves; any other failure crosses as a RuntimeError
 # carrying the child's message.
@@ -136,20 +137,145 @@ def transcribe_window(
 
     segment = np.frombuffer(pcm, dtype = np.float32)
     kwargs = dict(generate_kwargs)
+    return_timestamps = bool(kwargs.get("return_timestamps"))
+    if return_timestamps:
+        kwargs["force_unique_generate_call"] = True
     if cancel_event is not None:
         from transformers import StoppingCriteriaList
         kwargs["stopping_criteria"] = StoppingCriteriaList([_CancelCriteria(cancel_event)])
     from core.inference.stt_sidecar import _TARGET_SAMPLE_RATE
 
-    inputs = processor(segment, sampling_rate = _TARGET_SAMPLE_RATE, return_tensors = "pt")
+    inputs = processor(
+        segment,
+        sampling_rate = _TARGET_SAMPLE_RATE,
+        return_tensors = "pt",
+        return_attention_mask = return_timestamps,
+    )
     features = inputs.input_features.to(model.device)
     target_dtype = getattr(model, "dtype", None)
     if target_dtype is not None:
         features = features.to(target_dtype)
+    if return_timestamps:
+        kwargs["attention_mask"] = inputs.attention_mask.to(model.device)
     with torch.no_grad():
         generated = model.generate(features, **kwargs)
+    consumed = len(segment)
+    if return_timestamps:
+        raw_tokens = [int(token) for token in generated[0]]
+        indices, end = _complete_segment_indices(raw_tokens, model.generation_config)
+        if end:
+            consumed = end * _TARGET_SAMPLE_RATE // _TIMESTAMPS_PER_SECOND
+        generated = [[raw_tokens[index] for index in indices]]
     text = processor.batch_decode(generated, skip_special_tokens = True)
-    return text[0] if text else ""
+    return (text[0] if text else ""), consumed
+
+
+class _MlxSttModel:
+    def __init__(self, model) -> None:
+        self.model = model
+
+
+def load_mlx_stt(
+    snapshot_path: str,
+    device: str,
+    cancel_event = None,
+) -> _MlxSttModel:
+    from core.inference.stt_mlx import ships_custom_code
+    from core.inference.stt_sidecar import SttModelCompatibilityError
+
+    if ships_custom_code(snapshot_path):
+        raise SttModelCompatibilityError(
+            "This dictation model ships its own code, which is not run."
+        )
+    import mlx.core as mx
+    from mlx_audio.stt import load
+
+    if device == "cpu":
+        mx.set_default_device(mx.cpu)
+    model = load(str(snapshot_path))
+    _raise_if_cancelled(cancel_event)
+    return _MlxSttModel(model)
+
+
+# Whisper language codes -> the names Qwen3-ASR lists in config.support_languages.
+_MLX_LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
+
+
+def _mlx_language(model, code: Optional[str]) -> Optional[str]:
+    """The checkpoint's own name for a Whisper language code, or None to let it detect one."""
+    name = _MLX_LANGUAGE_NAMES.get(code or "", "").lower()
+    supported = getattr(getattr(model, "config", None), "support_languages", None) or []
+    return next((lang for lang in supported if name and str(lang).lower() == name), None)
+
+
+def transcribe_mlx_window(
+    engine: _MlxSttModel,
+    pcm: bytes,
+    language: Optional[str] = None,
+) -> tuple:
+    import numpy as np
+
+    segment = np.frombuffer(pcm, dtype = np.float32)
+    hint = _mlx_language(engine.model, language)
+    result = engine.model.generate(segment, **({"language": hint} if hint else {}))
+    text = getattr(result, "text", result)
+    return (text if isinstance(text, str) else ""), len(segment)
+
+
+def _complete_segment_indices(tokens: list, generation_config) -> tuple:
+    # whisper's long-form seek decodes a segment cut off by the window again from the next window
+    timestamp_begin = generation_config.no_timestamps_token_id + 1
+    indexed_tokens = [
+        (index, token)
+        for index, token in enumerate(tokens)
+        if token < generation_config.eos_token_id or token >= timestamp_begin
+    ]
+    is_timestamp = [token >= timestamp_begin for _, token in indexed_tokens]
+    pairs = [i for i in range(1, len(indexed_tokens)) if is_timestamp[i - 1] and is_timestamp[i]]
+    if not pairs or is_timestamp[-2:] == [False, True]:
+        return [index for index, _ in indexed_tokens], 0
+    return (
+        [index for index, _ in indexed_tokens[: pairs[-1]]],
+        indexed_tokens[pairs[-1] - 1][1] - timestamp_begin,
+    )
+
+
+def _supports_segment_timestamps(generation_config) -> bool:
+    return all(
+        isinstance(getattr(generation_config, field, None), int)
+        for field in ("no_timestamps_token_id", "eos_token_id")
+    )
 
 
 def _error_response(exc: BaseException) -> dict:
@@ -228,7 +354,18 @@ def run_stt_worker(
             continue
         kind = command.get("type")
         try:
-            if kind == "load":
+            if kind == "load" and command.get("runtime") == "mlx":
+                engine = load_mlx_stt(command["snapshot_path"], command["device"], cancel_event)
+                _send(
+                    resp_queue,
+                    {
+                        "type": "loaded",
+                        "device": command["device"],
+                        "is_multilingual": None,
+                        "supports_timestamps": False,
+                    },
+                )
+            elif kind == "load":
                 model, processor = load_whisper(
                     command["snapshot_path"],
                     command["device"],
@@ -238,6 +375,7 @@ def run_stt_worker(
                 engine = (model, processor)
                 generation_config = getattr(model, "generation_config", None)
                 is_multilingual = getattr(generation_config, "is_multilingual", None)
+                supports_timestamps = _supports_segment_timestamps(generation_config)
                 _send(
                     resp_queue,
                     {
@@ -246,23 +384,31 @@ def run_stt_worker(
                         "is_multilingual": (
                             is_multilingual if isinstance(is_multilingual, bool) else None
                         ),
+                        "supports_timestamps": supports_timestamps,
                     },
                 )
             elif kind == "transcribe":
                 if engine is None:
                     raise SttWorkerError("The dictation worker has no model loaded.")
                 cancellable = bool(command.get("cancellable"))
-                text = transcribe_window(
-                    engine[0],
-                    engine[1],
-                    command["audio"],
-                    command.get("generate_kwargs") or {},
-                    cancel_event if cancellable else None,
-                )
+                if isinstance(engine, _MlxSttModel):
+                    text, consumed = transcribe_mlx_window(
+                        engine,
+                        command["audio"],
+                        (command.get("generate_kwargs") or {}).get("language"),
+                    )
+                else:
+                    text, consumed = transcribe_window(
+                        engine[0],
+                        engine[1],
+                        command["audio"],
+                        command.get("generate_kwargs") or {},
+                        cancel_event if cancellable else None,
+                    )
                 if cancellable and cancel_event.is_set():
                     from core.inference.stt_sidecar import SttTranscriptionCancelledError
                     raise SttTranscriptionCancelledError("Transcription cancelled.")
-                _send(resp_queue, {"type": "text", "text": text})
+                _send(resp_queue, {"type": "text", "text": text, "consumed": consumed})
             elif kind == "shutdown":
                 _send(resp_queue, {"type": "shutdown_ack"})
                 return
@@ -324,6 +470,7 @@ class WhisperWorker:
         device: str,
         dtype_name: str,
         cancel_event: Optional[threading.Event] = None,
+        runtime: Optional[str] = None,
     ) -> None:
         """Spawn the child and load the model, or raise having killed it."""
         from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
@@ -399,14 +546,15 @@ class WhisperWorker:
             "STT worker started (pid=%s) for %s on %s", _spawned_proc.pid, snapshot_path, device
         )
         try:
-            self._send(
-                {
-                    "type": "load",
-                    "snapshot_path": str(snapshot_path),
-                    "device": device,
-                    "dtype": dtype_name,
-                }
-            )
+            load_command = {
+                "type": "load",
+                "snapshot_path": str(snapshot_path),
+                "device": device,
+                "dtype": dtype_name,
+            }
+            if runtime is not None:
+                load_command["runtime"] = runtime
+            self._send(load_command)
             response = self._await("loaded", _LOAD_TIMEOUT_SECONDS, cancel_event, "load")
         except BaseException as exc:
             # Classify before close(), which reaps the child and drops the handle.
@@ -418,14 +566,17 @@ class WhisperWorker:
                 ) from exc
             raise
         self.device = response.get("device") or device
-        self.generation_config = SimpleNamespace(is_multilingual = response.get("is_multilingual"))
+        self.generation_config = SimpleNamespace(
+            is_multilingual = response.get("is_multilingual"),
+            supports_timestamps = response.get("supports_timestamps") is True,
+        )
 
     def transcribe_window(
         self,
         pcm: bytes,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         if self._cancel_event is not None:
             self._cancel_event.clear()
         self._send(
@@ -438,7 +589,7 @@ class WhisperWorker:
         )
         response = self._await("text", _TRANSCRIBE_TIMEOUT_SECONDS, cancel_event, "transcribe")
         text = response.get("text")
-        return text if isinstance(text, str) else ""
+        return (text if isinstance(text, str) else ""), response["consumed"]
 
     def is_alive(self) -> bool:
         process = self._process
@@ -657,7 +808,8 @@ class InProcessWhisperEngine:
         generation_config = getattr(model, "generation_config", None)
         is_multilingual = getattr(generation_config, "is_multilingual", None)
         self.generation_config = SimpleNamespace(
-            is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None
+            is_multilingual = is_multilingual if isinstance(is_multilingual, bool) else None,
+            supports_timestamps = _supports_segment_timestamps(generation_config),
         )
         logger.info("STT model loaded in process on the CPU from %s", snapshot_path)
 
@@ -666,16 +818,16 @@ class InProcessWhisperEngine:
         pcm: bytes,
         generate_kwargs: dict,
         cancel_event: Optional[threading.Event] = None,
-    ) -> str:
+    ) -> tuple[str, int]:
         if self._model is None:
             raise SttWorkerError("The dictation worker has no model loaded.")
-        text = transcribe_window(
+        result = transcribe_window(
             self._model, self._processor, pcm, dict(generate_kwargs), cancel_event
         )
         if cancel_event is not None and cancel_event.is_set():
             from core.inference.stt_sidecar import SttTranscriptionCancelledError
             raise SttTranscriptionCancelledError("Transcription cancelled.")
-        return text
+        return result
 
     def is_alive(self) -> bool:
         return self._model is not None

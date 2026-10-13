@@ -1423,8 +1423,17 @@ test("light mode is the chatbox's background, under a slightly heavier shadow", 
       alpha: Number(hit[4]),
     };
   };
-  const from = shape(composer);
-  const to = shape(bar);
+  // The composer may read its shadow from a variable (it shares one with the toasts); compare the
+  // light value that variable holds, which is what the composer paints in light mode.
+  const resolved = (rule: string) => {
+    const ref = /box-shadow:\s*var\((--[\w-]+)\);/.exec(rule);
+    if (!ref) return rule;
+    const value = new RegExp(`\\s${ref[1]}:\\s*([^;]+);`).exec(cssRule(INDEX, ":root"));
+    assert.ok(value, `${ref[1]} has no light value in :root`);
+    return `box-shadow: ${value[1]};`;
+  };
+  const from = shape(resolved(composer));
+  const to = shape(resolved(bar));
   assert.ok(
     to.blur > from.blur,
     `blur ${to.blur} is not wider than ${from.blur}`,
@@ -1544,6 +1553,9 @@ test("the bar stays out of a backgrounded scope, and off the document origin", a
   // 22.25/28.25rem is exactly the previous short-counter width: fixed input + 12rem chrome.
   assert.match(surface[1], /(?:^|\s)w-\[calc\(22\.25rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
   assert.match(surface[1], /(?:^|\s)sm:w-\[calc\(28\.25rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
+  // With the chat/browser scope buttons it widens by their room (5.5rem), so the field keeps its width.
+  assert.match(surface[1], /(?:^|\s)data-scoped:w-\[calc\(27\.75rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
+  assert.match(surface[1], /(?:^|\s)sm:data-scoped:w-\[calc\(33\.75rem\*var\(--ui-space-scale,1\)\)\](?:\s|$)/);
   // Either form: the field's classes are the point, not whether they go
   // through cn().
   const input = /<input[\s\S]*?className=\{?(?:cn\()?\s*"([^"]*)"/.exec(
@@ -1564,10 +1576,7 @@ test("toasts clear the bar while it is open", () => {
   assert.match(FIND_BAR, FIND_SURFACE_GEOMETRY);
   assert.match(FIND_IN_PAGE, FIND_SURFACE_GEOMETRY);
   const toaster = '[data-sonner-toaster][data-y-position="top"]';
-  const rule = cssRule(
-    INDEX,
-    `:root:has([data-find-bar-layer]:not([hidden]) .find-bar-surface) ${toaster}`,
-  );
+  const rule = cssRule(INDEX, `html[data-find-bar-open] ${toaster}`);
   assert.match(rule, TOAST_UNDER_FIND_BAR);
   // The toaster renders outside the chrome wrapper, so the bar's inset has to reach <html>.
   assert.match(
@@ -2729,7 +2738,7 @@ test("closing the bar hands focus back to where it came from", async () => {
   const capture = FIND_BAR.indexOf("const active = document.activeElement");
   const takeFocus = FIND_BAR.indexOf("input.select();");
   assert.ok(capture > 0 && capture < takeFocus);
-  assert.match(FIND_BAR, /origin\.focus\(\);/);
+  assert.match(FIND_BAR, /origin\.focus\(\{ preventScroll: true \}\);/);
   // First answer only: StrictMode replays the effect, and by the second run the field has focus.
   assert.match(FIND_BAR, /originRef\.current === null &&/);
   // Against the bar's element, not `data-find-skip`, which the composer carries.
@@ -3258,4 +3267,13 @@ test("nothing of the engine is mounted while the bar is closed", async () => {
   assert.equal(FIND_IN_PAGE.includes("useFindInPage("), false);
 
   assert.equal((FIND_BAR.match(/useFindInPage\(/g) ?? []).length, 1);
+});
+
+test("the find bar hides under the Browser overlay from its first frame", () => {
+  const page = readSrc("features/chat/chat-page.tsx");
+  const start = page.indexOf("function BrowserOverlay(");
+  const overlay = page.slice(start, page.indexOf("\n}\n", start));
+  assert.match(overlay, /useDocumentFlag\("data-browser-overlay-open", true\);/, "the inline modal tells CSS it is up, which nothing else notices until its lazy panel loads");
+  assert.match(INDEX, /html\[data-browser-overlay-open\] \[data-find-bar-layer\] \{\s*display: none;\s*\}/);
+  assert.equal(/html\[data-browser-overlay-open\][^{]*\.interface-zoom-position/.test(INDEX), false, "the zoom popup stays, as upstream keeps it under any dialog");
 });
