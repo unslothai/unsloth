@@ -43,7 +43,6 @@ import {
   audioGenerationPresentation,
 } from "./audio-page-policy";
 import { clipReference } from "./audio-run-request";
-import { AudioRuntimeUpdateNotice } from "./components/audio-runtime-update-notice";
 import { AudioActiveProvider } from "./components/audio-source-input";
 import {
   audioModelLabel,
@@ -324,7 +323,6 @@ export function AudioPage({
     selectedSttRepoRef,
     sttStatusRefreshGeneration,
     audioCppRuntime,
-    runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
     setLastSttRepo,
@@ -1705,14 +1703,6 @@ export function AudioPage({
                 <p className="text-xs leading-snug text-muted-foreground">
                   {capabilityLine}
                 </p>
-                {runtimeUpdate ? (
-                  <AudioRuntimeUpdateNotice
-                    update={runtimeUpdate}
-                    onUpdated={() =>
-                      Promise.all([refreshStatus(), refreshSttStatus()])
-                    }
-                  />
-                ) : null}
               </div>
 
               {mode === "speak" ? (
