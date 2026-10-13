@@ -7,7 +7,7 @@ import type { PageResponse } from "../src/features/browser/api.ts";
 import type { PageRequest } from "../src/features/browser/frame-message.ts";
 import { pageRequests } from "../src/features/browser/page-requests.ts";
 
-const request: PageRequest = { url: "https://site.test/api", method: "GET", headers: [], body: null, redirect: "follow" };
+const request: PageRequest = { url: "https://site.test/api", method: "GET", headers: [], body: null, redirect: "follow", integrity: "" };
 const answer: PageResponse = { status: 200, statusText: "OK", url: "https://site.test/api", headers: [], body: new ArrayBuffer(0) };
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -66,6 +66,21 @@ test("a page with many waiting can't keep another page waiting until its queue d
   busy.requests.stop();
   other.requests.stop();
   for (const call of [...busy.calls, ...other.calls]) call.finish(false);
+  await tick();
+});
+
+test("queued requests the page aborts leave the queue, so they can't fill it", async () => {
+  const t = setup();
+  for (let i = 0; i < 3; i++) t.requests.request(`run${i}`, request);
+  for (let i = 0; i < 300; i++) {
+    t.requests.request(`q${i}`, request);
+    t.requests.abort(`q${i}`);
+  }
+  t.requests.request("last", request);
+  // Queued behind the three running, not refused as over the bound.
+  assert.deepEqual(t.replies, []);
+  t.requests.stop();
+  for (const call of t.calls) call.finish(false);
   await tick();
 });
 

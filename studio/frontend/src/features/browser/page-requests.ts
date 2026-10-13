@@ -71,8 +71,12 @@ export function pageRequests(
       schedule();
     },
     abort(id: string) {
-      open.get(id)?.abort();
+      const controller = open.get(id);
+      controller?.abort();
       open.delete(id);
+      // A queued one leaves the queue, so aborted requests don't fill its bound.
+      const at = queue.findIndex((job) => job.controller === controller);
+      if (at >= 0) queue.splice(at, 1);
     },
     /** The page is gone: end all it asked for, queued or running. */
     stop() {
