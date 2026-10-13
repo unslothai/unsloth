@@ -2736,6 +2736,9 @@ def _finalize_mlx_training(
                 resume_blocked = True,
             )
             return
+    if not stopped_after_save and getattr(trainer, "_early_stopped", False):
+        # Zoo ends an early-stopped run without stop_requested, so it reads as a plain completion otherwise.
+        completion_message = "Training completed (stopped early: eval loss stopped improving)"
     send(
         "complete",
         output_dir = output_dir if bool(trainer.is_main_process) else None,

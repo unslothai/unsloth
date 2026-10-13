@@ -116,6 +116,12 @@ function canReapplyModelDefaults(modelName: string): boolean {
 
 const DEFAULT_DECISION_CHECKPOINT = "laya-multilingual";
 
+// Saved runs and YAML files carry it, but it is not a model default: switching models keeps it.
+function earlyStoppingPatienceFrom(value: unknown): number {
+  const patience = Number(value);
+  return Number.isFinite(patience) && patience > 0 ? Math.floor(patience) : 0;
+}
+
 // evalSteps is left alone: it follows the chosen eval split, not the model.
 const GENERIC_MODEL_DEFAULTS = Object.fromEntries(
   MODEL_DEFAULT_STATE_KEYS.filter((key) => key !== "evalSteps").map((key) => [
@@ -1659,15 +1665,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _trainingMethodEditGeneration += 1;
           _trainOnCompletionsManuallySet = true;
           _trainOnCompletionsExplicitModel = selections.selectedModel;
-          // Not a model default (switching models keeps it), so it is not in the patch above.
-          const patience = Number(config.early_stopping_patience);
           setUserEdit({
             ...hyperparameters,
             ...selections,
-            earlyStoppingPatience:
-              Number.isFinite(patience) && patience > 0
-                ? Math.floor(patience)
-                : 0,
+            earlyStoppingPatience: earlyStoppingPatienceFrom(
+              config.early_stopping_patience,
+            ),
           });
           // Fetch capabilities without replacing the saved recipe.
           loadAndApplyModelDefaults(selections.selectedModel, {
@@ -1710,12 +1713,23 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           if (patch.trainOnCompletions !== undefined) {
             _trainOnCompletionsExplicitModel = get().selectedModel;
           }
+          const importsPatience = Object.hasOwn(
+            config.training ?? {},
+            "early_stopping_patience",
+          );
           setUserEdit((state) => {
             const importsCompletionsInCpt =
               state.trainingMethod === "cpt" &&
               patch.trainOnCompletions !== undefined;
             return {
               ...patch,
+              ...(importsPatience
+                ? {
+                    earlyStoppingPatience: earlyStoppingPatienceFrom(
+                      config.training?.early_stopping_patience,
+                    ),
+                  }
+                : {}),
               ...(patch.trainOnCompletions !== undefined
                 ? { trainOnCompletionsDefaultPendingFor: null }
                 : {}),

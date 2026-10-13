@@ -126,7 +126,15 @@ def create_early_stopping_callback(patience: int):
                         "weights is too much to hold a copy of the best ones\n"
                     )
                     return
-                self._best_weights = {n: p.detach().to("cpu", copy = True) for n, p in trainable}
+                # Refill the previous copy in place: building a new dict first would hold two copies at once.
+                if self._best_weights is not None and self._best_weights.keys() == {
+                    n for n, _ in trainable
+                }:
+                    for n, p in trainable:
+                        self._best_weights[n].copy_(p.detach())
+                else:
+                    self._best_weights = None
+                    self._best_weights = {n: p.detach().to("cpu", copy = True) for n, p in trainable}
             except Exception as exc:
                 self._too_large = True
                 self._best_weights = None

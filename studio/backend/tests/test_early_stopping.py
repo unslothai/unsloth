@@ -290,3 +290,53 @@ def test_the_best_weight_copy_is_released_when_not_needed(tmp_path):
     callback = attach_early_stopping(trainer, 2)
     trainer.train()
     assert not callback.restored and callback._best_weights is None
+
+
+def test_a_new_best_refills_the_copy_in_place():
+    # Building a fresh dict per improvement would hold two full copies of the trainable weights at once.
+    callback = es.create_early_stopping_callback(3)
+    model = _Line()
+
+    class _State:
+        global_step = 1
+
+    callback.on_evaluate(None, _State(), None, metrics = {"eval_loss": 2.0}, model = model)
+    first = callback._best_weights["w"]
+    with torch.no_grad():
+        model.w.fill_(5.0)
+    _State.global_step = 2
+    callback.on_evaluate(None, _State(), None, metrics = {"eval_loss": 1.0}, model = model)
+    assert callback._best_weights["w"] is first and first.item() == 5.0
+
+
+def test_mlx_early_stop_is_named_in_the_final_status():
+    import types
+
+    from core.training import worker
+
+    def finish(early_stopped):
+        events = []
+        trainer = types.SimpleNamespace(
+            distributed_world_size = 1,
+            is_main_process = True,
+            stop_requested = False,
+            _early_stopped = early_stopped,
+            save_model = lambda path: None,
+        )
+        worker._finalize_mlx_training(
+            trainer,
+            lambda: (False, True),
+            "/out",
+            lambda: None,
+            lambda kind, **payload: events.append((kind, payload)),
+            lambda: True,
+        )
+        return events[-1]
+
+    assert finish(False) == (
+        "complete",
+        {"output_dir": "/out", "status_message": "Training completed"},
+    )
+    assert finish(True)[1]["status_message"] == (
+        "Training completed (stopped early: eval loss stopped improving)"
+    )
