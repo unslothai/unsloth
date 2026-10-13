@@ -405,6 +405,13 @@ def _launch_urls(app_state) -> list[str]:
             _url_scheme(app_state),
         )
     url = getattr(app_state, "server_url", None)
+    if url is None and _url_scheme(app_state) == "https":
+        # run.py publishes no server_url for TLS; the bound host is still where LAN peers reach it
+        return _listener_urls(
+            (getattr(app_state, "lan_access_bind_host", ""),),
+            getattr(app_state, "lan_access_port", None),
+            "https",
+        )
     return [url] if url else []
 
 

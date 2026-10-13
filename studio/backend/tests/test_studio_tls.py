@@ -248,3 +248,21 @@ def test_tls_launch_publishes_no_ip_server_url(monkeypatch):
     assert run._direct_server_url("0.0.0.0", 8888) == "http://192.168.1.5:8888"
     monkeypatch.setattr(run, "_url_scheme", "https")
     assert run._direct_server_url("0.0.0.0", 8888) is None
+
+
+@pytest.mark.parametrize("bind_host", ["192.168.1.5", "studio.example.ts.net"])
+def test_tls_launch_on_a_specific_host_still_lists_its_lan_url(tmp_path, bind_host):
+    from utils.lan_access_settings import _launch_urls
+    from utils.studio_tls import resolve_studio_tls
+
+    tls = resolve_studio_tls(*map(str, _write_pair(tmp_path)))
+    state = types.SimpleNamespace(
+        lan_access_wildcard_bind = False,
+        server_url = None,
+        studio_tls = tls,
+        lan_access_bind_host = bind_host,
+        lan_access_port = 8888,
+    )
+    assert _launch_urls(state) == [f"https://{bind_host}:8888"]
+    state.studio_tls = None
+    assert _launch_urls(state) == []
