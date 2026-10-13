@@ -71,6 +71,7 @@ from .models.loader_utils import (
 from .models._utils import (
     _convert_torchao_model,
     _merged_torchao_config_for_peft_qat,
+    _peft_untied_embedding_keys,
     _strip_torchao_fake_quantization,
     lora_relative_to_original_base,
 )
@@ -6044,6 +6045,7 @@ def _unsloth_save_torchao_with_attached_config(
     if isinstance(model, (PeftModelForCausalLM, PeftModel)):
         # Quantizing in place leaves int4 base layers the LoRA merge cannot read, so merge in 16-bit and quantize the reload with the QAT configs.
         torchao_config = _merged_torchao_config_for_peft_qat(model)
+        untied_embedding_keys = _peft_untied_embedding_keys(model)
         _strip_torchao_fake_quantization(model)
         _unsloth_save_torchao_with_given_config(
             model = model,
@@ -6052,6 +6054,7 @@ def _unsloth_save_torchao_with_attached_config(
             torchao_config = torchao_config,
             push_to_hub = push_to_hub,
             token = token,
+            untied_embedding_keys = untied_embedding_keys,
         )
         return
 
@@ -6068,6 +6071,58 @@ def _unsloth_save_torchao_with_attached_config(
         tokenizer.save_pretrained(save_directory)
 
 
+def _untie_merged_checkpoint(save_directory, embed_key, lm_head_key):
+    """Give a tied merged 16-bit checkpoint its own lm_head, so its torchao reload quantizes the two apart as QAT trained them."""
+    from safetensors import safe_open
+    from safetensors.torch import load_file, save_file
+
+    config_path = os.path.join(save_directory, "config.json")
+    with open(config_path, encoding = "utf-8") as f:
+        config = json.load(f)
+    text_config = config.get("text_config")
+    tied = [
+        c for c in (config, text_config) if isinstance(c, dict) and c.get("tie_word_embeddings")
+    ]
+    if not tied:
+        return
+
+    index_path = os.path.join(save_directory, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        with open(index_path, encoding = "utf-8") as f:
+            index = json.load(f)
+        weight_map = index["weight_map"]
+        if embed_key not in weight_map:
+            return
+        if lm_head_key not in weight_map:
+            with safe_open(os.path.join(save_directory, weight_map[embed_key]), "pt") as h:
+                weight = h.get_tensor(embed_key)
+            shard = "model-lm_head.safetensors"
+            save_file(
+                {lm_head_key: weight},
+                os.path.join(save_directory, shard),
+                metadata = {"format": "pt"},
+            )
+            weight_map[lm_head_key] = shard
+            with open(index_path, "w", encoding = "utf-8") as f:
+                json.dump(index, f, indent = 2)
+    else:
+        path = os.path.join(save_directory, "model.safetensors")
+        if not os.path.exists(path):
+            return
+        tensors = load_file(path)
+        if embed_key not in tensors:
+            return
+        if lm_head_key not in tensors:
+            tensors[lm_head_key] = tensors[embed_key].clone()
+            save_file(tensors, path, metadata = {"format": "pt"})
+        del tensors
+
+    for c in tied:
+        c["tie_word_embeddings"] = False
+    with open(config_path, "w", encoding = "utf-8") as f:
+        json.dump(config, f, indent = 2)
+
+
 def _unsloth_save_torchao_with_given_config(
     model,
     save_directory: Union[str, os.PathLike],
@@ -6075,6 +6130,7 @@ def _unsloth_save_torchao_with_given_config(
     torchao_config,
     push_to_hub: bool = False,
     token: Optional[Union[str, bool]] = None,
+    untied_embedding_keys = None,
 ):
     """Quantize the model with torchao and save a torchao quantized checkpoint.
 
@@ -6093,12 +6149,16 @@ def _unsloth_save_torchao_with_given_config(
     arguments["push_to_hub"] = False
     arguments["save_method"] = "merged_16bit"
     del arguments["torchao_config"]
+    del arguments["untied_embedding_keys"]
 
     if not isinstance(model, PeftModelForCausalLM) and not isinstance(model, PeftModel):
         model.save_pretrained(save_directory)
         tokenizer.save_pretrained(save_directory)
     else:
         unsloth_generic_save(**arguments)
+
+    if untied_embedding_keys is not None:
+        _untie_merged_checkpoint(save_directory, *untied_embedding_keys)
 
     for _ in range(3):
         gc.collect()

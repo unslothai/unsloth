@@ -188,3 +188,67 @@ def test_peft_qat_save_reloads_with_merged_names(monkeypatch, tmp_path):
     for module in peft_model.modules():
         assert not hasattr(module, "weight_fake_quantizer")
         assert not _is_quantized(getattr(module, "weight", None))
+
+
+class _TiedModel(_Model):
+    def __init__(self):
+        super().__init__()
+        self.config = type("cfg", (), {"model_type": "llama", "tie_word_embeddings": True})()
+        self.lm_head = torch.nn.Linear(256, 32, bias = False)
+        self.lm_head.weight = self.embed_tokens.weight
+
+    def get_output_embeddings(self):
+        return self.lm_head
+
+
+def test_int8_int4_lora_rank_below_group_size():
+    # lora_B at rank 16 has in_features 16, which PerGroup(32) rejects.
+    from peft import LoraConfig, get_peft_model
+
+    from unsloth.models._utils import _peft_untied_embedding_keys
+
+    peft_model = get_peft_model(
+        _TiedModel(), LoraConfig(r = 16, target_modules = ["q_proj", "down_proj"])
+    )
+    _prepare_model_for_qat(peft_model, "int8-int4")
+    block = peft_model.base_model.model.layers[0]
+    assert hasattr(block.q_proj.base_layer, "weight_fake_quantizer")
+    assert hasattr(block.q_proj.lora_A["default"], "weight_fake_quantizer")
+    assert not hasattr(block.q_proj.lora_B["default"], "weight_fake_quantizer")
+    assert _peft_untied_embedding_keys(peft_model) == ("embed_tokens.weight", "lm_head.weight")
+
+
+@pytest.mark.parametrize("sharded", [False, True])
+def test_untie_merged_checkpoint(tmp_path, sharded):
+    import json
+
+    from safetensors import safe_open
+    from safetensors.torch import save_file
+
+    embed = torch.randn(32, 8)
+    tensors = {"model.embed_tokens.weight": embed, "model.norm.weight": torch.ones(8)}
+    if sharded:
+        save_file(tensors, tmp_path / "model-00001-of-00001.safetensors")
+        weight_map = {k: "model-00001-of-00001.safetensors" for k in tensors}
+        (tmp_path / "model.safetensors.index.json").write_text(
+            json.dumps({"metadata": {}, "weight_map": weight_map}), encoding = "utf-8"
+        )
+    else:
+        save_file(tensors, tmp_path / "model.safetensors")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"tie_word_embeddings": True}), encoding = "utf-8"
+    )
+
+    save_mod._untie_merged_checkpoint(str(tmp_path), "model.embed_tokens.weight", "lm_head.weight")
+
+    assert (
+        json.loads((tmp_path / "config.json").read_text(encoding = "utf-8"))["tie_word_embeddings"]
+        is False
+    )
+    if sharded:
+        index = json.loads((tmp_path / "model.safetensors.index.json").read_text(encoding = "utf-8"))
+        shard = tmp_path / index["weight_map"]["lm_head.weight"]
+    else:
+        shard = tmp_path / "model.safetensors"
+    with safe_open(str(shard), "pt") as h:
+        assert torch.equal(h.get_tensor("lm_head.weight"), embed)
