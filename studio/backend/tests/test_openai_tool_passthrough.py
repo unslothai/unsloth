@@ -3437,6 +3437,32 @@ class TestOpenAICompatibilityHelpers:
         assert usage["completion_tokens"] == 7
         assert usage["total_tokens"] == 7
 
+    def test_stream_usage_chunk_forwards_tool_loop_context_tokens(self):
+        payload = SimpleNamespace(stream_options = {"include_usage": True})
+        tool_loop = {
+            "prompt_tokens": 140,
+            "completion_tokens": 40,
+            "total_tokens": 180,
+            "context_tokens": 150,
+        }
+        line = _openai_stream_usage_chunk(payload, "c", 1, "m", tool_loop, None)
+        usage = json.loads(line.removeprefix("data: "))["usage"]
+        assert usage["total_tokens"] == 180
+        assert usage["context_tokens"] == 150
+
+        single = {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        line = _openai_stream_usage_chunk(payload, "c", 1, "m", single, None)
+        assert "context_tokens" not in json.loads(line.removeprefix("data: "))["usage"]
+
+    def test_non_streaming_usage_omits_unset_context_tokens(self):
+        from models.inference import CompletionUsage
+
+        assert "context_tokens" not in json.loads(CompletionUsage(total_tokens = 5).model_dump_json())
+        assert "context_tokens" not in CompletionUsage(total_tokens = 5).model_dump()
+        assert (
+            json.loads(CompletionUsage(context_tokens = 4).model_dump_json())["context_tokens"] == 4
+        )
+
     def test_completion_stream_monitor_reads_usage_before_client_strip(self, monkeypatch):
         import routes.inference as inf_mod
 
@@ -3794,12 +3820,6 @@ class TestFriendlyErrorHttpx:
         assert _friendly_error(RuntimeError("unrelated")) == "An internal error occurred"
 
 
-from routes.inference import (  # noqa: E402
-    _drop_empty_assistant_sentinels,
-    _openai_messages_for_gguf_chat,
-)
-
-
 def _image_question_messages():
     """One user turn holding a question and a tiny png."""
     return [
@@ -3928,6 +3948,14 @@ async def fake_select_tools(*_args, **_kwargs):
 
 async def fake_send(*_args, **_kwargs):
     return httpx.Response(200, content = b"")
+
+
+# Upper bounds only: the route reaches the hanging client and notices the disconnect (it polls
+# is_disconnected every 0.1 s) in milliseconds here. 0.2 s / 0.5 s timed out on loaded xdist
+# workers (the first embeddings call on a cold worker does extra setup), so allow seconds; a real
+# hang or a missed disconnect still fails, just later.
+_HANGING_CLIENT_START_TIMEOUT_S = 10.0
+_DISCONNECT_TO_499_TIMEOUT_S = 5.0
 
 
 class HangingCancelableClient:
@@ -8584,11 +8612,11 @@ class TestApiMonitorProviderAndCompletionStreams:
             )
 
             task = asyncio.create_task(route(request, current_subject = "test"))
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             request.disconnected = True
 
             with pytest.raises(HTTPException) as exc:
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
 
             assert exc.value.status_code == 499
             assert client.closed.is_set()
@@ -9380,7 +9408,7 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = threading.Event(),
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             task.cancel()
 
             with pytest.raises(asyncio.CancelledError):
@@ -9422,11 +9450,11 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = cancel_event,
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             cancel_event.set()
 
             with pytest.raises(HTTPException) as exc:
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
 
             assert exc.value.status_code == 499
             assert client.closed.is_set()
@@ -9539,11 +9567,11 @@ class TestApiMonitorProviderAndCompletionStreams:
                     cancel_event = cancel_event,
                 )
             )
-            await asyncio.wait_for(client.started.wait(), 0.2)
+            await asyncio.wait_for(client.started.wait(), _HANGING_CLIENT_START_TIMEOUT_S)
             request.disconnected = True
 
             with pytest.raises(HTTPException) as exc:
-                await asyncio.wait_for(task, 0.5)
+                await asyncio.wait_for(task, _DISCONNECT_TO_499_TIMEOUT_S)
 
             assert exc.value.status_code == 499
             assert client.closed.is_set()
@@ -11012,6 +11040,9 @@ def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
             payload = {}
             _apply_seeded_llama_request(payload, value)
             assert payload["cache_prompt"] is False, (seed, value)
+            warm = {}
+            _apply_seeded_llama_request(warm, value, reuse_prompt_cache = True)
+            assert warm == {"seed": value}, (seed, value, warm)
 
 
 def test_a_lenient_schema_reaches_llama_server_where_it_reads_one():

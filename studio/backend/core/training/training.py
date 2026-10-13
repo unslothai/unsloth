@@ -268,6 +268,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "is_dataset_image": values.get("is_dataset_image", False),
         "is_dataset_audio": values.get("is_dataset_audio", False),
         "is_embedding": values.get("is_embedding", False),
+        "is_decision": values.get("is_decision", False),
+        "model_subfolder": values.get("model_subfolder"),
+        "decision_layout": values.get("decision_layout"),
         "num_epochs": values.get("num_epochs", 3),
         "learning_rate": values.get("learning_rate", "2e-4"),
         "embedding_learning_rate": values.get("embedding_learning_rate"),
@@ -300,6 +303,10 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "lora_dropout": values.get("lora_dropout", 0.0),
         "target_modules": values.get("target_modules"),
         "gradient_checkpointing": values.get("gradient_checkpointing", "unsloth"),
+        "offload_layers": values.get("offload_layers") or 0,
+        "offload_vram_gb": values.get("offload_vram_gb"),
+        "offload_vram_gb_per_device": values.get("offload_vram_gb_per_device"),
+        "prefetch_depth": values.get("prefetch_depth") or 2,
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),
         "use_dora": values.get("use_dora", False),
@@ -318,6 +325,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "require_exact_model_resource": values.get("require_exact_model_resource", False),
         "require_exact_dataset_resource": values.get("require_exact_dataset_resource", False),
         "require_validated_model_snapshot": values.get("require_validated_model_snapshot", False),
+        "adapter_base_pin": values.get("adapter_base_pin"),
         "trust_remote_code": values.get("trust_remote_code", False),
         "approved_remote_code_fingerprint": values.get("approved_remote_code_fingerprint"),
         "subject": values.get("subject"),
@@ -357,6 +365,7 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
             "require_exact_dataset_resource",
             "require_validated_model_snapshot",
             "resume_model_load_mode",
+            "adapter_base_pin",
         }
     }
     s3_config = config.get("s3_config")
@@ -437,7 +446,8 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
 def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     resume = bool(config.get("resume_from_checkpoint"))
     model_name = config["model_name"]
-    if is_local_path(model_name):
+    # The decision trainer resolves its own Laya cache, which holds no config.json to pin.
+    if is_local_path(model_name) or config.get("is_decision"):
         config["actual_model_repo_id"] = None
         config["model_snapshot_path"] = None
         config["model_revision"] = None
@@ -693,6 +703,8 @@ class TrainingProgress:
     num_tokens: Optional[int] = None
     eval_loss: Optional[float] = None
     peak_memory_gb: Optional[float] = None
+    # BlockSwap.stats() from the last logged step, for the live offload panel.
+    offload: Optional[dict] = None
     output_dir: Optional[str] = None
     # The end-of-run record has no step loss, so the progress filter would drop it, and with it the only
     # elapsed time that includes the final evaluation, checkpoint save and best-model reload.
@@ -3189,6 +3201,9 @@ class TrainingBackend:
                         self._progress.peak_memory_gb = float(_peak)
                     except (TypeError, ValueError):
                         pass
+                # A step without stats (eval, status) keeps the last snapshot, so the panel does not blank.
+                if event.get("offload"):
+                    self._progress.offload = event["offload"]
                 self._progress.is_training = True
                 status = event.get("status_message", "")
                 if status:

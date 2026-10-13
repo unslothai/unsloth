@@ -34,6 +34,8 @@ from utils import client_ip, mxc_isolation_settings
 from utils.account_context import OWNER, AccountContext, bind_account, reset_account
 
 ALICE = AccountContext("a" * 32, "alice")
+_IS_DIRECT_LOCAL = client_ip.is_direct_local_request
+PKEXEC = ("pkexec", "/usr/bin/pkexec")
 
 
 def _cap(available):
@@ -48,7 +50,7 @@ def _cap(available):
 
 @pytest.fixture
 def host(monkeypatch):
-    calls = {"start": [], "revoke": 0}
+    calls = {"start": [], "revoke": 0, "interactive": []}
     saved = {"dacl": False, "locked": False, "available": False}
     plan = {
         "value": sandbox_setup_plan.SetupPlan(
@@ -88,8 +90,9 @@ def host(monkeypatch):
         mxc_isolation_settings, "locked_by_environment", lambda _name: saved["locked"]
     )
 
-    def start(operation):
+    def start(operation, interactive = True):
         calls["start"].append(operation)
+        calls["interactive"].append(interactive)
         return sandbox_setup_job.SetupJob(id = "job1", operation = operation)
 
     monkeypatch.setattr(sandbox_setup_job, "start", start)
@@ -110,7 +113,11 @@ def windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
 
 
-def _client(account, via_api_key = False):
+def _client(
+    account,
+    via_api_key = False,
+    **client_kw,
+):
     app = FastAPI()
     app.include_router(settings.router)
 
@@ -123,7 +130,7 @@ def _client(account, via_api_key = False):
 
     app.dependency_overrides[settings.get_current_subject] = subject
     app.dependency_overrides[settings.authenticated_via_api_key] = lambda: via_api_key
-    return TestClient(app, raise_server_exceptions = False)
+    return TestClient(app, raise_server_exceptions = False, **client_kw)
 
 
 def test_owner_starts_the_linux_install_from_this_computer(host, linux):
@@ -134,7 +141,7 @@ def test_owner_starts_the_linux_install_from_this_computer(host, linux):
         body = response.json()
         assert body["state"] == "running" and body["operation"] == "linux-install"
         assert client.get("/sandbox/setup").json()["state"] == "idle"
-    assert calls["start"] == ["linux-install"]
+    assert calls["start"] == ["linux-install"] and calls["interactive"] == [True]
 
 
 def test_status_names_the_setup_for_this_host(host, linux):
@@ -144,12 +151,25 @@ def test_status_names_the_setup_for_this_host(host, linux):
     assert setup["manual_command"] == "sudo apt-get install -y bubblewrap"
 
 
-def test_status_offers_the_button_only_to_this_computer(host, linux, monkeypatch):
+def test_status_offers_a_prompting_setup_only_to_this_computer(host, linux, monkeypatch):
+    _calls, saved, _plan = host
+    saved["elevation"] = PKEXEC
     with _client(OWNER) as client:
         assert client.get("/sandbox").json()["setup"]["can_run"] is True
         monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
+        settings._forget_sandbox_status()
         setup = client.get("/sandbox").json()["setup"]
     assert setup["can_run"] is False and setup["manual_command"]
+
+
+@pytest.mark.parametrize("elevation", [("root", None), ("sudo", "/usr/bin/sudo")])
+def test_status_offers_a_promptless_setup_to_a_remote_owner(host, linux, monkeypatch, elevation):
+    _calls, saved, _plan = host
+    saved["elevation"] = elevation
+    monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
+    with _client(OWNER) as client:
+        setup = client.get("/sandbox").json()["setup"]
+    assert setup["can_run"] is True and setup["elevation"] == elevation[0]
 
 
 def _capability_client(account):
@@ -183,16 +203,67 @@ def test_capability_reason_is_the_short_setup_reason_when_a_command_is_shown(hos
 
 @pytest.mark.parametrize("who", ["other_account", "remote_owner"])
 def test_capability_gives_everyone_else_only_the_command(host, linux, monkeypatch, who):
-    calls, _saved, _plan = host
+    calls, saved, _plan = host
     account = ALICE
     if who == "remote_owner":
         account = OWNER
+        saved["elevation"] = PKEXEC
         monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     body = _capability_client(account).get("/api/sandbox/capability").json()
     assert body["setup_action"] is None and body["can_run_setup"] is False
     assert body["manual_command"] == "sudo apt-get install -y bubblewrap"
     assert body["setup_blocked"] == ("not_owner" if who == "other_account" else "not_local")
-    assert calls["elevation_checks"] == 0
+    if who == "other_account":
+        assert calls["elevation_checks"] == 0
+
+
+def _proxied_capability(account):
+    # The real check, behind a proxy as on Colab: loopback peer and Host, but a forwarding header.
+    from routes.sandbox_capability import router as capability_router
+
+    app = FastAPI()
+    app.include_router(capability_router, prefix = "/api/sandbox")
+
+    async def subject():
+        token = bind_account(account)
+        try:
+            yield account.username
+        finally:
+            reset_account(token)
+
+    app.dependency_overrides[settings.get_current_subject] = subject
+    client = TestClient(
+        app,
+        raise_server_exceptions = False,
+        base_url = "http://127.0.0.1:8888",
+        client = ("127.0.0.1", 50000),
+    )
+    return client.get("/api/sandbox/capability", headers = {"X-Forwarded-For": "203.0.113.7"})
+
+
+@pytest.mark.parametrize(
+    "account,elevation,offered",
+    [
+        (OWNER, ("root", None), True),
+        (OWNER, ("sudo", "/usr/bin/sudo"), True),
+        (OWNER, PKEXEC, False),
+        (OWNER, (None, None), False),
+        (ALICE, ("root", None), False),
+        (ALICE, ("sudo", "/usr/bin/sudo"), False),
+    ],
+)
+def test_capability_through_a_proxy_offers_only_a_promptless_setup_to_the_owner(
+    host, linux, monkeypatch, account, elevation, offered
+):
+    _calls, saved, _plan = host
+    saved["elevation"] = elevation
+    monkeypatch.setattr(client_ip, "is_direct_local_request", _IS_DIRECT_LOCAL)
+    body = _proxied_capability(account).json()
+    assert body["can_run_setup"] is offered
+    assert body["setup_action"] == ("linux-install" if offered else None)
+    assert body["setup_blocked"] == (
+        None if offered else "not_owner" if account is ALICE else "not_local"
+    )
 
 
 def test_capability_tells_the_owner_here_when_no_password_prompt_is_possible(host, linux):
@@ -208,12 +279,13 @@ def test_capability_names_no_block_when_the_button_is_offered(host, linux):
     assert body["can_run_setup"] is True and body["setup_blocked"] is None
 
 
-def test_a_remote_status_read_never_checks_elevation(host, linux, monkeypatch):
-    calls, _saved, _plan = host
+def test_a_remote_status_read_offers_no_password_prompt(host, linux, monkeypatch):
+    _calls, saved, _plan = host
+    saved["elevation"] = PKEXEC
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
     with _client(OWNER) as client:
         setup = client.get("/sandbox").json()["setup"]
-    assert setup["can_run"] is False and calls["elevation_checks"] == 0
+    assert setup["can_run"] is False
 
 
 def test_no_elevation_here_means_the_command_only(host, linux):
@@ -253,12 +325,40 @@ def test_the_capability_read_checks_a_tool_it_has_no_answer_for(host, linux, mon
     os_sandbox.forget_tool_isolation()
 
 
-def test_a_remote_browser_is_refused(host, linux, monkeypatch):
+@pytest.mark.parametrize("elevation", [PKEXEC, (None, None)])
+def test_a_remote_browser_is_refused_a_setup_that_prompts(host, linux, monkeypatch, elevation):
     monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
-    calls, _saved, _plan = host
+    calls, saved, _plan = host
+    saved["elevation"] = elevation
     with _client(OWNER) as client:
         response = client.post("/sandbox/setup", json = {"operation": "linux-install"})
     assert response.status_code == 403 and "computer running Unsloth" in response.json()["detail"]
+    assert calls["start"] == []
+
+
+@pytest.mark.parametrize("elevation", [("root", None), ("sudo", "/usr/bin/sudo")])
+def test_a_remote_owner_installs_when_nothing_prompts(host, linux, monkeypatch, elevation):
+    calls, saved, _plan = host
+    saved["elevation"] = elevation
+    monkeypatch.setattr(client_ip, "is_direct_local_request", _IS_DIRECT_LOCAL)
+    with _client(OWNER, base_url = "http://127.0.0.1:8888", client = ("127.0.0.1", 50000)) as client:
+        response = client.post(
+            "/sandbox/setup",
+            json = {"operation": "linux-install"},
+            headers = {"X-Forwarded-For": "203.0.113.7"},
+        )
+    assert response.status_code == 200, response.text
+    assert calls["start"] == ["linux-install"] and calls["interactive"] == [False]
+
+
+def test_a_remote_api_key_or_other_account_is_refused_even_as_root(host, linux, monkeypatch):
+    calls, saved, _plan = host
+    saved["elevation"] = ("root", None)
+    monkeypatch.setattr(client_ip, "is_direct_local_request", lambda _request: False)
+    with _client(OWNER, via_api_key = True) as client:
+        assert client.post("/sandbox/setup", json = {"operation": "linux-install"}).status_code == 403
+    with _client(ALICE) as client:
+        assert client.post("/sandbox/setup", json = {"operation": "linux-install"}).status_code == 403
     assert calls["start"] == []
 
 
@@ -304,7 +404,7 @@ def test_the_operation_must_match_the_platform(host, linux, monkeypatch):
 
 
 def test_nothing_to_set_up_is_a_conflict(host, linux, monkeypatch):
-    def unavailable(_operation):
+    def unavailable(_operation, interactive = True):
         raise sandbox_setup_job.SetupUnavailable("OS isolation already works on this computer.")
 
     monkeypatch.setattr(sandbox_setup_job, "start", unavailable)
@@ -317,7 +417,7 @@ def test_windows_consent_turns_the_opt_in_on_once_the_setup_is_accepted(host, wi
     calls, saved, _plan = host
     seen = []
 
-    def start(operation):
+    def start(operation, interactive = True):
         # The opt-in must still be off while the job is decided, or the plan reads "already works".
         seen.append(saved["dacl"])
         return sandbox_setup_job.SetupJob(id = "job1", operation = operation)
@@ -334,7 +434,7 @@ def test_windows_consent_turns_the_opt_in_on_once_the_setup_is_accepted(host, wi
 def test_windows_consent_is_not_saved_when_the_setup_is_refused(host, windows, monkeypatch):
     _calls, saved, _plan = host
 
-    def unavailable(_operation):
+    def unavailable(_operation, interactive = True):
         raise sandbox_setup_job.SetupUnavailable("OS isolation already works on this computer.")
 
     monkeypatch.setattr(sandbox_setup_job, "start", unavailable)
@@ -364,7 +464,7 @@ def test_a_remote_owner_may_install_the_runtime_but_not_prepare(host, windows, m
             client.post("/sandbox/setup", json = {"operation": "windows-runtime"}).status_code == 200
         )
         assert client.post("/sandbox/setup", json = {"operation": "windows-setup"}).status_code == 403
-    assert calls["start"] == ["windows-runtime"]
+    assert calls["start"] == ["windows-runtime"] and calls["interactive"] == [False]
 
 
 def test_windows_setup_without_consent_leaves_the_opt_in_alone(host, windows):

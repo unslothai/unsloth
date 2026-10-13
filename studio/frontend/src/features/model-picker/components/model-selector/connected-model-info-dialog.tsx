@@ -19,6 +19,8 @@ import {
 } from "@/components/ui/dialog";
 import { modelCatalogVersion, subscribeModelCatalog } from "@/features/chat";
 import type { ProviderApiType } from "@/features/chat/api/providers-api";
+// eslint-disable-next-line no-restricted-imports -- Connection contract has no React dependencies.
+import type { CustomReasoningConfig } from "@/features/chat/custom-reasoning";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
 import { resolveModelCatalogEntry } from "@/features/chat/model-catalog";
 // eslint-disable-next-line no-restricted-imports -- Avoid the chat barrel's React exports.
@@ -67,6 +69,7 @@ export function ConnectedModelInfoDialog({
   apiType,
   baseUrl,
   isReasoningProvider,
+  reasoningConfig,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -79,6 +82,7 @@ export function ConnectedModelInfoDialog({
   baseUrl?: string | null;
   /** A vLLM connection flagged as serving a reasoning model: the only signal a self-host gives. */
   isReasoningProvider?: boolean;
+  reasoningConfig?: CustomReasoningConfig;
 }) {
   // Every figure below is read from the catalogue, which can land after this renders.
   useSyncExternalStore(subscribeModelCatalog, modelCatalogVersion);
@@ -92,6 +96,7 @@ export function ConnectedModelInfoDialog({
   // The resolver behind the composer's Thinking chip, not the catalogue alone.
   const reasoning = getExternalReasoningCapabilities(providerType, modelId, {
     isReasoningProvider,
+    reasoningConfig,
     baseUrl,
     apiType,
   });

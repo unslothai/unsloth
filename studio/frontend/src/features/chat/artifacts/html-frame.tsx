@@ -10,6 +10,11 @@ import {
   AlertTitle,
 } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 // eslint-disable-next-line no-restricted-imports -- the settings barrel imports this feature back
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import { useLocale, useT } from "@/i18n";
@@ -21,7 +26,7 @@ import {
   MultiplicationSignCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Trash2Icon, XIcon } from "lucide-react";
+import { BanIcon, XIcon } from "lucide-react";
 import {
   type RefObject,
   useCallback,
@@ -133,7 +138,7 @@ export function buildArtifactSrcDoc(code: string): string {
 // UI, but downloads must go through Unsloth's explicit controls outside the sandbox.
 export function ArtifactHtmlFrame({
   code,
-  title = "HTML canvas preview",
+  title = "HTML preview",
   className,
   fill = false,
   actionFocusTargetRef,
@@ -142,6 +147,7 @@ export function ArtifactHtmlFrame({
   onConsoleOpenChange,
   onOutputCountChange,
   onFixWithModel,
+  kind = "html",
 }: {
   code: string;
   title?: string;
@@ -154,6 +160,8 @@ export function ArtifactHtmlFrame({
   onOutputCountChange?: (counts: { errors: number; total: number }) => void;
   // Only surfaces that can route the text to a composer pass this; without it there is no Fix button.
   onFixWithModel?: (prompt: string) => void;
+  // A React preview runs compiled code, so its runtime line numbers aren't shown.
+  kind?: "html" | "react";
 }) {
   const t = useT();
   const locale = useLocale();
@@ -360,6 +368,9 @@ export function ArtifactHtmlFrame({
         });
   const locationLabel = (entry: CanvasConsoleEntry) => {
     if (entry.line <= 0) return "";
+    // A React preview's runtime positions point into compiled code nobody sees, and differ by
+    // browser; compile errors carry their source position in the message instead.
+    if (kind === "react") return "";
     return entry.column > 0
       ? t("settings.chat.artifacts.errorLocation", {
           line: entry.line,
@@ -389,7 +400,7 @@ export function ArtifactHtmlFrame({
         <div className={NOTICE_WRAP}>
           <Alert
             role="group"
-            dir={locale === "ar" ? "rtl" : "ltr"}
+            dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
             aria-label={t("settings.chat.artifacts.blockedTitle")}
             className={NOTICE}
           >
@@ -445,8 +456,8 @@ export function ArtifactHtmlFrame({
                   variant="outline"
                   className={NOTICE_SECONDARY}
                   onClick={() => {
-                    useSettingsDialogStore.getState().openDialog("chat", {
-                      scrollTarget: "chat-canvas-network",
+                    useSettingsDialogStore.getState().openDialog("browser", {
+                      scrollTarget: "browser-html-network",
                       focusFallback:
                         actionFocusTargetRef?.current ?? iframeRef.current,
                     });
@@ -463,7 +474,7 @@ export function ArtifactHtmlFrame({
         <div className={NOTICE_WRAP}>
           <Alert
             role="group"
-            dir={locale === "ar" ? "rtl" : "ltr"}
+            dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
             aria-label={errorTitle}
             className={NOTICE}
           >
@@ -496,7 +507,7 @@ export function ArtifactHtmlFrame({
                   <Button
                     size="xs"
                     className={NOTICE_PRIMARY}
-                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors))}
+                    onClick={() => onFixWithModel(buildCanvasFixPrompt(title, errors, kind))}
                     title={t("settings.chat.artifacts.errorHint")}
                   >
                     {t("settings.chat.artifacts.errorBannerAction")}
@@ -524,7 +535,7 @@ export function ArtifactHtmlFrame({
       {consoleOpen ? (
         <section
           aria-label={t("settings.chat.artifacts.consoleTitle")}
-          dir={locale === "ar" ? "rtl" : "ltr"}
+          dir={locale === "ar" || locale === "he" ? "rtl" : "ltr"}
           className="absolute inset-x-0 bottom-0 flex h-2/5 min-h-32 flex-col border-t border-border bg-background/95 text-xs backdrop-blur"
         >
           <div
@@ -539,25 +550,39 @@ export function ArtifactHtmlFrame({
               )}
             </span>
             <span className="flex-1" />
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("settings.chat.artifacts.consoleClear")}
-              onClick={() => {
-                dropPendingEntries();
-                setOutput(emptyCanvasConsole(code));
-              }}
-            >
-              <Trash2Icon />
-            </Button>
-            <Button
-              size="icon-sm"
-              variant="ghost"
-              aria-label={t("settings.chat.artifacts.consoleClose")}
-              onClick={() => onConsoleOpenChange?.(false)}
-            >
-              <XIcon />
-            </Button>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("settings.chat.artifacts.consoleClear")}
+                  onClick={() => {
+                    dropPendingEntries();
+                    setOutput(emptyCanvasConsole(code));
+                  }}
+                >
+                  <BanIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="tooltip-compact">
+                {t("settings.chat.artifacts.consoleClear")}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild={true}>
+                <Button
+                  size="icon-sm"
+                  variant="ghost"
+                  aria-label={t("settings.chat.artifacts.consoleClose")}
+                  onClick={() => onConsoleOpenChange?.(false)}
+                >
+                  <XIcon />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="tooltip-compact">
+                {t("settings.chat.artifacts.consoleClose")}
+              </TooltipContent>
+            </Tooltip>
           </div>
           <ol className="min-h-0 flex-1 overflow-auto pb-2 font-mono">
             {outputForCanvas.capped ? (

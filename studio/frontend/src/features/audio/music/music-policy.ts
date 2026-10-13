@@ -55,6 +55,17 @@ export function effectiveMusicMode(
   );
 }
 
+/** A clip sent to edit stays in view even when the model cannot edit; Edit then says to load one that can. */
+export function withWaitingEdit(
+  capabilities: MusicCapabilities,
+  editWaiting: boolean,
+): MusicCapabilities {
+  if (!editWaiting || capabilities.modes.some((rule) => rule.id === "edit")) {
+    return capabilities;
+  }
+  return { modes: [...capabilities.modes, { id: "edit" }] };
+}
+
 const SECTION_NAMES = [
   "Intro",
   "Verse",

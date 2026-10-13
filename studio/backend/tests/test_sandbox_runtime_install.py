@@ -189,7 +189,7 @@ def _client(account, via_api_key = False):
 def route(x64_windows, monkeypatch):
     started = []
 
-    def start(operation):
+    def start(operation, interactive = True):
         started.append(operation)
         return job_mod.SetupJob(id = "rt1", operation = operation)
 

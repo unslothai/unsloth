@@ -15,8 +15,10 @@ export {
   type TransportMode,
   updateExternalJob,
   TRANSPORT_MODE_STORAGE_KEY,
+  DOWNLOAD_DIR_STORAGE_KEY,
   useDownloadManagerStore,
   useHttpPartialsResumable,
+  useRepoDownload,
   useTransportMode,
 } from "./download-manager";
 export { HfTokenIndicator } from "./components/hf-token-indicator";
@@ -69,7 +71,10 @@ export {
   dedupeSameSourceHubCacheRows,
   defaultCapabilities,
   deleteCachedDataset,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
   epochMillisecondsToSeconds,
   fetchInventorySource,
   findCompleteHfCacheLocalRow,

@@ -698,15 +698,18 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "dark:border-white" not in decoration
     assert "dark:border-t-white" not in decoration
     # Pinned, it is the sidebar's full-height edge: dark has no sidebar border-r to continue it.
+    assert re.search(r'pinned &&\s*"rounded-tl-\[12px\] border-l"', decoration)
     assert re.search(
-        r'pinned &&\s*"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)\)\] '
-        r'rounded-tl-\[12px\] border-l"',
+        r'className="absolute top-\[12px\] '
+        r"h-\[calc\(100dvh-var\(--studio-custom-titlebar-height\)-12px\)\] "
+        r'w-0 border-l border-sidebar-edge dark:border-transparent"\s*'
+        r"style=\{\{ left: cornerLeft \}\}",
         decoration,
     )
     assert "style={{ left: pinned ? cornerLeft : 0 }}" in decoration
     assert "style={{ left: cornerLeft }}" in decoration
     # The sidebar-coloured mask outside the corner only appears when pinned.
-    assert decoration.count("{pinned && (") == 1
+    assert decoration.count("{pinned && (") == 2
     assert "transparent_11px,var(--color-sidebar)_12px" in decoration
 
 
@@ -959,10 +962,6 @@ def test_chat_sidebar_rows_are_compact_without_vertical_padding():
     assert (
         '"sidebar-nav-btn h-[30px] cursor-pointer rounded-full py-0 pr-4 '
         'text-ui-14p5 leading-ui-19 tracking-nav font-medium"'
-    ) in block
-    assert (
-        '"text-foreground h-[30px] w-full border-0 bg-transparent py-0 pr-4 '
-        'text-ui-14p5 leading-ui-19 font-medium tracking-nav outline-none"'
     ) in block
     assert 'isPinned && variant !== "project" && "gap-[8.5px]"' in block
     assert 'variant === "project" ? "pl-[39px]" : "pl-3"' in block
@@ -2012,8 +2011,8 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
                 builder_end = index
                 break
     assert builder_end is not None, "unbalanced `const buttonClass = cn(` in the sidebar"
-    # On the row button itself, not merely somewhere in the function. The row also renders an
-    # inline rename input and a pin, and handing buttonClass to one of those while the button
+    # On the row button itself, not merely somewhere in the function. The row also renders a
+    # pin, and handing buttonClass to it or another element while the button
     # went without would leave every padding check below describing classes that reach nothing
     # the gutters are measured against.
     carriers = [
@@ -2708,11 +2707,12 @@ _LENGTHS_THAT_MUST_KEEP_THE_SCALE = (
     # The sidebar row: its height, the gap it sets when pinned, and the indent a project row
     # takes. These are hand-set one-off lengths, which is exactly the spacing that used to
     # stay put while the labels grew, so the row clips its own text at a larger setting.
-    # Seven rows: #11589 added the drop-cue row, and #12016 a second section header for the
-    # custom sidebar sections, both scaled like the rest.
+    # Seven rows: #11589 added the drop-cue row, #12016 a second section header for the
+    # custom sidebar sections, and #12927 the pinned-pages label; #13575 dropped the inline
+    # rename input (one 30px height, one 39px indent).
     (APP_SIDEBAR, "", "h", "30px", 7),
     (APP_SIDEBAR, "", "gap", "8.5px", 6),
-    (APP_SIDEBAR, "", "pl", "39px", 2),
+    (APP_SIDEBAR, "", "pl", "39px", 1),
     # The 34px pill controls in the media headers, in all three spellings the pages use. The
     # band around them scales and so does their own text, so a control left fixed is the one
     # thing in that row that does not move, and it crowds out its label.

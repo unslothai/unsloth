@@ -7317,6 +7317,17 @@ def test_spec_draft_n_max_only_stored_for_mtp_modes():
     assert "spec_draft_n_max" not in ngram
 
 
+def test_mlx_speculative_modes_and_drafter_survive_to_the_load():
+    stored = {"spec_draft_n_max": 4, "spec_draft_model": " d "}
+    for mode, is_gguf, kept in (
+        ("eagle3", False, {"spec_draft_n_max": 4, "spec_draft_model": "d"}),
+        ("eagle3", True, {}),
+    ):
+        entry = settings.normalize_model_override({"speculative_type": mode, **stored})
+        kwargs = settings.model_override_load_kwargs(entry, is_gguf = is_gguf)
+        assert kwargs == kept | ({} if is_gguf else {"speculative_type": mode})
+
+
 def test_resolve_fit_max_seq_length_hands_sizing_to_fit_under_manual_auto_layers():
     # Manual GPU memory with Auto layers hands the context to llama.cpp --fit, so
     # the load sends the context pin (or 0), not the stored max seq length.
@@ -7945,7 +7956,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
     monkeypatch.setattr(
         settings,
         "get_model_override",
-        lambda mid: {"gpu_ids": [0, 1], "max_seq_length": 4096},
+        lambda mid: {"gpu_ids": [0, 1], "tensor_split": [3, 1], "max_seq_length": 4096},
     )
 
     async def _unusable(ids, index_kind = "physical"):
@@ -7956,6 +7967,7 @@ def test_stale_gpu_ids_are_dropped_not_fatal(monkeypatch):
     _run_hook("unsloth/B-GGUF")
     req = rec.calls[0]
     assert not req.gpu_ids
+    assert req.tensor_split is None
     # The rest of the config still applies.
     assert req.max_seq_length == 4096
 
@@ -7964,12 +7976,15 @@ def test_usable_gpu_ids_are_kept(monkeypatch):
     backend, rec = _wired(
         monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
     )
-    monkeypatch.setattr(settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1]})
+    monkeypatch.setattr(
+        settings, "get_model_override", lambda mid: {"gpu_ids": [0, 1], "tensor_split": [3, 1]}
+    )
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
 
     _run_hook("unsloth/B-GGUF")
     assert rec.calls[0].gpu_ids == [0, 1]
+    assert rec.calls[0].tensor_split == [3, 1]
 
 
 def test_override_gpu_ids_probe_never_raises(monkeypatch):
@@ -8248,7 +8263,9 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
         monkeypatch, _FakeBackend(None), ("unsloth/B-GGUF", "Q4_K_M", "unsloth/B-GGUF")
     )
     monkeypatch.setattr(
-        settings, "get_model_override", lambda mid: {"gpu_ids": [0], "max_seq_length": 4096}
+        settings,
+        "get_model_override",
+        lambda mid: {"gpu_ids": [0, 1], "tensor_split": [3, 1], "max_seq_length": 4096},
     )
 
     monkeypatch.setattr(inference_route, "_override_gpu_ids_still_resolve", _usable)
@@ -8270,6 +8287,7 @@ def test_load_retries_without_gpu_ids_when_the_loader_rejects_the_pin(monkeypatc
     assert calls["n"] == 2
     served = rec.calls[-1]
     assert not served.gpu_ids
+    assert served.tensor_split is None
     assert served.max_seq_length == 4096
 
 
@@ -11821,6 +11839,52 @@ def test_speech_switch_admission(monkeypatch, audio_type, context, text, instruc
         assert len(recorder.calls) == 1
 
 
+@pytest.mark.parametrize(
+    "workflow, speech_type, workflows, admitted",
+    [
+        ("separate", None, ["separate"], True),
+        ("separate", None, [], False),
+        ("clone", "audiocpp_tts", ["speak"], False),
+        ("clone", "audiocpp_tts", ["speak", "clone"], True),
+    ],
+)
+def test_audio_workflow_switch_admission(monkeypatch, workflow, speech_type, workflows, admitted):
+    backend, recorder = _speech_case(monkeypatch, speech_type, gguf = False)
+    seen = []
+    monkeypatch.setattr(
+        inference_route, "_target_audio_workflows", lambda *a: seen.append(a) or workflows
+    )
+    call = inference_route._maybe_auto_switch_model(
+        "org/B-GGUF",
+        object(),
+        "tester",
+        require_speech = speech_type is not None,
+        require_audio_workflow = workflow,
+    )
+    if admitted:
+        asyncio.run(call)
+        assert len(recorder.calls) == 1
+    else:
+        with pytest.raises(HTTPException) as error:
+            asyncio.run(call)
+        assert error.value.status_code == 400
+        assert error.value.detail["error"]["param"] == "model"
+        # Refused before the resident model is evicted.
+        assert recorder.calls == [] and backend.model_identifier == "org/A-GGUF"
+    assert seen == [("/local/B", speech_type)]
+
+
+def test_target_audio_workflows_reads_audio_cpp_targets_from_the_cache(monkeypatch):
+    from core.inference import audio_cpp_models
+
+    sep = SimpleNamespace(workflows = {"separate": None})
+    monkeypatch.setattr(audio_cpp_models, "resolve", lambda target, network: sep)
+    workflows = inference_route._target_audio_workflows
+    assert workflows("audio-cpp/audio.cpp-gguf/HTDemucs-6stems-GGUF", None) == ["separate"]
+    assert workflows("/local/csm", "csm") == ["speak"]
+    assert workflows("/local/chat", None) == []
+
+
 @pytest.mark.parametrize("audio_type", ["snac", "bicodec", "dac", "higgs_tts2"])
 @pytest.mark.parametrize("token", [None, "caller-token"])
 def test_speech_switch_preserves_staged_assets_and_identity(monkeypatch, audio_type, token):
@@ -12210,3 +12274,70 @@ def test_the_legacy_bare_delete_clears_a_managed_engine_choice(override_store):
 
     _put("org/Model")
     assert settings.get_model_override("org/Model") == {}
+
+
+def test_tensor_split_survives_the_settings_route_and_reaches_a_gguf_load(override_store):
+    _put(
+        "org/split-GGUF",
+        gpu_memory_mode = "manual",
+        gpu_layers = 66,
+        gpu_ids = [1, 2, 0],
+        tensor_split = [30, 20, 16],
+    )
+    stored = settings.get_model_override("org/split-GGUF")
+    assert stored["gpu_ids"] == [1, 2, 0]
+    assert stored["tensor_split"] == [30, 20, 16]
+    kwargs = settings.model_override_load_kwargs(stored, is_gguf = True)
+    assert kwargs["tensor_split"] == [30, 20, 16]
+    LoadRequest(model_path = "org/split-GGUF", **kwargs)
+    assert "tensor_split" not in settings.model_override_load_kwargs(stored, is_gguf = False)
+
+
+def test_an_older_client_keeps_a_split_only_with_the_same_gpu_order(override_store):
+    _put("org/split-GGUF", gpu_ids = [1, 2, 0], tensor_split = [30, 20, 16])
+    _put("org/split-GGUF", gpu_ids = [1, 2, 0], gpu_layers = 66)
+    assert settings.get_model_override("org/split-GGUF")["tensor_split"] == [30, 20, 16]
+    _put("org/split-GGUF", gpu_ids = [0, 1, 2], gpu_layers = 66)
+    assert "tensor_split" not in settings.get_model_override("org/split-GGUF")
+
+
+def test_explicit_tensor_split_reset_clears_the_server_copy(override_store):
+    _put("org/split-GGUF", gpu_ids = [1, 2, 0], tensor_split = [30, 20, 16])
+    _put("org/split-GGUF", gpu_ids = [1, 2, 0], tensor_split = None)
+    assert "tensor_split" not in settings.get_model_override("org/split-GGUF")
+
+
+@pytest.mark.parametrize(
+    "split", [[0, 0], [-1, 2], [float("nan"), 1], [float("inf"), 1], [True, 1], [1e308, 1e308]]
+)
+def test_invalid_tensor_split_is_rejected_at_the_settings_boundary(split):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        settings_route.ModelOverridePayload(model_id = "org/split-GGUF", tensor_split = split)
+
+
+def test_tensor_split_is_dropped_if_normalizing_gpu_ids_changes_its_mapping():
+    for ids in ([0, 0], [0, -1], [0], None):
+        stored = settings.normalize_model_override({"gpu_ids": ids, "tensor_split": [2, 1]})
+        assert "tensor_split" not in stored
+    stored = settings.normalize_model_override({"gpu_ids": [1, 0], "tensor_split": [0, 2.5]})
+    assert stored["tensor_split"] == [0, 2.5]
+
+
+def test_fill_never_attaches_a_tensor_split_to_an_existing_other_gpu_order(override_store):
+    settings.set_model_override("org/split-GGUF", gpu_ids = [0, 1])
+    settings.set_model_override(
+        "org/split-GGUF", gpu_ids = [1, 0], tensor_split = [3, 1], fill_absent_fields = True
+    )
+    stored = settings.get_model_override("org/split-GGUF")
+    assert stored["gpu_ids"] == [0, 1]
+    assert "tensor_split" not in stored
+
+
+@pytest.mark.parametrize("ids", [None, [0], [0, 0], [0, -1], [0, 1, 2]])
+def test_tensor_split_requires_matching_gpu_ids_at_the_settings_boundary(ids):
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        settings_route.ModelOverridePayload(
+            model_id = "org/split-GGUF", gpu_ids = ids, tensor_split = [3, 1]
+        )

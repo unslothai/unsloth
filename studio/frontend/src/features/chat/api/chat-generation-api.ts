@@ -86,7 +86,8 @@ export function normalizeChatGenerationChunkPayload(
       frameType === "tool_start" ||
       frameType === "tool_end" ||
       frameType === "tool_output" ||
-      frameType === "tool_args"
+      frameType === "tool_args" ||
+      frameType === "tool_model_note"
     ) {
       // tool_start/end carry full input/output; tool_output streams incremental stdout and
       // tool_args streams the call arguments live. The consumer accumulates by tag, so keep the frame whole.
@@ -94,6 +95,9 @@ export function normalizeChatGenerationChunkPayload(
     }
     if (frameType === "diffusion_frame") {
       return { _diffusionFrame: payload } as unknown as OpenAIChatChunk;
+    }
+    if (frameType === "context_usage") {
+      return { _contextUsage: payload } as unknown as OpenAIChatChunk;
     }
   }
   return payload;
@@ -147,6 +151,10 @@ export function isLegacyFallbackChatGenerationAdmissionError(
     (error instanceof ChatGenerationApiError &&
       error.status === 400 &&
       error.message === "Media chat runs use the legacy streaming path") ||
+    // A backend older than this UI rejects request fields it does not know yet (#13010); its legacy stream ignores them.
+    (error instanceof ChatGenerationApiError &&
+      error.status === 400 &&
+      error.message.startsWith("Unsupported durable request fields:")) ||
     (error instanceof ChatGenerationApiError &&
       error.status === 404 &&
       error.message === "Thread not found") ||

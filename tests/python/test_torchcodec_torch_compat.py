@@ -280,6 +280,19 @@ def test_select_torchcodec_spec_falls_back_on_unknown_torch():
         assert ips._select_torchcodec_spec(value) == ips._TORCHCODEC_DEFAULT_SPEC
 
 
+def test_shell_torch_floors_below_codec_table_skip_torchcodec():
+    ips = _load_install_python_stack()
+    source = (REPO_ROOT / "install.sh").read_text(encoding = "utf-8")
+    floors = {int(m) for m in re.findall(r'TORCH_CONSTRAINT="torch>=2\.(\d+)', source)}
+    assert floors, "install.sh torch constraints were not found"
+    codec_floor = min(ips._TORCHCODEC_TORCH_SPECS)
+    # Moving either floor means the torch 2.4 notes in both files are stale (#10598).
+    assert (min(floors), codec_floor) == (4, 5)
+    for minor in floors:
+        spec = ips._select_torchcodec_spec(f"2.{minor}.0")
+        assert (spec is None) == (minor < codec_floor), (minor, spec)
+
+
 def test_select_torchcodec_spec_skips_older_torch():
     ips = _load_install_python_stack()
     for minor in range(min(ips._TORCHCODEC_TORCH_SPECS)):
@@ -1069,6 +1082,13 @@ def test_a_mismatched_accelerator_build_is_named_when_the_codec_cannot_load(monk
     fixes = _load_import_fixes_module()
     _stub_torch(monkeypatch, "2.11.0+cu128")
 
+    # Metadata is read first; report none so the stub answers, installed codec or not.
+    import importlib.metadata
+
+    def _no_metadata(name):
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "version", _no_metadata)
     codec = types.ModuleType("torchcodec")
     codec.__version__ = "0.11.0"  # untagged: PyPI's default build
     monkeypatch.setitem(sys.modules, "torchcodec", codec)
@@ -1370,8 +1390,8 @@ def test_the_provenance_hint_reads_a_codec_it_cannot_import(monkeypatch):
 
     fixes = _load_import_fixes_module()
     _stub_torch(monkeypatch, "2.11.0+cu128")
-    # No importable torchcodec at all, which is what a failed initialisation leaves behind.
-    monkeypatch.delitem(sys.modules, "torchcodec", raising = False)
+    # None blocks the import even with a codec installed, as a failed initialisation does.
+    monkeypatch.setitem(sys.modules, "torchcodec", None)
 
     def _version(name):
         if name == "torchcodec":
@@ -1508,6 +1528,17 @@ def test_a_query_authenticated_mirror_is_not_pinned_at_all(monkeypatch):
 
 def test_query_authenticated_mirror_repairs_decline_instead_of_falling_back(monkeypatch):
     """The eight repair/flavor paths must neither mangle the token nor leave the mirror."""
+    # Hidden CUDA returns before the mirror is read; index/backend pins pick another path.
+    for name in (
+        "CUDA_VISIBLE_DEVICES",
+        "UNSLOTH_TORCH_INDEX_URL",
+        "UNSLOTH_TORCH_INDEX_FAMILY",
+        "UNSLOTH_TORCH_INSTALL_INDEX_URL",
+        "UNSLOTH_TORCH_BACKEND",
+        "UNSLOTH_ROCM_TORCH_INSTALLED",
+        "UNSLOTH_FORCE_ROCM_TORCH",
+    ):
+        monkeypatch.delenv(name, raising = False)
     monkeypatch.setenv("UNSLOTH_PYTORCH_MIRROR", "https://mirror.example/whl?token=abc")
     mod = _reload_install_python_stack()
 

@@ -375,7 +375,7 @@ def test_yue2_instrumental_sends_the_instrumental_tag_not_its_style():
     assert request["text"] == "[Instrumental]"
     assert request["options"]["lyrics"] == "[Instrumental]"
     assert request["options"]["style"] == "ambient piano"
-    assert request["options"]["semantic_max_tokens"] == 500
+    assert request["options"]["semantic_max_tokens"] == 750
 
 
 def test_minimax_gguf_keeps_its_body_through_the_studio():
@@ -493,10 +493,11 @@ def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
 
 
 def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
-    t = lambda s, n = 1, cpu = False: cm.timeout_seconds("yue2", s, n, cpu)
-    assert t(10) < t(60) < t(60, 3) < t(60, 3, cpu = True)
-    assert t(0) == 300.0 and t(240, 4, cpu = True) == 4 * 3600.0
-    assert cm.timeout_seconds("stable_audio", 10, 1, False) == 310.0
+    t = lambda s, n = 1, backend = "cuda": cm.timeout_seconds("yue2", s, n, backend)
+    assert t(10) < t(60) < t(60, 3) < t(60, 3, backend = "cpu")
+    assert t(0) == 300.0 and t(240, 4, backend = "cpu") == 4 * 3600.0
+    assert cm.timeout_seconds("stable_audio", 10, 1, "cuda") == 310.0
+    assert t(60) == 300.0 + 6.0 * 1.5 * 60
     b = _backend(_model("yue2"))
     _run(b, text = "rock", lyrics = "x", duration_s = 60)
     assert b._server.calls[0][2]["timeout"] == t(60)
@@ -504,6 +505,16 @@ def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
     b = _backend(_model("yue2"))
     _run(b, text = "rock", lyrics = "x", duration_s = 60, timeout_s = 1234.0)
     assert b._server.calls[0][2]["timeout"] == 1234.0
+
+
+def test_metal_and_vulkan_waits_cover_minimax_on_apple_silicon():
+    t = lambda backend: cm.timeout_seconds("minimax_music3", 31, 1, backend)
+    assert t("cuda") == t("hip") == t(None) == 300.0 + 4.0 * 31
+    assert t("metal") == t("vulkan") == t("cpu") == 300.0 + 40.0 * 31
+    assert t("metal") > 24 * 31
+    b = _backend(_model("minimax_music3"), backend = "metal")
+    _run(b, text = "pop", lyrics = "la", duration_s = 30)
+    assert b._server.calls[0][2]["timeout"] == cm.timeout_seconds("minimax_music3", 30, 1, "metal")
 
 
 @pytest.fixture

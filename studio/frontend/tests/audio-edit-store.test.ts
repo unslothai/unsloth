@@ -54,6 +54,11 @@ test("② follows ① until the user types in it, and Reset puts it back", () =>
   state().setEdited("It was a rainy day.");
   state().setTranscript("It was a fine day!");
   assert.deepEqual(draft(), ["It was a rainy day.", "in2"]);
+  state().setTranscript("A newer saved transcript.", "in2");
+  assert.deepEqual(
+    [state().transcript, ...draft()],
+    ["A newer saved transcript.", "It was a rainy day.", "in2"],
+  );
   state().setDelivery({ pitchSteps: 4 });
   assert.deepEqual(state().delivery, { speed: 1.5, pitchSteps: 4 });
   const { state: saved, version } = JSON.parse(store.get(KEY) ?? "{}");

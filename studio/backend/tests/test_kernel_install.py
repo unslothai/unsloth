@@ -46,6 +46,8 @@ def _env(
 @pytest.fixture(autouse = True)
 def _no_mirror(monkeypatch):
     monkeypatch.delenv("UNSLOTH_PYTORCH_MIRROR", raising = False)
+    # Forces the mamba_ssm decision below sm80; an inherited value would override the mocked Triton.
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
 
 
 @pytest.mark.parametrize(
@@ -109,15 +111,21 @@ class _Runner:
         self,
         loads,
         capability = "9 0",
+        triton = None,
     ):
         self.loads = list(loads)
         self.capability = capability
+        self.triton = triton
         self.calls = []
 
     def __call__(self, cmd, **kwargs):
         self.calls.append(cmd)
         if cmd[1] == "-c" and "get_device_capability" in cmd[2]:
             return SimpleNamespace(returncode = 0, stdout = self.capability)
+        if cmd[1] == "-c" and "import triton" in cmd[2]:
+            if self.triton is None:
+                return SimpleNamespace(returncode = 1, stdout = "")
+            return SimpleNamespace(returncode = 0, stdout = self.triton + "\n")
         if cmd[1] == "-c":
             return SimpleNamespace(returncode = 0 if self.loads.pop(0) else 1, stdout = "")
         return SimpleNamespace(returncode = 0, stdout = "")
@@ -336,14 +344,143 @@ def test_flash_attn_resolution(env, expected):
     assert kernel_install.resolve_wheel_url("flash_attn", env) == expected
 
 
+@pytest.mark.parametrize("name", ["flash_attn", "mamba_ssm"])
 @pytest.mark.parametrize("capability", ["7 5", "None"])
-def test_flash_attn_is_skipped_below_sm80(capability, capsys):
+def test_sm80_kernels_are_skipped_below_sm80(name, capability, capsys, monkeypatch):
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
     run = _Runner([], capability = capability)
+    assert kernel_install.install_kernel(name, _COLAB, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls == []
+    assert f"skipping {name}, which needs sm80" in capsys.readouterr().out
+
+
+# unsloth_zoo keeps mamba_ssm's fast path on sm75 with Triton 3.4+ (torch 2.8+).
+
+
+@pytest.mark.parametrize("triton", [(3, 4), (3, 6), (4, 0)])
+def test_mamba_ssm_installs_on_sm75_with_a_new_triton(uv, monkeypatch, triton):
+    uv(False)
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: triton)
+    run = _Runner([False, True], capability = "7 5")
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls[0][-1].endswith(
+        "mamba_ssm-2.3.1+cu13torch2.10cxx11abiTRUE-cp313-cp313-linux_x86_64.whl"
+    )
+
+
+@pytest.mark.parametrize("triton", [(3, 3), (3, 2), None])
+def test_mamba_ssm_is_skipped_on_sm75_with_an_old_triton(monkeypatch, capsys, triton):
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: triton)
+    run = _Runner([], capability = "7 5")
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls == []
+    out = capsys.readouterr().out
+    assert "sm75 with Triton 3.4+" in out
+    assert ("missing" if triton is None else "%d.%d" % triton) in out
+
+
+@pytest.mark.parametrize(
+    "triton, installs",
+    [("3.4.0", True), ("3.6.0+git1a2b3c", True), ("3.3.1", False), (None, False)],
+)
+def test_triton_is_read_from_the_module(uv, monkeypatch, triton, installs):
+    """pytorch-triton and other providers ship the `triton` import under another
+    distribution name, so the version comes from `triton.__version__`."""
+    uv(False)
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    run = _Runner([False, True], capability = "7 5", triton = triton)
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert bool(run.installer_calls) is installs
+
+
+def test_mamba_ssm_is_skipped_below_sm75_whatever_the_triton(monkeypatch, capsys):
+    monkeypatch.delenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", raising = False)
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 6))
+    run = _Runner([], capability = "7 0")
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls == []
+    assert "the best GPU is sm70" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "forced, capability, installs",
+    [
+        ("1", "7 0", True),
+        ("1", "7 5", True),
+        ("0", "7 5", False),
+    ],
+)
+def test_mamba_ssm_follows_the_unsloth_zoo_override(uv, monkeypatch, forced, capability, installs):
+    uv(False)
+    monkeypatch.setenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", forced)
+    monkeypatch.setattr(
+        kernel_install, "_triton_version", lambda run: (3, 6) if forced == "0" else (3, 3)
+    )
+    run = _Runner([False, True], capability = capability)
+    assert kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True) == 0
+    assert bool(run.installer_calls) is installs
+
+
+def test_the_override_skip_message_reads_as_a_sentence(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", "0")
+    run = _Runner([], capability = "7 5")
+    kernel_install.install_kernel("mamba_ssm", _COLAB, run = run, exists = lambda url: True)
+    assert (
+        "Unsloth: skipping mamba_ssm, which UNSLOTH_MAMBA_PRE_AMPERE_FAST=0 turns off "
+        "(the best GPU is sm75)." in capsys.readouterr().out
+    )
+
+
+def test_flash_attn_stays_sm80_only_with_a_new_triton(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_MAMBA_PRE_AMPERE_FAST", "1")
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 6))
+    run = _Runner([], capability = "7 5")
     assert (
         kernel_install.install_kernel("flash_attn", _COLAB, run = run, exists = lambda url: True) == 0
     )
     assert run.installer_calls == []
-    assert "skipping flash_attn" in capsys.readouterr().out
+
+
+def test_causal_conv1d_still_installs_below_sm80(uv):
+    uv(False)
+    run = _Runner([False, True], capability = "7 5")
+    assert (
+        kernel_install.install_kernel("causal_conv1d", _COLAB, run = run, exists = lambda url: True)
+        == 0
+    )
+    assert run.installer_calls[0][-1].startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu13torch2.10")
+
+
+@pytest.mark.parametrize(
+    "without_gpu, capability, installs",
+    [(False, "None", False), (True, "None", True), (True, "7 0", False), (True, "9 0", True)],
+)
+def test_setup_installs_mamba_ssm_before_a_gpu_is_visible(
+    uv, monkeypatch, without_gpu, capability, installs
+):
+    # An image build sees no GPU; a visible pre-Ampere one still skips. Linux, so Windows'
+    # triton-windows gate (its own test) does not answer first.
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "linux")
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
+    run = _Runner([False, True], capability = capability)
+    assert (
+        kernel_install.install_kernel(
+            "mamba_ssm", _COLAB, run = run, exists = lambda url: True, install_without_gpu = without_gpu
+        )
+        == 0
+    )
+    assert bool(run.installer_calls) is installs
+
+
+def test_the_gpu_is_probed_once_for_every_sm80_kernel(capsys, monkeypatch):
+    monkeypatch.setattr(kernel_install, "_triton_version", lambda run: (3, 3))
+    run = _Runner([], capability = "7 5")
+    for name in ("flash_attn", "mamba_ssm"):
+        kernel_install.install_kernel(name, _COLAB, run = run, exists = lambda url: True)
+    assert sum("get_device_capability" in " ".join(c) for c in run.calls) == 1
 
 
 def test_flash_attn_installs_on_sm80_and_newer(uv):
@@ -396,3 +533,199 @@ def test_capability_probe_takes_the_best_visible_gpu():
 
     assert kernel_install._gpu_capability(run) == (9, 0)
     assert "max(torch.cuda.get_device_capability(i)" in seen["check"] and seen["timeout"]
+
+
+def test_pinned_kernels_match_the_wheel_utils_pins():
+    from utils import wheel_utils
+
+    cc1d, mamba = kernel_install.CAUSAL_CONV1D, kernel_install.MAMBA_SSM
+    assert (cc1d.package_version, cc1d.release_tag, cc1d.release_base_url) == (
+        wheel_utils.CAUSAL_CONV1D_PACKAGE_VERSION,
+        wheel_utils.CAUSAL_CONV1D_RELEASE_TAG,
+        wheel_utils.CAUSAL_CONV1D_RELEASE_BASE_URL,
+    )
+    assert (mamba.package_version, mamba.release_tag, mamba.release_base_url) == (
+        wheel_utils.MAMBA_SSM_PACKAGE_VERSION,
+        wheel_utils.MAMBA_SSM_RELEASE_TAG,
+        wheel_utils.MAMBA_SSM_RELEASE_BASE_URL,
+    )
+    assert (cc1d.import_name, cc1d.pypi_name, mamba.import_name, mamba.pypi_name) == (
+        "causal_conv1d",
+        "causal-conv1d",
+        "mamba_ssm",
+        "mamba-ssm",
+    )
+    url = cc1d.wheel_url(_env("2.10.0+cu128", "12.8"))
+    assert url.startswith(f"{_CC1D}/causal_conv1d-1.6.1+cu12torch2.10")
+    assert kernel_install.resolve_wheel_url("causal_conv1d", _env("2.10.0+cu128", "12.8")) == url
+
+
+def _ok(code):
+    return SimpleNamespace(returncode = code, stdout = f"out{code}")
+
+
+@pytest.mark.parametrize(
+    "attempts, verified, outcome, failed",
+    [
+        ([("uv", 0)], True, "installed", []),
+        ([("uv", 1), ("pip", 0)], True, "installed", ["uv"]),
+        ([("uv", 0)], False, "rejected", []),
+        ([("uv", 1), ("pip", 1)], True, "failed", ["uv", "pip"]),
+    ],
+)
+def test_install_prebuilt_outcomes(attempts, verified, outcome, failed):
+    seen, failures, verifies = {}, [], []
+
+    def install(url, **kwargs):
+        seen["url"], seen["kwargs"] = url, kwargs
+        return [(installer, _ok(code)) for installer, code in attempts]
+
+    result = kernel_install.install_prebuilt(
+        "https://example.invalid/k.whl",
+        install = install,
+        verify = lambda: verifies.append(1) or verified,
+        on_failed = lambda installer, result: failures.append(installer),
+        use_uv = True,
+    )
+    assert result == outcome
+    assert failures == failed
+    assert len(verifies) == (outcome != "failed")
+    # Only what the caller passed is forwarded, so each caller's installer flags stay its own.
+    assert seen == {
+        "url": "https://example.invalid/k.whl",
+        "kwargs": {"python_executable": sys.executable, "use_uv": True},
+    }
+
+
+@pytest.mark.parametrize(
+    "use_uv, is_hip, reinstall, expected",
+    [
+        (
+            True,
+            False,
+            False,
+            ["uv", "pip", "install", "--python", "PY", "--no-build-isolation", "--no-deps", "k==1"],
+        ),
+        (
+            True,
+            True,
+            True,
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                "PY",
+                "--no-build-isolation",
+                "--no-deps",
+                "--reinstall",
+                "--no-cache",
+                "k==1",
+            ],
+        ),
+        (
+            False,
+            False,
+            False,
+            [
+                "PY",
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                "--no-deps",
+                "--no-cache-dir",
+                "k==1",
+            ],
+        ),
+        (
+            False,
+            True,
+            True,
+            [
+                "PY",
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                "--no-deps",
+                "--no-cache-dir",
+                "--force-reinstall",
+                "k==1",
+            ],
+        ),
+    ],
+)
+def test_source_build_command(use_uv, is_hip, reinstall, expected):
+    cmd = kernel_install.source_build_command(
+        "k==1", use_uv = use_uv, is_hip = is_hip, reinstall = reinstall
+    )
+    assert cmd == [sys.executable if part == "PY" else part for part in expected]
+
+
+def test_source_build_run_kwargs(monkeypatch):
+    monkeypatch.delenv("HIPCC_COMPILE_FLAGS_APPEND", raising = False)
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = False, gcc_install_dir = lambda: pytest.fail("non-HIP never looks for gcc")
+    )
+    assert gcc is None and "timeout" not in kwargs
+    assert kwargs["encoding"] == "utf-8" and kwargs["stderr"] == subprocess.STDOUT
+
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = True, gcc_install_dir = lambda: "/usr/lib/gcc/x86_64-linux-gnu/13"
+    )
+    assert gcc == "/usr/lib/gcc/x86_64-linux-gnu/13" and kwargs["timeout"] == 1800
+    assert kwargs["env"]["HIPCC_COMPILE_FLAGS_APPEND"] == f"--gcc-install-dir={gcc}"
+    assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+
+    monkeypatch.setenv("HIPCC_COMPILE_FLAGS_APPEND", "--gcc-install-dir=/mine")
+    kwargs, gcc = kernel_install.source_build_run_kwargs(
+        is_hip = True, gcc_install_dir = lambda: pytest.fail("an explicit dir is respected")
+    )
+    assert gcc is None and kwargs["env"]["HIPCC_COMPILE_FLAGS_APPEND"] == "--gcc-install-dir=/mine"
+
+
+@pytest.mark.parametrize(
+    "use_uv, system, expected",
+    [
+        (True, False, ["uv", "pip", "uninstall", "--python", "PY", "k"]),
+        (True, True, ["uv", "pip", "uninstall", "--system", "--python", "PY", "k"]),
+        (False, True, ["PY", "-m", "pip", "uninstall", "-y", "k"]),
+    ],
+)
+def test_uninstall_command(use_uv, system, expected):
+    cmd = kernel_install.uninstall_command("k", use_uv = use_uv, uv_needs_system = system)
+    assert cmd == [sys.executable if part == "PY" else part for part in expected]
+
+
+_WIN = {
+    "platform_tag": "win_amd64",
+    "torch_mm": "2.13",
+    "torch_version": "2.13.0+cu130",
+    "cuda_major": "13",
+    "cuda_version": "13.0",
+    "cxx11abi": "TRUE",
+    "python_tag": "cp313",
+    "abi_tag": "cp313",
+    "hip_version": "",
+}
+
+
+def test_windows_mamba_ssm_waits_for_triton(uv, monkeypatch, capsys):
+    """mamba_ssm imports triton at load; on Windows that is triton-windows, absent from its METADATA."""
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "win32")
+    run = _Runner([], triton = None)
+    assert kernel_install.install_kernel("mamba_ssm", _WIN, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls == []
+    assert "needs Triton on Windows" in capsys.readouterr().out
+
+
+def test_windows_mamba_ssm_installs_with_triton(uv, monkeypatch):
+    uv(False)
+    monkeypatch.setattr(kernel_install.sys, "platform", "win32")
+    run = _Runner([False, True], triton = "3.7.1")
+    assert kernel_install.install_kernel("mamba_ssm", _WIN, run = run, exists = lambda url: True) == 0
+    assert run.installer_calls[0][-1].endswith(
+        "mamba_ssm-2.3.2.post1+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
+    )

@@ -46,15 +46,40 @@ test("a loaded model opens the page that fits it", () => {
     slot,
     /const loadedWorkflow = workflowForLoadedModel\(\{\s*current: useAudioWorkspaceStore\.getState\(\)\.workflow,\s*audioWorkflows: res\.audio_workflows,\s*music: isMusicGenerationModel\(repoId, res\.audio_type\),\s*\}\);[\s\S]{0,200}?rememberModel\(loadedWorkflow, repoId\);\s*if \(modeRef\.current === "speak"\) workspace\.commitWorkflow\(loadedWorkflow\);/,
   );
-  assert.match(host, /adoptWorkflow\("music"\)/);
+  assert.match(
+    host,
+    /if \(modeRef\.current === "speak" && ttsLoaded\) \{\s*const workspace = useAudioWorkspaceStore\.getState\(\);\s*workspace\.adoptWorkflow\(\s*workflowForLoadedModel\(\{\s*current: workspace\.workflow,\s*audioWorkflows: status\.audio_workflows,\s*music: musicGeneration,/,
+  );
+  assert.doesNotMatch(host, /adoptWorkflow\("music"\)/);
 });
 
 test("?workflow= names the page ahead of ?task=, and both go through the workflow gate", () => {
   // Task-only links take the same gate as ?workflow=, so a Speak/Music switch never skips the busy check.
   assert.match(
     handoff,
-    /const routedWorkflow = audioRouteIntent\(routeSearch\);\s*if \(routedWorkflow === null\) return;[\s\S]{0,120}?if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
+    /const urlWorkflow = audioRouteIntent\(routeSearch\);[\s\S]*?const action = audioWorkflowUrlAction\(\{\s*urlWorkflow,/,
   );
+  // A successful switch keeps only the page in the URL, so a reload reopens it.
+  assert.match(
+    handoff,
+    /if \(action\.kind === "intent"\) \{[\s\S]{0,120}?if \(!transitionWorkflow\(action\.workflow\)\) return;\s*lastSyncedWorkflow\.current = action\.workflow;[\s\S]{0,120}?void navigateSelf\(\{\s*to: "\/audio",\s*search: \{ workflow: action\.workflow \},\s*replace: true,\s*\}\);/,
+  );
+  // The committed page is written back with replace only, and only while Audio is the route.
+  assert.match(
+    handoff,
+    /useEffect\(\(\) => \{\s*if \(!active\) \{\s*lastSyncedWorkflow\.current = null;\s*pendingWrite\.current = null;\s*return;\s*\}/,
+  );
+  assert.match(
+    handoff,
+    /lastSyncedWorkflow\.current = action\.workflow;\s*pendingWrite\.current = \{ from: urlWorkflow \};\s*void navigateSelf\(\{\s*to: "\/audio",\s*search: \(prev\) => \(\{ \.\.\.prev, workflow: action\.workflow \}\),\s*replace: true,\s*\}\);/,
+  );
+  // A write still in flight is not read back as a request for the page it left.
+  assert.match(
+    handoff,
+    /if \(urlWorkflow === pendingWrite\.current\.from\) return;/,
+  );
+  assert.doesNotMatch(handoff, /search: \{\}/);
+  assert.doesNotMatch(handoff, /replace: false/);
   assert.doesNotMatch(handoff, /commitWorkflow\(/);
   // A Library clip asks for its page through ?workflow=, so a busy page retries it later.
   assert.match(
@@ -129,7 +154,6 @@ test("results show as a clip card with a waveform, never autoplaying", () => {
   assert.doesNotMatch(output + card, /autoPlay/);
   assert.match(output, /<ClipCard\s+\/\/[^\n]*\n\s*key=\{selectedClip\.id\}/);
   assert.match(card, /<Waveform\s+peaks=\{peaks\}/);
-  // A run in progress stands where its clip will appear, with Stop, and no second live region.
   assert.match(
     output,
     /\{pending \? \(\s*<PendingClipCard \{\.\.\.pending\} \/>/,
@@ -142,12 +166,10 @@ test("results show as a clip card with a waveform, never autoplaying", () => {
   assert.doesNotMatch(card, /aria-live/);
 });
 
-test("Send to lists the other Audio pages from the shared workflow list", () => {
+test("Send to lists Audio pages from the shared workflow list", () => {
   const card = readSrc("features/audio/components/clip-card.tsx");
-  assert.match(
-    card,
-    /AUDIO_WORKFLOWS\.filter\(\s*\(tab\) => tab\.id !== current && handlers\[tab\.id\],?\s*\)/,
-  );
+  // send-targets decides eligibility while the menu preserves page order
+  assert.match(card, /AUDIO_WORKFLOWS\.filter\(\(tab\) => handlers\[tab\.id\]\)/);
   assert.match(
     host,
     /if \(!transitionWorkflow\("transcribe"\)\) return;[\s\S]{0,200}?useAudioTranscribeStore\.setState\(\{\s*source: \{\s*kind: "clip",\s*id: clip\.id,/,
@@ -181,11 +203,15 @@ test("auto-selecting a page's history keeps another page's unsaved clip", () => 
 });
 
 test("Send to waits for a running task instead of stopping it and dropping the clip", () => {
-  // A switch mid-run stops the run, but the page stays busy until the stopped run settles, so the
-  // transcription was refused and the clip silently dropped.
+  // switching mid-run can reject transcription and drop the clip before the stopped run settles
   assert.match(
     host,
-    /transcribe: \(\) => \{[\s\S]*?if \(busyRef\.current !== null\) \{\s*toast\.info\([^)]*\);\s*return;\s*\}\s*if \(!transitionWorkflow\("transcribe"\)\) return;/,
+    /const runBusy = useCallback\(\(\) => \{\s*if \(busyRef\.current === null\) return false;\s*toast\.info\([^)]*\);\s*return true;/,
+  );
+  // Transcribe must use the same busy guard as every other target
+  assert.match(
+    host,
+    /clipSendTargets\(clip, ttsWorkflow\)\.map\(\(id\) => \[\s*id,\s*\(\) => \{\s*if \(!runBusy\(\)\) handlers\[id\]\?\.\(\);/,
   );
 });
 

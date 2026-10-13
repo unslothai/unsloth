@@ -16,6 +16,7 @@ import {
   type PlusMenuItemId,
   normaliseDisplayVisibility,
   refreshModelDisclaimerPreference,
+  requestReplyFinishedPermission,
   saveModelDisclaimerPreference,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -24,6 +25,7 @@ import {
 import { PASTED_TEXT_THRESHOLD_CHOICES } from "@/features/chat/utils/pasted-text";
 import { refreshContextUsage } from "@/features/chat/utils/refresh-context-usage";
 import { formatBindingLabel, isMacPlatform } from "../lib/keyboard-shortcuts";
+import { useIsAccountOwner } from "@/features/auth";
 import { useUserProfileStore } from "@/features/profile";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -35,19 +37,24 @@ import {
   Folder01Icon,
   LibrariesIcon,
   McpServerIcon,
-  PencilRulerIcon,
   Scroll01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { Columns2Icon } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import {
   type CurrentDatePromptSettings,
   loadCurrentDatePrompt,
   updateCurrentDatePrompt,
 } from "../api/current-date-prompt";
+import {
+  type ToolResultLimitSettings,
+  loadToolResultLimit,
+  toolResultLimitChoices,
+  updateToolResultLimit,
+} from "../api/tool-result-limit";
 import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
@@ -122,17 +129,6 @@ const PLUS_MENU_SETTINGS: {
     ),
   },
   {
-    id: "canvas",
-    labelKey: "settings.chat.artifacts.title",
-    icon: (
-      <HugeiconsIcon
-        icon={PencilRulerIcon}
-        strokeWidth={2}
-        className={PLUS_MENU_ICON_CLASS}
-      />
-    ),
-  },
-  {
     id: "projects",
     labelKey: "shell.navigation.projects",
     icon: (
@@ -145,7 +141,119 @@ const PLUS_MENU_SETTINGS: {
   },
 ];
 
+// Install-wide, so owner-only: how much of one tool result the model reads.
+function ToolResultLimitRow() {
+  const t = useT();
+  const [settings, setSettings] = useState<ToolResultLimitSettings | null>(
+    null,
+  );
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadToolResultLimit(t("settings.chat.toolResultLimitLoadError"))
+      .then((loaded) => {
+        if (cancelled) return;
+        setSettings(loaded);
+        setError(null);
+      })
+      .catch((loadError) => {
+        if (cancelled) return;
+        setError(
+          loadError instanceof Error
+            ? loadError.message
+            : t("settings.chat.toolResultLimitLoadError"),
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+
+  const save = async (maxChars: number) => {
+    setSaving(true);
+    setError(null);
+    try {
+      setSettings(
+        await updateToolResultLimit(
+          maxChars,
+          t("settings.chat.toolResultLimitSaveError"),
+        ),
+      );
+    } catch (saveError) {
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : t("settings.chat.toolResultLimitSaveError"),
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const note = settings?.lockedByEnvironment
+    ? t("settings.chat.toolResultLimitLocked")
+    : error;
+  return (
+    <SettingsRow
+      label={t("settings.chat.toolResultLimit")}
+      description={t("settings.chat.toolResultLimitDescription", {
+        count: (
+          settings?.defaultChars ?? 16000
+        ).toLocaleString(),
+      })}
+      hint={t("settings.chat.toolResultLimitHint")}
+      below={
+        note ? (
+          <span
+            role={settings?.lockedByEnvironment ? undefined : "alert"}
+            className={cn(
+              "max-w-[calc(260px*var(--ui-space-scale,1))] text-right text-xs",
+              settings?.lockedByEnvironment
+                ? "text-muted-foreground"
+                : "text-destructive",
+            )}
+          >
+            {note}
+          </span>
+        ) : null
+      }
+    >
+      <Select
+        value={settings ? String(settings.maxChars) : undefined}
+        disabled={!settings || saving || settings.lockedByEnvironment}
+        onValueChange={(value) => {
+          const next = Number(value);
+          if (settings && next !== settings.maxChars) void save(next);
+        }}
+      >
+        <SelectTrigger
+          className="w-44"
+          aria-label={t("settings.chat.toolResultLimit")}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {settings
+            ? toolResultLimitChoices(settings).map((choice) => (
+                <SelectItem key={choice} value={String(choice)}>
+                  {choice === settings.defaultChars
+                    ? t("settings.chat.toolResultLimitDefault", {
+                        count: choice.toLocaleString(),
+                      })
+                    : choice.toLocaleString()}
+                </SelectItem>
+              ))
+            : null}
+        </SelectContent>
+      </Select>
+    </SettingsRow>
+  );
+}
+
 export function ChatTab() {
+  const isOwner = useIsAccountOwner();
   const t = useT();
   const navigate = useNavigate();
   const plusPins = usePlusMenuPrefsStore((state) => state.pins);
@@ -174,42 +282,8 @@ export function ChatTab() {
   const setShowGreetingSloth = useUserProfileStore(
     (s) => s.setShowGreetingSloth,
   );
-  const showCanvasMenuItem = useChatRuntimeStore(
-    (state) => state.showCanvasMenuItem,
-  );
-  const setShowCanvasMenuItem = useChatRuntimeStore(
-    (state) => state.setShowCanvasMenuItem,
-  );
-  const collapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.collapseHtmlArtifacts,
-  );
-  const setCollapseHtmlArtifacts = useChatRuntimeStore(
-    (state) => state.setCollapseHtmlArtifacts,
-  );
-  const allowArtifactNetworkAccess = useChatRuntimeStore(
-    (state) => state.allowArtifactNetworkAccess,
-  );
-  const setAllowArtifactNetworkAccess = useChatRuntimeStore(
-    (state) => state.setAllowArtifactNetworkAccess,
-  );
   const searchImages = useChatRuntimeStore((state) => state.searchImages);
   const setSearchImages = useChatRuntimeStore((state) => state.setSearchImages);
-  const networkAccessRowRef = useRef<HTMLDivElement | null>(null);
-  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
-  const consumeScrollTarget = useSettingsDialogStore(
-    (s) => s.consumeScrollTarget,
-  );
-  useEffect(() => {
-    if (scrollTarget !== "chat-canvas-network") return;
-    const frame = window.requestAnimationFrame(() => {
-      networkAccessRowRef.current?.scrollIntoView({
-        block: "center",
-        behavior: "smooth",
-      });
-      consumeScrollTarget("chat-canvas-network");
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [consumeScrollTarget, scrollTarget]);
   const hydratePersistedSettings = useChatRuntimeStore(
     (state) => state.hydratePersistedSettings,
   );
@@ -255,6 +329,12 @@ export function ChatTab() {
   );
   const setShowScrollToBottomButton = useChatPreferencesStore(
     (state) => state.setShowScrollToBottomButton,
+  );
+  const notifyWhenReplyFinishes = useChatPreferencesStore(
+    (state) => state.notifyWhenReplyFinishes,
+  );
+  const setNotifyWhenReplyFinishes = useChatPreferencesStore(
+    (state) => state.setNotifyWhenReplyFinishes,
   );
   const thinkingVisibility = useChatPreferencesStore(
     (state) => state.thinkingVisibility,
@@ -419,6 +499,7 @@ export function ChatTab() {
             onCheckedChange={setAutoCompactEnabled}
           />
         </SettingsRow>
+        {isOwner ? <ToolResultLimitRow /> : null}
         <SettingsRow
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}
@@ -458,6 +539,24 @@ export function ChatTab() {
             aria-label={t("settings.chat.scrollToBottomButton")}
             checked={showScrollToBottomButton}
             onCheckedChange={setShowScrollToBottomButton}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.replyNotification")}
+          description={t("settings.chat.replyNotificationDescription")}
+        >
+          <Switch
+            aria-label={t("settings.chat.replyNotification")}
+            checked={notifyWhenReplyFinishes}
+            onCheckedChange={(checked) => {
+              setNotifyWhenReplyFinishes(checked);
+              if (!checked) return;
+              void requestReplyFinishedPermission().then((granted) => {
+                if (granted) return;
+                setNotifyWhenReplyFinishes(false);
+                toast.error(t("settings.chat.replyNotificationBlocked"));
+              });
+            }}
           />
         </SettingsRow>
       </SettingsSection>
@@ -686,46 +785,12 @@ export function ChatTab() {
       </SettingsSection>
 
 
-      <SettingsSection title={t("settings.chat.artifacts.title")}>
-        <div ref={networkAccessRowRef}>
-          <SettingsRow
-            label={t("settings.chat.artifacts.allowNetworkAccess")}
-            description={t(
-              "settings.chat.artifacts.allowNetworkAccessDescription",
-            )}
-          >
-            <Switch
-              checked={allowArtifactNetworkAccess}
-              onCheckedChange={setAllowArtifactNetworkAccess}
-            />
-          </SettingsRow>
-        </div>
-        <SettingsRow
-          label={t("settings.chat.artifacts.collapseHtmlBlocks")}
-          description={t(
-            "settings.chat.artifacts.collapseHtmlBlocksDescription",
-          )}
-        >
-          <Switch
-            checked={collapseHtmlArtifacts}
-            onCheckedChange={setCollapseHtmlArtifacts}
-          />
-        </SettingsRow>
-      </SettingsSection>
-
       <SettingsSection title={t("settings.chat.groups.menu.title")}>
         {PLUS_MENU_SETTINGS.map((item) => (
           <SettingsRow key={item.id} label={t(item.labelKey)} icon={item.icon}>
-            {/* Canvas toggles menu visibility; the rest toggle pin placement. */}
             <Switch
-              checked={
-                item.id === "canvas" ? showCanvasMenuItem : plusPins[item.id]
-              }
-              onCheckedChange={
-                item.id === "canvas"
-                  ? setShowCanvasMenuItem
-                  : () => togglePlusPin(item.id)
-              }
+              checked={plusPins[item.id]}
+              onCheckedChange={() => togglePlusPin(item.id)}
             />
           </SettingsRow>
         ))}

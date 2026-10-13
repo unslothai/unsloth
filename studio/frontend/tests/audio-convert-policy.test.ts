@@ -372,7 +372,7 @@ test("Use again re-uploads a conversion's kept source instead of its expiring up
 
 const SEND_TO_HAS_CONVERT = /convert: \(\) => handleSendToConvert\(clip\),/;
 const SEND_TO_CLONE_KEEPS_LABELS_OUT =
-  /adoptReference\(clipReference\(\{ \.\.\.clip, workflow: clipWorkflow\(clip\) \}\)\)/;
+  /const reference = \(\) =>\s*clipReference\(\{ \.\.\.clip, workflow: clipWorkflow\(clip\) \}\);\s*const handlers: ClipSendHandlers = \{\s*clone: \(\) => \{\s*if \(transitionWorkflow\("clone"\)\) adoptReference\(reference\(\)\);/;
 const WORKSPACE_FOCUSES_A_FRESH_CUSTOM_PLAYER =
   /renderPlayer\(\s*selectedClip,\s*selectedClipSrc,\s*selectedClip\.id === freshClipId \? focusFreshClip : undefined,?\s*\)/;
 

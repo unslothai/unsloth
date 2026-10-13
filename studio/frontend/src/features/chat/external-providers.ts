@@ -8,6 +8,10 @@ import type {
   ProviderAuthStatus,
 } from "./api/providers-api";
 import { modelCatalogSupportsVision } from "./model-catalog.ts";
+import {
+  type CustomReasoningConfig,
+  normalizeCustomReasoningConfig,
+} from "./custom-reasoning.ts";
 
 export interface ExternalProviderConfig {
   id: string;
@@ -18,6 +22,7 @@ export interface ExternalProviderConfig {
   /** Provider base URL (default from registry or backend-saved override). */
   baseUrl: string;
   apiType?: ProviderApiType;
+  reasoningConfig?: CustomReasoningConfig;
   decisionsOnly?: boolean;
   /** Model ids user enabled from `/api/providers/models`. */
   models: string[];
@@ -613,6 +618,12 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     name: raw.name.trim(),
     baseUrl: raw.baseUrl.trim(),
     apiType: raw.apiType === "responses" ? "responses" : "chat_completions",
+    reasoningConfig:
+      providerType === "custom" &&
+      (raw.backendProviderType === undefined || raw.backendProviderType === "custom") &&
+      raw.apiType !== "responses" && raw.decisionsOnly !== true
+        ? normalizeCustomReasoningConfig(raw.reasoningConfig)
+        : undefined,
     models: raw.models
       .map((model) => model.trim())
       .filter((model) => model.length > 0),

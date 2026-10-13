@@ -422,6 +422,156 @@ def test_native_compaction_delta_is_replayed_with_encrypted_content(monkeypatch)
     assert bodies[-1]["messages"][0]["content"] == [{"type": "compaction", **summary}]
 
 
+def test_tool_follow_up_replays_native_compaction_once(monkeypatch):
+    bodies = []
+    summary = {"content": "Earlier conversation summary", "encrypted_content": "opaque-compaction"}
+    first_turn = [
+        *_block(
+            0,
+            {"type": "compaction", "content": None},
+            {"type": "compaction_delta", "content": "Earlier conversation "},
+            {
+                "type": "compaction_delta",
+                "content": "summary",
+                "encrypted_content": summary["encrypted_content"],
+            },
+        ),
+        *_block(
+            1,
+            {"type": "tool_use", "id": "toolu_a", "name": "python", "input": {}},
+            {"type": "input_json_delta", "partial_json": '{"query":"current"}'},
+        ),
+        *_finish("tool_use"),
+    ]
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return _response(first_turn if len(bodies) == 1 else _finish("end_turn"))
+
+    monkeypatch.setattr(loop, "execute_tool", lambda *_args, **_kwargs: "done")
+    monkeypatch.setattr(loop, "build_rag_autoinject", lambda *a, **k: None)
+    client = _client(monkeypatch, handler)
+
+    async def run():
+        try:
+            return [
+                line
+                async for line in loop.stream_with_studio_tools(
+                    OAICompatTransport(
+                        client,
+                        model = "claude-sonnet-4-6",
+                        temperature = 0.7,
+                        top_p = 0.95,
+                        max_tokens = 4096,
+                    ),
+                    run = loop.ToolLoopRun(
+                        messages = [
+                            {"role": "user", "content": "old question"},
+                            {"role": "assistant", "content": "old answer"},
+                            {"role": "user", "content": "current question"},
+                        ]
+                    ),
+                    policy = loop.ToolLoopPolicy(
+                        tools = TOOLS,
+                        max_calls = 1,
+                        timeout = 30,
+                        permission_mode = "off",
+                        confirm_calls = False,
+                        bypass_permissions = False,
+                        rag_scope = None,
+                        auto_heal = False,
+                        nudge_tool_calls = False,
+                    ),
+                    cancel_event = threading.Event(),
+                )
+            ]
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    assistant_parts = [
+        part
+        for message in bodies[1]["messages"]
+        if message["role"] == "assistant"
+        for part in message["content"]
+    ]
+    assert [part for part in assistant_parts if part["type"] == "compaction"] == [
+        {"type": "compaction", **summary}
+    ]
+    assert len([part for part in assistant_parts if part["type"] == "tool_use"]) == 1
+
+
+def test_failed_native_compaction_keeps_history_for_tool_follow_up(monkeypatch):
+    bodies = []
+    first_turn = [
+        *_block(
+            0,
+            {
+                "type": "compaction",
+                "content": None,
+                "encrypted_content": "opaque-failed",
+            },
+        ),
+        *_block(
+            1,
+            {"type": "tool_use", "id": "toolu_a", "name": "python", "input": {}},
+            {"type": "input_json_delta", "partial_json": '{"query":"current"}'},
+        ),
+        *_finish("tool_use"),
+    ]
+
+    def handler(request):
+        bodies.append(json.loads(request.content))
+        return _response(first_turn if len(bodies) == 1 else _finish("end_turn"))
+
+    monkeypatch.setattr(loop, "execute_tool", lambda *_args, **_kwargs: "done")
+    monkeypatch.setattr(loop, "build_rag_autoinject", lambda *a, **k: None)
+    client = _client(monkeypatch, handler)
+
+    async def run():
+        try:
+            return [
+                line
+                async for line in loop.stream_with_studio_tools(
+                    OAICompatTransport(
+                        client,
+                        model = "claude-sonnet-4-6",
+                        temperature = 0.7,
+                        top_p = 0.95,
+                        max_tokens = 4096,
+                    ),
+                    run = loop.ToolLoopRun(
+                        messages = [
+                            {"role": "user", "content": "old question"},
+                            {"role": "assistant", "content": "old answer"},
+                            {"role": "user", "content": "current question"},
+                        ]
+                    ),
+                    policy = loop.ToolLoopPolicy(
+                        tools = TOOLS,
+                        max_calls = 1,
+                        timeout = 30,
+                        permission_mode = "off",
+                        confirm_calls = False,
+                        bypass_permissions = False,
+                        rag_scope = None,
+                        auto_heal = False,
+                        nudge_tool_calls = False,
+                    ),
+                    cancel_event = threading.Event(),
+                )
+            ]
+        finally:
+            await client.close()
+
+    asyncio.run(run())
+    follow_up = json.dumps(bodies[1]["messages"])
+    assert "old question" in follow_up
+    assert "old answer" in follow_up
+    assert "current question" in follow_up
+    assert "opaque-failed" not in follow_up
+
+
 def test_truncated_hosted_json_still_reports_length(monkeypatch):
     events = [
         *_block(

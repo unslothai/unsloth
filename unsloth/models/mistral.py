@@ -55,7 +55,7 @@ try:
 except:
     MistralSdpaAttention = MistralAttention
     MistralFlashAttention2 = MistralAttention
-from unsloth_zoo.utils import Version, _get_dtype
+from unsloth_zoo.utils import Version
 
 
 def MistralAttention_fast_forward(
@@ -110,6 +110,8 @@ def MistralAttention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
     sw_cfg = getattr(self.config, "sliding_window", None)
@@ -120,9 +122,11 @@ def MistralAttention_fast_forward(
         sw = kv_seq_len
     else:
         sw = sw_cfg
-    window_size = (-1, -1) if (kv_seq_len <= sw) else (sw, sw)
+    # transformers' window: k > q - sliding_window, so flash's left window is sliding_window - 1.
+    window_size = (-1, -1) if (kv_seq_len <= sw) else (sw - 1, sw - 1)
 
-    use_varlen = seq_info is not None and past_key_value is None and window_size == (-1, -1)
+    # Packed rows always take varlen: dense flash would let a document attend into the one before it.
+    use_varlen = seq_info is not None and not had_cache
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
     attention_config = AttentionConfig(
         backend = backend,
@@ -133,6 +137,7 @@ def MistralAttention_fast_forward(
             "dropout_p": 0.0,
             "causal": True,
             "softmax_scale": getattr(self, "softmax_scale", None),
+            "window_size": window_size,
         },
     )
     # PrefixGrouper seg table rides in **kwargs from the GRPO logprob forward; misuse (KV cache /
@@ -208,9 +213,10 @@ def MistralForCausalLM_fast_forward(
 
             # If attention_mask exists, it is handled in the attention forward.
 
-        elif self.training:
+        elif self.training or kwargs.get("packed_seq_lengths", None) is not None:
             # LlamaModel_fast_forward's DPO embed-masking block needs the 2D attention_mask; it nulls the mask
             # before attention anyway, so leaving it 2D avoids a 4D conversion that crashes DPO.
+            # Packed rows need no mask: a row-wide causal mask would let documents attend across.
             pass
 
         else:
@@ -407,9 +413,8 @@ def MistralForCausalLM_fast_forward(
             logit_scaling = logit_scaling,
             n_items = n_items,
         )
-    else:
-        # Inference returns the logits, so they carry the transforms themselves.
-        logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
+    # After the loss: the kernel reads the raw logits, and this is in place without grad.
+    logits = apply_logit_transforms(logits, logit_softcapping, logit_scaling)
 
     if not return_dict:
         output = (logits,) + outputs[1:]

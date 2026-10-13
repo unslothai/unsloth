@@ -40,6 +40,7 @@ from functools import lru_cache
 from core._torchao_stub import is_stubbed, torch_is_rocm
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_disabled_message
+from .family_profile import profile_table as _profile_table
 
 TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
@@ -53,15 +54,9 @@ _TE_TORCHAO_MODES = frozenset({TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVF
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
 # int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16. Per-family (skip_first,
-# skip_last) blocks to keep dense, from measured hidden-state fidelity; absent families have no schedule clearing the
-# bar, so int8 falls back to fp8. qwen-image (Qwen2.5-VL-7B): first+last 6 gives ~0.997 cosine; flux.2-dev
-# (Mistral-Small-24B): first 3 gives ~0.98 (early-layer seeding).
-_TE_INT8_SKIP: dict[str, tuple[int, int]] = {
-    "qwen-image": (6, 6),
-    "qwen-image-edit": (6, 6),
-    "qwen-image-layered": (6, 6),
-    "flux.2-dev": (3, 0),
-}
+# skip_last) blocks to keep dense (``FamilyProfile.te_int8_skip``, measured hidden-state fidelity); absent families
+# have no schedule clearing the bar, so int8 falls back to fp8.
+_TE_INT8_SKIP: dict[str, tuple[int, int]] = _profile_table("te_int8_skip")
 
 
 def normalize_te_quant(value: Optional[str]) -> Optional[str]:
@@ -178,13 +173,12 @@ _TE_QUANT_REQUIREMENTS = {
 
 
 def te_quant_unsupported_reason(mode: str) -> str:
-    """Why ``te_quant_supported`` declined ``mode``, naming what that mode needs."""
     return f"text-encoder '{mode}' needs {_TE_QUANT_REQUIREMENTS[mode]}, which this host does not provide"
 
 
 @lru_cache(maxsize = 1)
 def nvfp4_weight_only_importable() -> bool:
-    """Whether torchao ships a usable ``NVFP4WeightOnlyConfig`` (0.15+; Studio pins 0.14 on torch <= 2.9)."""
+    """requires torchao 0.15+; older Studio installs kept 0.14 with torch <= 2.8."""
     try:
         from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
         from .diffusion_transformer_quant import _quiet_config
@@ -195,9 +189,7 @@ def nvfp4_weight_only_importable() -> bool:
 
 
 def te_quant_supported(target: Any, mode: str) -> bool:
-    """Whether ``mode`` is usable for ``target``: a CUDA bf16 device plus what each backend
-    needs -- fp8 dtype (fp8, nvfp4 block scales), fp8 GEMM sm_89+ (fp8_dynamic), int8 sm_80+
-    (int8). nvfp4 is weight-only, so it has no FP4 tensor-core requirement."""
+    """CUDA bf16: e4m3 for fp8/nvfp4, sm_89+ for dynamic fp8, sm_80+ for int8; no FP4 cores."""
     if getattr(target, "device", None) != "cuda":
         return False
     if nvfp4_blocked(mode):
@@ -263,6 +255,15 @@ def quantize_text_encoders(
     leaves the encoder dense."""
     mode = normalize_te_quant(mode)
     if mode is None:
+        present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]
+        stored_int8 = [a for a in present if _hosted_te_scheme(getattr(pipe, a)) == TE_QUANT_INT8]
+        if stored_int8:
+            return TEQuantOutcome(
+                TE_QUANT_INT8,
+                "int8 ConvRot weight-only text encoder, as stored in the supplied file"
+                + ("" if len(stored_int8) == len(present) else f" ({', '.join(stored_int8)} only)"),
+                RESOLVED_APPLIED,
+            )
         return TEQuantOutcome(None)
     # A hosted int8 ConvRot encoder is already quantized (plain tensors, offload-safe): report it, never re-cast it.
     present = [a for a in _TEXT_ENCODER_ATTRS if getattr(pipe, a, None) is not None]

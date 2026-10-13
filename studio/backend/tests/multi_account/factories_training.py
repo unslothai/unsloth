@@ -10,6 +10,8 @@ EDITED = "training-matrix-edited"
 START_REQUEST_ID = "training-matrix-start-request"
 START_JOB_ID = "training-matrix-job"
 DIFFUSION_JOB_ID = "a1b2c3d4e5f607182930a4b5c6d7e8f9"
+SAMPLE_JOB_ID = "b2c3d4e5f607182930a4b5c6d7e8f9a1"
+SAMPLE_PATH = "samples/20260101-000000-abcdef/step-0-0.png"
 DATASET_NAME = "training-matrix-dataset"
 IMAGE_NAME = "training-matrix-image.png"
 RECIPE_JOB_ID = "f9e8d7c6b5a40312092a8b7c6d5e4f30"
@@ -132,6 +134,39 @@ def seed_diffusion_run(account) -> dict[str, str]:
     return {"job_id": DIFFUSION_JOB_ID}
 
 
+@seeder("training-diffusion-sample")
+def seed_diffusion_sample(account) -> dict[str, str]:
+    import base64
+    import json
+
+    from utils.account_context import run_as
+    from utils.paths import outputs_root
+    from utils.paths.storage_roots import tensorboard_root
+
+    def install() -> None:
+        out_dir = outputs_root() / "training-matrix-diffusion"
+        image = out_dir / SAMPLE_PATH
+        image.parent.mkdir(parents = True, exist_ok = True)
+        image.write_bytes(base64.b64decode(PNG_1X1))
+        folder = tensorboard_root() / "diffusion"
+        folder.mkdir(parents = True, exist_ok = True)
+        (folder / f"{SAMPLE_JOB_ID}.json").write_text(
+            json.dumps(
+                {
+                    "job_id": SAMPLE_JOB_ID,
+                    "status": "completed",
+                    "output_dir": str(out_dir),
+                    "samples": [{"step": 0, "index": 0, "path": SAMPLE_PATH}],
+                    "config": {},
+                }
+            ),
+            encoding = "utf-8",
+        )
+
+    run_as(account, install)
+    return {"job_id": SAMPLE_JOB_ID}
+
+
 @seeder("training-diffusion-dataset")
 def seed_diffusion_dataset(account) -> dict[str, str]:
     import base64
@@ -241,6 +276,9 @@ FACTORIES = {
     ),
     "routes.training:GET:/diffusion/runs/{job_id}": Factory(
         "training-diffusion-run", fragment = SENTINEL
+    ),
+    "routes.training:GET:/diffusion/runs/{job_id}/sample": Factory(
+        "training-diffusion-sample", fragment = "IHDR", query = {"path": SAMPLE_PATH}
     ),
     "routes.training:GET:/diffusion/dataset/{name}/images": Factory(
         "training-diffusion-dataset", fragment = SENTINEL

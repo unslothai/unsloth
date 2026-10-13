@@ -79,10 +79,10 @@ const SETTINGS_ROWS: &[Row] = &[
     Row::Action("settings-accounts", "Accounts", ""),
     Row::Action("settings-agents", "Agents", ""),
     Row::Action("settings-voice", "Voice", ""),
-    Row::Action("settings-library", "Library", ""),
-    Row::Action("settings-data", "Data", ""),
-    Row::Action("settings-keyboard-shortcuts", "Shortcuts", ""),
     Row::Action("settings-browser", "Browser", ""),
+    Row::Action("settings-keyboard-shortcuts", "Shortcuts", ""),
+    Row::Action("settings-data", "Data", ""),
+    Row::Action("settings-library", "Library", ""),
     Row::Action("settings-debugging", "Logs", ""),
     Row::Action("settings-about", "About", ""),
 ];

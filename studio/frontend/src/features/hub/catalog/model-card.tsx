@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import {
   Tooltip,
   TooltipContent,
@@ -239,6 +240,8 @@ export const ModelCard = memo(function ModelCard({
   isDataset: boolean;
   onSelect: (id: string) => void;
 }) {
+  const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const support = useMemo(
     () =>
       isDataset
@@ -250,8 +253,10 @@ export const ModelCard = memo(function ModelCard({
             libraryName: row.result.libraryName,
             deviceType,
             quantMethod: row.result.quantMethod,
+            vllmAvailable,
+            vllmPlatform,
           }),
-    [isDataset, row.id, row.result, deviceType],
+    [isDataset, row.id, row.result, deviceType, vllmAvailable, vllmPlatform],
   );
   const unsupported = support?.status === "unsupported" && !support?.supportedIn;
   const partial = row.isAvailableOnDevice && row.isPartialOnDevice;

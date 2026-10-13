@@ -30,12 +30,20 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { archiveTranscript, deleteTranscript, listTranscripts } from "./api";
+import {
+  type ClipSendHandlers,
+  ClipSendToMenu,
+} from "./components/clip-card";
 import { getTranscript } from "./transcribe-api";
 import {
   TRANSCRIPT_EXPORT_FORMATS,
   type TranscriptExportFormat,
 } from "./transcript-export";
-import { detailsFrom, formatTimestamp } from "./transcript-model";
+import {
+  type TranscriptSource,
+  detailsFrom,
+  formatTimestamp,
+} from "./transcript-model";
 import type { TranscriptRecord } from "./transcript-stream";
 
 export function TranscriptExportItems({
@@ -98,6 +106,12 @@ function recordBadge(record: TranscriptRecord): string | null {
   return (record.segment_count ?? 0) > 0 ? "Timestamps" : null;
 }
 
+export type TranscriptSendHandlers = (transcript: {
+  text: string;
+  source?: TranscriptSource | null;
+  duration: number | null;
+}) => ClipSendHandlers;
+
 export function TranscriptGallery({
   active,
   currentId,
@@ -106,6 +120,7 @@ export function TranscriptGallery({
   onDelete,
   canSelect,
   autoSelect,
+  sendHandlersFor,
 }: {
   active: boolean;
   autoSelect: boolean;
@@ -114,6 +129,7 @@ export function TranscriptGallery({
   onSelect: (record: TranscriptRecord) => void;
   onDelete: (ids: string[] | null) => void;
   canSelect: () => boolean;
+  sendHandlersFor: TranscriptSendHandlers;
 }) {
   const [records, setRecords] = useState<TranscriptRecord[]>([]);
   const [archived, setArchived] = useState(false);
@@ -306,6 +322,7 @@ export function TranscriptGallery({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <ClipSendToMenu handlers={sendHandlersFor(record)} />
                 <TranscriptExportItems
                   timed={(record.segment_count ?? 0) > 0}
                   label={(format) => (

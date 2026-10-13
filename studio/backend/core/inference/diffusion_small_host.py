@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -52,14 +51,11 @@ _ST_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
 
 
 def _safetensors_bytes_by_dtype(path: Path, keep: tuple[str, ...] = ()) -> dict[str, int]:
+    from .diffusion_component_sizes import read_safetensors_header
+
     out: dict[str, int] = {}
-    try:
-        with open(path, "rb") as fh:
-            (n,) = struct.unpack("<Q", fh.read(8))
-            if not 0 < n <= 256 * _MIB:
-                return out
-            header = json.loads(fh.read(n))
-    except Exception:  # noqa: BLE001 - unreadable header: no claim about this file
+    header = read_safetensors_header(path, max_bytes = 256 * _MIB)
+    if header is None:  # unreadable header: no claim about this file
         return out
     for name, meta in header.items():
         if name == "__metadata__":
@@ -149,18 +145,8 @@ def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Pa
 
 def host_ram_mib() -> tuple[Optional[int], Optional[int]]:
     """(total, available) host MiB, both capped by an enforcing cgroup."""
-    from .diffusion_memory import (
-        _available_system_memory_mib,
-        _cgroup_memory_limit_mib,
-        _system_memory_mib,
-    )
-
-    total, _ = _system_memory_mib()
-    available = _available_system_memory_mib()
-    limit = _cgroup_memory_limit_mib()
-    if total is not None and limit is not None:
-        total = min(int(total), int(limit))
-    return total, available
+    from .diffusion_memory import _available_system_memory_mib, _host_ram_capacity_mib
+    return _host_ram_capacity_mib(), _available_system_memory_mib()
 
 
 def host_reserve_mib(total_mib: Optional[int]) -> int:

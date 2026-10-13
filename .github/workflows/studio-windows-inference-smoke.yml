@@ -188,6 +188,8 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_path_probe_access_denied.ps1
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File tests/studio/test_unsloth_torch_override.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           # cross-platform-parity-ci.yml, which is the host it describes.
 
       # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a

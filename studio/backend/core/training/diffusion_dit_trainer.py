@@ -21,7 +21,7 @@ the VAE freed: the cache stores the posterior's affine parameters (mean/std fold
 family's latent normalisation), so every step still draws a fresh VAE sample --
 distribution-identical to encoding in the loop, without keeping the VAE resident or paying a
 per-step encode. The transformer trains as a QLoRA (nf4) adapter by default with gradient
-checkpointing and 8-bit AdamW, so only the (small) LoRA params + optimizer state and the frozen
+checkpointing and fused AdamW, so only the (small) LoRA params + optimizer state and the frozen
 4-bit base sit in VRAM during the loop.
 """
 
@@ -46,7 +46,11 @@ from core.training.diffusion_train_common import (
     EventCb,
     LATENT_CACHE_OVER_BUDGET,
     StopCb,
-    bitsandbytes_optimizer_supported,
+    enable_diffusion_gradient_checkpointing,
+    TrainingPeakMemory,
+    resume_steps_left,
+    make_lora_optimizer,
+    recorded_optimizer_class,
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
@@ -55,12 +59,15 @@ from core.training.diffusion_train_common import (
     _plan_cache_variants,
     _publish_to_lora_catalog,
     _restore_perf_flags,
+    bucket_groups,
     discover_image_caption_pairs,
     has_functional_torchao,
     flow_bf16_trainable,
     native_bf16_supported_xpu,
     PermutationBatchSampler,
+    plan_image_canvases,
     repo_is_prequantized,
+    resolve_bucketing,
     resolve_train_device,
     resolve_train_steps,
     restore_resume_state,
@@ -78,14 +85,22 @@ from core.training.diffusion_checkpoint import (
     with_resolved_revision,
     preflight_resume,
 )
+from core.training.diffusion_samples import (
+    discard_samples,
+    euler_flow_sample,
+    isolated_sampling,
+    plan_samples,
+    run_sample_round,
+)
 from core.training.diffusion_train_extras import (
+    BucketBatchSampler,
     LoRAEMA,
+    cover_resize_dims,
     PersistentConditioningCache,
     save_ema_adapter,
 )
 
-# Per-family LoRA target modules (attention projections). FLUX / Qwen double-stream blocks also carry added-kv
-# projections; Z-Image is single-stream.
+# FLUX / Qwen double-stream blocks also carry added-kv projections; Z-Image is single-stream.
 _FLUX_TARGETS = (
     "to_q",
     "to_k",
@@ -97,7 +112,8 @@ _FLUX_TARGETS = (
     "to_add_out",
 )
 _QWEN_TARGETS = _FLUX_TARGETS
-_ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0")
+# Attention + SwiGLU (DiffSynth-Studio's Z-Image recipe); old attention-only runs keep theirs on resume.
+_ZIMAGE_TARGETS = ("to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3")
 # The Krea 2 authors' recommended defaults (their DreamBooth script): attention + SwiGLU + text-fusion projector +
 # conditioning embedders. For long runs they suggest narrowing to attention.
 _KREA2_TARGETS = (
@@ -163,6 +179,10 @@ class _FamilySpec:
     forward: Callable[..., Any]
     # Save the LoRA in diffusers format via the family pipeline's save_lora_weights.
     save: Callable[..., None]
+    # (vae, h, w) -> (latent shape, packed seq len for the shift), and latents -> pixels. None = no sampling path.
+    latent_shape: Optional[Callable[..., tuple]] = None
+    decode_latents: Optional[Callable[..., Any]] = None
+    sample_forward_kwargs: Optional[dict] = None
 
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
@@ -177,19 +197,26 @@ def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
     return sigma
 
 
+def _unshifted_sigmas(scheduler):
+    """Uniform u before any init-time static shift, as ``FlowMatchEulerDiscreteScheduler.__init__`` builds it."""
+    import numpy as np
+    import torch
+
+    sc = scheduler.config
+    if getattr(sc, "use_dynamic_shifting", False) or float(getattr(sc, "shift", 1.0) or 1.0) == 1.0:
+        return scheduler.sigmas
+    n = int(sc.num_train_timesteps)
+    u = torch.from_numpy(np.linspace(1, n, n, dtype = np.float32)[::-1].copy()) / n
+    return u.to(scheduler.sigmas.dtype)
+
+
 def _training_sigma_table(scheduler, flow_shift):
-    """The sigma table training draws index into, per ``cfg.flow_shift``. ``1.0`` (every non-Qwen
-    family's default) returns ``scheduler.sigmas`` unchanged: the historical behavior, correct
-    for the families whose schedule already matches training convention. ``"auto"`` (the
-    qwen-image default) reproduces the family's INFERENCE sigma distribution, which the scheduler
-    never bakes into ``sigmas`` when ``use_dynamic_shifting`` is true (the static ``shift`` at
-    init is skipped, so Qwen-Image otherwise trains on unshifted uniform sigmas): apply the
-    scheduler's own ``time_shift`` at mu = ``max_shift`` (Qwen pins base_shift = max_shift = log
-    3, so the inference mu is constant at every resolution) followed by its
-    ``stretch_shift_to_terminal`` -- using the scheduler's methods keeps the transform faithful
-    across diffusers versions. A numeric value applies the standard linear shift s*u/(1+(s-1)*u)
-    (musubi/kohya style discrete_flow_shift)."""
+    """None: the scheduler's own sigmas. "auto": the inference distribution, which dynamic-shifting
+    schedulers never bake into ``sigmas`` (Qwen pins mu = max_shift = log 3). A number: the effective
+    shift s*u/(1+(s-1)*u) on unshifted u (musubi/kohya); applying it on top of a baked-in shift is WRONG."""
     sigmas = scheduler.sigmas
+    if flow_shift is None:
+        return sigmas
     if flow_shift == "auto":
         sc = scheduler.config
         if not getattr(sc, "use_dynamic_shifting", False):
@@ -197,14 +224,14 @@ def _training_sigma_table(scheduler, flow_shift):
         mu = float(getattr(sc, "max_shift", None) or math.log(3.0))
         shifted = scheduler.time_shift(mu, 1.0, sigmas)
         if getattr(sc, "shift_terminal", None):
-            # The stretch scales off the table's own final sigma, so it must see the full descending schedule, never a
-            # batch.
+            # Stretch must see the full descending table, never a batch.
             shifted = scheduler.stretch_shift_to_terminal(shifted)
         return shifted
     s = float(flow_shift)
+    u = _unshifted_sigmas(scheduler)
     if s == 1.0:
-        return sigmas
-    return s * sigmas / (1.0 + (s - 1.0) * sigmas)
+        return u
+    return s * u / (1.0 + (s - 1.0) * u)
 
 
 def _bell_loss_weights(num_train_timesteps):
@@ -303,9 +330,9 @@ def _load_pipe_without_transformer(pipe_cls, cfg, device):
 def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
     """Load the transformer alone in the resolved ``base_precision``. nf4: a prequant (bnb-4bit)
     repo carries its quantization config and loads 4-bit as-is, while a dense base is quantized
-    to nf4 on the fly; the memory floor. bf16 / fp8 / mxfp8: the dense transformer (fp8/mxfp8
-    convert its frozen linears to float8 training compute AFTER the LoRA attaches; storage stays
-    bf16). int8: the dense transformer quantized in place to torchao weight-only int8 (the
+    to nf4 on the fly; the memory floor. bf16 / fp8 / mxfp8: the dense transformer, converted AFTER the LoRA
+    attaches (fp8 stores its frozen linears in e4m3, about half the bf16 weight memory; mxfp8 keeps bf16 storage).
+    int8: the dense transformer quantized in place to torchao weight-only int8 (the
     PEFT-attachable scheme), roughly halving the bf16 weight footprint."""
     import torch
 
@@ -323,14 +350,45 @@ def _load_dit_transformer(transformer_cls, cfg, device, base_precision):
             transformer = transformer.to(device)
         return transformer
 
+    if base_precision == "fp8":
+        transformer = _load_fp8_prequant_transformer(transformer_cls, cfg, device)
+        if transformer is not None:
+            return transformer
+
     # int8 quantizes AFTER the LoRA attaches: quantizing first makes peft dispatch TorchaoLoraLinear, whose peft-0.18
-    # constructor rejects the torchao-0.16 config API.
+    # constructor rejects the torchao-0.16 config API (peft 0.19+ accepts it; the order works for both).
     return transformer_cls.from_pretrained(
         cfg.base_model,
         subfolder = "transformer",
         torch_dtype = torch.bfloat16,
         token = cfg.hf_token,
     ).to(device)
+
+
+def _load_fp8_prequant_transformer(transformer_cls, cfg, device):
+    """The family's hosted fp8 denoiser (the file Studio inference uses) as the fp8 base, skipping the bf16 transformer
+    download; None (load bf16 and quantize, as before) when none is mapped for this exact base or it fails to load."""
+    import logging
+
+    from core.training.diffusion_fp8_prequant import load_fp8_transformer, resolve_fp8_checkpoint
+
+    log = logging.getLogger(__name__)
+    path = resolve_fp8_checkpoint(
+        getattr(cfg, "resolved_family", None), cfg.base_model, cfg.hf_token, logger = log
+    )
+    if path is None:
+        return None
+    try:
+        transformer = load_fp8_transformer(
+            transformer_cls, cfg.base_model, path, device, hf_token = cfg.hf_token
+        )
+    except Exception as exc:  # noqa: BLE001 -- the dense path still works
+        log.warning("fp8 prequant: %s did not load (%s); loading bf16", path, exc)
+        gc.collect()
+        return None
+    transformer._studio_fp8_prequant_path = path
+    log.info("fp8 base loaded from the pre-quantized checkpoint %s", path)
+    return transformer
 
 
 def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
@@ -372,11 +430,22 @@ def _int8_quantize_base(transformer, family: Optional[str] = None) -> None:
     apply_small_m_padding(transformer, "int8", family)
 
 
-def _fp8_module_filter(mod, fqn: str) -> bool:
-    """Which frozen linears get float8 training compute: skip anything LoRA-owned (the adapters must
-    stay high precision, since PEFT has no float8 base support), the output projection, and
-    shapes float8 kernels reject (dims not divisible by 16), matching the diffusers FLUX2
-    reference filter."""
+# Small-M linears (conditioning vectors, LTX-2 one-token audio) stay bf16: the float8 / MX casts cost more than the GEMM.
+# final_layer is Krea 2's output projection.
+_LOWP_EXTRA_EXCLUDE_TOKENS = ("final_layer",)
+
+
+def _lowp_exclude_tokens(family: Optional[str] = None) -> tuple[str, ...]:
+    from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
+    return tuple(exclude_tokens_for_scheme("int8", family)) + _LOWP_EXTRA_EXCLUDE_TOKENS
+
+
+def _lowp_module_filter(
+    mod,
+    fqn: str,
+    align: int,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
     import torch.nn as nn
 
     if not isinstance(mod, nn.Linear):
@@ -385,93 +454,245 @@ def _fp8_module_filter(mod, fqn: str) -> bool:
         return False
     if fqn.endswith("proj_out") or ".proj_out." in fqn:
         return False
-    return mod.in_features % 16 == 0 and mod.out_features % 16 == 0
+    name = fqn.lower()
+    if any(tok in name for tok in exclude_tokens):
+        return False
+    return mod.in_features % align == 0 and mod.out_features % align == 0
 
 
-def _fp8_training_config():
-    """The float8 training config: per-ROW (rowwise) scaling when this torchao build ships the
-    recipe, else the tensorwise default. The DiT families carry extreme activation outliers
-    (Z-Image MLP activations peak near 6.6e4, the same range that forced per-row scaling in the
-    inference quant layer): one tensor-wide dynamic scale pushes normal values (~1-30) below fp8
-    resolution, so the frozen base's forward -- the signal the LoRA regresses against --
-    degrades. Per-row scaling confines each outlier to its own token/channel. The tensorwise
-    fallback keeps pad_inner_dim so a non-16-aligned inner dim never aborts the scaled_mm (the
-    rowwise recipe manages its own padding rules and rejects the knob, hence the split)."""
-    from torchao.float8 import Float8LinearConfig
+def _fp8_module_filter(
+    mod,
+    fqn: str,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
+    """Dims divisible by 16 (the diffusers FLUX2 reference filter)."""
+    return _lowp_module_filter(mod, fqn, 16, exclude_tokens)
+
+
+def _in_repeated_blocks(transformer, module_filter):
+    """Restrict the filter to the regionally compiled ``_repeated_blocks`` (if any)."""
+    names = set(getattr(transformer, "_repeated_blocks", None) or ())
+    prefixes = tuple(
+        f"{fqn}." for fqn, mod in transformer.named_modules() if mod.__class__.__name__ in names
+    )
+    if not prefixes:
+        return module_filter
+    return lambda mod, fqn: fqn.startswith(prefixes) and module_filter(mod, fqn)
+
+
+def _lowp_targets(transformer, base_filter, family: Optional[str]) -> list:
+    tokens = _lowp_exclude_tokens(family)
+    keep = _in_repeated_blocks(transformer, lambda mod, fqn: base_filter(mod, fqn, tokens))
+    return [
+        (fqn, mod)
+        for fqn, mod in transformer.named_modules()
+        if not getattr(mod, "_studio_lowp", None) and keep(mod, fqn)
+    ]
+
+
+def _require_lowp_modules(transformer, mode: str) -> bool:
+    """Raises when nothing converted (FLUX.1 / LTX-2 on torchao 0.17, all biased), so bf16 is recorded."""
+    if not any(getattr(mod, "_studio_lowp", None) == mode for mod in transformer.modules()):
+        raise RuntimeError("no eligible linear layers")
+    return True
+
+
+def _convert_fp8(transformer, family: Optional[str] = None) -> bool:
+    """Frozen base linears to weight-cached fp8 (``diffusion_frozen_fp8``): rowwise float scales, as DiT activation
+    outliers (Z-Image ~2.7e6) crush a tensorwise one."""
+    from core.training.diffusion_frozen_fp8 import convert_frozen_fp8
+
+    _, failed = convert_frozen_fp8(
+        transformer, {fqn for fqn, _ in _lowp_targets(transformer, _fp8_module_filter, family)}
+    )
+    transformer._studio_fp8_failed = failed
+    return _require_lowp_modules(transformer, "fp8")
+
+
+def _probe_lowp(convert, transformer) -> None:
+    """Tiny converted Linear fwd + bwd so an unverified arch falls back to bf16 at load, not mid-run.
+    48 rows: not a multiple of 16 / 32."""
+    import torch
+    import torch.nn as nn
+
     try:
-        return Float8LinearConfig.from_recipe_name("rowwise")
-    except Exception:  # noqa: BLE001 -- older torchao without the rowwise recipe
-        return Float8LinearConfig(pad_inner_dim = True)
+        device = next(transformer.parameters()).device
+    except StopIteration:
+        return
+    if device.type != "cuda":
+        return
+
+    class _Probe(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.ff = nn.Linear(64, 64, bias = False)
+
+        def forward(self, x):
+            return self.ff(x)
+
+    # Forked RNG: the probe's init + randn run after the seed and would shift the noise / timestep draws vs bf16.
+    with torch.random.fork_rng(devices = [device]):
+        probe = _Probe().to(device = device, dtype = torch.bfloat16).requires_grad_(False)
+        convert(probe)
+        x = torch.randn(1, 48, 64, device = device, requires_grad = True)
+        with torch.autocast("cuda", dtype = torch.bfloat16):
+            y = probe(x)
+        y.float().sum().backward()
+        torch.cuda.synchronize(device)
+    if not (torch.isfinite(y).all() and torch.isfinite(x.grad).all()):
+        raise RuntimeError("probe GEMM returned non-finite values")
 
 
-def _apply_fp8_training(transformer, on_event) -> bool:
-    """Convert the frozen base linears to torchao float8 training compute (dynamic scaling; weights
-    stay bf16 in memory). Applied AFTER add_adapter so the filter can exclude the LoRA modules.
-    Never fatal: on any failure the run continues in bf16 with a warning."""
+def _apply_fp8_training(
+    transformer,
+    on_event,
+    family: Optional[str] = None,
+) -> bool:
+    """fp8 compute + storage for the frozen base, after add_adapter. Never fatal: falls back to bf16."""
+    from core.training.diffusion_fp8_prequant import dequantize_placeholders
     try:
-        from torchao.float8 import convert_to_float8_training
-        convert_to_float8_training(
-            transformer,
-            module_filter_fn = _fp8_module_filter,
-            config = _fp8_training_config(),
-        )
-        return True
+        _probe_lowp(_convert_fp8, transformer)
+        converted = _convert_fp8(transformer, family)
+        # A prequant base's fp8 layers the conversion did not take stay bf16, as on the dense path.
+        dequantize_placeholders(transformer)
+        failed = getattr(transformer, "_studio_fp8_failed", 0)
+        if failed:
+            _emit(
+                on_event,
+                "warning",
+                message = f"fp8: {failed} layer(s) could not be converted and stay bf16.",
+            )
+        import torch
+
+        device = next(transformer.parameters()).device.type
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        elif device == "xpu":
+            torch.xpu.empty_cache()
+        return converted
     except Exception as exc:  # noqa: BLE001 -- fp8 is an optimisation, never fatal
+        dequantize_placeholders(transformer)
         _emit(on_event, "warning", message = f"fp8 training unavailable, using bf16 compute: {exc}")
         return False
 
 
-def _mx_module_filter(mod, fqn: str) -> bool:
-    """Which frozen linears get mxfp8 training compute: skip anything LoRA-owned (the adapters must
-    stay high precision), the output projection (same guard as fp8), and shapes the 32-wide MX
-    block scaling cannot tile (dims not divisible by 32)."""
-    import torch.nn as nn
-
-    if not isinstance(mod, nn.Linear):
-        return False
-    if "lora_" in fqn:
-        return False
-    if fqn.endswith("proj_out") or ".proj_out." in fqn:
-        return False
-    # Skip biased linears: the torchao 0.17 MX path swaps the weight for a wrapper that drops the bias, changing the
-    # output the LoRA regresses against.
-    if getattr(mod, "bias", None) is not None:
-        return False
-    return mod.in_features % 32 == 0 and mod.out_features % 32 == 0
+def _mx_module_filter(
+    mod,
+    fqn: str,
+    exclude_tokens: tuple[str, ...] = (),
+) -> bool:
+    """32-wide MX blocks and a bf16 weight (the MX casts assert it)."""
+    import torch
+    return _lowp_module_filter(mod, fqn, 32, exclude_tokens) and mod.weight.dtype == torch.bfloat16
 
 
 def _mxfp8_training_config():
-    """The torchao MX training config across the prototype API's revisions: torchao 0.16 ships
-    ``MXLinearConfig`` in ``prototype.mx_formats``; 0.17 removed it in favour of the
-    ``MXFP8TrainingOpConfig`` recipe API shared with MoE training. Both feed ``quantize_``.
-    Raises ImportError when neither API exists (mxfp8 then falls back to bf16)."""
+    """RCEIL MX config: torchao 0.14-0.16 ``MXLinearConfig``, else 0.17+ with hp wgrad: torchao computes grad_weight
+    even for a frozen weight, and its dim1 cast asserts tokens % 32 == 0 (the gradient is discarded anyway)."""
     try:
         from torchao.prototype.mx_formats import MXLinearConfig
-        return MXLinearConfig.from_recipe_name("mxfp8_cublas")
+        return MXLinearConfig.from_recipe_name("mxfp8_cublas_rceil")
     except ImportError:
         from torchao.prototype.moe_training.config import (
             MXFP8TrainingOpConfig,
             MXFP8TrainingRecipe,
         )
-        return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL)
+        return MXFP8TrainingOpConfig.from_recipe(MXFP8TrainingRecipe.MXFP8_RCEIL_WGRAD_WITH_HP)
 
 
-def _apply_mxfp8_training(transformer, on_event) -> bool:
-    """Swap the frozen base linears to torchao MX float8 training compute (mxfp8, the
-    Blackwell-native block-scaled format; the swap is in place and the weights stay bf16 in
-    memory, so like fp8 this is a speed mode, not a memory mode). Applied AFTER add_adapter so
-    the filter can exclude the LoRA modules. Only competitive under torch.compile and only ahead
-    of compiled bf16 at large token counts (high resolution or batch), which is why it stays an
-    explicit opt-in rather than an "auto" pick. Never fatal: on any failure the run continues in
-    bf16 with a warning."""
+def _mx_linear_class():
     try:
-        from torchao.quantization import quantize_
-        quantize_(
-            transformer,
-            _mxfp8_training_config(),
-            filter_fn = _mx_module_filter,
+        from torchao.prototype.moe_training.mxfp8_linear import MXFP8Linear
+        return MXFP8Linear
+    except ImportError:
+        return None
+
+
+_ROW_PADDED_MX: dict = {}
+
+
+def _row_padded_mx_linear(base_cls):
+    """torchao <= 0.16 MXLinear has no hp wgrad and asserts tokens % 32 == 0: pad zero rows, slice off
+    (MX scales are per block along the feature dim, so real rows are unchanged)."""
+    cls = _ROW_PADDED_MX.get(base_cls)
+    if cls is None:
+        import torch.nn.functional as F
+        def forward(self, x):
+            shape = x.shape
+            rows = x.reshape(-1, shape[-1])
+            m = rows.shape[0]
+            y = base_cls.forward(self, F.pad(rows, (0, 0, 0, (-m) % 32)))[:m]
+            return y.reshape(*shape[:-1], y.shape[-1])
+
+        cls = _ROW_PADDED_MX[base_cls] = type(
+            f"RowPadded{base_cls.__name__}", (base_cls,), {"forward": forward}
         )
-        return True
+    return cls
+
+
+def _autocast_mx_input(module, args):
+    import torch
+
+    x = args[0] if args else None
+    if (
+        isinstance(x, torch.Tensor)
+        and x.dtype == torch.float32
+        and x.is_cuda
+        and torch.is_autocast_enabled("cuda")
+    ):
+        return (x.to(torch.get_autocast_dtype("cuda")), *args[1:])
+    return None
+
+
+def _convert_mxfp8(transformer, family: Optional[str] = None) -> bool:
+    import torch.nn as nn
+
+    config = _mxfp8_training_config()
+    targets = [
+        (fqn, mod)
+        for fqn, mod in _lowp_targets(transformer, _mx_module_filter, family)
+        if type(mod) is nn.Linear
+    ]
+    if not hasattr(config, "wgrad_with_hp"):
+        from torchao.quantization import quantize_
+
+        names = {fqn for fqn, _ in targets}
+        quantize_(transformer, config, filter_fn = lambda mod, fqn: fqn in names)
+        for _, mod in targets:
+            mod.__class__ = _row_padded_mx_linear(mod.__class__)
+    else:
+        linear_cls = _mx_linear_class()
+        if linear_cls is not None:
+            for _, mod in targets:
+                mod.__class__ = linear_cls
+                mod.kernel_preference = config.kernel_preference
+                mod.scale_calculation_mode = config.scale_calculation_mode
+                mod.wgrad_with_hp = config.wgrad_with_hp
+        else:
+            from torchao.quantization import quantize_
+
+            targets = [(fqn, mod) for fqn, mod in targets if mod.bias is None]
+            names = {fqn for fqn, _ in targets}
+            quantize_(transformer, config, filter_fn = lambda mod, fqn: fqn in names)
+        # The MX linear asserts bf16 input above autocast (fp32 LayerNorm output into FLUX.2 ff.linear_in raised).
+        for _, mod in targets:
+            mod.register_forward_pre_hook(_autocast_mx_input)
+    for _, mod in targets:
+        mod._studio_lowp = "mxfp8"
+    return _require_lowp_modules(transformer, "mxfp8")
+
+
+def _apply_mxfp8_training(
+    transformer,
+    on_event,
+    family: Optional[str] = None,
+) -> bool:
+    """torchao mxfp8 compute for the frozen base (speed only), after add_adapter; never fatal.
+    0.18+ swaps the class to MXFP8Linear, not ``quantize_``: its wrapper drops the bias (pytorch/ao#4846),
+    so on torchao 0.17 biased linears stay bf16."""
+    try:
+        _probe_lowp(_convert_mxfp8, transformer)
+        return _convert_mxfp8(transformer, family)
     except Exception as exc:  # noqa: BLE001 -- mxfp8 is an optimisation, never fatal
         _emit(on_event, "warning", message = f"mxfp8 training unavailable, using bf16 compute: {exc}")
         return False
@@ -489,8 +710,8 @@ def _pick_auto_precision(
     """Pure policy for base_precision="auto": nf4 for a prequant base or no CUDA; else the fastest
     dense mode whose weights + headroom (activations, optimizer, cache) fit the free VRAM at
     decision time. bf16 + regional compile is the measured speed winner (2.3-2.6x over nf4 on
-    B200); fp8 stays an explicit opt-in because torchao float8's dynamic-scaling overhead made it
-    SLOWER than compiled bf16 at LoRA-training shapes on the same hardware. int8 must still
+    B200); fp8 stays an explicit opt-in: it trades e4m3 rounding (~0.5% loss vs bf16) for ~half the base weight
+    memory and only ~7% speed at LoRA-training shapes. int8 must still
     materialise the full bf16 transformer before ``quantize_`` shrinks it module-by-module, so
     its band requires the dense-load transient (1.15x dense) to fit -- what int8 buys in that
     band is steady-state headroom for activations and the latent cache, not load-time memory.
@@ -573,6 +794,18 @@ def _resolve_base_precision(cfg, spec, device) -> str:
             )
         # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, after a full dense load.
         # Re-check here to fail fast for a stale client.
+        # fp8 needs sm89+ (Ada / Hopper / Blackwell): below it the first float8 _scaled_mm raises inside the loop.
+        if mode == "fp8" and device == "cuda":
+            try:
+                import torch
+                fp8_ok = torch.cuda.get_device_capability() >= (8, 9)
+            except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported, fail fast
+                fp8_ok = False
+            if not fp8_ok:
+                raise ValueError(
+                    "base_precision='fp8' needs an Ada, Hopper or Blackwell (sm89+) GPU; this GPU is "
+                    "older. Use base_precision='bf16', 'int8', 'nf4', or 'auto'."
+                )
         if mode == "mxfp8" and device == "cuda":
             try:
                 import torch
@@ -686,28 +919,45 @@ def _flux_collate(
 _FLUX_STATIC: dict[tuple, tuple] = {}
 
 
-def _flux_static_inputs(bsz, h, w, device):
+def _flux_static_inputs(
+    bsz,
+    h,
+    w,
+    device,
+    guidance_value = 1.0,
+):
     import torch
     from diffusers import FluxPipeline
 
-    key = (bsz, h, w, str(device))
+    key = (bsz, h, w, str(device), float(guidance_value))
     hit = _FLUX_STATIC.get(key)
     if hit is None:
         # Position ids drive RoPE and are indices, not activations, so keep them float32 regardless of the training
         # dtype.
         img_ids = FluxPipeline._prepare_latent_image_ids(bsz, h // 2, w // 2, device, torch.float32)
-        guidance = torch.full((bsz,), 1.0, device = device, dtype = torch.float32)
+        guidance = torch.full((bsz,), float(guidance_value), device = device, dtype = torch.float32)
         hit = _FLUX_STATIC[key] = (img_ids, guidance)
     return hit
 
 
-def _flux_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+def _flux_forward(
+    transformer,
+    noisy,
+    timesteps,
+    sigmas,
+    embeds_batch,
+    cfg,
+    device,
+    weight_dtype,
+    guidance = 1.0,
+):
     from diffusers import FluxPipeline
 
     pe, pooled, text_ids = embeds_batch
     bsz, c, h, w = noisy.shape
     packed = FluxPipeline._pack_latents(noisy, bsz, c, h, w)
-    img_ids, guidance = _flux_static_inputs(bsz, h, w, device)
+    # Training feeds guidance 1.0 (diffusers dreambooth convention); sampling feeds the inference 3.5.
+    img_ids, guidance = _flux_static_inputs(bsz, h, w, device, guidance)
     model_pred = transformer(
         hidden_states = packed,
         timestep = timesteps / 1000,
@@ -1125,7 +1375,17 @@ def _flux2_static_img_ids(latents, device):
     return hit
 
 
-def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+def _flux2_forward(
+    transformer,
+    noisy,
+    timesteps,
+    sigmas,
+    embeds_batch,
+    cfg,
+    device,
+    weight_dtype,
+    guidance_value = None,
+):
     import torch
     from diffusers import Flux2Pipeline
 
@@ -1137,7 +1397,10 @@ def _flux2_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, dev
     guidance = None
     if getattr(transformer.config, "guidance_embeds", False):
         guidance = torch.full(
-            (noisy.shape[0],), _FLUX2_TRAIN_GUIDANCE, device = device, dtype = torch.float32
+            (noisy.shape[0],),
+            _FLUX2_TRAIN_GUIDANCE if guidance_value is None else guidance_value,
+            device = device,
+            dtype = torch.float32,
         )
     pred = transformer(
         hidden_states = packed,
@@ -1381,6 +1644,40 @@ def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+def _vae8_latent_shape(vae, height, width):
+    return (1, vae.config.latent_channels, height // 8, width // 8), (height // 16) * (width // 16)
+
+
+def _flux_decode_latents(vae, latents):
+    lat = latents / vae.config.scaling_factor + vae.config.shift_factor
+    return vae.decode(lat.to(vae.dtype)).sample
+
+
+def _qwen_latent_shape(vae, height, width):
+    return (1, vae.config.z_dim, 1, height // 8, width // 8), (height // 16) * (width // 16)
+
+
+def _qwen_decode_latents(vae, latents):
+    mean, std = _qwen_latent_affine(vae, latents)
+    return vae.decode((latents * std + mean).to(vae.dtype)).sample[:, :, 0]
+
+
+def _flux2_latent_shape(vae, height, width):
+    return (1, vae.config.latent_channels * 4, height // 16, width // 16), (height // 16) * (
+        width // 16
+    )
+
+
+def _flux2_decode_latents(vae, latents):
+    import torch
+    from diffusers import Flux2Pipeline
+
+    mean = vae.bn.running_mean.view(1, -1, 1, 1).to(latents)
+    std = torch.sqrt(vae.bn.running_var.view(1, -1, 1, 1) + vae.config.batch_norm_eps).to(latents)
+    lat = Flux2Pipeline._unpatchify_latents(latents * std + mean)
+    return vae.decode(lat.to(vae.dtype)).sample
+
+
 _SPECS: dict[str, _FamilySpec] = {
     "flux.1": _FamilySpec(
         family = "flux.1",
@@ -1395,6 +1692,9 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux_collate,
         forward = _flux_forward,
         save = _flux_save,
+        latent_shape = _vae8_latent_shape,
+        decode_latents = _flux_decode_latents,
+        sample_forward_kwargs = {"guidance": 3.5},
     ),
     "qwen-image": _FamilySpec(
         family = "qwen-image",
@@ -1409,6 +1709,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _qwen_collate,
         forward = _qwen_forward,
         save = _qwen_save,
+        latent_shape = _qwen_latent_shape,
+        decode_latents = _qwen_decode_latents,
     ),
     "z-image": _FamilySpec(
         family = "z-image",
@@ -1423,6 +1725,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _zimage_collate,
         forward = _zimage_forward,
         save = _zimage_save,
+        latent_shape = _vae8_latent_shape,
+        decode_latents = _flux_decode_latents,
     ),
     "krea-2": _FamilySpec(
         family = "krea-2",
@@ -1437,6 +1741,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _krea2_collate,
         forward = _krea2_forward,
         save = _krea2_save,
+        latent_shape = _qwen_latent_shape,
+        decode_latents = _qwen_decode_latents,
     ),
     "flux.2-klein": _FamilySpec(
         family = "flux.2-klein",
@@ -1452,6 +1758,8 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_klein_save,
+        latent_shape = _flux2_latent_shape,
+        decode_latents = _flux2_decode_latents,
     ),
     "flux.2-dev": _FamilySpec(
         family = "flux.2-dev",
@@ -1468,6 +1776,10 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _flux2_collate,
         forward = _flux2_forward,
         save = _flux2_save,
+        latent_shape = _flux2_latent_shape,
+        decode_latents = _flux2_decode_latents,
+        # Flux2Pipeline's default guidance_scale, which Studio's FLUX.2-dev inference also uses.
+        sample_forward_kwargs = {"guidance_value": 4.0},
     ),
     "ltx-2": _FamilySpec(
         family = "ltx-2",
@@ -1509,15 +1821,22 @@ def _assert_gated_access(base_model: str, hf_token: Optional[str]) -> None:
         )
 
 
+def _canvas(resolution):
+    """(w, h) of the training canvas: a bucket tuple, or the legacy square ``resolution``."""
+    if isinstance(resolution, (tuple, list)):
+        return int(resolution[0]), int(resolution[1])
+    return int(resolution), int(resolution)
+
+
 def _open_resized(path, resolution):
-    """Open + EXIF-orient + short-side resize to ``resolution`` (same geometry as the SDXL loader).
-    Returns the resized PIL image and its (rw, rh)."""
+    """Open + EXIF-orient + cover-resize to the canvas (same geometry as the SDXL loader; a square
+    canvas is the legacy short-side resize). Returns the resized PIL image and its (rw, rh)."""
     from PIL import Image, ImageOps
 
-    img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
-    w0, h0 = img.size
-    scale = resolution / min(w0, h0)
-    rw, rh = max(resolution, round(w0 * scale)), max(resolution, round(h0 * scale))
+    from core.inference.mcp_images import flattened_rgb
+
+    img = flattened_rgb(ImageOps.exif_transpose(Image.open(path)), background = (255, 255, 255))
+    rw, rh = cover_resize_dims(*img.size, *_canvas(resolution))
     return img.resize((rw, rh), Image.LANCZOS), rw, rh
 
 
@@ -1534,13 +1853,14 @@ def _load_pixel_tensor(path, resolution, center_crop, random_flip, rng):
     without the SDXL time-ids (DiT families don't use them)."""
     from PIL import Image
 
+    cw, ch = _canvas(resolution)
     img, rw, rh = _open_resized(path, resolution)
     if center_crop:
-        left, top = (rw - resolution) // 2, (rh - resolution) // 2
+        left, top = (rw - cw) // 2, (rh - ch) // 2
     else:
-        left = rng.randint(0, max(0, rw - resolution))
-        top = rng.randint(0, max(0, rh - resolution))
-    img = img.crop((left, top, left + resolution, top + resolution))
+        left = rng.randint(0, max(0, rw - cw))
+        top = rng.randint(0, max(0, rh - ch))
+    img = img.crop((left, top, left + cw, top + ch))
     if random_flip and rng.random() < 0.5:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
     return _to_unit_tensor(img)
@@ -1553,13 +1873,14 @@ def _load_pixel_tensor_planned(path, resolution, center_crop, u_left, u_top, fli
     center-crop run matches the uncached one bit-for-bit."""
     from PIL import Image
 
+    cw, ch = _canvas(resolution)
     img, rw, rh = _open_resized(path, resolution)
     if center_crop:
-        left, top = (rw - resolution) // 2, (rh - resolution) // 2
+        left, top = (rw - cw) // 2, (rh - ch) // 2
     else:
-        left = min(int(u_left * (rw - resolution + 1)), max(0, rw - resolution))
-        top = min(int(u_top * (rh - resolution + 1)), max(0, rh - resolution))
-    img = img.crop((left, top, left + resolution, top + resolution))
+        left = min(int(u_left * (rw - cw + 1)), max(0, rw - cw))
+        top = min(int(u_top * (rh - ch + 1)), max(0, rh - ch))
+    img = img.crop((left, top, left + cw, top + ch))
     if flip:
         img = img.transpose(Image.FLIP_LEFT_RIGHT)
     return _to_unit_tensor(img)
@@ -1576,6 +1897,7 @@ def _build_latent_cache(
     check_stop,
     pcache = None,
     plan = None,
+    canvases = None,
 ):
     """Precompute the per-image latent posterior cache: for each planned crop/flip variant, encode
     once and store the affine (A, B) pair on CPU (pinned when possible) in fp32. The stats stay
@@ -1612,15 +1934,18 @@ def _build_latent_cache(
     for i, path in enumerate(image_paths):
         variants = []
         for u_left, u_top, flip in plan[i]:
-            key = pcache.latent_key(path, (u_left, u_top, flip)) if pcache is not None else None
+            canvas = cfg.resolution if canvases is None else canvases[i]
+            key = (
+                pcache.latent_key(path, (u_left, u_top, flip), None if canvases is None else canvas)
+                if pcache is not None
+                else None
+            )
             entry = pcache.get(key) if key is not None else None
             if entry is not None:
                 a, b = entry
             else:
                 px = (
-                    _load_pixel_tensor_planned(
-                        path, cfg.resolution, cfg.center_crop, u_left, u_top, flip
-                    )
+                    _load_pixel_tensor_planned(path, canvas, cfg.center_crop, u_left, u_top, flip)
                     .unsqueeze(0)
                     .to(device)
                 )
@@ -1684,7 +2009,14 @@ def _encode_prompts_cached(spec, pipe, to_encode, device, pcache):
     return [hits[cap] for cap in to_encode]
 
 
-def _load_warm_conditioning(pcache, image_paths, plan, to_encode, device):
+def _load_warm_conditioning(
+    pcache,
+    image_paths,
+    plan,
+    to_encode,
+    device,
+    canvases = None,
+):
     """Load the FULL conditioning set (caption embeds + latent posterior stats) from the persistent
     cache. Returns (caption_embeds, latent_cache) on a complete hit, else (None, None) so the
     caller takes the cold path -- any missing/corrupt entry, and also an in-memory holding that
@@ -1717,7 +2049,9 @@ def _load_warm_conditioning(pcache, image_paths, plan, to_encode, device):
     for i, path in enumerate(image_paths):
         variants = []
         for variant in plan[i]:
-            entry = pcache.get(pcache.latent_key(path, variant))
+            entry = pcache.get(
+                pcache.latent_key(path, variant, None if canvases is None else canvases[i])
+            )
             if entry is None:
                 return None, None
             a, b = entry
@@ -1759,6 +2093,7 @@ def _should_compile(
     base_is_bnb,
     device,
     base_precision = "nf4",
+    steps_left = None,
 ) -> bool:
     mode = (cfg.compile_transformer or "auto").strip().lower()
     if device != "cuda" or mode == "off":
@@ -1769,9 +2104,33 @@ def _should_compile(
         return False
     if mode == "on":
         return True
-    # Regional compile is the whole point of the dense modes (2.6x measured on Z-Image bf16) but is fragile over
-    # bitsandbytes 4-bit modules, so it stays off for QLoRA.
+    if base_precision == "nf4":
+        steps = cfg.train_steps if steps_left is None else steps_left
+        return steps >= NF4_COMPILE_MIN_STEPS and _nf4_compile_supported()
     return base_precision in ("bf16", "fp8", "mxfp8")
+
+
+# Lowest stack where bnb 4-bit ops are torch custom ops (0 graph breaks, loss matches eager); ROCm unmeasured, stays eager.
+NF4_COMPILE_MIN_TORCH = "2.10"
+NF4_COMPILE_MIN_BNB = "0.46.1"
+# The nf4 compile only pays back after a few hundred steps, so a short run stays eager.
+NF4_COMPILE_MIN_STEPS = 200
+
+
+def _nf4_compile_supported() -> bool:
+    try:
+        import importlib.metadata
+
+        import torch
+        from packaging.version import Version
+
+        if torch_is_rocm():
+            return False
+        if Version(torch.__version__) < Version(NF4_COMPILE_MIN_TORCH):
+            return False
+        return Version(importlib.metadata.version("bitsandbytes")) >= Version(NF4_COMPILE_MIN_BNB)
+    except Exception:  # noqa: BLE001 -- unknown versions keep the historical eager path
+        return False
 
 
 def _maybe_compile_transformer(
@@ -1781,12 +2140,13 @@ def _maybe_compile_transformer(
     device,
     on_event,
     base_precision = "nf4",
+    steps_left = None,
 ) -> bool:
     """Regionally compile the transformer blocks (diffusers compile_repeated_blocks) after the LoRA
     is attached. Never fatal: a wrap failure falls back to eager with a warning event, and
     dynamo's suppress_errors keeps a frame that fails to COMPILE at the first step running eager
     instead of raising mid-run."""
-    if not _should_compile(cfg, base_is_bnb, device, base_precision):
+    if not _should_compile(cfg, base_is_bnb, device, base_precision, steps_left):
         if base_precision in ("fp8", "mxfp8"):
             _emit(
                 on_event,
@@ -1817,11 +2177,46 @@ def _maybe_compile_transformer(
                 dynamo_cfg.suppress_errors = True
         # dynamic=True matches the inference speed layer: on torch 2.10 / B200 the dynamic=False specialisation failed
         # with CUBLAS_STATUS_EXECUTION_FAILED.
+        try:
+            # torch 2.12 / 2.13 inductor CantSplit in the dynamic joint-stream cat backward (FLUX.1 fp8); probe-gated.
+            from core.inference.diffusion_inductor_backports import install as _install_backports
+            _install_backports()
+        except Exception:  # noqa: BLE001 -- the backport is best-effort
+            pass
         fn(fullgraph = not base_is_bnb, dynamic = True)
         return True
     except Exception as exc:  # noqa: BLE001 -- optimisation only, never fatal
         _emit(on_event, "warning", message = f"torch.compile disabled (eager fallback): {exc}")
         return False
+
+
+def _dynamo_compile_counters() -> Optional[tuple[int, int, int]]:
+    """(graph breaks, failed frames, unique graphs), or None."""
+    try:
+        from torch._dynamo.utils import counters
+        frames = counters["frames"]
+        return (
+            sum(counters["graph_break"].values()),
+            frames["total"] - frames["ok"],
+            counters["stats"]["unique_graphs"],
+        )
+    except Exception:  # noqa: BLE001 -- diagnostics only
+        return None
+
+
+def _compile_engagement_warning(before, after) -> Optional[str]:
+    """Why compiled blocks run eager since ``before`` (suppress_errors hides failures), else None."""
+    if before is None or after is None:
+        return None
+    breaks, failed, graphs = (a - b for a, b in zip(after, before))
+    if breaks > 0 or failed > 0:
+        return (
+            f"torch.compile did not fully engage ({breaks} graph break(s), {failed} frame(s) "
+            f"fell back to eager): training continues, slower than compiled."
+        )
+    if graphs <= 0:
+        return "torch.compile produced no graphs: the transformer blocks are running eager."
+    return None
 
 
 def run_dit_lora_training(
@@ -1835,7 +2230,7 @@ def run_dit_lora_training(
     LR position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle, and
     the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
     ``cfg.save_steps`` interval write such a bundle."""
-    cfg = config.normalized()
+    cfg = resolve_bucketing(config.normalized())
     spec = _SPECS.get(cfg.resolved_family)
     if spec is None:
         raise ValueError(f"No DiT trainer for family {cfg.resolved_family!r}")
@@ -1891,7 +2286,11 @@ def run_dit_lora_training(
     )
     # Resolve num_epochs into a concrete train_steps now the dataset size is known, and rebind cfg so every downstream
     # read agrees.
-    cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
+    cfg = replace(
+        cfg,
+        train_steps = resolve_train_steps(cfg, len(pairs), [p for p, _ in pairs]),
+        num_epochs = 0,
+    )
     # Validate a resume against this run's identity BEFORE the multi-GB phased load, using the RESOLVED LoRA targets
     # rather than the generic default the config carries.
     identity = identity_for_config(
@@ -1975,6 +2374,12 @@ def _train_dit(
     # the captions (the encoders are freed right after).
     cfg_dropout = float(getattr(cfg, "cfg_dropout", 0.0) or 0.0)
     to_encode = uniq + ([""] if cfg_dropout > 0 and "" not in uniq else [])
+    # Own dict: caption_embeds sizes the qwen compile pad bucket, which a long preview prompt must not grow.
+    sample_plan = plan_samples(cfg, spec.family, captions) if spec.decode_latents else None
+    sample_texts = sample_plan.encode_texts if sample_plan is not None else []
+    sample_embeds: dict = {}
+    # Kept past a failed round (which drops sample_plan) so a discard still removes what was written.
+    sample_owner = sample_plan
     use_cache = cfg.cache_latents and os.environ.get(
         "UNSLOTH_DIFFUSION_NO_LATENT_CACHE", ""
     ) not in ("1", "true")
@@ -1990,8 +2395,14 @@ def _train_dit(
             _emit(on_event, "warning", message = f"conditioning cache disabled: {exc}")
     # The crop/flip variant plan is seed-deterministic, so persistent keys are stable across runs and the warm check
     # can run before anything loads.
+    canvases, crop_room = plan_image_canvases(cfg, image_paths)
     plan = _plan_cache_variants(
-        len(image_paths), cfg.cache_variants, cfg.center_crop, cfg.random_flip, cfg.seed
+        len(image_paths),
+        cfg.cache_variants,
+        cfg.center_crop,
+        cfg.random_flip,
+        cfg.seed,
+        crop_room = crop_room,
     )
 
     pipe = None
@@ -2002,7 +2413,7 @@ def _train_dit(
     latent_cache = None
     if pcache is not None and use_cache:
         caption_embeds, latent_cache = _load_warm_conditioning(
-            pcache, image_paths, plan, to_encode, device
+            pcache, image_paths, plan, to_encode, device, canvases
         )
         if caption_embeds is not None:
             _emit(
@@ -2012,11 +2423,22 @@ def _train_dit(
                 done = len(image_paths),
                 total = len(image_paths),
             )
+    if caption_embeds is not None and sample_texts:
+        # Warm conditioning skips the VAE and encoders, but previews need the VAE and their own embeddings. RNG-isolated:
+        # a run without previews never makes this load, so it must not move the training streams.
+        with isolated_sampling(device, False):
+            pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
+            encoded = _encode_prompts_cached(spec, pipe, sample_texts, device, pcache)
+        sample_embeds = dict(zip(sample_texts, encoded))
+        _free_text_encoders(pipe)
     if caption_embeds is None:
         latent_cache = None
         pipe, vae = spec.load_conditioners(fetch_cfg, device, weight_dtype)
-        encoded = _encode_prompts_cached(spec, pipe, to_encode, device, pcache)
+        extra = [t for t in sample_texts if t not in to_encode]
+        encoded = _encode_prompts_cached(spec, pipe, to_encode + extra, device, pcache)
         caption_embeds = {cap: emb for cap, emb in zip(to_encode, encoded)}
+        all_embeds = dict(zip(to_encode + extra, encoded))
+        sample_embeds = {t: all_embeds[t] for t in sample_texts}
         _free_text_encoders(pipe)
         gc.collect()
         if device == "cuda":
@@ -2037,6 +2459,7 @@ def _train_dit(
                 _check_stop,
                 pcache = pcache,
                 plan = plan,
+                canvases = canvases,
             )
             if latent_cache is LATENT_CACHE_OVER_BUDGET:
                 # The estimated cache exceeded the host-memory budget; keep the VAE resident and fall through to the
@@ -2054,6 +2477,10 @@ def _train_dit(
                     discarded = not _save_on_stop(),
                 )
                 return str(out_dir)
+    # VAE parked on the host between rounds when the latent cache would have freed it: training VRAM unchanged.
+    sample_vae = vae if sample_plan is not None else None
+    if sample_vae is not None and latent_cache is not None:
+        sample_vae.to("cpu")
     if latent_cache is not None and vae is not None:
         try:
             pipe.vae = None
@@ -2086,13 +2513,7 @@ def _train_dit(
         )
     )
     if cfg.gradient_checkpointing:
-        # Non-reentrant checkpointing: reentrant recompute of a bnb 4-bit LoRA linear can trip an illegal memory
-        # access on the larger FLUX transformer, and it is the recommended mode anyway.
-        import functools
-        import torch.utils.checkpoint as _ckpt
-        transformer.enable_gradient_checkpointing(
-            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
-        )
+        enable_diffusion_gradient_checkpointing(transformer)
     cast_training_params(transformer, dtype = torch.float32)
     lora_params = [p for p in transformer.parameters() if p.requires_grad]
 
@@ -2100,17 +2521,28 @@ def _train_dit(
     # and stay high precision.
     if base_precision == "int8":
         _int8_quantize_base(transformer, cfg.resolved_family)
-    if base_precision == "fp8" and not _apply_fp8_training(transformer, on_event):
+    if base_precision == "fp8" and not _apply_fp8_training(
+        transformer, on_event, cfg.resolved_family
+    ):
         base_precision = "bf16"
-    if base_precision == "mxfp8" and not _apply_mxfp8_training(transformer, on_event):
+    if base_precision == "mxfp8" and not _apply_mxfp8_training(
+        transformer, on_event, cfg.resolved_family
+    ):
         base_precision = "bf16"
 
     # LoRA EMA (opt-in via cfg.ema_decay): shadows ONLY the trainable adapter params, initialised after the precision
     # conversions so they track the final fp32 objects.
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
 
+    # A resume runs only the remaining steps, so the nf4 compile break-even is judged on those.
     compiled = _maybe_compile_transformer(
-        transformer, cfg, base_is_bnb, device, on_event, base_precision
+        transformer,
+        cfg,
+        base_is_bnb,
+        device,
+        on_event,
+        base_precision,
+        resume_steps_left(cfg, identity),
     )
     # Compiled Qwen graphs need one fixed text length across steps: pin the pad bucket to the dataset's longest
     # caption.
@@ -2118,14 +2550,16 @@ def _train_dit(
     if compiled and spec.family == "qwen-image":
         qwen_pad_to = max(e[0].shape[1] for e in caption_embeds.values())
 
-    optimizer = _make_optimizer(lora_params, cfg.learning_rate)
+    optimizer = _make_optimizer(
+        lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
+    )
     scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
         fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
     )
     # getattr defaults keep an un-normalized config on the historical behaviour.
     flow_shift = getattr(cfg, "flow_shift", None)
-    if flow_shift is None:
-        flow_shift = "auto" if spec.family in AUTO_FLOW_SHIFT_FAMILIES else 1.0
+    if flow_shift is None and spec.family in AUTO_FLOW_SHIFT_FAMILIES:
+        flow_shift = "auto"
     sigma_table = _training_sigma_table(scheduler, flow_shift)
     shift_active = sigma_table is not scheduler.sigmas
     num_train_ts = scheduler.config.num_train_timesteps
@@ -2159,8 +2593,12 @@ def _train_dit(
     n_images = len(image_paths)
     batch_size = cfg.train_batch_size
     # Permutation-cycle index sampler (shared with the SDXL trainer): visits every image once per cycle, so a short
-    # run covers the whole dataset.
-    index_sampler = PermutationBatchSampler(n_images, rng)
+    # run covers the whole dataset. Bucketed runs draw each batch from one bucket so its latents stack into one shape.
+    index_sampler = (
+        PermutationBatchSampler(n_images, rng)
+        if canvases is None
+        else BucketBatchSampler(bucket_groups(canvases), rng)
+    )
 
     # Restore a previous run (adapter, optimizer moments, LR position, EMA shadow, sampler cycle, RNG streams) before
     # the loop, so it picks up at `resumed + 1`. None for a fresh run.
@@ -2202,6 +2640,7 @@ def _train_dit(
     peak_gb = 0.0
     t_start = time.time()
     t_steady = None
+    t_rate = t_start
     # Starts at the resumed step so a no-op resume still reports the real step.
     done = resumed
 
@@ -2236,11 +2675,95 @@ def _train_dit(
         if device in ("cuda", "xpu")
         else nullcontext()
     )
+
+    def _render_dit(index, prompt):
+        shape, seq_len = spec.latent_shape(
+            sample_vae, sample_plan.resolution, sample_plan.resolution
+        )
+        extra = spec.sample_forward_kwargs or {}
+
+        def velocity(x, t, sig, embeds):
+            with autocast:
+                return spec.forward(
+                    transformer, x, t, sig, embeds, cfg, device, weight_dtype, **extra
+                )
+
+        cond = spec.collate([sample_embeds[prompt]], device, weight_dtype)
+        uncond = (
+            spec.collate([sample_embeds[""]], device, weight_dtype)
+            if sample_plan.uses_cfg
+            else None
+        )
+        latents = euler_flow_sample(
+            plan = sample_plan,
+            index = index,
+            latent_shape = shape,
+            image_seq_len = seq_len,
+            family = spec.family,
+            scheduler_config = scheduler.config,
+            velocity = velocity,
+            cond = cond,
+            uncond = uncond,
+            device = device,
+            weight_dtype = weight_dtype,
+            stop_requested = _stop_during_sample,
+        )
+        return spec.decode_latents(sample_vae, latents.to(next(sample_vae.parameters()).device))
+
+    # The stop poll drains the request, so one seen mid-round is latched here for the loop to act on.
+    stop_latched = False
+
+    def _stop_during_sample() -> bool:
+        nonlocal stop_latched
+        if not stop_latched and _check_stop():
+            stop_latched = True
+        return stop_latched
+
+    def _sample(step: int) -> None:
+        nonlocal sample_plan, t_rate, t_steady
+        if sample_plan is None:
+            return
+        t_round = time.time()
+        parked = next(sample_vae.parameters()).device.type == "cpu"
+        try:
+            with isolated_sampling(device, compiled):
+                transformer.eval()
+                if parked:
+                    sample_vae.to(device)
+                run_sample_round(
+                    sample_plan, step, _render_dit, on_event, _emit, _stop_during_sample
+                )
+        except Exception as exc:  # noqa: BLE001 -- previews are diagnostics, never a reason to lose the run
+            _emit(on_event, "warning", message = f"Sample images disabled after an error: {exc}")
+            sample_plan = None
+        finally:
+            transformer.train()
+            if parked:
+                sample_vae.to("cpu")
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+                elif device == "xpu":
+                    torch.xpu.empty_cache()
+            spent = time.time() - t_round
+            t_rate += spent
+            if t_steady is not None:
+                t_steady += spent
+
+    if sample_plan is not None and resumed < cfg.train_steps:
+        _sample(resumed)
+
+    train_peak = TrainingPeakMemory(device)
+    compile_watch = _dynamo_compile_counters() if compiled else None
     for opt_step in range(resumed, cfg.train_steps):
+        if stop_latched:
+            stopped = True
+            break
         optimizer.zero_grad(set_to_none = True)
         step_loss = 0.0
         for _ in range(cfg.gradient_accumulation_steps):
             idxs = index_sampler.next_batch(batch_size)
+            if canvases is not None:
+                idxs = idxs[1]
             if latent_cache is not None:
                 latents = _sample_cached_latents(
                     latent_cache, idxs, variant_rng, device, weight_dtype
@@ -2249,7 +2772,11 @@ def _train_dit(
                 px = torch.stack(
                     [
                         _load_pixel_tensor(
-                            image_paths[i], cfg.resolution, cfg.center_crop, cfg.random_flip, rng
+                            image_paths[i],
+                            cfg.resolution if canvases is None else canvases[i],
+                            cfg.center_crop,
+                            cfg.random_flip,
+                            rng,
                         )
                         for i in idxs
                     ]
@@ -2314,14 +2841,18 @@ def _train_dit(
         if ran_here == 1:
             # Step 1 pays the one-time costs (cudnn autotune, compile warmup), so the reported rate starts after it.
             t_steady = now
+        if compile_watch is not None:
+            reason = _compile_engagement_warning(compile_watch, _dynamo_compile_counters())
+            if reason:
+                _emit(on_event, "warning", message = reason)
+                compile_watch = None
         if done % cfg.log_every == 0 or done == cfg.train_steps:
-            if device == "cuda":
-                peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+            peak_gb = train_peak.gb()
             per_step = batch_size * cfg.gradient_accumulation_steps
             if t_steady is not None and ran_here > 1:
                 sps = round((ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3)
             else:
-                sps = round(ran_here * per_step / max(now - t_start, 1e-6), 3)
+                sps = round(ran_here * per_step / max(now - t_rate, 1e-6), 3)
             _emit(
                 on_event,
                 "progress",
@@ -2335,6 +2866,11 @@ def _train_dit(
                 peak_memory_gb = peak_gb or None,
             )
         stop_now = _check_stop()
+        if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+            train_peak.pause()
+            _sample(done)
+            train_peak.resume()
+            stop_now = stop_latched
         # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
         if (
             not stop_now
@@ -2381,6 +2917,7 @@ def _train_dit(
         # the optimizer state in a directory the user got no artifact from: invisible to every scanner, unresumable,
         # with no delete path in the UI.
         clear_own_checkpoints(out_dir, preexisting_checkpoints)
+        discard_samples(sample_owner)
         try:
             out_dir.rmdir()
         except OSError:
@@ -2406,31 +2943,12 @@ def _train_dit(
     return str(out_dir)
 
 
-def _make_optimizer(params, lr):
-    """8-bit AdamW (bitsandbytes) when available -- half the optimizer state, no accuracy regression
-    for LoRA -- else torch AdamW, fused on CUDA (with a fallback when this build/device lacks the
-    fused kernel). UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW, as it does for
-    SDXL: the accuracy guard wants the reference optimizer, and a host where the override means
-    one thing for one trainer and nothing for the other cannot answer "can this checkpoint be
-    resumed here" before the run starts."""
-    import torch
-
-    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
-        return torch.optim.AdamW(params, lr = lr)
-    # Checked before construction, not around it: on XPU the 8-bit optimizer builds fine and
-    # only dies at the first step(), which the except below would never see.
-    if bitsandbytes_optimizer_supported():
-        try:
-            import bitsandbytes as bnb
-            return bnb.optim.AdamW8bit(params, lr = lr)
-        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
-            pass
-    if torch.cuda.is_available():
-        try:
-            return torch.optim.AdamW(params, lr = lr, fused = True)
-        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
-            pass
-    return torch.optim.AdamW(params, lr = lr)
+def _make_optimizer(
+    params,
+    lr,
+    resume_optimizer_class = None,
+):
+    return make_lora_optimizer(params, lr, resume_optimizer_class)
 
 
 def _free_text_encoders(pipe) -> None:

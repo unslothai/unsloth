@@ -3,6 +3,12 @@
 mod app_layout;
 mod app_menu;
 mod browser_capture;
+#[cfg(target_os = "macos")]
+mod browser_context_downloads;
+mod browser_downloads;
+#[cfg(target_os = "macos")]
+mod browser_layer;
+mod browser_open_with;
 mod browser_proxy;
 mod browser_webview;
 mod commands;
@@ -30,6 +36,7 @@ mod native_path_policy;
 mod preflight;
 mod process;
 mod process_identity;
+mod shell_path;
 mod staged_update;
 mod update;
 mod webview_permissions;
@@ -2172,7 +2179,7 @@ fn main() {
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
-    let _ = fix_path_env::fix();
+    shell_path::fix_path();
 
     setup_logging();
     log_panics();
@@ -2240,6 +2247,7 @@ fn main() {
         .manage(native_file_dialogs::ChatImportRegistry::default())
         .manage(native_file_dialogs::NativeSaveRegistry::default())
         .manage(browser_webview::new_browser_views())
+        .manage(browser_downloads::new_browser_downloads())
         .invoke_handler(tauri::generate_handler![
             app_menu::set_app_menu_actions,
             browser_webview::browser_view_supported,
@@ -2248,10 +2256,29 @@ fn main() {
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,
             browser_webview::browser_view_find,
+            browser_webview::browser_view_annotate,
+            browser_webview::browser_view_agent,
+            browser_webview::browser_view_eval,
             browser_webview::browser_view_close,
             browser_webview::browser_view_clear_data,
             browser_webview::browser_view_mute,
+            browser_webview::browser_view_layered,
+            browser_webview::browser_view_input,
             browser_capture::browser_capture,
+            browser_downloads::browser_download_save,
+            browser_downloads::browser_download_reveal,
+            browser_downloads::browser_download_open,
+            browser_downloads::browser_download_exists,
+            browser_downloads::browser_download_forget,
+            browser_downloads::browser_download_decide,
+            browser_downloads::browser_download_folder,
+            browser_downloads::browser_download_folder_pick,
+            browser_downloads::browser_download_folder_reset,
+            browser_open_with::browser_file_local_copy,
+            browser_open_with::browser_file_apps,
+            browser_open_with::browser_file_open,
+            browser_open_with::browser_file_path,
+            browser_open_with::browser_file_reveal,
             browser_capture::browser_view_print,
             set_training_active,
             set_renderer_activity,
@@ -2370,6 +2397,19 @@ fn main() {
             setup_unix_termination_signals(app)?;
             Ok(())
         })
+        .on_webview_event(|webview, event| {
+            // The multi-webview runtime delivers OS drops to the webview, not the window.
+            // Browser page drops must not authorize paths for Studio's native intake.
+            if webview.label() == "main" {
+                if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) =
+                    event
+                {
+                    webview
+                        .state::<native_intents::NativeIntakeState>()
+                        .note_dropped_paths(paths);
+                }
+            }
+        })
         .on_window_event(|window, event| {
             if window.label() == "main" {
                 match event {
@@ -2381,13 +2421,6 @@ fn main() {
                     }
                     _ => {}
                 }
-            }
-            // Record real drops here, in Rust, so the renderer can only register paths the
-            // OS actually handed to the native intake commands.
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
-                window
-                    .state::<native_intents::NativeIntakeState>()
-                    .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 // Never close directly: the only window, so closing exits before the reap.

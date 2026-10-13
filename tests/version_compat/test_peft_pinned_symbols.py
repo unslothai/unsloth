@@ -21,6 +21,7 @@ PEFT_TAGS = [
     "v0.18.1",
     "v0.19.0",
     "v0.19.1",
+    "v0.20.0",
     "main",
 ]
 
@@ -289,3 +290,37 @@ def test_peft_version_parseable(tag: str):
     assert (
         has_literal or has_subimport or has_metadata
     ), f"{tag}: peft.__version__ not exported via any known mechanism"
+
+
+# 11. init_lora_weights="mica": check_mica_init imports MiCALinearVariant; PEFT inits via LoraLayer.mica_init
+#     and freezes lora_B via _freeze_non_trainable_peft_weights (freeze_peft_variant_weights). PEFT >= 0.20.0.
+def test_peft_mica_variant_and_init(tag: str):
+    variants_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/variants.py")
+    if variants_src is None or not has_def(variants_src, "MiCALinearVariant", "class"):
+        pytest.skip(f"{tag}: MiCA not yet introduced (peft 0.20)")
+    layer_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
+    tuners_src = fetch_text("huggingface/peft", tag, "src/peft/tuners/tuners_utils.py")
+    assert layer_src is not None and has_def(
+        layer_src, "mica_init", "func"
+    ), f"{tag}: mica_init missing"
+    assert tuners_src is not None and has_def(
+        tuners_src, "_freeze_non_trainable_peft_weights", "func"
+    ), f"{tag}: _freeze_non_trainable_peft_weights missing"
+
+
+# 12. unsloth/models/lora_init.py replaces LoraLayer.pissa_init(self, adapter_name, init_lora_weights) and
+#     mica_init(self, adapter_name) during get_peft_model and calls layer.py's `transpose`.
+def test_peft_lora_init_hooks(tag: str):
+    src = fetch_text("huggingface/peft", tag, "src/peft/tuners/lora/layer.py")
+    if src is None:
+        pytest.skip(f"{tag}: layer.py missing")
+    assert re.search(
+        r"def pissa_init\(self, adapter_name, init_lora_weights\)", src
+    ), f"{tag}: pissa_init signature moved"
+    assert re.search(
+        r"^from peft\.utils\.other import transpose$", src, re.M
+    ), f"{tag}: transpose import moved"
+    if has_def(src, "mica_init", "func"):
+        assert re.search(
+            r"def mica_init\(self, adapter_name\)", src
+        ), f"{tag}: mica_init signature moved"

@@ -48,32 +48,36 @@ import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
 import { usePlatformStore } from "@/config/env";
+import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
-function lastUserText(
-  messages: readonly { role?: string; content?: unknown }[],
-): string {
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (message?.role !== "user") continue;
-    const content = message.content;
-    if (typeof content === "string") return content;
-    if (!Array.isArray(content)) return "";
-    return content
-      .map((part) =>
-        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
-          ? (part as { text: string }).text
-          : "",
-      )
-      .join(" ");
-  }
-  return "";
+function messageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) =>
+      part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+        ? (part as { text: string }).text
+        : "",
+    )
+    .join(" ");
 }
+
+function userTexts(
+  messages: readonly { role?: string; content?: unknown }[],
+): string[] {
+  return messages
+    .filter((message) => message?.role === "user")
+    .map((message) => messageText(message.content));
+}
+import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
+import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
+  SANDBOX_RUN_TOOLS,
   extractCreatedFiles,
   isSandboxFileList,
   isSandboxToolResult,
@@ -88,6 +92,7 @@ import {
   mcpUiReplayImages,
 } from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
+import { userMessageIdRequestField } from "../utils/rewind";
 import {
   type McpImage,
   planMcpImageBound,
@@ -111,6 +116,11 @@ import { parseParamCountB } from "@/lib/model-size";
 import { createLoadingToastIcon, toast } from "@/lib/toast";
 import { notifyPromptQueueRunFailed } from "../utils/prompt-queue-boundary";
 import {
+  providerCompactionConnectionKey,
+  providerCompactionForTarget,
+  providerCompactionPart,
+} from "../utils/provider-compaction";
+import {
   adoptPreStreamRunReservation,
   findPreStreamRunReservation,
   preStreamRunThreadIdsForAdapter,
@@ -118,7 +128,11 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
-import { ggufCompactionRequestFields } from "../utils/auto-compaction";
+import {
+  apiCompactionRequestFields,
+  ggufCompactionRequestFields,
+} from "../utils/auto-compaction";
+import { resolveModelCatalogEntry } from "../model-catalog";
 import {
   lengthIncompleteReason,
   lengthStopCause,
@@ -154,6 +168,7 @@ import {
   providerModelTakesMcpImages,
   supportsProviderPromptCacheTtl,
   supportsProviderPromptCaching,
+  toExternalBackendProviderType,
 } from "../external-providers";
 
 import {
@@ -167,6 +182,30 @@ import {
   startsNewCodexToolRound,
   type CodexReasoningLedger,
 } from "../codex-reasoning";
+import {
+  toolModelNoteTarget,
+  toolModelSuffixExtraContent,
+  withToolModelSuffix,
+} from "../tool-model-suffix";
+import {
+  type GeminiContinuationReplay,
+  type GeminiContinuationReplayTurn,
+  type GeminiAnswerReplayPart,
+  type GeminiThoughtReplayPart,
+  type PositionedGeminiAnswerReplayPart,
+  type PositionedGeminiThoughtReplayPart,
+  appendGeminiAnswerReplayPart,
+  appendGeminiThoughtReplayPart,
+  geminiAnswerReplayParts,
+  geminiContinuationReplayEntries,
+  geminiThoughtReplayParts,
+  pinGeminiAnswerReplayParts,
+  pinGeminiTextThoughtSignature,
+  pinGeminiThoughtReplayParts,
+  readGeminiContinuationReplay,
+  withGeminiAnswerReplayParts,
+  withGeminiThoughtReplayParts,
+} from "../gemini-thought-replay";
 
 import {
   createBoundaryScan,
@@ -184,6 +223,7 @@ import {
 } from "../tool-call-id";
 
 import { buildResearchInferenceRequest } from "../research-inference-request";
+import { customReasoningRequestFields } from "../custom-reasoning";
 import { pickFriendlyContainerName } from "../lib/friendly-names";
 import {
   buildExternalRoutingFields,
@@ -210,6 +250,7 @@ import {
   getGroundedExternalMaxOutputTokens,
   getExternalMinOutputTokens,
   getExternalReasoningCapabilities,
+  providerModelReplaysReasoning,
   providerSupportsPreserveThinking,
   getProviderCapabilities,
   providerHostsCodeExecution,
@@ -220,7 +261,7 @@ import {
   providerSupportsFastMode,
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
-import { skillToolsOffered } from "./skill-tools";
+import { skillToolNames } from "./skill-tools";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -251,6 +292,7 @@ import {
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { takeThreadCompactionRequest } from "../stores/compact-request-store";
 import {
   shouldPreserveFullOutput,
   toolOutputKey,
@@ -269,6 +311,7 @@ import type {
   OpenAIChatMessage,
   OpenAIMessageContent,
   OpenAIReasoningContentPart,
+  ProviderCompactionContentPart,
 } from "../types/api";
 import { modelReadsSamplingSeed, type ChatModelRow } from "../types/runtime";
 import { loadFallbackNotice } from "../utils/mmproj-fallback";
@@ -293,6 +336,9 @@ import {
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
 import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  compactionAnchorToolCallId,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -326,6 +372,7 @@ import {
   incompleteLabel,
   incompleteReasonAfterError,
   type IncompleteReason,
+  isRestart,
   noteRunStartedThisSession,
   readIncompleteInfo,
   resolveIncompleteReason,
@@ -347,6 +394,7 @@ import {
   generateAudio,
   GenerationLengthError,
   fetchGgufStagedMetadata,
+  getChatAgentsMd,
   getInferenceStatus,
   listCachedGguf,
   listCachedModels,
@@ -356,6 +404,11 @@ import {
   StreamInterruptedError,
   validateModel,
 } from "./chat-api";
+import {
+  type AgentsMdRecord,
+  composeChatInstructions,
+  EMPTY_AGENTS_MD,
+} from "../utils/agents-md";
 import {
   createOpenAIContainer,
   listOpenAIContainers,
@@ -443,6 +496,8 @@ interface ServerUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  // Studio tool loops: context after the turn; total_tokens re-counts earlier passes' completions.
+  context_tokens?: number;
   // cache_creation is Anthropic's cache-write count, cache_write_tokens OpenRouter's.
   prompt_tokens_details?: {
     cached_tokens?: number;
@@ -835,7 +890,9 @@ function collectImageParts(
     parts.push({
       type: "image_url",
       image_url: {
-        url: src.startsWith("data:") ? src : `data:image/png;base64,${src}`,
+        url: /^(?:data:|https?:\/\/)/i.test(src)
+          ? src
+          : `data:image/png;base64,${src}`,
       },
     });
   };
@@ -948,6 +1005,7 @@ type SerializedToolResult = {
   content: string;
   tool_call_id: string;
   name?: string;
+  extra_content?: { studio_model_suffix: string };
 };
 
 type ToolPartReplayMetadata = {
@@ -1180,6 +1238,8 @@ function serializeToolResultPart(
     content,
     tool_call_id: tc.toolCallId,
     ...(tc.toolName ? { name: tc.toolName } : {}),
+    // Model-only feedback the backend re-appends on replay.
+    ...toolModelSuffixExtraContent(getToolReplayProvenance(tc)),
   };
 }
 
@@ -1273,6 +1333,63 @@ function setAssistantOpenAIResponsesReasoning(
   message.extra_content = { ...extra, openai_responses_reasoning: reasoning };
 }
 
+function providerCompactionAssistant(
+  messages: SerializedMessage[],
+  afterToolCalls: number,
+): SerializedMessage | undefined {
+  const boundary =
+    Number.isInteger(afterToolCalls) && afterToolCalls >= 0
+      ? afterToolCalls
+      : 0;
+  let precedingToolCalls = 0;
+  let lastAssistant: SerializedMessage | undefined;
+  for (const message of messages) {
+    if (message.role !== "assistant") continue;
+    lastAssistant = message;
+    if (precedingToolCalls >= boundary) return message;
+    precedingToolCalls += message.tool_calls?.length ?? 0;
+  }
+  return lastAssistant;
+}
+
+/** The provider drops what came before its compaction, so it leads the subturn that produced it. */
+function withProviderCompaction(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+  target: {
+    providerType: string | undefined;
+    modelId: string | undefined;
+    connectionKey: string | undefined;
+  },
+): SerializedMessage[] {
+  const custom = (
+    message as { metadata?: { custom?: Record<string, unknown> } }
+  ).metadata?.custom;
+  const compaction = providerCompactionForTarget(
+    custom,
+    target.providerType,
+    target.modelId,
+    target.connectionKey,
+  );
+  const assistant = providerCompactionAssistant(
+    serialized,
+    typeof custom?.providerCompactionAfterToolCalls === "number"
+      ? custom.providerCompactionAfterToolCalls
+      : 0,
+  );
+  if (!compaction || !assistant) return serialized;
+  const content = assistant.content;
+  assistant.content = [
+    compaction,
+    ...(typeof content === "string"
+      ? content
+        ? [{ type: "text" as const, text: content }]
+        : []
+      : (content ?? [])),
+  ];
+  return serialized;
+}
+
 function attachAssistantThoughtSignature(
   messages: SerializedMessage[],
   thoughtSignature: string | undefined,
@@ -1301,6 +1418,87 @@ function attachAssistantThoughtSignature(
   }
 }
 
+function serializeGeminiContinuationTurns(
+  turns: GeminiContinuationReplayTurn[],
+  includeTrailingInstruction: boolean,
+): SerializedMessage[] {
+  const messages: SerializedMessage[] = [];
+  for (const entry of geminiContinuationReplayEntries(
+    turns,
+    includeTrailingInstruction,
+  )) {
+    if (entry.role === "user") {
+      messages.push({ role: "user", content: CONTINUE_INSTRUCTION });
+      continue;
+    }
+    const { turn } = entry;
+    const assistant: SerializedMessage = {
+      role: "assistant",
+      content: turn.text,
+      ...(turn.thoughtParts?.length || turn.answerParts?.length
+        ? {
+            extra_content: withGeminiAnswerReplayParts(
+              withGeminiThoughtReplayParts(undefined, turn.thoughtParts ?? []),
+              turn.answerParts ?? [],
+            ),
+          }
+        : {}),
+    };
+    attachAssistantThoughtSignature([assistant], turn.thoughtSignature);
+    messages.push(assistant);
+  }
+  return messages;
+}
+
+function stripGeminiContinuationVisiblePrefix(
+  messages: SerializedMessage[],
+  visiblePrefix: string,
+): void {
+  if (!visiblePrefix) return;
+  const assistant = messages.find((message) => message.role === "assistant");
+  if (!assistant) return;
+  if (typeof assistant.content === "string") {
+    if (assistant.content.startsWith(visiblePrefix)) {
+      assistant.content = assistant.content.slice(visiblePrefix.length);
+    }
+    return;
+  }
+  if (!Array.isArray(assistant.content)) return;
+  const content = assistant.content as Array<Record<string, unknown>>;
+  const text = content
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text as string)
+    .join("");
+  if (!text.startsWith(visiblePrefix)) return;
+  let remaining = visiblePrefix.length;
+  assistant.content = content.flatMap((part) => {
+    if (remaining === 0 || part.type !== "text" || typeof part.text !== "string") {
+      return [part];
+    }
+    const drop = Math.min(remaining, part.text.length);
+    remaining -= drop;
+    const trimmed = part.text.slice(drop);
+    return trimmed ? [{ ...part, text: trimmed }] : [];
+  }) as OpenAIMessageContent;
+}
+
+function expandGeminiContinuationReplay(
+  message: RunMessage,
+  serialized: SerializedMessage[],
+): SerializedMessage[] {
+  const replay = readGeminiContinuationReplay(
+    (message as { metadata?: unknown }).metadata,
+  );
+  if (!replay) return serialized;
+  if (replay.stripVisiblePrefix) {
+    stripGeminiContinuationVisiblePrefix(serialized, replay.visiblePrefix);
+  }
+  return [
+    ...serializeGeminiContinuationTurns(replay.turns, true),
+    ...serialized,
+  ];
+}
+
 function serializeAssistantReplayMessages(
   message: RunMessage,
   includeReasoningContent = false,
@@ -1323,6 +1521,8 @@ function serializeAssistantReplayMessages(
   const pendingReasoningParts: string[] = [];
   let pendingToolCalls: SerializedToolCall[] = [];
   let pendingToolResults: SerializedToolResult[] = [];
+  let pendingGeminiThoughtParts: GeminiThoughtReplayPart[] = [];
+  let pendingGeminiAnswerParts: GeminiAnswerReplayPart[] = [];
   let imagePartsPending = imageParts.length > 0;
 
   let pendingLocalToolRoundId: number | null = null;
@@ -1334,6 +1534,8 @@ function serializeAssistantReplayMessages(
     const includeImageParts = imagePartsPending ? imageParts : [];
     const hasContent = textContent.length > 0 || includeImageParts.length > 0;
     const hasToolCalls = pendingToolCalls.length > 0;
+    const hasGeminiThoughtParts = pendingGeminiThoughtParts.length > 0;
+    const hasGeminiAnswerParts = pendingGeminiAnswerParts.length > 0;
     const reasoningContent = pendingReasoningParts.join("\n");
     const incomplete =
       message.status?.type === "incomplete" ||
@@ -1346,7 +1548,14 @@ function serializeAssistantReplayMessages(
       incomplete,
     });
 
-    if (!force && !hasContent && !hasToolCalls && !hasReasoningContent) {
+    if (
+      !force &&
+      !hasContent &&
+      !hasToolCalls &&
+      !hasReasoningContent &&
+      !hasGeminiThoughtParts &&
+      !hasGeminiAnswerParts
+    ) {
       return;
     }
 
@@ -1365,6 +1574,18 @@ function serializeAssistantReplayMessages(
     }
     if (hasReasoningContent) {
       assistantMessage.reasoning_content = reasoningContent;
+    }
+    if (hasGeminiThoughtParts) {
+      assistantMessage.extra_content = withGeminiThoughtReplayParts(
+        assistantMessage.extra_content,
+        pendingGeminiThoughtParts,
+      );
+    }
+    if (hasGeminiAnswerParts) {
+      assistantMessage.extra_content = withGeminiAnswerReplayParts(
+        assistantMessage.extra_content,
+        pendingGeminiAnswerParts,
+      );
     }
 
     if (hasToolCalls) {
@@ -1393,6 +1614,8 @@ function serializeAssistantReplayMessages(
     pendingReasoningParts.length = 0;
     pendingToolCalls = [];
     pendingToolResults = [];
+    pendingGeminiThoughtParts = [];
+    pendingGeminiAnswerParts = [];
     imagePartsPending = false;
 
     pendingLocalToolRoundId = null;
@@ -1403,6 +1626,7 @@ function serializeAssistantReplayMessages(
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
+      pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
       pendingReasoningParts.push(part.text);
       continue;
     }
@@ -1411,6 +1635,8 @@ function serializeAssistantReplayMessages(
       if (pendingToolCalls.length > 0) {
         flushAssistantAndToolResults();
       }
+      pendingGeminiThoughtParts.push(...geminiThoughtReplayParts(part));
+      pendingGeminiAnswerParts.push(...geminiAnswerReplayParts(part));
       pendingTextParts.push(part.text);
       continue;
     }
@@ -1471,6 +1697,7 @@ function serializeAssistantReplayMessages(
 function toOpenAIMessages(
   message: RunMessage,
   includeReasoningContent = false,
+  expandGeminiContinuations = false,
 ): SerializedMessage[] {
   message = modelVisibleMessage(message);
   if (
@@ -1482,10 +1709,13 @@ function toOpenAIMessages(
   }
 
   if (message.role === "assistant") {
-    return fillStoppedAssistantReplay(
+    const serialized = fillStoppedAssistantReplay(
       message,
       serializeAssistantReplayMessages(message, includeReasoningContent),
     );
+    return expandGeminiContinuations
+      ? expandGeminiContinuationReplay(message, serialized)
+      : serialized;
   }
 
   const textContent = collectTextParts(message).join("\n");
@@ -1834,12 +2064,6 @@ export function findLatestUserVideoBase64(
   return undefined;
 }
 
-// The Canvas instructions createOpenAIStreamAdapter appends, so the recount prices the same text.
-export const CANVAS_TOOL_INSTRUCTION =
-  "When the user asks for an HTML, CSS, or JavaScript canvas, call render_html once with one complete self-contained HTML document in the code argument. Embed CSS and JavaScript inside the document. After render_html succeeds, do not call it again in the same response unless the user asks for changes. Future user requests for new canvases may call render_html once.";
-export const CANVAS_FALLBACK_INSTRUCTION =
-  "When the user asks for an HTML, CSS, or JavaScript canvas, return one complete self-contained fenced html code block. Embed CSS and JavaScript inside the document. Do not emit tool-call syntax.";
-
 /** The MCP image bound applied to the run's own tool results, BEFORE they are
  *  serialized. Bounding the OpenAI history afterwards meant every result's image
  *  array was stringified into an envelope on the main thread and then parsed again
@@ -1945,7 +2169,7 @@ export async function buildLocalTokenCountHistory(
   studio_tool_history?: true;
 }> {
   const runtimeState = useChatRuntimeStore.getState();
-  const { params, artifactsEnabled, supportsTools } = runtimeState;
+  const { params } = runtimeState;
   const activeModel = runtimeState.models.find(
     (model) => model.id === runtimeState.params.checkpoint,
   );
@@ -1970,38 +2194,21 @@ export async function buildLocalTokenCountHistory(
             : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(threadId);
-  const combinedSystemPrompt = [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const projectId = await resolveProjectId(threadId);
+  const [projectInstructions, agentsMd] = await Promise.all([
+    resolveProjectInstructions(projectId),
+    resolveAgentsMd(projectId),
+  ]);
+  const combinedSystemPrompt = composeChatInstructions({
+    agentsMd,
+    projectInstructions,
+    systemPrompt: safeSystemPrompt,
+  });
   if (combinedSystemPrompt) {
     outboundMessages.unshift({
       role: "system",
       content: combinedSystemPrompt,
     });
-  }
-
-  // Canvas appends one of these on every request, so a count without it reads low.
-  const canvasInstruction = artifactsEnabled
-    ? supportsTools
-      ? CANVAS_TOOL_INSTRUCTION
-      : CANVAS_FALLBACK_INSTRUCTION
-    : "";
-  if (canvasInstruction) {
-    const first = outboundMessages[0];
-    if (first && first.role === "system" && typeof first.content === "string") {
-      outboundMessages[0] = {
-        ...first,
-        content: `${first.content}\n\n${canvasInstruction}`,
-      };
-    } else {
-      outboundMessages.unshift({ role: "system", content: canvasInstruction });
-    }
   }
 
   return {
@@ -2050,12 +2257,12 @@ export function buildLocalTokenCountReasoning(): Record<string, unknown> {
 /** The tool flags a completion would send, so the count includes the schemas and the action nudge. */
 export async function buildLocalTokenCountExtras(
   threadId: string | undefined,
+  messages: readonly { role?: string; content?: unknown }[] = [],
 ): Promise<Record<string, unknown>> {
   const state = useChatRuntimeStore.getState();
   const {
     supportsTools,
     toolsEnabled,
-    artifactsEnabled,
     mcpEnabledForChat,
     ragEnabled,
     ragSource,
@@ -2065,6 +2272,7 @@ export async function buildLocalTokenCountExtras(
     bypassPermissions,
     deepResearchEnabled,
     permissionMode,
+    sandboxLevel,
     maxToolCallsPerMessage,
     ragAutoInject,
     ragAutoInjectMinScore,
@@ -2081,6 +2289,7 @@ export async function buildLocalTokenCountExtras(
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2091,25 +2300,29 @@ export async function buildLocalTokenCountExtras(
     : false;
   const ragOn = ragEnabled || projectRagEnabled;
 
-  await settleSkillsForText("");
-  const hasEnabledSkills = skillToolsOffered(
+  // re-fetch for every counted user turn so skills created since page load match request pricing.
+  await settleSkillsForText(userTexts(messages).join("\n"));
+  const skillTools = skillToolNames(
     getSkillsSnapshot().skills,
     codeToolsEnabled,
+    userTexts(messages),
   );
+  const browserTools = browserAgentToolsForTurn();
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
-    !artifactsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
-    !hasEnabledSkills
+    browserTools.length === 0 &&
+    skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
     // along because `--enable-tools` still outranks that false in _effective_enable_tools.
     return {
       enable_tools: false,
       bypass_permissions: bypassPermissions,
+      sandbox_level: sandboxLevel,
       ...threadField,
     };
   }
@@ -2121,6 +2334,7 @@ export async function buildLocalTokenCountExtras(
     // Ask holds first-pass retrieval behind the gate, so the count prices a pending RAG
     // turn rather than declining one the completion never retrieves for.
     permission_mode: permissionMode,
+    sandbox_level: sandboxLevel,
     // Off suppresses the loop, and the relay renders no schemas or nudge: same zero.
     max_tool_calls_per_message: maxToolCallsPerMessage,
     // Full access swaps the python/terminal descriptions and adds a nudge
@@ -2130,9 +2344,9 @@ export async function buildLocalTokenCountExtras(
       ...(ragOn ? ["search_knowledge_base"] : []),
       ...(toolsEnabled ? ["web_search"] : []),
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
-      ...(artifactsEnabled ? ["render_html"] : []),
-      // Same gate as the request: with no enabled skill neither tool is sent, so neither is priced.
-      ...(hasEnabledSkills ? ["read_skill", "create_skill"] : []),
+      // match the request gate so token pricing includes only sent skill tools.
+      ...skillTools,
+      ...browserTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -2201,11 +2415,7 @@ async function resolveUseAdapter(
   }
 }
 
-async function resolveProjectInstructions(
-  threadId: string | undefined,
-  readThreadRecord?: ThreadRecordReader,
-): Promise<string> {
-  const projectId = await resolveProjectId(threadId, readThreadRecord);
+async function resolveProjectInstructions(projectId: string | null): Promise<string> {
   if (!projectId) {
     return "";
   }
@@ -2217,11 +2427,33 @@ async function resolveProjectInstructions(
   return project.instructions?.trim() ?? "";
 }
 
-async function resolveChatInstructions(
+// Background recounts and the send that follows them ask within moments: one read serves both.
+const AGENTS_MD_TTL_MS = 2_000;
+const agentsMdByProject = new Map<
+  string,
+  { at: number; value: Promise<AgentsMdRecord> }
+>();
+
+/** The AGENTS.md text for a request; a failed read sends what it would without the file. */
+function resolveAgentsMd(projectId: string | null): Promise<AgentsMdRecord> {
+  const key = projectId ?? "";
+  const now = Date.now();
+  const hit = agentsMdByProject.get(key);
+  if (hit && now - hit.at < AGENTS_MD_TTL_MS) {
+    return hit.value;
+  }
+  const value = getChatAgentsMd(projectId).catch(() => EMPTY_AGENTS_MD);
+  agentsMdByProject.set(key, { at: now, value });
+  return value;
+}
+
+export async function resolveChatInstructions(
   threadId: string | undefined,
   systemPrompt: unknown,
   systemVariables: unknown,
   readThreadRecord?: ThreadRecordReader,
+  // Only what goes to the model carries AGENTS.md; copies and exports of a chat keep its own instructions.
+  opts?: { agentsMd?: boolean },
 ): Promise<string> {
   const safeSystemPrompt =
     typeof systemPrompt === "string"
@@ -2230,18 +2462,16 @@ async function resolveChatInstructions(
           typeof systemVariables === "string" ? systemVariables : "",
         )
       : "";
-  const projectInstructions = await resolveProjectInstructions(
-    threadId,
-    readThreadRecord,
-  );
-  return [
-    projectInstructions
-      ? `<project_instructions>\n${projectInstructions}\n</project_instructions>`
-      : "",
-    safeSystemPrompt.trim(),
-  ]
-    .filter(Boolean)
-    .join("\n\n");
+  const projectId = await resolveProjectId(threadId, readThreadRecord);
+  const [projectInstructions, agentsMd] = await Promise.all([
+    resolveProjectInstructions(projectId),
+    opts?.agentsMd ? resolveAgentsMd(projectId) : undefined,
+  ]);
+  return composeChatInstructions({
+    agentsMd,
+    projectInstructions,
+    systemPrompt: safeSystemPrompt,
+  });
 }
 
 // Answered once per thread and reused: sandbox, RAG scope and instructions each resolve the
@@ -2339,7 +2569,7 @@ const MAX_AUTO_LOAD_ATTEMPTS = 3;
 const MAX_AUTO_VALIDATE_FAILURES = 12;
 const BIG_ENDIAN_GGUF_FILENAME_RE = /(^|[-_])be(?:[._-]|$)/gi;
 const GGUF_KNOWN_QUANT_RE =
-  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?|Q[0-9]+_K|BF16|F16|F32)/i;
+  /(UD-)?(MXFP[0-9]+(?:_[A-Z0-9]+)*|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?|P?TQ[0-9]+_[0-9]+|Q[0-9]+_K_[A-Z]+|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)|Q[0-9]+_K|BF16|F16|F32)/i;
 
 type AutoLoadCandidate = {
   id: string;
@@ -2510,6 +2740,8 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "specFallbackReason",
   "specDraftNMax",
   "loadedSpecDraftNMax",
+  "specDraftModel",
+  "loadedSpecDraftModel",
 ] as const satisfies readonly (keyof ChatRuntimeState)[];
 
 type VisibleModelRuntimeState = Pick<
@@ -2651,6 +2883,7 @@ const NON_CHAT_TASKS: ReadonlySet<string> = new Set([
 const AUTO_LOAD_LOCAL_SOURCES: ReadonlySet<string> = new Set([
   "models_dir",
   "lmstudio",
+  "omlx",
   "hermes",
   "custom",
 ]);
@@ -2844,8 +3077,15 @@ async function resolveAutoLoadCandidate(
       : `Loaded ${source.id}`,
   });
   if (!source.listVariants) {
-    const candidate = build(null);
-    return isSkipped(candidate) ? null : candidate;
+    const variants =
+      source.kind === "model" && rememberedVariant
+        ? [rememberedVariant, null]
+        : [null];
+    for (const variant of variants) {
+      const candidate = build(variant);
+      if (!isSkipped(candidate)) return candidate;
+    }
+    return null;
   }
   const downloaded = (await source.listVariants())
     .filter(
@@ -3307,6 +3547,12 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       validateFailures += 1;
       return false;
     }
+    // Engine choice is the picker dialog's; the default engine would decompress and crawl (#8861).
+    if (validation.managed_engine_offer) {
+      hadNonTrustFailure = true;
+      validateFailures += 1;
+      return false;
+    }
     return true;
   }
 
@@ -3473,10 +3719,25 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       config.customContextLength ?? null,
       effectiveMaxSeqLength,
     );
-    const effectiveSpeculativeType =
-      config.speculativeType ?? specSettings.speculativeType;
+    const candidateIsMlx = isServedByMlx(
+      candidate.kind === "gguf",
+      platform.deviceType,
+      platform.chatOnlyReason,
+    );
+    // MLX falls back to the standing preference: the live store may hold another model's settings.
+    const standingSpec = candidateIsMlx
+      ? resolveSpeculativeSettingsForLoad({ usePersistedPreference: true })
+      : specSettings;
+    const effectiveSpeculativeType = resolveSpeculativeType(
+      config.speculativeType,
+      standingSpec.speculativeType ?? "auto",
+      candidateIsMlx,
+    );
     const effectiveSpecDraftNMax =
-      config.specDraftNMax ?? specSettings.specDraftNMax;
+      config.specDraftNMax ?? standingSpec.specDraftNMax;
+    const mlxDrafter = candidateIsMlx
+      ? { spec_draft_model: config.specDraftModel ?? null }
+      : {};
     const effectiveChatTemplateOverride = config.chatTemplateOverride?.trim()
       ? config.chatTemplateOverride
       : null;
@@ -3551,6 +3812,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       mlx_int8_prefill: config.mlxInt8Prefill ?? false,
       speculative_type: effectiveSpeculativeType,
       spec_draft_n_max: effectiveSpecDraftNMax,
+      ...mlxDrafter,
       reasoning_budget:
         candidate.kind === "gguf" && !isDiffusion ? config.reasoningBudget : -1,
       reasoning_budget_message:
@@ -3589,8 +3851,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     options?.abortSignal?.throwIfAborted();
     applyAutoLoadRuntimeState(options, () => {
       // Persist the global preference only when the value came from global settings, or autoloading
-      // a remembered model rewrites the default.
-      if (config.speculativeType == null) {
+      // a remembered model rewrites the default. MLX only reads it.
+      if (config.speculativeType == null && !candidateIsMlx) {
         saveSpeculativeType(effectiveSpeculativeType);
       }
       // Self-gates on is_gguf (skips diffusion), so persists only for a real GGUF load.
@@ -4552,6 +4814,7 @@ export function createOpenAIStreamAdapter(
           params.systemPrompt,
           params.systemVariables,
           readThreadRecord,
+          { agentsMd: true },
         );
         if (transitionSignal.aborted) return;
         const ragScope =
@@ -4632,11 +4895,13 @@ export function createOpenAIStreamAdapter(
             userMessageId: userMessage.id,
             assistantMessageId: unstable_assistantMessageId,
             inferenceRequest,
-            // Omitted when empty: CreateResearchRun forbids unknown fields, so an unconditional send 422s
-            // an older backend.
+            // omit empty fields: old backends reject unknown fields with 422.
             ...(researchQuestion ? { question: researchQuestion } : {}),
             ...(researchInstructions ? { instructions: researchInstructions } : {}),
             ...(ragScope ? { ragScope } : {}),
+            ...(runtime.researchMcpSources.length
+              ? { mcpSources: runtime.researchMcpSources }
+              : {}),
             budgets: {
               modelTimeoutSeconds: runtime.researchModelTimeoutSeconds,
             },
@@ -4647,8 +4912,7 @@ export function createOpenAIStreamAdapter(
           });
           researchRunId = createdRun.id;
           if (researchStopRequested) {
-            // Stopped while createResearchRun was in flight, so the handle had no id; replay it rather
-            // than follow a run the user ended.
+            // replay stop once creation supplies the missing run id.
             void cancelResearchRun(createdRun.id).catch(() => {});
             return;
           }
@@ -4718,6 +4982,7 @@ export function createOpenAIStreamAdapter(
         runtime.deepResearchEnabled &&
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
+      const browserTools = browserAgentToolsForTurn();
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane AND thread; the
       // reader has only threadListItem.remoteId.
@@ -4875,7 +5140,6 @@ export function createOpenAIStreamAdapter(
         supportsTools,
         toolsEnabled,
         imageToolsEnabled,
-        artifactsEnabled,
         mcpEnabledForChat,
         confirmToolCalls,
         bypassPermissions,
@@ -4922,6 +5186,12 @@ export function createOpenAIStreamAdapter(
       }
       const externalProvider =
         externalRouting.kind === "external" ? externalRouting.provider : null;
+      const providerCompactionTargetConnectionKey =
+        providerCompactionConnectionKey(
+          externalProvider?.id,
+          externalProvider?.baseUrl,
+          externalProvider?.apiType,
+        );
 
       const externalUsesStudioTools =
         providerModelSupportsStudioTools(
@@ -5038,6 +5308,9 @@ export function createOpenAIStreamAdapter(
       const replayReasoning = !isExternalRequest || (
         providerSupportsPreserveThinking(externalProvider?.providerType) &&
         runtime.preserveThinking
+      ) || providerModelReplaysReasoning(
+        externalProvider?.providerType,
+        externalSelection?.modelId,
       );
       const survivingMessages = pruneOutboundHistory(messages, replayReasoning);
       const { messages: renderedMessages, sandboxAttachments } =
@@ -5048,7 +5321,22 @@ export function createOpenAIStreamAdapter(
       // toOpenAIMessages emits assistant tool_calls plus role="tool" follow-ups; the backend Gemini
       // translator rebuilds the functionCall/functionResponse parts.
       let outboundMessages = renderedMessages
-        .flatMap((message) => toOpenAIMessages(message, replayReasoning))
+        .flatMap((message) => {
+          const serialized = toOpenAIMessages(
+            message,
+            replayReasoning,
+            externalProvider?.providerType === "gemini",
+          );
+          return isExternalRequest
+            ? withProviderCompaction(message, serialized, {
+                providerType: toExternalBackendProviderType(
+                  externalProvider?.providerType,
+                ),
+                modelId: externalSelection?.modelId,
+                connectionKey: providerCompactionTargetConnectionKey,
+              })
+            : serialized;
+        })
         .filter((message): message is NonNullable<typeof message> =>
           Boolean(message),
         );
@@ -5092,26 +5380,70 @@ export function createOpenAIStreamAdapter(
         })
           ? (continuation.reasoning ?? "")
           : "";
-      if (continuation && !continuation.partial && !resumedThought) {
+      const hasGeminiReplayContinuation = Boolean(
+        continuation &&
+          externalProvider?.providerType === "gemini" &&
+          (continuation.geminiReplayTurns?.length ||
+            continuation.thoughtParts?.length ||
+            continuation.answerParts?.length ||
+            continuation.thoughtSignature),
+      );
+      if (
+        continuation &&
+        !continuation.partial &&
+        !resumedThought &&
+        !hasGeminiReplayContinuation
+      ) {
         toast.error("This response cannot be resumed", {
           description:
             "It stopped mid-thought, and only GGUF and MLX models can resume a thought. Use Retry instead.",
         });
         throw new Error("A response that stopped mid-thought cannot be resumed here.");
       }
+      const continuationCompaction = continuation
+        ? providerCompactionForTarget(
+            continuation,
+            toExternalBackendProviderType(externalProvider?.providerType),
+            externalSelection?.modelId,
+            providerCompactionTargetConnectionKey,
+          )
+        : null;
       // The run's messages stop at the user turn, so the partial is appended here for the backend to resume.
       if (continuation) {
-        outboundMessages.push({
-          role: "assistant",
-          content: continuation.partial,
-          ...(resumedThought ? { reasoning_content: resumedThought } : {}),
-        });
-        // The original assistant message is not in this branch, so without its signature the history
-        // goes back unsigned.
-        attachAssistantThoughtSignature(
-          outboundMessages,
-          continuation.thoughtSignature,
-        );
+        const geminiReplayTurns =
+          externalProvider?.providerType === "gemini"
+            ? continuation.geminiReplayTurns
+            : undefined;
+        if (geminiReplayTurns?.length) {
+          outboundMessages.push(
+            ...serializeGeminiContinuationTurns(geminiReplayTurns, false),
+          );
+        } else {
+          outboundMessages.push({
+            role: "assistant",
+            content: continuationCompaction
+              ? [
+                  continuationCompaction,
+                  ...(continuation.partial
+                    ? [{ type: "text" as const, text: continuation.partial }]
+                    : []),
+                ]
+              : continuation.partial,
+            ...(resumedThought ? { reasoning_content: resumedThought } : {}),
+            ...(continuation.thoughtParts && continuation.thoughtParts.length > 0
+              ? {
+                  extra_content: withGeminiThoughtReplayParts(
+                    undefined,
+                    continuation.thoughtParts,
+                  ),
+                }
+              : {}),
+          });
+          attachAssistantThoughtSignature(
+            outboundMessages,
+            continuation.thoughtSignature,
+          );
+        }
         // Anthropic 400s when the last message is an assistant turn, so append an instruction turn
         // instead of a prefill.
         if (rejectsAssistantPrefill(externalProvider?.providerType)) {
@@ -5127,6 +5459,7 @@ export function createOpenAIStreamAdapter(
         params.systemPrompt,
         params.systemVariables,
         readThreadRecord,
+        { agentsMd: true },
       );
       if (combinedSystemPrompt) {
         outboundMessages.unshift({
@@ -5228,26 +5561,8 @@ export function createOpenAIStreamAdapter(
         !queuedRunSettings && !continuation,
       );
       const videoBase64 = findLatestUserVideoBase64(survivingMessages);
-      const hasOutboundImage = Boolean(imageBase64);
 
-      // Canvas is independent of Search/Code: render_html stays local-only and mirrors the backend image-turn gate.
-      const renderHtmlToolEnabledForThisTurn = Boolean(
-        !isExternalRequest &&
-          supportsTools &&
-          artifactsEnabled &&
-          !hasOutboundImage,
-      );
-      const artifactInstruction = artifactsEnabled
-        ? renderHtmlToolEnabledForThisTurn
-          ? CANVAS_TOOL_INSTRUCTION
-          : CANVAS_FALLBACK_INSTRUCTION
-        : null;
-      const effectiveDisabledToolGuard =
-        disabledToolGuard && artifactsEnabled
-          ? `${disabledToolGuard} HTML, CSS, or JavaScript canvas requests can still be answered by following the canvas fallback instruction.`
-          : disabledToolGuard;
-      addSystemInstruction(outboundMessages, effectiveDisabledToolGuard);
-      addSystemInstruction(outboundMessages, artifactInstruction);
+      addSystemInstruction(outboundMessages, disabledToolGuard);
 
       const blockAttachmentRun = (reason: string): never => {
         toast.error(reason);
@@ -5360,9 +5675,22 @@ export function createOpenAIStreamAdapter(
       // the local model still resident.
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
+      const isManagedEngineForCompaction =
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
+      // Taken once, so a retried request still carries it and the next turn does not.
+      const compactNow =
+        takeThreadCompactionRequest(resolvedThreadId) &&
+        (isGgufForCompaction || isMlxForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
+      // Names the turn whose file changes /rewind can undo; a continuation reuses its turn's prompt.
+      // A temporary chat keeps no file history.
+      const userMessageIdField = userMessageIdRequestField(
+        resolvedThreadId && isThreadIncognito(resolvedThreadId)
+          ? undefined
+          : generationUserMessage?.id,
+      );
 
       // Durability gate keys on THIS turn's attachments only. The scans above walk post-prune history so an old
       // refused turn cannot mis-attribute media onto the next one - correct for building the request payload, but it
@@ -5527,9 +5855,28 @@ export function createOpenAIStreamAdapter(
       const continuationPartial = continuation
         ? continuationSeed(continuation.partial, resumedThought)
         : "";
+      const geminiContinuationReplayTurns =
+        continuation?.geminiReplayTurns?.length
+          ? continuation.geminiReplayTurns
+          : undefined;
       // A seed that ends inside the thought: the next reasoning delta extends it.
       const resumesInsideThought = Boolean(resumedThought) && !continuation?.partial;
       let cumulativeText = continuationPartial;
+      const geminiContinuationReplay = (
+        final: boolean,
+      ): GeminiContinuationReplay | undefined =>
+        geminiContinuationReplayTurns
+          ? {
+              turns: geminiContinuationReplayTurns,
+              visiblePrefix: continuation?.partial ?? "",
+              stripVisiblePrefix:
+                !final ||
+                !isRestart(
+                  continuation?.partial ?? "",
+                  cumulativeText.slice(continuationPartial.length),
+                ),
+            }
+          : undefined;
       // Reading `cumulativeText` costs O(reply): each `+=` builds a cons string that the first read
       // flattens, so one charCodeAt per arrival is as expensive as a scan. Everything below is fed
       // the delta through `appendCumulative` and the buffer is read only where the reply is
@@ -5593,6 +5940,25 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let compactionMarkers: CompactionMarker[] | undefined;
+      let providerCompaction: ProviderCompactionContentPart | undefined =
+        continuationCompaction ?? undefined;
+      let providerCompactionAfterToolCalls: number | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionAfterToolCalls
+          : undefined;
+      let providerCompactionProviderType: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionProviderType
+          : undefined;
+      let providerCompactionModelId: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionModelId
+          : undefined;
+      let providerCompactionOriginConnectionKey: string | undefined =
+        continuationCompaction
+          ? continuation?.providerCompactionConnectionKey
+          : undefined;
 
       const liveAssistantContent = () =>
         buildAssistantContent(mergeContinuation(cumulativeText));
@@ -5606,6 +5972,13 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        compactionMarkers,
+        providerCompaction,
+        providerCompactionAfterToolCalls,
+        providerCompactionProviderType,
+        providerCompactionModelId,
+        providerCompactionConnectionKey: providerCompactionOriginConnectionKey,
+        geminiContinuationReplay: geminiContinuationReplay(false),
         // A legacy (browser-tool / attachment / incognito) run that ends because you closed the tab has no
         // server-side run to resume from, so its last streamed yield is what persists. Mark it an interruption
         // — partial kept + Resume — instead of a silent blank/ambiguous state. Durable runs keep "cancelled":
@@ -5912,24 +6285,21 @@ export function createOpenAIStreamAdapter(
           toolCallParts[toolCallParts.length - 1]?.toolCallId ?? "",
           () => `${backendToolCallId}:${crypto.randomUUID()}`,
         );
-      // Latest Gemini text-part thoughtSignature, pinned onto the final text MessagePart so the
-      // next turn's replay carries it.
-      let latestTextThoughtSignature: string | undefined;
-      const pinTextThoughtSignature = <T extends { type: string }>(
-        parts: T[],
-      ): T[] => {
-        if (!latestTextThoughtSignature || parts.length === 0) return parts;
-        for (let i = parts.length - 1; i >= 0; i -= 1) {
-          if (parts[i].type === "text") {
-            parts[i] = {
-              ...parts[i],
-              _google_thought_signature: latestTextThoughtSignature,
-            } as T;
-            break;
-          }
-        }
-        return parts;
-      };
+      let legacyGeminiTextSignature: string | undefined;
+      const geminiThoughtParts: PositionedGeminiThoughtReplayPart[] =
+        geminiContinuationReplayTurns
+          ? []
+          : (continuation?.thoughtParts?.map((part) => ({
+              ...part,
+              afterToolCalls: 0,
+            })) ?? []);
+      const geminiAnswerParts: PositionedGeminiAnswerReplayPart[] =
+        geminiContinuationReplayTurns
+          ? []
+          : (continuation?.answerParts?.map((part) => ({
+              ...part,
+              afterToolCalls: 0,
+            })) ?? []);
       const buildAssistantContent = (rawText: string) => {
         const positionedTools = toolCallParts
           .map((part, index) => {
@@ -5972,7 +6342,14 @@ export function createOpenAIStreamAdapter(
         }
         assembled.push(...runs[boundaries.length]);
 
-        return pinTextThoughtSignature(assembled);
+        pinGeminiThoughtReplayParts(assembled, geminiThoughtParts);
+        pinGeminiAnswerReplayParts(assembled, geminiAnswerParts);
+        return pinGeminiTextThoughtSignature(
+          assembled,
+          geminiAnswerParts.length > 0
+            ? undefined
+            : legacyGeminiTextSignature,
+        );
       };
 
       const {
@@ -5994,6 +6371,7 @@ export function createOpenAIStreamAdapter(
                 isReasoningProvider: externalProvider.isReasoningModel === true,
                 baseUrl: externalProvider.baseUrl ?? null,
                 apiType: externalProvider.apiType,
+                reasoningConfig: externalProvider.reasoningConfig,
               },
             )
           : {
@@ -6027,19 +6405,26 @@ export function createOpenAIStreamAdapter(
         reasoningEffortLevels,
       );
       const externalReasoningFields: ReasoningRequestFields =
-        externalReasoningCaps.supportsReasoning
-          ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
-            ? externalReasoningEnabled
-              ? { reasoning_effort: selectedExternalEffort }
-              : externalReasoningCaps.supportsReasoningOff
-                ? { reasoning_effort: "none" }
-                : { reasoning_effort: fallbackExternalEffort }
-            : {
-                thinking: {
-                  type: externalReasoningEnabled ? "enabled" : "disabled",
-                },
-              }
-          : {};
+        externalProvider?.providerType === "custom" &&
+        externalProvider.apiType !== "responses"
+          ? customReasoningRequestFields(
+              externalProvider.reasoningConfig,
+              externalReasoningEnabled,
+              selectedExternalEffort,
+            )
+          : externalReasoningCaps.supportsReasoning
+            ? externalReasoningCaps.reasoningStyle === "reasoning_effort"
+              ? externalReasoningEnabled
+                ? { reasoning_effort: selectedExternalEffort }
+                : externalReasoningCaps.supportsReasoningOff
+                  ? { reasoning_effort: "none" }
+                  : { reasoning_effort: fallbackExternalEffort }
+              : {
+                  thinking: {
+                    type: externalReasoningEnabled ? "enabled" : "disabled",
+                  },
+                }
+            : {};
       const localReasoningFields: ReasoningRequestFields = supportsReasoning
         ? reasoningStyle === "enable_thinking_effort"
           ? // GLM-5.2-style gate plus level, e.g. high|max.
@@ -6056,7 +6441,11 @@ export function createOpenAIStreamAdapter(
       // A carried thought is reasoning whatever this request's thinking setting says.
       setParseThink(
         isExternalRequest
-          ? requestParsesThinkTags(externalReasoningFields)
+          ? requestParsesThinkTags({
+              ...externalReasoningFields,
+              provider_type: externalProvider?.providerType,
+              external_model: externalSelection?.modelId,
+            })
           : reasoningAlwaysOn ||
               Boolean(resumedThought) ||
               requestParsesThinkTags(localReasoningFields),
@@ -6120,6 +6509,29 @@ export function createOpenAIStreamAdapter(
         usage?: ServerUsage;
         timings?: ServerTimings;
       } | null = null;
+      // Gate on the captured checkpoint and thread so a late write from provider A cannot repaint
+      // the bar after a switch to B. A first turn is adopted onto an id mid-run and autosave moves
+      // activeThreadId with it, so read the adopted key, or the bar stays blank for life.
+      const publishContextUsage = (
+        usage: NonNullable<
+          ReturnType<typeof useChatRuntimeStore.getState>["contextUsage"]
+        >,
+      ) => {
+        const usageKey = liveThreadKey(serverCancel);
+        const usageThreadKey = usageKey === "__default" ? null : usageKey;
+        const store = useChatRuntimeStore.getState();
+        // File it under this run's own thread even when the gate blocks the visible write, so
+        // switching back re-applies it.
+        if (usageThreadKey !== null) {
+          store.setThreadContextUsage(usageThreadKey, usage);
+        }
+        if (
+          store.activeThreadId === (usageThreadKey ?? activeThreadIdAtRunStart) &&
+          store.params.checkpoint === params.checkpoint
+        ) {
+          store.setContextUsage(usage);
+        }
+      };
       // llama.cpp output count, including reasoning.
       let windowCount: number | null = null;
 
@@ -6247,7 +6659,7 @@ export function createOpenAIStreamAdapter(
             docs:
               supportsStudioToolsForThisTurn &&
               (ragEnabled || projectRagEnabled),
-            artifacts: renderHtmlToolEnabledForThisTurn,
+            artifacts: false,
             confirmToolCalls,
             bypassPermissions,
             permissionMode,
@@ -6263,11 +6675,13 @@ export function createOpenAIStreamAdapter(
           forceRefreshPublicKey = false,
         ): Promise<OpenAIChatCompletionsRequest> => {
           if (supportsStudioToolsForThisTurn) {
-            await settleSkillsForText(lastUserText(outboundMessages));
+            // include every user turn because follow-ups still need skills mentioned earlier.
+            await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
-          const hasEnabledSkills = skillToolsOffered(
+          const skillTools = skillToolNames(
             getSkillsSnapshot().skills,
             codeToolsEnabled,
+            userTexts(outboundMessages),
           );
           if (externalSelection && externalProvider) {
             // Per-thread container reuse; empty falls back to container_auto. Anthropic uses its own key.
@@ -6419,7 +6833,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that resolved to the provider's
+              // studioLocalCodeTools, not codeToolsEnabled: a Tools pill that resolved to the provider's
               // sandbox is a hosted request and belongs below, where this body would 400 on permission_mode.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
@@ -6427,7 +6841,8 @@ export function createOpenAIStreamAdapter(
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                hasEnabledSkills ||
+                skillTools.length > 0 ||
+                browserTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6438,10 +6853,9 @@ export function createOpenAIStreamAdapter(
                         ? ["search_knowledge_base"]
                         : []),
                       ...(toolsEnabled ? ["web_search"] : []),
-                      ...(hasEnabledSkills
-                        ? ["read_skill", "create_skill"]
-                        : []),
+                      ...skillTools,
                       ...studioLocalCodeTools,
+                      ...browserTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -6453,6 +6867,7 @@ export function createOpenAIStreamAdapter(
                     ],
                     mcp_enabled: mcpEnabledForChat,
                     permission_mode: permissionMode,
+                    sandbox_level: runtime.sandboxLevel,
                     ...(permissionMode === "auto" || permissionMode === "off"
                       ? {}
                       : { confirm_tool_calls: permissionMode === "ask" }),
@@ -6467,13 +6882,16 @@ export function createOpenAIStreamAdapter(
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
-                    nudge_tool_calls: false,
+                    // Browser use is the exception: a step announced and not taken ends the task.
+                    nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false,
+                    deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
                     run_tools_locally: true,
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
+                    ...userMessageIdField,
                     ...(sandboxAttachments.length > 0
                       ? { sandbox_attachments: sandboxAttachments }
                       : {}),
@@ -6541,6 +6959,13 @@ export function createOpenAIStreamAdapter(
                 },
                 { forceRefreshPublicKey },
               )),
+              ...apiCompactionRequestFields({
+                autoCompactEnabled: runtime.autoCompactEnabled,
+                contextLength: resolveModelCatalogEntry(
+                  externalProvider.providerType,
+                  externalModelId,
+                )?.contextLength,
+              }),
               // On every external request: OpenRouter's cache routing, and the prompt date unless Claude caches.
               ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
               ...(openaiCodeExecContainerId
@@ -6593,7 +7018,9 @@ export function createOpenAIStreamAdapter(
             ...ggufCompactionRequestFields({
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
+              isManagedEngine: isManagedEngineForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
+              compactNow,
             }),
             temperature: params.temperature,
             top_p: params.topP,
@@ -6625,6 +7052,7 @@ export function createOpenAIStreamAdapter(
               ? { sandbox_attachments: sandboxAttachments }
               : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+            ...userMessageIdField,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
             ...(supportsPreserveThinking
@@ -6634,7 +7062,9 @@ export function createOpenAIStreamAdapter(
             // no pill lit. "auto" OMITS confirm_tool_calls (an explicit true would force a stream and
             // defeat the safe-only exception); "off" omits it too, since an explicit false opts out of
             // its risky-call prompt without an OS sandbox; "ask" sends true, full sends false.
+            // sandbox_level "low" runs Python/Terminal on software safeguards only; Full access overrides it.
             permission_mode: permissionMode,
+            sandbox_level: runtime.sandboxLevel,
             ...(permissionMode === "auto" || permissionMode === "off"
               ? {}
               : { confirm_tool_calls: permissionMode === "ask" }),
@@ -6643,11 +7073,11 @@ export function createOpenAIStreamAdapter(
             ...(supportsTools &&
               (toolsEnabled ||
                 codeToolsEnabled ||
-                renderHtmlToolEnabledForThisTurn ||
                 mcpEnabledForChat ||
                 ragEnabled ||
                 projectRagEnabled ||
-                hasEnabledSkills ||
+                skillTools.length > 0 ||
+                browserTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -6657,15 +7087,11 @@ export function createOpenAIStreamAdapter(
                       ? ["search_knowledge_base"]
                       : []),
                     ...(toolsEnabled ? ["web_search"] : []),
-                    ...(hasEnabledSkills
-                      ? ["read_skill", "create_skill"]
-                      : []),
+                    ...skillTools,
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
-                    ...(renderHtmlToolEnabledForThisTurn
-                      ? ["render_html"]
-                      : []),
+                    ...browserTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB, project_id = the thread's project
@@ -6704,6 +7130,7 @@ export function createOpenAIStreamAdapter(
                     : {}),
                   auto_heal_tool_calls: runtime.autoHealToolCalls,
                   nudge_tool_calls: runtime.nudgeToolCalls,
+                  deduplicate_tool_calls: runtime.deduplicateToolCalls,
                   max_tool_calls_per_message: runtime.maxToolCallsPerMessage,
                   tool_call_timeout: (() => {
                     const mins = runtime.toolCallTimeout;
@@ -6913,6 +7340,14 @@ export function createOpenAIStreamAdapter(
                   contextTruncation,
                   chunk.context_truncated,
                 );
+                compactionMarkers = appendCompactionMarker(
+                  compactionMarkers,
+                  chunk.context_truncated,
+                  compactionAnchorToolCallId(
+                    toolCallParts,
+                    chunk.context_truncated,
+                  ),
+                );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
                 // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
@@ -6932,8 +7367,11 @@ export function createOpenAIStreamAdapter(
                       ? "It got long, so older turns were removed from the model's " +
                         "context. They are saved and searchable, and relevant parts are " +
                         "brought back automatically."
-                      : "The full conversation is still visible and saved. " +
-                        "Unsloth removed complete older turns from this request so the chat can continue.",
+                      : contextTruncation?.summarized
+                        ? "The full conversation is still visible and saved. " +
+                          "The provider summarized older turns so the chat can continue."
+                        : "The full conversation is still visible and saved. " +
+                          "Unsloth removed complete older turns from this request so the chat can continue.",
                     duration: 8000,
                   });
                 }
@@ -6945,6 +7383,37 @@ export function createOpenAIStreamAdapter(
                 chunk as { _reasoningDurationMs?: number } | null | undefined
               )?._reasoningDurationMs;
               if (reasoningDurationTracker.recordServerDuration(reasoningMs)) {
+                continue;
+              }
+
+              // A tool loop handing off to a tool: show its context now rather than at turn end, which
+              // still writes the final figure.
+              const liveContext = (
+                chunk as unknown as {
+                  _contextUsage?: {
+                    prompt_tokens?: unknown;
+                    completion_tokens?: unknown;
+                    context_tokens?: unknown;
+                    cached_tokens?: unknown;
+                  };
+                }
+              )._contextUsage;
+              if (liveContext !== undefined) {
+                const { prompt_tokens, completion_tokens, context_tokens, cached_tokens } =
+                  liveContext ?? {};
+                if (
+                  typeof prompt_tokens === "number" &&
+                  typeof completion_tokens === "number" &&
+                  typeof context_tokens === "number"
+                ) {
+                  publishContextUsage({
+                    promptTokens: prompt_tokens,
+                    completionTokens: completion_tokens,
+                    totalTokens: context_tokens,
+                    contextTokens: context_tokens,
+                    cachedTokens: typeof cached_tokens === "number" ? cached_tokens : 0,
+                  });
+                }
                 continue;
               }
 
@@ -7006,6 +7475,28 @@ export function createOpenAIStreamAdapter(
                   }
                   continue;
                 }
+                if (toolEvent.type === "compaction_block") {
+                  const nextCompaction = providerCompactionPart(toolEvent);
+                  if (nextCompaction) {
+                    providerCompaction = nextCompaction;
+                    providerCompactionProviderType =
+                      toExternalBackendProviderType(
+                        externalProvider?.providerType,
+                      );
+                    providerCompactionModelId = externalSelection?.modelId;
+                    providerCompactionOriginConnectionKey =
+                      providerCompactionTargetConnectionKey;
+                    // Compaction items arrive before the provider content they introduce. Remember
+                    // how much of this stored run preceded it so replay does not put a later marker
+                    // ahead of earlier Studio tool rounds that the marker already summarizes.
+                    providerCompactionAfterToolCalls = toolCallParts.filter(
+                      (part) =>
+                        part.toolName !== "studio_load_skill" &&
+                        toolCallPartSurvivesOpenAIReplay(part),
+                    ).length;
+                  }
+                  continue;
+                }
                 if (toolEvent.type === "document_citations") {
                   // Convert citations_delta footnotes into Sources entries matching the inline [N] markers.
                   const cits = toolEvent.citations;
@@ -7060,6 +7551,71 @@ export function createOpenAIStreamAdapter(
                       custom: liveCustom(),
                     },
                   };
+                  continue;
+                }
+                if (toolEvent.type === "tool_output" && toolEvent.browser_action) {
+                  // A browser tool asking this tab to act; it answers on its own request, so the stream never waits.
+                  const request = toolEvent.browser_action;
+                  const userText = userTexts(survivingMessages).join("\n");
+                  void import("@/features/browser/agent/executor").then(
+                    ({ parseBrowserAction, runBrowserAction }) => {
+                      const action = parseBrowserAction(request);
+                      if (action) {
+                        void runBrowserAction(action, {
+                          runKey: cancelId,
+                          // Resolved per action: a first turn is re-keyed from "__default" to its id.
+                          scope: liveThreadKey(serverCancel),
+                          userText,
+                          signal: runSignal,
+                        });
+                      }
+                    },
+                    // A stale chunk after an update: answer now rather than leave the tool waiting.
+                    () => {
+                      const raw = (request ?? {}) as Record<string, unknown>;
+                      if (typeof raw.id !== "string") return;
+                      void authFetch("/api/inference/browser-action-result", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action_id: raw.id,
+                          session_id: typeof raw.session_id === "string" ? raw.session_id : "",
+                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Studio." },
+                        }),
+                      }).catch(() => undefined);
+                    },
+                  );
+                  continue;
+                }
+                if (toolEvent.type === "tool_model_note") {
+                  const at = toolModelNoteTarget(
+                    toolCallParts as Parameters<typeof toolModelNoteTarget>[0],
+                    (toolEvent.tool_call_id as string) || "",
+                  );
+                  const suffix =
+                    typeof toolEvent.suffix === "string" ? toolEvent.suffix : "";
+                  if (at !== -1 && suffix) {
+                    const existing = toolCallParts[at] as PositionedToolCallPart;
+                    toolCallParts[at] = {
+                      ...existing,
+                      provenance: withToolModelSuffix(
+                        existing.provenance as Record<string, unknown> | undefined,
+                        suffix,
+                      ),
+                    } as PositionedToolCallPart;
+                    // A stop before the next chunk saves only what was yielded.
+                    yield {
+                      content: liveAssistantContent(),
+                      metadata: {
+                        timing: buildTiming(
+                          streamStartTime,
+                          totalChunks,
+                          firstTokenTime,
+                        ),
+                        custom: liveCustom(),
+                      },
+                    };
+                  }
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -7335,7 +7891,7 @@ export function createOpenAIStreamAdapter(
                       }
                     } else if (
                       createdFiles.length > 0 ||
-                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                      SANDBOX_RUN_TOOLS.has(toolCallParts[idx].toolName ?? "")
                     ) {
                       // Structured even with neither files nor images, because the session is the only record of
                       // WHERE this call ran: _created_file_sentinels emits nothing when a concurrent call shared
@@ -7460,6 +8016,9 @@ export function createOpenAIStreamAdapter(
               // Replay state reaches the message only through a yield, so a Stop while the gate holds one
               // persists a turn that cannot replay. Pace previews, never state.
               let replayStateChanged = false;
+              let geminiReplayStateChanged = false;
+              let geminiThoughtSignature: string | undefined;
+              let capturedGeminiThoughtPart = false;
               if (deltaExtraContent && typeof deltaExtraContent === "object") {
                 const extraRecord = deltaExtraContent as Record<
                   string,
@@ -7467,11 +8026,71 @@ export function createOpenAIStreamAdapter(
                 >;
                 const eGoogle = extraRecord.google;
                 if (eGoogle && typeof eGoogle === "object") {
-                  const sig = (eGoogle as Record<string, unknown>)
-                    .thought_signature;
+                  const googleRecord = eGoogle as Record<string, unknown>;
+                  const sig = googleRecord.thought_signature;
+                  const thoughtPart = googleRecord.thought_part;
+                  const answerPart = googleRecord.answer_part;
+                  if (
+                    thoughtPart &&
+                    typeof thoughtPart === "object" &&
+                    !Array.isArray(thoughtPart)
+                  ) {
+                    const thoughtRecord = thoughtPart as Record<string, unknown>;
+                    const thoughtText = thoughtRecord.text;
+                    const thoughtSignature = thoughtRecord.thought_signature;
+                    if (
+                      typeof thoughtText === "string" &&
+                      (thoughtSignature === undefined ||
+                        (typeof thoughtSignature === "string" && thoughtSignature))
+                    ) {
+                      appendGeminiThoughtReplayPart(
+                        geminiThoughtParts,
+                        thoughtText,
+                        typeof thoughtSignature === "string"
+                          ? thoughtSignature
+                          : undefined,
+                        toolCallParts.length,
+                      );
+                      capturedGeminiThoughtPart = true;
+                      geminiReplayStateChanged = true;
+                    }
+                  }
+                  let capturedAnswerPart = false;
+                  if (
+                    answerPart &&
+                    typeof answerPart === "object" &&
+                    !Array.isArray(answerPart)
+                  ) {
+                    const answerRecord = answerPart as Record<string, unknown>;
+                    const answerText = answerRecord.text;
+                    const answerSignature = answerRecord.thought_signature;
+                    if (
+                      typeof answerText === "string" &&
+                      (answerSignature === undefined ||
+                        (typeof answerSignature === "string" && answerSignature))
+                    ) {
+                      appendGeminiAnswerReplayPart(
+                        geminiAnswerParts,
+                        {
+                          text: answerText,
+                          ...(typeof answerSignature === "string"
+                            ? { thoughtSignature: answerSignature }
+                            : {}),
+                        },
+                        toolCallParts.length,
+                      );
+                      capturedAnswerPart = true;
+                      geminiReplayStateChanged = true;
+                    }
+                  }
                   if (typeof sig === "string" && sig) {
-                    replayStateChanged ||= sig !== latestTextThoughtSignature;
-                    latestTextThoughtSignature = sig;
+                    const belongsToThought = googleRecord.thought === true;
+                    if (belongsToThought) {
+                      geminiThoughtSignature = sig;
+                    } else if (!capturedAnswerPart) {
+                      geminiReplayStateChanged ||= sig !== legacyGeminiTextSignature;
+                      legacyGeminiTextSignature = sig;
+                    }
                   }
                 }
                 const codexReasoning = extraRecord.openai_codex_reasoning;
@@ -7528,6 +8147,23 @@ export function createOpenAIStreamAdapter(
               const reasoning =
                 (typeof rawReasoning === "string" ? rawReasoning : "") +
                 reasoningFromDetails;
+              if (
+                !capturedGeminiThoughtPart &&
+                externalProvider?.providerType === "gemini" &&
+                (reasoning || geminiThoughtSignature)
+              ) {
+                appendGeminiThoughtReplayPart(
+                  geminiThoughtParts,
+                  reasoning,
+                  geminiThoughtSignature,
+                  toolCallParts.length,
+                );
+                geminiReplayStateChanged = true;
+              }
+              // Text-bearing replay metadata is published with the same paced preview as its visible delta.
+              // Metadata-only signature parts still need an immediate yield or Stop could lose them.
+              replayStateChanged ||=
+                geminiReplayStateChanged && !delta && !reasoning;
               // OpenAI delta.tool_calls streams fragments by index; accumulate into one part. extra_content
               // carries the Gemini 3 thoughtSignature.
               const rawDeltaToolCalls = (
@@ -8140,43 +8776,22 @@ export function createOpenAIStreamAdapter(
           0;
         const cacheWriteTokens = usageCacheWriteTokens(meta?.usage);
 
-        // Gate on the captured checkpoint and thread so a late completion from provider A cannot
-        // repaint the bar after a switch to B. A first turn is adopted onto an id mid-run, so read
-        // the adopted key or the bar stays blank for life.
-        // A first turn is adopted onto an id mid-run and autosave moves activeThreadId with it, so read the
-        // adopted key, or the run stays "unresolved" for life and the bar stays blank.
-        const usageKey = liveThreadKey(serverCancel);
-        const usageThreadKey = usageKey === "__default" ? null : usageKey;
-        const usageThreadIsVisible =
-          useChatRuntimeStore.getState().activeThreadId ===
-          (usageThreadKey ?? activeThreadIdAtRunStart);
         if (
           meta?.usage &&
           typeof meta.usage.prompt_tokens === "number" &&
           typeof meta.usage.completion_tokens === "number" &&
           typeof meta.usage.total_tokens === "number"
         ) {
-          const usage = {
+          publishContextUsage({
             promptTokens: meta.usage.prompt_tokens,
             completionTokens: meta.usage.completion_tokens,
             totalTokens: meta.usage.total_tokens,
+            ...(typeof meta.usage.context_tokens === "number"
+              ? { contextTokens: meta.usage.context_tokens }
+              : {}),
             cachedTokens,
             cacheWriteTokens,
-          };
-          // File it under this run's own thread even when the gate blocks the visible write, so
-          // switching back re-applies it.
-          if (usageThreadKey !== null) {
-            useChatRuntimeStore
-              .getState()
-              .setThreadContextUsage(usageThreadKey, usage);
-          }
-          if (
-            usageThreadIsVisible &&
-            useChatRuntimeStore.getState().params.checkpoint ===
-              params.checkpoint
-          ) {
-            useChatRuntimeStore.getState().setContextUsage(usage);
-          }
+          });
         }
 
         if (
@@ -8289,6 +8904,19 @@ export function createOpenAIStreamAdapter(
           }
         }
 
+        if (
+          compactNow &&
+          !compactionMarkers?.some(
+            (marker) =>
+              marker.truncation.manual === true &&
+              marker.truncation.checkpoint_started === true,
+          )
+        ) {
+          toast.info("This chat was not compacted", {
+            description:
+              "Compaction needs the conversation archive and the default checkpoint policy.",
+          });
+        }
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
@@ -8327,6 +8955,14 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
+              compactionMarkers,
+              providerCompaction,
+              providerCompactionAfterToolCalls,
+              providerCompactionProviderType,
+              providerCompactionModelId,
+              providerCompactionConnectionKey:
+                providerCompactionOriginConnectionKey,
+              geminiContinuationReplay: geminiContinuationReplay(true),
               incomplete: finalIncompleteReason
                 ? { reason: finalIncompleteReason }
                 : undefined,
@@ -8338,6 +8974,9 @@ export function createOpenAIStreamAdapter(
                     promptTokens: meta.usage.prompt_tokens,
                     completionTokens: meta.usage.completion_tokens,
                     totalTokens: meta.usage.total_tokens,
+                    ...(typeof meta.usage.context_tokens === "number"
+                      ? { contextTokens: meta.usage.context_tokens }
+                      : {}),
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,
@@ -8496,6 +9135,14 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                compactionMarkers,
+                providerCompaction,
+                providerCompactionAfterToolCalls,
+                providerCompactionProviderType,
+                providerCompactionModelId,
+                providerCompactionConnectionKey:
+                  providerCompactionOriginConnectionKey,
+                geminiContinuationReplay: geminiContinuationReplay(true),
                 // Unfinished too, so it also offers Continue -- unless the provider already
                 // said why the model stopped.
                 incomplete: {
@@ -8574,6 +9221,7 @@ export function createOpenAIStreamAdapter(
         // serverCancel narrows both clears: runs with no resolved thread id share the "__default" key.
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
+        if (browserTools.length > 0) endBrowserAgentRun(cancelId);
       }
     },
   } satisfies ChatModelAdapter;

@@ -46,6 +46,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { armPanelDrag } from "@/components/ui/panel-drag-overlay";
 import {
   ResizableHandle,
   ResizablePanel,
@@ -74,6 +75,7 @@ import { chatLocalModelOptions } from "./local-model-options";
 import {
   type NativeIntent,
   NativeAttachmentTargetContext,
+  NativeAttachmentDragContext,
   NativeModelChip,
   NativeModelDropOverlay,
   useNativeIntentStore,
@@ -83,6 +85,7 @@ import {
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
+import { useDocumentFlag } from "@/lib/document-flag";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import { hasKnownContextWindow } from "./lib/context-window-known";
 import { isDownloadCancelled } from "@/lib/native-files";
@@ -124,15 +127,20 @@ import {
   SaveTemporaryChatMenu,
   TemporaryChatSaveBridge,
 } from "./components/temporary-chat-save";
+import { useT } from "@/i18n";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import {
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactElement,
+  createContext,
   lazy,
   memo,
   Suspense,
   useCallback,
+  useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -144,15 +152,11 @@ import {
   notifyChatHistoryUpdated,
 } from "./api/chat-api";
 import { codeToolCanRun } from "./api/code-tool-placement";
-import { ArtifactSurface } from "./artifacts/artifact-surface";
 import {
   clearAutoOpenedArtifacts,
   useChatArtifactsStore,
-  useSelectedChatArtifact,
 } from "./artifacts/store";
 import { isKnownTextOnlySelection } from "./utils/model-vision-capability";
-import { createChatArtifact } from "./artifacts/types";
-import type { ChatArtifact, ChatArtifactSurface } from "./artifacts/types";
 import { McpServersDialogMount } from "./mcp-composer-button";
 import { ChatSettingsPanel } from "./chat-settings-sheet";
 import {
@@ -210,6 +214,7 @@ import {
   getExternalReasoningCapabilities,
   providerSupportsPreserveThinking,
   getProviderCapabilities,
+  kimiSearchExcludesThinking,
   modelCatalogVersion,
   providerHostsCodeExecution,
   providerSupportsBuiltinCodeExecution,
@@ -228,6 +233,7 @@ import {
 } from "@/features/settings";
 import {
   ChatActiveContext,
+  ChatComposerFocusableContext,
   ChatRuntimeProvider,
   useChatActive,
 } from "./runtime-provider";
@@ -283,7 +289,9 @@ import {
   createAnnotationsFile,
 } from "./utils/document-annotations";
 import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
+import { savedBranchHead } from "./utils/branch-head";
 import { estimateContextUsage } from "./utils/estimate-chat-tokens";
+import { orderBySelectedBranch } from "./utils/message-order";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
@@ -314,6 +322,113 @@ const FullViewChatButton = lazy(() =>
     default: module.FullViewChatButton,
   })),
 );
+
+// Sandboxed page frames stay outside the trap: same-origin access would weaken their isolation.
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+// Only what is on screen: background tabs stay mounted under hidden or aria-hidden wrappers.
+function focusableIn(container: HTMLElement): HTMLElement[] {
+  return Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+    (element) =>
+      element.tabIndex !== -1 &&
+      !element.closest('[aria-hidden="true"], [inert]') &&
+      element.getClientRects().length > 0 &&
+      getComputedStyle(element).visibility !== "hidden",
+  );
+}
+
+/** Puts a staged fix prompt in this view's composer once it is on screen. */
+function useStagedFixPrompt(pendingFixPrompt: string | null, active: boolean): void {
+  const aui = useAui();
+  useEffect(() => {
+    if (!pendingFixPrompt || !active) return;
+    useChatArtifactsStore.getState().clearFixPrompt();
+    const composer = aui.composer();
+    const current = composer.getState().text;
+    composer.setText(
+      current.trim().length > 0
+        ? `${current}\n\n${pendingFixPrompt}`
+        : pendingFixPrompt,
+    );
+    // Focus the composer after the overlay returns focus to its opener.
+    window.setTimeout(() => {
+      document
+        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
+        ?.focus();
+    }, 0);
+  }, [pendingFixPrompt, aui, active]);
+}
+
+// Compare keeps the base view mounted but hidden; the overlay owns the browser then, so it runs once.
+const BrowserOverlaidContext = createContext(false);
+
+/** The browser over the chat, where it cannot sit beside it. A modal: focus moves in, stays in, and returns on close. */
+function BrowserOverlay(): ReactElement {
+  const t = useT();
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useDocumentFlag("data-browser-overlay-open", true);
+  useEffect(() => {
+    const previous = document.activeElement;
+    const id = window.setTimeout(() => {
+      const dialog = dialogRef.current;
+      if (dialog && !dialog.contains(document.activeElement)) (focusableIn(dialog)[0] ?? dialog).focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(id);
+      if (previous instanceof HTMLElement && previous.isConnected) previous.focus();
+    };
+  }, []);
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      // Menus, fields and annotating handle their own Escape first.
+      const target = event.target as HTMLElement;
+      const typing = target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+      if (event.defaultPrevented || typing || useBrowserStore.getState().annotateTabId !== null) return;
+      event.preventDefault();
+      useBrowserStore.getState().closePanel();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = focusableIn(event.currentTarget);
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (!first || !last) {
+      event.preventDefault();
+      event.currentTarget.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  };
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 sm:p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) {
+          useBrowserStore.getState().closePanel();
+        }
+      }}
+    >
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal={true}
+        aria-label={t("browser.title")}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+        className="size-full overflow-hidden border-border bg-background outline-none sm:h-[min(92dvh,900px)] sm:w-[min(96vw,1200px)] sm:rounded-2xl sm:border sm:shadow-xl"
+      >
+        <Suspense fallback={null}>
+          <BrowserPanel active={true} />
+        </Suspense>
+      </div>
+    </div>
+  );
+}
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -349,7 +464,7 @@ function savedUsageFor(
   }
   // llama.cpp stops at the window, so a count past it is stale; MLX runs past it, so its count stands.
   const limit = store.loadedIsGguf ? store.loadedContextLength : null;
-  if (typeof limit === "number" && limit > 0 && (usage.totalTokens ?? 0) > limit) {
+  if (typeof limit === "number" && limit > 0 && (usage.contextTokens ?? usage.totalTokens ?? 0) > limit) {
     return null;
   }
   return usage;
@@ -378,6 +493,7 @@ function messageHasImage(message: MessageRecord): boolean {
 function sendDocumentAnnotations(
   aui: ReturnType<typeof useAui>,
   annotations: DocumentAnnotations,
+  files: File[] = [],
 ): Promise<boolean> {
   const composer = aui.composer();
   const drafted = () => {
@@ -387,8 +503,21 @@ function sendDocumentAnnotations(
   // Text or files the user staged are their next message: the annotations join it unsent.
   const before = drafted();
   const hasDraft = before.text || before.attachments > 0;
-  return composer
-    .addAttachment(createAnnotationsFile(annotations))
+  // Extra files first, after the draft check, so they don't count as a draft. They're optional:
+  // one the model can't take (a screenshot on a text-only model) is skipped.
+  let extras = 0;
+  return files
+    .reduce(
+      (staged, file) =>
+        staged.then(() =>
+          composer.addAttachment(file).then(
+            () => void extras++,
+            () => undefined,
+          ),
+        ),
+      Promise.resolve(),
+    )
+    .then(() => composer.addAttachment(createAnnotationsFile(annotations)))
     .then(() => {
       const form = [
         ...document.querySelectorAll<HTMLFormElement>("form.aui-composer-root"),
@@ -407,7 +536,7 @@ function sendDocumentAnnotations(
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
           const now = drafted();
-          if (now.text || now.attachments > 1) return;
+          if (now.text || now.attachments > 1 + extras) return;
           form.requestSubmit();
         }),
       );
@@ -456,16 +585,9 @@ const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
 const SingleContent = memo(function SingleContent({
   threadId,
-  artifact,
-  artifactSurface,
-  onCloseArtifact,
 }: {
   threadId?: string;
-  artifact?: ChatArtifact | null;
-  artifactSurface: ChatArtifactSurface;
-  onCloseArtifact: () => void;
 }): ReactElement {
-  const openArtifact = useChatArtifactsStore((state) => state.openArtifact);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
   const isMobile = useIsMobile();
   const chatActive = useChatActive();
@@ -483,18 +605,7 @@ const SingleContent = memo(function SingleContent({
     setInAppLinkHandler(openUrlInBrowser);
     useBrowserStore.setState({
       requestEdits: (prompt) => useChatArtifactsStore.getState().stageFixPrompt(prompt),
-      sendAnnotations: (annotations) => sendDocumentAnnotations(aui, annotations),
-      // The canvas and the browser share the side panel, so the file leaves the browser for it.
-      openInCanvas: ({ title, code }) => {
-        const artifact = createChatArtifact({
-          title,
-          code,
-          source: "fence",
-          threadId: useChatRuntimeStore.getState().activeThreadId,
-        });
-        useBrowserStore.getState().closePanel();
-        useChatArtifactsStore.getState().openArtifact(artifact, { surface: "panel" });
-      },
+      sendAnnotations: (annotations, files) => sendDocumentAnnotations(aui, annotations, files),
       attachToChat: (file) =>
         aui
           .composer()
@@ -508,26 +619,10 @@ const SingleContent = memo(function SingleContent({
     return () => {
       setBrowserPanelAvailable(false);
       setInAppLinkHandler(null);
-      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, openInCanvas: null, attachToChat: null });
+      useBrowserStore.setState({ requestEdits: null, sendAnnotations: null, attachToChat: null });
     };
   }, [chatActive, isMobile, aui]);
-  useEffect(() => {
-    if (!pendingFixPrompt || !chatActive) return;
-    useChatArtifactsStore.getState().clearFixPrompt();
-    const composer = aui.composer();
-    const current = composer.getState().text;
-    composer.setText(
-      current.trim().length > 0
-        ? `${current}\n\n${pendingFixPrompt}`
-        : pendingFixPrompt,
-    );
-    // The overlay returns focus to its opener on unmount, so focus the composer after that.
-    window.setTimeout(() => {
-      document
-        .querySelector<HTMLTextAreaElement>(COMPOSER_INPUT_SELECTOR)
-        ?.focus();
-    }, 0);
-  }, [pendingFixPrompt, aui, chatActive]);
+  useStagedFixPrompt(pendingFixPrompt, chatActive);
   const openResearchRunId = useResearchRunStore((state) => state.openRunId);
   const closeResearchPanel = useResearchRunStore((state) => state.closePanel);
   useEffect(() => {
@@ -548,14 +643,13 @@ const SingleContent = memo(function SingleContent({
   const rememberArtifactPanelWidth = useCallback(() => {
     const size = artifactPanelRef.current?.getSize().asPercentage;
     if (size == null) return;
-    // A drag shut is a close; a zero-width panel still holding the artifact would make the next card click hide it.
+    // Dragged shut means closed.
     if (size <= 5) {
-      if (useBrowserStore.getState().open) closeBrowser();
-      else onCloseArtifact();
+      closeBrowser();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, [onCloseArtifact, closeBrowser]);
+  }, [closeBrowser]);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -568,7 +662,15 @@ const SingleContent = memo(function SingleContent({
       openResearchThreadId === (threadId ?? activeThreadId),
   );
   const showResearchPanel = researchMatchesThread && !isMobile;
-  const showBrowserPanel = !showResearchPanel && !isMobile && browserOpen;
+  const browserOverlaid = useContext(BrowserOverlaidContext);
+  const showBrowserPanel = !showResearchPanel && !isMobile && !browserOverlaid && browserOpen;
+  // Research outranks the browser in the side pane, so a new browser open (a card, a link) closes it.
+  const handledBrowserOpenRef = useRef(browserOpenSequence);
+  useEffect(() => {
+    if (handledBrowserOpenRef.current === browserOpenSequence) return;
+    handledBrowserOpenRef.current = browserOpenSequence;
+    if (showResearchPanel && browserOpen && !browserOverlaid) closeResearchPanel();
+  }, [browserOpenSequence, browserOpen, browserOverlaid, showResearchPanel, closeResearchPanel]);
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
   const chatDock = useBrowserStore((state) => state.chatDock);
@@ -582,16 +684,7 @@ const SingleContent = memo(function SingleContent({
       ? BROWSER_PANEL_DEFAULT_SIZE
       : ARTIFACT_PANEL_DEFAULT_SIZE;
   });
-  // Without a URL threadId the artifact must belong to the active thread.
-  const showArtifactPanel = !showResearchPanel && !showBrowserPanel && Boolean(
-    artifact &&
-      artifactSurface === "panel" &&
-      (threadId
-        ? !artifact.threadId || artifact.threadId === threadId
-        : Boolean(artifact.threadId && artifact.threadId === activeThreadId)),
-  );
-  const showContextPanel =
-    showResearchPanel || showArtifactPanel || showBrowserPanel;
+  const showContextPanel = showResearchPanel || showBrowserPanel;
 
   const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
@@ -605,29 +698,16 @@ const SingleContent = memo(function SingleContent({
     artifactPanelWidthRef.current = null;
   }, [artifactPanelThread]);
 
-  const artifactOpenSequence = useChatArtifactsStore(
-    (state) => state.openSequence,
-  );
-  const seenArtifactOpenSequenceRef = useRef(artifactOpenSequence);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequence is the re-expand trigger
   useEffect(() => {
-    if (seenArtifactOpenSequenceRef.current === artifactOpenSequence) return;
-    seenArtifactOpenSequenceRef.current = artifactOpenSequence;
-    closeBrowser();
-  }, [artifactOpenSequence, closeBrowser]);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequences are the re-expand triggers
-  useEffect(() => {
-    if (
-      !showContextPanel ||
-      (artifactOpenSequence === 0 && browserOpenSequence === 0)
-    )
-      return;
+    if (!showContextPanel || browserOpenSequence === 0) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
     if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
     // expand() alone restores the pre-collapse width, which is zero after a drag shut.
     panel.expand();
     panel.resize(artifactPanelWidthRef.current ?? defaultPanelSizeRef.current);
-  }, [artifactOpenSequence, browserOpenSequence, showContextPanel]);
+  }, [browserOpenSequence, showContextPanel]);
 
   useEffect(() => {
     const panel = artifactPanelRef.current;
@@ -680,10 +760,9 @@ const SingleContent = memo(function SingleContent({
 
   useEffect(() => {
     if (!researchMatchesThread) return;
-    onCloseArtifact();
     closeBrowser();
     useChatRuntimeStore.getState().setSettingsPanelOpen(false);
-  }, [researchMatchesThread, onCloseArtifact, closeBrowser]);
+  }, [researchMatchesThread, closeBrowser]);
 
   // Close the browser on leaving the chat; the runtime thread id survives a new chat's first save.
   const shownThreadId = useAuiState(({ threads }) => threads.mainThreadId);
@@ -792,6 +871,7 @@ const SingleContent = memo(function SingleContent({
     <>
       <ResizablePanelGroup
         orientation="horizontal"
+        disableCursor
         data-artifact-layout-animating={
           isArtifactLayoutAnimating ? "true" : "false"
         }
@@ -823,7 +903,7 @@ const SingleContent = memo(function SingleContent({
           <div
             data-expanded={chatDock === "expanded" ? "true" : "false"}
             className={cn(
-              "flex h-full min-h-0 min-w-0 flex-col overflow-hidden",
+              "flex h-full min-h-0 min-w-0 flex-col overflow-hidden [html[data-panel-resizing]_&]:pointer-events-auto",
               browserFullView &&
                 (chatDock === "minimized"
                   ? "chat-full-view-dock-minimized"
@@ -845,17 +925,26 @@ const SingleContent = memo(function SingleContent({
           withHandle={false}
           // The library's double-click reset would shut the panel without closing the artifact.
           disableDoubleClick
+          disabled={!artifactLayoutActive || browserFullView}
           onPointerDown={(event) => {
             if (event.button !== 0) return;
+            const drag = armPanelDrag(event.clientX);
             const unpin = pinBrowserPage(event.currentTarget);
             const release = () => {
               window.removeEventListener("pointerup", release);
               window.removeEventListener("pointercancel", release);
+              window.removeEventListener("pointermove", moved);
+              drag.release();
               unpin();
               rememberArtifactPanelWidth();
             };
+            const moved = (move: PointerEvent) => {
+              if (move.buttons === 0) release();
+              else drag.move(move.clientX);
+            };
             window.addEventListener("pointerup", release);
             window.addEventListener("pointercancel", release);
+            window.addEventListener("pointermove", moved);
           }}
           onKeyUp={rememberArtifactPanelWidth}
           className={cn(
@@ -885,7 +974,7 @@ const SingleContent = memo(function SingleContent({
                 ? "58%"
                 : "0%"
           }
-          collapsible={showArtifactPanel || showBrowserPanel}
+          collapsible={showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -915,15 +1004,6 @@ const SingleContent = memo(function SingleContent({
               <Suspense fallback={null}>
                 <BrowserPanel active={chatActive} />
               </Suspense>
-            ) : showArtifactPanel && artifact ? (
-              <ArtifactSurface
-                artifact={artifact}
-                variant="panel"
-                onClose={onCloseArtifact}
-                onOpenFullscreen={() =>
-                  openArtifact(artifact, { surface: "overlay" })
-                }
-              />
             ) : null}
           </div>
         </ResizablePanel>
@@ -1216,7 +1296,8 @@ function CompareShell({
         {/* Symmetric: the extra right inset mirrored the viewport's one-sided
             scrollbar gutter, which is now reserved on both edges. */}
         <div className="shrink-0 bg-background pl-5 pr-5 md:px-[calc(30px*var(--ui-space-scale,1))] pb-2 pt-1">
-          <div className="mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
+          {/* unsloth-composer-shell: the size container the single composer's narrow layout queries. */}
+          <div className="unsloth-composer-shell mx-auto w-full max-w-[var(--custom-chat-max-width,48rem)]">{composer}</div>
           {showModelDisclaimer && (
             <p className="composer-footer-note">
               LLMs can make mistakes. Double-check responses.
@@ -1799,6 +1880,11 @@ function ProjectLanding({
   const navigate = useNavigate();
   // Gates body-portaled surfaces so they cannot linger or act while the landing is off-route.
   const active = useChatActive();
+  // The browser shows over a project, so its Request edits lands in this composer.
+  useStagedFixPrompt(
+    useChatArtifactsStore((state) => state.pendingFixPrompt),
+    active,
+  );
   const wasActiveRef = useRef(active);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   // Captured in render, not an effect: the shared provider's ThreadNewChatSwitch is an earlier
@@ -2680,8 +2766,12 @@ export function ChatPage({
       projectId: search.project,
     }),
   );
+  // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
+  // take focus and dismiss them.
+  const [handoffOwnsPicker, setHandoffOwnsPicker] = useState(false);
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
+      setHandoffOwnsPicker(true);
       setSettingsOpen(false);
       setModelSelectorLocked(false);
       setModelSelectorOpen(true);
@@ -2689,6 +2779,8 @@ export function ChatPage({
     },
     [setSettingsOpen],
   );
+  // During render, so the composer is focusable again in the commit that closes the picker.
+  if (handoffOwnsPicker && !modelSelectorOpen) setHandoffOwnsPicker(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when compare was opened from a
   // path that does not set viewBeforeCompareRef.
@@ -2698,11 +2790,13 @@ export function ChatPage({
       lastNonCompareViewRef.current = { ...search };
     }
   }, [search]);
-  const inferenceParams = useChatRuntimeStore((state) => state.params);
-  const setInferenceParams = useChatRuntimeStore((state) => state.setParams);
+  const inferenceCheckpoint = useChatRuntimeStore(
+    (state) => state.params.checkpoint,
+  );
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
+  const loadedIsMlx = useChatRuntimeStore((state) => state.loadedIsMlx);
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
@@ -2736,8 +2830,25 @@ export function ChatPage({
   const modelsError = useChatRuntimeStore((state) => state.modelsError);
   const modelLoading = useChatRuntimeStore((state) => state.modelLoading);
   const clearCheckpoint = useChatRuntimeStore((state) => state.clearCheckpoint);
-  const resetArtifacts = useChatArtifactsStore((state) => state.resetArtifacts);
   const activeThreadId = useChatRuntimeStore((state) => state.activeThreadId);
+  const [compactionSnapshot, setCompactionSnapshot] = useState<{
+    threadId: string;
+    count: number;
+  } | null>(null);
+  const handleCompactionCountChange = useCallback(
+    (threadId: string, count: number) => {
+      setCompactionSnapshot((current) =>
+        current?.threadId === threadId && current.count === count
+          ? current
+          : { threadId, count },
+      );
+    },
+    [],
+  );
+  const compactionCount =
+    compactionSnapshot?.threadId === activeThreadId
+      ? compactionSnapshot.count
+      : 0;
   const latestResearchRunId = useResearchRunStore((state) =>
     activeThreadId ? state.latestRunByThreadId[activeThreadId] : undefined,
   );
@@ -2760,7 +2871,8 @@ export function ChatPage({
     : null;
   const { items: currentProjectItems, loaded: currentProjectItemsLoaded } =
     useChatSidebarItems({
-    projectId: currentProjectId ?? "__no_project_selected__",
+      projectId: currentProjectId ?? "__no_project_selected__",
+      enabled: Boolean(currentProjectId),
     });
   const currentChatTitle = activeThreadId
     ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
@@ -2793,9 +2905,7 @@ export function ChatPage({
   const persistedActiveThreadId = isAssistantLocalThreadId(activeThreadId)
     ? null
     : activeThreadId;
-  // A ?new=<nonce> chat has no thread in the URL before or after its first send, and for the first render the
-  // store still holds the PREVIOUS chat's id until ThreadNewChatSwitch blanks it, so latch on having seen it
-  // blanked for this nonce.
+  // ?new=<nonce> lacks a URL thread; wait for ThreadNewChatSwitch to clear stale activeThreadId.
   const newChatBlankedRef = useRef<string | null>(null);
   if (
     search.new &&
@@ -2807,6 +2917,17 @@ export function ChatPage({
     search.new && newChatBlankedRef.current === search.new
       ? persistedActiveThreadId
       : null;
+  // leaving Chat clears activeThreadId and restores it later, so the shown thread id is latched.
+  const newChatIdentityBlankedRef = useRef<string | null>(null);
+  if (search.new && activeThreadId === null) {
+    newChatIdentityBlankedRef.current = search.new;
+  }
+  // re-latch after every blank: a nonce whose chat was deleted while hidden comes back on a fresh thread.
+  const newChatRef = useRef<{ nonce: string; threadId: string } | null>(null);
+  if (search.new && activeThreadId && newChatIdentityBlankedRef.current === search.new) {
+    newChatRef.current = { nonce: search.new, threadId: activeThreadId };
+    newChatIdentityBlankedRef.current = null;
+  }
   const modelOperationInProgress = useChatRuntimeStore(
     (state) => state.modelLoading,
   );
@@ -2830,8 +2951,7 @@ export function ChatPage({
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
   useEffect(() => {
     const turnedOff = prevConnectionsEnabledRef.current && !connectionsEnabled;
-    if (!connectionsEnabled && isExternalModelId(inferenceParams.checkpoint)) {
-      resetArtifacts();
+    if (!connectionsEnabled && isExternalModelId(inferenceCheckpoint)) {
       clearCheckpoint();
       if (turnedOff) {
         toast.info("Connections disabled", {
@@ -2843,8 +2963,7 @@ export function ChatPage({
   }, [
     clearCheckpoint,
     connectionsEnabled,
-    inferenceParams.checkpoint,
-    resetArtifacts,
+    inferenceCheckpoint,
   ]);
   const pendingNativeModelIntent = useNativeIntentStore(
     (state) => state.pendingModelIntent,
@@ -2873,8 +2992,8 @@ export function ChatPage({
     [],
   );
   const isExternalModel = useMemo(
-    () => isExternalModelId(inferenceParams.checkpoint),
-    [inferenceParams.checkpoint],
+    () => isExternalModelId(inferenceCheckpoint),
+    [inferenceCheckpoint],
   );
   const contextWindowKnown = hasKnownContextWindow({
     loadedContextLength,
@@ -2893,13 +3012,13 @@ export function ChatPage({
     (s) => s.loadedIsDiffusion,
   );
   const activeModelIsLora = useMemo(() => {
-    const checkpoint = inferenceParams.checkpoint;
+    const checkpoint = inferenceCheckpoint;
     if (!checkpoint || isExternalModel) return false;
     const model = modelsFromStore.find((entry) => entry.id === checkpoint);
     if (model) return model.isLora;
     const lora = lorasFromStore.find((entry) => entry.id === checkpoint);
     return lora?.exportType === "lora";
-  }, [inferenceParams.checkpoint, isExternalModel, modelsFromStore, lorasFromStore]);
+  }, [inferenceCheckpoint, isExternalModel, modelsFromStore, lorasFromStore]);
   const reasoningEnabled = useChatRuntimeStore((s) => s.reasoningEnabled);
   const reasoningStyle = useChatRuntimeStore((s) => s.reasoningStyle);
   const reasoningEffort = useChatRuntimeStore((s) => s.reasoningEffort);
@@ -2907,17 +3026,17 @@ export function ChatPage({
     (s) => s.supportsReasoningOff,
   );
   const activeExternalProvider = useMemo(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return null;
     return (
       externalProvidersForChat.find((p) => p.id === selection.providerId) ??
       null
     );
-  }, [externalProvidersForChat, inferenceParams.checkpoint]);
+  }, [externalProvidersForChat, inferenceCheckpoint]);
   const activeExternalProviderType =
     activeExternalProvider?.providerType ?? null;
   const activeProviderCapabilities = useMemo(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return null;
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
@@ -2942,14 +3061,14 @@ export function ChatPage({
     };
   }, [
     externalProvidersForChat,
-    inferenceParams.checkpoint,
+    inferenceCheckpoint,
     reasoningEnabled,
     reasoningStyle,
     reasoningEffort,
     supportsReasoningOff,
   ]);
   useEffect(() => {
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return;
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
@@ -2961,6 +3080,7 @@ export function ChatPage({
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
         apiType: provider?.apiType,
+        reasoningConfig: provider?.reasoningConfig,
       },
     );
     const state = useChatRuntimeStore.getState();
@@ -2969,7 +3089,7 @@ export function ChatPage({
     // resync, and resolving it without the pin is what put the provider default back over a
     // level the user had set on the model's row.
     const pinnedEffort = externalReasoningTakesEffort(reasoningCaps)
-      ? pinnedReasoningEffort(inferenceParams.checkpoint, effortLevels)
+      ? pinnedReasoningEffort(inferenceCheckpoint, effortLevels)
       : null;
     const nextReasoningEffort = resolveExternalReasoningEffort({
       caps: reasoningCaps,
@@ -3010,7 +3130,10 @@ export function ChatPage({
     );
     // Kimi's k2.6/k2.5 default to thinking enabled server-side, so the Think pill comes up clicked. Search stays
     // off; the composer's mutual-exclusion handlers flip the two. Per https://platform.kimi.ai/docs/models.
-    const isKimi = provider?.providerType === "kimi";
+    const isKimi = kimiSearchExcludesThinking(
+      provider?.providerType,
+      selection.modelId,
+    );
     // Web search on by default only for Anthropic and OpenAI, both with structured citations.
     // OpenRouter and Kimi work on opt-in but are less reliable.
     const searchOnByDefault =
@@ -3090,19 +3213,19 @@ export function ChatPage({
     });
     // Reruns once settings hydrate: this normalization reads the stored pills and clamps them to the
     // model, and hydration refreshes what it reads, so it has to be applied last.
-  }, [externalProvidersForChat, inferenceParams.checkpoint, settingsHydrated]);
+  }, [externalProvidersForChat, inferenceCheckpoint, settingsHydrated]);
   // Another tab can change the active model's pin (the pin store listens for the storage event),
   // and the normalization above reads the pin through a getState helper without subscribing, so
   // the composer kept the old level until a switch. Only the effort here: the pills and the rest
   // of that block are not this one's to rerun.
   const activePinnedEffort = useModelReasoningEffortStore(
-    (state) => state.effortByModel[inferenceParams.checkpoint],
+    (state) => state.effortByModel[inferenceCheckpoint],
   );
   const appliedPinnedEffort = useRef(activePinnedEffort);
   useEffect(() => {
     if (appliedPinnedEffort.current === activePinnedEffort) return;
     appliedPinnedEffort.current = activePinnedEffort;
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return;
     const provider = externalProvidersForChat.find(
       (p) => p.id === selection.providerId,
@@ -3114,15 +3237,16 @@ export function ChatPage({
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
         apiType: provider?.apiType,
+        reasoningConfig: provider?.reasoningConfig,
       },
     );
     reconcilePinnedReasoningEffort({
-      checkpoint: inferenceParams.checkpoint,
+      checkpoint: inferenceCheckpoint,
       caps,
       providerType: provider?.providerType,
       apiType: provider?.apiType,
     });
-  }, [activePinnedEffort, externalProvidersForChat, inferenceParams.checkpoint]);
+  }, [activePinnedEffort, externalProvidersForChat, inferenceCheckpoint]);
   // A catalog that lands after selection refreshes only the stored reasoning fields (the effort shortcut reads them),
   // never the selection defaults above, so a chosen effort and the pills survive the refresh.
   const modelCatalogChange = useSyncExternalStore(
@@ -3133,7 +3257,7 @@ export function ChatPage({
   useEffect(() => {
     if (appliedCatalogChange.current === modelCatalogChange) return;
     appliedCatalogChange.current = modelCatalogChange;
-    const selection = parseExternalModelId(inferenceParams.checkpoint);
+    const selection = parseExternalModelId(inferenceCheckpoint);
     if (!selection) return;
     const { providers, connectionsEnabled: enabled } = useExternalProvidersStore.getState();
     const provider = enabled
@@ -3146,6 +3270,7 @@ export function ChatPage({
         isReasoningProvider: provider?.isReasoningModel === true,
         baseUrl: provider?.baseUrl ?? null,
         apiType: provider?.apiType,
+        reasoningConfig: provider?.reasoningConfig,
       },
     );
     useChatRuntimeStore.setState(
@@ -3154,15 +3279,15 @@ export function ChatPage({
     // After the levels, not before: a pin is only applied while the catalogue calls it legal, so
     // the refresh that publishes the level is what puts the model's own pin in force.
     reconcilePinnedReasoningEffort({
-      checkpoint: inferenceParams.checkpoint,
+      checkpoint: inferenceCheckpoint,
       caps,
       providerType: provider?.providerType,
       apiType: provider?.apiType,
     });
-  }, [modelCatalogChange, inferenceParams.checkpoint]);
+  }, [modelCatalogChange, inferenceCheckpoint]);
   const canCompare = useMemo(() => {
-    return Boolean(inferenceParams.checkpoint) && !isExternalModel;
-  }, [inferenceParams.checkpoint, isExternalModel]);
+    return Boolean(inferenceCheckpoint) && !isExternalModel;
+  }, [inferenceCheckpoint, isExternalModel]);
 
   useEffect(() => {
     let canceled = false;
@@ -3270,11 +3395,15 @@ export function ChatPage({
     }
   }, [view, incognito, setIncognito]);
 
-  const selectedArtifact = useSelectedChatArtifact();
-  const artifactSurface = useChatArtifactsStore((state) => state.surface);
-  const closeArtifactSurface = useChatArtifactsStore(
-    (state) => state.closeArtifactSurface,
-  );
+  const browserOpen = useBrowserStore((state) => state.open);
+  const browserOpenSequence = useBrowserStore((state) => state.openSequence);
+  // A project has no side pane: only a browser opened from it (a card, a link) shows over it, not
+  // one left open in a chat before.
+  const [projectBrowserBaseline, setProjectBrowserBaseline] = useState<number | null>(null);
+  const projectViewId = view.mode === "project" ? view.projectId : null;
+  useEffect(() => {
+    setProjectBrowserBaseline(projectViewId ? useBrowserStore.getState().openSequence : null);
+  }, [projectViewId]);
   const artifactViewKey =
     view.mode === "single"
       ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
@@ -3316,24 +3445,56 @@ export function ChatPage({
   const projectRuntimeReady =
     projectLandingId !== null && projectRuntimeReadyFor === projectLandingId;
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a new view is the reset
   useEffect(() => {
     clearAutoOpenedArtifacts();
-    closeArtifactSurface();
-  }, [artifactViewKey, closeArtifactSurface]);
+  }, [artifactViewKey]);
 
-  useEffect(() => {
-    if (view.mode !== "single") return;
-    if (view.threadId || !selectedArtifact) return;
-    // Close any canvas that does not belong to the active thread.
-    if (
-      selectedArtifact.threadId &&
-      selectedArtifact.threadId === activeThreadId
-    )
-      return;
-    closeArtifactSurface();
-  }, [activeThreadId, closeArtifactSurface, selectedArtifact, view]);
+  const newChat = newChatRef.current;
+  const newChatShownId =
+    newChat && view.mode === "single" && view.newThreadNonce === newChat.nonce ? newChat.threadId : null;
+  const projectChatBlankedRef = useRef<{ projectId: string; nonce: string } | null>(null);
+  if (view.mode === "project" && activeThreadId === null) {
+    projectChatBlankedRef.current = { projectId: view.projectId, nonce: projectNewThreadNonce };
+  }
+  const projectChatRef = useRef<{ projectId: string; nonce: string; threadId: string } | null>(null);
+  const projectChatBlanked = projectChatBlankedRef.current;
+  if (
+    view.mode === "project" &&
+    activeThreadId &&
+    projectChatBlanked?.projectId === view.projectId &&
+    projectChatBlanked.nonce === projectNewThreadNonce &&
+    (projectChatRef.current?.projectId !== view.projectId ||
+      projectChatRef.current.nonce !== projectNewThreadNonce)
+  ) {
+    projectChatRef.current = {
+      projectId: view.projectId,
+      nonce: projectNewThreadNonce,
+      threadId: activeThreadId,
+    };
+  }
+  const projectChat = projectChatRef.current;
+  const projectChatShownId =
+    projectChat &&
+    view.mode === "project" &&
+    projectChat.projectId === view.projectId &&
+    projectChat.nonce === projectNewThreadNonce
+      ? projectChat.threadId
+      : null;
+  const shownChatKey =
+    view.mode === "single"
+      ? `single:${view.threadId ?? newChatShownId ?? activeThreadId ?? view.newThreadNonce ?? "new"}`
+      : view.mode === "project"
+        ? projectChatShownId
+          ? `single:${projectChatShownId}`
+          : `project:${view.projectId}:${projectNewThreadNonce}`
+        : artifactViewKey;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: another chat on screen is the reset
+  useLayoutEffect(() => {
+    useBrowserStore.getState().closeChatPages();
+  }, [shownChatKey]);
 
-  const hasActiveModel = Boolean(inferenceParams.checkpoint);
+  const hasActiveModel = Boolean(inferenceCheckpoint);
   const chatContextKey = `${view.mode}|${activeThreadId ?? ""}|${search.new ?? ""}|${search.project ?? ""}`;
   const [pendingHubAutoLoad, setPendingHubAutoLoad] =
     useState<PendingHubAutoLoad | null>(null);
@@ -3569,21 +3730,13 @@ export function ChatPage({
       ),
     [hasActiveModel, loadNativeModelIntent],
   );
-  // Dropped documents go to the thread bar, which owns the RAG upload and can materialize a thread
-  // id for a chat that has not been sent to yet.
-  const handleNativeAttachmentDrop = useCallback(
-    (intents: NativeIntent[]) => {
-      useNativeIntentStore.getState().addAttachments(artifactViewKey, intents);
-    },
-    [artifactViewKey],
-  );
   const handleNativeImageDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore.getState().addImageAttachments(artifactViewKey, intents);
     },
     [artifactViewKey],
   );
-  const handleNativeOpenDocumentDrop = useCallback(
+  const handleNativeDocumentDrop = useCallback(
     (intents: NativeIntent[]) => {
       useNativeIntentStore
         .getState()
@@ -3617,9 +3770,8 @@ export function ChatPage({
     hasActiveModel,
     isModelLoading: Boolean(loadingModel) || modelLoading,
     onAutoLoad: handleNativeModelDropAutoLoad,
-    onAttach: handleNativeAttachmentDrop,
     onAttachImages: handleNativeImageDrop,
-    onAttachOpenDocuments: handleNativeOpenDocumentDrop,
+    onAttachDocuments: handleNativeDocumentDrop,
     onAttachAudio: handleNativeAudioDrop,
     onAttachVideo: handleNativeVideoDrop,
   });
@@ -3705,6 +3857,7 @@ export function ChatPage({
             isReasoningProvider: selectedProvider?.isReasoningModel === true,
             baseUrl: selectedProvider?.baseUrl ?? null,
             apiType: selectedProvider?.apiType,
+            reasoningConfig: selectedProvider?.reasoningConfig,
           },
         );
         const effortLevels = reasoningCaps.reasoningEffortLevels;
@@ -3757,7 +3910,10 @@ export function ChatPage({
         );
         // See sibling useEffect: Kimi's k2.x default to thinking enabled. Search stays off; the
         // composer's mutual exclusion flips them.
-        const isKimi = selectedProvider?.providerType === "kimi";
+        const isKimi = kimiSearchExcludesThinking(
+          selectedProvider?.providerType,
+          selectedExternal?.modelId,
+        );
         // Mirror of sibling useEffect: Anthropic/OpenAI get Search on by default; others stay off.
         const searchOnByDefault =
           supportsBuiltinWebSearch &&
@@ -3917,7 +4073,7 @@ export function ChatPage({
   );
   const handleReloadActiveModel = useCallback(
     (config: PerModelConfig) => {
-      const checkpoint = inferenceParams.checkpoint;
+      const checkpoint = inferenceCheckpoint;
       if (!checkpoint) return;
       const runtime = useChatRuntimeStore.getState();
       const activeLoadId = runtime.activeLoadId;
@@ -3948,7 +4104,7 @@ export function ChatPage({
       });
     },
     [
-      inferenceParams.checkpoint,
+      inferenceCheckpoint,
       activeGgufVariant,
       activeModelIsLora,
       activeModelIsGguf,
@@ -3958,14 +4114,13 @@ export function ChatPage({
   );
   const handleEject = useCallback(
     (modelId?: string) => {
-      const ejectedSelected = !modelId || modelId === inferenceParams.checkpoint;
-      void ejectModel(modelId).then((ok) => ok && ejectedSelected && resetArtifacts());
+      void ejectModel(modelId);
     },
-    [ejectModel, inferenceParams.checkpoint, resetArtifacts],
+    [ejectModel],
   );
   const handleEjectAll = useCallback(() => {
-    void ejectAllModels().then((ok) => ok && resetArtifacts());
-  }, [ejectAllModels, resetArtifacts]);
+    void ejectAllModels();
+  }, [ejectAllModels]);
 
   // Pins the picker open so a stray click cannot dismiss the step under it. Tour steps only: the
   // effect below shuts anything left pinned once the tour is gone.
@@ -4091,7 +4246,7 @@ export function ChatPage({
 
   const fastModeSupported = providerSupportsFastMode(
     activeExternalProviderType,
-    parseExternalModelId(inferenceParams.checkpoint)?.modelId ?? null,
+    parseExternalModelId(inferenceCheckpoint)?.modelId ?? null,
   );
   useShortcut(
     "toggleFastMode",
@@ -4124,10 +4279,9 @@ export function ChatPage({
   }, [currentProjectId, navigate, search]);
 
   const exitCompare = useCallback(() => {
-    // Prefer the explicit save; fall back to the last non-compare view so the composer + menu path
-    // also returns where the user started.
+    // the composer and menu exit paths rely on the last non-compare view.
     const saved = viewBeforeCompareRef.current ?? lastNonCompareViewRef.current;
-    // No saved view (compare opened by direct URL); fall back to a fresh chat.
+    // direct compare URLs have no saved view, so return to a fresh chat.
     if (!saved) {
       navigate({ to: "/chat" });
       return;
@@ -4140,10 +4294,13 @@ export function ChatPage({
       void listStoredChatMessages(threadId)
         .then((messages) => {
           const store = useChatRuntimeStore.getState();
-          const usage = savedUsageFor(messages, store) ?? estimateContextUsage(messages);
+          const branch = orderBySelectedBranch(
+            messages,
+            savedBranchHead(threadId, messages),
+          );
+          const usage = savedUsageFor(branch, store) ?? estimateContextUsage(branch);
           if (!usage) return;
-          // Key by the thread this restore read, like the history loader: the await above can outlast a
-          // switch away, and an unkeyed write would file this usage under the incoming thread.
+          // key usage by the restored thread because this read can outlast a thread switch.
           store.setThreadContextUsage(threadId, usage);
           if (store.activeThreadId === threadId) {
             store.setContextUsage(usage);
@@ -4463,15 +4620,24 @@ export function ChatPage({
     return () => window.clearTimeout(timeoutId);
   }, [modelSelectorLocked, tour.open]);
 
-  const showArtifactOverlay = Boolean(
-    selectedArtifact &&
-      (view.mode === "compare" || artifactSurface === "overlay"),
-  );
+  // Compare, projects (no side pane) and phones show the browser over the chat.
+  const showBrowserOverlay =
+    active &&
+    browserOpen &&
+    (view.mode === "compare" ||
+      isMobile ||
+      (view.mode === "project" &&
+        projectBrowserBaseline !== null &&
+        browserOpenSequence > projectBrowserBaseline));
 
   return (
     // Provides `active` to ChatRuntimeProvider (drops the message views while off-route, keeping the
     // runtime alive) and to the compare chrome.
     <ChatActiveContext.Provider value={active}>
+    {/* Before adoption sets handoffOwnsPicker, the pending request is what holds the picker open. */}
+    <ChatComposerFocusableContext.Provider
+      value={modelConfigRequest === null && !handoffOwnsPicker}
+    >
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
       {/* Portaled surfaces render to document.body, escaping the parent's hidden wrapper, so gate them
           on `active` to keep them off other tabs. */}
@@ -4485,16 +4651,9 @@ export function ChatPage({
           used to own it only renders once it is. Mounted through the route change so it can close
           itself on the way out. */}
       <McpServersDialogMount />
-      {/* `--studio-chat-notice-height` is 0 until ChatModelNotice is on screen; the thread viewport
-          adds it to the top padding, so without it the first message reads under an opaque bar.
-          Declared on the nearest ancestor of BOTH so the two cannot disagree. `has-[>...]`, not
-          `has-[...]`: a `:has()` with a DESCENDANT argument is re-checked on any insertion in the
-          subtree, which walks the whole thread on every mutation - 17.5 ms per append on a 357k-
-          element thread, against 0.10 ms without this rule (Chromium). ChatModelNotice renders a
-          direct child, which tests/thread-ancestor-has-scope.test.ts asserts. */}
       <div
         data-chat-content-root=""
-        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden has-[>[data-chat-model-notice]]:[--studio-chat-notice-height:2.25rem]"
+        className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
       >
         <NativeModelDropOverlay state={nativeModelDropState} />
         {/* Fade under the top bar so messages dissolve as they scroll beneath it, instead of a hard cut. */}
@@ -4502,7 +4661,7 @@ export function ChatPage({
           <div
             aria-hidden
             data-side-panel-inset=""
-            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px)+var(--studio-chat-notice-height,0px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
+            className="chat-header-fade pointer-events-none absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-20 h-6 bg-gradient-to-b from-background to-transparent"
           />
         )}
         <div
@@ -4520,7 +4679,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div className="pointer-events-auto flex min-w-0 items-center gap-1">
+          <div className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -4544,17 +4703,18 @@ export function ChatPage({
                 loraModels={loraModels}
                 externalModels={externalModels}
                 externalConnections={externalConnections}
-                value={inferenceParams.checkpoint}
+                value={inferenceCheckpoint}
                 // Resident, not merely picked: an image or video load evicts the chat model and leaves this
                 // selection behind, so the tick stayed on a released model.
                 loaded={chatModelLoaded({
-                  checkpoint: inferenceParams.checkpoint,
+                  checkpoint: inferenceCheckpoint,
                   isExternalModel: isExternalModelId(
-                    inferenceParams.checkpoint,
+                    inferenceCheckpoint,
                   ),
                   residentCheckpoint,
                 })}
                 activeGgufVariant={activeGgufVariant}
+                activeVariantIsMlx={loadedIsMlx === true}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
                 configRequest={modelConfigRequest}
@@ -4574,7 +4734,17 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)]"
+                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
+              />
+            )}
+            {view.mode === "single" && (
+              <ChatModelNotice
+                active={active}
+                threadId={view.threadId ?? newChatThreadId ?? undefined}
+                checkpoint={inferenceCheckpoint}
+                activeGgufVariant={activeGgufVariant}
+                selectableModelIds={selectableModelIds}
+                onSwitch={handleSwitchBackToChatModel}
               />
             )}
             {view.mode !== "compare" && currentProjectId && (
@@ -4648,16 +4818,24 @@ export function ChatPage({
           </div>
           <div className="pointer-events-auto ml-auto flex min-w-min max-w-max grow basis-0 items-center gap-1 *:shrink-0">
             {showContextWindowUsage &&
-            view.mode === "single" &&
+            (view.mode === "single" ||
+              (view.mode === "project" && activeThreadId != null)) &&
             (contextUsage || contextWindowKnown) ? (
               <ContextUsageBar
-                used={contextUsage?.totalTokens ?? null}
+                compactUnknownAsIcon={view.mode === "single"}
+                used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
                 // null on external providers; the bar handles that.
                 total={loadedContextLength}
                 cached={contextUsage?.cachedTokens}
                 cacheWrites={contextUsage?.cacheWriteTokens}
                 promptTokens={contextUsage?.promptTokens}
-                completionTokens={contextUsage?.completionTokens}
+                // A tool turn's completionTokens sums every pass; the context holds only the last one.
+                completionTokens={
+                  contextUsage?.contextTokens !== undefined
+                    ? contextUsage.contextTokens - contextUsage.promptTokens
+                    : contextUsage?.completionTokens
+                }
+                compactionCount={compactionCount}
                 isMlx={isServedByMlx(
                   Boolean(loadedIsGguf),
                   platformDeviceType,
@@ -4694,7 +4872,6 @@ export function ChatPage({
                         return;
                       }
                       setSettingsOpen(false);
-                      closeArtifactSurface();
                       openResearchPanel(latestResearchRunId);
                     }}
                     className="relative flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:hover:text-white"
@@ -4747,16 +4924,6 @@ export function ChatPage({
           </div>
         </div>
 
-        {view.mode === "single" && (
-          <ChatModelNotice
-            threadId={view.threadId ?? newChatThreadId ?? undefined}
-            checkpoint={inferenceParams.checkpoint}
-            activeGgufVariant={activeGgufVariant}
-            selectableModelIds={selectableModelIds}
-            onSwitch={handleSwitchBackToChatModel}
-          />
-        )}
-
         {/* One provider shared by the project and single views, never keyed on thread / nonce / project,
             so switching between them reattaches the live run instead of remounting the runtime and
             aborting generation (#8908). Any key here brings the bug back. Compare renders as a
@@ -4771,6 +4938,7 @@ export function ChatPage({
             }
             inert={baseBackgrounded || undefined}
           >
+            <BrowserOverlaidContext.Provider value={baseBackgrounded}>
             <ChatActiveContext.Provider value={active && !baseBackgrounded}>
               <ChatRuntimeProvider
                 modelType="base"
@@ -4790,6 +4958,7 @@ export function ChatPage({
                     ? markProjectRuntimeReady
                     : undefined
                 }
+                onCompactionCountChange={handleCompactionCountChange}
               >
                 {baseView.mode === "project" ? (
                   <ProjectLanding
@@ -4803,20 +4972,20 @@ export function ChatPage({
                     runtimeReady={projectRuntimeReady}
                   />
                 ) : (
-                  <NativeAttachmentTargetContext.Provider
-                    value={baseAttachmentTargetKey}
+                  <NativeAttachmentDragContext.Provider
+                    value={nativeModelDropState.status === "attach"}
                   >
-                    <TemporaryChatSaveBridge />
-                    <SingleContent
-                      threadId={baseView.threadId}
-                      artifact={selectedArtifact}
-                      artifactSurface={artifactSurface}
-                      onCloseArtifact={closeArtifactSurface}
-                    />
-                  </NativeAttachmentTargetContext.Provider>
+                    <NativeAttachmentTargetContext.Provider
+                      value={baseAttachmentTargetKey}
+                    >
+                      <TemporaryChatSaveBridge />
+                      <SingleContent threadId={baseView.threadId} />
+                    </NativeAttachmentTargetContext.Provider>
+                  </NativeAttachmentDragContext.Provider>
                 )}
               </ChatRuntimeProvider>
             </ChatActiveContext.Provider>
+            </BrowserOverlaidContext.Provider>
           </div>
         ) : null}
         {view.mode === "compare" ? (
@@ -4835,13 +5004,7 @@ export function ChatPage({
           />
         ) : null}
 
-        {active && showArtifactOverlay && selectedArtifact ? (
-          <ArtifactSurface
-            artifact={selectedArtifact}
-            variant="overlay"
-            onClose={closeArtifactSurface}
-          />
-        ) : null}
+        {showBrowserOverlay ? <BrowserOverlay /> : null}
       </div>
 
       <ChatSettingsPanel
@@ -4849,12 +5012,10 @@ export function ChatPage({
         onOpenChange={(open) => {
           setSettingsOpen(open);
         }}
-        params={inferenceParams}
-        onParamsChange={setInferenceParams}
         modelConfig={
           view.mode !== "compare" && activeModelConfig && !modelLoading ? (
             <SidebarModelConfig
-              modelId={inferenceParams.checkpoint}
+              modelId={inferenceCheckpoint}
               ggufVariant={activeGgufVariant ?? null}
               isGguf={activeModelIsGguf}
               isLora={activeModelIsLora}
@@ -4879,6 +5040,7 @@ export function ChatPage({
         externalProviderType={activeExternalProviderType}
       />
     </div>
+    </ChatComposerFocusableContext.Provider>
     </ChatActiveContext.Provider>
   );
 }

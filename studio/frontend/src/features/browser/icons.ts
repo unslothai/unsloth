@@ -20,22 +20,6 @@ export const ExitFullViewIcon: IconSvgElement = [
   ["path", { d: "M6.5 13.5H10.5V17.5", ...stroke, key: "1" }],
 ];
 
-export const SplitPaneIcon: IconSvgElement = [
-  [
-    "rect",
-    {
-      x: "3",
-      y: "4.5",
-      width: "18",
-      height: "15",
-      rx: "4",
-      ...stroke,
-      key: "0",
-    },
-  ],
-  ["path", { d: "M12 4.5V19.5", ...stroke, key: "1" }],
-];
-
 // A padlock drawn as Firefox's is: a narrow shackle over a compact body with a keyhole dot, in the
 // same thin stroke as the other browser icons, rather than a wide, heavy one.
 export const PadlockIcon: IconSvgElement = [

@@ -5,13 +5,20 @@ import { CodeSourceView } from "@/components/code-source-view";
 import { DocumentView, MAX_DOCUMENT_PREVIEW_BYTES, documentKind } from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { Spinner } from "@/components/ui/spinner";
-import { ArtifactHtmlFrame, attachmentTextLanguage, truncateAttachmentPreviewText } from "@/features/chat";
+import {
+  ArtifactHtmlFrame,
+  ReactPreview,
+  attachmentTextLanguage,
+  truncateAttachmentPreviewText,
+} from "@/features/chat";
 import { useT } from "@/i18n";
 import { MAX_HIGHLIGHT_CHARS } from "@/lib/markdown-plugins";
 import { cn } from "@/lib/utils";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { HTML_NAME, TEXT_NAME, TEXT_TYPE, mediaKind, textFileKind } from "./file-kind";
+import { canShowFile, mediaKind, textFileKind } from "./file-kind";
+import { stageEditsPrompt } from "./stage-edits";
 import { DEFAULT_FILE_VIEW, useBrowserStore } from "./store";
+import { VideoFile } from "./video-file";
 
 // The preview shows at most 200,000 chars (4 bytes each at most): a 50 MB body is never decoded whole.
 const MAX_TEXT_BYTES = 1024 * 1024;
@@ -65,14 +72,21 @@ function TextFile({
   const [text, setText] = useState<string | null>(null);
   const view = useBrowserStore((state) => (tabId ? state.fileViews[tabId] : undefined)) ?? DEFAULT_FILE_VIEW;
   const requestEdits = useBrowserStore((state) => state.requestEdits);
+  // HTML runs only once previewed, so opening to source does not run it.
+  const [previewed, setPreviewed] = useState(view.mode === "preview");
+  if (!previewed && view.mode === "preview") setPreviewed(true);
+  const fileKind = textFileKind(name, contentType, plainText);
+  // A React preview runs only in a tab of its own; anywhere else it is just its code.
+  const kind = fileKind === "react" && !tabId ? "code" : fileKind;
   useEffect(() => {
     let active = true;
-    void blob.slice(0, MAX_TEXT_BYTES).text().then((value) => active && setText(value));
+    // HTML runs whole: a cut document breaks its scripts and closing tags.
+    const bytes = kind === "html" ? blob.size : MAX_TEXT_BYTES;
+    void blob.slice(0, bytes).text().then((value) => active && setText(value));
     return () => {
       active = false;
     };
-  }, [blob]);
-  const kind = textFileKind(name, contentType, plainText);
+  }, [blob, kind]);
   // Stable: the frame reports its counts from an effect that depends on these.
   const onConsoleOpenChange = useCallback(
     (consoleOpen: boolean) => tabId && useBrowserStore.getState().setFileView(tabId, { consoleOpen }),
@@ -90,7 +104,7 @@ function TextFile({
   }, [text, name, kind]);
   if (text === null) return <Spinner className="m-auto size-6" />;
   const preview = truncateAttachmentPreviewText(text);
-  const source = (kind === "html" || kind === "markdown") && view.mode === "source";
+  const source = (kind === "html" || kind === "react" || kind === "markdown") && view.mode === "source";
   const sourceView = language ? (
     <div className={cn("size-full overflow-auto", view.wrap && WRAP_CLASS)} style={{ zoom: scale }}>
       <CodeSourceView code={preview.text} language={language} className="px-5 py-4" />
@@ -106,23 +120,46 @@ function TextFile({
       {preview.text}
     </pre>
   );
+  if (kind === "react") {
+    return (
+      <>
+        {previewed ? (
+          <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
+            <ReactPreview
+              source={text}
+              lang={/\.jsx$/i.test(name) ? "jsx" : "tsx"}
+              title={name}
+              reloadNonce={reloadNonce}
+              consoleOpen={view.consoleOpen}
+              onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
+              onOutputCountChange={tabId ? onOutputCountChange : undefined}
+              onFixWithModel={requestEdits ?? stageEditsPrompt}
+            />
+          </div>
+        ) : null}
+        {source ? sourceView : null}
+      </>
+    );
+  }
   // Same frame as the attachment preview: network stays off until the user allows it.
   if (kind === "html") {
     return (
       <>
-        {/* Kept mounted behind the source, as the canvas does, so the console keeps its output. */}
-        <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
-          <ArtifactHtmlFrame
-            code={preview.text}
-            title={name}
-            fill={true}
-            reloadNonce={reloadNonce}
-            consoleOpen={view.consoleOpen}
-            onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
-            onOutputCountChange={tabId ? onOutputCountChange : undefined}
-            onFixWithModel={requestEdits ?? undefined}
-          />
-        </div>
+        {/* Kept mounted behind the source, so the console keeps its output. */}
+        {previewed ? (
+          <div className={cn("size-full overflow-auto", source && "hidden")} style={{ zoom: scale }}>
+            <ArtifactHtmlFrame
+              code={text}
+              title={name}
+              fill={true}
+              reloadNonce={reloadNonce}
+              consoleOpen={view.consoleOpen}
+              onConsoleOpenChange={tabId ? onConsoleOpenChange : undefined}
+              onOutputCountChange={tabId ? onOutputCountChange : undefined}
+              onFixWithModel={requestEdits ?? stageEditsPrompt}
+            />
+          </div>
+        ) : null}
         {source ? sourceView : null}
       </>
     );
@@ -190,9 +227,7 @@ export function FileView({
       );
     }
     if (media === "video") {
-      return (
-        <video src={src} controls onError={() => setFailed(true)} className="size-full bg-black object-contain" />
-      );
+      return <VideoFile src={src} name={name} tabId={tabId} onError={() => setFailed(true)} />;
     }
     return (
       <div className="m-auto w-full max-w-lg px-6">
@@ -201,7 +236,7 @@ export function FileView({
       </div>
     );
   }
-  if (plainText || TEXT_TYPE.test(contentType) || TEXT_NAME.test(name) || HTML_NAME.test(name) || !contentType) {
+  if (plainText || canShowFile(name, contentType)) {
     return (
       <TextFile
         blob={blob}

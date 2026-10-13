@@ -18,18 +18,24 @@ import { type ReactNode, useMemo, useState } from "react";
 import { hostOf } from "./address";
 import { type HistoryItem, useBrowserHistoryStore } from "./history-store";
 import { LinkContextMenu, MenuRow } from "./link-context-menu";
+import { useNativeBrowser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { SiteFavicon } from "./site-favicon";
 import { useBrowserStore } from "./store";
 
+type Site = { title: string; url: string; icon?: string };
+
 // Unsloth's sites have no /favicon.ico, so they use Studio's own sticker.
-const DEFAULT_SITES: Site[] = [
+const UNSLOTH_SITES: Site[] = [
   { title: "Unsloth", url: "https://unsloth.ai", icon: "/sticker.png" },
   {
     title: "Unsloth Docs",
     url: "https://docs.unsloth.ai",
     icon: "/sticker.png",
   },
+];
+
+const OTHER_SITES: Site[] = [
   {
     title: "Unsloth on GitHub",
     url: "https://github.com/unslothai/unsloth",
@@ -38,7 +44,7 @@ const DEFAULT_SITES: Site[] = [
   { title: "Hugging Face", url: "https://huggingface.co/unsloth" },
 ];
 
-type Site = { title: string; url: string; icon?: string };
+const KNOWN_SITES = [...UNSLOTH_SITES, ...OTHER_SITES];
 
 const SUGGESTED_COUNT = 4;
 const RECENTS_PER_PAGE = 5;
@@ -47,6 +53,7 @@ const RECENTS_PER_PAGE = 5;
 function suggestedSites(
   history: HistoryItem[],
   hidden: readonly string[],
+  defaults: Site[],
 ): Site[] {
   const byHost = new Map<string, { site: Site; visits: number }>();
   for (const item of history) {
@@ -54,7 +61,7 @@ function suggestedSites(
     const seen = byHost.get(host);
     if (seen) seen.visits += 1;
     else {
-      const icon = DEFAULT_SITES.find(
+      const icon = KNOWN_SITES.find(
         (site) => hostOf(site.url) === host,
       )?.icon;
       byHost.set(host, {
@@ -68,7 +75,7 @@ function suggestedSites(
     .sort((a, b) => b.visits - a.visits)
     .map((site) => site.site);
   const hosts = new Set(sites.map((site) => hostOf(site.url)));
-  for (const site of DEFAULT_SITES)
+  for (const site of defaults)
     if (!hosts.has(hostOf(site.url))) sites.push(site);
   const off = new Set(hidden);
   return sites
@@ -201,9 +208,13 @@ export function NewTabPage({ tabId }: { tabId: string }) {
   const { navigate, openInternal } = useBrowserStore.getState();
   const [page, setPage] = useState(0);
   const hidden = useBrowserPrefsStore((state) => state.hiddenSuggestions);
+  const showSuggested = useBrowserPrefsStore((state) => state.showSuggestedSites);
+  const showRecents = useBrowserPrefsStore((state) => state.showRecentPages);
+  // Cloudflare blocks Unsloth's sites in the proxied view, so only native views suggest them.
+  const native = useNativeBrowser((state) => state.enabled);
   const sites = useMemo(
-    () => suggestedSites(history, hidden),
-    [history, hidden],
+    () => suggestedSites(history, hidden, native ? KNOWN_SITES : OTHER_SITES),
+    [history, hidden, native],
   );
   const recents = useMemo(() => recentPages(history), [history]);
   // A recent stands for its page, so taking it off takes every visit to that page.
@@ -258,7 +269,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             />
           </div>
         </section>
-        {sites.length > 0 ? (
+        {showSuggested && sites.length > 0 ? (
           <section className="flex flex-col gap-3">
             <SectionTitle>{t("browser.suggested")}</SectionTitle>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -268,7 +279,7 @@ export function NewTabPage({ tabId }: { tabId: string }) {
             </div>
           </section>
         ) : null}
-        {recents.length > 0 ? (
+        {showRecents && recents.length > 0 ? (
           <section className="flex flex-col gap-3">
             <SectionTitle
               actions={

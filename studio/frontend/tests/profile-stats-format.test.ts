@@ -16,6 +16,7 @@ import {
   heatLevel,
   parseDayKey,
   seriesForMode,
+  weekChartPoints,
   windowBaseline,
 } from "../src/features/profile/utils/stats-format.ts";
 
@@ -150,6 +151,8 @@ test("profile counts follow the selected locale's plural rules", () => {
   assert.equal(formatProfileCount(2, "message", "it"), "2 messaggi");
   assert.equal(formatProfileCount(2, "token", "it"), "2 token");
   assert.equal(formatProfileCount(2, "step", "it"), "2 step");
+  assert.equal(formatProfileCount(1, "message", "sv"), "1 meddelande");
+  assert.equal(formatProfileCount(2, "message", "sv"), "2 meddelanden");
   assert.equal(formatProfileCount(5, "token", "en", "$&"), "$& tokens");
   assert.equal(formatProfileCount(5, "token", "en", "$'"), "$' tokens");
 
@@ -163,6 +166,9 @@ test("profile counts follow the selected locale's plural rules", () => {
   assert.equal(formatProfileCount(3, "message", "ar"), "3 رسائل");
   assert.equal(formatProfileCount(11, "message", "ar"), "11 رسالة");
   assert.equal(formatProfileCount(100, "message", "ar"), "100 رسالة");
+  assert.equal(formatProfileCount(1, "message", "he"), "הודעה אחת");
+  assert.equal(formatProfileCount(2, "message", "he"), "2 הודעות");
+  assert.equal(formatProfileCount(5, "token", "he"), "5 טוקנים");
   assert.equal(formatProfileCount(1200, "token", "ar", "1.2K"), "1.2K توكن");
 });
 
@@ -311,4 +317,51 @@ test("only cumulative rebases: daily and weekly are already per-window", () => {
   const values = [10, 20, 5];
   assert.equal(windowBaseline(values, 2, "daily"), 0);
   assert.equal(windowBaseline(values, 2, "weekly"), 0);
+});
+
+test("week chart points carry the week total and the running total", () => {
+  // Monday 2026-09-07 through Wednesday 2026-09-16: one full week, one partial.
+  const daily = [
+    { date: "2026-09-07", tokens: 100 },
+    { date: "2026-09-08", tokens: 0 },
+    { date: "2026-09-09", tokens: 50 },
+    { date: "2026-09-10", tokens: 0 },
+    { date: "2026-09-11", tokens: 0 },
+    { date: "2026-09-12", tokens: 0 },
+    { date: "2026-09-13", tokens: 25 },
+    { date: "2026-09-14", tokens: 10 },
+    { date: "2026-09-15", tokens: 0 },
+    { date: "2026-09-16", tokens: 5 },
+  ];
+  const columns = (values: number[]) => [
+    daily.slice(0, 7).map((day, index) => ({ day, value: values[index] ?? 0 })),
+    [
+      ...daily
+        .slice(7)
+        .map((day, index) => ({ day, value: values[7 + index] ?? 0 })),
+      { day: null, value: 0 },
+    ],
+  ];
+  assert.deepEqual(weekChartPoints(columns(seriesForMode(daily, "weekly"))), [
+    { week: "2026-09-07", tokens: 175 },
+    { week: "2026-09-14", tokens: 15 },
+  ]);
+  assert.deepEqual(
+    weekChartPoints(columns(seriesForMode(daily, "cumulative"))),
+    [
+      { week: "2026-09-07", tokens: 175 },
+      { week: "2026-09-14", tokens: 190 },
+    ],
+  );
+  // Leading pad cells before the first shown day do not create a point.
+  assert.deepEqual(
+    weekChartPoints([
+      [
+        { day: null, value: 0 },
+        { day: { date: "2026-09-16" }, value: 7 },
+      ],
+      [{ day: null, value: 0 }],
+    ]),
+    [{ week: "2026-09-16", tokens: 7 }],
+  );
 });

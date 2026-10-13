@@ -5,6 +5,7 @@ import forge from "node-forge";
 import { authFetch } from "@/features/auth/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type { ModelCatalogSnapshotEntry } from "../model-catalog-snapshot";
+import type { CustomReasoningConfig } from "../custom-reasoning";
 
 
 export type ProviderAuthKind = "api_key" | "chatgpt_oauth";
@@ -53,6 +54,7 @@ export interface ProviderConfig {
   models?: string[];
   available_models?: string[];
   max_output_tokens?: number | null;
+  reasoning_config?: CustomReasoningConfig | null;
   created_at: string;
   updated_at: string;
 }
@@ -214,6 +216,7 @@ export async function createProviderConfig(payload: {
   models?: string[];
   availableModels?: string[];
   maxOutputTokens?: number | null;
+  reasoningConfig?: CustomReasoningConfig | null;
   apiKey?: string;
 }): Promise<ProviderConfig> {
   return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
@@ -230,6 +233,9 @@ export async function createProviderConfig(payload: {
         ...(payload.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: payload.maxOutputTokens }),
+        ...(payload.reasoningConfig === undefined
+          ? {}
+          : { reasoning_config: payload.reasoningConfig }),
         encrypted_api_key: encryptedApiKey,
       }),
     });
@@ -262,6 +268,7 @@ export async function updateProviderConfig(
     models?: string[];
     availableModels?: string[];
     maxOutputTokens?: number | null;
+    reasoningConfig?: CustomReasoningConfig | null;
     apiKey?: string;
     clearApiKey?: boolean;
   },
@@ -282,6 +289,9 @@ export async function updateProviderConfig(
         ...(payload.maxOutputTokens === undefined
           ? {}
           : { max_output_tokens: payload.maxOutputTokens }),
+        ...(payload.reasoningConfig === undefined
+          ? {}
+          : { reasoning_config: payload.reasoningConfig }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
       }),

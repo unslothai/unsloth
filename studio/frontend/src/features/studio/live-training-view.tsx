@@ -16,6 +16,7 @@ import { ChartsSection } from "./sections/charts-section";
 import { NeuronHeatmapSection, ReplayControls } from "./sections/neuron-heatmap-section";
 import { NeuronHealthTrend } from "./sections/neuron-health-trend";
 import { DiagnosticsPanel } from "./sections/diagnostics-panel";
+import { OffloadPanel } from "./sections/offload-panel";
 import { ProgressSection } from "./sections/progress-section";
 import {
   type RunConfigOverride,
@@ -155,6 +156,7 @@ export function LiveTrainingView(): ReactElement {
       trainingMethod: state.trainingMethod,
       enableActivationCapture: state.enableActivationCapture,
       dataset: state.dataset,
+      modelType: state.modelType,
     })),
   );
 
@@ -239,6 +241,8 @@ export function LiveTrainingView(): ReactElement {
     // run started, which would relabel the run and hide its saved LoRA rows in the popover.
     trainingMethod:
       runConfigOverride?.trainingMethod ?? config.trainingMethod ?? "",
+    isDecision:
+      runConfigOverride?.isDecision ?? config.modelType === "decision",
     lossHistory: runtime.lossHistory,
     lrHistory: runtime.lrHistory,
     gradNormHistory: runtime.gradNormHistory,
@@ -268,11 +272,13 @@ export function LiveTrainingView(): ReactElement {
       >
         <div data-tour="studio-training-progress">
           <ProgressSection
+            runId={runtime.jobId}
             key={runtime.jobId ?? "no-job"}
             data={viewData}
             configOverride={runConfigOverride}
           />
         </div>
+        <OffloadPanel isTrainingRunning={viewData.isTrainingRunning} />
         <Tabs defaultValue="training">
           <TabsList className="mb-2">
             <TabsTrigger value="training">Training</TabsTrigger>

@@ -399,6 +399,51 @@ def test_pipe_kwargs_empty_when_load_fails(monkeypatch):
     )
 
 
+def test_pipe_kwargs_raises_when_load_fails_and_dense_shards_were_skipped(monkeypatch, tmp_path):
+    """#12860: the plan skips the dense shards a pre-cast encoder replaces, so a failed pre-cast load
+    (os error 1455 on Windows) must stop with a clear error, not fall back to shards that are not there."""
+    pytest.importorskip("torch")
+    import json
+
+    import core.inference.diffusion_precision as precision
+    import core.inference.prequant_safetensors as prequant_safetensors
+
+    fam = _fam(te_prequant_repos = (("fp8", "text_encoder", "org/hosted"),), base_repo = str(tmp_path))
+    monkeypatch.setattr(precision, "te_quant_supported", lambda target, mode: True)
+    ckpt = tmp_path / "te.safetensors"
+    ckpt.write_bytes(b"")
+    monkeypatch.setattr(tpq, "_resolve_checkpoint_path", lambda *a, **k: str(ckpt))
+
+    def out_of_commit(*a, **k):
+        raise OSError(
+            "The paging file is too small for this operation to complete. (os error 1455)"
+        )
+
+    monkeypatch.setattr(prequant_safetensors, "load_plain_prequant_safetensors", out_of_commit)
+    encoder = tmp_path / "text_encoder"
+    encoder.mkdir()
+    (encoder / "config.json").write_text("{}")
+    shard = "model-00001-of-00001.safetensors"
+    (encoder / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"w": shard}}))
+
+    def load(dense_source):
+        return te_prequant_pipe_kwargs(
+            fam,
+            str(tmp_path),
+            te_quant_mode = "fp8",
+            target = _target(),
+            dtype = None,
+            dense_source = dense_source,
+        )
+
+    # assembly that can still fetch the shards keeps the dense fallback
+    assert load(None) == {}
+    with pytest.raises(RuntimeError, match = r"text_encoder .*\(os error 1455\).*Dense \(bf16\)"):
+        load(str(tmp_path))
+    (encoder / shard).write_bytes(b"")
+    assert load(str(tmp_path)) == {}
+
+
 def test_pipe_kwargs_injects_every_hosted_component(monkeypatch):
     """A family hosting several TE components (flux.1: T5 as text_encoder_2) gets each
     one injected under its own attr; unhosted components stay dense."""

@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { AudioWave01Icon, Download01Icon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useMemo, useState } from "react";
 import {
@@ -35,6 +36,7 @@ import {
   type SeparateGeneration,
 } from "../hooks/use-separate-generation";
 import { useStemSources } from "../hooks/use-stem-sources";
+import { STEM_SEND_TARGETS } from "../send-targets";
 import { saveAudio } from "../save-audio";
 import {
   SEPARATE_MAX_SECONDS,
@@ -281,12 +283,7 @@ function downloadGroup(group: SeparationGroup) {
   return saveAudio(stemZipName(group.title), null, () => zipStems(files));
 }
 
-const SEND_TARGETS: readonly SendTarget[] = [
-  { id: "transcribe", workflow: "transcribe", label: "Transcribe" },
-  { id: "clone", workflow: "clone", label: "Clone (as reference)" },
-];
-
-/** Keyed by group so each one starts from its own clock. */
+/** keyed by group so each mixer starts from its own clock. */
 function SelectedSeparation({
   group,
   autoFocus,
@@ -331,7 +328,7 @@ function SelectedSeparation({
         stems={stems}
         autoFocus={autoFocus}
         active={active}
-        sendTargets={SEND_TARGETS}
+        sendTargets={STEM_SEND_TARGETS}
         onDownloadStem={(clipId) => {
           const clip = group.stems.find((item) => item.id === clipId);
           const src = sources.srcById[clipId];
@@ -378,6 +375,7 @@ export function SeparateOutput({
   fallbackClip,
   handleDownloadFallbackClip,
   handleDeleteClip,
+  handleDeleteGroup,
   handleArchiveClip,
   handleTogglePin,
   handleClearGallery,
@@ -396,6 +394,7 @@ export function SeparateOutput({
   | "fallbackClip"
   | "handleDownloadFallbackClip"
   | "handleDeleteClip"
+  | "handleDeleteGroup"
   | "handleArchiveClip"
   | "handleTogglePin"
   | "hasMore"
@@ -464,7 +463,16 @@ export function SeparateOutput({
     if (last) await handleArchiveClip(last.id);
   };
   const deleteGroup = async (group: SeparationGroup) => {
-    for (const clip of group.stems) await handleDeleteClip(clip.id);
+    // A clip saved without a run is a group of one.
+    const groupId = group.stems[0]?.group_id;
+    if (!groupId) {
+      for (const clip of group.stems) await handleDeleteClip(clip.id);
+      return;
+    }
+    await handleDeleteGroup(
+      groupId,
+      group.stems.map((clip) => clip.id),
+    );
   };
 
   return (
@@ -599,7 +607,7 @@ export function SeparateOutput({
                     className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
                   >
                     <HugeiconsIcon
-                      icon={AudioWave01Icon}
+                      icon={AiSpeechIcon}
                       className="size-3.5 shrink-0 text-muted-foreground"
                     />
                     <span className="min-w-0 flex-1 truncate">

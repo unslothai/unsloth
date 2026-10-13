@@ -980,3 +980,101 @@ def test_a_kept_source_goes_with_its_clip(tmp_path):
     again = gallery.save(_wav(), _meta(), source)
     assert gallery.delete(again["id"])
     assert not (gallery.gallery_dir() / f"{again['id']}.source.wav").exists()
+
+
+def test_deleting_the_last_edit_takes_its_hidden_original():
+    source = gallery.save(_wav(), _meta(workflow = "edit", role = "source"))
+    first, second = (
+        gallery.save(_wav(), _meta(workflow = "edit", role = "output", source_clip_id = source["id"]))
+        for _ in range(2)
+    )
+    assert gallery.delete(first["id"]) is True
+    assert gallery.audio_path(source["id"]) is not None  # the second edit still plays it
+    assert gallery.delete(second["id"]) is True
+    assert gallery.audio_path(source["id"]) is None
+
+
+def test_deleting_a_clip_made_from_a_listed_clip_keeps_that_clip():
+    take = gallery.save(_wav(), _meta())
+    converted = gallery.save(_wav(), _meta(workflow = "convert", source_clip_id = take["id"]))
+    assert gallery.delete(converted["id"]) is True
+    assert gallery.audio_path(take["id"]) is not None
+
+
+def test_a_group_delete_takes_only_that_runs_clips():
+    from fastapi import HTTPException
+    from routes.inference import delete_gallery_audio_group
+
+    stems = [
+        gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = r))
+        for r in ("vocals", "drums")
+    ]
+    other = gallery.save(_wav(), _meta(workflow = "separate", group_id = "g2", role = "vocals"))
+    loose = gallery.save(_wav(), _meta())
+    assert asyncio.run(delete_gallery_audio_group("g1", current_subject = "tester")) == {"removed": 2}
+    assert all(gallery.audio_path(stem["id"]) is None for stem in stems)
+    assert {r["id"] for r in gallery.list_audio()} == {other["id"], loose["id"]}
+    assert gallery.delete_group("") == 0
+    with pytest.raises(HTTPException) as missing:
+        asyncio.run(delete_gallery_audio_group("g1", current_subject = "tester"))
+    assert missing.value.status_code == 404
+
+
+def test_a_group_delete_spares_the_runs_archived_clips():
+    # A stem restored from the archive leaves its siblings archived; deleting the run on the
+    # Separate page, which lists only active clips, must not take them.
+    stems = [
+        gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = r))
+        for r in ("vocals", "drums", "bass")
+    ]
+    for stem in stems[1:]:
+        gallery.set_flags(stem["id"], archived = True)
+    assert gallery.delete_group("g1") == 1
+    assert gallery.audio_path(stems[0]["id"]) is None
+    assert {r["id"] for r in gallery.list_audio(archived = True)} == {s["id"] for s in stems[1:]}
+
+
+def test_the_group_route_refuses_with_an_unreadable_store():
+    from fastapi import HTTPException
+    from routes.inference import delete_gallery_audio_group
+
+    stem = gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = "vocals"))
+    gallery.set_flags(stem["id"], archived = True)
+    (gallery.gallery_dir() / ".flags.json").write_text("corrupt", encoding = "utf-8")
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(delete_gallery_audio_group("g1", current_subject = "tester"))
+    assert excinfo.value.status_code == 503
+    assert gallery.audio_path(stem["id"]) is not None
+
+
+def test_an_archive_racing_a_group_delete_is_never_lost(monkeypatch):
+    import threading
+
+    from core.inference import gallery_flags
+
+    stems = [
+        gallery.save(_wav(), _meta(workflow = "separate", group_id = "g1", role = r))
+        for r in ("vocals", "drums")
+    ]
+    target = stems[1]["id"]
+    archived: list = []
+    real_read_trusted = gallery_flags.read_trusted
+
+    def read_then_archive(directory):
+        flags = real_read_trusted(directory)
+        worker = threading.Thread(
+            target = lambda: archived.append(gallery.set_flags(target, archived = True))
+        )
+        worker.start()
+        worker.join(timeout = 0.5)
+        return flags
+
+    monkeypatch.setattr(gallery_flags, "read_trusted", read_then_archive)
+    gallery.delete_group("g1")
+    monkeypatch.setattr(gallery_flags, "read_trusted", real_read_trusted)
+    for _ in range(50):
+        if archived:
+            break
+        threading.Event().wait(0.1)
+    # The archive either lands first and spares the stem, or waits and finds it gone.
+    assert archived and (archived[0] is None) == (gallery.audio_path(target) is None)

@@ -56,6 +56,8 @@ _ERROR_BODY_BYTES = 64 * 1024
 # CUDA graph replay wedges these transducers mid-request (server spins, never answers); graphs off fixes it.
 _NO_CUDA_GRAPH_FAMILIES = frozenset({"nemotron_asr", "parakeet_tdt"})
 _GPU_HOST_THREADS = 8
+# Startup output of a GPU backend that found no device, as opposed to a model that failed to load.
+_GPU_INIT_FAILURES = ("has no device", "failed to initialize cuda", "backend requested but")
 
 
 class AudioCppUnavailableError(RuntimeError):
@@ -188,8 +190,14 @@ def binary_has_espeak(binary: Optional[str]) -> bool:
     return any((bin_dir / name).exists() for name in _ESPEAK_DATA_NAMES)
 
 
+# Set by utils.audio_cpp_update while it replaces the managed tree.
+UPDATE_IN_PROGRESS = threading.Event()
+
+
 def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) -> Optional[str]:
     """Why ``model`` cannot run on the installed runtime, or None when it can."""
+    if UPDATE_IN_PROGRESS.is_set():
+        return "The audio runtime is being updated. Try again in a moment."
     if model.unsupported:
         return model.unsupported
     binary = binary if binary is not None else find_audio_cpp_server_binary()
@@ -208,6 +216,36 @@ def model_runtime_problem(model: AudioCppModel, binary: Optional[str] = None) ->
         return None
 
 
+def _gpu_vendors() -> Optional[set[str]]:
+    """GPU vendors this process can reach, or None when that cannot be told."""
+    try:
+        from utils.llama_cpp_path_settings import (
+            _amd_mask_hides_all,
+            _mask_hides_all,
+            host_gpu_vendors,
+        )
+
+        vendors = host_gpu_vendors()
+        # Windows detection only sees driver DLLs, so apply the visibility masks here too.
+        if vendors is not None:
+            if _mask_hides_all("CUDA_VISIBLE_DEVICES"):
+                vendors = vendors - {"nvidia"}
+            if _amd_mask_hides_all():
+                vendors = vendors - {"amd"}
+        return vendors
+    except Exception:  # noqa: BLE001 - an unknown host keeps the build's backend
+        return None
+
+
+def _reachable(backend: str) -> str:
+    """CPU when ``backend`` needs a GPU vendor this process cannot see (e.g. CUDA_VISIBLE_DEVICES="")."""
+    vendor = {"cuda": "nvidia", "hip": "amd"}.get(backend)
+    if vendor is None:
+        return backend
+    vendors = _gpu_vendors()
+    return "cpu" if vendors is not None and vendor not in vendors else backend
+
+
 def select_backend(binary: str, force_cpu: bool) -> str:
     """The ``--backend`` for this launch: CPU when asked, else what the install was built for."""
     if force_cpu:
@@ -217,13 +255,13 @@ def select_backend(binary: str, force_cpu: bool) -> str:
         return override
     recorded = str(read_install_record(binary).get("backend") or "").strip().lower()
     if recorded in ("cpu", "cuda", "vulkan", "metal", "hip"):
-        return recorded
+        return _reachable(recorded)
     # A custom build with no record: what it was compiled with, preferring the host's GPU.
     built = compiled_backends(binary)
     if sys.platform == "darwin":
         return "metal" if built is None or "metal" in built else "cpu"
     if shutil.which("nvidia-smi") and (built is None or "cuda" in built):
-        return "cuda"
+        return _reachable("cuda")
     if built and "vulkan" in built:
         return "vulkan"
     return "cpu"
@@ -496,10 +534,18 @@ class AudioCppServer:
             if not self.alive():
                 tail = self.log_tail()
                 logger.warning("audiocpp_server exited during startup: %s", tail)
+                last = f" Last output: {sanitize_runtime_tail(tail)}" if tail else ""
+                # A CUDA build prints its CUDA init failure on CPU launches too.
+                lowered = tail.lower()
+                if self.backend != "cpu" and any(s in lowered for s in _GPU_INIT_FAILURES):
+                    raise AudioCppUnavailableError(
+                        f"The audio runtime could not start on the {self.backend.upper()} backend "
+                        "because no usable GPU is visible. Choose CPU for the audio device in "
+                        "Unsloth Studio, or set UNSLOTH_AUDIO_CPP_BACKEND=cpu." + last
+                    )
                 raise AudioCppUnavailableError(
                     "The audio runtime exited before becoming ready; the model file may be "
-                    "incomplete or unsupported by this build."
-                    + (f" Last output: {sanitize_runtime_tail(tail)}" if tail else "")
+                    "incomplete or unsupported by this build." + last
                 )
             if self._probe():
                 return

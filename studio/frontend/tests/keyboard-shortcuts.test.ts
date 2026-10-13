@@ -914,7 +914,8 @@ test("Reset all local preferences clears the rebound chords", async () => {
 // shows an English word in the middle of a translated settings dialog.
 test("every locale overlay carries the shortcut strings", async () => {
   const locales = [
-    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "zh-CN",
+    "ar", "de", "es", "fr", "hi", "it", "ja", "ko", "pt-br", "ru", "sv",
+    "zh-CN",
   ];
   for (const locale of locales) {
     const source = await readFile(
@@ -1154,40 +1155,26 @@ test("the model picker chord opens without the tour's pin", async () => {
   assert.equal((CHAT_PAGE.match(/openModelSelector/g) ?? []).length, 3);
 });
 
-// The inline rename pill is rendered by the row, so it needs the row to be on
-// screen. A chord has no row under the cursor, and the open chat may be behind
-// a collapsed section, past a folder's limit, or on a route with no chat list.
-test("the rename chord does not land in a surface only a row can show", async () => {
-  // The chord asks for the dialog; the context menu, which has a row under the
-  // cursor by definition, keeps the pill.
+// The chord, the row menus and a double-click all open the Rename chat dialog; there is no in-row editor.
+test("every sidebar chat rename opens the dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
+    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item\)\);/,
   );
-  // The menu names the list its row is in, so a chat on screen twice renames in the row the
-  // user opened, not in both at once.
+  assert.match(APP_SIDEBAR, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
   assert.match(
     APP_SIDEBAR,
-    /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
+    /onDoubleClick=\{\(event\) => \{[\s\S]*?openRenameChat\(item\);/,
   );
-  assert.match(
-    APP_SIDEBAR,
-    /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
-  );
-
-  // The pill is gated on it, so a dialog rename cannot also arm a row that is
-  // off screen and surprise the user when it comes back.
-  assert.match(
-    APP_SIDEBAR,
-    /const isRenamingThis =\n\s*renamingTarget\?\.kind === "chat" &&\n\s*renamingTarget\.inline &&/,
-  );
-  // And the dialog takes chats now, which is what its chat strings were always
-  // written for.
-  assert.match(
-    APP_SIDEBAR,
-    /\(renamingTarget\.kind !== "chat" \|\| !renamingTarget\.inline\)/,
-  );
+  assert.match(APP_SIDEBAR, /function openRenameChat\(item: SidebarItem\) \{/);
+  assert.match(APP_SIDEBAR, /open=\{renamingTarget !== null\}/);
+  assert.doesNotMatch(APP_SIDEBAR, /isRenamingThis|handleInlineRename|renamingTarget\.inline/);
   assert.ok(APP_SIDEBAR.includes('t("shell.dialog.renameChat.title")'));
+  // The title opens selected, and focus still resets the IME state.
+  assert.match(
+    APP_SIDEBAR,
+    /onFocus=\{\(event\) => \{\s*resetInputIme\(renameImeRef\.current\);\s*event\.currentTarget\.select\(\);/,
+  );
 });
 
 // Bare Escape has more than one owner. The sidebar answers it while rows are
@@ -1619,9 +1606,12 @@ test("the published chat lists stop where the sidebar stops", async () => {
   ]) {
     assert.match(APP_SIDEBAR, group);
   }
-  // Select All reads the same rows the walk does, so it cannot reach further.
-  const selectAll = APP_SIDEBAR.indexOf("const selectAllChats = useCallback(");
-  assert.ok(selectAll !== -1, "selectAllChats moved");
+  assert.match(
+    APP_SIDEBAR,
+    /const selectAllChats = useCallback\(\(\) => \{\n\s*if \(!chatRowsOnScreen\) return;/,
+  );
+  const selectAll = APP_SIDEBAR.indexOf("const selectRenderedChats = useCallback(");
+  assert.ok(selectAll !== -1, "selectRenderedChats moved");
   assert.match(
     APP_SIDEBAR.slice(selectAll, APP_SIDEBAR.indexOf("\n  }, [", selectAll)),
     /const ids = renderedChatItems\.map\(\(item\) => item\.id\);/,

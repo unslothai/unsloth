@@ -154,6 +154,29 @@ def fsdp_will_wrap():
     return False
 
 
+def fsdp2_requested():
+    """True when this process runs under FSDP2: `accelerate launch` exports FSDP_VERSION=2, an
+    Accelerator built already records its fsdp_plugin."""
+    if os.environ.get("FSDP_VERSION", "").strip() == "2":
+        return True
+    try:
+        from accelerate.state import AcceleratorState
+        plugin = AcceleratorState._shared_state.get("fsdp_plugin", None)
+        return getattr(plugin, "fsdp_version", None) == 2
+    except Exception:
+        return False
+
+
+def raise_if_fast_inference_under_fsdp2(fast_inference):
+    """Unsupported combination: refuse it before vLLM loads instead of failing mid-run (unsloth#3551)."""
+    if fast_inference and fsdp2_requested():
+        raise NotImplementedError(
+            "Unsloth: `fast_inference = True` (vLLM) is not supported with FSDP2.\n"
+            "Load the model with `fast_inference = False` to train with FSDP2, "
+            "or launch without FSDP2 to use vLLM."
+        )
+
+
 def prepare_device_map():
     rank, world_size = _infer_distributed_ranks()
     distributed = (world_size or 1) > 1 or (rank is not None and rank > 0)
@@ -221,6 +244,63 @@ def planner_kwargs_with_max_memory(planner_kwargs, loader_kwargs):
     merged = dict(planner_kwargs or {})
     merged.setdefault("max_memory", budget)
     return merged
+
+
+# transformers' bitsandbytes quantizers (4-bit and 8-bit) raise this when the automatic map spills past the GPU.
+_BNB_CPU_SPILL_PREFIX = "Some modules are dispatched on the CPU or the disk"
+
+
+def raise_if_bnb_cpu_spill(
+    error,
+    model_name,
+    offload_layers = None,
+    device_map = None,
+    load_in_8bit = False,
+    quantization_config = None,
+    max_memory = None,
+):
+    """Replace transformers' bitsandbytes CPU-spill error with what to do in Unsloth (#1629). Its advice, `llm_int8_enable_fp32_cpu_offload`, keeps the spilled weights unquantized in fp32 on the CPU, which is no route to training; `offload_layers = "auto"` is. Returns for any other error, and for a caller's own dict or CPU map (that placement is a choice, and transformers' advice is the relevant one), so the caller re-raises it unchanged. `offload_layers`, `quantization_config` and `max_memory` are what the caller passed, before the loader added its own."""
+    if not isinstance(error, ValueError) or not str(error).startswith(_BNB_CPU_SPILL_PREFIX):
+        return
+    # On transformers 4.x an all-CPU map raises this too unless bitsandbytes' multi-backend is on.
+    if isinstance(device_map, dict) or str(device_map).split(":")[0] in ("cpu", "disk"):
+        return
+    free = ""
+    try:
+        # The current card only: probing others would open a CUDA context on cards the caller may have withheld.
+        # A caller's max_memory may withhold this card; then the figure would be about the wrong one.
+        if DEVICE_TYPE_TORCH == "cuda" and torch.cuda.is_available() and not max_memory:
+            device = torch.cuda.current_device()
+            free = (
+                f" (cuda:{device} has {torch.cuda.mem_get_info(device)[0] / 1024**3:.2f} GB free)"
+            )
+    except Exception:
+        free = ""
+    if load_in_8bit or getattr(quantization_config, "load_in_8bit", False):
+        # offload_layers supports 16-bit and 4-bit loads only.
+        hint = "Load in 4-bit (load_in_4bit = True) to halve the weights, or load a smaller model."
+    elif quantization_config is not None:
+        # offload_layers refuses a quantization_config.
+        hint = (
+            'Pass load_in_4bit = True with `offload_layers = "auto"` instead of a '
+            "quantization_config to stream the layers the GPU cannot hold from host RAM, "
+            "or load a smaller model."
+        )
+    elif offload_layers == "auto":
+        hint = "Lower max_seq_length or the batch size, load a smaller model, or add a GPU."
+    elif offload_layers:
+        hint = 'Raise offload_layers or pass `offload_layers = "auto"`, load a smaller model, or add a GPU.'
+    else:
+        hint = (
+            'Pass `offload_layers = "auto"` to from_pretrained to keep the decoder layers the GPU '
+            "cannot hold in host RAM and stream them in during training (slower, and it needs that "
+            "much free system RAM), "
+            "load a smaller model, or free GPU memory held by other programs."
+        )
+    raise ValueError(
+        f"Unsloth: {model_name} does not fit in GPU memory{free}, so transformers placed "
+        f"part of it on the CPU, which bitsandbytes cannot quantize. {hint}"
+    ) from error
 
 
 def unmarked_device_map(device_map):
@@ -554,6 +634,29 @@ def resolve_unsloth_device_map(
         print(f"Unsloth: Not planning a device map; {reason}. Using `{_declined}`.")
         return _declined
 
+    def _plan_fits_first_device(
+        plan,
+        explicit_reserve,
+        activation_share = 0.2,
+    ):
+        """First allowed card if weights + headroom + load transient leave `activation_share` (about
+        Gemma 3n E4B fp32 on a T4) and any passed reserve free; None for a planner without sizes."""
+        try:
+            budgets = plan.raw_budgets
+            first = min(budgets)
+            budget = int(budgets[first])
+            transient = max((plan.load_transient_by_device or {}).values(), default = 0)
+            need = int(plan.total_weight_bytes) + int(plan.headroom_bytes) + int(transient)
+            free = budget * activation_share
+            if explicit_reserve:
+                # A passed reserve is a hard constraint to the planner.
+                free = max(free, int(plan.activation_reserve_by_device.get(first, 0)))
+        except Exception:
+            return None
+        if budget > 0 and need + free <= budget:
+            return first
+        return None
+
     if skip_reason is not None:
         return _fallback(skip_reason)
     if fast_inference:
@@ -639,8 +742,71 @@ def resolve_unsloth_device_map(
 
     if plan is None:
         return _declined
+    single_device = (
+        _plan_fits_first_device(plan, planner_kwargs.get("activation_reserve_bytes") is not None)
+        if device_map == UNSLOTH_DEVICE_MAP
+        else None
+    )
+    if single_device is not None:
+        # Splitting a model one card holds only adds cross-device bugs (Kaggle T4x2).
+        print(
+            f"Unsloth: Not splitting across GPUs; the model fits on cuda:{single_device} with room "
+            f'to train. Pass device_map = "{UNSLOTH_BALANCED_DEVICE_MAP}" to split it anyway.'
+        )
+        return {"": single_device}
     print(plan.describe())
     return plan.device_map
+
+
+def _sharded_data_parallel_launch():
+    """ "FSDP" / "DeepSpeed" when this process will hand the model to one, else None."""
+    try:
+        from accelerate.state import AcceleratorState
+        distributed_type = str(AcceleratorState._shared_state.get("distributed_type", "")).upper()
+    except Exception:
+        distributed_type = ""
+    if "FSDP" in distributed_type:
+        return "FSDP"
+    if "DEEPSPEED" in distributed_type:
+        return "DeepSpeed"
+    if str(os.environ.get("ACCELERATE_USE_FSDP", "")).strip().lower() in _TRUTHY or str(
+        os.environ.get("FSDP_VERSION", "")
+    ).strip() not in ("", "0"):
+        return "FSDP"
+    if str(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")).strip().lower() in _TRUTHY:
+        return "DeepSpeed"
+    return None
+
+
+def _single_card_device_map(device_map):
+    if isinstance(device_map, dict):
+        if set(device_map) != {""}:
+            return False
+        device_map = device_map[""]
+    if isinstance(device_map, int) and not isinstance(device_map, bool):
+        return True
+    if isinstance(device_map, torch.device):
+        return device_map.type == "cuda"
+    return isinstance(device_map, str) and (device_map == "cuda" or device_map.startswith("cuda:"))
+
+
+def ddp_auto_block_swap_launch(device_map):
+    return (
+        is_distributed()
+        and _sharded_data_parallel_launch() is None
+        and _single_card_device_map(device_map)
+    )
+
+
+def auto_offload_for_launch(offload_layers):
+    """No "auto" swap on a launch that already shows FSDP / DeepSpeed."""
+    if (
+        offload_layers == "auto"
+        and is_distributed()
+        and _sharded_data_parallel_launch() is not None
+    ):
+        return 0
+    return offload_layers
 
 
 _BLOCK_SWAP_PLANNER_KEYS = (
@@ -683,8 +849,15 @@ def resolve_auto_block_swap(
         return _none(skip_reason)
     if DEVICE_TYPE_TORCH != "cuda" or not torch.cuda.is_available():
         return _none("block swap needs a CUDA or ROCm GPU")
-    if is_distributed():
-        return _none("each rank of a distributed launch owns its own device")
+    distributed = is_distributed()
+    if distributed:
+        sharded = _sharded_data_parallel_launch()
+        if sharded is not None:
+            return _none(f"{sharded} shards the weights across the ranks itself")
+        if not _single_card_device_map(device_map):
+            return _none("each rank of a distributed launch owns its own device")
+        # DDP refuses a CPU parameter.
+        offload_embedding = False
     try:
         from unsloth_zoo.device_map_planner import plan_block_swap
     except ImportError:
@@ -710,6 +883,11 @@ def resolve_auto_block_swap(
             if target.type != "cuda":
                 return _none(f"the load places the model on {target}")
             target = target.index if target.index is not None else torch.cuda.current_device()
+        elif (
+            isinstance(device_map, (int, torch.device))
+            and _single_device_index(device_map) is not None
+        ):
+            target = _single_device_index(device_map)
         elif device_map is None or (
             isinstance(device_map, str)
             and (device_map in TRANSFORMERS_PLACEMENT_STRATEGIES or device_map.startswith("cuda"))
@@ -733,6 +911,9 @@ def resolve_auto_block_swap(
         max_memory[d] = free if cap is None else min(free, cap)
 
     options = {k: planner_kwargs[k] for k in _BLOCK_SWAP_PLANNER_KEYS if k in planner_kwargs}
+    if "prefetch_depth" in options:
+        from ._utils import auto_plan_depth
+        options["prefetch_depth"] = auto_plan_depth(options["prefetch_depth"])
     try:
         planner_parameters = inspect.signature(plan_block_swap).parameters
     except (TypeError, ValueError):
@@ -755,6 +936,11 @@ def resolve_auto_block_swap(
         + plan.describe().splitlines()[0].replace("block swap:", "offload_layers = 'auto':")
     )
     embedding = bool(getattr(plan, "offload_embedding", False))
+    if distributed:
+        # No collective: a loader only some ranks run would hang. Plans may differ per rank.
+        layers = int(plan.layers or 0)
+        print(f"Unsloth: offload_layers = 'auto' plans {layers} layers on this rank.")
+        return layers, ({"": target} if layers else device_map), False
     if not plan.layers:
         return 0, device_map, embedding
     if multi and plan.device_plan is not None:
@@ -1479,6 +1665,7 @@ def _offline_quantize_to_fp8(
     *,
     text_only: bool = False,
     revision: str = None,
+    token = None,
 ) -> str:
     """Quantize the model to fp8 via torchao, save to a temp dir, return its path. For vllm >= 0.12.0, prefer dynamic quantization in vllm instead (via hf_overrides={"quantization_config_file": "torchao_config.json"}). The caller's revision has to reach the source loads, and the cache name has to name it too: the returned path replaces model_name, so the revision gate downstream drops the pin, and two refs of one repo would otherwise share a single artifact."""
     from transformers import (
@@ -1490,7 +1677,7 @@ def _offline_quantize_to_fp8(
         AutoConfig,
     )
 
-    config = AutoConfig.from_pretrained(model_name, revision = revision)
+    config = AutoConfig.from_pretrained(model_name, revision = revision, token = token)
     is_vlm = any(
         x.endswith(("ForConditionalGeneration", "ForVisionText2Text"))
         for x in (getattr(config, "architectures", None) or [])
@@ -1538,13 +1725,19 @@ def _offline_quantize_to_fp8(
             config = text_config
         auto_model = AutoModelForImageTextToText if is_vlm else AutoModelForCausalLM
         auto_processor = AutoProcessor if is_vlm else AutoTokenizer
-        model = auto_model.from_pretrained(
+        with sync_load_when_quantizing(qconfig, config):
+            model = auto_model.from_pretrained(
+                model_name,
+                config = config,
+                revision = revision,
+                token = token,
+                **load_kwargs,
+            )
+        tokenizer = auto_processor.from_pretrained(
             model_name,
-            config = config,
             revision = revision,
-            **load_kwargs,
+            token = token,
         )
-        tokenizer = auto_processor.from_pretrained(model_name, revision = revision)
         model.save_pretrained(new_model_name, safe_serialization = False)
         del model
         for _ in range(2):
@@ -2358,6 +2551,43 @@ def _offload_store_set(store, key, value):
         raise TypeError(f"Unsloth: cannot write offloaded tensor into {type(store).__name__}")
 
 
+def _dequantize_multihead_attention_out_proj(model):
+    """nn.MultiheadAttention passes out_proj.weight straight to F.linear, so a bitsandbytes 4-bit out_proj
+    (SigLIP pooling head, granite-vision, #2672; transformers 4.x quantizes it) fails with "Half and Byte".
+    Swap each for a float Linear holding the dequantized weight, as transformers 5 loads it. Returns the count."""
+    try:
+        import bitsandbytes as bnb
+    except Exception:
+        return 0
+    n = 0
+    for module in model.modules():
+        if not isinstance(module, torch.nn.MultiheadAttention):
+            continue
+        out_proj = module.out_proj
+        quant_state = getattr(getattr(out_proj, "weight", None), "quant_state", None)
+        if not isinstance(out_proj, bnb.nn.Linear4bit) or quant_state is None:
+            continue
+        dtype = (
+            module.in_proj_weight.dtype if module.in_proj_weight is not None else quant_state.dtype
+        )
+        weight = bnb.functional.dequantize_4bit(out_proj.weight.data, quant_state).to(dtype)
+        new = torch.nn.modules.linear.NonDynamicallyQuantizableLinear(
+            out_proj.in_features,
+            out_proj.out_features,
+            bias = out_proj.bias is not None,
+            device = "meta",
+        )
+        new.weight = torch.nn.Parameter(weight, requires_grad = False)
+        if out_proj.bias is not None:
+            new.bias = out_proj.bias
+        if hasattr(out_proj, "_hf_hook"):
+            from accelerate.hooks import add_hook_to_module
+            add_hook_to_module(new, out_proj._hf_hook)
+        module.out_proj = new
+        n += 1
+    return n
+
+
 def _restore_dropped_fp8_scales(
     model,
     model_name,
@@ -2685,6 +2915,54 @@ def _decompress_compressed_tensors_model(model):
     except Exception as e:
         print(f"Unsloth: could not decompress the compressed-tensors checkpoint after load: {e}")
         return False
+    return True
+
+
+def _dequantize_bitsandbytes_for_full_finetuning(
+    model,
+    dtype = None,
+    model_name = "",
+):
+    """Full finetuning marks every weight trainable, which the uint8 / int8 weights of a pre-quantized bitsandbytes checkpoint (a local `-bnb-4bit` folder, which the name mapper cannot redirect) reject (#2613)."""
+    quantizer = getattr(model, "hf_quantizer", None)
+    method = getattr(getattr(quantizer, "quantization_config", None), "quant_method", None)
+    # pre_quantized False = an explicit on-the-fly config; rounding then restoring would train a lossy copy.
+    if str(getattr(method, "value", method)).lower() != "bitsandbytes" or not getattr(
+        quantizer, "pre_quantized", True
+    ):
+        return False
+    print(
+        f"Unsloth: `{model_name}` is a pre-quantized bitsandbytes checkpoint, so full finetuning "
+        "dequantizes it to 16bit. For the best accuracy, full finetune the original 16bit model instead."
+    )
+    # transformers < 5 deletes these unguarded, and a composite's extracted text core lacks some of them.
+    for owner, attribute in (
+        (model, "quantization_method"),
+        (model.config, "quantization_config"),
+        (model.config, "_pre_quantization_dtype"),
+    ):
+        if not hasattr(owner, attribute):
+            setattr(owner, attribute, None)
+    # transformers < 5 has no dtype argument; prepare_model_for_training casts the weights anyway.
+    if "dtype" in inspect.signature(model.dequantize).parameters:
+        model.dequantize(dtype = dtype)
+    else:
+        model.dequantize()
+    # Left True by dequantize; the trainer's DataParallel gate and PEFT still read them.
+    for attribute in ("is_loaded_in_4bit", "is_loaded_in_8bit"):
+        if getattr(model, attribute, False):
+            setattr(model, attribute, False)
+    # transformers 5 keeps the load's bnb deserialize converter, whose missing reverse op makes save_pretrained raise NotImplementedError.
+    conversions = getattr(model, "_weight_conversions", None)
+    if isinstance(conversions, list):
+        model._weight_conversions = [
+            conversion
+            for conversion in conversions
+            if not any(
+                getattr(op, "hf_quantizer", None) is quantizer
+                for op in getattr(conversion, "operations", None) or ()
+            )
+        ]
     return True
 
 
@@ -3062,6 +3340,66 @@ def _bnb_bits_requested(quantization_config):
     if get("load_in_8bit", False):
         return 8
     return None
+
+
+_ASYNC_LOAD_ENV = "HF_DEACTIVATE_ASYNC_LOAD"
+
+
+@contextlib.contextmanager
+def sync_load_when_quantizing(quantization_config, model_config):
+    """Sync-load on-the-fly quantization: transformers 5.0-5.3 worker threads put full-precision
+    tensors on the card faster than they are quantized (5.4+ already loads these synchronously)."""
+    if (
+        quantization_config is None
+        or getattr(model_config, "quantization_config", None) is not None
+        or _ASYNC_LOAD_ENV in os.environ
+    ):
+        yield
+        return
+    os.environ[_ASYNC_LOAD_ENV] = "1"
+    try:
+        yield
+    finally:
+        os.environ.pop(_ASYNC_LOAD_ENV, None)
+
+
+def gptq_trainable_quantization_config(model_config, user_quantization_config):
+    """GPTQConfig / AwqConfig asking gptqmodel for a trainable kernel on a GPTQ or AWQ checkpoint, else None.
+
+    gptqmodel's default kernels (Marlin / ExLlama) raise NotImplementedError on model.train(); only
+    `backend` is a loading attribute, so the checkpoint's own bits / group_size still apply.
+    """
+    if user_quantization_config is not None:
+        return None
+    qc = getattr(model_config, "quantization_config", None)
+    if qc is not None and not isinstance(qc, dict):
+        qc = qc.to_dict()
+    quant_method = str((qc or {}).get("quant_method", "")).lower()
+    if quant_method not in ("gptq", "awq"):
+        return None
+    # transformers 4.x wrote "autoawq" / "llm-awq" into AWQ configs (Qwen3-8B-AWQ); AwqConfig reads both as auto.
+    default_backends = (
+        (None, "auto", "autoawq", "llm-awq") if quant_method == "awq" else (None, "auto")
+    )
+    if qc.get("backend") not in default_backends:
+        return None
+    try:
+        from transformers import AwqConfig, GPTQConfig
+        from transformers.utils import is_gptqmodel_available
+    except ImportError:
+        return None
+    if not is_gptqmodel_available() or "backend" not in inspect.signature(GPTQConfig).parameters:
+        return None
+    if quant_method == "awq":
+        # transformers < 5 AwqConfig has no auto_trainable backend (autoawq era).
+        try:
+            from transformers.utils.quantization_config import AwqBackend
+        except ImportError:
+            return None
+        if not hasattr(AwqBackend, "AUTO_TRAINABLE"):
+            return None
+        return AwqConfig(bits = qc.get("bits", 4), backend = "auto_trainable")
+    return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
 
 
 def warn_if_bitsandbytes_quantized_nothing(
@@ -3646,6 +3984,26 @@ def _note_offline_retry(error, retry_error):
         add_note(text)
     except Exception:
         pass
+
+
+# Set per load (family branches in FastModel.from_pretrained, the compiler's norm check) and read only during it. Left set, a later load of another family gets float32 norms beside 16 bit projections and fails with "float != BFloat16".
+LOAD_SCOPED_ENV_VARS = ("UNSLOTH_HIGH_PRECISION_LAYERNORM",)
+
+
+def _restore_load_scoped_env(fn):
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        saved = {name: os.environ.get(name) for name in LOAD_SCOPED_ENV_VARS}
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            for name, value in saved.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
+    return _wrapper
 
 
 def _offline_aware_load(fn):

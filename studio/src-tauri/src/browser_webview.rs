@@ -26,6 +26,8 @@ const EVENT: &str = "unsloth-browser";
 const MAIN_WEBVIEW: &str = "main";
 const MAIN_WINDOW: &str = "main";
 const URL_POLL: Duration = Duration::from_millis(800);
+/// How far left of the window a parked page sits, in logical pixels.
+const PARK_GAP: f64 = 64.0;
 /// macOS 14+ data store for pages (fixed, so it persists).
 #[cfg(target_os = "macos")]
 const PAGE_DATA_STORE: [u8; 16] = *b"unsloth-browser1";
@@ -150,10 +152,14 @@ struct ViewsState {
     urls: HashMap<String, String>,
     /// Download paths by URL, oldest first (macOS doesn't report it back; one URL can download twice).
     downloads: HashMap<String, Vec<PathBuf>>,
+    /// By URL, finishes that couldn't tell which of several reservations they were (`take_finished`).
+    unexplained_finishes: HashMap<String, usize>,
     download_starts: HashMap<String, VecDeque<Instant>>,
     polling: bool,
     /** Tabs the reader muted; macOS mutes each page they load, Windows the view once. */
     muted: HashSet<String>,
+    /// Tabs whose view committed a page of its own since it opened or was last sent somewhere; until then a download's site is the address asked for (or the opener).
+    committed: HashSet<String>,
 }
 
 pub fn new_browser_views() -> BrowserViews {
@@ -233,6 +239,28 @@ enum BrowserEvent {
         size: Option<u64>,
         done: bool,
         success: bool,
+        /// A finished download's handle for Download history (browser_downloads.rs).
+        download_id: Option<String>,
+        /// Marked as from the internet: false if that failed (the panel warns), None where nothing marks.
+        marked: Option<bool>,
+        /// The DownloadPrompt `id` it was asked under; None when refused before asking.
+        prompt_id: Option<String>,
+    },
+    /// An approved download that left no file (its save dialog was cancelled).
+    DownloadCancelled {
+        tab_id: String,
+        url: String,
+        prompt_id: String,
+    },
+    DownloadPrompt {
+        tab_id: String,
+        url: String,
+        /// Page showing when the download started (the site a remembered answer is for); "" before the view showed one.
+        site: String,
+        name: String,
+        id: String,
+        /// Started from the page's context menu: the user asked for it, so save it via a dialog.
+        save_as: bool,
     },
 }
 
@@ -517,6 +545,75 @@ fn emit<R: Runtime>(app: &AppHandle<R>, event: BrowserEvent) {
     let _ = app.emit_to(MAIN_WEBVIEW, EVENT, event);
 }
 
+pub(crate) fn emit_download_done<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    path: &Path,
+    download_id: Option<String>,
+    marked: Option<bool>,
+    prompt_id: &str,
+) {
+    emit(
+        app,
+        BrowserEvent::Download {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            name: path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            path: None,
+            size: std::fs::metadata(path).ok().map(|m| m.len()),
+            done: true,
+            success: true,
+            download_id,
+            marked,
+            prompt_id: Some(prompt_id.to_string()),
+        },
+    );
+}
+
+pub(crate) fn emit_download_cancelled<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    prompt_id: &str,
+) {
+    emit(
+        app,
+        BrowserEvent::DownloadCancelled {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            prompt_id: prompt_id.to_string(),
+        },
+    );
+}
+
+pub(crate) fn emit_download_failed<R: Runtime>(
+    app: &AppHandle<R>,
+    tab_id: &str,
+    url: &Url,
+    name: &str,
+    prompt_id: Option<&str>,
+) {
+    emit(
+        app,
+        BrowserEvent::Download {
+            tab_id: tab_id.to_string(),
+            url: url.to_string(),
+            name: name.to_string(),
+            path: None,
+            size: None,
+            done: true,
+            success: false,
+            download_id: None,
+            marked: None,
+            prompt_id: prompt_id.map(str::to_string),
+        },
+    );
+}
+
 pub(crate) fn view<R: Runtime>(app: &AppHandle<R>, tab_id: &str) -> Result<Webview<R>, String> {
     let label = label_for(tab_id)?;
     app.get_webview(&label).ok_or_else(|| "no such tab".into())
@@ -622,18 +719,7 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
     let name = suggested
         .file_name()
         .and_then(|name| name.to_str())
-        .map(|name| {
-            name.chars()
-                .map(|c| {
-                    if c.is_control() || "/\\:".contains(c) {
-                        '_'
-                    } else {
-                        c
-                    }
-                })
-                .collect::<String>()
-        })
-        .filter(|name| !name.trim_matches('.').is_empty())
+        .map(crate::native_file_dialogs::safe_download_name)
         .unwrap_or_else(|| "download".into());
     // Windows and macOS file systems ignore case, so `Report.pdf` and `report.pdf` are one file.
     let same = |a: &Path, b: &Path| {
@@ -663,8 +749,24 @@ fn download_destination(dir: &Path, suggested: &Path, reserved: &HashSet<&Path>)
         .unwrap_or(candidate)
 }
 
-/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it.
-fn mark_downloaded(path: &Path, url: &Url) {
+/// Where a download came from, for the file's internet mark: no credentials, query or fragment,
+/// which can carry tokens. Web addresses only.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn sanitized_source(url: &Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let mut clean = url.clone();
+    let _ = clean.set_username("");
+    let _ = clean.set_password(None);
+    clean.set_query(None);
+    clean.set_fragment(None);
+    Some(clean.to_string())
+}
+
+/// Mark a download as from the internet, so Gatekeeper or SmartScreen checks it. Whether that
+/// worked (FAT, exFAT and some network drives keep no mark); None where there is no mark.
+pub(crate) fn mark_downloaded(path: &Path, url: &Url) -> Option<bool> {
     #[cfg(target_os = "macos")]
     {
         use std::ffi::CString;
@@ -678,9 +780,10 @@ fn mark_downloaded(path: &Path, url: &Url) {
             CString::new(path.as_os_str().as_bytes()),
             CString::new("com.apple.quarantine"),
         ) else {
-            return;
+            return Some(false);
         };
-        unsafe {
+        let _ = url;
+        let result = unsafe {
             libc::setxattr(
                 path.as_ptr(),
                 name.as_ptr(),
@@ -688,21 +791,24 @@ fn mark_downloaded(path: &Path, url: &Url) {
                 value.len(),
                 0,
                 0,
-            );
-        }
-        let _ = url;
+            )
+        };
+        Some(result == 0)
     }
     #[cfg(windows)]
     {
         let mut stream = path.as_os_str().to_owned();
         stream.push(":Zone.Identifier");
-        let _ = std::fs::write(
-            stream,
-            format!("[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={url}\r\n"),
-        );
+        let host = sanitized_source(url)
+            .map(|source| format!("HostUrl={source}\r\n"))
+            .unwrap_or_default();
+        Some(std::fs::write(stream, format!("[ZoneTransfer]\r\nZoneId=3\r\n{host}")).is_ok())
     }
     #[cfg(not(any(target_os = "macos", windows)))]
-    let _ = (path, url);
+    {
+        let _ = (path, url);
+        None
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -845,6 +951,136 @@ async fn poll_url<R: Runtime>(app: AppHandle<R>) {
     }
 }
 
+/// Stage a tab's download and ask about it. False refuses it.
+pub(crate) fn download_requested<R: Runtime>(
+    webview: &Webview<R>,
+    download_tab: &str,
+    url: Url,
+    destination: &mut PathBuf,
+    save_as: bool,
+) -> bool {
+    let app = webview.app_handle();
+    if crate::browser_downloads::unanswered(app, download_tab)
+        >= crate::browser_downloads::MAX_UNANSWERED_PER_TAB
+    {
+        let name = destination
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        emit_download_failed(app, download_tab, &url, &name, None);
+        return false;
+    }
+    let Some((id, staging)) = crate::browser_downloads::staging_dir(app) else {
+        return false;
+    };
+    let path = {
+        let state = app.state::<BrowserViews>();
+        let mut inner = state.inner.lock().unwrap();
+        // macOS reports no path when a download finishes, so two of one URL at
+        // once couldn't be told apart: one at a time.
+        let busy = cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str());
+        let in_flight = inner.downloads.values().map(Vec::len).sum();
+        let starts = inner
+            .download_starts
+            .entry(download_tab.to_string())
+            .or_default();
+        if busy || !download_allowed(in_flight, starts, Instant::now()) {
+            drop(inner);
+            let _ = std::fs::remove_dir_all(&staging);
+            if !busy {
+                let name = destination
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                emit_download_failed(app, download_tab, &url, &name, None);
+            }
+            return false;
+        }
+        let path = download_destination(&staging, destination, &HashSet::new());
+        inner
+            .downloads
+            .entry(url.to_string())
+            .or_default()
+            .push(path.clone());
+        path
+    };
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    *destination = path.clone();
+    crate::browser_downloads::add_pending(
+        app,
+        id.clone(),
+        download_tab.to_string(),
+        url.clone(),
+        path,
+    );
+    // "" before the view showed its own page: the frontend knows the tab's address or opener.
+    let committed = app
+        .state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .committed
+        .contains(download_tab);
+    let site = match webview.url() {
+        Ok(page) if committed => page.to_string(),
+        _ => String::new(),
+    };
+    emit(
+        app,
+        BrowserEvent::DownloadPrompt {
+            tab_id: download_tab.to_string(),
+            url: url.to_string(),
+            site,
+            name,
+            id,
+            save_as,
+        },
+    );
+    true
+}
+
+/// Settle a finished download. Needs no view: its tab may have closed meanwhile.
+pub(crate) fn download_finished<R: Runtime>(
+    app: &AppHandle<R>,
+    url: Url,
+    path: Option<PathBuf>,
+    success: bool,
+) {
+    let (recorded, retired) = {
+        let state = app.state::<BrowserViews>();
+        let mut inner = state.inner.lock().unwrap();
+        let ViewsState {
+            downloads,
+            unexplained_finishes,
+            ..
+        } = &mut *inner;
+        let key = url.to_string();
+        let mut unexplained = unexplained_finishes.remove(&key).unwrap_or(0);
+        let pending = downloads.entry(key.clone()).or_default();
+        let taken = take_finished(pending, &mut unexplained, path.as_deref());
+        if pending.is_empty() {
+            downloads.remove(&key);
+        } else if unexplained > 0 {
+            unexplained_finishes.insert(key, unexplained);
+        }
+        taken
+    };
+    // The reserved path first: the engine may report another spelling of it.
+    crate::browser_downloads::finished(app, [recorded.as_deref(), path.as_deref()], success);
+    for staged in retired {
+        crate::browser_downloads::finished(app, [Some(&staged), None], false);
+    }
+}
+
+fn close_view<R: Runtime>(page: &Webview<R>) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    crate::browser_context_downloads::forget(page);
+    page.close()
+}
+
 fn create_view<R: Runtime>(
     caller: &Webview<R>,
     tab_id: &str,
@@ -862,7 +1098,6 @@ fn create_view<R: Runtime>(
     let window_app = app.clone();
     let window_tab = tab.clone();
     let download_tab = tab.clone();
-    let downloads_dir = app.path().download_dir().ok();
 
     #[cfg(target_os = "macos")]
     let (initial, deferred) = (Url::parse("about:blank").unwrap(), Some(url));
@@ -893,12 +1128,15 @@ fn create_view<R: Runtime>(
             }
             let url = payload.url().to_string();
             let loading = matches!(payload.event(), PageLoadEvent::Started);
-            app.state::<BrowserViews>()
-                .inner
-                .lock()
-                .unwrap()
-                .urls
-                .insert(load_tab.clone(), url.clone());
+            {
+                let state = app.state::<BrowserViews>();
+                let mut inner = state.inner.lock().unwrap();
+                inner.urls.insert(load_tab.clone(), url.clone());
+                // Started is a commit (WebKit) or content loading (WebView2): never a download.
+                if loading {
+                    inner.committed.insert(load_tab.clone());
+                }
+            }
             emit(
                 app,
                 BrowserEvent::Load {
@@ -957,123 +1195,15 @@ fn create_view<R: Runtime>(
             }
             NewWindowResponse::Deny
         })
-        .on_download(move |webview, event| {
-            let app = webview.app_handle();
-            match event {
-                DownloadEvent::Requested { url, destination } => {
-                    let Some(dir) = downloads_dir.as_deref() else {
-                        return false;
-                    };
-                    // Picked and recorded under one lock, so two downloads can't take one name.
-                    let path = {
-                        let state = app.state::<BrowserViews>();
-                        let mut inner = state.inner.lock().unwrap();
-                        // macOS reports no path when a download finishes, so two of one URL at
-                        // once couldn't be told apart (and quarantined right): one at a time.
-                        if cfg!(target_os = "macos") && inner.downloads.contains_key(url.as_str()) {
-                            return false;
-                        }
-                        let in_flight = inner.downloads.values().map(Vec::len).sum();
-                        let starts = inner
-                            .download_starts
-                            .entry(download_tab.clone())
-                            .or_default();
-                        if !download_allowed(in_flight, starts, Instant::now()) {
-                            drop(inner);
-                            emit(
-                                app,
-                                BrowserEvent::Download {
-                                    tab_id: download_tab.clone(),
-                                    url: url.to_string(),
-                                    name: destination
-                                        .file_name()
-                                        .map(|name| name.to_string_lossy().into_owned())
-                                        .unwrap_or_default(),
-                                    path: None,
-                                    size: None,
-                                    done: true,
-                                    success: false,
-                                },
-                            );
-                            return false;
-                        }
-                        let path = {
-                            let reserved: HashSet<&Path> = inner
-                                .downloads
-                                .values()
-                                .flatten()
-                                .map(PathBuf::as_path)
-                                .collect();
-                            download_destination(dir, destination, &reserved)
-                        };
-                        inner
-                            .downloads
-                            .entry(url.to_string())
-                            .or_default()
-                            .push(path.clone());
-                        path
-                    };
-                    let name = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    *destination = path;
-                    emit(
-                        app,
-                        BrowserEvent::Download {
-                            tab_id: download_tab.clone(),
-                            url: url.to_string(),
-                            name,
-                            path: None,
-                            size: None,
-                            done: false,
-                            success: false,
-                        },
-                    );
-                    true
-                }
-                DownloadEvent::Finished { url, path, success } => {
-                    let recorded = {
-                        let state = app.state::<BrowserViews>();
-                        let mut inner = state.inner.lock().unwrap();
-                        let pending = inner.downloads.entry(url.to_string()).or_default();
-                        let index = path
-                            .as_ref()
-                            .and_then(|path| pending.iter().position(|p| p == path))
-                            .unwrap_or(0);
-                        let recorded = (index < pending.len()).then(|| pending.remove(index));
-                        if pending.is_empty() {
-                            inner.downloads.remove(url.as_str());
-                        }
-                        recorded
-                    };
-                    let path = path.or(recorded);
-                    if let (true, Some(path)) = (success, path.as_deref()) {
-                        mark_downloaded(path, &url);
-                    }
-                    emit(
-                        app,
-                        BrowserEvent::Download {
-                            tab_id: download_tab.clone(),
-                            url: url.to_string(),
-                            name: path
-                                .as_deref()
-                                .and_then(|p| p.file_name())
-                                .map(|name| name.to_string_lossy().into_owned())
-                                .unwrap_or_default(),
-                            size: path
-                                .as_deref()
-                                .and_then(|p| std::fs::metadata(p).ok())
-                                .map(|m| m.len()),
-                            path: path.map(|p| p.to_string_lossy().into_owned()),
-                            done: true,
-                            success,
-                        },
-                    );
-                    true
-                }
-                _ => false,
+        .on_download(move |webview, event| match event {
+            DownloadEvent::Requested { url, destination } => {
+                download_requested(&webview, &download_tab, url, destination, false)
             }
+            DownloadEvent::Finished { url, path, success } => {
+                download_finished(webview.app_handle(), url, path, success);
+                true
+            }
+            _ => false,
         })
         .zoom_hotkeys_enabled(false)
         .devtools(cfg!(debug_assertions))
@@ -1085,6 +1215,10 @@ fn create_view<R: Runtime>(
     let webview = window
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "macos")]
+    crate::browser_layer::place(&webview);
+    #[cfg(target_os = "macos")]
+    crate::browser_context_downloads::watch(&webview, &tab);
     // A muted tab whose view closed (four at most stay open) opens muted again.
     if app.state::<BrowserViews>().inner.lock().unwrap().muted.contains(&tab) {
         let _ = apply_mute(&webview, true);
@@ -1232,7 +1366,41 @@ pub fn browser_view_supported() -> bool {
     false
 }
 
+/// Whether pages sit under the app's webview (`browser_layer`). Elsewhere covered pages are snapshotted.
+/// Asked once per load of the app, so it also drops input state a reload left behind.
+#[tauri::command]
+pub fn browser_view_layered<R: Runtime>(webview: Webview<R>) -> Result<bool, String> {
+    require_main(&webview)?;
+    #[cfg(target_os = "macos")]
+    {
+        if crate::browser_layer::set_input(false, &[]) {
+            let _ = webview.run_on_main_thread(crate::browser_layer::reroute_moves);
+        }
+        Ok(browser_view_supported())
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(false)
+}
+
+/// The panel UI over the page: all of it while a menu or dialog is open, else clickable rects.
+#[tauri::command]
+pub fn browser_view_input<R: Runtime>(
+    webview: Webview<R>,
+    blocked: bool,
+    exclude: Vec<ViewBounds>,
+) -> Result<(), String> {
+    require_main(&webview)?;
+    #[cfg(target_os = "macos")]
+    if crate::browser_layer::set_input(blocked, &exclude) {
+        let _ = webview.run_on_main_thread(crate::browser_layer::reroute_moves);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (blocked, exclude);
+    Ok(())
+}
+
 /// Show a tab's page at `bounds` (created at `url` first time), hide the rest; `None` hides all.
+/// `parked` moves the page just off-window instead of hiding it, so it keeps painting under its snapshot.
 /// Async: creating a webview from a sync command deadlocks on Windows (Tauri known issue).
 #[tauri::command]
 pub async fn browser_view_show<R: Runtime>(
@@ -1241,13 +1409,18 @@ pub async fn browser_view_show<R: Runtime>(
     tab_id: Option<String>,
     url: Option<String>,
     bounds: Option<ViewBounds>,
+    parked: Option<bool>,
 ) -> Result<(), String> {
     require_main(&webview)?;
     let app = webview.app_handle().clone();
+    let parked = parked.unwrap_or(false);
     let target = match (&tab_id, &bounds) {
         (Some(tab_id), Some(bounds)) => Some(match app.get_webview(&label_for(tab_id)?) {
             Some(view) => {
-                let (position, size) = logical_rect(&webview, bounds);
+                let (mut position, size) = logical_rect(&webview, bounds);
+                if parked {
+                    position.x = -size.width - PARK_GAP;
+                }
                 view.set_bounds(Rect {
                     position: position.into(),
                     size: size.into(),
@@ -1255,8 +1428,11 @@ pub async fn browser_view_show<R: Runtime>(
                 .map_err(|error| error.to_string())?;
                 view
             }
+            None if parked => return Err("no page to park".into()),
             None => {
                 let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
+                #[cfg(target_os = "macos")]
+                crate::browser_layer::install(&webview);
                 create_view(&webview, tab_id, url, bounds)?
             }
         }),
@@ -1287,9 +1463,15 @@ pub fn browser_view_navigate<R: Runtime>(
 ) -> Result<(), String> {
     require_main(&webview)?;
     let url = parse_page_url(&url)?;
-    view(webview.app_handle(), &tab_id)?
-        .navigate(url)
-        .map_err(|error| error.to_string())
+    let page = view(webview.app_handle(), &tab_id)?;
+    webview
+        .state::<BrowserViews>()
+        .inner
+        .lock()
+        .unwrap()
+        .committed
+        .remove(&tab_id);
+    page.navigate(url).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1306,6 +1488,8 @@ pub fn browser_view_action<R: Runtime>(
         "reload" => page.reload(),
         "stop" => page.eval("window.stop()"),
         "focus" => page.set_focus(),
+        // Key focus back to the panel, e.g. for an annotation comment.
+        "blur" => webview.set_focus(),
         _ => return Err("unknown action".into()),
     };
     result.map_err(|error| error.to_string())
@@ -1355,6 +1539,251 @@ pub async fn browser_view_find<R: Runtime>(
         .ok()
         .and_then(Result::ok)
         .unwrap_or(false))
+}
+
+// Same cap as the page shell's `install` (routes/browser.py).
+const MAX_ANNOTATE_CODE: usize = 262_144;
+const MAX_ANNOTATE_NUMBERS: usize = 500;
+
+/// Commands for a page's annotate code (`_ANNOTATE_JS` in routes/browser.py).
+#[derive(Debug, Deserialize)]
+#[serde(tag = "command", rename_all = "camelCase")]
+pub enum AnnotateCommand {
+    Install { code: String },
+    Start { color: String },
+    Stop,
+    Forget { id: u32 },
+    Number { numbers: Vec<(u32, u32)> },
+    Poll,
+}
+
+// Installs the annotate code under a non-enumerable key. `post` queues reports for the panel to
+// poll, keeping only the latest `rects`. Each call returns whether the code is installed (a
+// navigation drops it) and the reports since the last call.
+const ANNOTATE_SCRIPT: &str = r#"(() => {
+  const key = Symbol.for("unsloth.annotate");
+  const command = __COMMAND__;
+  let shell = window[key];
+  if (!shell && command.command === "install") {
+    const queue = [];
+    const post = (message) => {
+      if (!message || message.type !== "annotate") return;
+      if (message.event === "rects") {
+        const at = queue.findIndex((queued) => queued.event === "rects");
+        if (at !== -1) queue.splice(at, 1);
+      }
+      if (queue.length < 200) queue.push(message);
+    };
+    try {
+      shell = { queue, annotation: (function (post) {
+__CODE__
+      })(post) };
+      Object.defineProperty(window, key, { value: shell, configurable: true });
+    } catch { shell = null; }
+  }
+  if (!shell) return JSON.stringify({ installed: false, events: [] });
+  const { annotation, queue } = shell;
+  if (command.command === "start") annotation.start(command.color);
+  else if (command.command === "stop") annotation.stop();
+  else if (command.command === "forget") annotation.forget(command.id);
+  else if (command.command === "number") annotation.number(command.numbers);
+  return JSON.stringify({ installed: true, events: queue.splice(0) });
+})()"#;
+
+fn annotate_script(command: &AnnotateCommand) -> Result<String, String> {
+    let (args, code) = match command {
+        AnnotateCommand::Install { code } => {
+            if code.len() > MAX_ANNOTATE_CODE {
+                return Err("annotate code too large".into());
+            }
+            (serde_json::json!({ "command": "install" }), code.as_str())
+        }
+        AnnotateCommand::Start { color } => (
+            serde_json::json!({ "command": "start", "color": color.chars().take(64).collect::<String>() }),
+            "",
+        ),
+        AnnotateCommand::Stop => (serde_json::json!({ "command": "stop" }), ""),
+        AnnotateCommand::Forget { id } => {
+            (serde_json::json!({ "command": "forget", "id": id }), "")
+        }
+        AnnotateCommand::Number { numbers } => {
+            let numbers: Vec<_> = numbers.iter().take(MAX_ANNOTATE_NUMBERS).collect();
+            (
+                serde_json::json!({ "command": "number", "numbers": numbers }),
+                "",
+            )
+        }
+        AnnotateCommand::Poll => (serde_json::json!({ "command": "poll" }), ""),
+    };
+    // Spliced in, not compiled in the page, so a CSP without 'unsafe-eval' can't block it.
+    // Single pass, so neither part can inject the other's placeholder.
+    let (head, rest) = ANNOTATE_SCRIPT
+        .split_once("__COMMAND__")
+        .ok_or("bad annotate script")?;
+    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad annotate script")?;
+    Ok(format!("{head}{args}{middle}{code}{tail}"))
+}
+
+/// Runs an annotate command in a tab's page and returns `{ installed, events }`. The panel
+/// validates events like frame messages, since the page can write to the queue.
+#[tauri::command]
+pub async fn browser_view_annotate<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    command: AnnotateCommand,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = annotate_script(&command)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    page.eval_with_callback(script, move |result| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(result);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "page did not answer".to_string())?
+        .map_err(|error| error.to_string())?;
+    // The script returns a JSON string, which the engine JSON-encodes again.
+    let inner = serde_json::from_str::<String>(&result).map_err(|error| error.to_string())?;
+    serde_json::from_str(&inner).map_err(|error| error.to_string())
+}
+
+// The panel's browser agent (frontend agent/page-agent.ts): installed on first use per page, then
+// each call runs one command and returns `{ installed, result }`.
+const AGENT_SCRIPT: &str = r#"(() => {
+  const key = Symbol.for("unsloth.agent");
+  const command = __COMMAND__;
+  if (!window[key] && command.install) {
+    try {
+__CODE__
+    } catch (error) {}
+  }
+  const agent = window[key];
+  if (!agent) return JSON.stringify({ installed: false, result: null });
+  return JSON.stringify({ installed: true, result: agent.run(command.op) });
+})()"#;
+const MAX_AGENT_OP: usize = 65_536;
+
+#[derive(Debug, Deserialize)]
+pub struct AgentCommand {
+    op: serde_json::Map<String, serde_json::Value>,
+    code: Option<String>,
+}
+
+fn agent_script(command: &AgentCommand) -> Result<String, String> {
+    let code = command.code.as_deref().unwrap_or("");
+    if code.len() > MAX_ANNOTATE_CODE {
+        return Err("agent code too large".into());
+    }
+    let args = serde_json::json!({ "install": !code.is_empty(), "op": command.op }).to_string();
+    if args.len() > MAX_AGENT_OP {
+        return Err("agent command too large".into());
+    }
+    let (head, rest) = AGENT_SCRIPT
+        .split_once("__COMMAND__")
+        .ok_or("bad agent script")?;
+    let (middle, tail) = rest.split_once("__CODE__").ok_or("bad agent script")?;
+    Ok(format!("{head}{args}{middle}{code}{tail}"))
+}
+
+/// Runs a browser agent command in a tab's page. The panel checks the result, since the page
+/// shares the agent's world and can write to it.
+#[tauri::command]
+pub async fn browser_view_agent<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    command: AgentCommand,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = agent_script(&command)?;
+    eval_json(&page, script).await
+}
+
+// Spliced past the CSP; the document check is its own statement since spliced code can close any wrapper.
+const EVAL_SCRIPT: &str = r#"(() => {
+  const agent = window[Symbol.for("unsloth.agent")];
+  if (!agent || typeof agent.owns !== "function" || agent.owns(__DOC__) !== true) throw new Error("not the approved document");
+})();
+JSON.stringify({ installed: true, result: window[Symbol.for("unsloth.agent")].evaluate(__ID__, __DOC__, async () => {
+__CODE__
+}) });"#;
+// browser_agent.py allows 8000 characters, of up to 4 bytes each.
+const MAX_EVAL_CODE: usize = 32_000;
+
+fn eval_script(id: &str, doc: &str, code: &str) -> Result<String, String> {
+    if doc.len() < 2
+        || doc.len() > 16
+        || !doc.starts_with('r')
+        || !doc[1..].chars().all(|c| c.is_ascii_digit())
+    {
+        return Err("bad document ref".into());
+    }
+    if id.is_empty()
+        || id.len() > 64
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("bad script id".into());
+    }
+    if code.len() > MAX_EVAL_CODE {
+        return Err("script too large".into());
+    }
+    // Single pass over the template, so the code can't inject a placeholder.
+    let mut out = String::with_capacity(EVAL_SCRIPT.len() + code.len() + 96);
+    let mut rest = EVAL_SCRIPT;
+    for (marker, value) in [
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__ID__", format!("\"{id}\"")),
+        ("__DOC__", format!("\"{doc}\"")),
+        ("__CODE__", code.to_string()),
+    ] {
+        let (head, tail) = rest.split_once(marker).ok_or("bad eval script")?;
+        out.push_str(head);
+        out.push_str(&value);
+        rest = tail;
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+#[tauri::command]
+pub async fn browser_view_eval<R: Runtime>(
+    webview: Webview<R>,
+    tab_id: String,
+    id: String,
+    doc: String,
+    code: String,
+) -> Result<serde_json::Value, String> {
+    require_main(&webview)?;
+    let page = view(webview.app_handle(), &tab_id)?;
+    let script = eval_script(&id, &doc, &code)?;
+    eval_json(&page, script).await
+}
+
+async fn eval_json<R: Runtime>(
+    page: &Webview<R>,
+    script: String,
+) -> Result<serde_json::Value, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Mutex::new(Some(tx));
+    page.eval_with_callback(script, move |result| {
+        if let Some(tx) = tx.lock().unwrap().take() {
+            let _ = tx.send(result);
+        }
+    })
+    .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout(Duration::from_secs(5), rx)
+        .await
+        .map_err(|_| "page did not answer".to_string())?
+        .map_err(|error| error.to_string())?;
+    let inner = serde_json::from_str::<String>(&result).map_err(|error| error.to_string())?;
+    serde_json::from_str(&inner).map_err(|error| error.to_string())
 }
 
 /// Mute or unmute a tab's page. Windows mutes the whole view (Web Audio too) and keeps it muted
@@ -1420,6 +1849,7 @@ pub fn browser_view_close<R: Runtime>(
     {
         let mut inner = state.inner.lock().unwrap();
         inner.urls.remove(&tab_id);
+        inner.committed.remove(&tab_id);
         inner.download_starts.remove(&tab_id);
         // `muted` stays: a pruned view reopens muted; unmuting is what forgets it.
         if inner.shown.as_deref() == Some(tab_id.as_str()) {
@@ -1427,7 +1857,7 @@ pub fn browser_view_close<R: Runtime>(
         }
     }
     if let Ok(page) = view(webview.app_handle(), &tab_id) {
-        page.close().map_err(|error| error.to_string())?;
+        close_view(&page).map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -1446,10 +1876,11 @@ pub async fn browser_view_clear_data<R: Runtime>(
         {
             let mut inner = state.inner.lock().unwrap();
             inner.urls.clear();
+            inner.committed.clear();
             set_shown(&state, &mut inner, None);
         }
         for page in browser_views(&app) {
-            let _ = page.close();
+            let _ = close_view(&page);
         }
     }
     let live = if closing {
@@ -1483,7 +1914,7 @@ pub async fn browser_view_clear_data<R: Runtime>(
     };
     let result = clear_profile(&page).await;
     if hidden {
-        let _ = page.close();
+        let _ = close_view(&page);
     }
     result
 }
@@ -1565,9 +1996,103 @@ fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish
     }
 }
 
+/// The reservation a finished download of one URL settles, and any it retires. No path: the first on
+/// macOS, which reports none and runs downloads of one URL in turn. Elsewhere a missing path (WebView2
+/// sends none for a failed download) or one matching none stands for the sole reservation only, else
+/// settling one of several would hand it another download's result. Such a finish is counted instead:
+/// once every other download has finished, the reservations left are exactly the counted ones, and
+/// they are retired as failed so none holds a download slot or waits forever.
+fn take_finished(
+    pending: &mut Vec<PathBuf>,
+    unexplained: &mut usize,
+    path: Option<&Path>,
+) -> (Option<PathBuf>, Vec<PathBuf>) {
+    let sole = (pending.len() == 1).then_some(0);
+    let index = match path {
+        None if cfg!(target_os = "macos") => Some(0),
+        None => sole,
+        Some(path) => pending
+            .iter()
+            .position(|p| crate::browser_downloads::same_path(p, path))
+            .or(sole),
+    };
+    let recorded = match index.filter(|&index| index < pending.len()) {
+        Some(index) => Some(pending.remove(index)),
+        None => {
+            if !pending.is_empty() {
+                *unexplained += 1;
+            }
+            None
+        }
+    };
+    let mut retired = Vec::new();
+    if *unexplained > 0 && pending.len() <= *unexplained {
+        retired = std::mem::take(pending);
+        *unexplained = 0;
+    }
+    (recorded, retired)
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_finished_path_matching_no_reservation_settles_only_a_sole_one() {
+        let (a, b) = (PathBuf::from("/s/a.zip"), PathBuf::from("/s/b.zip"));
+        let mut n = 0;
+        let mut two = vec![a.clone(), b.clone()];
+        let found = take_finished(&mut two, &mut n, Some(Path::new("/s/b.zip")));
+        assert_eq!(found, (Some(b.clone()), vec![]));
+        let mut two = vec![a.clone(), b.clone()];
+        assert_eq!(
+            take_finished(&mut two, &mut n, Some(Path::new("/elsewhere"))),
+            (None, vec![])
+        );
+        assert_eq!((two.len(), n), (2, 1));
+        // The other one finishes: the one left is the unexplained finish, retired as failed.
+        assert_eq!(
+            take_finished(&mut two, &mut n, Some(Path::new("/s/b.zip"))),
+            (Some(b.clone()), vec![a.clone()])
+        );
+        assert_eq!((two.len(), n), (0, 0));
+        let mut one = vec![b.clone()];
+        assert_eq!(
+            take_finished(&mut one, &mut n, Some(Path::new("/elsewhere"))),
+            (Some(b.clone()), vec![])
+        );
+        assert_eq!(take_finished(&mut Vec::new(), &mut n, None), (None, vec![]));
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn a_finish_without_a_path_takes_the_first_only_where_downloads_run_in_turn() {
+        let (a, b) = (PathBuf::from("/s/a.zip"), PathBuf::from("/s/b.zip"));
+        let mut n = 0;
+        let mut two = vec![a.clone(), b.clone()];
+        if cfg!(target_os = "macos") {
+            assert_eq!(take_finished(&mut two, &mut n, None), (Some(a), vec![]));
+            return;
+        }
+        // WebView2: a failed download reports no path. Which one is unknown until the other ends.
+        assert_eq!(take_finished(&mut two, &mut n, None), (None, vec![]));
+        assert_eq!(
+            take_finished(&mut two, &mut n, Some(Path::new("/s/a.zip"))),
+            (Some(a), vec![b])
+        );
+        let mut one = vec![PathBuf::from("/s/c.zip")];
+        assert!(take_finished(&mut one, &mut n, None).0.is_some());
+    }
+
     use super::*;
+
+    #[test]
+    fn the_internet_mark_keeps_where_not_secrets() {
+        let source = |url: &str| sanitized_source(&Url::parse(url).unwrap());
+        assert_eq!(
+            source("https://user:pass@example.com:8443/f/a.exe?sig=secret#x").as_deref(),
+            Some("https://example.com:8443/f/a.exe")
+        );
+        assert_eq!(source("file:///etc/passwd"), None);
+    }
 
     mod url_poll {
         use super::*;
@@ -1812,6 +2337,83 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(bounds.viewport_width, 5.0);
+    }
+
+    #[test]
+    fn annotate_commands_match_the_panel() {
+        let parse = |value| serde_json::from_value::<AnnotateCommand>(value).unwrap();
+        assert!(matches!(
+            parse(serde_json::json!({ "command": "number", "numbers": [[3, 1]] })),
+            AnnotateCommand::Number { numbers } if numbers == vec![(3, 1)]
+        ));
+        assert!(matches!(
+            parse(serde_json::json!({ "command": "poll" })),
+            AnnotateCommand::Poll
+        ));
+        assert!(serde_json::from_value::<AnnotateCommand>(
+            serde_json::json!({ "command": "eval" })
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn annotate_code_is_spliced_once() {
+        let script = annotate_script(&AnnotateCommand::Install {
+            code: "return __COMMAND__;".into(),
+        })
+        .unwrap();
+        assert!(script.contains(r#"const command = {"command":"install"};"#));
+        assert!(script.contains("return __COMMAND__;"));
+        let start = annotate_script(&AnnotateCommand::Start {
+            color: "__CODE__".into(),
+        })
+        .unwrap();
+        assert!(start.contains(r#""color":"__CODE__""#));
+        assert!(annotate_script(&AnnotateCommand::Install {
+            code: "x".repeat(MAX_ANNOTATE_CODE + 1)
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn agent_code_and_command_are_spliced_once() {
+        let mut op = serde_json::Map::new();
+        op.insert("op".into(), "find".into());
+        op.insert("query".into(), "__CODE__".into());
+        let script = agent_script(&AgentCommand {
+            op: op.clone(),
+            code: Some("window.x = '__COMMAND__';".into()),
+        })
+        .unwrap();
+        assert!(script.contains(
+            r#"const command = {"install":true,"op":{"op":"find","query":"__CODE__"}};"#
+        ));
+        assert!(script.contains("window.x = '__COMMAND__';"));
+        let bare = agent_script(&AgentCommand { op, code: None }).unwrap();
+        assert!(bare.contains(r#""install":false"#));
+        assert!(agent_script(&AgentCommand {
+            op: serde_json::Map::new(),
+            code: Some("x".repeat(MAX_ANNOTATE_CODE + 1)),
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn eval_code_is_spliced_once_and_ids_are_plain() {
+        let script = eval_script("s1-a_B", "r100001", "return '__ID__' + '__DOC__';").unwrap();
+        let check = script
+            .find(r#"agent.owns("r100001") !== true) throw"#)
+            .unwrap();
+        let run = script
+            .find(r#".evaluate("s1-a_B", "r100001", async () => {"#)
+            .unwrap();
+        assert!(check < run && script[check..run].contains("})();"));
+        assert!(script.contains("return '__ID__' + '__DOC__';"));
+        assert!(eval_script("a\"); evil(\"", "r1", "").is_err());
+        assert!(eval_script("", "r1", "").is_err());
+        assert!(eval_script("s1", "r1\"", "").is_err());
+        assert!(eval_script("s1", "", "").is_err());
+        assert!(eval_script("s1", "r1", &"x".repeat(MAX_EVAL_CODE + 1)).is_err());
     }
 
     #[test]

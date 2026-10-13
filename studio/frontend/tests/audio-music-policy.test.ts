@@ -15,6 +15,7 @@ const {
   buildMusicRunRequest,
   durationLabel,
   effectiveMusicMode,
+  withWaitingEdit,
   musicModeHint,
   musicModeLabel,
   insertSectionTag,
@@ -404,4 +405,24 @@ test("instrumental-only models say so in the mode label and length wording", () 
     durationLabel(caps(YUE).modes[0]),
     "Length (seconds, approximate)",
   );
+});
+
+test("a clip waiting in Edit keeps the Edit tab, even on a model that cannot edit", () => {
+  const songOnly = { modes: [{ id: "song" as const }] };
+  const waiting = withWaitingEdit(songOnly, true);
+  assert.deepEqual(
+    waiting.modes.map((rule) => rule.id),
+    ["song", "edit"],
+  );
+  // The added mode has no actions, so the page says the model cannot edit and Generate stays blocked.
+  assert.equal(effectiveMusicMode(waiting, "edit").actions, undefined);
+  assert.equal(effectiveMusicMode(songOnly, "edit").id, "song");
+  assert.equal(withWaitingEdit(songOnly, false), songOnly);
+  const editing = {
+    modes: [
+      { id: "song" as const },
+      { id: "edit" as const, actions: ["repaint" as const] },
+    ],
+  };
+  assert.equal(withWaitingEdit(editing, true), editing);
 });

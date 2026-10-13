@@ -121,7 +121,7 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
           restore.current?.focus({ preventScroll: true });
           restore.current = null;
         }}
-        className="library-actions-menu w-56"
+        className="browser-menu library-actions-menu w-56"
       >
         <DropdownMenuItem onSelect={() => openTab()}>
           <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />

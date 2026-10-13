@@ -358,6 +358,18 @@ def reconcile_entries(adopt: list[tuple[str, str]], stale: list[tuple[str, str]]
         conn.close()
 
 
+def carry_fingerprint(item_id: str, old: Optional[str], new: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE library_entries SET fingerprint = ? WHERE item_id = ? AND fingerprint IS ?",
+            (new, item_id, old),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def delete_entry(item_id: str) -> None:
     conn = get_connection()
     try:

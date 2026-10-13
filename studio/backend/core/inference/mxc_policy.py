@@ -213,7 +213,12 @@ def _trusted_terminal_path_dirs(plan) -> list[str]:
 def _runtime_read_roots(executable: str, extra: list[str] = ()) -> list[str]:
     # Preserve the lexical executable for launch. Grants may use canonical roots,
     # but never broaden to the user profile or a drive root.
-    roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, sys.base_prefix, *extra]
+    # uv's managed Python base_prefix can be a version-independent junction.
+    # Resolve this interpreter-owned root before validation so the grant names
+    # the concrete runtime, not a redirect uv can retarget on upgrade. Keep
+    # strict reparse rejection for executables, workdirs and other grant inputs.
+    base_prefix = os.path.realpath(sys.base_prefix)
+    roots = [os.path.dirname(os.path.abspath(executable)), sys.prefix, base_prefix, *extra]
     roots.extend(site.getsitepackages())
     roots.append(str(Path(__file__).with_name("sandbox_site")))
     system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")

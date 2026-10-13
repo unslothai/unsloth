@@ -23,3 +23,11 @@ export function authFetch(input: string, init?: RequestInit): Promise<Response> 
 export async function prepareHfTokenForUse(): Promise<null> {
   return null;
 }
+
+export function useIsAccountOwner(): boolean {
+  return true;
+}
+
+export function isAccountOwner(): boolean {
+  return true;
+}

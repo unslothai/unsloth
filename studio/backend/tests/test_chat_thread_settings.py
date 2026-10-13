@@ -730,3 +730,96 @@ def test_the_response_says_absent_for_a_key_the_snapshot_never_held(stored, expe
 
     with TestClient(app) as client:
         assert client.get("/thread").json()["settings"] == expected
+
+
+@pytest.mark.parametrize("modified_at", [None, 1_700_000_000_100])
+@pytest.mark.parametrize("comparison", [False, True])
+def test_regenerate_title_preserves_each_threads_recency(
+    tmp_path, monkeypatch, modified_at, comparison
+):
+    from routes.chat_history import patch_thread
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    ids = ["left", "right"] if comparison else ["single"]
+    for index, thread_id in enumerate(ids):
+        studio_db.upsert_chat_thread(
+            _thread(
+                thread_id,
+                title = f"Old title {index}",
+                pairId = "pair" if comparison else None,
+                updatedAt = 1_700_000_001_000 + index,
+            )
+        )
+        with sqlite3.connect(studio_db_path()) as conn:
+            conn.execute(
+                "UPDATE chat_threads SET modified_at = ? WHERE id = ?", (modified_at, thread_id)
+            )
+        before = studio_db.get_chat_thread(thread_id)
+        saved = patch_thread(
+            thread_id,
+            ChatThreadPatch(
+                title = "Generated title",
+                expectedTitle = before["title"],
+                preserveTitleModifiedAt = True,
+            ),
+            current_subject = "test",
+        )
+        assert saved.title == "Generated title"
+        after = studio_db.get_chat_thread(thread_id)
+        for field in ("createdAt", "updatedAt", "modifiedAt"):
+            assert after[field] == before[field]
+
+
+def test_regenerated_title_keeps_new_activity_and_manual_rename_guard(tmp_path, monkeypatch):
+    from fastapi import HTTPException
+    from routes.chat_history import patch_thread
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread(updatedAt = 1_700_000_001_000))
+    # New activity lands while generation is pending. Never restore a timestamp from the client.
+    studio_db.update_chat_thread("thread-1", {"updatedAt": 1_700_000_002_000})
+    patch_thread(
+        "thread-1",
+        ChatThreadPatch(
+            title = "Generated title",
+            expectedTitle = "Test Chat",
+            preserveTitleModifiedAt = True,
+        ),
+        current_subject = "test",
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_002_000
+
+    patch_thread("thread-1", ChatThreadPatch(title = "Manual rename"), current_subject = "test")
+    before = studio_db.get_chat_thread("thread-1")
+    assert before["modifiedAt"] is not None
+    with pytest.raises(HTTPException) as error:
+        patch_thread(
+            "thread-1",
+            ChatThreadPatch(
+                title = "Stale generated title",
+                expectedTitle = "Generated title",
+                preserveTitleModifiedAt = True,
+            ),
+            current_subject = "test",
+        )
+    assert error.value.status_code == 409
+    assert studio_db.get_chat_thread("thread-1") == before
+
+
+def test_preserving_title_recency_does_not_suppress_other_edits(tmp_path, monkeypatch):
+    from routes.chat_history import patch_thread
+
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    patch_thread(
+        "thread-1",
+        ChatThreadPatch(
+            title = "Generated title",
+            archived = True,
+            preserveTitleModifiedAt = True,
+        ),
+        current_subject = "test",
+    )
+    saved = studio_db.get_chat_thread("thread-1")
+    assert saved["archived"] is True
+    assert saved["modifiedAt"] is not None

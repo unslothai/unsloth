@@ -15,6 +15,8 @@ import {
   sortReasoningEfforts,
 } from "./model-catalog";
 
+import { normalizeCustomReasoningConfig } from "./custom-reasoning";
+
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 
 /** Per-provider sampling capability matrix from each provider's chat docs (2026-05).
@@ -240,6 +242,8 @@ const EXTERNAL_MAX_OUTPUT_TOKENS_BY_MODEL: Array<{
   },
   // DeepSeek (deepseek-flash / deepseek-v4-pro).
   { providerType: "deepseek", prefixes: ["deepseek"], cap: 384000 },
+  // max_completion_tokens up to 1M (https://platform.kimi.ai/docs/guide/kimi-k3-quickstart).
+  { providerType: "kimi", prefixes: ["kimi-k3"], cap: 1048576 },
 ];
 
 /** The connection's effective Max Tokens ceiling for one model. A documented per-model cap
@@ -406,6 +410,16 @@ export function providerSupportsBuiltinWebSearch(
     providerType === "anthropic" ||
     providerType === "openrouter" ||
     providerType === "kimi"
+  );
+}
+
+/** Search and Think stay exclusive on Kimi, except kimi-k3, which has no thinking off switch. */
+export function kimiSearchExcludesThinking(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return (
+    providerType === "kimi" && modelId?.trim().toLowerCase() !== "kimi-k3"
   );
 }
 
@@ -796,6 +810,10 @@ export function getProviderCapabilities(
       topK: false,
     };
   }
+  // kimi-k3 fixes presence_penalty too and the docs ask for it to be omitted.
+  if (providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3") {
+    return { ...PROVIDER_CAPABILITIES.kimi, presencePenalty: false };
+  }
   return PROVIDER_CAPABILITIES[providerType] ?? DEFAULT_EXTERNAL_CAPABILITIES;
 }
 
@@ -834,8 +852,8 @@ const NO_REASONING_CAPS: ReasoningCaps = {
 
 const ANTHROPIC_REASONING_MODELS = [
   {
-    // Fable / Mythos 5 always think: `thinking.type "disabled"` 400s, so there is no off switch.
-    prefixes: ["claude-fable-5", "claude-mythos-5"],
+    // Fable, Mythos 5, and Opus 5.5 return 400 for disabled thinking; no off switch.
+    prefixes: ["claude-fable-5", "claude-mythos-5", "claude-opus-5-5"],
     supportsOff: false,
     levels: ["low", "medium", "high", "xhigh", "max"],
   },
@@ -1018,7 +1036,19 @@ function withReasoningEffortStyle(caps: ReasoningCaps): ExternalReasoningCapabil
 function resolveKimiReasoningCapabilities(modelId: string): ExternalReasoningCapabilities {
   // Kimi has a boolean thinking toggle, not an effort scale: k2.6 on by default and
   // toggleable, k2-thinking always on, k2.5 and others none.
-  // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}.
+  // k2.6 is toggled via extra_body: {thinking: {type: enabled|disabled}}. k3 always reasons
+  // and takes reasoning_effort low|high|max instead.
+  if (modelId === "kimi-k3") {
+    return {
+      ...withReasoningEffortStyle({
+        supportsReasoning: true,
+        supportsReasoningOff: false,
+        reasoningEffortLevels: ["low", "high", "max"],
+      }),
+      // The API's own default; the chat's medium would otherwise clamp down to low.
+      defaultEffort: "max",
+    };
+  }
   if (modelId === "kimi-k2-thinking") {
     return withEnableThinkingStyle({
       supportsReasoning: true,
@@ -1159,6 +1189,7 @@ export interface ExternalReasoningResolveOptions {
   baseUrl?: string | null;
   /** Custom providers can opt into OpenAI's Responses API and its reasoning controls. */
   apiType?: "chat_completions" | "responses";
+  reasoningConfig?: unknown;
 }
 
 export function effectiveExternalReasoningProviderType(
@@ -1174,14 +1205,17 @@ export function effectiveExternalReasoningProviderType(
 // Thinking off sends "none". https://docs.ollama.com/api/openai-compatibility
 const OLLAMA_EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
 
-// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle. Ollama errors a
-// thinking request at a model without the /api/tags "thinking" capability, so gate on it (#9649).
+// vLLM has no per-model reasoning signal on OpenAI-compat, so pin via user toggle; a catalogued effort
+// ladder still applies, since the template is the model's own. Ollama errors a thinking request at a
+// model without the /api/tags "thinking" capability, so gate on it (#9649).
 function resolveProviderReasoning(
   normalizedProvider: string,
   modelId: string,
   options: ExternalReasoningResolveOptions | undefined,
 ): ExternalReasoningCapabilities | null {
   if (normalizedProvider === "vllm" && options?.isReasoningProvider) {
+    const catalog = modelId ? catalogCapabilities("vllm", modelId.toLowerCase(), true) : null;
+    if (catalog && externalReasoningTakesEffort(catalog)) return catalog;
     return withEnableThinkingStyle({
       supportsReasoning: true,
       supportsReasoningOff: true,
@@ -1226,7 +1260,8 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   qwen: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
   ollama: { levels: null, off: "unified" },
-  vllm: LOCAL_SERVER_WIRE,
+  // A vLLM older than 0.21 400s on the wider levels; the backend then leaves them to the template default.
+  vllm: { levels: null, off: "unified" },
   llama_cpp: LOCAL_SERVER_WIRE,
 };
 
@@ -1299,6 +1334,29 @@ export function getExternalReasoningCapabilities(
   modelId: string | null | undefined,
   options?: ExternalReasoningResolveOptions,
 ): ExternalReasoningCapabilities {
+  // Check the connection before the catalog: known models must not opt Custom in.
+  if (
+    providerType?.trim().toLowerCase() === "custom" &&
+    options?.apiType !== "responses"
+  ) {
+    const config = normalizeCustomReasoningConfig(options?.reasoningConfig);
+    if (!config?.enabled) {
+      return isOpenRouterMandatoryReasoningModel(modelId ?? "")
+        ? withEnableThinkingStyle({
+            supportsReasoning: true,
+            reasoningAlwaysOn: true,
+            supportsReasoningOff: false,
+          })
+        : withEnableThinkingStyle();
+    }
+    return config.style === "reasoning_effort" || config.style === "reasoning"
+      ? withReasoningEffortStyle({
+          supportsReasoning: true,
+          supportsReasoningOff: true,
+          reasoningEffortLevels: ["none", "low", "medium", "high"],
+        })
+      : withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
+  }
   // The capability map is keyed by the catalog's id, so look it up before case-folding.
   const catalogModel = modelId?.trim() ?? "";
   const normalizedModel = catalogModel.toLowerCase();
@@ -1429,9 +1487,17 @@ export function reasoningFieldsAfterCatalogRefresh(
   };
 }
 
-/** Sent as a llama-server template kwarg, so the model's template must still read it. */
+/** kimi-k3 wants every assistant message back whole (https://platform.kimi.ai/docs/guide/use-kimi-k2-thinking-model). */
+export function providerModelReplaysReasoning(
+  providerType: string | null | undefined,
+  modelId: string | null | undefined,
+): boolean {
+  return providerType === "kimi" && modelId?.trim().toLowerCase() === "kimi-k3";
+}
+
+/** Sent as a llama-server / vLLM template kwarg, so the model's template must still read it. */
 export function providerSupportsPreserveThinking(
   providerType: string | null | undefined,
 ): boolean {
-  return providerType === "llama_cpp";
+  return providerType === "llama_cpp" || providerType === "vllm";
 }

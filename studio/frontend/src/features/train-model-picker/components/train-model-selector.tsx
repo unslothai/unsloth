@@ -345,7 +345,12 @@ export function TrainModelSelector({
       if (row.partial) {
         return false;
       }
-      if (row.source === "lmstudio" || row.source === "ollama") {
+      // Host-app stores hold pre-quantized inference weights, not training bases.
+      if (
+        row.source === "lmstudio" ||
+        row.source === "omlx" ||
+        row.source === "ollama"
+      ) {
         return false;
       }
       if (!row.capabilities.canTrain) {

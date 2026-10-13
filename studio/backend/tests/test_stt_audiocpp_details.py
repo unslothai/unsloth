@@ -457,3 +457,22 @@ def test_an_unreadable_source_is_a_decode_error(fake, side, tmp_path):
     with pytest.raises(SttAudioDecodeError):
         side.transcribe_path(bad, QWEN3, None)
     assert fake.starts == []
+
+
+@pytest.mark.parametrize("gpu_visible", [False, True])
+def test_training_moves_the_server_only_when_its_placement_changes(
+    fake, side, monkeypatch, gpu_visible
+):
+    """A GPU build with no visible GPU already runs on the CPU, so training starting or ending keeps it."""
+    monkeypatch.setattr(
+        srv,
+        "select_backend",
+        lambda binary, force_cpu: "cpu" if force_cpu or not gpu_visible else "cuda",
+    )
+    monkeypatch.setattr(stt, "runtime_runs_on_cpu", lambda: not gpu_visible)
+    training = [False]
+    monkeypatch.setattr(stt, "_training_active", lambda: training[0])
+    for active in (False, True, False):
+        training[0] = active
+        side.transcribe(wav_bytes(), QWEN3, "en")
+    assert len(fake.starts) == (3 if gpu_visible else 1)

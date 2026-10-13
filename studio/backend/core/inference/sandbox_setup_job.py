@@ -117,7 +117,9 @@ def pkexec_script(steps) -> str:
     return "set -e\n" + "\n".join(shlex.join(list(step)) for step in steps) + "\n"
 
 
-def _commands(plan: sandbox_setup_plan.SetupPlan) -> tuple[list[list[str]], dict | None]:
+def _commands(
+    plan: sandbox_setup_plan.SetupPlan, interactive: bool = True
+) -> tuple[list[list[str]], dict | None]:
     """(argv list, env). Linux steps run as root: programs pinned to system binaries, never PATH."""
     if plan.action != sandbox_setup_plan.LINUX_INSTALL:
         return [list(step) for step in plan.steps], None
@@ -125,6 +127,11 @@ def _commands(plan: sandbox_setup_plan.SetupPlan) -> tuple[list[list[str]], dict
     if kind is None:
         raise SetupUnavailable(
             "Neither passwordless sudo nor a desktop password prompt is available."
+        )
+    # A remote start was allowed because nothing prompts; a desktop prompt would appear where nobody is.
+    if not interactive and kind not in sandbox_setup_plan.PROMPTLESS_ELEVATION:
+        raise SetupUnavailable(
+            "This setup needs the password prompt on the computer running Unsloth; start it there."
         )
     try:
         steps = sandbox_setup_plan.elevated_steps(plan.steps)
@@ -225,8 +232,11 @@ def _joined(running: SetupJob, operation: str) -> SetupJob:
     return running
 
 
-def start(operation: str) -> SetupJob:
-    """Start the setup for `operation`, or return the run of the same operation already in progress."""
+def start(operation: str, interactive: bool = True) -> SetupJob:
+    """Start the setup for `operation`, or return the run of the same operation already in progress.
+
+    ``interactive=False`` (a remote start) refuses any step that would prompt on this computer.
+    """
     global _current
     from . import mxc_host_prep_job
 
@@ -241,7 +251,7 @@ def start(operation: str) -> SetupJob:
         plan = sandbox_setup_plan.detect(force = True)
     if plan.action != operation:
         raise SetupUnavailable(plan.reason or "There is nothing to set up on this computer.")
-    commands, env = _commands(plan)
+    commands, env = _commands(plan, interactive)
     with HOST_CHANGE_LOCK:
         with _lock:
             if _current is not None and _current.state == "running":

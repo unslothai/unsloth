@@ -377,6 +377,19 @@ def test_approval_reads_a_cmd_command_the_way_cmd_splits_it(windows, monkeypatch
     assert tools._terminal_is_high_risk(command) is False  # bash keeps the whole thing one argument
 
 
+def test_the_host_cmd_fallback_is_read_as_cmd_too(windows, monkeypatch, tmp_path):
+    """No Git Bash (or Sandbox Low on such a host): `cmd /c` runs the command, so ' does not quote."""
+    windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
+    monkeypatch.setattr(tools, "_terminal_profile", lambda *_a, **_k: "cmd_fallback")
+    assert tools._terminal_is_high_risk("echo 'hi & del victim.txt & echo bye'") is True
+    monkeypatch.setattr(
+        tools, "_BLOCKED_COMMANDS", tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN
+    )
+    plan, result = _exec(monkeypatch, tmp_path, "echo 'x & rmdir /s /q y'")
+    assert plan is None
+    assert result.startswith("Blocked command(s) for safety: rmdir"), result
+
+
 def test_cmd_echo_off_prefix_does_not_hide_the_command(windows, monkeypatch, tmp_path):
     windows(bash_cap = _cap(False, MSYS), cmd_cap = _cap(True))
     monkeypatch.setattr(
