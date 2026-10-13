@@ -98,6 +98,12 @@ def invalidate_hf_cache_scans() -> None:
         _hf_cache_scans_result = None
         _hf_cache_scans_cached_at = 0.0
         _hf_cache_scans_epoch += 1
+    # The audio.cpp listing memoizes the same cache, and the next scan lists its umbrella folders.
+    try:
+        from core.inference.audio_cpp_models import forget
+    except Exception:  # noqa: BLE001 - no audio.cpp support, nothing memoized
+        return
+    forget()
 
 
 def hf_cache_scans_epoch() -> int:

@@ -275,11 +275,31 @@ def _audio_cpp_package_scope(target_repo, variant: str) -> tuple[frozenset[str],
     names = [name for _snap, _blob, name in _repo_file_matches(target_repo, lambda name: True)]
     packages = package_variant_files(names)
     if not packages:
-        return frozenset(), frozenset()
+        return _umbrella_variant_scope(target_repo, variant)
     wanted = (variant or "").strip().lower()
     own = next((files for key, files in packages.items() if key.lower() == wanted), ())
     protected = {path for key, files in packages.items() if key.lower() != wanted for path in files}
     return frozenset(own), frozenset(protected)
+
+
+def _umbrella_variant_scope(target_repo, variant: str) -> tuple[frozenset[str], frozenset[str]]:
+    """``(own files, protected files)`` of one umbrella folder variant (``<Folder>/<file>`` key): its
+    voice embeddings and configs go with it, unless another cached variant of the folder lists them."""
+    from core.inference.audio_cpp_models import folder_row_for_download, resolve
+
+    row = folder_row_for_download(str(getattr(target_repo, "repo_id", "")), variant)
+    model = resolve(row[0], network = False) if row else None
+    if model is None:
+        return frozenset(), frozenset()
+    own: set[str] = set()
+    protected: set[str] = set()
+    for candidate in model.variants:
+        files = {f.path for f in candidate.files}
+        if candidate.primary and gguf_variant_key(candidate.primary).lower() == variant.lower():
+            own |= files
+        else:
+            protected |= files
+    return frozenset(own - protected), frozenset(protected)
 
 
 def _delete_gguf_variant_from_repos(

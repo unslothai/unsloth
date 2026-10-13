@@ -89,10 +89,18 @@ def _variant_keys(repo_info, variant: str) -> set[str]:
 
 
 def _variant_bytes(repo_info, variant: str) -> int:
+    from hub.services.models.deletion import _audio_cpp_package_scope
+
     wanted = _variant_keys(repo_info, variant)
+    # The same files the delete removes: an audio.cpp variant's own embeddings and configs too.
+    own, protected = _audio_cpp_package_scope(repo_info, variant)
 
     def _matches(name: str) -> bool:
-        return _is_main_gguf_filename(name) and gguf_variant_key(name).lower() in wanted
+        if name in protected:
+            return False
+        return name in own or (
+            _is_main_gguf_filename(name) and gguf_variant_key(name).lower() in wanted
+        )
 
     return _repo_blob_bytes(repo_info, only = _matches)
 

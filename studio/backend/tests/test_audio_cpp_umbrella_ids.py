@@ -339,3 +339,45 @@ def test_a_loaded_model_holds_the_folder_it_loads_as_a_companion(monkeypatch):
     _idle(monkeypatch, active = f"{miotts}:Q8_0")
     assert deletion._audio_cpp_blocks_delete(codec) is True
     assert deletion._audio_cpp_blocks_delete(KOKORO) is False
+
+
+def test_a_finished_download_lists_its_folder_on_the_next_scan(hub):
+    from hub.services.models import cache_inventory
+
+    moon = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    assert moon not in {row["repo_id"] for row in cache_inventory._scan_cached_gguf()}
+    key = "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0"
+    _add_snapshot(hub, "a" * 40, {f"{key}.gguf": "moonshine_asr"}, main = True)
+    # What a completed download calls; the audio.cpp memo must not keep the old listing.
+    cache_inventory.invalidate_hf_cache_scans()
+    assert moon in {row["repo_id"] for row in cache_inventory._scan_cached_gguf()}
+
+
+def test_a_folder_variant_delete_takes_its_own_voice_files(hub, monkeypatch):
+    from hub.services.models import companion_cleanup, deletion
+
+    _idle(monkeypatch)
+    snap = hub / SNAPSHOT
+    blobs = hub / "models--audio-cpp--audio.cpp-gguf" / "blobs"
+    pocket = f"{AUDIO_CPP_REPO}/PocketTTS-GGUF"
+    for lang in ("english", "french"):
+        rel = f"PocketTTS-GGUF/{lang}/pocket-tts-{lang}-q8_0.gguf"
+        _add_snapshot(hub, "a" * 40, {rel: "pocket_tts"}, main = True)
+        voice = blobs / f"voice-{lang}"
+        voice.write_bytes(lang.encode() * 100)
+        path = snap / f"PocketTTS-GGUF/{lang}/embeddings/alba.safetensors"
+        path.parent.mkdir(parents = True, exist_ok = True)
+        os.symlink(os.path.relpath(voice, path.parent), path)
+    acm.forget()
+    english = snap / "PocketTTS-GGUF/english"
+    gguf = (english / "pocket-tts-english-q8_0.gguf").stat().st_size
+    voice = (english / "embeddings/alba.safetensors").stat().st_size
+    impact = asyncio.run(companion_cleanup.delete_impact_response(pocket, "english/Q8_0"))
+    assert impact["reclaimed_bytes"] == gguf + voice
+    asyncio.run(deletion.delete_cached_model_response(pocket, "english/Q8_0"))
+    assert not (english / "pocket-tts-english-q8_0.gguf").exists()
+    assert not (english / "embeddings/alba.safetensors").exists()
+    assert not (blobs / "voice-english").exists()
+    assert (snap / "PocketTTS-GGUF/french/embeddings/alba.safetensors").exists()
+    assert (snap / "PocketTTS-GGUF/french/pocket-tts-french-q8_0.gguf").exists()
+    assert len(_left(hub)) == 4
