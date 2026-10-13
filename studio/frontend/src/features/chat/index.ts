@@ -163,6 +163,11 @@ export {
   rewindTouchesFiles,
 } from "./utils/rewind";
 export {
+  isCompactCommand,
+  requestThreadCompaction,
+  useCompactRequestStore,
+} from "./stores/compact-request-store";
+export {
   folderRingKey,
   planKey,
   planSidebarDrop,

@@ -285,9 +285,9 @@ export interface SttStatus {
 // Keep load/unload requests ordered so a new recording cannot race an unload still finishing for the previous one.
 let sttLifecycle: Promise<void> = Promise.resolve();
 
-function queueSttLifecycle(operation: () => Promise<void>): Promise<void> {
+function queueSttLifecycle<T>(operation: () => Promise<T>): Promise<T> {
   const result = sttLifecycle.catch(() => {}).then(operation);
-  sttLifecycle = result.catch(() => {});
+  sttLifecycle = result.then(() => {}, () => {});
   return result;
 }
 
@@ -464,7 +464,7 @@ export function unloadSttModel(
   engine?: SttEngine,
   model?: string,
   options?: { wait?: boolean },
-): Promise<void> {
+): Promise<{ released?: boolean }> {
   return queueSttLifecycle(async () => {
     const params = new URLSearchParams();
     if (engine) params.set("engine", engine);
@@ -482,6 +482,11 @@ export function unloadSttModel(
       } | null;
       throw new Error(body?.detail ?? `HTTP ${response.status}`);
     }
+    // `released` is false when the backend kept a model it was not asked to unload.
+    const body = (await response.json().catch(() => null)) as {
+      released?: boolean;
+    } | null;
+    return { released: body?.released };
   });
 }
 

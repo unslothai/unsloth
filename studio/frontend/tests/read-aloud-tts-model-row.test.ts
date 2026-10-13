@@ -30,13 +30,15 @@ test("the row lands on the TTS selector, not the mode Audio was left in", () => 
   // Audio ignored a task without a model, so the task names the page via the busy gate.
   assert.match(
     audioSource,
-    /const routedWorkflow = audioRouteIntent\(routeSearch\);\s*if \(routedWorkflow === null\) return;/,
+    /const urlWorkflow = audioRouteIntent\(routeSearch\);[\s\S]*?audioWorkflowUrlAction\(\{\s*urlWorkflow,/,
   );
-  // A refused switch keeps the parameter, so the retry rides the effect's busy dep.
+  // A refused switch returns before navigating and keeps the parameter, so the retry rides the
+  // effect's busy dep; a successful one leaves only the page (the task is dropped).
   assert.match(
     audioSource,
-    /if \(!transitionWorkflow\(routedWorkflow\)\) return;\s*void navigateSelf\(\{ to: "\/audio", search: \{\}, replace: true \}\);/,
+    /if \(!transitionWorkflow\(action\.workflow\)\) return;\s*lastSyncedWorkflow\.current = action\.workflow;[\s\S]{0,120}?void navigateSelf\(\{\s*to: "\/audio",\s*search: \{ workflow: action\.workflow \},\s*replace: true,\s*\}\);/,
   );
+  assert.match(audioSource, /\}, \[\s*active,\s*busy,/);
 });
 
 test("custom TTS explains the strict voice default", () => {

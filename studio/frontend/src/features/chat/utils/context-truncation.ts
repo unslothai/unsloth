@@ -45,6 +45,46 @@ export function shouldShowCompactionNotice(
   );
 }
 
+/** afterToolCallId is null when the fit ran before the reply began. */
+export interface CompactionMarker {
+  afterToolCallId: string | null;
+  truncation: ContextTruncation;
+}
+
+/** A fit that recalled already emitted its `search_conversation`, which belongs after the cut. */
+export function compactionAnchorToolCallId(
+  toolCalls: ReadonlyArray<{ toolCallId?: unknown; toolName?: unknown }>,
+  truncation: ContextTruncation,
+): string | null {
+  let end = toolCalls.length;
+  if (
+    (truncation.recalled_chunks ?? 0) > 0 &&
+    toolCalls[end - 1]?.toolName === "search_conversation"
+  ) {
+    end -= 1;
+  }
+  const id = toolCalls[end - 1]?.toolCallId;
+  return typeof id === "string" ? id : null;
+}
+
+/** Skips the cut a tool loop replays every round. */
+export function appendCompactionMarker(
+  markers: CompactionMarker[] | undefined,
+  truncation: ContextTruncation,
+  afterToolCallId: string | null,
+): CompactionMarker[] | undefined {
+  if (!promptWasShortened(truncation)) return markers;
+  const last = markers?.[markers.length - 1];
+  if (
+    last &&
+    truncation.checkpoint_started !== true &&
+    compactionBoundary(truncation) <= compactionBoundary(last.truncation)
+  ) {
+    return markers;
+  }
+  return [...(markers ?? []), { afterToolCallId, truncation }];
+}
+
 function nonNegativeInt(value: number | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value as number)) : 0;
 }

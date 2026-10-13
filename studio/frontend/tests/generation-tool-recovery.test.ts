@@ -1540,3 +1540,21 @@ test("each rebuild yields its own source objects", () => {
   assert.equal(second.title, "Docs");
   assert.deepEqual(second.metadata, { description: "only" });
 });
+
+test("recovery keeps a model note on the finished card it targets", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start(), 12, 1);
+  replay(end(), 20, 2);
+  const note = {
+    type: "tool_model_note",
+    tool_call_id: "call_0",
+    suffix: "\n\nbudget",
+  };
+  replay({ _toolEvent: note }, 20, 3);
+  replay(note, 20, 3);
+  const part = carried[0].part as Record<string, unknown>;
+  assert.equal(carried.length, 1);
+  assert.equal(part.result, "ok");
+  assert.deepEqual(part.provenance, { model_suffix: "\n\nbudget" });
+});

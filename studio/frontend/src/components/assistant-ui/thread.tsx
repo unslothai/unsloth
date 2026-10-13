@@ -25,6 +25,7 @@ import { AutoReadAloud } from "@/components/assistant-ui/auto-read-aloud";
 import { CompactionDivider } from "@/components/assistant-ui/compaction-divider";
 import {
   compactionDividerRows,
+  compactionToolCallDividers,
   memoOnArrayByKey,
 } from "@/components/assistant-ui/message-derived";
 import { downloadImagePart } from "@/components/assistant-ui/image";
@@ -100,6 +101,10 @@ import {
   type ContextTruncation,
   attachmentsPastedText,
   hasPendingPromptQueueStart,
+  isCompactCommand,
+  isThreadIncognito,
+  requestThreadCompaction,
+  useCompactRequestStore,
   isPastedTextFile,
   pastedTextQueueKey,
   promptQueueActiveItemChanged,
@@ -429,6 +434,7 @@ import {
   type FC,
   type KeyboardEvent,
   type DragEvent as ReactDragEvent,
+  type PropsWithChildren,
   type ReactNode,
   type RefObject,
   Fragment,
@@ -1816,8 +1822,21 @@ const ThreadMessage: FC = () => {
       <CompactionRowDivider />
       {body}
       <ForkContinuationRule />
+      <PendingCompactionRule />
     </>
   );
+};
+
+const PendingCompactionRule: FC = () => {
+  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const pending = useCompactRequestStore((s) =>
+    threadId === null ? false : s.requested[threadId] === true,
+  );
+  const endsWithReply = useAuiState(
+    ({ message }) => message.isLast && message.role === "assistant",
+  );
+  if (!pending || !endsWithReply) return null;
+  return <CompactionDivider pending={true} className="mt-6" />;
 };
 
 // The selector returns the persisted record, which keeps its identity between renders, so a
@@ -5105,6 +5124,41 @@ const Composer: FC<{
         });
         return;
       }
+      if (
+        !overlay &&
+        !hasAttachments &&
+        !hasPendingAudio &&
+        isCompactCommand(composerText)
+      ) {
+        event.preventDefault();
+        const runtime = useChatRuntimeStore.getState();
+        if (!referenceThreadId || aui.thread().getState().messages.length === 0) {
+          toast.info("Nothing to compact yet");
+          return;
+        }
+        if (runtime.incognito || isThreadIncognito(referenceThreadId)) {
+          toast.info("Temporary chats are not saved, so they cannot be compacted");
+          return;
+        }
+        // The compacted turns stay reachable only through search_conversation, so no tools, no reset.
+        if (
+          !runtime.supportsTools ||
+          !resumesThought({
+            loadedIsGguf: runtime.loadedIsGguf,
+            loadedIsMlx: runtime.loadedIsMlx,
+            activeGgufVariant: runtime.activeGgufVariant,
+            activeNativePathToken: runtime.activeNativePathToken,
+            checkpoint: runtime.params.checkpoint,
+          })
+        ) {
+          toast.info("/compact works with GGUF and MLX models that support tools");
+          return;
+        }
+        requestThreadCompaction(referenceThreadId);
+        clearStoredDraft();
+        aui.composer().setText("");
+        return;
+      }
       if (disabled || shouldBlockSend()) {
         event.preventDefault();
         parkIfWaitingOnAttachments();
@@ -7550,6 +7604,33 @@ const ContinueMessageBarForLastMessage: FC = () => {
   );
 };
 
+const ToolGroupThenCompaction = memo<
+  PropsWithChildren<{ startIndex: number; endIndex: number }>
+>(({ startIndex, endIndex, children }) => {
+  const truncation = useAuiState(({ thread, message }) => {
+    const marker = compactionToolCallDividers(thread.messages).get(message.id);
+    if (!marker) return null;
+    for (let index = startIndex; index <= endIndex; index += 1) {
+      const part = message.parts[index];
+      if (part?.type === "tool-call" && part.toolCallId === marker.afterToolCallId) {
+        return marker.truncation;
+      }
+    }
+    return null;
+  });
+  return (
+    <>
+      <ToolGroup startIndex={startIndex} endIndex={endIndex}>
+        {children}
+      </ToolGroup>
+      {truncation && (
+        <CompactionDivider truncation={truncation} className="my-6" />
+      )}
+    </>
+  );
+});
+ToolGroupThenCompaction.displayName = "ToolGroupThenCompaction";
+
 const WebSearchToolUIConfirmable = withToolConfirmation(WebSearchToolUI);
 const KnowledgeBaseToolUIConfirmable =
   withToolConfirmation(KnowledgeBaseToolUI);
@@ -7576,7 +7657,7 @@ const ASSISTANT_PART_COMPONENTS = {
   Reasoning: Reasoning,
   ReasoningGroup: ReasoningGroup,
   Source: Sources,
-  ToolGroup: ToolGroup,
+  ToolGroup: ToolGroupThenCompaction,
   tools: {
     by_name: {
       web_search: WebSearchToolUIConfirmable,

@@ -9,10 +9,16 @@ export function ggufCompactionRequestFields(options: {
   isGguf: boolean;
   isMlx?: boolean;
   autoCompactEnabled: boolean;
+  // /compact: asked for by the user, so it applies with auto-compaction off too
+  compactNow?: boolean;
 }): {
   context_overflow?: "error" | "truncate_oldest";
+  compact_context?: true;
 } {
   if (!options.isGguf && !options.isMlx) return {};
+  if (options.compactNow) {
+    return { context_overflow: "truncate_oldest", compact_context: true };
+  }
   if (!options.autoCompactEnabled) {
     // explicit error avoids the UNSLOTH_CONTEXT_OVERFLOW fallback, which may compact
     return { context_overflow: "error" };
