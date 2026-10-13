@@ -34,7 +34,9 @@ _QUERY_AUTHORIZATION = re.compile(
     rf"""(?ix)(?<![A-Za-z0-9])authorization["'”’]?[ \t]*[:=][ \t]*["'“‘]?[\w!#$%&'*+.^`|~-]+[ \t]+
     (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|(?P<token68>[\w.~+/-]+=*))"""
 )
-_AUTH_PARAM_VALUE = re.compile(r"""=[ \t]*([^\s,]+)""")
+_AUTH_PARAM_VALUE = re.compile(
+    r"""=[ \t]*("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
+)
 _TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
@@ -162,10 +164,12 @@ def _sanitize_public_query(query: str) -> str:
     credentials = set()
     for match in _QUERY_AUTHORIZATION.finditer(query):
         values = [match["token68"]] if match["token68"] else _AUTH_PARAM_VALUE.findall(match[0])
-        credentials.update(value.strip(_TOKEN_PUNCTUATION) for value in values)
-    credentials = {value for value in credentials if len(value) >= 8}
+        credentials.update(
+            piece for value in values for piece in value.strip(_TOKEN_PUNCTUATION).split()
+        )
+    credentials = {piece for piece in credentials if len(piece) >= 8}
     if credentials:
-        plain = [token for token in plain if token.strip(_TOKEN_PUNCTUATION) not in credentials]
+        plain = [token for token in plain if not any(piece in token for piece in credentials)]
     tokens = plain
     if with_authorization != plain:
         # 600 tokens cover the 500-character output; the matcher is quadratic past that.

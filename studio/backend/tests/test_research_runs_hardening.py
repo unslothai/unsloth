@@ -276,6 +276,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization: Basic dXNlcjpwYXNzd29yZA== why does dXNlcjpwYXNzd29yZA== fail",
         "headers={“Authorization”: “Basic dXNlcjpwYXNzd29yZA==”} why",
         "Authorization: Digest nonce=dXNlcjpwYXNzd29yZA why does dXNlcjpwYXNzd29yZA fail",
+        'Authorization: Digest username="dXNlcjpw,YXNzd29yZA" why does dXNlcjpw,YXNzd29yZA fail',
+        "Authorization: Basic dXNlcjpwYXNzd29yZA== server echoed dXNlcjpwYXNzd29yZA==.",
     ):
         assert "dXNlcjpwYXNzd29yZA" not in _sanitize_public_query(text), text
     question = _sanitize_public_query('Authorization: Digest realm="private\nexplain oauth refresh')
