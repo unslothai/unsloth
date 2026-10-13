@@ -248,8 +248,13 @@ class TestWindowsBelowTheFloorGetsTheVulkanBundle:
             host("Windows", driver), "b11443", _release_with(*kinds), None
         )
 
-    def test_a_12_2_driver_gets_vulkan_then_cpu(self, monkeypatch):
-        choices = self._choices(monkeypatch, (12, 2))
+    # (10, 1) on sm_30 is #13662's GT 650M; a pre-12 driver used to source-build.
+    @pytest.mark.parametrize("driver, caps", [((12, 2), ("86",)), ((11, 8), ("61",)), ((10, 1), ("30",))])
+    def test_a_driver_below_the_floor_gets_vulkan_then_cpu(self, monkeypatch, driver, caps):
+        monkeypatch.setattr(m, "apply_approved_hashes", lambda attempts, _checksums: attempts)
+        choices = m.resolve_release_asset_choice(
+            host("Windows", driver, caps), "b11443", _release_with("windows-vulkan", "windows-cpu"), None
+        )
         assert [c.install_kind for c in choices] == ["windows-vulkan", "windows-cpu"]
         assert choices[0].name == f"app-{TAG}-windows-x64-vulkan.zip"
 
@@ -267,8 +272,9 @@ class TestWindowsBelowTheFloorGetsTheVulkanBundle:
         )
         assert [c.install_kind for c in choices] == ["windows-cpu"]
 
-    def test_without_a_vulkan_bundle_it_gets_the_cpu_bundle(self, monkeypatch):
-        choices = self._choices(monkeypatch, (12, 2), kinds = ("windows-cpu",))
+    @pytest.mark.parametrize("driver", [(12, 2), (10, 1)])
+    def test_without_a_vulkan_bundle_it_gets_the_cpu_bundle(self, monkeypatch, driver):
+        choices = self._choices(monkeypatch, driver, kinds = ("windows-cpu",))
         assert [c.install_kind for c in choices] == ["windows-cpu"]
 
     @pytest.mark.parametrize("driver", [(12, 4), (13, 0)])
@@ -276,10 +282,9 @@ class TestWindowsBelowTheFloorGetsTheVulkanBundle:
         choices = self._choices(monkeypatch, driver)
         assert choices and all(c.install_kind == "windows-cuda" for c in choices)
 
-    def test_a_cuda_11_driver_keeps_its_old_route(self, monkeypatch):
-        # No fork bundle covers it; the caller turned main's empty list into this same fallback.
+    def test_without_either_bundle_a_pre_12_driver_still_source_builds(self, monkeypatch):
         with pytest.raises(m.PrebuiltFallback, match = "no published Windows CUDA bundle"):
-            self._choices(monkeypatch, (11, 8))
+            self._choices(monkeypatch, (11, 8), kinds = ())
 
 
 class TestTheSourceStageDoesNotKeepABrokenCudaPrebuilt:
