@@ -243,7 +243,12 @@ def validate_model(
         from .llama_cpp import detect_reasoning_flags
         options["reasoning_parser"] = reasoning_parser
         options["reasoning_flags"] = detect_reasoning_flags(
-            template, config.identifier, log_source = "managed engine"
+            template,
+            # The detector reads DeepSeek's `thinking` toggle off the id; a renamed local directory loses it.
+            f"deepseek {config.identifier}"
+            if reasoning_parser == "deepseek_v3"
+            else config.identifier,
+            log_source = "managed engine",
         )
     if precision == "fp8" and profile(engine)["platform"] == "cuda":
         # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.

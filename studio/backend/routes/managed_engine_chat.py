@@ -108,7 +108,6 @@ def _message_fitter(payload, engine, public, tools):
 
     if (
         getattr(engine, "engine", None) != "vllm"
-        or payload.context_overflow != "truncate_oldest"
         or api._rolling_context_policy(payload) is None
         or not engine.context
     ):
@@ -327,8 +326,9 @@ async def managed_tool_chat(
                 )
             elif not payload.stream:
                 request_body = {**body, "stream": False}
+                truncation_line = None
                 if transport._message_fitter is not None:
-                    fitted, max_tokens, _ = await transport._message_fitter(messages)
+                    fitted, max_tokens, truncation_line = await transport._message_fitter(messages)
                     request_body["messages"] = engine.replay_reasoning(
                         engine_messages(fitted), payload.preserve_thinking
                     )
@@ -350,6 +350,8 @@ async def managed_tool_chat(
                         reasoning = message.pop("reasoning")
                         if reasoning and not message.get("reasoning_content"):
                             message["reasoning_content"] = reasoning
+                if truncation_line and isinstance(data, dict):
+                    data["context_truncated"] = json.loads(truncation_line[5:])["context_truncated"]
                 api._monitor_openai_chunk(monitor_id, data, streaming = False)
                 yield data
                 return
@@ -461,10 +463,16 @@ async def managed_tool_chat(
                 raise HTTPException(status_code = 502, detail = event)
             if event.get("usage"):
                 result["usage"] = event["usage"]
+            if event.get("context_truncated"):
+                result["context_truncated"] = event["context_truncated"]
+            message = result["choices"][0]["message"]
             for choice in event.get("choices", []):
-                result["choices"][0]["message"]["content"] += (
-                    choice.get("delta", {}).get("content") or ""
-                )
+                delta = choice.get("delta") or {}
+                message["content"] += delta.get("content") or ""
+                if delta.get("reasoning_content"):
+                    message["reasoning_content"] = (
+                        message.get("reasoning_content", "") + delta["reasoning_content"]
+                    )
                 if choice.get("finish_reason"):
                     result["choices"][0]["finish_reason"] = choice["finish_reason"]
     return JSONResponse(result)

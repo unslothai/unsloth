@@ -343,3 +343,26 @@ def test_tool_loop_turns_are_fitted_to_the_engine_window():
         _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), sglang, "m", None)
         is None
     )
+
+
+def test_tool_loop_honors_the_server_default_overflow(monkeypatch):
+    from routes.managed_engine_chat import _message_fitter
+
+    monkeypatch.setenv("UNSLOTH_CONTEXT_OVERFLOW", "truncate_oldest")
+    assert _message_fitter(_tool_payload(), _Engine(), "m", tools = None) is not None
+    # Auto-compact off in the UI is an explicit "error", which the server default never overrides.
+    assert _message_fitter(_tool_payload(context_overflow = "error"), _Engine(), "m", None) is None
+
+
+def test_a_renamed_deepseek_v31_directory_keeps_its_thinking_toggle(tmp_path):
+    template = (
+        "{% for m in messages %}<｜User｜>{{ m.content }}{% endfor %}<｜Assistant｜>"
+        "{% if thinking is defined and thinking %}<think>{% else %}</think>{% endif %}"
+    )
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "deepseek_v3"}))
+    (tmp_path / "chat_template.jinja").write_text(template)
+    config = SimpleNamespace(is_local = True, path = str(tmp_path), identifier = str(tmp_path))
+    options = validate_model(config, engine = "vllm")
+    assert options["reasoning_parser"] == "deepseek_v3"
+    assert options["reasoning_flags"]["supports_reasoning"] is True
+    assert options["reasoning_flags"]["reasoning_always_on"] is False
