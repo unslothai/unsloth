@@ -3,6 +3,8 @@
 
 import ast
 import contextlib
+import functools
+import inspect
 import logging
 import os
 from pathlib import Path
@@ -16,15 +18,18 @@ UTILS_PATH = Path(__file__).resolve().parents[1] / "unsloth" / "models" / "_util
 
 
 def _load(name = "hf_login"):
+    names = ("hf_login", "hf_token_env", "hf_token_for_load")
     tree = ast.parse(UTILS_PATH.read_text(encoding = "utf-8"))
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
+    nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     namespace = {
         "Optional": Optional,
         "logger": logging.getLogger(__name__),
         "contextlib": contextlib,
+        "functools": functools,
+        "inspect": inspect,
         "os": os,
     }
-    exec(compile(ast.Module([node], []), str(UTILS_PATH), "exec"), namespace)
+    exec(compile(ast.Module(nodes, []), str(UTILS_PATH), "exec"), namespace)
     return namespace[name]
 
 
@@ -93,3 +98,26 @@ def test_passed_token_is_active_only_inside_hf_token_env(hub):
 
     with hf_token_env(False):
         assert huggingface_hub.get_token() == "hf_saved_write"
+
+
+def _tokenless_load(model_name, max_seq_length = 2048, token = None, **kwargs):
+    return huggingface_hub.get_token()
+
+
+def test_tokenless_reads_inside_the_load_use_the_passed_token(hub):
+    huggingface_hub.login(token = "hf_saved_write")
+    load = _load("hf_token_for_load")(_tokenless_load)
+
+    assert load("org/gated", token = "hf_passed_read") == "hf_passed_read"
+    assert load("org/gated", 2048, "hf_passed_read") == "hf_passed_read"
+    assert load("org/gated") == "hf_saved_write"
+    assert load("org/gated", token = False) == "hf_saved_write"
+    assert huggingface_hub.get_token() == "hf_saved_write"
+    assert "HF_TOKEN" not in os.environ
+
+
+def test_the_load_scope_still_saves_a_token_on_a_machine_with_no_login(hub):
+    load = _load("hf_token_for_load")(_tokenless_load)
+
+    assert load("org/gated", token = "hf_passed") == "hf_passed"
+    assert huggingface_hub.get_token() == "hf_passed"

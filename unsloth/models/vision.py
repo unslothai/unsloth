@@ -2937,6 +2937,7 @@ _NON_REENTRANT_GC_MODEL_TYPES = ("deepseek_v41",)
 
 class FastBaseModel:
     @staticmethod
+    @hf_token_for_load
     @_offline_aware_load
     def from_pretrained(
         model_name = "unsloth/Llama-3.2-1B-Instruct",
@@ -3940,8 +3941,7 @@ class FastBaseModel:
                     if allowed_arg not in load_vllm_kwargs and allowed_arg in kwargs:
                         load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
 
-                with hf_token_env(token):
-                    llm = load_vllm(**load_vllm_kwargs)
+                llm = load_vllm(**load_vllm_kwargs)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,

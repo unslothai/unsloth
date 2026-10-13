@@ -2729,6 +2729,7 @@ class FastLlamaModel:
         return
 
     @staticmethod
+    @hf_token_for_load
     def from_pretrained(
         model_name = "unsloth/llama-3-8b-bnb-4bit",
         max_seq_length = None,
@@ -3503,8 +3504,7 @@ class FastLlamaModel:
                         load_vllm_kwargs[allowed_arg] = kwargs[allowed_arg]
                 pass
 
-                with hf_token_env(token):
-                    llm = load_vllm(**load_vllm_kwargs)
+                llm = load_vllm(**load_vllm_kwargs)
 
                 _, quant_state_dict = get_vllm_state_dict(
                     llm,

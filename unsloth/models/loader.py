@@ -18,6 +18,7 @@ from ._utils import (
     USE_MODELSCOPE,
     get_transformers_model_type,
     hf_login,
+    hf_token_for_load,
     # Single source of truth is _utils.py; re-exported so callers importing it from here keep working and so _is_sdpa_excluded can honor it without a loader -> _utils cycle.
     DISABLE_SDPA_MODEL_NAMES,
 )
@@ -959,6 +960,7 @@ def _vllm_unavailable_error():
 
 class FastLanguageModel(FastLlamaModel):
     @staticmethod
+    @hf_token_for_load
     @tokenizers_v1_on_return
     @_offline_aware_load
     @mistral_format_redirect
@@ -1837,6 +1839,7 @@ class FastModel(FastBaseModel):
         return FastBaseModel.for_training(model, use_gradient_checkpointing)
 
     @staticmethod
+    @hf_token_for_load
     @tokenizers_v1_on_return
     @_restore_load_scoped_env
     @_offline_aware_load

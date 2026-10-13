@@ -93,6 +93,7 @@ __all__ = [
     "_get_inference_mode_context_manager",
     "hf_login",
     "hf_token_env",
+    "hf_token_for_load",
     "maybe_prefetch_hf_snapshot",
     "is_moe_model",
     "install_block_swap",
@@ -7500,7 +7501,6 @@ def hf_login(token: Optional[str] = None) -> Optional[str]:
 
 @contextlib.contextmanager
 def hf_token_env(token):
-    # For Hub reads that cannot take a token (vLLM), without touching the saved login.
     if not isinstance(token, str) or not token:
         yield
         return
@@ -7513,6 +7513,24 @@ def hf_token_env(token):
             os.environ.pop("HF_TOKEN", None)
         else:
             os.environ["HF_TOKEN"] = old
+
+
+def hf_token_for_load(from_pretrained):
+    # Hub reads inside the load that take no token (vLLM, unsloth_zoo, fp8 conversion) see the passed token; the saved login is left as it was.
+    @functools.wraps(from_pretrained)
+    def wrapper(*args, **kwargs):
+        token = kwargs.get("token")
+        if token is None and args:
+            try:
+                token = inspect.signature(from_pretrained).bind_partial(*args).arguments.get("token")
+            except TypeError:
+                token = None
+        if not isinstance(token, str) or not token:
+            return from_pretrained(*args, **kwargs)
+        with hf_token_env(hf_login(token)):
+            return from_pretrained(*args, **kwargs)
+
+    return wrapper
 
 
 def _check_block_swap(model_or_config):
