@@ -28785,6 +28785,26 @@ class LlamaCppBackend:
                                     _draft_devs and all(d in ("cpu", "none") for d in _draft_devs)
                                 ):
                                     return None
+                        # A fixed positive -ngld below the drafter's block count splits it
+                        # between card and host, while _mtp_bytes charges it whole to the
+                        # GPU; which slice stays on the card is unknown (the same case the
+                        # fit treats as _draft_split_across_host). -ngld 0 is already off
+                        # the budget (_cpu_draft_path), and -1 / a count above the block
+                        # count is the whole drafter on the card _mtp_bytes prices.
+                        if (
+                            _mtp_will_engage
+                            and _mtp_draft_for_budget
+                            and _draft_is_split_across_host(
+                                _child_extras,
+                                _child_env,
+                                n_draft_layers = getattr(
+                                    self._draft_backend_for(_mtp_draft_for_budget),
+                                    "_n_layers",
+                                    None,
+                                ),
+                            )
+                        ):
+                            return None
                         if _mmproj_offload is False:
                             if _mmproj_dev_gpu:
                                 return None
