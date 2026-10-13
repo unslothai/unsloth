@@ -230,3 +230,19 @@ def test_a_small_window_still_lowers_a_raised_mcp_cap(monkeypatch):
     out = tools._fit_result_to_room(MCP_23K, "mcp__server__tool")
     # 8192 tokens * 4 chars * 0.35 share = 11,468 before the notice is priced in.
     assert "chars for the model; 23098 chars total" in out and len(out) < 11468 + 200
+
+
+def test_an_mcp_call_through_execute_tool_gets_the_saved_cap(monkeypatch):
+    from core.inference import mcp_client
+    from storage import mcp_servers_db
+
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
+    monkeypatch.setattr(mcp_client, "_tool_cache", {})
+    mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a.example/mcp")
+    mcp_client.cache_tools("srv1", [{"name": "dump", "inputSchema": {"type": "object"}}])
+    monkeypatch.setattr(tools, "call_tool_sync", lambda **kwargs: MCP_23K)
+    limit.set_max_chars(32000)
+    call = dict(context_tokens = 131072, result_budget_tokens = 100_000)
+    assert tools.execute_tool("mcp__srv1__dump", {}, **call) == MCP_23K
+    limit.set_max_chars(4000)
+    assert "truncated to 4000 chars" in tools.execute_tool("mcp__srv1__dump", {}, **call)
