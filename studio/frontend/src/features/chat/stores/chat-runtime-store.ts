@@ -846,7 +846,16 @@ function persistSetting(key: string, raw: string): void {
     }
     writeStorageValue(key, raw);
   };
-  if (mirrored && captureThreadScopedEdit(mirrored.field, writeGlobal)) return;
+  if (
+    mirrored &&
+    captureThreadScopedEdit(
+      mirrored.field,
+      writeGlobal,
+      key === CHAT_DEEP_RESEARCH_ENABLED_KEY ? raw === "true" : undefined,
+    )
+  ) {
+    return;
+  }
   writeGlobal();
 }
 
@@ -869,6 +878,16 @@ function readThreadScopedValue(
   state: ChatRuntimeStore,
   key: ThreadScopedSettingKey,
 ): unknown {
+  if (key === "deepResearchEnabled") {
+    return (
+      heldThreadScopedParamValue(key) ??
+      activeThreadScopedSettings?.deepResearchEnabled ??
+      (threadScopedSettingsThreadId !== null
+        ? globalThreadScopedDefaults?.deepResearchEnabled
+        : loadOptionalBool(CHAT_DEEP_RESEARCH_ENABLED_KEY)) ??
+      state.deepResearchEnabled
+    );
+  }
   return isThreadScopedParamKey(key)
     ? state.params[key]
     : (state as Record<string, unknown>)[key];
@@ -1718,12 +1737,14 @@ function heldThreadScopedChanges(
   // Same reader the snapshot path uses: sampling keys sit under `params`, so a direct field
   // read returns undefined and the sanitizer drops them.
   for (const edit of held) {
-    edited[edit.field] = edit.field === "reasoningEffort" && edit.value !== undefined
-      ? edit.value
-      : readThreadScopedValue(
-          live,
-          edit.field as ThreadScopedSettingKey,
-        );
+    edited[edit.field] =
+      (edit.field === "reasoningEffort" || edit.field === "deepResearchEnabled") &&
+      edit.value !== undefined
+        ? edit.value
+        : readThreadScopedValue(
+            live,
+            edit.field as ThreadScopedSettingKey,
+          );
   }
   return sanitizeThreadScopedSettings(edited);
 }
@@ -1799,6 +1820,12 @@ function captureThreadScopedEdit(
         reasoningEffort: value as ReasoningEffort,
       };
     }
+    if (field === "deepResearchEnabled" && typeof value === "boolean") {
+      activeThreadScopedSettings = {
+        ...activeThreadScopedSettings,
+        deepResearchEnabled: value,
+      };
+    }
     explicitlyEditedThreadFields.add(field);
     // Set by the user now, so the chat stores this rather than what it had before a constraint moved the same field.
     constraintSuppressedThreadFields.delete(field);
@@ -1845,9 +1872,20 @@ export function loadOptionalBool(key: string): boolean | null {
 export function resolveToolsEnabledOnLoad(supportsTools: boolean): {
   toolsEnabled: boolean;
   codeToolsEnabled: boolean;
+  deepResearchEnabled: boolean;
 } {
-  if (!supportsTools) return { toolsEnabled: false, codeToolsEnabled: false };
+  if (!supportsTools) {
+    return {
+      toolsEnabled: false,
+      codeToolsEnabled: false,
+      deepResearchEnabled: false,
+    };
+  }
+  const state = useChatRuntimeStore.getState();
   return {
+    deepResearchEnabled:
+      !state.incognito &&
+      readThreadScopedValue(state, "deepResearchEnabled") === true,
     toolsEnabled:
       threadScopedOverride("toolsEnabled") ??
       loadOptionalBool(CHAT_TOOLS_ENABLED_KEY) ??
@@ -3332,6 +3370,14 @@ function externalCheckpointRefusesDeepResearch(
   return provider != null && provider.providerType !== "openai_codex";
 }
 
+function localCheckpointRefusesDeepResearch(state: ChatRuntimeStore): boolean {
+  return Boolean(
+    state.params.checkpoint &&
+      !isExternalModelId(state.params.checkpoint) &&
+      !state.supportsTools,
+  );
+}
+
 /** Kimi's $web_search requires thinking disabled and the composer keeps the pills exclusive,
  *  so a restore must too, or a chat stored elsewhere sends a combination Kimi rejects. */
 function isKimiCheckpoint(checkpoint: string | null | undefined): boolean {
@@ -3512,8 +3558,11 @@ function getHydratedSettingsState(
     if (
       key === "deepResearchEnabled" &&
       value === true &&
-      externalCheckpointRefusesDeepResearch(state.params.checkpoint)
+      (externalCheckpointRefusesDeepResearch(state.params.checkpoint) ||
+        localCheckpointRefusesDeepResearch(state) ||
+        state.incognito)
     ) {
+      nextState.deepResearchEnabled = false;
       continue;
     }
     // A click made before this response landed is held for the open chat rather than written
@@ -5025,11 +5074,18 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       // or the read would silently undo a click the user already saw.
       const heldFields = new Set<string>();
       let heldEffort: ReasoningEffort | undefined;
+      let heldResearch: boolean | undefined;
       if (threadId !== null && threadId === pendingPairingThreadId) {
         for (const edit of heldThreadScopedEdits) {
           heldFields.add(edit.field);
           if (edit.field === "reasoningEffort" && edit.value !== undefined) {
             heldEffort = edit.value as ReasoningEffort;
+          }
+          if (
+            edit.field === "deepResearchEnabled" &&
+            typeof edit.value === "boolean"
+          ) {
+            heldResearch = edit.value;
           }
         }
         heldThreadScopedEdits = [];
@@ -5101,10 +5157,24 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       const target = nextState as Record<string, unknown>;
       const applied: Record<string, unknown> = {};
       const paramsPatch: Record<string, unknown> = {};
+      const researchAllowed =
+        !localCheckpointRefusesDeepResearch(state) &&
+        !externalCheckpointRefusesDeepResearch(state.params.checkpoint) &&
+        !state.incognito;
       for (const key of THREAD_SCOPED_SETTING_KEYS) {
         // The user set this one while the read was in flight, so it wins over what came back.
         if (heldFields.has(key)) {
-          if (key === "reasoningEffort" && heldEffort !== undefined) {
+          if (key === "deepResearchEnabled" && heldResearch !== undefined) {
+            applied[key] = heldResearch;
+            activeThreadScopedSettings = {
+              ...activeThreadScopedSettings,
+              deepResearchEnabled: heldResearch,
+            };
+            const enabled = heldResearch && researchAllowed;
+            if (state.deepResearchEnabled !== enabled) {
+              nextState.deepResearchEnabled = enabled;
+            }
+          } else if (key === "reasoningEffort" && heldEffort !== undefined) {
             applied[key] = heldEffort;
             activeThreadScopedSettings = { ...activeThreadScopedSettings, reasoningEffort: heldEffort };
             if (pinOwnsLiveReasoningEffort(state)) effortDisplacedByPin = heldEffort;
@@ -5124,15 +5194,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
           if (underneath !== "full") applied[key] = underneath;
           continue;
         }
-        // setCheckpoint clears deep research for external models in the store only, so a stored true
-        // comes back and fails every send. openai_codex is the composer's own exception.
-        if (
-          key === "deepResearchEnabled" &&
-          (externalCheckpointRefusesDeepResearch(state.params.checkpoint) ||
-            state.incognito)
-        ) {
-          continue;
-        }
         // A key the snapshot omits falls back to the defaults, not to the outgoing chat's value.
         const value = firstSetThreadScopedValue(
           stored?.[key],
@@ -5140,6 +5201,13 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
         );
         if (value === undefined) continue;
         applied[key] = value;
+        if (key === "deepResearchEnabled") {
+          const enabled = value === true && researchAllowed;
+          if (state.deepResearchEnabled !== enabled) {
+            nextState.deepResearchEnabled = enabled;
+          }
+          continue;
+        }
         // The pin outranks the chat for as long as its model is selected, so the incoming level
         // stays the chat's on record, recorded just above, but must not land in the store over
         // the pin. Same shape as the "full" case: recorded, not applied.
@@ -5470,6 +5538,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     }),
   setDeepResearchEnabled: (deepResearchEnabled) =>
     set((state) => {
+      if (deepResearchEnabled && localCheckpointRefusesDeepResearch(state)) {
+        return state;
+      }
       saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, deepResearchEnabled);
       // The level this chat carries, or the global one when it carries none.
       const permissionMode =

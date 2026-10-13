@@ -27,7 +27,7 @@ const TOOL_KEYS = [
   "ragEnabled",
 ] as const;
 
-async function boot(t: TestContext): Promise<RuntimeModule> {
+async function boot(t: TestContext, hydrate = true): Promise<RuntimeModule> {
   storage.clear();
   storage.set("unsloth_chat_settings_imported_to_studio_db", "true");
   settingsHttp.settings = { rememberParamsPerModel: false };
@@ -42,7 +42,7 @@ async function boot(t: TestContext): Promise<RuntimeModule> {
     await runtime.awaitStartedThreadScopedSettingsWrites();
   });
   const store = runtime.useChatRuntimeStore;
-  await store.getState().hydratePersistedSettings();
+  if (hydrate) await store.getState().hydratePersistedSettings();
   store.getState().setCheckpoint(MODEL, null);
   store.setState({ supportsTools: true });
   return runtime;
@@ -111,6 +111,7 @@ for (const scope of ["defaults", "chat", "pending chat"] as const) {
         assert.deepEqual(runtime.resolveToolsEnabledOnLoad(false), {
           toolsEnabled: false,
           codeToolsEnabled: false,
+          deepResearchEnabled: false,
         });
       });
     }
@@ -164,5 +165,110 @@ test("unloading preserves armed research without changing tool exclusivity", asy
   assert.equal(storage.get("unsloth_chat_deep_research_enabled"), "true");
 
   store.getState().setCodeToolsEnabled(true);
+  assert.equal(store.getState().deepResearchEnabled, false);
+});
+
+for (const scope of ["defaults", "chat", "pending chat"] as const) {
+  test(`${scope} disables Research for an incompatible local model and restores its preference`, async (t) => {
+    const runtime = await boot(t);
+    const store = runtime.useChatRuntimeStore;
+    if (scope !== "defaults") {
+      store.getState().setActiveThreadId(THREAD);
+      if (scope === "pending chat") {
+        runtime.beginThreadScopedPairing(THREAD);
+      } else {
+        store
+          .getState()
+          .applyThreadScopedSettings(THREAD, { deepResearchEnabled: false });
+      }
+    }
+    store.getState().setDeepResearchEnabled(true);
+    store.getState().clearCheckpoint();
+    store.getState().setCheckpoint("unsloth/no-tools", null);
+    store.setState({
+      supportsTools: false,
+      ...runtime.resolveToolsEnabledOnLoad(false),
+    });
+    assert.equal(store.getState().deepResearchEnabled, false);
+    store.getState().setDeepResearchEnabled(true);
+    assert.equal(store.getState().deepResearchEnabled, false);
+
+    if (scope === "pending chat") {
+      store
+        .getState()
+        .applyThreadScopedSettings(THREAD, { deepResearchEnabled: false });
+    }
+    store.getState().setPermissionMode("ask");
+    await runtime.awaitThreadScopedSettingsWrite(THREAD);
+    assert.equal(store.getState().deepResearchEnabled, false);
+    if (scope !== "defaults") {
+      assert.equal(threadRows.rows.get(THREAD)?.deepResearchEnabled, true);
+      store
+        .getState()
+        .applyThreadScopedSettings(THREAD, threadRows.rows.get(THREAD)!);
+      assert.equal(store.getState().deepResearchEnabled, false);
+    } else {
+      assert.equal(storage.get("unsloth_chat_deep_research_enabled"), "true");
+    }
+
+    store.getState().clearCheckpoint();
+    store.getState().setCheckpoint(MODEL, null);
+    store.setState({
+      supportsTools: true,
+      ...runtime.resolveToolsEnabledOnLoad(true),
+    });
+    assert.equal(store.getState().deepResearchEnabled, true);
+    store.getState().setDeepResearchEnabled(false);
+    store.setState(runtime.resolveToolsEnabledOnLoad(true));
+    assert.equal(store.getState().deepResearchEnabled, false);
+  });
+}
+
+test("late settings hydration cannot arm Research on an incompatible local model", async (t) => {
+  const runtime = await boot(t, false);
+  const store = runtime.useChatRuntimeStore;
+  settingsHttp.settings = { deepResearchEnabled: true };
+  store.setState({
+    supportsTools: false,
+    ...runtime.resolveToolsEnabledOnLoad(false),
+  });
+  await store.getState().hydratePersistedSettings();
+  assert.equal(store.getState().deepResearchEnabled, false);
+  assert.equal(storage.get("unsloth_chat_deep_research_enabled"), "true");
+  store.setState({
+    supportsTools: true,
+    ...runtime.resolveToolsEnabledOnLoad(true),
+  });
+  assert.equal(store.getState().deepResearchEnabled, true);
+});
+
+test("suppressed Research remains scoped to its chat", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setActiveThreadId(THREAD);
+  store
+    .getState()
+    .applyThreadScopedSettings(THREAD, { deepResearchEnabled: true });
+  store.setState({
+    supportsTools: false,
+    ...runtime.resolveToolsEnabledOnLoad(false),
+  });
+  store.getState().setActiveThreadId("other-chat");
+  store
+    .getState()
+    .applyThreadScopedSettings("other-chat", { deepResearchEnabled: false });
+  store.setState({
+    supportsTools: true,
+    ...runtime.resolveToolsEnabledOnLoad(true),
+  });
+  assert.equal(store.getState().deepResearchEnabled, false);
+  store.getState().setActiveThreadId(THREAD);
+  store
+    .getState()
+    .applyThreadScopedSettings(THREAD, { deepResearchEnabled: true });
+  assert.equal(store.getState().deepResearchEnabled, true);
+  store.getState().setToolsEnabled(true);
+  store.setState(runtime.resolveToolsEnabledOnLoad(true));
+  assert.equal(store.getState().toolsEnabled, true);
   assert.equal(store.getState().deepResearchEnabled, false);
 });
