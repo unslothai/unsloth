@@ -10,7 +10,7 @@ export const CARD_SHADOW =
 // Hover-revealed card controls. Light mode outlines them and deepens the shadow: white chips
 // vanished on white thumbnails and on the hovered card's neutral-100.
 const CONTROL_EDGE =
-  "shadow-[0_2px_10px_-2px_rgba(0,0,0,0.24)] ring-1 ring-black/10 dark:shadow-none";
+  "shadow-[0_2px_10px_-2px_rgba(0,0,0,0.24)] ring-1 ring-black/5 dark:shadow-none";
 
 export const OVERLAY_CONTROL = `bg-white ${CONTROL_EDGE} dark:bg-neutral-700 dark:ring-0`;
 
