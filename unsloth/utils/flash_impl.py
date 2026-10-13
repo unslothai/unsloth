@@ -14,6 +14,7 @@ import functools
 import inspect
 import logging
 import os
+import random
 
 import torch
 
@@ -497,6 +498,39 @@ def deactivate_flash_attention_impl():
             pass
 
 
+@contextlib.contextmanager
+def _rng_preserved():
+    state = random.getstate()
+    try:
+        import numpy
+
+        numpy_state = numpy.random.get_state()
+    except Exception:
+        numpy, numpy_state = None, None
+    devices = list(range(torch.cuda.device_count())) if torch.cuda.is_initialized() else []
+    try:
+        with torch.random.fork_rng(devices = devices):
+            yield
+    finally:
+        random.setstate(state)
+        if numpy_state is not None:
+            numpy.random.set_state(numpy_state)
+
+
+def _sampled_rows(dataset, indices, key):
+    """Backing values, so no transform runs; a column only a custom transform makes is read through the
+    transform with every RNG restored afterwards, so training sees the same random draws."""
+    raw = dataset.with_format(None)
+    columns = set(raw.column_names)
+    wanted = [c for c in dict.fromkeys((key, "input_ids")) if c in columns]
+    if wanted:
+        return list(raw.select_columns(wanted).select(indices))
+    if (getattr(dataset, "format", None) or {}).get("type") != "custom":
+        return None
+    with _rng_preserved():
+        return [dataset[i] for i in indices]
+
+
 def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
     """Mean tokens per document over rows spread across the whole dataset (TRL's BFD packing puts the longest
     documents first): the packed lengths column, else that row's ``input_ids`` as one document, like the collators."""
@@ -504,12 +538,10 @@ def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
         total = len(dataset)
         if total <= 0:
             return None
-        columns = set(dataset.column_names)
-        wanted = [c for c in dict.fromkeys((key, "input_ids")) if c in columns]
-        if not wanted:
-            return None
         n = min(rows, total)
-        sample = dataset.select_columns(wanted).select(sorted({i * total // n for i in range(n)}))
+        sample = _sampled_rows(dataset, sorted({i * total // n for i in range(n)}), key)
+        if sample is None:
+            return None
         lengths = []
         for row in sample:
             per_document = row.get(key)

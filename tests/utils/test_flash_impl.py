@@ -464,6 +464,42 @@ def test_mean_document_length_reads_packed_and_padding_free_rows():
     assert fi._mean_document_length(streamed) is None
 
 
+def test_mean_document_length_with_dataset_transforms():
+    datasets = pytest.importorskip("datasets")
+    import random
+
+    calls = [0]
+
+    def augment(batch):
+        # Stochastic, over an existing input_ids column: never needed for the lengths.
+        calls[0] += 1
+        random.random()
+        return {"input_ids": [ids[: random.randint(1, len(ids))] for ids in batch["input_ids"]]}
+
+    tokenized = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300]}).with_transform(augment)
+    random.seed(0)
+    expected = random.random()
+    random.seed(0)
+    assert fi._mean_document_length(tokenized) == 200
+    assert calls[0] == 0 and random.random() == expected
+
+    def tokenize(batch):
+        # input_ids only exist through the transform: read it, then restore every RNG.
+        random.random()
+        torch.rand(1)
+        return {"input_ids": [[1] * len(text) for text in batch["text"]]}
+
+    raw = datasets.Dataset.from_dict({"text": ["a" * 100, "a" * 300]}).with_transform(tokenize)
+    random.seed(0)
+    torch.manual_seed(0)
+    expected = (random.random(), torch.rand(1))
+    random.seed(0)
+    torch.manual_seed(0)
+    assert fi._mean_document_length(raw) == 200
+    after = (random.random(), torch.rand(1))
+    assert after[0] == expected[0] and torch.equal(after[1], expected[1])
+
+
 def test_scope_to_train_reads_the_train_dataset_document_length(fake):
     datasets = pytest.importorskip("datasets")
     seen = []
