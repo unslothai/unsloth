@@ -96,8 +96,13 @@ test("a closing block keeps the cap it had while open", () => {
   assert.ok(open !== -1 && open < reasoning.indexOf("const cappedNow ="));
 });
 
-test("Expand thinking draws the composer's expand mark", () => {
-  const composer = readSrc("features/chat/shared-composer.tsx");
-  assert.match(reasoning, /<ExpandToggleIcon expanded=\{expanded\}/);
-  assert.match(composer, /<ExpandToggleIcon\s+expanded=\{isWritingExpanded\}/);
+test("Expand thinking ends in the header's chevron, turned up once expanded", () => {
+  const tail = reasoning.slice(
+    reasoning.indexOf("function ReasoningTail("),
+    reasoning.indexOf("// With the fold preference on"),
+  );
+  assert.match(
+    tail,
+    /\{expanded \? "Collapse thinking" : "Expand thinking"\}\s*<ChevronDownIcon[\s\S]*?expanded && "rotate-180"/,
+  );
 });

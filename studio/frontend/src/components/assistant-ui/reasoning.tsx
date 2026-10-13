@@ -65,7 +65,6 @@ import {
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { type VariantProps, cva } from "class-variance-authority";
 import { ChevronDownIcon } from "lucide-react";
-import { ExpandToggleIcon } from "@/lib/expand-toggle-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -595,7 +594,13 @@ function ReasoningTail({
           className="mt-2 inline-flex cursor-pointer items-center gap-1.5 font-medium text-muted-foreground text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {expanded ? "Collapse thinking" : "Expand thinking"}
-          <ExpandToggleIcon expanded={expanded} className="size-3.5 shrink-0" />
+          <ChevronDownIcon
+            aria-hidden={true}
+            className={cn(
+              "size-3.5 shrink-0 transition-transform duration-200 ease-out",
+              expanded && "rotate-180",
+            )}
+          />
         </button>
       )}
     </>

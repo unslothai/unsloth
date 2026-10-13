@@ -26,7 +26,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
-import { ExpandToggleIcon } from "@/lib/expand-toggle-icon";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
@@ -3162,10 +3161,24 @@ export function SharedComposer({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={toggleWritingExpanded}
               >
-                <ExpandToggleIcon
-                  expanded={isWritingExpanded}
+                <svg
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2.25}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                   className="size-4"
-                />
+                  aria-hidden={true}
+                >
+                  <path
+                    d={
+                      isWritingExpanded
+                        ? "M13 2v5h5M2 13h5v5"
+                        : "M11 4h5v5M4 11v5h5"
+                    }
+                  />
+                </svg>
               </TooltipIconButton>
             )}
           </div>
