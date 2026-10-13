@@ -5662,8 +5662,8 @@ export function createOpenAIStreamAdapter(
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       // Taken once, so a retried request still carries it and the next turn does not.
       const compactNow =
-        (isGgufForCompaction || isMlxForCompaction) &&
-        takeThreadCompactionRequest(resolvedThreadId);
+        takeThreadCompactionRequest(resolvedThreadId) &&
+        (isGgufForCompaction || isMlxForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");

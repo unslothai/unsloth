@@ -167,8 +167,10 @@ test("the composer reads /compact before any send path, and only for GGUF or MLX
   assert.ok(command < submit.indexOf("if (disabled || shouldBlockSend())"));
   assert.match(submit, /requestThreadCompaction\(referenceThreadId\)/);
   assert.match(submit, /resumesThought\(\{/);
+  assert.match(submit, /!runtime\.supportsTools \|\|/);
   const adapter = await readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\)/);
+  // Taken whatever model sends next, so a switch to an API model cannot leave it armed for later.
+  assert.match(adapter, /takeThreadCompactionRequest\(resolvedThreadId\) &&/);
   assert.match(adapter, /compactNow,\n\s+\}\),/);
 });
 

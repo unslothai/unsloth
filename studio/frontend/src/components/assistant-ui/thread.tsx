@@ -5398,7 +5398,9 @@ const Composer: FC<{
           toast.info("Nothing to compact yet");
           return;
         }
+        // The compacted turns stay reachable only through search_conversation, so no tools, no reset.
         if (
+          !runtime.supportsTools ||
           !resumesThought({
             loadedIsGguf: runtime.loadedIsGguf,
             loadedIsMlx: runtime.loadedIsMlx,
@@ -5407,7 +5409,7 @@ const Composer: FC<{
             checkpoint: runtime.params.checkpoint,
           })
         ) {
-          toast.info("/compact works with GGUF and MLX models");
+          toast.info("/compact works with GGUF and MLX models that support tools");
           return;
         }
         // Applied by the next request, which is the first one the compaction can change.
