@@ -1020,7 +1020,6 @@ def _is_whisper_model_config(config: object) -> bool:
 
 
 def _is_mlx_stt_model_config(config: object) -> bool:
-    """A speech-to-text checkpoint the Transcribe page runs through mlx-audio on this Mac."""
     try:
         from core.inference.stt_mlx import is_mlx_stt_config
         return is_mlx_stt_config(config)

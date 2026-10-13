@@ -257,8 +257,7 @@ export function audioPickIsRoutable({
 
 /** The macOS audio runtime can execute TTS only through llama.cpp GGUF. Curated families may
  *  expose a non-GGUF canonical row because Audio resolves it to a published GGUF sibling. */
-/** On a Mac the backend lists on-device speech-to-text checkpoints it runs through mlx-audio
- *  under that library name, and only on a host that can load them. */
+/** The backend names on-device speech checkpoints it runs through mlx-audio by that library, Mac only. */
 export function macMlxSttRowIsRunnable({
   isMac,
   isStt,

@@ -171,8 +171,6 @@ def transcribe_window(
 
 
 class _MlxSttModel:
-    """An mlx-audio speech-to-text model, told apart from the Whisper ``(model, processor)`` pair."""
-
     def __init__(self, model) -> None:
         self.model = model
 
@@ -182,7 +180,6 @@ def load_mlx_stt(
     device: str,
     cancel_event = None,
 ) -> _MlxSttModel:
-    """Load an mlx-audio STT checkpoint from the local snapshot. Child side, Apple Silicon only."""
     import mlx.core as mx
     from mlx_audio.stt import load
 
@@ -194,8 +191,7 @@ def load_mlx_stt(
 
 
 def transcribe_mlx_window(engine: _MlxSttModel, pcm: bytes) -> tuple:
-    """Transcribe one window of 16 kHz mono float32 PCM. The model detects the language itself,
-    as Qwen3-ASR does on the llama.cpp engine."""
+    # Language is left to the model, as Qwen3-ASR does on the llama.cpp engine.
     import numpy as np
 
     segment = np.frombuffer(pcm, dtype = np.float32)
@@ -419,8 +415,7 @@ class WhisperWorker:
         cancel_event: Optional[threading.Event] = None,
         runtime: Optional[str] = None,
     ) -> None:
-        """Spawn the child and load the model, or raise having killed it. ``runtime="mlx"`` loads
-        an mlx-audio checkpoint instead of Whisper."""
+        """Spawn the child and load the model, or raise having killed it."""
         from utils.hf_cache_settings import child_environment_for_spawn, get_hf_cache_paths
         from utils.native_path_leases import (
             native_path_secret_removed_for_child_start,

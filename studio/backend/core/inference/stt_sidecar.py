@@ -490,7 +490,6 @@ def _safe_snapshot_for_revision(repo: str, revision: str) -> Optional[Path]:
 
 
 def _is_servable_config(config: object) -> bool:
-    """Whisper, or a checkpoint this host runs through mlx-audio (Apple Silicon)."""
     from core.inference.stt_mlx import is_mlx_stt_config
     return _is_whisper_config(config) or is_mlx_stt_config(config)
 
@@ -1459,7 +1458,6 @@ class WhisperSttSidecar:
             else:
                 worker.start(str(snapshot_path), device, _dtype_name(dtype), cancel_event)
         except SttWorkerSpawnError as exc:
-            # The in-process fallback is Whisper only.
             if device != "cpu" or mlx:
                 raise
             logger.warning(
