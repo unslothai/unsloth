@@ -2006,9 +2006,7 @@ def _video_seed_stays_resident(
     ``_auto_keeps_resident_bf16``)."""
     from .diffusion_component_sizes import video_components_gb
 
-    components = video_components_gb(
-        fam, base_repo, allow_hub = True, token = hf_token, dev = ltx25_dev
-    )
+    components = video_components_gb(fam, base_repo, allow_hub = True, token = hf_token, dev = ltx25_dev)
     if not components:
         return scheme is not None
     import torch
@@ -2541,7 +2539,11 @@ def _calibration_revision(state: Any) -> Optional[str]:
     if getattr(state, "kind", "pipeline") != "pipeline":
         # a GGUF / single-file load takes its companions from a base repo: its id and exact weights are part of it
         base = getattr(state, "base_repo", None)
-        revision = f"{revision or ''}|base={base or ''}@{checkpoint_fingerprint(base) or ''}" if base else revision
+        revision = (
+            f"{revision or ''}|base={base or ''}@{checkpoint_fingerprint(base) or ''}"
+            if base
+            else revision
+        )
     try:
         pipe._unsloth_calibration_revision = revision or ""
     except Exception:  # noqa: BLE001
@@ -9908,7 +9910,6 @@ class VideoBackend:
                     # runner-aware toggle if that disagrees.
                     if state.cache_auto:
                         from .diffusion_cache import auto_step_cache_mode
-
                         request_cache_mode = auto_step_cache_mode(steps)
                     else:
                         request_cache_mode = getattr(state, "transformer_cache", None)

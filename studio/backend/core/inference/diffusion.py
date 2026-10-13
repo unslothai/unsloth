@@ -11924,7 +11924,9 @@ def _pipeline_components_from_index(
             from .diffusion_component_sizes import manifest_entry_loaded
 
             # the same predicate the size planner reads the manifest with
-            selected = {str(name) for name, spec in payload.items() if manifest_entry_loaded(name, spec)}
+            selected = {
+                str(name) for name, spec in payload.items() if manifest_entry_loaded(name, spec)
+            }
         else:
             selected = {str(name) for name in explicit_components}
         ignored = payload.get("_ignore_files", ())

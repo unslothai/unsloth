@@ -62,8 +62,6 @@ def _component(
     )
 
 
-
-
 def test_parser_rejects_implausible_and_non_object_headers(tmp_path):
     bad = tmp_path / "bad.safetensors"
     bad.write_bytes(struct.pack("<Q", 1 << 40) + b"{}")
@@ -98,8 +96,6 @@ def test_merged_callers_read_through_the_shared_parser(tmp_path):
     assert _safetensors_bytes_by_dtype(bad) == {}
     assert DiffusionBackend._safetensors_param_count(bad) == 0
     assert DiffusionBackend._safetensors_cast_bytes(bad, 2) is None
-
-
 
 
 def test_local_sizes_pick_default_variant_and_complete_index(tmp_path):
@@ -161,8 +157,6 @@ def test_resident_cast_keeps_non_float_tensors(tmp_path):
     assert dict(size.bytes_by_dtype) == {"F32": 400}
 
 
-
-
 def _fam(name):
     return next(f for f in VIDEO_FAMILIES if f.name == name)
 
@@ -206,7 +200,9 @@ def test_video_roles(tmp_path):
 
     moe = _fam("wan2.2-t2v-a14b")
     # a first-expert-only checkpoint is a complete single denoiser (video._transformer_names)
-    assert dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan))[0] == pytest.approx(2.84)
+    assert dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan))[0] == pytest.approx(
+        2.84
+    )
     _component(wan, "transformer_2", 5.68, "F32")
     assert dcs.video_header_components_gb(moe, dcs.local_component_sizes(wan))[0] == pytest.approx(
         5.68
@@ -243,7 +239,13 @@ def _stub_for_table(root: Path, fam) -> None:
     for n in extra_text:
         _component(root, n, 0.1, stem = "model")
     _component(root, "text_encoder", text - 0.1 * len(extra_text), stem = "model")
-    companions = [n for n in dcs.video_loaded_roles(fam) if n not in ("vae", "text_encoder") and n not in extra_text and not n.startswith("transformer")]
+    companions = [
+        n
+        for n in dcs.video_loaded_roles(fam)
+        if n not in ("vae", "text_encoder")
+        and n not in extra_text
+        and not n.startswith("transformer")
+    ]
     for n in companions:
         _component(root, n, 0.1)
     _component(root, "vae", vae - 0.1 * len(companions), "F32" if fam.vae_force_fp32 else "BF16")
@@ -387,8 +389,6 @@ def test_hub_headers_match_tables(fam):
     assert not _check_against_table(fam.name, header, fam.bf16_components_gb)
 
 
-
-
 class _Module:
     pass
 
@@ -456,8 +456,6 @@ def test_shortfall_uses_a_measured_peak_only_when_smaller():
     )
 
 
-
-
 def test_float8_tensors_are_floating_parameters(tmp_path):
     _write_header(
         tmp_path / "transformer" / "diffusion_pytorch_model.safetensors",
@@ -486,7 +484,11 @@ def test_optional_folders_do_not_send_a_cached_model_to_the_hub(tmp_path, monkey
     )
     assert dcs.video_required_roles(fam) == ("transformer", "text_encoder", "vae")
     # the second expert is loaded only when shipped (present or in the manifest), so never required
-    assert dcs.video_required_roles(_fam("wan2.2-t2v-a14b")) == ("transformer", "text_encoder", "vae")
+    assert dcs.video_required_roles(_fam("wan2.2-t2v-a14b")) == (
+        "transformer",
+        "text_encoder",
+        "vae",
+    )
     assert dcs.video_required_roles(_fam("ltx-2.5"))[-1] == "audio_vae"
     # optional folders are still counted when present
     ltx = _fam("ltx-2.5")
@@ -496,7 +498,9 @@ def test_optional_folders_do_not_send_a_cached_model_to_the_hub(tmp_path, monkey
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: root)
     monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: root.name)
     got = dcs.video_components_gb(ltx, "someone/ltx-finetune", allow_hub = True)
-    assert got[2] == pytest.approx(round(ltx.bf16_components_gb[2] - 0.1 + 1.0, 1))  # stub connectors 0.1 -> 1.0
+    assert got[2] == pytest.approx(
+        round(ltx.bf16_components_gb[2] - 0.1 + 1.0, 1)
+    )  # stub connectors 0.1 -> 1.0
     # a missing required folder still asks the Hub (with the load's token)
     (root / "vae" / "diffusion_pytorch_model.safetensors").unlink()
     calls = []
@@ -631,8 +635,6 @@ def test_generate_keys_calibration_on_the_load_configuration():
     assert "transformer_cache = request_cache_mode" in call
 
 
-
-
 def _index(path: Path, shards: list) -> None:
     path.write_text(json.dumps({"weight_map": {f"t{i}": s for i, s in enumerate(shards)}}))
 
@@ -645,25 +647,40 @@ def test_incomplete_preferred_index_is_unknown_even_beside_a_complete_one(tmp_pa
     _write_header(t / "diffusion_pytorch_model-00001-of-00002.safetensors", {"b": ("BF16", 10)})
     _index(
         t / "diffusion_pytorch_model.safetensors.index.json",
-        ["diffusion_pytorch_model-00001-of-00002.safetensors", "diffusion_pytorch_model-00002-of-00002.safetensors"],
+        [
+            "diffusion_pytorch_model-00001-of-00002.safetensors",
+            "diffusion_pytorch_model-00002-of-00002.safetensors",
+        ],
     )
     # transformers folder: the preferred model index is incomplete, a diffusers index beside it is complete
     e = tmp_path / "text_encoder"
     _write_header(e / "diffusion_pytorch_model-00001-of-00001.safetensors", {"c": ("BF16", 10)})
-    _index(e / "diffusion_pytorch_model.safetensors.index.json", ["diffusion_pytorch_model-00001-of-00001.safetensors"])
+    _index(
+        e / "diffusion_pytorch_model.safetensors.index.json",
+        ["diffusion_pytorch_model-00001-of-00001.safetensors"],
+    )
     _write_header(e / "model-00001-of-00002.safetensors", {"d": ("BF16", 10)})
-    _index(e / "model.safetensors.index.json", ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"])
+    _index(
+        e / "model.safetensors.index.json",
+        ["model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"],
+    )
     assert dcs.local_component_sizes(tmp_path) is None
     # the preferred stem's unindexed file wins over a lower-priority index
     v = tmp_path / "vae"
     _write_header(v / "diffusion_pytorch_model.safetensors", {"v": ("BF16", 7)})
     _write_header(v / "model-00001-of-00001.safetensors", {"w": ("BF16", 999)})
     _index(v / "model.safetensors.index.json", ["model-00001-of-00001.safetensors"])
-    assert dcs.local_component_sizes(tmp_path).get("vae").files == ("diffusion_pytorch_model.safetensors",)
+    assert dcs.local_component_sizes(tmp_path).get("vae").files == (
+        "diffusion_pytorch_model.safetensors",
+    )
 
 
 class _Sib:
-    def __init__(self, name, size = 100):
+    def __init__(
+        self,
+        name,
+        size = 100,
+    ):
         self.rfilename, self.size = name, size
 
 
@@ -674,7 +691,13 @@ def _hub_with(monkeypatch, siblings, header_for):
         def __init__(self, token = None):
             pass
 
-        def model_info(self, repo_id, revision = None, files_metadata = False, timeout = None):
+        def model_info(
+            self,
+            repo_id,
+            revision = None,
+            files_metadata = False,
+            timeout = None,
+        ):
             info = _Info("d" * 40)
             info.siblings = [_Sib(n) for n in siblings]
             return info
@@ -696,19 +719,34 @@ def test_hub_result_with_a_failed_header_is_rejected(monkeypatch):
     ]
     ok = {"__metadata__": {}, "w": {"dtype": "BF16", "shape": [10], "data_offsets": [0, 20]}}
     _hub_with(monkeypatch, files, lambda f: ok)
-    assert dcs.hub_component_sizes("o/r").names() == ("connectors", "text_encoder", "transformer", "vae")
+    assert dcs.hub_component_sizes("o/r").names() == (
+        "connectors",
+        "text_encoder",
+        "transformer",
+        "vae",
+    )
     # an optional-but-loaded folder whose header does not read invalidates the whole answer (and is not cached)
     _hub_with(monkeypatch, files, lambda f: None if f.startswith("connectors/") else ok)
     assert dcs.hub_component_sizes("o/r") is None
     assert not dcs._HUB_SHA_CACHE
     # an index that cannot be read is unknown too, not a skipped folder
-    _hub_with(monkeypatch, files[:3] + ["vocoder/diffusion_pytorch_model.safetensors.index.json"], lambda f: ok)
-    monkeypatch.setattr(dcs, "_fetch_capped_text", lambda *a, **k: (_ for _ in ()).throw(OSError("refused")))
+    _hub_with(
+        monkeypatch,
+        files[:3] + ["vocoder/diffusion_pytorch_model.safetensors.index.json"],
+        lambda f: ok,
+    )
+    monkeypatch.setattr(
+        dcs, "_fetch_capped_text", lambda *a, **k: (_ for _ in ()).throw(OSError("refused"))
+    )
     assert dcs.hub_component_sizes("o/r") is None
 
 
 class _Resp:
-    def __init__(self, chunks, length = None):
+    def __init__(
+        self,
+        chunks,
+        length = None,
+    ):
         self.chunks, self.headers, self.pulled, self.closed = chunks, {}, 0, False
         if length is not None:
             self.headers["Content-Length"] = str(length)
@@ -776,14 +814,18 @@ def test_index_fetch_is_streamed_under_the_cap():
     lying = _Session(_Resp([b"x" * 6] * 1000))
     with pytest.raises(ValueError):
         dcs._fetch_capped_text(lying, "u", {}, 1.0, float("inf"), cap = 10)
-    assert lying.resp.pulled == 2 and lying.resp.closed  # stopped as soon as the body passed the cap
+    assert (
+        lying.resp.pulled == 2 and lying.resp.closed
+    )  # stopped as soon as the body passed the cap
 
 
 def test_tagged_module_reads_only_its_own_mode(monkeypatch):
     monkeypatch.setattr(vsr, "_PEAKS", {})
     t2v = vsr.calibration_key("ltx-2", "r", "group", "cuda:0", fps = 24, conditioning = "t2v", cfg = True)
     i2v = vsr.calibration_key("ltx-2", "r", "group", "cuda:0", fps = 24, conditioning = "i2v", cfg = True)
-    fps50 = vsr.calibration_key("ltx-2", "r", "group", "cuda:0", fps = 50, conditioning = "t2v", cfg = True)
+    fps50 = vsr.calibration_key(
+        "ltx-2", "r", "group", "cuda:0", fps = 50, conditioning = "t2v", cfg = True
+    )
     assert len({t2v, i2v, fps50}) == 3
     vsr._PEAKS[t2v] = {1000: 3000}
     module = _Module()
@@ -794,7 +836,9 @@ def test_tagged_module_reads_only_its_own_mode(monkeypatch):
     assert vsr._measured_extra_mib(module, 1000) == 3000
     # a fresh module after a reload, tagged before the fit, finds the process-wide peak
     reloaded = _Pipe()
-    assert vsr.arm_request(reloaded, key = t2v, width = 1, height = 1, frames = 1, device = "cuda:0", rearm = False)
+    assert vsr.arm_request(
+        reloaded, key = t2v, width = 1, height = 1, frames = 1, device = "cuda:0", rearm = False
+    )
     assert vsr._measured_extra_mib(reloaded.transformer, 1000) == 3000
 
 
@@ -811,8 +855,6 @@ def test_generate_tags_before_the_fit_and_keys_the_request_mode():
     call = src[key_at : src.index("\n                    )", key_at)]
     for field in ("fps", "conditioning", "first_frame", "last_frame", "references", "cfg"):
         assert f"{field} = " in call, field
-
-
 
 
 def test_local_files_only_scope_disables_hub_reads(monkeypatch):
@@ -862,10 +904,14 @@ def test_shards_without_an_index_are_unknown(tmp_path):
     _write_header(t / "diffusion_pytorch_model-00001-of-00002.safetensors", {"a": ("BF16", 10)})
     _write_header(t / "diffusion_pytorch_model-00002-of-00002.safetensors", {"b": ("BF16", 10)})
     assert dcs.local_component_sizes(tmp_path) is None
-    assert dcs.select_weight_files(["model-00001-of-00001.safetensors"], folder = "text_encoder") == []
+    assert (
+        dcs.select_weight_files(["model-00001-of-00001.safetensors"], folder = "text_encoder") == []
+    )
     # the unsharded file alone is a complete answer, a stray shard beside it is ignored
     _write_header(t / "diffusion_pytorch_model.safetensors", {"c": ("BF16", 30)})
-    assert dcs.local_component_sizes(tmp_path).get("transformer").files == ("diffusion_pytorch_model.safetensors",)
+    assert dcs.local_component_sizes(tmp_path).get("transformer").files == (
+        "diffusion_pytorch_model.safetensors",
+    )
 
 
 def test_mixed_format_variant_keeps_its_known_larger_terms(tmp_path, monkeypatch):
@@ -874,7 +920,9 @@ def test_mixed_format_variant_keeps_its_known_larger_terms(tmp_path, monkeypatch
     table = fam.bf16_components_gb
     _component(tmp_path, "transformer", table[0] + 3.0)
     (tmp_path / "text_encoder").mkdir()
-    (tmp_path / "text_encoder" / "pytorch_model.bin").write_bytes(b"\0" * 16)  # header-less: unknown term
+    (tmp_path / "text_encoder" / "pytorch_model.bin").write_bytes(
+        b"\0" * 16
+    )  # header-less: unknown term
     _component(tmp_path, "vae", 0.1, "F32")
     terms = dcs.video_header_terms(fam, dcs.local_component_sizes(tmp_path))
     assert terms[1] is None and terms[0] == pytest.approx(table[0] + 3.0)
@@ -912,7 +960,10 @@ def test_pytorch_model_stem_and_its_index_are_recognised(tmp_path):
     size = dcs.local_component_sizes(tmp_path).get("transformer")
     assert size.float_params == 200 and len(size.files) == 2
     # the stems match the loader's default weight names
-    from core.inference.diffusion import _DEFAULT_PIPELINE_WEIGHT_INDEX_RE, _DEFAULT_PIPELINE_WEIGHT_RE
+    from core.inference.diffusion import (
+        _DEFAULT_PIPELINE_WEIGHT_INDEX_RE,
+        _DEFAULT_PIPELINE_WEIGHT_RE,
+    )
 
     for name in ("pytorch_model-00001-of-00002.safetensors", "pytorch_model.safetensors"):
         assert dcs._DEFAULT_WEIGHT_RE.match(name) and _DEFAULT_PIPELINE_WEIGHT_RE.match(name)
@@ -927,7 +978,9 @@ def test_complete_local_snapshot_is_revalidated_online(tmp_path, monkeypatch):
     fam = _fam("wan2.2-ti2v-5b")
     snap = tmp_path / ("a" * 40)
     _stub_for_table(snap, fam)
-    _component(snap, "transformer", fam.bf16_components_gb[0] + 5.0)  # the cached (old) commit is larger
+    _component(
+        snap, "transformer", fam.bf16_components_gb[0] + 5.0
+    )  # the cached (old) commit is larger
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: snap)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_HEADER_FETCH", raising = False)
@@ -935,9 +988,13 @@ def test_complete_local_snapshot_is_revalidated_online(tmp_path, monkeypatch):
     _stub_for_table(fresh_root, fam)
     fresh = dcs.local_component_sizes(fresh_root)
     hub_calls, ref_calls = [], []
-    monkeypatch.setattr(dcs, "hub_component_sizes", lambda repo, **k: hub_calls.append(repo) or fresh)
+    monkeypatch.setattr(
+        dcs, "hub_component_sizes", lambda repo, **k: hub_calls.append(repo) or fresh
+    )
     head = ["a" * 40]
-    monkeypatch.setattr(dcs, "resolve_ref", lambda repo, revision = None, **k: ref_calls.append(repo) or head[0])
+    monkeypatch.setattr(
+        dcs, "resolve_ref", lambda repo, revision = None, **k: ref_calls.append(repo) or head[0]
+    )
     expected_old = round(fam.bf16_components_gb[0] + 5.0, 1)
     # the ref still points at the cached snapshot: local answer, no header reads
     assert dcs.video_components_gb(fam, "o/variant", allow_hub = True)[0] == expected_old
@@ -966,7 +1023,13 @@ def test_resolve_ref_is_ttl_cached(monkeypatch):
         def __init__(self, token = None):
             pass
 
-        def model_info(self, repo_id, revision = None, timeout = None, files_metadata = False):
+        def model_info(
+            self,
+            repo_id,
+            revision = None,
+            timeout = None,
+            files_metadata = False,
+        ):
             calls.append(files_metadata)
             return _Info(sha[0])
 
@@ -991,10 +1054,19 @@ def test_companion_folders_follow_the_family_or_manifest(tmp_path):
     for folder in ("connectors", "vocoder", "audio_vae"):
         _component(tmp_path, folder, 1.0)
     # leftover companion folders are not counted for a family that does not load them
-    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[2] == pytest.approx(base)
+    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[2] == pytest.approx(
+        base
+    )
     # ... unless model_index.json names them
     (tmp_path / "model_index.json").write_text(
-        json.dumps({"_class_name": "X", "vae": ["diffusers", "A"], "vocoder": ["transformers", "B"], "connectors": [None, None]})
+        json.dumps(
+            {
+                "_class_name": "X",
+                "vae": ["diffusers", "A"],
+                "vocoder": ["transformers", "B"],
+                "connectors": [None, None],
+            }
+        )
     )
     sizes = dcs.local_component_sizes(tmp_path)
     assert sizes.manifest == frozenset({"vae", "vocoder"})
@@ -1007,7 +1079,9 @@ def test_companion_folders_follow_the_family_or_manifest(tmp_path):
     _component(ltx_root, "connectors", 1.0)
     _component(ltx_root, "vocoder", 0.5)
     # the stub already holds 0.1 GB of each; they grew to 1.0 and 0.5
-    assert dcs.video_header_terms(ltx, dcs.local_component_sizes(ltx_root))[2] == pytest.approx(before + 0.9 + 0.4)
+    assert dcs.video_header_terms(ltx, dcs.local_component_sizes(ltx_root))[2] == pytest.approx(
+        before + 0.9 + 0.4
+    )
 
 
 def test_sub_byte_floats_count_parameters_by_bit_width(tmp_path):
@@ -1062,18 +1136,30 @@ def test_extra_text_encoders_need_the_family_or_manifest(tmp_path):
     base = dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[1]
     _component(tmp_path, "text_encoder_2", 1.0, stem = "model")
     _component(tmp_path, "text_encoder_3", 2.0, stem = "model")
-    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[1] == pytest.approx(base)
-    (tmp_path / "model_index.json").write_text(
-        json.dumps({"text_encoder": ["t", "A"], "text_encoder_2": ["t", "B"], "text_encoder_3": [None, None]})
+    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[1] == pytest.approx(
+        base
     )
-    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[1] == pytest.approx(base + 1.0)
+    (tmp_path / "model_index.json").write_text(
+        json.dumps(
+            {
+                "text_encoder": ["t", "A"],
+                "text_encoder_2": ["t", "B"],
+                "text_encoder_3": [None, None],
+            }
+        )
+    )
+    assert dcs.video_header_terms(wan, dcs.local_component_sizes(tmp_path))[1] == pytest.approx(
+        base + 1.0
+    )
     # HunyuanVideo-1.5 loads its ByT5 text_encoder_2 without a manifest
     hv = _fam("hunyuanvideo-1.5")
     root = tmp_path / "hv"
     _stub_for_table(root, hv)
     before = dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1]
     _component(root, "text_encoder_2", 0.44, stem = "model")
-    assert dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1] == pytest.approx(before - 0.1 + 0.44)
+    assert dcs.video_header_terms(hv, dcs.local_component_sizes(root))[1] == pytest.approx(
+        before - 0.1 + 0.44
+    )
 
 
 def test_same_stem_order_follows_the_loader(tmp_path):
@@ -1106,12 +1192,24 @@ def test_hub_skips_folders_the_manifest_does_not_load(monkeypatch):
     # vocoder is null in the manifest and its header fails: not loaded, so not fatal
     _hub_with(monkeypatch, files, lambda f: None if f.startswith("vocoder/") else ok)
     manifest = json.dumps(
-        {"transformer": ["d", "T"], "text_encoder": ["t", "E"], "vae": ["d", "V"], "connectors": ["l", "C"], "vocoder": [None, None]}
+        {
+            "transformer": ["d", "T"],
+            "text_encoder": ["t", "E"],
+            "vae": ["d", "V"],
+            "connectors": ["l", "C"],
+            "vocoder": [None, None],
+        }
     )
     monkeypatch.setattr(dcs, "_fetch_capped_text", lambda *a, **k: manifest)
     sizes = dcs.hub_component_sizes("o/r")
     # latent_upsampler is attached by Studio outside the manifest, so it is still read
-    assert sizes is not None and sizes.names() == ("connectors", "latent_upsampler", "text_encoder", "transformer", "vae")
+    assert sizes is not None and sizes.names() == (
+        "connectors",
+        "latent_upsampler",
+        "text_encoder",
+        "transformer",
+        "vae",
+    )
     # a LOADED folder that fails stays fatal
     _hub_with(monkeypatch, files, lambda f: None if f.startswith("connectors/") else ok)
     monkeypatch.setattr(dcs, "_fetch_capped_text", lambda *a, **k: manifest)
@@ -1157,23 +1255,36 @@ def test_loaded_role_with_unreadable_size_makes_its_term_unknown(tmp_path, monke
 
 
 def test_no_index_fallback_takes_only_loader_names(tmp_path):
-    for name in ("adapter_model.safetensors", "weights.safetensors", "diffusion_pytorch_model.fp16.safetensors"):
+    for name in (
+        "adapter_model.safetensors",
+        "weights.safetensors",
+        "diffusion_pytorch_model.fp16.safetensors",
+    ):
         assert dcs.select_weight_files([name], folder = "transformer") == []
     _write_header(tmp_path / "transformer" / "adapter_model.safetensors", {"a": ("BF16", 10)})
     assert dcs.local_component_sizes(tmp_path) is None
     for stem in ("diffusion_pytorch_model", "model", "pytorch_model"):
-        assert dcs.select_weight_files([f"{stem}.safetensors", "adapter_model.safetensors"]) == [f"{stem}.safetensors"]
+        assert dcs.select_weight_files([f"{stem}.safetensors", "adapter_model.safetensors"]) == [
+            f"{stem}.safetensors"
+        ]
 
 
 def test_local_index_read_is_capped(tmp_path, monkeypatch):
     t = tmp_path / "transformer"
     _write_header(t / "diffusion_pytorch_model-00001-of-00001.safetensors", {"a": ("BF16", 10)})
-    _index(t / "diffusion_pytorch_model.safetensors.index.json", ["diffusion_pytorch_model-00001-of-00001.safetensors"])
+    _index(
+        t / "diffusion_pytorch_model.safetensors.index.json",
+        ["diffusion_pytorch_model-00001-of-00001.safetensors"],
+    )
     assert dcs.local_component_sizes(tmp_path) is not None
-    monkeypatch.setattr(dcs, "MAX_INDEX_BYTES", 8)  # the index is now over the cap: never read, unknown
+    monkeypatch.setattr(
+        dcs, "MAX_INDEX_BYTES", 8
+    )  # the index is now over the cap: never read, unknown
     reads = []
     real = Path.read_text
-    monkeypatch.setattr(Path, "read_text", lambda self, *a, **k: reads.append(self.name) or real(self, *a, **k))
+    monkeypatch.setattr(
+        Path, "read_text", lambda self, *a, **k: reads.append(self.name) or real(self, *a, **k)
+    )
     sizes = dcs.local_component_sizes(tmp_path)
     assert sizes is None and "diffusion_pytorch_model.safetensors.index.json" not in reads
 
@@ -1256,9 +1367,13 @@ def test_ltx_bundled_connector_tensors_leave_the_denoiser_term(tmp_path):
     )
     size = dcs.local_component_sizes(tmp_path).get("transformer")
     assert size.bundled_connector_float_params == 1_750_000_000
-    assert dcs.video_header_terms(fam, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(clean)
+    assert dcs.video_header_terms(fam, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(
+        clean
+    )
     # the same split for LTX-2; a non-LTX family keeps every tensor
-    assert dcs.video_header_terms(_fam("ltx-2"), dcs.local_component_sizes(tmp_path))[0] == pytest.approx(clean)
+    assert dcs.video_header_terms(_fam("ltx-2"), dcs.local_component_sizes(tmp_path))[
+        0
+    ] == pytest.approx(clean)
     wan = dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), dcs.local_component_sizes(tmp_path))[0]
     assert wan == pytest.approx(clean + 3.5)
     # base plans are unchanged: the table still answers for the base repo
@@ -1306,17 +1421,25 @@ def test_moe_second_expert_is_optional_unless_shipped(tmp_path):
     _component(tmp_path, "vae", 0.254, "F32")
     sizes = dcs.local_component_sizes(tmp_path)
     assert "transformer_2" not in dcs.video_loaded_roles(moe, sizes)
-    assert dcs.video_header_terms(moe, sizes)[0] == pytest.approx(28.6)  # the known first expert is kept
+    assert dcs.video_header_terms(moe, sizes)[0] == pytest.approx(
+        28.6
+    )  # the known first expert is kept
     # named by the manifest but absent: loaded, so the snapshot is incomplete and the term unknown
-    (tmp_path / "model_index.json").write_text(json.dumps({"transformer": ["d", "W"], "transformer_2": ["d", "W"]}))
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"transformer": ["d", "W"], "transformer_2": ["d", "W"]})
+    )
     sizes = dcs.local_component_sizes(tmp_path)
     assert "transformer_2" in dcs.video_loaded_roles(moe, sizes)
     assert dcs.video_header_terms(moe, sizes)[0] is None
     # present: both experts count
     _component(tmp_path, "transformer_2", 28.6)
-    assert dcs.video_header_terms(moe, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(57.2)
+    assert dcs.video_header_terms(moe, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(
+        57.2
+    )
     # a non-MoE family never counts a stray transformer_2
-    assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), dcs.local_component_sizes(tmp_path))[0] == pytest.approx(28.6)
+    assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), dcs.local_component_sizes(tmp_path))[
+        0
+    ] == pytest.approx(28.6)
 
 
 # ---- review round 9 ----
@@ -1327,7 +1450,9 @@ def test_partial_term_keeps_its_known_sum_as_a_lower_bound(tmp_path, monkeypatch
 
     ltx = _fam("ltx-2")
     _stub_for_table(tmp_path, ltx)
-    _component(tmp_path, "vae", ltx.bf16_components_gb[2] + 4.0)  # readable siblings far above the table term
+    _component(
+        tmp_path, "vae", ltx.bf16_components_gb[2] + 4.0
+    )  # readable siblings far above the table term
     shutil.rmtree(tmp_path / "vocoder")
     (tmp_path / "vocoder").mkdir()
     (tmp_path / "vocoder" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 8)
@@ -1338,7 +1463,9 @@ def test_partial_term_keeps_its_known_sum_as_a_lower_bound(tmp_path, monkeypatch
     monkeypatch.setattr(dcs, "hub_component_sizes", lambda *a, **k: None)
     got = dcs.video_components_gb(ltx, "o/variant", allow_hub = True)
     assert got[2] == round(known, 1)  # never below what did read
-    assert dcs.reconcile_with_table((None, None, None), (1.0, 1.0, 1.0), is_base = False, lower = (None, 2.04, None)) == (1.0, 2.0, 1.0)
+    assert dcs.reconcile_with_table(
+        (None, None, None), (1.0, 1.0, 1.0), is_base = False, lower = (None, 2.04, None)
+    ) == (1.0, 2.0, 1.0)
 
 
 def test_dev_table_term_drops_the_upsampler_before_reconciling(monkeypatch, tmp_path):
@@ -1357,7 +1484,9 @@ def test_dev_table_term_drops_the_upsampler_before_reconciling(monkeypatch, tmp_
     # a dev variant whose headers equal the table minus the upsampler agrees, no mismatch recorded
     monkeypatch.setattr(dcs, "_MISMATCHES", {})
     _stub_for_table(tmp_path, fam)  # two-stage off: no upsampler folder in the stub
-    _component(tmp_path, "vae", 0.1 + 0.0)  # shrink the stub's companion term by the upsampler the table includes
+    _component(
+        tmp_path, "vae", 0.1 + 0.0
+    )  # shrink the stub's companion term by the upsampler the table includes
     vae_known = dcs.video_header_parts(fam, dcs.local_component_sizes(tmp_path))[2][0]
     _component(tmp_path, "vae", 0.1 + dev[2] - vae_known)
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
@@ -1382,7 +1511,11 @@ def test_dev_load_never_probes_the_upsampler_on_the_hub(monkeypatch):
     fam = _fam("ltx-2.5")
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: None)
     seen = []
-    monkeypatch.setattr(dcs, "hub_component_sizes", lambda repo, components = None, **k: seen.append(tuple(components)))
+    monkeypatch.setattr(
+        dcs,
+        "hub_component_sizes",
+        lambda repo, components = None, **k: seen.append(tuple(components)),
+    )
     monkeypatch.setattr(video_ltx25, "two_stage_enabled", lambda: True)
     dcs.video_components_gb(fam, "o/v", allow_hub = True, dev = True)
     dcs.video_components_gb(fam, "o/v", allow_hub = True, dev = False)
@@ -1398,8 +1531,12 @@ def test_manifest_is_authoritative_for_the_second_expert(tmp_path):
     _component(tmp_path, "transformer_2", 28.6)  # a stale folder
     _component(tmp_path, "text_encoder", 11.4, stem = "model")
     _component(tmp_path, "vae", 0.254, "F32")
-    assert dcs.video_header_terms(moe, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(57.2)  # no manifest
-    (tmp_path / "model_index.json").write_text(json.dumps({"transformer": ["d", "W"], "transformer_2": [None, None]}))
+    assert dcs.video_header_terms(moe, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(
+        57.2
+    )  # no manifest
+    (tmp_path / "model_index.json").write_text(
+        json.dumps({"transformer": ["d", "W"], "transformer_2": [None, None]})
+    )
     sizes = dcs.local_component_sizes(tmp_path)
     assert "transformer_2" not in dcs.video_loaded_roles(moe, sizes)
     assert dcs.video_header_terms(moe, sizes)[0] == pytest.approx(28.6)
@@ -1450,11 +1587,27 @@ def test_manifest_predicate_matches_the_loader(tmp_path):
     from core.inference import diffusion
 
     assert dcs.manifest_entry_loaded("vae", ["diffusers", "AutoencoderKL"])
-    for spec in (["diffusers"], ["diffusers", None], [None, "X"], [None, None], "diffusers", None, []):
+    for spec in (
+        ["diffusers"],
+        ["diffusers", None],
+        [None, "X"],
+        [None, None],
+        "diffusers",
+        None,
+        [],
+    ):
         assert not dcs.manifest_entry_loaded("vae", spec), spec
     assert not dcs.manifest_entry_loaded("_class_name", ["a", "b"])
     (tmp_path / "model_index.json").write_text(
-        json.dumps({"_class_name": "P", "vae": ["d", "V"], "vocoder": ["d", None], "connectors": ["l"], "text_encoder": [None, "T"]})
+        json.dumps(
+            {
+                "_class_name": "P",
+                "vae": ["d", "V"],
+                "vocoder": ["d", None],
+                "connectors": ["l"],
+                "text_encoder": [None, "T"],
+            }
+        )
     )
     assert dcs._manifest_names(tmp_path) == frozenset({"vae"})
     # the loader's staging selection uses the same predicate (no second copy to drift)
@@ -1468,22 +1621,34 @@ def test_auto_cache_decision_is_shared_and_retags_the_calibration():
 
     from core.inference import diffusion_cache, video
 
-    assert diffusion_cache.auto_step_cache_mode(diffusion_cache.FBCACHE_MIN_STEPS) == diffusion_cache.TC_FBCACHE
+    assert (
+        diffusion_cache.auto_step_cache_mode(diffusion_cache.FBCACHE_MIN_STEPS)
+        == diffusion_cache.TC_FBCACHE
+    )
     assert diffusion_cache.auto_step_cache_mode(diffusion_cache.FBCACHE_MIN_STEPS - 1) is None
-    assert "auto_step_cache_mode(steps)" in inspect.getsource(diffusion_cache.maybe_toggle_step_cache)
+    assert "auto_step_cache_mode(steps)" in inspect.getsource(
+        diffusion_cache.maybe_toggle_step_cache
+    )
     src = inspect.getsource(video)
     key_at = src.index("video_stream_residency.calibration_key(")
     call = src[key_at : src.index("\n                    )", key_at)]
     assert "transformer_cache = request_cache_mode" in call
     assert src.index("request_cache_mode = auto_step_cache_mode(steps)") < key_at
     toggle_at = src.index("toggled = maybe_toggle_step_cache(")
-    assert src.index('video_stream_residency.retag(state.pipe, "transformer_cache", toggled)') > toggle_at
+    assert (
+        src.index('video_stream_residency.retag(state.pipe, "transformer_cache", toggled)')
+        > toggle_at
+    )
     # the retag rewrites only that entry, so the recorded peak lands under the mode that ran
     pipe = _Pipe()
-    key = vsr.calibration_key("wan", "r", "group", "cuda:0", transformer_cache = "fbcache", dtype = "bf16")
+    key = vsr.calibration_key(
+        "wan", "r", "group", "cuda:0", transformer_cache = "fbcache", dtype = "bf16"
+    )
     pipe.transformer._unsloth_video_calibration_key = key
     new = vsr.retag(pipe, "transformer_cache", None)
-    assert new == vsr.calibration_key("wan", "r", "group", "cuda:0", transformer_cache = None, dtype = "bf16")
+    assert new == vsr.calibration_key(
+        "wan", "r", "group", "cuda:0", transformer_cache = None, dtype = "bf16"
+    )
     assert pipe.transformer._unsloth_video_calibration_key == new
     assert vsr.retag(_Pipe(), "transformer_cache", None) is None
 
@@ -1522,7 +1687,9 @@ def test_pre_download_plan_threads_the_dev_flag():
     for caller in (video.VideoBackend._run_load, video.VideoBackend.download_plan):
         src = inspect.getsource(caller)
         call = src[src.index("_video_planned_auto_denoiser_scheme(") :]
-        assert "ltx25_dev = ltx25_dev" in call[: call.index("DENOISER_SEED_DECLINED")], caller.__name__
+        assert (
+            "ltx25_dev = ltx25_dev" in call[: call.index("DENOISER_SEED_DECLINED")]
+        ), caller.__name__
 
 
 def test_unknown_loaded_folder_gets_an_allowance(tmp_path, monkeypatch):
@@ -1530,10 +1697,14 @@ def test_unknown_loaded_folder_gets_an_allowance(tmp_path, monkeypatch):
 
     ltx = _fam("ltx-2")
     _stub_for_table(tmp_path, ltx)
-    _component(tmp_path, "vae", ltx.bf16_components_gb[2] + 4.0)  # known siblings above the table term
+    _component(
+        tmp_path, "vae", ltx.bf16_components_gb[2] + 4.0
+    )  # known siblings above the table term
     shutil.rmtree(tmp_path / "vocoder")
     (tmp_path / "vocoder").mkdir()
-    (tmp_path / "vocoder" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 300_000_000)  # 0.3 GB on disk
+    (tmp_path / "vocoder" / "diffusion_pytorch_model.bin").write_bytes(
+        b"\0" * 300_000_000
+    )  # 0.3 GB on disk
     sizes = dcs.local_component_sizes(tmp_path)
     assert dict(sizes.unknown_bytes)["vocoder"] == 300_000_000
     known = dcs.video_header_parts(ltx, sizes)[2][0]
@@ -1569,7 +1740,13 @@ def test_calibration_revision_includes_the_companion_base(monkeypatch):
     monkeypatch.setattr(dcs, "checkpoint_fingerprint", lambda repo, filename = None: fps.get(repo))
 
     def rev(kind, base):
-        state = SimpleNamespace(pipe = SimpleNamespace(), repo_id = "u/ltx-gguf", gguf_filename = "x.gguf", kind = kind, base_repo = base)
+        state = SimpleNamespace(
+            pipe = SimpleNamespace(),
+            repo_id = "u/ltx-gguf",
+            gguf_filename = "x.gguf",
+            kind = kind,
+            base_repo = base,
+        )
         return video._calibration_revision(state)
 
     assert rev("pipeline", "Lightricks/LTX-2") == "g" * 40
@@ -1585,7 +1762,9 @@ def test_transformers_folders_recognise_only_transformers_stems(tmp_path):
     ):
         assert dcs._pick_files([name], lambda n: "", "text_encoder") == [], name
         assert dcs._pick_files([name], lambda n: "", "transformer") == [name], name
-    assert dcs._pick_files(["model.safetensors"], lambda n: "", "image_encoder") == ["model.safetensors"]
+    assert dcs._pick_files(["model.safetensors"], lambda n: "", "image_encoder") == [
+        "model.safetensors"
+    ]
     # pytorch_model.bin: what transformers reads next, not sized here -> unknown, with its bytes as the allowance
     te = tmp_path / "text_encoder"
     te.mkdir()

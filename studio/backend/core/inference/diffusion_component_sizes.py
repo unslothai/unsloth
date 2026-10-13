@@ -65,7 +65,7 @@ def read_safetensors_header(path: Any, *, max_bytes: int = MAX_HEADER_BYTES) -> 
     """None when unreadable. Never raises."""
     try:
         with open(path, "rb") as fh:
-            return parse_safetensors_header(fh.read, max_bytes=max_bytes)
+            return parse_safetensors_header(fh.read, max_bytes = max_bytes)
     except Exception:  # noqa: BLE001 - unreadable / crafted header: no claim about this file
         return None
 
@@ -88,15 +88,14 @@ def entry_nbytes(meta: dict) -> int:
     return int(end) - int(begin)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ComponentSize:
-
     name: str
     stored_bytes: int
     float_params: int
     nonfloat_bytes: int
-    bytes_by_dtype: tuple[tuple[str, int], ...] = field(default_factory=tuple)
-    files: tuple[str, ...] = field(default_factory=tuple)
+    bytes_by_dtype: tuple[tuple[str, int], ...] = field(default_factory = tuple)
+    files: tuple[str, ...] = field(default_factory = tuple)
     # Of the totals above: tensors under the LTX loader's connector key prefixes bundled into a denoiser folder. The
     # loader splits them off (video_ltx2._checkpoint_group) and the pack prices them as its own connectors/ folder.
     bundled_connector_float_params: int = 0
@@ -112,16 +111,16 @@ class ComponentSize:
 
     def resident_bytes_without_bundled_connectors(self, itemsize: int = 2) -> int:
         return self.resident_bytes(itemsize) - (
-            self.bundled_connector_float_params * int(itemsize) + self.bundled_connector_nonfloat_bytes
+            self.bundled_connector_float_params * int(itemsize)
+            + self.bundled_connector_nonfloat_bytes
         )
 
     def resident_gb(self, itemsize: int = 2) -> float:
         return self.resident_bytes(itemsize) / _GB
 
 
-@dataclass(frozen=True)
+@dataclass(frozen = True)
 class ComponentSizes:
-
     components: dict
     source: str = "local"
     revision: Optional[str] = None
@@ -139,7 +138,11 @@ class ComponentSizes:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self.components))
 
-    def resident_gb(self, names: Iterable[str], itemsize: int = 2) -> float:
+    def resident_gb(
+        self,
+        names: Iterable[str],
+        itemsize: int = 2,
+    ) -> float:
         return (
             sum(self.components[n].resident_bytes(itemsize) for n in names if n in self.components)
             / _GB
@@ -185,14 +188,14 @@ def _accumulate(
     if not files or stored <= 0:
         return None
     return ComponentSize(
-        name=name,
-        stored_bytes=stored,
-        float_params=float_params,
-        nonfloat_bytes=nonfloat,
-        bytes_by_dtype=tuple(sorted(by_dtype.items())),
-        files=tuple(files),
-        bundled_connector_float_params=conn_params,
-        bundled_connector_nonfloat_bytes=conn_nonfloat,
+        name = name,
+        stored_bytes = stored,
+        float_params = float_params,
+        nonfloat_bytes = nonfloat,
+        bytes_by_dtype = tuple(sorted(by_dtype.items())),
+        files = tuple(files),
+        bundled_connector_float_params = conn_params,
+        bundled_connector_nonfloat_bytes = conn_nonfloat,
     )
 
 
@@ -200,7 +203,6 @@ def _connector_key_matcher() -> Optional[Callable[[str], bool]]:
     """Whether a tensor key is a connector tensor, by the LTX loader's own grouping; None if it cannot load."""
     try:
         from .video_ltx2 import _checkpoint_group
-
         return lambda key: _checkpoint_group(key)[0] == "connectors"
     except Exception:  # noqa: BLE001
         return None
@@ -229,7 +231,9 @@ def _stem_order(folder: str) -> tuple[str, ...]:
 
 
 def select_weight_files(
-    names: Iterable[str], index_files: Optional[Iterable[str]] = None, folder: str = ""
+    names: Iterable[str],
+    index_files: Optional[Iterable[str]] = None,
+    folder: str = "",
 ) -> list[str]:
     """Listed ``index_files`` win over stray shards of an older layout."""
     names = [n for n in names if n.endswith(".safetensors")]
@@ -249,7 +253,16 @@ def select_weight_files(
     return []
 
 
-_WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".ckpt", ".gguf", ".safetensors.index.json", ".bin.index.json")
+_WEIGHT_SUFFIXES = (
+    ".safetensors",
+    ".bin",
+    ".pt",
+    ".pth",
+    ".ckpt",
+    ".gguf",
+    ".safetensors.index.json",
+    ".bin.index.json",
+)
 
 
 def _is_weight_file(name: str) -> bool:
@@ -263,7 +276,7 @@ def _holds_weights(names: Iterable[str]) -> bool:
 def _read_capped_file(path: Path, cap: int) -> str:
     if path.stat().st_size > cap:
         raise ValueError(f"{path.name} is larger than {cap} bytes")
-    return path.read_text(encoding="utf-8")
+    return path.read_text(encoding = "utf-8")
 
 
 def _index_shards(text: str) -> Optional[list[str]]:
@@ -275,7 +288,9 @@ def _index_shards(text: str) -> Optional[list[str]]:
 
 
 def _pick_files(
-    names: Iterable[str], read_text: Callable[[str], str], folder: str = ""
+    names: Iterable[str],
+    read_text: Callable[[str], str],
+    folder: str = "",
 ) -> list[str]:
     """Only the loader's PREFERRED index counts (it never falls back to a stale second one); unreadable or
     naming a missing shard makes the component unknown, never a smaller subset."""
@@ -300,9 +315,9 @@ def _pick_files(
             _DEFAULT_WEIGHT_RE.match(n) and n.startswith((stem + ".", stem + "-")) for n in names
         ):
             return select_weight_files(
-                [n for n in names if n.startswith((stem + ".", stem + "-"))], folder=folder
+                [n for n in names if n.startswith((stem + ".", stem + "-"))], folder = folder
             )
-    return select_weight_files(names, folder=folder)
+    return select_weight_files(names, folder = folder)
 
 
 def local_component_sizes(
@@ -322,7 +337,7 @@ def local_component_sizes(
                 continue
             names = [p.name for p in sub.iterdir() if p.is_file()]
             files = _pick_files(
-                names, lambda n, sub=sub: _read_capped_file(sub / n, MAX_INDEX_BYTES), sub.name
+                names, lambda n, sub = sub: _read_capped_file(sub / n, MAX_INDEX_BYTES), sub.name
             )
             size = (
                 _accumulate(sub.name, ((f, read_safetensors_header(sub / f)) for f in files))
@@ -340,10 +355,10 @@ def local_component_sizes(
             return None
         return ComponentSizes(
             out,
-            source="local",
-            manifest=_manifest_names(base),
-            unknown=frozenset(unknown),
-            unknown_bytes=tuple(sorted(unknown_bytes.items())),
+            source = "local",
+            manifest = _manifest_names(base),
+            unknown = frozenset(unknown),
+            unknown_bytes = tuple(sorted(unknown_bytes.items())),
         )
     except Exception:  # noqa: BLE001
         return None
@@ -378,7 +393,7 @@ def _manifest_names(root: Path) -> Optional[frozenset]:
         path = root / "model_index.json"
         if not path.is_file() or path.stat().st_size > MAX_MANIFEST_BYTES:
             return None
-        return _manifest_from_text(path.read_text(encoding="utf-8"))
+        return _manifest_from_text(path.read_text(encoding = "utf-8"))
     except Exception:  # noqa: BLE001
         return None
 
@@ -387,7 +402,6 @@ def active_cache_dir() -> Optional[str]:
     """Studio's LIVE hub cache root, not huggingface_hub's import-time default."""
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
-
         return active_hf_hub_cache()
     except Exception:  # noqa: BLE001
         return None
@@ -396,11 +410,11 @@ def active_cache_dir() -> Optional[str]:
 def local_snapshot_dir(repo_id: str, cache_dir: Any = None) -> Optional[Path]:
     try:
         from .diffusion_small_host import resolve_snapshot_dir
-
-        return resolve_snapshot_dir(repo_id, cache_dir if cache_dir is not None else active_cache_dir())
+        return resolve_snapshot_dir(
+            repo_id, cache_dir if cache_dir is not None else active_cache_dir()
+        )
     except Exception:  # noqa: BLE001
         return None
-
 
 
 HUB_TIMEOUT_SECONDS = 20.0
@@ -427,7 +441,6 @@ _HUB_LOCK = threading.Lock()
 def hub_disabled() -> bool:
     try:
         from .diffusion_prequant import _LOCAL_FILES_ONLY
-
         if _LOCAL_FILES_ONLY.get():
             return True
     except Exception:  # noqa: BLE001
@@ -456,8 +469,8 @@ def _hub_header(
         )
 
         reader = _hub_range_reader(
-            hf_hub_url(repo_id, filename, revision=revision),
-            dict(build_hf_headers(token=token)),
+            hf_hub_url(repo_id, filename, revision = revision),
+            dict(build_hf_headers(token = token)),
             deadline,
         )
         (length,) = struct.unpack("<Q", reader(0, 7))
@@ -503,10 +516,10 @@ def _fetch_capped_text(
         try:
             if callable(getattr(session, "stream", None)):
                 opened = session.stream(
-                    "GET", url, headers=headers, timeout=timeout, follow_redirects=True
+                    "GET", url, headers = headers, timeout = timeout, follow_redirects = True
                 )
             else:
-                opened = session.get(url, headers=headers, timeout=timeout, stream=True)
+                opened = session.get(url, headers = headers, timeout = timeout, stream = True)
             with opened as response:
                 holder[0] = response
                 response.raise_for_status()
@@ -531,7 +544,7 @@ def _fetch_capped_text(
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("index read deadline")
-    worker = threading.Thread(target=_fetch, name="component-sizes-index-read", daemon=True)
+    worker = threading.Thread(target = _fetch, name = "component-sizes-index-read", daemon = True)
     worker.start()
     worker.join(min(remaining, threading.TIMEOUT_MAX))
     if worker.is_alive():
@@ -573,8 +586,7 @@ def resolve_ref(
     sha = None
     try:
         from huggingface_hub import HfApi
-
-        info = HfApi(token=token).model_info(repo_id, revision=revision, timeout=timeout_seconds)
+        info = HfApi(token = token).model_info(repo_id, revision = revision, timeout = timeout_seconds)
         sha = getattr(info, "sha", None)
     except Exception:  # noqa: BLE001
         sha = None
@@ -584,7 +596,6 @@ def resolve_ref(
 
 def _note_ref(repo_id: str, revision: Optional[str], token: Any, sha: Optional[str]) -> None:
     import time
-
     with _HUB_LOCK:
         _REF_CACHE[(repo_id, revision, _token_id(token))] = (sha, time.monotonic())
 
@@ -632,9 +643,8 @@ def _hub_component_sizes(
     deadline = time.monotonic() + timeout_seconds
     try:
         from huggingface_hub import HfApi
-
-        info = HfApi(token=token).model_info(
-            repo_id, revision=revision, files_metadata=True, timeout=timeout_seconds
+        info = HfApi(token = token).model_info(
+            repo_id, revision = revision, files_metadata = True, timeout = timeout_seconds
         )
     except Exception:  # noqa: BLE001 - offline, gated, missing: the table answers
         return None
@@ -686,11 +696,11 @@ def _read_hub_sizes(
             manifest = _manifest_from_text(
                 _fetch_capped_text(
                     get_session(),
-                    hf_hub_url(repo_id, "model_index.json", revision=commit),
-                    dict(build_hf_headers(token=token)),
+                    hf_hub_url(repo_id, "model_index.json", revision = commit),
+                    dict(build_hf_headers(token = token)),
                     max(1.0, deadline - time.monotonic()),
                     deadline,
-                    cap=MAX_MANIFEST_BYTES,
+                    cap = MAX_MANIFEST_BYTES,
                 )
             )
         except Exception:  # noqa: BLE001 - no manifest: every folder counts as loaded
@@ -701,15 +711,19 @@ def _read_hub_sizes(
     try:
         for folder, files in sorted(by_folder.items()):
             # Studio-attached extras are never in the manifest; the caller only asks for them when attached
-            if manifest is not None and folder not in manifest and folder not in _LOADED_OUTSIDE_MANIFEST:
+            if (
+                manifest is not None
+                and folder not in manifest
+                and folder not in _LOADED_OUTSIDE_MANIFEST
+            ):
                 continue
 
             def _read_index(n: str, folder: str = folder) -> str:
                 # never from the HF cache: a stray index there would read as a started download
                 return _fetch_capped_text(
                     get_session(),
-                    hf_hub_url(repo_id, f"{folder}/{n}", revision=commit),
-                    dict(build_hf_headers(token=token)),
+                    hf_hub_url(repo_id, f"{folder}/{n}", revision = commit),
+                    dict(build_hf_headers(token = token)),
                     max(1.0, deadline - time.monotonic()),
                     deadline,
                 )
@@ -721,7 +735,9 @@ def _read_hub_sizes(
                 if any(n.endswith(".safetensors") or _INDEX_RE.match(n) for n in files):
                     return None  # safetensors weights this read cannot select (index unreadable / incomplete)
                 if _holds_weights(files):
-                    unknown.add(folder)  # a loaded .bin component: its term is unknown, never smaller
+                    unknown.add(
+                        folder
+                    )  # a loaded .bin component: its term is unknown, never smaller
                     unknown_bytes[folder] = sum(b for n, b in files.items() if _is_weight_file(n))
                 continue
             size = _accumulate(
@@ -746,11 +762,11 @@ def _read_hub_sizes(
         return None
     return ComponentSizes(
         out,
-        source="hub",
-        revision=commit,
-        manifest=manifest,
-        unknown=frozenset(unknown),
-        unknown_bytes=tuple(sorted(unknown_bytes.items())),
+        source = "hub",
+        revision = commit,
+        manifest = manifest,
+        unknown = frozenset(unknown),
+        unknown_bytes = tuple(sorted(unknown_bytes.items())),
     )
 
 
@@ -785,15 +801,14 @@ def component_sizes(
             return local
         # online: the cached snapshot answers only while the ref still points at it (TTL-cached resolve)
         # an unresolved ref (head None) is not a match: probe the Hub, and keep the local sizes only if that fails too
-        head = resolve_ref(str(repo_or_dir), token=token)
+        head = resolve_ref(str(repo_or_dir), token = token)
         if head is not None and head == snap.name:
             return local
     if allow_hub:
-        hub = hub_component_sizes(str(repo_or_dir), components=components, token=token)
+        hub = hub_component_sizes(str(repo_or_dir), components = components, token = token)
         if hub is not None:
             return hub
     return local
-
 
 
 # Folders not named here are outside the table (unloaded, or priced separately like LTX-2.5's upsampler).
@@ -837,7 +852,6 @@ def _role_loaded(fam: Any, manifest: Optional[frozenset], name: str) -> bool:
 def _upsampler_attached(dev: bool) -> bool:
     try:
         from .video_ltx25 import ltx25_uses_upsampler
-
         return bool(ltx25_uses_upsampler(bool(dev)))
     except Exception:  # noqa: BLE001
         return True
@@ -861,12 +875,16 @@ def _second_expert_loaded(fam: Any, sizes: Optional[ComponentSizes]) -> bool:
     if not bool(getattr(fam, "is_moe", False)) or sizes is None:
         return False
     if sizes.manifest is not None:
-        return "transformer_2" in sizes.manifest  # authoritative: an omitted / null entry is a stale folder
+        return (
+            "transformer_2" in sizes.manifest
+        )  # authoritative: an omitted / null entry is a stale folder
     return sizes.get("transformer_2") is not None or "transformer_2" in sizes.unknown
 
 
 def video_loaded_roles(
-    fam: Any, sizes: Optional[ComponentSizes] = None, dev: bool = False
+    fam: Any,
+    sizes: Optional[ComponentSizes] = None,
+    dev: bool = False,
 ) -> tuple[str, ...]:
     """Every folder this load reads: the required roles plus each optional one the family, Studio (when attached) or
     the snapshot's manifest loads. A cached snapshot missing any of them is incomplete."""
@@ -891,7 +909,9 @@ def video_required_roles(fam: Any) -> tuple[str, ...]:
 
 
 def video_header_parts(
-    fam: Any, sizes: Optional[ComponentSizes], dev: bool = False
+    fam: Any,
+    sizes: Optional[ComponentSizes],
+    dev: bool = False,
 ) -> tuple[tuple[Optional[float], bool], ...]:
     """Per term ``(known_sum, complete)``: the bf16-resident GB of every loaded folder whose size is known, and
     whether every folder the load reads is among them. An incomplete term's sum is a LOWER bound (a .bin vocoder,
@@ -903,7 +923,9 @@ def video_header_parts(
     primary = getattr(fam, "denoiser_attr", None) or "transformer"
     ltx = name.startswith("ltx")
 
-    def _part(names: Iterable[str], itemsize_of: Callable[[str], int]) -> tuple[Optional[float], bool]:
+    def _part(
+        names: Iterable[str], itemsize_of: Callable[[str], int]
+    ) -> tuple[Optional[float], bool]:
         names = [n for n in dict.fromkeys(names) if n in loaded]
         known = [n for n in names if sizes.get(n) is not None]
         complete = len(known) == len(names) and bool(names)
@@ -923,12 +945,16 @@ def video_header_parts(
     return (
         _part((primary, "transformer_2"), lambda n: 2),
         _part(VIDEO_ROLE_TEXT, lambda n: 2),
-        _part(VIDEO_ROLE_VAE + attached_extras(fam, dev), lambda n: vae_itemsize if n == "vae" else 2),
+        _part(
+            VIDEO_ROLE_VAE + attached_extras(fam, dev), lambda n: vae_itemsize if n == "vae" else 2
+        ),
     )
 
 
 def video_header_missing(
-    fam: Any, sizes: Optional[ComponentSizes], dev: bool = False
+    fam: Any,
+    sizes: Optional[ComponentSizes],
+    dev: bool = False,
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
     """Per term, the folders the load reads whose size is not known (unreadable or absent)."""
     loaded = set(video_loaded_roles(fam, sizes, dev))
@@ -975,7 +1001,9 @@ def _term_lower_bound(
 
 
 def video_header_terms(
-    fam: Any, sizes: Optional[ComponentSizes], dev: bool = False
+    fam: Any,
+    sizes: Optional[ComponentSizes],
+    dev: bool = False,
 ) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """Each term when every folder it loads is known, else None (see ``video_header_parts`` for the lower bound)."""
     return tuple(v if complete else None for v, complete in video_header_parts(fam, sizes, dev))  # type: ignore[return-value]
@@ -1020,7 +1048,7 @@ def reconcile_with_table(
     """Base repo: the table wins (disagreements recorded, never applied). Other repo: per-term max of the two.
     An unknown header term takes the table; without a table every term must be known. ``lower``: per-term lower
     bounds (the known part of an incomplete term); no term is ever returned below its bound."""
-    out = _reconcile(header, table, is_base=is_base, key=key)
+    out = _reconcile(header, table, is_base = is_base, key = key)
     if out is None or not lower:
         return out
     return tuple(  # type: ignore[return-value]
@@ -1076,7 +1104,7 @@ def video_components_gb(
     (single-stage) load, which attaches no latent upsampler."""
     table = getattr(fam, "bf16_components_gb", None)
     if details is not None:
-        details.update(sizes=None, sources=("table",) * 3)
+        details.update(sizes = None, sources = ("table",) * 3)
     try:
         if getattr(fam, "modular_workflow", None):
             return table  # modular (H3) layouts are not a diffusers component tree
@@ -1087,7 +1115,11 @@ def video_components_gb(
         is_base = str(target).lower() == str(base or "").lower()
         wanted = (
             *(VIDEO_ROLE_DENOISER if getattr(fam, "is_moe", False) else VIDEO_ROLE_DENOISER[:1]),
-            *(() if getattr(fam, "denoiser_attr", "transformer") in VIDEO_ROLE_DENOISER else (fam.denoiser_attr,)),
+            *(
+                ()
+                if getattr(fam, "denoiser_attr", "transformer") in VIDEO_ROLE_DENOISER
+                else (fam.denoiser_attr,)
+            ),
             *VIDEO_ROLE_TEXT,
             *VIDEO_ROLE_VAE,
             # only the extras this load attaches: a dev / single-stage load never probes the latent upsampler
@@ -1095,10 +1127,10 @@ def video_components_gb(
         )
         sizes = component_sizes(
             target,
-            components=wanted,
-            required=lambda local: video_loaded_roles(fam, local, dev),
-            allow_hub=allow_hub and (table is None or not is_base),
-            token=token,
+            components = wanted,
+            required = lambda local: video_loaded_roles(fam, local, dev),
+            allow_hub = allow_hub and (table is None or not is_base),
+            token = token,
         )
         table = _table_for_load(fam, table, dev)
         parts = video_header_parts(fam, sizes, dev)
@@ -1107,9 +1139,9 @@ def video_components_gb(
         result = reconcile_with_table(
             header,
             table,
-            is_base=is_base,
-            key=(getattr(fam, "name", None), str(target)),
-            lower=tuple(
+            is_base = is_base,
+            key = (getattr(fam, "name", None), str(target)),
+            lower = tuple(
                 _term_lower_bound(v, missing[i], sizes, table[i] if table else None)
                 if not complete
                 else None
@@ -1121,7 +1153,7 @@ def video_components_gb(
                 "table" if table is not None and float(r) == float(t) else "header"
                 for r, t in zip(result, table or (None,) * 3)
             )
-            details.update(sizes=sizes, sources=sources)
+            details.update(sizes = sizes, sources = sources)
         return result
     except Exception:  # noqa: BLE001 - sizing aid: the table stands
         return _table_for_load(fam, getattr(fam, "bf16_components_gb", None), dev)
@@ -1131,7 +1163,6 @@ def video_components_gb(
 def _extra_table_gb(name: str) -> float:
     if name == "latent_upsampler":
         from .video_ltx25 import LTX25_LATENT_UPSAMPLER_GB
-
         return float(LTX25_LATENT_UPSAMPLER_GB)
     return 0.0
 
@@ -1181,7 +1212,7 @@ def checkpoint_fingerprint(repo_or_path: Any, filename: Optional[str] = None) ->
         from huggingface_hub import try_to_load_from_cache
 
         hit = try_to_load_from_cache(
-            str(repo_or_path), filename or "model_index.json", cache_dir=active_cache_dir()
+            str(repo_or_path), filename or "model_index.json", cache_dir = active_cache_dir()
         )
         if isinstance(hit, str):
             match = _SNAPSHOT_RE.search(Path(hit).as_posix())
