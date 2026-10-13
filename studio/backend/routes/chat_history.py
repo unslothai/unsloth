@@ -69,6 +69,10 @@ from storage.studio_db import (
     get_chat_message,
     list_chat_attachments_page,
     list_chat_projects,
+    list_chat_sidebar_rows,
+    lookup_chat_sidebar_row_ids,
+    SidebarCursorError,
+    SIDEBAR_ROWS_MAX_LIMIT,
     list_chat_legacy_imports,
     list_chat_settings,
     list_chat_messages,
@@ -332,6 +336,7 @@ class ChatProject(BaseModel):
     archived: bool = False
     createdAt: int
     updatedAt: int
+    lastActivityAt: Optional[int] = None
 
 
 class ChatProjectWorkingFolder(BaseModel):
@@ -363,6 +368,47 @@ class ChatThreadListResponse(BaseModel):
 
 class ChatProjectListResponse(BaseModel):
     projects: list[ChatProject]
+
+
+class ChatSidebarRowsRequest(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+
+    archived: bool = False
+    projectId: Optional[str] = None
+    unfiledOnly: bool = False
+    includeIds: Optional[list[str]] = None
+    excludeIds: list[str] = Field(default_factory = list)
+    sort: Literal["updated", "manual"] = "updated"
+    manualOrder: Optional[list[str]] = None
+    limit: int = Field(default = 20, ge = 1, le = SIDEBAR_ROWS_MAX_LIMIT)
+    cursor: Optional[str] = Field(default = None, max_length = 4096)
+
+
+class ChatSidebarRow(BaseModel):
+    """One sidebar row, shaped as the frontend's SidebarItem."""
+
+    id: str
+    type: Literal["single", "compare"]
+    threadIds: list[str]
+    title: str
+    createdAt: int
+    updatedAt: int
+    modifiedAt: Optional[int] = None
+    modelIds: Optional[list[str]] = None
+    isFork: Optional[bool] = None
+    threadTitles: Optional[list[str]] = None
+    projectId: Optional[str] = None
+
+
+class ChatSidebarRowsResponse(BaseModel):
+    rows: list[ChatSidebarRow]
+    nextCursor: Optional[str] = None
+    hasMore: bool
+    total: int
+
+
+class ChatSidebarThreadRowsResponse(BaseModel):
+    rowIdByThreadId: dict[str, str]
 
 
 class ChatMessageListResponse(BaseModel):
@@ -673,6 +719,48 @@ def list_threads(
     return ChatThreadListResponse(threads = [thread_from_row(t) for t in threads])
 
 
+@router.post(
+    "/sidebar/rows",
+    response_model = ChatSidebarRowsResponse,
+    response_model_exclude_unset = True,
+)
+def list_sidebar_rows(
+    payload: ChatSidebarRowsRequest, current_subject: str = Depends(get_current_subject)
+):
+    """One page of sidebar rows, compare pairs grouped before the limit."""
+    try:
+        page = list_chat_sidebar_rows(
+            archived = payload.archived,
+            project_id = payload.projectId,
+            unfiled_only = payload.unfiledOnly,
+            include_ids = payload.includeIds,
+            exclude_ids = payload.excludeIds,
+            sort = payload.sort,
+            manual_order = payload.manualOrder,
+            limit = payload.limit,
+            cursor = payload.cursor,
+        )
+    except SidebarCursorError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    return ChatSidebarRowsResponse(**page)
+
+
+_SIDEBAR_THREAD_ROWS_MAX = 500
+
+
+@router.get("/sidebar/thread-rows", response_model = ChatSidebarThreadRowsResponse)
+def sidebar_thread_rows(
+    thread_ids: list[str] = Query(default_factory = list),
+    current_subject: str = Depends(get_current_subject),
+):
+    if len(thread_ids) > _SIDEBAR_THREAD_ROWS_MAX:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"At most {_SIDEBAR_THREAD_ROWS_MAX} thread ids per request",
+        )
+    return ChatSidebarThreadRowsResponse(rowIdByThreadId = lookup_chat_sidebar_row_ids(thread_ids))
+
+
 def _missing_project_error(project_id: Optional[str]) -> HTTPException:
     """The row references a project that is gone, whether the check or the write noticed it."""
     return HTTPException(status_code = 404, detail = f"Project {project_id} not found")
@@ -957,6 +1045,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             # with a tool call possibly running in here, so its folder is not this delete's to take.
             if get_chat_thread(thread_id) is not None:
                 continue
+            _drop_file_history(thread_id)
             # A fork clones the message content, cards and all, so the source
             # chat's files are still on screen in a chat the user kept.
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
@@ -1181,7 +1270,12 @@ def list_projects(
 ):
     return ChatProjectListResponse(
         projects = [
-            ChatProject(**(ensure_chat_project_workspace(project["id"]) or project))
+            ChatProject(
+                **{
+                    **(ensure_chat_project_workspace(project["id"]) or project),
+                    "lastActivityAt": project["lastActivityAt"],
+                }
+            )
             for project in list_chat_projects(include_archived = include_archived)
         ]
     )
@@ -1848,6 +1942,66 @@ class ChatForkCountResponse(BaseModel):
 
 class ChatThreadForkCountsResponse(BaseModel):
     counts: dict[str, int]
+
+
+def _drop_file_history(thread_id: str) -> None:
+    try:
+        from core.inference import file_history
+        file_history.store().delete_chat(thread_id)
+    except Exception:
+        logger.warning("Could not remove the file history of %s", thread_id, exc_info = True)
+
+
+class ChatRewindRequest(BaseModel):
+    # The user messages being rewound, from the chosen one to the tip of the selected branch.
+    turn_ids: list[Annotated[str, Field(min_length = 1, max_length = 256)]] = Field(max_length = 5000)
+    dry_run: bool = False
+    force: bool = False
+
+
+@router.post("/threads/{thread_id}/rewind")
+def rewind_thread_files(
+    thread_id: str,
+    payload: ChatRewindRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Put back the files this chat's tool calls changed during ``turn_ids``. Moving the
+    conversation itself is the client's: it edits the chosen message, which keeps the old branch."""
+    from core.inference import file_history, tools
+    from hub.services.models import account_access
+    from state import active_generations
+
+    if get_chat_thread(thread_id) is None:
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    if not payload.dry_run and thread_id in active_generations.active_thread_ids(
+        account_access.account_scope()
+    ):
+        raise HTTPException(
+            status_code = 409, detail = "This chat is still generating. Rewind it once it finishes."
+        )
+
+    def walk(workdir: str):
+        return tools._history_snapshot(tools._snapshot_workdir_files(workdir))
+
+    def busy(workdir: str) -> bool:
+        with tools._calls_lock:
+            return any(os.path.realpath(w) == workdir for w in tools._workdir_calls)
+
+    try:
+        report = file_history.store().rewind(
+            thread_id,
+            payload.turn_ids,
+            walk,
+            dry_run = payload.dry_run,
+            force = payload.force,
+            busy = busy,
+        )
+    except file_history.RewindBusy as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    if report.undo_turn_id:
+        from core import library
+        library.invalidate_listing()
+    return report.as_dict()
 
 
 @router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)

@@ -114,6 +114,7 @@ __all__ = [
     "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
+    "add_moe_target_modules",
     "get_moe_expert_submodule_leaves",
     "moe_expert_submodule_regex",
     "widen_target_regex_to_expert_submodules",
@@ -3570,6 +3571,12 @@ import transformers.trainer
 
 transformers.trainer.get_model_param_count = get_model_param_count
 
+# gc.freeze() the setup-time heap for each outermost Trainer.train(). Installed at import, before
+# PatchFastRL (llama.py) captures `train` for the RL resume guard, so every trainer goes through it.
+from ._gc_train_scope import patch_trainer_train_gc_scope as _patch_trainer_train_gc_scope
+
+_patch_trainer_train_gc_scope(transformers.trainer.Trainer)
+
 
 def patch_mistral_nemo_config(config):
     if "head_dim (" not in config:
@@ -5359,6 +5366,9 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer.__init__ = _unsloth_trainer_init
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
 
+    # Idempotent: already installed at import unless Trainer was reloaded since.
+    _patch_trainer_train_gc_scope(Trainer)
+
 
 # Real children only: PEFT's LoraModel forwards `base_model` to the backbone, skipping the loss head.
 _LOSS_KWARGS_CHILDREN = ("base_model", "model") + _UNSLOTH_WRAPPED_MODULE_ATTRS
@@ -5496,9 +5506,27 @@ def _loss_head(model):
     return None
 
 
+# Unwrapped forward -> the child it hands the loss count to (or None): parsed once, not every step.
+_PASS_THROUGH_ATTRS = {}
+
+
 def _pass_through_child(m, modules):
     try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(type(m).forward))))
+        forward = inspect.unwrap(type(m).forward)
+    except Exception:
+        return None
+    try:
+        attr = _PASS_THROUGH_ATTRS[forward]
+    except KeyError:
+        attr = _PASS_THROUGH_ATTRS[forward] = _pass_through_attr(forward)
+    except TypeError:
+        attr = _pass_through_attr(forward)
+    return modules[attr] if attr is not None and attr in modules else None
+
+
+def _pass_through_attr(forward):
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(forward)))
     except Exception:
         return None
     node = next(
@@ -5521,7 +5549,6 @@ def _pass_through_child(m, modules):
         isinstance(func, ast.Attribute)
         and isinstance(func.value, ast.Name)
         and func.value.id == "self"
-        and func.attr in modules
     ):
         return None
     kwarg = node.args.kwarg.arg if node.args.kwarg is not None else None
@@ -5543,7 +5570,7 @@ def _pass_through_child(m, modules):
         or (kw.arg == "num_items_in_batch" and carries_count(kw.value))
         for kw in call.keywords
     )
-    return modules[func.attr] if forwards_count else None
+    return func.attr if forwards_count else None
 
 
 def _call_forwards_count(node, call):
@@ -7257,7 +7284,8 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
         with torch.no_grad():
             W = in_emb.weight.detach().clone()
-        out_proj.weight = torch.nn.Parameter(W)  # new storage, keeps dtype/device
+        # Same trainability as the embedding, so a LoRA model keeps the head frozen.
+        out_proj.weight = torch.nn.Parameter(W, requires_grad = in_emb.weight.requires_grad)
 
     def _no_tie(self):
         return
@@ -7276,6 +7304,129 @@ def _filter_fn_to_fqns(
             yield fqn
 
 
+def _unquantized_filter(filter_fn):
+    from torchao.quantization.quant_api import _is_linear
+    from torchao.utils import TorchAOBaseTensor
+
+    filter_fn = filter_fn or _is_linear
+
+    def _filter(module, fqn):
+        if not filter_fn(module, fqn):
+            return False
+        weight = getattr(module, "weight", None)
+        return isinstance(weight, torch.Tensor) and not isinstance(weight, TorchAOBaseTensor)
+
+    return _filter
+
+
+def _strip_torchao_fake_quantization(model):
+    """Swap fake-quantized modules back to plain ones, weights untouched (QATConfig(step = "convert") without a base config)."""
+    from torchao.quantization import quantize_
+    from torchao.quantization.qat import QATConfig
+
+    quantize_(
+        model,
+        QATConfig(step = "convert"),
+        filter_fn = lambda m, _: hasattr(m, "weight_fake_quantizer"),
+    )
+
+
+def _peft_merged_module_name(fqn):
+    """A PEFT module name as the merged 16-bit checkpoint names it, or None for adapter-only modules."""
+    parts = fqn.split(".")
+    if parts[:2] == ["base_model", "model"]:
+        parts = parts[2:]
+    # Adapter weights are merged into their base layer; a modules_to_save copy is saved under its wrapper's name.
+    if any(p.startswith("lora_") or p == "original_module" for p in parts):
+        return None
+    if "modules_to_save" in parts:
+        i = parts.index("modules_to_save")
+        parts = parts[:i] + parts[i + 2 :]
+    return ".".join(p for p in parts if p != "base_layer")
+
+
+def _peft_untied_lm_head(model):
+    """(merged checkpoint key, weight) of the lm_head when QAT untied it from the embedding, else None."""
+    config = getattr(model, "_torchao_config", None)
+    if getattr(config, "prequantization_transform", None) is not _untie_input_output_embeddings:
+        return None
+    lm_head = model.get_output_embeddings()
+    names = [_peft_merged_module_name(n) for n, m in model.named_modules() if m is lm_head]
+    if not names or not names[0]:
+        return None
+    return names[0] + ".weight", lm_head.weight
+
+
+def _merged_torchao_config_for_peft_qat(model):
+    """TorchAoConfig for the merged 16-bit reload of a QAT LoRA model, naming modules as the reload does (PEFT wrappers removed)."""
+    from transformers import TorchAoConfig
+    from torchao.quantization import ModuleFqnToConfig
+    from torchao.quantization.quant_api import _is_linear
+
+    _merged_name = _peft_merged_module_name
+
+    configs = model._torchao_config.base_config_and_filter_fns
+    if len(configs) == 1:
+        # Plain config + skip list, not FqnToConfig: transformers 5 applies a module entry to its bias too.
+        base_config, filter_fn = configs[0]
+        filter_fn = filter_fn or _is_linear
+        skip = [
+            name
+            for fqn, module in model.named_modules()
+            if isinstance(module, (torch.nn.Linear, torch.nn.Embedding))
+            and (name := _merged_name(fqn))
+            and not filter_fn(module, fqn)
+        ]
+        return TorchAoConfig(quant_type = base_config, modules_to_not_convert = skip)
+
+    embeddings = set()
+    for getter in ("get_input_embeddings", "get_output_embeddings"):
+        try:
+            embedding = getattr(model, getter)()
+        except Exception:
+            embedding = None
+        embeddings.update(_merged_name(fqn) for fqn, m in model.named_modules() if m is embedding)
+
+    # transformers 5 also applies module and "_default" entries to a Linear bias; 4.x reads module names only.
+    weight_keys = Version(importlib_version("transformers")) >= Version("5.0.0") and Version(
+        importlib_version("torchao")
+    ) >= Version("0.15.0")
+    suffix = ".weight" if weight_keys else ""
+
+    module_to_fqn_dict = {}
+    include_embeddings = False
+    default_config = None
+    for base_config, filter_fn in configs:
+        if filter_fn is None:
+            if default_config is not None:
+                raise ValueError("Cannot use multiple default quantization configs")
+            default_config = base_config
+            continue
+        for fqn, module in model.named_modules():
+            if not filter_fn(module, fqn):
+                continue
+            name = _merged_name(fqn)
+            if not name:
+                continue
+            if name + suffix in module_to_fqn_dict:
+                raise ValueError(f"Found multiple quantization configs for {name}")
+            module_to_fqn_dict[name + suffix] = base_config
+            include_embeddings = include_embeddings or name in embeddings
+    if default_config is not None and not weight_keys:
+        module_to_fqn_dict["_default"] = default_config
+    elif default_config is not None:
+        for fqn, module in model.named_modules():
+            name = _merged_name(fqn)
+            if name and _is_linear(module, fqn) and name + suffix not in module_to_fqn_dict:
+                module_to_fqn_dict[name + suffix] = default_config
+
+    kwargs = {}
+    if include_embeddings:
+        kwargs["include_input_output_embeddings"] = True
+        kwargs["modules_to_not_convert"] = []
+    return TorchAoConfig(quant_type = ModuleFqnToConfig(module_to_fqn_dict), **kwargs)
+
+
 def _convert_torchao_model(model):
     from transformers import TorchAoConfig
     from torchao.quantization import quantize_, ModuleFqnToConfig
@@ -7285,6 +7436,8 @@ def _convert_torchao_model(model):
     module_to_fqn_dict = {}
     for base_config, filter_fn in model._torchao_config.base_config_and_filter_fns:
         quantize_(model, QATConfig(base_config, step = "convert"), filter_fn = filter_fn)
+        # The QAT notebook's manual QATConfig(step = "convert") leaves plain, unquantized modules.
+        quantize_(model, base_config, filter_fn = _unquantized_filter(filter_fn))
 
         if filter_fn is None:
             if "_default" in module_to_fqn_dict:
@@ -7365,6 +7518,26 @@ def _prepare_model_for_qat(
                 )
             except ImportError:
                 raise ImportError(TORCHAO_MSG)
+            from torchao.quantization.quant_api import _is_linear
+
+            group_size = 32
+            # PerGroup(32) rejects in_features not divisible by 32, e.g. lora_B at rank 16.
+            linear_filter = lambda m, fqn: _is_linear(m, fqn) and m.in_features % group_size == 0
+            skipped = [
+                name
+                for name, module in model.named_modules()
+                if _is_linear(module, name)
+                and module.in_features % group_size != 0
+                and ".lora_" not in name
+            ]
+            if skipped:
+                warnings.warn(
+                    f"Unsloth: qat_scheme='int8-int4' uses PerGroup({group_size}); these Linear layers "
+                    f"have in_features not divisible by {group_size} and stay in full precision: "
+                    + ", ".join(skipped[:8])
+                    + (f", ... ({len(skipped) - 8} more)" if len(skipped) > 8 else ""),
+                    stacklevel = 2,
+                )
             torchao_config = TorchAOConfig(
                 qat_scheme = qat_scheme,
                 base_config_and_filter_fns = [
@@ -7374,9 +7547,9 @@ def _prepare_model_for_qat(
                     ),
                     (
                         Int8DynamicActivationIntxWeightConfig(
-                            weight_dtype = torch.int4, weight_granularity = PerGroup(32)
+                            weight_dtype = torch.int4, weight_granularity = PerGroup(group_size)
                         ),
-                        None,
+                        linear_filter,
                     ),
                 ],
                 prequantization_transform = _untie_input_output_embeddings,
@@ -8766,6 +8939,21 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
             targets.add(f"{leaf}.{expert_index}")
 
     return sorted(targets)
+
+
+def add_moe_target_modules(target_modules, moe_module_targets):
+    """Extend target_modules with get_moe_target_modules' per-expert suffixes, in whichever form PEFT was given: a leaf list, or one regex string (fullmatched against the module path)."""
+    if not moe_module_targets:
+        return target_modules
+    if isinstance(target_modules, str):
+        # PEFT's "all-linear" already reaches every expert Linear; wrapping it in a regex would drop that meaning.
+        if target_modules == "all-linear":
+            return target_modules
+        leaves = sorted({t.rsplit(".", 1)[0] for t in moe_module_targets})
+        expert_alt = r".*\.experts\.(?:" + "|".join(re.escape(leaf) for leaf in leaves) + r")\.\d+"
+        return f"(?:{target_modules})|(?:{expert_alt})"
+    target_modules = list(target_modules)
+    return target_modules + [t for t in moe_module_targets if t not in target_modules]
 
 
 _EXPERT_SUBMODULE_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)\.([A-Za-z_]\w*)$")
