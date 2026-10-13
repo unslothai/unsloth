@@ -72,7 +72,7 @@ def _add_snapshot(hub: Path, sha: str, files: dict, *, main: bool) -> Path:
 def hub(tmp_path, monkeypatch):
     """A three-folder umbrella repo in an HF cache that is the only one any lookup can see."""
     from hub.services.models import cache_inventory, deletion
-    from hub.utils import hf_cache_state
+    from hub.utils import hf_cache_state, state_dir
     from utils import hf_cache_settings
 
     hf_home = tmp_path / "hf"
@@ -84,6 +84,7 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [root])
     monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(root))
     monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda **_kwargs: [root])
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "studio-cache")
     monkeypatch.setattr(acm, "_hub_cache", lambda: root)
     monkeypatch.setattr(audio_cpp_files, "_hub_cache", lambda: root)
     monkeypatch.setattr(acm, "runtime_spec", lambda family: None)
@@ -676,3 +677,53 @@ def test_a_listing_read_before_a_download_finished_is_not_memoized(hub, monkeypa
     assert len(calls) == 2
     acm.downloaded_models()
     assert len(calls) == 2
+
+
+def _partial(hub, monkeypatch, tmp_path, keys):
+    """Download state only (cancel marker and manifest) for planner keys of the umbrella repo."""
+    from hub.utils import download_manifest
+    for key in keys:
+        assert download_manifest.write_cancel_marker("model", AUDIO_CPP_REPO, key, hub_cache = hub)
+        download_manifest.write_manifest("model", AUDIO_CPP_REPO, key, [], hub_cache = hub)
+
+
+def _states(hub):
+    from hub.utils import download_manifest
+    return sorted(
+        {
+            key
+            for listing in (
+                download_manifest.iter_variant_manifests("model", AUDIO_CPP_REPO, hub_cache = hub),
+                download_manifest.iter_variant_markers("model", AUDIO_CPP_REPO, hub_cache = hub),
+            )
+            for key, _ in listing
+        }
+    )
+
+
+QWEN_F16 = "Qwen3-TTS-12Hz-0.6B-Base-GGUF/qwen3-tts-12hz-0.6b-base-f16"
+KOKORO_Q4 = "Kokoro-82M-GGUF/kokoro-82m-q4_0"
+
+
+def test_a_folder_delete_also_clears_a_partial_only_sibling(hub, monkeypatch, tmp_path):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch)
+    _partial(hub, monkeypatch, tmp_path, [QWEN_F16, KOKORO_Q4])
+    assert acm.cached_folder_target(QWEN, None) == (AUDIO_CPP_REPO, [QWEN_KEY, QWEN_F16])
+    asyncio.run(deletion.delete_cached_model_response(QWEN, None))
+    assert QWEN_FILE not in _left(hub)
+    assert _states(hub) == [KOKORO_Q4]
+    assert len(_left(hub)) == 2
+
+
+def test_deleting_a_partial_only_quant_of_a_folder_clears_its_state(hub, monkeypatch, tmp_path):
+    from hub.services.models import deletion
+
+    _idle(monkeypatch)
+    _partial(hub, monkeypatch, tmp_path, [QWEN_F16, KOKORO_Q4])
+    assert acm.cached_folder_target(QWEN, "F16") == (AUDIO_CPP_REPO, [QWEN_F16])
+    assert acm.cached_folder_target(QWEN, "Q4_0") == (AUDIO_CPP_REPO, [])
+    asyncio.run(deletion.delete_cached_model_response(QWEN, "F16"))
+    assert _states(hub) == [KOKORO_Q4]
+    assert len(_left(hub)) == 3

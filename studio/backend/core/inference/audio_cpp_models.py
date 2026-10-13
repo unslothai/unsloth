@@ -2592,21 +2592,71 @@ def cached_folder_target(
         return AUDIO_CPP_REPO, []
     wanted = (variant or "").strip() or inline or ref.variant_hint
     model = resolve(ref.id, wanted, network = False)
-    if model is None or not model.repo_id:
-        return AUDIO_CPP_REPO, []
-    if wanted:
-        chosen = _cached_variants_named(model.variants, wanted, ref.folder)
-    else:
-        snapshots = snapshot_dirs(model.repo_id)
-        chosen = [
-            v
-            for v in model.variants
-            if v.primary
-            and any((s / v.primary).exists() or (s / v.primary).is_symlink() for s in snapshots)
-        ]
+    chosen: list[AudioCppVariant] = []
+    if model is not None and model.repo_id:
+        if wanted:
+            chosen = _cached_variants_named(model.variants, wanted, ref.folder)
+        else:
+            snapshots = snapshot_dirs(model.repo_id)
+            chosen = [
+                v
+                for v in model.variants
+                if v.primary
+                and any((s / v.primary).exists() or (s / v.primary).is_symlink() for s in snapshots)
+            ]
     from hub.utils.gguf import gguf_variant_key
 
-    return model.repo_id, [gguf_variant_key(v.primary) for v in chosen if v.primary]
+    keys = [gguf_variant_key(v.primary) for v in chosen if v.primary]
+    if wanted and keys:
+        return AUDIO_CPP_REPO, keys
+    # A quant cancelled before any file finished has only its download state (manifest or cancel
+    # marker, plus .incomplete blobs); the variant delete clears that too.
+    partial = _folder_state_keys(ref.folder)
+    if wanted:
+        partial = [k for k in partial if _state_key_named(k, wanted, ref.folder)]
+        return AUDIO_CPP_REPO, partial if len(partial) == 1 else []
+    seen = {k.lower() for k in keys}
+    return AUDIO_CPP_REPO, keys + [k for k in partial if k.lower() not in seen]
+
+
+def _folder_state_keys(folder: str) -> list[str]:
+    """Planner keys under ``<folder>/`` with a download manifest or cancel marker in the active cache."""
+    try:
+        from hub.utils import download_manifest
+        found = {
+            key
+            for listing in (
+                download_manifest.iter_variant_manifests(
+                    "model", AUDIO_CPP_REPO, hub_cache = _hub_cache()
+                ),
+                download_manifest.iter_variant_markers(
+                    "model", AUDIO_CPP_REPO, hub_cache = _hub_cache()
+                ),
+            )
+            for key, _path in listing
+        }
+    except Exception:  # noqa: BLE001 - unreadable state names nothing more
+        return []
+    prefix = f"{folder.lower()}/"
+    return sorted(k for k in found if k.lower().startswith(prefix) and len(k) > len(prefix))
+
+
+def _state_key_named(key: str, wanted: str, folder: str) -> bool:
+    """Whether a folder's planner key (``<Folder>/<dirs>/<file stem>``) is the variant ``wanted``
+    names, by the same rules as a cached variant: the key itself, its file, or its quant plus scope
+    words."""
+    low = wanted.strip().replace("\\", "/").strip("/").lower()
+    path = key.lower()
+    stem = path.rsplit("/", 1)[-1]
+    if not low or low in (path, stem, f"{stem}.gguf") or f"{folder.lower()}/{low}" == path:
+        return bool(low)
+    parts = [p for p in low.split("/") if p]
+    if quant_label(f"{stem}.gguf").lower() != parts[-1]:
+        return False
+    dirs = set(path.split("/")[1:-1])
+    folder_words = set(re.split(r"[-_.]+", folder.lower()))
+    words = dirs | (set(re.split(r"[-_.]+", stem)) - folder_words)
+    return all(w in words for w in parts[:-1])
 
 
 def _cached_variants_named(
