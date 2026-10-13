@@ -194,7 +194,6 @@ def test_route_refuses_a_save_the_environment_decides(monkeypatch):
 
 @pytest.mark.parametrize("saved", [4000, 64000])
 def test_built_in_non_code_tools_keep_the_install_cap(monkeypatch, saved):
-    """Web and edit results are bounded by their own caps; only the install cap applies to them."""
     limit.set_max_chars(saved)
     tools._REQUEST_CONTEXT_TOKENS.set(131072)
     monkeypatch.setattr(tools, "_request_result_room", lambda: 10**9)
@@ -253,7 +252,7 @@ def test_an_mcp_call_through_execute_tool_gets_the_saved_cap(monkeypatch):
 
 @pytest.mark.parametrize("saved, cut", [(4000, 4000), (32000, None), (None, None)])
 def test_an_api_model_mcp_result_honours_only_a_lowered_setting(saved, cut):
-    """External providers price no room (`context_tokens=0`): a lowered setting still applies, nothing else changes."""
+    """External providers price no room (`context_tokens=0`)."""
     if saved:
         limit.set_max_chars(saved)
     tools._REQUEST_CONTEXT_TOKENS.set(0)

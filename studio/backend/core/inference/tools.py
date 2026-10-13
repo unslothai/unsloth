@@ -21318,7 +21318,6 @@ def _fit_result_to_room(text, name = None):
     if not isinstance(text, str) or not text:
         return text
     if _request_result_room() is None:
-        # A lowered setting still holds an MCP result here, as it does Python and Terminal on API models.
         # Against the shipped default: an environment cap sets `_MAX_OUTPUT_CHARS` too.
         lowered = _tool_result_max_chars() < tool_result_limit.DEFAULT_MAX_CHARS
         if not (lowered and isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)):
