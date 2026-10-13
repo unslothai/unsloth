@@ -2609,6 +2609,9 @@ def cached_folder_target(
     keys = [gguf_variant_key(v.primary) for v in chosen if v.primary]
     if wanted and keys:
         return AUDIO_CPP_REPO, keys
+    if wanted and model is not None and _on_disk_quant_named(model.variants, wanted):
+        # An ambiguous match on disk is a refusal, not a cue to act on some other download's state.
+        return AUDIO_CPP_REPO, []
     # A quant cancelled before any file finished has only its download state (manifest or cancel
     # marker, plus .incomplete blobs); the variant delete clears that too.
     partial = _folder_state_keys(ref.folder)
@@ -2617,6 +2620,11 @@ def cached_folder_target(
         return AUDIO_CPP_REPO, partial if len(partial) == 1 else []
     seen = {k.lower() for k in keys}
     return AUDIO_CPP_REPO, keys + [k for k in partial if k.lower() not in seen]
+
+
+def _on_disk_quant_named(variants: Sequence[AudioCppVariant], wanted: str) -> bool:
+    quant = wanted.strip().replace("\\", "/").strip("/").rsplit("/", 1)[-1].lower()
+    return any(quant_label(v.main_file).lower() == quant for v in variants)
 
 
 def _folder_state_keys(folder: str) -> list[str]:

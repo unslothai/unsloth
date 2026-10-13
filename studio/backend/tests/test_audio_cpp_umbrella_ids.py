@@ -727,3 +727,17 @@ def test_deleting_a_partial_only_quant_of_a_folder_clears_its_state(hub, monkeyp
     asyncio.run(deletion.delete_cached_model_response(QWEN, "F16"))
     assert _states(hub) == [KOKORO_Q4]
     assert len(_left(hub)) == 3
+
+
+def test_an_ambiguous_bare_quant_never_falls_back_to_download_state(hub, monkeypatch, tmp_path):
+    moon = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    files = {
+        f"Moonshine-Streaming-GGUF/moonshine-streaming-{size}-q8_0.gguf": "moonshine_asr"
+        for size in ("tiny", "small")
+    }
+    _add_snapshot(hub, "a" * 40, files, main = True)
+    medium = "Moonshine-Streaming-GGUF/moonshine-streaming-medium-q8_0"
+    _partial(hub, monkeypatch, tmp_path, [medium])
+    acm.forget()
+    assert acm.cached_folder_target(moon, "Q8_0") == (AUDIO_CPP_REPO, [])
+    assert medium in acm.cached_folder_target(moon, None)[1]
