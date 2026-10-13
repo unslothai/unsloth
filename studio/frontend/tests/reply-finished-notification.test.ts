@@ -32,6 +32,7 @@ type Env = {
   permission?: "absent" | "default" | "granted" | "denied";
   answer?: "granted" | "denied";
   pluginGranted?: boolean;
+  backend?: boolean;
 };
 
 type Control = {
@@ -39,6 +40,7 @@ type Control = {
   granted: boolean;
   mode: string;
   requests: number;
+  backend?: boolean;
 };
 
 let generation = 0;
@@ -74,6 +76,7 @@ async function load(env: Env) {
     permission = "absent",
     answer = "granted",
     pluginGranted = false,
+    backend,
   } = env;
   const created: { title: string; options?: NotificationOptions }[] = [];
   const storage = memoryStorage();
@@ -113,6 +116,7 @@ async function load(env: Env) {
   control.granted = pluginGranted;
   control.mode = "ok";
   control.requests = 0;
+  control.backend = backend;
 
   generation += 1;
   const store = await import(`${STORE}?bust=${generation}`);
@@ -222,6 +226,39 @@ test("replies finishing together send one notification", async () => {
   mod.notifyReplyFinished();
   await settle();
   assert.equal(control.sent.length, 1);
+});
+
+test("Windows Desktop: the switch turns on and notifies although the plugin shim says denied", async () => {
+  // tauri-apps/plugins-workspace#3512: the shim stamps "denied" at startup on Windows while
+  // the desktop backend grants.
+  const { mod, control } = await load({
+    tauri: true,
+    enabled: true,
+    permission: "denied",
+    backend: true,
+  });
+  assert.equal(await mod.requestReplyFinishedPermission(), true);
+  mod.notifyReplyFinished();
+  await settle();
+  assert.equal(control.sent.length, 1);
+});
+
+test("a reply that finished in view never notifies, even if the user looks away before the timer", async () => {
+  const env = await load({
+    tauri: true,
+    enabled: true,
+    hidden: false,
+    focused: true,
+    pluginGranted: true,
+  });
+  env.mod.notifyReplyFinished();
+  Object.defineProperty(globalThis, "document", {
+    value: { visibilityState: "hidden", hasFocus: () => false },
+    configurable: true,
+    writable: true,
+  });
+  await settle();
+  assert.equal(env.control.sent.length, 0);
 });
 
 test("an unfocused but visible window still counts as the background", async () => {

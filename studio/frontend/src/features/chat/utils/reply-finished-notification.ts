@@ -52,6 +52,10 @@ export function notifyReplyFinished(): void {
     return;
   }
   cancelReplyFinishedNotification();
+  // A reply that finished in view was seen, even if the user looks away before the timer.
+  if (!windowIsInBackground()) {
+    return;
+  }
   pending = setTimeout(() => {
     pending = null;
     sendReplyFinished();
