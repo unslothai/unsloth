@@ -141,8 +141,10 @@ def _fake_hub(
     return calls
 
 
-def _no_gguf_rows(monkeypatch):
-    empty = gguf_variants.VariantsAnswer(gguf_variants.GgufVariantsResponse(repo_id = _REPO), None)
+def _no_gguf_rows(monkeypatch, cache_authorized = True):
+    empty = gguf_variants.VariantsAnswer(
+        gguf_variants.GgufVariantsResponse(repo_id = _REPO), None, cache_authorized
+    )
 
     async def _scan(key, compute):
         return empty
@@ -542,3 +544,22 @@ def test_a_root_request_never_reuses_a_resident_precision_folder(
             )
         )
     assert calls[:1] == [expected]
+
+
+def test_a_caller_refused_the_cache_learns_nothing_from_it(monkeypatch, tmp_path):
+    folder = _cached_repo(monkeypatch, tmp_path, _REPO, "6-bit")
+    (folder / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (folder / "model.safetensors").write_bytes(b"x")
+    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: folder.parent)
+    _fake_hub(monkeypatch)
+    monkeypatch.setattr("hub.utils.mlx_variants.cached_precision_folder", lambda repo, name: folder)
+    _no_gguf_rows(monkeypatch)
+    rows = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response.variants
+    assert [v.quant for v in rows if v.downloaded] == ["2-bit", "4-bit", "6-bit", "8-bit"]
+    # The GGUF scan refused this caller the cache: the Hub listing stays, the on-device state goes.
+    _no_gguf_rows(monkeypatch, cache_authorized = False)
+    rows = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO)).response.variants
+    assert rows and not any(v.downloaded for v in rows)
+    # Offline, the cache is the only source, so nothing is listed.
+    answer = asyncio.run(gguf_variants.get_gguf_variants_answer(_REPO, offline = True))
+    assert not answer.response.variants

@@ -1148,7 +1148,10 @@ _VISION_PIPELINE_TAGS = frozenset(
 
 
 async def _mlx_precision_variants_answer(
-    repo_id: str, hf_token: Optional[str], offline: bool
+    repo_id: str,
+    hf_token: Optional[str],
+    offline: bool,
+    cache_readable: bool = True,
 ) -> Optional[VariantsAnswer]:
     """The precision folders of an MLX repo (``4-bit/``, ``6-bit/``, ``8bit/``) as its variants,
     else None. Each folder is a whole checkpoint, so a pick downloads and loads that folder alone."""
@@ -1184,6 +1187,9 @@ async def _mlx_precision_variants_answer(
                 hashes = {s.rfilename: sibling_sha256(s) for s in (info.siblings or [])}
                 has_vision = str(info.pipeline_tag or "").lower() in _VISION_PIPELINE_TAGS
         if not sizes:
+            # A caller refused this repo's cache learns nothing from it.
+            if not cache_readable:
+                return None
             snapshot = hf_cache_snapshot_dir_for_repo(repo_id)
             if snapshot is None:
                 return None
@@ -1219,7 +1225,8 @@ async def _mlx_precision_variants_answer(
                     quant = folder,
                     size_bytes = sum(sizes[name] for name in names),
                     download_size_bytes = sum(sizes[name] for name in names),
-                    downloaded = cached_precision_folder(repo_id, folder) is not None,
+                    downloaded = cache_readable
+                    and cached_precision_folder(repo_id, folder) is not None,
                 )
                 for folder, names in folders.items()
             ),
@@ -2408,7 +2415,9 @@ async def get_gguf_variants_answer(
         answer = await _shared_variants_scan(inflight_key, _compute_with_cleanables)
         # Only after an empty GGUF listing, so GGUF answers never change.
         if not answer.response.variants and not local_path:
-            mlx_answer = await _mlx_precision_variants_answer(repo_id, hf_token, offline)
+            mlx_answer = await _mlx_precision_variants_answer(
+                repo_id, hf_token, offline, cache_readable = answer.cache_authorized
+            )
             if mlx_answer is not None:
                 return mlx_answer
         return answer
