@@ -32,6 +32,8 @@ export type ElementInfo = {
   formMethod: string;
   formAction: string;
   formHasPassword: boolean;
+  /** Whether one of those password fields holds a value (the user's to type); never the value. */
+  formPasswordFilled?: boolean;
   /** For a dropdown described with a value: the label of the option that value selects. */
   option?: string;
   /** For Enter in a field: the label of the button that will submit its form. */
@@ -48,6 +50,8 @@ export type AgentAnswer = {
   navigate?: string;
   info?: ElementInfo;
   quietMs?: number;
+  /** Requests the page started recently and is still waiting on. */
+  requests?: number;
   title?: string;
   x?: number;
   y?: number;
@@ -566,6 +570,10 @@ export function installPageAgent(): PageAgent {
     const action = submitter?.hasAttribute("formaction")
       ? new URL(submitter.getAttribute("formaction") ?? "", document.baseURI).href
       : form?.action || pageUrl().href;
+    // form.elements, not descendants: a field joins a form from anywhere with form="id".
+    const passwords = Array.from(form?.elements ?? []).filter(
+      (node): node is HTMLInputElement => (node as HTMLInputElement).type === "password",
+    );
     const info = {
       role: roleOf(el) ?? (anchor ? "link" : "element"),
       name: nameOf(el) || nameOf(anchor ?? el),
@@ -575,8 +583,8 @@ export function installPageAgent(): PageAgent {
       autocomplete: (el.getAttribute("autocomplete") ?? "").toLowerCase(),
       formMethod: form ? method.toLowerCase() : "get",
       formAction: form ? action : "",
-      // form.elements, not descendants: a field joins a form from anywhere with form="id".
-      formHasPassword: Array.from(form?.elements ?? []).some((node) => (node as HTMLInputElement).type === "password"),
+      formHasPassword: passwords.length > 0,
+      formPasswordFilled: passwords.some((field) => field.value !== ""),
       submits,
       // What choose() will pick, so the panel gates that option's label, not the model's words.
       ...(el instanceof HTMLSelectElement && typeof value === "string"
@@ -1105,13 +1113,18 @@ export function installPageAgent(): PageAgent {
     try {
       const ref = typeof command.ref === "string" ? command.ref : "";
       switch (command.op) {
-        case "status":
+        case "status": {
+          // Fetch/XHR the proxied shell counts as open since `since` (routes/browser_network.py).
+          const pending = host[Symbol.for("unsloth.browser.pending")];
+          const since = typeof command.since === "number" ? command.since : Number.POSITIVE_INFINITY;
           return {
             ok: true,
             quietMs: Math.round(performance.now() - lastMutation),
+            requests: typeof pending === "function" ? Number(pending(since)) || 0 : 0,
             title: document.title,
             ...view(),
           };
+        }
         case "snapshot":
           return snapshot(command.fullPage === true, ref || undefined);
         case "find":
