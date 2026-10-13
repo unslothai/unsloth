@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import shlex
+from typing import Optional
 
 import typer
 
@@ -794,8 +795,8 @@ def train(
         "as a control arm -- it is slower and its 1f1b and "
         "interleaved deadlock.",
     ),
-    schedule: str = typer.Option(
-        "1f1b",
+    schedule: Optional[str] = typer.Option(
+        None,
         "--schedule",
         help = "On --pp-backend torch, measured on two Sparks vs one: "
         "1f1b 1.94x (default), dualpipev 1.96x, zbv 1.94x, "
@@ -837,8 +838,8 @@ def train(
         "these are two-Spark launch commands and do not apply here. "
         "Train as usual with `unsloth train`.",
     )
-    if not script and not layer_split:
-        typer.echo("give either --script <train.py> (DDP) or --layer-split <model>.")
+    if bool(script) == bool(layer_split):
+        typer.echo("give exactly one of --script <train.py> (DDP) or --layer-split <model>.")
         raise typer.Exit(2)
     if layer_split:
         # Before the modulo: `--microbatches 0` raised ZeroDivisionError out of this line, so the
@@ -854,12 +855,15 @@ def train(
             raise typer.Exit(2)
         extra = [
             f"--microbatches {microbatches}",
-            f"--schedule {schedule}",
             f"--pp-backend {pp_backend}",
             f"--steps {steps}",
             f"--batch {batch}",
             f"--seq {seq}",
         ]
+        # Unset, spark_pipeline picks the backend's own default (1f1b on torch, gpipe on legacy,
+        # whose 1f1b deadlocks).
+        if schedule:
+            extra.append(f"--schedule {schedule}")
         if data:
             extra.append(f"--data {shlex.quote(data)}")
         if save:
