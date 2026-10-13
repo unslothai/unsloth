@@ -51,6 +51,8 @@ _fallback_reason: str | None = None
 _reloading: Checkpoint | None = None
 # Why the reload's load was stopped ("training" or "gpu"), recorded when it happens: a short run can be over by the join.
 _reload_stopped_by: str | None = None
+# The unload generation the running load started for: an unload during its Hub lookup still stops the worker.
+_load_generation = threading.local()
 TRAINING_POLL_S = 2.0
 # A llama.cpp decision server unloads after this long without a request.
 IDLE_UNLOAD_S = 300.0
@@ -1028,7 +1030,7 @@ def _load_checkpoint(checkpoint: Checkpoint):
         from .clef_runtime import ClefAgent, ClefWorkerError
 
         _evict()
-        unloads = _unloads
+        unloads = getattr(_load_generation, "unloads", _unloads)
         agent = ClefAgent(
             root,
             cancelled = lambda: _clef_preempted() or _unloads != unloads,
@@ -1351,6 +1353,7 @@ def _load(checkpoint: Checkpoint, unloads: int | None = None) -> None:
             _loading = None
         logger.info("System One dropped %s: it was unloaded before it loaded", checkpoint.name)
         return
+    _load_generation.unloads = unloads
     try:
         agent, device = _load_checkpoint(checkpoint)
     except Exception as exc:
