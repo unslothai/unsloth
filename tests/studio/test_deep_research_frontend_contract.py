@@ -275,7 +275,9 @@ def test_research_presentation_is_integrated() -> None:
     checkpoint_update = store.split("setCheckpoint: (modelId, ggufVariant, options) =>", 1)[
         1
     ].split("setActiveThreadId:", 1)[0]
-    assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY, false)" in checkpoint_update
+    assert "const clampsDeepResearch =" in checkpoint_update
+    assert "saveBool(CHAT_DEEP_RESEARCH_ENABLED_KEY" not in checkpoint_update
+    assert "deepResearchEnabled: nextDeepResearchEnabled" in checkpoint_update
     # #8686 put a chat-scoped override in front of the global read here, so the literal `const permissionMode =
     # loadPermissionMode();` this used to pin is gone. The read itself is the contract, and it is still per call:
     # toggling deep research re-resolves the permission level, taking the chat's own level when it has one and the

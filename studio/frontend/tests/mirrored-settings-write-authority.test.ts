@@ -1,6 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+// Two writes that reach every browser on the install now that saveBool and the hydration
+// backfill mirror to /api/chat/settings, so each needs a reason to fire:
+//   1. setCheckpoint's deep-research clamp. Codex runs deep research (thread.tsx exempts
+//      openai_codex from researchDisabled, chat-adapter accepts its research requests), so
+//      clamping on every external id would turn a Codex user's preference off everywhere.
+//   2. The backfill, which reads "field absent" as "unset on the server". That only holds
+//      for a GET that answered; the legacy-storage fallback knows nothing about the server.
+// The store and chat-settings-storage cannot be imported in a bare node test (a .tsx barrel
+// sits in both graphs), so these pin the source the way the sibling store tests do.
+
 import assert from "node:assert/strict";
 import test from "node:test";
 

@@ -77,7 +77,7 @@ import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-g
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
-import { codeToolCanRun, isRewindCommand, useRewindDialogStore } from "@/features/chat";
+import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -249,7 +249,6 @@ import {
   getExternalReasoningCapabilities,
   kimiSearchExcludesThinking,
   modelCatalogVersion,
-  providerHostsCodeExecution,
   subscribeModelCatalog,
 } from "@/features/chat/provider-capabilities";
 import { useRagToolDisabled } from "@/features/chat/hooks/use-rag-tool-disabled";
@@ -6508,9 +6507,6 @@ const WebSearchToggle: FC = () => {
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
-  const supportsBuiltinImageGeneration = useChatRuntimeStore(
-    (s) => s.supportsBuiltinImageGeneration,
-  );
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
   const setToolsEnabled = useChatRuntimeStore((s) => s.setToolsEnabled);
   const setReasoningEnabled = useChatRuntimeStore((s) => s.setReasoningEnabled);
@@ -6530,12 +6526,7 @@ const WebSearchToggle: FC = () => {
   );
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the + menu.
-  const disabled = modelLoaded && (
-    selectedExternalProvider?.providerType === "gemini" &&
-    supportsBuiltinImageGeneration
-      ? !supportsBuiltinWebSearch
-      : !(supportsTools || supportsBuiltinWebSearch)
-  );
+  const disabled = modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
 
   return (
     <button
@@ -6566,9 +6557,22 @@ const WebSearchToggle: FC = () => {
 };
 
 const CodeToolsToggle: FC = () => {
-  const disabled = useCodeToolsDisabled();
+  const modelLoaded = useChatRuntimeStore(
+    (s) => !!s.params.checkpoint && !s.modelLoading,
+  );
+  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  // External providers have no local tool runtime, but Anthropic's Claude 4.x
+  // dispatches code_execution_20250825 server-side; the chat-page resolver
+  // stashes that capability in the runtime store (next to
+  // supportsBuiltinWebSearch). Mirror of shared-composer's codeDisabled.
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
+  );
   const codeToolsEnabled = useChatRuntimeStore(codeToolsOn);
   const setCodeToolsEnabled = useChatRuntimeStore((s) => s.setCodeToolsEnabled);
+  // Disable only when a loaded model lacks the capability; with no model the
+  // tool can still be pre-selected, matching the + menu.
+  const disabled = modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
 
   return (
     <button
@@ -6593,45 +6597,6 @@ const CodeToolsToggle: FC = () => {
     </button>
   );
 };
-
-function useCodeToolsDisabled(): boolean {
-  const modelLoaded = useChatRuntimeStore(
-    (s) => !!s.params.checkpoint && !s.modelLoading,
-  );
-  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
-  const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
-  const supportsBuiltinCodeExecution = useChatRuntimeStore(
-    (s) => s.supportsBuiltinCodeExecution,
-  );
-  const supportsBuiltinImageGeneration = useChatRuntimeStore(
-    (s) => s.supportsBuiltinImageGeneration,
-  );
-  const externalSelection = parseExternalModelId(checkpoint);
-  const provider = useExternalProvidersStore((s) =>
-    s.connectionsEnabled
-      ? s.providers.find((p) => p.id === externalSelection?.providerId)
-      : undefined,
-  );
-  const canRunCode = externalSelection
-    ? codeToolCanRun({
-        hostedCodeExecutionForThisTurn: supportsBuiltinCodeExecution,
-        providerHostsCodeExecution: providerHostsCodeExecution(
-          provider?.providerType,
-          provider?.baseUrl,
-          provider?.apiType,
-        ),
-        supportsStudioTools:
-          providerModelSupportsStudioTools(
-            provider?.providerType,
-            externalSelection.modelId,
-          ) === true,
-      })
-    : supportsTools;
-  return modelLoaded && (
-    !canRunCode ||
-    (provider?.providerType === "gemini" && supportsBuiltinImageGeneration)
-  );
-}
 
 const ImagesToggle: FC = () => {
   const modelLoaded = useChatRuntimeStore(
@@ -6838,6 +6803,9 @@ const ComposerToolsMenu: FC<{
   const supportsBuiltinWebSearch = useChatRuntimeStore(
     (s) => s.supportsBuiltinWebSearch,
   );
+  const supportsBuiltinCodeExecution = useChatRuntimeStore(
+    (s) => s.supportsBuiltinCodeExecution,
+  );
   const supportsBuiltinImageGeneration = useChatRuntimeStore(
     (s) => s.supportsBuiltinImageGeneration,
   );
@@ -6863,13 +6831,9 @@ const ComposerToolsMenu: FC<{
   // Disable only when a loaded model lacks the capability; with no model the
   // tool can still be pre-selected, matching the pill logic above.
   const searchDisabled =
-    modelLoaded && (
-      selectedExternalProvider?.providerType === "gemini" &&
-      supportsBuiltinImageGeneration
-        ? !supportsBuiltinWebSearch
-        : !(supportsTools || supportsBuiltinWebSearch)
-    );
-  const codeDisabled = useCodeToolsDisabled();
+    modelLoaded && !(supportsTools || supportsBuiltinWebSearch);
+  const codeDisabled =
+    modelLoaded && !(supportsTools || supportsBuiltinCodeExecution);
   const imageDisabled = !modelLoaded;
   // Like Search/Code: disabled only when a loaded model lacks tool support.
   const mcpDisabled = modelLoaded && !supportsTools;

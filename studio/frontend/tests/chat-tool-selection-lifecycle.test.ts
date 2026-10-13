@@ -470,3 +470,202 @@ test("an unresolved external provider preserves Research until its capabilities 
   store.setState({ supportsTools: true, ...runtime.resolveToolsEnabledOnLoad(true) });
   assert.equal(store.getState().deepResearchEnabled, true);
 });
+
+test("Kimi keeps Search off and Thinking on when a chat opens without stored pills", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setToolsEnabled(true);
+  assert.equal(storage.get("unsloth_chat_tools_enabled"), "true");
+  useExternalProvidersStore.getState().setProviders([{
+    id: "kimi",
+    providerType: "kimi",
+    name: "Kimi fixture",
+    baseUrl: "https://api.moonshot.ai/v1",
+    models: ["kimi-k2.5"],
+    createdAt: 0,
+    updatedAt: 0,
+  }]);
+  store.getState().setCheckpoint("external::kimi::kimi-k2.5", null);
+  store.setState({
+    supportsTools: false,
+    supportsBuiltinWebSearch: true,
+    toolsEnabled: false,
+    reasoningEnabled: true,
+  });
+  store.getState().setActiveThreadId(THREAD);
+  store.getState().applyThreadScopedSettings(THREAD, null);
+  assert.equal(store.getState().toolsEnabled, false);
+  assert.equal(store.getState().reasoningEnabled, true);
+  await runtime.awaitThreadScopedSettingsWrite(THREAD);
+  assert.equal(threadRows.rows.get(THREAD)?.toolsEnabled, false);
+  assert.equal(threadRows.rows.get(THREAD)?.reasoningEnabled, true);
+  store.getState().setActiveThreadId(null);
+  store.getState().applyThreadScopedSettings(null, null);
+  assert.equal(store.getState().toolsEnabled, false);
+  assert.equal(store.getState().reasoningEnabled, true);
+  assert.equal(storage.get("unsloth_chat_tools_enabled"), "true");
+});
+
+test("unloading drops a Search pill the provider lit without a stored preference", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  store.setState({ toolsEnabled: true, codeToolsEnabled: true });
+  assert.equal(storage.get("unsloth_chat_tools_enabled"), undefined);
+  store.getState().clearCheckpoint();
+  assert.equal(store.getState().toolsEnabled, false);
+  assert.equal(store.getState().codeToolsEnabled, false);
+  store.getState().setToolsEnabled(true);
+  store.getState().clearCheckpoint();
+  assert.equal(store.getState().toolsEnabled, true);
+});
+
+test("a held edit committed on leave cannot re-arm Research on an incompatible local model", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setDeepResearchEnabled(true);
+  store.getState().clearCheckpoint();
+  store.getState().setCheckpoint("unsloth/no-tools", null);
+  store.setState({ supportsTools: false, ...runtime.resolveToolsEnabledOnLoad(false) });
+  assert.equal(store.getState().deepResearchEnabled, false);
+  store.getState().setActiveThreadId(THREAD);
+  runtime.beginThreadScopedPairing(THREAD);
+  store.getState().setMcpEnabledForChat(true);
+  store.getState().setActiveThreadId(null);
+  const commit = runtime.commitHeldThreadScopedEditsToTheirThread();
+  assert.equal(store.getState().deepResearchEnabled, false);
+  assert.equal(store.getState().mcpEnabledForChat, false);
+  await commit;
+  assert.equal(threadRows.rows.get(THREAD)?.deepResearchEnabled, false);
+  assert.equal(threadRows.rows.get(THREAD)?.mcpEnabledForChat, true);
+  assert.equal(storage.get("unsloth_chat_deep_research_enabled"), "true");
+  store.getState().clearCheckpoint();
+  store.getState().setCheckpoint(MODEL, null);
+  store.setState({ supportsTools: true, ...runtime.resolveToolsEnabledOnLoad(true) });
+  assert.equal(store.getState().deepResearchEnabled, true);
+});
+
+test("a chat's stored Search and Code stay off in the composer under a model without tools", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().clearCheckpoint();
+  store.getState().setCheckpoint("unsloth/no-tools", null);
+  store.setState({ supportsTools: false, ...runtime.resolveToolsEnabledOnLoad(false) });
+  store.getState().setActiveThreadId(THREAD);
+  store.getState().applyThreadScopedSettings(THREAD, {
+    toolsEnabled: true,
+    codeToolsEnabled: true,
+  });
+  assert.equal(store.getState().toolsEnabled, false);
+  assert.equal(store.getState().codeToolsEnabled, false);
+  assert.equal(runtime.threadScopedOverride("toolsEnabled"), true);
+  store.getState().setPermissionMode("ask");
+  await runtime.awaitThreadScopedSettingsWrite(THREAD);
+  assert.equal(threadRows.rows.get(THREAD)?.toolsEnabled, true);
+  assert.equal(threadRows.rows.get(THREAD)?.codeToolsEnabled, true);
+  store.getState().clearCheckpoint();
+  assert.equal(store.getState().toolsEnabled, true);
+  store.getState().setCheckpoint(MODEL, null);
+  store.setState({ supportsTools: true, ...runtime.resolveToolsEnabledOnLoad(true) });
+  assert.equal(store.getState().toolsEnabled, true);
+  assert.equal(store.getState().codeToolsEnabled, true);
+});
+
+for (const pills of [
+  { toolsEnabled: true, codeToolsEnabled: true },
+  { deepResearchEnabled: true },
+] as const) {
+  test(`a snapshot written while a model loads keeps ${Object.keys(pills).join(" and ")} on the chat`, async (t) => {
+    const runtime = await boot(t);
+    const store = runtime.useChatRuntimeStore;
+    store.getState().clearCheckpoint();
+    store.getState().setCheckpoint("unsloth/no-tools", null);
+    store.setState({ supportsTools: false, ...runtime.resolveToolsEnabledOnLoad(false) });
+    store.getState().setActiveThreadId(THREAD);
+    store.getState().applyThreadScopedSettings(THREAD, pills);
+    for (const key of Object.keys(pills) as (keyof typeof pills)[]) {
+      assert.equal(store.getState()[key], false, key);
+    }
+    const lease = store.getState().beginModelLoading("loading");
+    assert.ok(lease !== null);
+    store.getState().setPermissionMode("ask");
+    await runtime.awaitThreadScopedSettingsWrite(THREAD);
+    store.setState({ supportsTools: false, ...runtime.resolveToolsEnabledOnLoad(false) });
+    store.getState().setPermissionMode("auto");
+    await runtime.awaitThreadScopedSettingsWrite(THREAD);
+    for (const key of Object.keys(pills) as (keyof typeof pills)[]) {
+      assert.equal(threadRows.rows.get(THREAD)?.[key], true, key);
+      assert.equal(runtime.threadScopedOverride(key), true, key);
+    }
+    store.getState().setCheckpoint(MODEL, null);
+    store.setState({ supportsTools: true, ...runtime.resolveToolsEnabledOnLoad(true) });
+    store.getState().endModelLoading(lease);
+    for (const key of Object.keys(pills) as (keyof typeof pills)[]) {
+      assert.equal(store.getState()[key], true, key);
+    }
+  });
+}
+
+for (const leave of [false, true]) {
+  test(`Kimi keeps a Thinking click over a held Search click when the chat ${leave ? "is left" : "opens"}`, async (t) => {
+    const runtime = await boot(t);
+    const store = runtime.useChatRuntimeStore;
+    useExternalProvidersStore.getState().setProviders([{
+      id: "kimi",
+      providerType: "kimi",
+      name: "Kimi fixture",
+      baseUrl: "https://api.moonshot.ai/v1",
+      models: ["kimi-k2.5"],
+      createdAt: 0,
+      updatedAt: 0,
+    }]);
+    store.getState().setCheckpoint("external::kimi::kimi-k2.5", null);
+    store.setState({
+      supportsTools: false,
+      supportsBuiltinWebSearch: true,
+      toolsEnabled: false,
+      reasoningEnabled: false,
+    });
+    store.getState().setActiveThreadId(THREAD);
+    runtime.beginThreadScopedPairing(THREAD);
+    store.getState().setToolsEnabled(true);
+    store.getState().setReasoningEnabled(true);
+    store.getState().setToolsEnabled(false, { persist: false });
+    if (leave) {
+      store.getState().setActiveThreadId(null);
+      await runtime.commitHeldThreadScopedEditsToTheirThread();
+    } else {
+      store.getState().applyThreadScopedSettings(THREAD, null);
+      assert.equal(store.getState().toolsEnabled, false);
+      assert.equal(store.getState().reasoningEnabled, true);
+      await runtime.awaitThreadScopedSettingsWrite(THREAD);
+    }
+    assert.equal(threadRows.rows.get(THREAD)?.toolsEnabled, false);
+    assert.equal(threadRows.rows.get(THREAD)?.reasoningEnabled, true);
+  });
+}
+
+test("enabling Search on a chat whose stored Research is clamped off clears the stored Research", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  useExternalProvidersStore.getState().setProviders([{
+    id: "search-only",
+    providerType: "vllm",
+    name: "Search-only fixture",
+    baseUrl: "http://localhost:8000/v1",
+    models: ["no-studio-tools"],
+    createdAt: 0,
+    updatedAt: 0,
+  }]);
+  setProviderModelCapabilities("vllm", { "no-studio-tools": { studio_tools: false } });
+  store.getState().setCheckpoint("external::search-only::no-studio-tools", null);
+  store.setState({ supportsTools: false, supportsBuiltinWebSearch: true });
+  store.getState().setActiveThreadId(THREAD);
+  store.getState().applyThreadScopedSettings(THREAD, { deepResearchEnabled: true });
+  assert.equal(store.getState().deepResearchEnabled, false);
+  assert.equal(runtime.threadScopedOverride("deepResearchEnabled"), true);
+  store.getState().setToolsEnabled(true);
+  await runtime.awaitThreadScopedSettingsWrite(THREAD);
+  assert.equal(threadRows.rows.get(THREAD)?.toolsEnabled, true);
+  assert.equal(threadRows.rows.get(THREAD)?.deepResearchEnabled, false);
+  assert.equal(runtime.threadScopedOverride("deepResearchEnabled"), false);
+});
