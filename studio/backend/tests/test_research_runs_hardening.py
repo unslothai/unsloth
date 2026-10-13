@@ -284,6 +284,11 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     ):
         assert "dXNlcjpwYXNzd29yZA" not in _sanitize_public_query(text), text
     assert _sanitize_public_query("Authorization: Basic YTpi why did YTpi fail") == "why did fail"
+    assert "YTpi" not in _sanitize_public_query(
+        'Authorization: Basic YTpi response {"received":"YTpi"}'
+    )
+    folded = 'Authorization: Digest username="bob",\r\n response="abcdefghijklmnop" why'
+    assert "abcdefghijklmnop" not in _sanitize_public_query(folded)
     for text in (
         'Authorization: Custom token="abc,def,ghi" why did abc,def,ghi fail',
         'Authorization: Custom token="abc123" why did abc123 fail',

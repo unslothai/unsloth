@@ -32,7 +32,7 @@ _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
 _QUERY_AUTHORIZATION = re.compile(
     rf"""(?aix)(?<![A-Za-z0-9])authorization\\?["'”’]?[ \t]*[:=][ \t]*\\?["'“‘]?[\w!#$%&'*+.^`|~-]+[ \t]+
-    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
+    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
 )
 _AUTH_PARAM_PAIR = re.compile(
     r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
@@ -181,10 +181,15 @@ def _sanitize_public_query(query: str) -> str:
             value = re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))
             exact.add(value)
             credentials.update(piece for piece in [value, *value.split()] if len(piece) >= 8)
+    # Short values match whole tokens or token-character-bounded fields such as {"received":"YTpi"}.
+    exact.discard("")
+    exact_echo = exact and re.compile(
+        "|".join(rf"(?<![\w.~+/=-]){re.escape(value)}(?![\w~+/-]|\.[\w~+/-])" for value in exact)
+    )
     plain = [
         token
         for token in plain
-        if token.strip(_TOKEN_PUNCTUATION + ".!?") not in exact
+        if not (exact_echo and exact_echo.search(token))
         and not any(piece in token for piece in credentials)
     ]
     # A multiword credential echoed unquoted spans several tokens.
