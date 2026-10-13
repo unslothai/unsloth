@@ -50,7 +50,7 @@ export const en = {
     agentSettings: {
       title: "Browser use",
       enable: "Let models use the browser",
-      enableDescription: "Models open pages in their own tab of the browser panel, read them, and click and type for you. Also in the composer's + menu.",
+      enableDescription: "Models open pages in their own browser tab, read them, and click and type for you. Also in the composer's + menu.",
       history: "Browsing history",
       historyDescription: "Choose whether models can read your browser history",
       alwaysAsk: "Always ask",
