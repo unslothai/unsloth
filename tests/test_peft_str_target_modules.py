@@ -96,18 +96,23 @@ def test_add_moe_target_modules_keeps_each_form():
     assert not re.fullmatch(combined, "model.layers.0.mlp.experts.router")
 
 
-def _prewrapped(target_modules):
+def _prewrapped(target_modules, layers = 2):
     from peft import LoraConfig
     config = LoraConfig(r = 16, lora_alpha = 16, target_modules = target_modules, task_type = "CAUSAL_LM")
-    return get_peft_model(_tiny_llama(), config)
+    return get_peft_model(_tiny_llama(layers), config)
 
 
 REGEX = r".*\.layers\.0\.self_attn\.q_proj"
 
 
-@pytest.mark.parametrize("target_modules", ["all-linear", REGEX], ids = ["all_linear", "regex"])
-def test_repeat_call_with_same_str_keeps_the_adapter(target_modules):
-    model = _prewrapped(target_modules)
+@pytest.mark.parametrize(
+    "target_modules, layers",
+    [("all-linear", 2), ("all-linear", 4), (REGEX, 2)],
+    # 4 layers = 28 Linears: past PEFT's 20-module threshold, the stored list is compacted to suffixes.
+    ids = ["all_linear", "all_linear_compacted", "regex"],
+)
+def test_repeat_call_with_same_str_keeps_the_adapter(target_modules, layers):
+    model = _prewrapped(target_modules, layers)
     again = FastLlamaModel.get_peft_model(
         model, r = 16, target_modules = target_modules, use_gradient_checkpointing = False
     )
@@ -116,7 +121,10 @@ def test_repeat_call_with_same_str_keeps_the_adapter(target_modules):
 
 @pytest.mark.parametrize(
     "stored, requested",
-    [(["q_proj", "v_proj"], "all-linear"), (REGEX, r".*\.layers\.1\.self_attn\.q_proj")],
+    [
+        (["q_proj", "v_proj"], "all-linear"),
+        (REGEX, r".*\.layers\.1\.self_attn\.q_proj"),
+    ],
     ids = ["narrower_then_all_linear", "other_regex"],
 )
 def test_repeat_call_with_different_str_is_refused(stored, requested):
@@ -124,3 +132,14 @@ def test_repeat_call_with_different_str_is_refused(stored, requested):
         FastLlamaModel.get_peft_model(
             _prewrapped(stored), r = 16, target_modules = requested, use_gradient_checkpointing = False
         )
+
+
+def test_all_linear_matches_an_adapter_on_every_linear():
+    # The adapter wraps exactly what "all-linear" resolves to, however its targets were spelled.
+    model = _prewrapped(
+        ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"], 4
+    )
+    again = FastLlamaModel.get_peft_model(
+        model, r = 16, target_modules = "all-linear", use_gradient_checkpointing = False
+    )
+    assert again is model

@@ -2544,12 +2544,21 @@ def _fused_lora_skip_reason(
 
 
 def _resolve_all_linear(model, target_modules):
+    """(modules "all-linear" resolves to, modules the adapter wraps) on a wrapped model, both as full paths."""
     try:
-        from peft.tuners.tuners_utils import _maybe_include_all_linear_layers
+        from peft.tuners.tuners_utils import BaseTunerLayer, _maybe_include_all_linear_layers
     except ImportError:
-        return target_modules
-    config = LoraConfig(target_modules = target_modules)
-    return _maybe_include_all_linear_layers(config, model.get_base_model()).target_modules
+        return None
+    base = model.get_base_model()
+    config = _maybe_include_all_linear_layers(LoraConfig(target_modules = target_modules), base)
+    # A trained lm_head sits in a modules_to_save wrapper whose copies are Linear too; PEFT excluded it at creation.
+    resolved = {
+        name
+        for name in config.target_modules
+        if ".original_module" not in name and ".modules_to_save." not in name
+    }
+    wrapped = {name for name, module in base.named_modules() if isinstance(module, BaseTunerLayer)}
+    return resolved, wrapped
 
 
 _DEFAULT_TARGET_MODULES = [
@@ -3956,11 +3965,6 @@ class FastLlamaModel:
             def _as_list(targets):
                 return [targets] if isinstance(targets, str) else list(targets or [])
 
-            old_target_modules = _as_list(peft_config["target_modules"]) + modules_to_save
-            old_target_modules += list(
-                getattr(model.peft_config["default"], "modules_to_tie", None) or []
-            )
-
             # The new side is what THIS call asks for, through the same redirect; built from the stored
             # lists instead, a narrowed request would compare equal.
             requested_targets, requested_saved, _ = _redirect_embedding_targets(
@@ -3968,10 +3972,18 @@ class FastLlamaModel:
                 requested_modules_to_save,
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
+            stored_targets = peft_config["target_modules"]
             if isinstance(requested_targets, str) and requested_targets.lower() == "all-linear":
-                # PEFT rewrote the stored "all-linear" into the modules it resolved to; resolve this request the
-                # same way, or re-running the same call reads as a different adapter.
-                requested_targets = _resolve_all_linear(model, requested_targets)
+                # PEFT stores "all-linear" expanded and, past 20 modules, compacted to suffixes: compare the
+                # modules it resolves to with the modules the adapter wraps instead.
+                resolved = _resolve_all_linear(model, requested_targets)
+                if resolved is not None:
+                    requested_targets, stored_targets = resolved
+
+            old_target_modules = _as_list(stored_targets) + modules_to_save
+            old_target_modules += list(
+                getattr(model.peft_config["default"], "modules_to_tie", None) or []
+            )
             new_target_modules = _as_list(requested_targets) + list(requested_saved or [])
             if isinstance(model, PeftModelForSequenceClassification):
                 # PeftModelForSequenceClassification.__init__ extends modules_to_save with these
