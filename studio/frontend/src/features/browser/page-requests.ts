@@ -4,9 +4,12 @@
 import type { PageResponse } from "./api";
 import type { PageRequest } from "./frame-message";
 
-// A few at once, as browsers keep per host, then a bounded queue.
-const MAX_RUNNING = 6;
+// Each one holds a connection to Studio until the site answers, and browsers keep 6 per host over
+// HTTP/1.1; shared by every page so some stay free for Studio itself. Then a bounded queue per page.
+const MAX_RUNNING = 3;
 const MAX_QUEUED = 256;
+let running = 0;
+const waiting = new Set<() => void>();
 
 type Job = { id: string; request: PageRequest; controller: AbortController };
 
@@ -19,7 +22,6 @@ export function pageRequests(
 ) {
   const open = new Map<string, AbortController>();
   const queue: Job[] = [];
-  let running = 0;
   const next = () => {
     while (running < MAX_RUNNING && queue.length) {
       const job = queue.shift() as Job;
@@ -37,10 +39,11 @@ export function pageRequests(
           running--;
           if (open.get(job.id) === job.controller) open.delete(job.id);
           if (!job.controller.signal.aborted) reply(job.id, answer);
-          next();
+          for (const wake of waiting) wake();
         });
     }
   };
+  waiting.add(next);
   return {
     /** `request` null is one the panel won't make: it fails at once. */
     request(id: string, request: PageRequest | null) {
@@ -63,6 +66,7 @@ export function pageRequests(
       for (const controller of open.values()) controller.abort();
       open.clear();
       queue.length = 0;
+      waiting.delete(next);
     },
   };
 }

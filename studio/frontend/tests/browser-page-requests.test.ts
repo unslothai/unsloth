@@ -34,13 +34,20 @@ test("requests go out for the panel's page address and are answered once each", 
   assert.deepEqual(t.replies, [["a", answer], ["b", null]]);
 });
 
-test("six run at once and the rest wait their turn", async () => {
+test("three run at once across every page and the rest wait their turn", async () => {
   const t = setup();
-  for (let i = 0; i < 8; i++) t.requests.request(`r${i}`, request);
-  assert.equal(t.calls.length, 6);
+  const other = setup();
+  for (let i = 0; i < 2; i++) t.requests.request(`r${i}`, request);
+  for (let i = 0; i < 3; i++) other.requests.request(`o${i}`, request);
+  assert.equal(t.calls.length + other.calls.length, 3);
+  assert.equal(other.calls.length, 1);
   t.calls[0].finish(true);
   await tick();
-  assert.equal(t.calls.length, 7);
+  assert.equal(other.calls.length, 2);
+  t.requests.stop();
+  other.requests.stop();
+  for (const call of [...t.calls, ...other.calls]) call.finish(false);
+  await tick();
 });
 
 test("one the panel won't make, or with no page address to make it for, fails at once", () => {
@@ -70,6 +77,6 @@ test("a page that goes ends everything it asked for, queued or running", async (
   assert.ok(t.calls.every((call) => call.signal.aborted));
   for (const call of t.calls) call.finish(false);
   await tick();
-  assert.equal(t.calls.length, 6);
+  assert.equal(t.calls.length, 3);
   assert.deepEqual(t.replies, []);
 });
