@@ -983,6 +983,7 @@ _VLLM_ENGINE_KWARGS = (
     "max_logprobs",
     "max_num_seqs",
     "return_args",
+    "training",
 )
 
 
