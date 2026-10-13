@@ -360,6 +360,48 @@ def test_fast_upload_passes_tensor_subclasses_through(monkeypatch):
     assert module.weight.device.type == "cuda"
 
 
+@torch_cuda
+def test_fast_upload_stages_torchao_int8_weights_byte_for_byte(monkeypatch):
+    """A hosted int8 checkpoint's torchao ``Int8Tensor`` weights ride the ring too (their own ``.to`` copies the inner
+    tensors where the staging mode cannot see them); the device copy is the stock ``.to``'s, attribute for attribute."""
+    torch = pytest.importorskip("torch")
+    int8 = pytest.importorskip("torchao.quantization.quantize_.workflows.int8.int8_tensor")
+    from torchao.quantization.granularity import PerRow
+
+    monkeypatch.setattr(fl, "_UPLOAD_MIN_TOTAL_BYTES", 0)
+    monkeypatch.setattr(fl, "_UPLOAD_CHUNK_BYTES", 1 << 16)
+
+    def _build():
+        torch.manual_seed(0)
+        m = torch.nn.Sequential(torch.nn.Linear(256, 512), torch.nn.Linear(512, 256)).to(torch.bfloat16)
+        for lin in m:
+            lin.weight = torch.nn.Parameter(
+                int8.Int8Tensor.from_hp(lin.weight.detach(), PerRow()), requires_grad = False
+            )
+        return m
+
+    ref = _build().to("cuda")
+    got = _build()
+    assert len(fl._subclass_candidates([got], set())) == 2
+    copies = []
+    ring = fl._ring_copy
+    monkeypatch.setattr(fl, "_ring_copy", lambda *a, **k: copies.extend(ring(*a, **k)) or copies)
+    with fl.fast_upload([got], "cuda") as staged:
+        got.to("cuda")
+    assert staged >= 6  # 2 biases + 2 x (qdata, scale)
+    # The weights ARE the ring's copies, not a second pageable copy made by the subclass's own .to.
+    ring_ptrs = {c.data_ptr() for c in copies}
+    assert all(lin.weight.qdata.data_ptr() in ring_ptrs for lin in got)
+    for a, b in zip(ref, got):
+        wa, wb = a.weight, b.weight
+        assert type(wb) is type(wa) and wb.device == wa.device and wb.dtype == wa.dtype
+        assert torch.equal(wb.qdata, wa.qdata) and torch.equal(wb.scale, wa.scale)
+        assert wb.qdata.device.type == "cuda" and wb.block_size == wa.block_size
+        assert wb.act_quant_kwargs == wa.act_quant_kwargs
+    x = torch.randn(32, 256, dtype = torch.bfloat16, device = "cuda")
+    assert torch.equal(got(x), ref(x))
+
+
 def test_rotational_lookup_never_raises(tmp_path):
     path = tmp_path / "w.safetensors"
     path.write_bytes(b"z")
