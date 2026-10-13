@@ -26993,8 +26993,10 @@ class LlamaCppBackend:
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
                         # (GPU count, target-only context, budget with the drafter) for
-                        # every subset the walk priced the target on.
+                        # every subset of the drafter's ranking the walk priced the target
+                        # on: the order the final placement sorts by once the drafter stays.
                         _target_placements: list[tuple[int, int, float]] = []
+                        _drafter_order = _probe_orders[-1]
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
                                 break
@@ -27078,7 +27080,8 @@ class LlamaCppBackend:
                                         _foot_w,
                                         _budget_w,
                                     )
-                                _target_placements.append((_n, _ctx_wo, _budget_w))
+                                if _probe_ranked is _drafter_order:
+                                    _target_placements.append((_n, _ctx_wo, _budget_w))
                                 if _foot_w <= _budget_w:
                                     _both_fit_somewhere = True
                                     break
