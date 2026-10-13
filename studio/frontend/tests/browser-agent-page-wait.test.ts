@@ -79,3 +79,10 @@ test("the DOM a slow response sets off still gets its quiet time after the reque
   assert.equal(await waitForPage(p.wait(0, 3000, 1000)), "settled");
   assert.ok(p.now() >= 1600 + QUIET, `read at ${p.now()}, while the list was still being drawn`);
 });
+
+test("a DOM quiet while a request was open is not read as settled the moment it closes", async () => {
+  // Nothing changes while the list loads; it is drawn 200 ms after its response lands.
+  const p = page([{ start: 0, end: 800 }], [0, 1000]);
+  assert.equal(await waitForPage(p.wait(0, 3000, 1000)), "settled");
+  assert.ok(p.now() >= 1000 + QUIET, `read at ${p.now()}, before the list was drawn`);
+});

@@ -23,8 +23,9 @@ const POLL_MS = 120;
 /** "settled", "loading" (requests still open at `maxMs`), or "moved". */
 export async function waitForPage(wait: PageWait): Promise<"settled" | "loading" | "moved"> {
   const started = wait.now();
-  // The changing-DOM allowance runs from when no request is open: a response's own DOM work comes after it.
+  // After a request closes, quiet and the changing-DOM allowance count from then: its DOM work comes after it.
   let free: number | null = null;
+  let opened = false;
   while (!wait.aborted?.()) {
     if (wait.moved()) return "moved";
     const status = await wait.status();
@@ -32,8 +33,10 @@ export async function waitForPage(wait: PageWait): Promise<"settled" | "loading"
     const loading = (status.requests ?? 0) > 0;
     const now = wait.now();
     const waited = now - started;
-    free = loading ? null : (free ?? now);
-    if (free !== null && ((status.quietMs ?? 0) >= wait.quietMs || now - free >= wait.changingMaxMs)) return "settled";
+    if (loading) opened = true;
+    free = loading ? null : (free ?? (opened ? now : started));
+    const quiet = opened && free !== null ? Math.min(status.quietMs ?? 0, now - free) : (status.quietMs ?? 0);
+    if (free !== null && (quiet >= wait.quietMs || now - free >= wait.changingMaxMs)) return "settled";
     if (waited >= wait.maxMs) return loading ? "loading" : "settled";
     await wait.sleep(POLL_MS);
   }
