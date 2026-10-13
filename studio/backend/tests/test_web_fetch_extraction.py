@@ -402,6 +402,63 @@ def test_ancestor_end_tag_that_pops_a_skipped_element_ends_suppression(html, mai
 
 
 @pytest.mark.parametrize(
+    "opening",
+    ["<blockquote>", "<pre>", "<a href='/real'>", "<ol><li>"],
+)
+def test_recovered_ancestor_flushes_open_content_buffers_before_scoring(opening):
+    real = "real article prose " * 20
+    decoy = "unrelated decoy prose " * 20
+    html = f"<article>{opening}{real}<nav>Hidden</article><main><p>{decoy}</p></main>"
+    out = html_to_markdown(html, main_content = True)
+    assert "real article prose" in out
+    assert "unrelated decoy prose" not in out
+
+
+def test_mismatched_heading_recovery_closes_the_open_heading_before_scoring():
+    real = "real article prose " * 20
+    decoy = "unrelated decoy prose " * 20
+    html = (
+        f"<article><h1>Real title<nav>Hidden</h2><p>{real}</p></article>"
+        f"<main><p>{decoy}</p></main>"
+    )
+    out = html_to_markdown(html, main_content = True)
+    assert "real article prose" in out
+    assert "unrelated decoy prose" not in out
+
+
+@pytest.mark.parametrize(
+    "foreign",
+    [
+        "<svg><foreignObject><p>Hidden</div>Menu text</p></foreignObject></svg>",
+        "<svg><desc><p>Hidden</div>Menu text</p></desc></svg>",
+        "<svg><title>Hidden</div>Menu text</title></svg>",
+        "<math><mi><p>Hidden</div>Menu text</p></mi></math>",
+        "<math><mo><p>Hidden</div>Menu text</p></mo></math>",
+        "<math><mn><p>Hidden</div>Menu text</p></mn></math>",
+        "<math><ms><p>Hidden</div>Menu text</p></ms></math>",
+        "<math><mtext><p>Hidden</div>Menu text</p></mtext></math>",
+        '<math><annotation-xml encoding="text/html"><p>Hidden</div>Menu text</p>'
+        "</annotation-xml></math>",
+        '<math><annotation-xml encoding="application/xhtml+xml"><p>Hidden</div>Menu text</p>'
+        "</annotation-xml></math>",
+    ],
+)
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_content_scope_barriers_keep_skipped_text_hidden(foreign, main_content):
+    html = f"<div>{foreign}</div><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+def test_html_element_named_like_foreign_barrier_does_not_block_recovery():
+    html = "<div><nav><foreignobject>Hidden</div>Visible</foreignobject></nav><p>After</p>"
+    out = html_to_markdown(html)
+    assert "Hidden" not in out
+    assert "Visible" in out and "After" in out
+
+
+@pytest.mark.parametrize(
     "build",
     [
         lambda n: "<body><nav><ul>" + "<li>x" * n + "</a>" * n + "</ul></nav>",

@@ -257,6 +257,9 @@ _SKIP_RECOVERY_END_TAGS = (
 _SCOPE_BARRIERS = frozenset(
     {"applet", "caption", "html", "marquee", "object", "select", "table", "td", "template", "th"}
 )
+_SVG_SCOPE_BARRIERS = frozenset({"foreignobject", "desc", "title"})
+_MATHML_SCOPE_BARRIERS = frozenset({"mi", "mo", "mn", "ms", "mtext", "annotation-xml"})
+_MATHML_TEXT_INTEGRATION_POINTS = frozenset({"mi", "mo", "mn", "ms", "mtext"})
 _LIST_ITEM_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"ol", "ul"}
 _BUTTON_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"button"}
 _TABLE_SCOPE_BARRIERS = frozenset({"html", "table", "template"})
@@ -705,6 +708,9 @@ class _MarkdownRenderer(HTMLParser):
         self._skip_tags: list[str] = []
         # tag indices in _skip_tags avoid rescanning the stack for end tags
         self._skip_at: dict[str, list[int]] = {}
+        self._skip_ns_at: dict[tuple[str, str], list[int]] = {}
+        self._skip_namespaces: list[str] = []
+        self._skip_html_integration: list[bool] = []
 
         self._scope_tags = scope_tags
         self._scope_depth: int = 0
@@ -1265,6 +1271,35 @@ class _MarkdownRenderer(HTMLParser):
         else:
             self._link_header_chars += chars
 
+    @staticmethod
+    def _html_start_namespace(tag: str) -> str:
+        if tag == "svg":
+            return "svg"
+        if tag == "math":
+            return "math"
+        return "html"
+
+    def _skipped_tag_namespace(self, tag: str) -> str:
+        if not self._skip_namespaces:
+            return self._html_start_namespace(tag)
+        parent_namespace = self._skip_namespaces[-1]
+        if self._skip_html_integration[-1] and not (
+            parent_namespace == "math" and tag in {"mglyph", "malignmark"}
+        ):
+            return self._html_start_namespace(tag)
+        return parent_namespace
+
+    @staticmethod
+    def _is_html_integration_point(tag: str, namespace: str, attrs: dict) -> bool:
+        if namespace == "svg":
+            return tag in _SVG_SCOPE_BARRIERS
+        if namespace != "math":
+            return False
+        if tag in _MATHML_TEXT_INTEGRATION_POINTS:
+            return True
+        encoding = (attrs.get("encoding") or "").strip().lower()
+        return tag == "annotation-xml" and encoding in {"text/html", "application/xhtml+xml"}
+
     def _enter_tag(self, tag: str, attr_dict: dict) -> bool:
         """track tag state; run ``_close_implicit`` first so skipped tags trigger recovery."""
         if tag not in _VOID_TAGS:
@@ -1360,8 +1395,16 @@ class _MarkdownRenderer(HTMLParser):
 
         if self._skip_tags:
             if tag not in _VOID_TAGS:
-                self._skip_at.setdefault(tag, []).append(len(self._skip_tags))
+                attr_dict = dict(attrs)
+                namespace = self._skipped_tag_namespace(tag)
+                position = len(self._skip_tags)
+                self._skip_at.setdefault(tag, []).append(position)
+                self._skip_ns_at.setdefault((namespace, tag), []).append(position)
                 self._skip_tags.append(tag)
+                self._skip_namespaces.append(namespace)
+                self._skip_html_integration.append(
+                    self._is_html_integration_point(tag, namespace, attr_dict)
+                )
             return
 
         # close optional tags before skipping so skipped <nav>/<footer> releases an open <p> marker
@@ -1370,6 +1413,12 @@ class _MarkdownRenderer(HTMLParser):
         if tag in _SKIP_TAGS and not (title_button and self._heading_marks):
             self._skip_tags.append(tag)
             self._skip_at = {tag: [0]}
+            namespace = self._html_start_namespace(tag)
+            self._skip_ns_at = {(namespace, tag): [0]}
+            self._skip_namespaces = [namespace]
+            self._skip_html_integration = [
+                self._is_html_integration_point(tag, namespace, dict(attrs))
+            ]
             return
 
         attr_dict = dict(attrs)
@@ -1502,17 +1551,22 @@ class _MarkdownRenderer(HTMLParser):
         if self._title_scan is not None:
             self._title_scan.endtag(tag)
 
+        recovered_target = -1
+        recovered_tag = tag
         if self._skip_tags:
             at = self._skip_at.get(tag)
-            templates = self._skip_at.get("template")
+            template = self._last_skip_position("template", "html")
             # template is a scope boundary, so end tags outside it are ignored
-            if at and (not templates or at[-1] >= templates[-1]):
+            if at and (template < 0 or at[-1] >= template):
                 i = at[-1]
                 if tag in _SKIP_RECOVERY_END_TAGS and not self._skip_target_in_scope(tag, i):
                     return
-                for name in self._skip_tags[i:]:
+                for position, name in enumerate(self._skip_tags[i:], start = i):
                     self._skip_at[name].pop()
+                    self._skip_ns_at[(self._skip_namespaces[position], name)].pop()
                 del self._skip_tags[i:]
+                del self._skip_namespaces[i:]
+                del self._skip_html_integration[i:]
                 return
             # only scoped structural end tags pop skipped elements; form and inline end tags do not
             if tag not in _SKIP_RECOVERY_END_TAGS:
@@ -1529,10 +1583,24 @@ class _MarkdownRenderer(HTMLParser):
                 return
             self._skip_tags.clear()
             self._skip_at.clear()
+            self._skip_ns_at.clear()
+            self._skip_namespaces.clear()
+            self._skip_html_integration.clear()
+            recovered_target = target
+            recovered_tag = self._open_tags[target]
         # kept title buttons close through _exit_tag
         elif tag in _SKIP_TAGS and tag != "button":
             return
 
+        if recovered_target >= 0:
+            descendants = self._open_tags[recovered_target + 1 :]
+            for descendant in reversed(descendants):
+                self._close_rendered_tag(descendant)
+            self._close_rendered_tag(recovered_tag)
+            return
+        self._close_rendered_tag(tag)
+
+    def _close_rendered_tag(self, tag: str) -> None:
         closing_sup = None
         # only the innermost open <sup> converts in O(1); malformed nesting drops on unwind
         if (
@@ -1616,17 +1684,32 @@ class _MarkdownRenderer(HTMLParser):
             return _TABLE_SCOPE_BARRIERS
         return _SCOPE_BARRIERS
 
+    def _last_skip_position(self, tag: str, namespace: str) -> int:
+        positions = self._skip_ns_at.get((namespace, tag))
+        return positions[-1] if positions else -1
+
+    def _skip_barrier_after(self, names: frozenset[str], namespace: str, target: int) -> bool:
+        return any(self._last_skip_position(name, namespace) > target for name in names)
+
+    def _foreign_skip_barrier_after(self, target: int) -> bool:
+        return self._skip_barrier_after(
+            _SVG_SCOPE_BARRIERS, "svg", target
+        ) or self._skip_barrier_after(_MATHML_SCOPE_BARRIERS, "math", target)
+
     def _skip_target_in_scope(self, tag: str, target: int) -> bool:
         barriers = self._scope_barriers(tag)
-        return not any(
-            positions and positions[-1] > target
-            for name in barriers
-            if (positions := self._skip_at.get(name))
+        return not self._skip_barrier_after(
+            barriers, "html", target
+        ) and not self._foreign_skip_barrier_after(target)
+
+    def _open_skip_barrier(self, barriers: frozenset[str]) -> bool:
+        return self._skip_barrier_after(barriers, "html", -1) or self._foreign_skip_barrier_after(
+            -1
         )
 
     def _open_target_in_scope(self, tag: str, target: int) -> bool:
         barriers = self._scope_barriers(tag)
-        if any(self._skip_at.get(name) for name in barriers):
+        if self._open_skip_barrier(barriers):
             return False
         return not any(
             positions and positions[-1] > target
