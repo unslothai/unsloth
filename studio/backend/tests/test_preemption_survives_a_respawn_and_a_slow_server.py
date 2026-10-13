@@ -200,8 +200,6 @@ class TestAParkedResumeWaitsThroughAMovingPool:
 
     @pytest.mark.asyncio
     async def test_a_released_lease_leaves_the_slot_line_at_once(self):
-        # A turn that gave up releases its lease; its resume, still waiting on a moving cache,
-        # used to keep its ticket ahead of every later resumer until its hard deadline.
         queue = LlamaAdmissionQueue("k")
         first = await _lease(queue, tokens = 1000)
         assert first.preempt() is True
@@ -224,7 +222,6 @@ class TestAParkedResumeWaitsThroughAMovingPool:
         from core.inference import llama_preemption
 
         source = inspect.getsource(llama_preemption.ControllerPreemptionPolicy.await_resume)
-        # The inner wait is handed the same absolute bound, which the outer one shares.
         assert "hard_deadline_at = hard_deadline," in source
         assert "future.result(timeout = max(0.0, hard_deadline - time.monotonic()) + 5.0)" in source
         assert "future.cancel()" in source
@@ -309,9 +306,7 @@ class TestTheDisarmDoesNotHoldTheLoop:
             started = time.monotonic()
             inference._openai_llama_preemption_disarm(llama_backend = _Backend(), gen_id = "leaving")
             held = time.monotonic() - started
-            # The ledger is exact the instant the call returns.
             assert contended.participant("leaving") is None
-            # Let the worker finish, then look at where the probe ran.
             await asyncio.sleep(0.6)
             return held
 

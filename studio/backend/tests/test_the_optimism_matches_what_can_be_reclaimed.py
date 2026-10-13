@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Four places where the mechanism promised more than it delivered.
-
-Admission is optimistic because something reclaims the difference. Where nothing can --
-the raw surfaces, a victim whose parked identity was erased, an admission that never read
-the cache -- the optimism is a bare overcommit, which is the failure this branch exists to
-remove. And a Stop during a pause is a cancel, not a chat that ran out of cache.
-"""
+"""Four places where the mechanism promised more than it delivered."""
 
 from __future__ import annotations
 
@@ -86,8 +80,8 @@ class TestARawSurfaceKeepsTheShare:
             payload, request = None, llama_backend = backend, pausable = False
         )
         assert armed is not None and raw is not None
-        # Armed: the window, because the controller polices it. Raw: a share, because
-        # nobody can pause it and it never says how big it has become.
+        # Armed: the window, because the controller polices it. Raw: a share, because nobody can
+        # pause it and it never says how big it has become.
         assert armed > 16384 // 2
         assert raw <= 16384 // 4, f"a raw surface was offered {raw} of a 16384 cache"
 
@@ -123,8 +117,6 @@ class TestARawSurfaceKeepsTheShare:
         raw = inference_route._openai_llama_admission_tokens(
             payload, preemption_active = False, **common
         )
-        # Charging less than a request may write is safe only where something reclaims the
-        # difference. A raw stream pays for what it asked for.
         assert raw > armed, (
             f"raw charged {raw}, armed charged {armed}: the raw surface bought optimism "
             "nothing can pay for"
@@ -143,9 +135,7 @@ class TestARawSurfaceKeepsTheShare:
     @pytest.mark.parametrize(
         "anchor",
         [
-            # The Responses stream.
             "payload = chat_req,",
-            # Both OpenAI passthrough branches, and the shared body builder they clamp with.
             '_raw_gen_id = monitor_id or f"passthrough-nonstream-{id(payload):x}"',
             "or _effective_openai_max_tokens(payload)",
         ],
@@ -159,8 +149,7 @@ class TestARawSurfaceKeepsTheShare:
 
     def test_the_overflow_retry_keeps_the_raw_flag(self):
         # The first bound on both OpenAI passthroughs is raw; the bound priced again after a
-        # context overflow dropped history must be too, or the retry is handed nearly the
-        # whole window while still a participant nobody can pause.
+        # context overflow dropped history must be too.
         source = ROUTES.read_text(encoding = "utf-8")
         needle = "def _repriced_passthrough_cap(fitted):"
         starts, at = [], source.find(needle)
@@ -209,7 +198,6 @@ class TestAChosenVictimKeepsItsParkedIdentity:
         """`observe()` sweeps, then the route reads parked holders and erases idle slots."""
         controller, parked, _decoder = self._two_holders_over_the_ceiling()
         controller.observe("decoder", 3000)
-        # This is the reading the route takes AFTER the sweep, and hands back below.
         parked_before = controller.parked_holders()
         assert "parked" in parked_before, (
             "an approval has no stream to abort, so its pause may not land until the user "
@@ -371,8 +359,6 @@ class TestAFailedResumeGivesTheRoomBack:
     def test_a_raising_resume_rolls_the_grant_back(self, monkeypatch):
         controller, held, policy = self._granted(monkeypatch)
         assert policy.await_resume(timeout = 0.5) is False
-        # Not RESUMING: that is in `_HOLDS_KV` and out of `_PREEMPTABLE`, so a holder left
-        # there is room nothing will fill and no sweep can choose.
         assert held.state == ParticipantState.PAUSED
         assert held.prefill_pending(time.monotonic()) == 0
 
@@ -385,7 +371,6 @@ class TestAFailedResumeGivesTheRoomBack:
             / "llama_preemption.py"
         )
         body = source.read_text(encoding = "utf-8")
-        # The concrete policy, not the Protocol stub of the same name above it.
         body = body[body.index("class ControllerPreemptionPolicy:") :]
         body = body[body.index("    def await_resume(") :]
         body = body[: body.index("    def on_resumed(")]

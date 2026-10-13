@@ -426,8 +426,6 @@ test("recovery persists the replay prefix statistics it has applied", () => {
 });
 
 test("an empty turn preemption gave up on is not claimed as cancelled", async () => {
-  // `paused` restores as `cancelled` for want of a better status, which is what the empty
-  // "Cancelled." placeholder keys on; the stamped reason is what tells the two apart.
   const paused = { custom: { incomplete: { reason: "paused" } } };
   assert.deepEqual(restoredAssistantStatus(paused), {
     type: "incomplete",

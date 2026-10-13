@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An approval landing while an idle-slot erase runs does not hide the erase.
-
-A reclaim reads who is parked before its `/slots` scrape and releases only those holders after
-the erases. Approving moves a holder from waiting on the approval to running its tools, and
-counting that as a new park made the release skip a holder whose cells the erase did take: its
-next round neither waited for room nor announced the whole prompt as a replay.
-"""
+"""An approval landing while an idle-slot erase runs does not hide the erase."""
 
 from __future__ import annotations
 
@@ -43,7 +37,6 @@ def _parked_on_an_approval():
 def test_the_erase_is_recorded_though_the_tool_started(report):
     controller, lease = _parked_on_an_approval()
     reading = controller.parked_holders()
-    # Approved while the erases were in flight: the tool runs, nothing refilled the slot.
     getattr(controller, report)("chat", ParticipantState.TOOLS_RUNNING)
     assert controller.note_cells_reclaimed(reading) == 1
     participant = controller.participant("chat")

@@ -650,8 +650,7 @@ class _LlamaStreamCancelled(Exception):
 _TOOL_PRIME_PENDING = object()
 # A parallel round entry whose driver has not started; the round starts them all together below.
 _TOOL_START_DEFERRED = object()
-# An entry of a parallel round the context gate declined BEFORE it ran. Kept apart from a
-# result because the settle records an execution, and this call never made one.
+# An entry of a parallel round the context gate declined BEFORE it ran.
 _TOOL_CALL_REFUSED = object()
 
 
@@ -8265,17 +8264,12 @@ def _preempt_gave_up_event(context_length, max_tokens) -> dict:
     }
     if window:
         event["context_length"] = window
-        # Same formula the preflight's fit reports, so the client stays on one scale.
         event["prompt_target"] = prompt_budget(window, max_tokens)
     return event
 
 
 def _context_usage_event(usage, timings):
-    """UI frame pricing the context one finished tool-loop pass leaves behind, or None.
-
-    ``timings.prompt_n`` excludes the KV-cache hit (``cache_n``) while ``usage.prompt_tokens``
-    includes it, so a prompt read from timings adds the hit back.
-    """
+    """UI frame pricing the context one finished tool-loop pass leaves behind, or None."""
     usage = usage or {}
     timings = timings or {}
     cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens") or timings.get(
@@ -9187,8 +9181,6 @@ class LlamaCppBackend:
         # Bumped by every unload. load_model clears _cancel_event, so a respawn that
         # raced an unload needs a signal that survives the clear (see _respawn_if_dead).
         self._unload_epoch = 0
-        # Keyed per model load: a mid-session respawn picks a fresh port, so a key read off
-        # base_url would strand every live participant under the old one.
         self._admission_key: Optional[str] = None
         self._respawn_replay = False
         # Set by the in-app updater while it swaps prebuilt binaries; load_model()
@@ -9361,7 +9353,6 @@ class LlamaCppBackend:
         return getattr(self, "_admission_key", None) or self.base_url
 
     def _stamp_admission_key(self) -> None:
-        # A replay keeps the key it was launched under; a user-driven load starts fresh.
         if not getattr(self, "_respawn_replay", False) or not getattr(self, "_admission_key", None):
             self._admission_key = self.base_url
 
@@ -38909,7 +38900,6 @@ class LlamaCppBackend:
                         ):
                             last_prefill_progress = processed
                             first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
-                            # And the preemptor's batch reserve, which expires on its own clock.
                             _note_progress = getattr(preempt_event, "note_prefill_progress", None)
                             if callable(_note_progress):
                                 _note_progress()
@@ -39224,11 +39214,7 @@ class LlamaCppBackend:
             _cancel_closed.set()
 
     def _server_socket_is_open(self, timeout_s: float = 0.15) -> bool:
-        """True if anything still accepts on the server port.
-
-        The listening socket dies with the process, so this tells a live server
-        from a dead one without waiting for the child to become reapable.
-        """
+        """True if anything still accepts on the server port."""
         port = self._port
         if not port:
             return False
@@ -39514,7 +39500,6 @@ class LlamaCppBackend:
         _allow_respawn_retry: bool = True,
         # Appended, never inserted: no bare `*`, so a mid parameter rebinds positional callers.
         admission_output_allowance: Optional[int] = None,
-        # Reprice after fitting so a shortened prompt does not retain the one-token floor.
         on_prompt_fitted: Optional[Callable[[list], Optional[int]]] = None,
         # Preemption on the NON-tool path. Both default to None, so existing callers are unaffected.
         preempt_event = None,
@@ -39554,7 +39539,6 @@ class LlamaCppBackend:
             openai_messages[-1]["reasoning_content"] if _resume_kind == "reasoning_content" else ""
         )
         if resumed_reasoning:
-            # A pause inside a thought put it back as the trailing turn, so it is promoted once.
             _preempt_earlier_reasoning = ""
 
         payload = {
@@ -39691,7 +39675,6 @@ class LlamaCppBackend:
                 payload["messages"] = neutralize_control_markup_in_messages(
                     openai_messages, None, self.markup_profile
                 )
-                # Reprice after recall, which may restore messages removed by fitting.
                 if on_prompt_fitted is not None:
                     try:
                         _refitted_allowance = on_prompt_fitted(openai_messages)
@@ -39769,7 +39752,6 @@ class LlamaCppBackend:
                 # The route still holds the optimistically priced lease and the participant,
                 # so the retry keeps the clamp, signal, policy and token reports.
                 admission_output_allowance = admission_output_allowance,
-                # Forwarded so a resumed attempt that refits under truncate_oldest prices the prompt it sends
                 on_prompt_fitted = on_prompt_fitted,
                 **({} if preempt_event is None else {"preempt_event": preempt_event}),
                 preempt_policy = preempt_policy,
@@ -40059,8 +40041,6 @@ class LlamaCppBackend:
                     "finish_reason": "length",
                 }
 
-            # Counted on output, not pauses: a chat that keeps decoding between pauses is
-            # making progress however often it is paused.
             _stalled_now = _preemption.next_stall_count(_preempt_stalled, checkpoint.charged_tokens)
             if _preemption.resumes_stalled(_stalled_now):
                 logger.warning(
@@ -40082,24 +40062,16 @@ class LlamaCppBackend:
                 if max_tokens - checkpoint.charged_tokens <= 0 and not (
                     _window_p and max_tokens >= _window_p
                 ):
-                    # Spent: reopening the stream for one floored token went past the cap by
-                    # that token, once per pause. The partial is on screen and the turn is
-                    # continuable, and it does not queue for room it cannot use.
                     logger.info("Paused with the caller's output cap spent; ending the turn")
                     yield from _finish_after_giving_up(notice = False)
                     return
             try:
                 resumed_p = yield from _await_resume(preempt_policy, cancel_event)
             except Exception:
-                # Not a grant, as the tool paths treat it: the turn ends with its partial.
                 logger.warning(
                     "preemption policy raised during the wait; ending the turn", exc_info = True
                 )
                 resumed_p = False
-            # `await_resume` answers False for a Stop as well as for a give-up, and the two
-            # are not the same ending: a cancel leaves the stream the way every other cancel
-            # in this generator does, silently, rather than telling the client its turn ran
-            # out of cache and handing it a `length` finish it would offer to continue.
             if cancel_event is not None and cancel_event.is_set():
                 return
             if not resumed_p:
@@ -40111,8 +40083,6 @@ class LlamaCppBackend:
                 )
                 yield from _finish_after_giving_up()
                 return
-            # Cleared before `on_resumed`, as the tool paths do: the policy protocol does not
-            # promise a clear, and a signal still set aborts the resumed attempt at once.
             if preempt_event is not None:
                 preempt_event.clear()
             # Tell the controller this one is decoding again, or the participant stays PAUSED in
@@ -40120,8 +40090,6 @@ class LlamaCppBackend:
             preempt_policy.on_resumed()
             # Clears the paused line, paired with the yield above.
             yield {"type": "preempt", "state": "resumed"}
-            # From the request this attempt sent, as the respawn replays it: rebuilt from the
-            # caller's messages, the fit ran again and reported the same evictions twice.
             resumed = [dict(message) for message in retry_messages]
             continues = self._assemble_preempt_resume(
                 resumed, checkpoint, content_text, reasoning_text
@@ -40154,7 +40122,6 @@ class LlamaCppBackend:
                 min_p = min_p,
                 max_tokens = resume_max_tokens,
                 admission_output_allowance = admission_output_allowance,
-                # Forwarded so a resumed attempt that refits under truncate_oldest prices the prompt it sends
                 on_prompt_fitted = on_prompt_fitted,
                 repetition_penalty = repetition_penalty,
                 presence_penalty = presence_penalty,
@@ -40175,7 +40142,6 @@ class LlamaCppBackend:
                 compaction_headroom_ratio = compaction_headroom_ratio,
                 thread_id = thread_id,
                 tools_withheld = tools_withheld,
-                # The caller's reasoning limit holds for the whole answer, as the respawn keeps it.
                 thinking_budget_tokens = thinking_budget_tokens,
                 _allow_respawn_retry = _allow_respawn_retry,
                 **({} if preempt_event is None else {"preempt_event": preempt_event}),
@@ -40263,9 +40229,6 @@ class LlamaCppBackend:
         )
 
         if checkpoint.has_resume_point():
-            # Unstripped, as the length continuation is: the replayed prefix has to match
-            # the text already streamed. A half-written textual call is cut before it gets
-            # here: nothing executed, so nothing is lost by asking again.
             partial = {"role": "assistant", "content": content_accum}
             # The thought that preceded the prose is the same turn's work: replayed as prose
             # alone, the continuation is conditioned on a prefix that never produced it.
@@ -40335,7 +40298,6 @@ class LlamaCppBackend:
         context_policy: Optional[str] = None,
         compaction_headroom_ratio: Optional[float] = None,
         tool_choice: Any = None,
-        # Appended for positional callers. May block for cache room; returns the new allowance.
         on_conversation_grew: Optional[Callable[[list, Optional[list]], Optional[int]]] = None,
         on_decode_slot: Optional[Callable[[str, int], None]] = None,
         thinking_budget_tokens: Optional[int] = None,
@@ -40343,28 +40305,14 @@ class LlamaCppBackend:
         deduplicate_tool_calls: bool = True,
         instruction_anchor_ids = None,
         sandbox_level: Optional[str] = None,
-        # Bounds the wire cap of every request the loop sends.
         admission_output_allowance: Optional[int] = None,
-        # KV-pressure pause signal and the policy that answers it; None keeps the plain stream.
         preempt_event = None,
         preempt_policy = None,
         # Called during generation with the running token count for THIS attempt, so the
         # preemptor sees n_i grow. Batched by _TOKEN_REPORT_EVERY; cheap, and must not raise.
         on_tokens: Optional[Callable[[int], None]] = None,
     ) -> Generator[dict, None, None]:
-        """
-        Agentic loop: let the model call tools, execute them, and continue.
-
-        permission_mode: "ask" confirms every call (with confirm_tool_calls),
-        "auto" only pauses calls detected as potentially unsafe, "off" never
-        pauses (sandbox stays on), "full" is the same as bypass_permissions.
-        Unset/unknown behaves as "ask".
-
-        Yields dicts:
-          {"type": "status", "text": "Searching: ..."/"Reading: ..."}   -- tool status updates
-          {"type": "content", "text": "token"}            -- streamed content tokens (cumulative)
-          {"type": "reasoning", "text": "token"}          -- streamed reasoning tokens (cumulative)
-        """
+        """Agentic loop: let the model call tools, execute them, and continue."""
         from core.inference.tool_stream_exec import (
             accepts_kwarg,
             accepts_output_callback,
@@ -40644,7 +40592,6 @@ class LlamaCppBackend:
             }
             return (_u or None), (_t or None)
 
-        # For an ending that sends nothing: the generation is accumulated, the prompt is not.
         _last_attempt: dict = {}
 
         def _remember_attempt(usage, timings):
@@ -40661,8 +40608,6 @@ class LlamaCppBackend:
             yield {"type": "status", "text": ""}
             if not (shown or "").strip():
                 yield {"type": "content", "text": _admission_room_refused_message()}
-            # The same notice a paused chat that gave up sends: the client then waits for an
-            # explicit Continue instead of resubmitting at once into the same full cache.
             yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
             _meta = _build_metadata_event(
                 _last_attempt.get("usage"), _last_attempt.get("timings"), "length"
@@ -40944,8 +40889,6 @@ class LlamaCppBackend:
                 # "This conversation was compacted" toast for an eviction that never happened.
                 "dropped_messages": 0,
                 "context_length": window,
-                # Same formula and the same clamped reserve the pass's fit used, so the
-                # client stays on one scale.
                 "prompt_target": prompt_budget(window, fit_max_tokens),
             }
 
@@ -40980,21 +40923,13 @@ class LlamaCppBackend:
         # A pause is not the model's doing, so it is counted separately: charging a resume to
         # the tool budget would let contention shorten an agent run.
         _preempt_resumes = 0
-        # Pauses in a row with no output between them; see `resumes_stalled`.
         _preempt_stalled = 0
         if preempt_policy is None:
             preempt_policy = _preemption.NullPreemptionPolicy()
         # `context_truncated` is not idempotent on the client, and the per-iteration list is
         # rebuilt by `continue`, so a truncation seen on a paused attempt rides across on this.
         _carried_truncations: list[dict] = []
-        # Seeds the resumed attempt's display so its snapshots extend the paused one's:
-        # every consumer diffs snapshots, and a shorter one loses the first emission.
         _preempt_display_seed: Optional[tuple[str, str, bool, str]] = None
-        # The thought the paused attempts already decoded. A reasoning-only turn promotes
-        # its thought as the visible answer, and that promotion is built from the CURRENT
-        # attempt's `reasoning_accum`, which resets every round; without this the answer is
-        # only the half decoded after the pause. Rebound per iteration below, as
-        # `_last_emitted` is. Mirrors `_preempt_earlier_reasoning` on the plain path.
         _preempt_earlier_reasoning = ""
         # A pause declined at the resume cap keeps its attempt: what it decoded is charged
         # against the final pass's allowance, and its partial is the turn the pass extends.
@@ -41084,7 +41019,6 @@ class LlamaCppBackend:
             _iteration_max_tokens = (
                 _continuation_max_tokens if _continuation_max_tokens is not None else max_tokens
             )
-            # Size the fit against the admitted output allowance to avoid unnecessary history eviction.
             _iteration_fit_max_tokens = (
                 min(
                     _iteration_max_tokens
@@ -41221,13 +41155,11 @@ class LlamaCppBackend:
                 except Exception as exc:
                     logger.warning("Could not preflight the rolling context window: %s", exc)
 
-            # Re-cost after fitting so refusal is based on the prompt actually sent.
             if on_conversation_grew is not None:
                 try:
                     _recosted_allowance = on_conversation_grew(conversation, safe_tools)
                     if _recosted_allowance is not None:
                         admission_output_allowance = _recosted_allowance
-                        # Use this round's allowance for all budgets below the re-cost.
                         _iteration_fit_max_tokens = min(
                             _iteration_max_tokens
                             if _iteration_max_tokens is not None
@@ -41235,7 +41167,6 @@ class LlamaCppBackend:
                             _recosted_allowance,
                         )
                 except LlamaAdmissionRecostRefused:
-                    # The lease holds the previous figure, so sending this is the overcommit.
                     logger.info(
                         "Tool round %d: no cache room for this prompt; keeping the "
                         "partial answer instead of sending it",
@@ -41332,7 +41263,6 @@ class LlamaCppBackend:
                     return
                 if max_tokens is None:
                     payload["max_tokens"] = self._effective_context_length
-                    # A new window is not a new reservation.
                     if admission_output_allowance is not None:
                         payload["max_tokens"] = min(
                             payload["max_tokens"], admission_output_allowance
@@ -41447,12 +41377,8 @@ class LlamaCppBackend:
                 _iter_finish_reason = None
                 _stream_done = False
                 _last_emitted = ""
-                # Cleared with the display: a round that was not resumed is a new turn.
                 _preempt_earlier_reasoning = ""
                 if _preempt_display_seed is not None:
-                    # The display and the thought so far: `content_accum` and
-                    # `reasoning_accum` stay per attempt, since the checkpoint and the
-                    # replay are built from them.
                     (
                         cumulative_display,
                         _last_emitted,
@@ -41461,7 +41387,6 @@ class LlamaCppBackend:
                     ) = _preempt_display_seed
                     _preempt_display_seed = None
                 if _resumed_reasoning:
-                    # A pause inside a thought put it back as the trailing turn, so it is promoted once.
                     _preempt_earlier_reasoning = ""
                 # Provisional tool_start cards already shown, keyed by tool_call_id.
                 provisional_started_tool_calls: dict[str, str] = {}
@@ -41663,7 +41588,6 @@ class LlamaCppBackend:
                                     try:
                                         on_tokens(_tokens_this_stream)
                                     except Exception:
-                                        # Never let the watermark sweep fail a generation.
                                         pass
 
                                 # ── Structured tool_calls ──
@@ -42950,8 +42874,8 @@ class LlamaCppBackend:
                     _forced_choice_resolved = True
                     yield completion.tool_end_event()
                     conversation.append(completion.tool_message())
-                    # Parsed only for a result that carries them and a model that will
-                    # be shown them; the marker test first, so a text result never asks.
+                    # Parsed only for a result that carries them and a model that will be shown
+                    # them, testing the marker first.
                     _completion_images = (
                         completion.mcp_images()
                         if mcp_images_mentioned_in(completion.result or "") and self.is_vision
@@ -43025,16 +42949,8 @@ class LlamaCppBackend:
                     and len(set(_round_keys)) == len(_round_keys)
                     and len(set(_round_one_shot)) == len(_round_one_shot)
                 )
-                # Started, not yet read back. Empty in a sequential round.
                 _pending_calls: list = []
-                # Calls that reach a driver: a suppressed repeat, disabled tool or spent
-                # one-shot stores no result, and dividing the room by the raw list cut a lone
-                # real read short. A cell the workers read; final before any driver starts.
                 _round_launched = [0]
-                # The room ONE call of the round gets, and the prompt it was priced
-                # against. Filled below the loop, with every call attached and after the
-                # round compacts, and read by the workers instead of each counting a
-                # `conversation` its siblings are already settling into.
                 _round_budget_cell: list = [None, None]
 
                 for _call_index, tc in enumerate(tool_calls or []):
@@ -43423,16 +43339,9 @@ class LlamaCppBackend:
                         # than a stream that stops mid-turn.
                         resolved_provisional_tool_call_ids.add(decision.tool_call_id)
                         if _parallel_round:
-                            # Its place in the round is still its own: closed and appended
-                            # here, ahead of the calls before it still running, the tool
-                            # messages settled out of the model's order.
-                            #
-                            # Marked refused rather than queued as a result. The settle is
-                            # the real-execution path: it calls `record_result`, and a
-                            # refusal is not an error, so the controller would file this
-                            # call as a success -- spending the turn's one shot at
-                            # `render_html` on a call that never ran and turning the
-                            # smaller retry that follows into a no-op.
+                            # Its place in the round is still its own: appended ahead of earlier calls still running,
+                            # the tool messages would misorder. Marked refused so
+                            # `record_result` does not file a call that never ran as a success.
                             _pending_calls.append(
                                 (
                                     decision,
@@ -43507,7 +43416,6 @@ class LlamaCppBackend:
                     ):
                         result = RAG_SEARCH_CAP_NUDGE
                         if _parallel_round:
-                            # No tool to start, but its place in the round is still its own.
                             _pending_calls.append(
                                 (
                                     decision,
@@ -43535,8 +43443,6 @@ class LlamaCppBackend:
 
                         # Only a call the user answered: the executor lets it reach the host paths it names.
                         _host_access_approved = _decision not in (None, "deny")
-                        # Built here, on the generator thread, and copied: read from a worker,
-                        # an overlapped call saw whichever siblings had settled by then.
                         _call_branch = (
                             list(_extend_live_branch(conversation))
                             if accepts_kwarg(execute_tool, "conversation_branch")
@@ -43557,10 +43463,7 @@ class LlamaCppBackend:
                             _call_position = _call_index,
                             _compact_flag = _compact_after_execution,
                             _compacted_tokens = _compacted_turn_tokens,
-                            # Bound for the same reason: an overlapped round's drivers run
-                            # after the loop, and this decides how the room is divided.
                             _round_parallel = _parallel_round,
-                            # Read, not bound by value: the cell completes after this closure.
                             _round_launched_cell = _round_launched,
                             _round_budget_cell = _round_budget_cell,
                         ):
@@ -43593,14 +43496,6 @@ class LlamaCppBackend:
                             # truncation protects, so a top_k the window cannot hold ends
                             # the turn in an unrecoverable context-length error.
                             if self._effective_context_length:
-                                # The round's own figure, sized ONCE on the generator
-                                # thread with every call attached and after the round
-                                # compacted, read here before any count. A worker counting
-                                # the shared `conversation` sees whatever calls of its own
-                                # round have already settled into it and still divides by
-                                # the whole round, so a late call is priced short and a
-                                # valid result is cut to a window notice it then retries
-                                # against.
                                 _frozen_budget, _frozen_spent = (
                                     _round_budget_cell
                                     if _round_parallel and _round_budget_cell[0] is not None
@@ -43747,13 +43642,6 @@ class LlamaCppBackend:
                                     # carry base64, minified JSON or a block of code, which
                                     # run nearer one or two. Under-priced, the first result
                                     # is handed room the later ARGUMENTS already occupy.
-                                    # Sequential rounds only. An overlapped round attaches
-                                    # EVERY call to the assistant message before any driver
-                                    # starts, so the exact count above already renders the
-                                    # whole round's arguments; adding them again charges the
-                                    # later calls twice and hands a valid result a budget
-                                    # short by their size, cut to a window notice the model
-                                    # then retries against.
                                     _pending_args = 0
                                     if _pending_msgs and not _round_parallel:
                                         try:
@@ -43769,25 +43657,13 @@ class LlamaCppBackend:
                                                 _pending_msgs
                                             )
                                     if _frozen_budget is not None:
-                                        # Handed over whole, so two calls of one round
-                                        # cannot price against different conversations.
                                         _result_budget = int(_frozen_budget)
                                     else:
                                         _result_budget = tool_result_budget(
                                             self._effective_context_length,
-                                            # This iteration's cap, not the caller's whole
-                                            # one. A recovery turn with 100 of 1000 tokens
-                                            # left had the result priced as if 1000 were
-                                            # still to come, which reserves room away and can
-                                            # starve a read the request had space for.
                                             _iteration_fit_max_tokens,
                                             _spent + _pending_args,
                                         ) // (
-                                            # Sequentially, call k divides by the calls still to
-                                            # run. Run together they price against the same
-                                            # `_spent`, so per-call remainders would hand out
-                                            # more than the batch has; the launched calls, since
-                                            # a suppressed one stores no result.
                                             max(1, _round_launched_cell[0])
                                             if _round_parallel
                                             else (len(_pending) + 1)
@@ -43899,15 +43775,10 @@ class LlamaCppBackend:
                                 **kwargs,
                             )
 
-                        # Rides the round's first tool, sequential or overlapped, so the
-                        # meter refreshes once per round and only after that tool is running.
                         _started_events = (
                             (_pending_context_usage,) if _pending_context_usage is not None else ()
                         )
                         _pending_context_usage = None
-                        # Without this the handler below re-raises and a bad
-                        # argument kills the whole answer. A raising tool is the
-                        # tool's failure; the other two loops hand it back.
                         _tool_stream = stream_tool_execution(
                             _invoke_tool,
                             tool_name = decision.tool_name,
@@ -43932,9 +43803,6 @@ class LlamaCppBackend:
                                 )
                             )
                             _round_launched[0] += 1
-                            # Counted HERE, not when it settles: every call of an overlapped
-                            # round is prepared before any finishes, so counting at the end
-                            # lets four searches through a cap of three.
                             if decision.tool_name in RAG_SEARCH_TOOLS:
                                 _kb_search_count += 1
                             # Spent by THIS call: left set, the forced choice would be offered to
@@ -43968,7 +43836,6 @@ class LlamaCppBackend:
                         _compact_after_execution,
                     )
 
-                # The round's overlapped calls, read back in the order the model asked for.
                 if _parallel_round and any(
                     _entry[0] is _TOOL_START_DEFERRED for _entry in _pending_calls
                 ):
@@ -43978,10 +43845,6 @@ class LlamaCppBackend:
 
                         def _round_prompt_tokens(_messages):
                             """The prompt this round is about to produce, its results still empty."""
-                            # With one empty stand-in reply per deferred call, as the gate
-                            # and `_invoke_tool` price a single call: templates that render
-                            # an assistant call only once a `tool` reply follows drop the
-                            # round's own arguments otherwise.
                             _probe = list(_messages)
                             for _e in _pending_calls:
                                 if _e[0] is not _TOOL_START_DEFERRED:
@@ -43994,10 +43857,8 @@ class LlamaCppBackend:
                                 if _e[1].tool_call_id:
                                     _stand_in["tool_call_id"] = _e[1].tool_call_id
                                 _probe.append(_stand_in)
-                            # And with the arguments of every call the gate admitted on the
-                            # promise that they are compacted before the next prompt already
-                            # compacted, or the round is priced against a prompt it will
-                            # never send.
+                            # And with the admitted calls' arguments already compacted, or the round is priced against
+                            # a prompt it will never send.
                             for _e in _pending_calls:
                                 if _e[0] is _TOOL_START_DEFERRED and _e[5] and _e[1].tool_call_id:
                                     _probe = compact_executed_call_arguments(
@@ -44021,8 +43882,6 @@ class LlamaCppBackend:
                                     messages_without_unpriced_media(_probe)
                                 )
 
-                        # The over-cap notice is appended after the results and is not on the
-                        # assistant message, so the round reserves it, as a sequential call does.
                         _round_notice = 0
                         if _over_cap:
                             _notice_msgs = [
@@ -44046,16 +43905,12 @@ class LlamaCppBackend:
                             )
                             if _n_roomier:
                                 conversation[:] = _roomier
-                                # Re-priced on the room that was just reclaimed, which is
-                                # the whole point of reclaiming it here.
                                 _round_spent = _round_prompt_tokens(conversation) + _round_notice
                                 _round_budget = tool_result_budget(
                                     self._effective_context_length,
                                     _iteration_fit_max_tokens,
                                     _round_spent,
                                 ) // max(1, _round_launched[0])
-                        # Final before any driver starts: every worker takes this instead of
-                        # counting a `conversation` its siblings are already settling into.
                         _round_budget_cell[0] = _round_budget
                         _round_budget_cell[1] = _round_spent
                     for _entry_index, _entry in enumerate(_pending_calls):
@@ -44087,9 +43942,6 @@ class LlamaCppBackend:
                             yield _p_result
                             continue
                         if _p_refused is _TOOL_CALL_REFUSED:
-                            # Declined before it ran, settled the way the sequential branch
-                            # settles it: the refusal is emitted and answered in this call's
-                            # slot of the round, and nothing is recorded as executed.
                             yield {
                                 "type": "tool_end",
                                 "tool_name": _p_decision.tool_name,
@@ -44137,11 +43989,6 @@ class LlamaCppBackend:
                             _p_decision, result, _p_budget, _p_starved, _p_compact
                         )
                 except BaseException as _round_exit:
-                    # Closed or cancelled mid-round: the siblings still being driven run on
-                    # threads of their own, so nothing else would tell their tools to stop.
-                    # Signalled as the sequential path's stream signals, and not waited on, for
-                    # the same reason. Not on an ordinary error, which the handler below
-                    # reports, and would end silently with the event set.
                     if (
                         not isinstance(_round_exit, Exception)
                         and _pending_calls
@@ -44333,8 +44180,7 @@ class LlamaCppBackend:
                     reasoning_accum,
                 )
                 # A textual call the attempt was writing is dropped, not replayed: nothing has
-                # run, and the restarted parser would see only its tail and never run it. The
-                # prose the client was shown is what goes back, as the display strips it.
+                # run, and the restarted parser would see only its tail and never run it.
                 _preempt_content = content_accum
                 if detect_state == _S_DRAINING and _text_args_call_start >= 0:
                     _preempt_content = _preempt_content[:_text_args_call_start]
@@ -44352,8 +44198,6 @@ class LlamaCppBackend:
 
                 _preempt_stalled = _preemption.next_stall_count(_preempt_stalled, _pre_charged)
                 if _preemption.resumes_stalled(_preempt_stalled):
-                    # Churning rather than progressing; the admitted output clamp still
-                    # bounds what this request can occupy.
                     logger.warning(
                         "Not pausing again after %d resumes, %d without output; finishing "
                         "the turn instead",
@@ -44409,7 +44253,6 @@ class LlamaCppBackend:
                         _append_budget_exhausted_nudge = False
                     break
                 _preempt_resumes += 1
-                # The attempt really did decode these, so charge them once.
                 _accumulated_completion_tokens += _pre_charged
                 _it_p = _iter_timings or {}
                 _accumulated_predicted_ms += _it_p.get("predicted_ms", 0)
@@ -44457,8 +44300,6 @@ class LlamaCppBackend:
                 # Tell the client it is paused, not broken, as the plain path does; this loop never
                 # yielded it. AFTER on_preempted, so the signal cannot precede the lease.
                 yield {"type": "preempt", "state": "paused"}
-                # Spent, as the plain path checks before waiting: a resume would replay the
-                # whole prompt to decode the one floored token that goes past the cap.
                 if _loop_budget_left(0) == 0:
                     logger.info("Paused with the caller's output cap spent; ending the turn")
                     _spent_meta = _build_metadata_event(
@@ -44489,9 +44330,6 @@ class LlamaCppBackend:
                     if preempt_event is not None:
                         preempt_event.clear()
                 if cancel_event is not None and cancel_event.is_set():
-                    # Stop, not contention: `await_resume` reports both as False, and the
-                    # give-up notice below would tell the client its turn ran out of cache
-                    # and offer to continue a turn the user just stopped.
                     return
                 if not _resumed:
                     # The policy stopped waiting for room. Ending the turn leaves the partial
@@ -44501,14 +44339,12 @@ class LlamaCppBackend:
                     # instead decoded on cells the planner had handed out, the lease having gone
                     # back with on_preempted.
                     yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
-                    # The attempt's decode is in the accumulators already: its prompt side only.
                     _gave_up_meta = _build_metadata_event(
                         *_folded_attempt(_iter_usage, _iter_timings), "length"
                     )
                     if _gave_up_meta is not None:
                         yield _gave_up_meta
                     return
-                # Paired with the pause above, so a client that shows one shows the other.
                 yield {"type": "preempt", "state": "resumed"}
                 # `max_tokens` bounds NEW tokens and the next iteration rebuilds the payload
                 # from the caller's figure, so without this a request capped at 100 could emit
@@ -44519,16 +44355,11 @@ class LlamaCppBackend:
                     # would turn a pause into a silently empty turn.
                     _continuation_max_tokens = max(1, _preempt_cap_left)
                 _preempt_display_seed = (
-                    # Without the dropped call's markup: left in, it reads as an open call that
-                    # hides every word the resumed attempt writes after it.
                     _strip_tool_markup_streaming(cumulative_display)
                     if _preempt_content != content_accum
                     else cumulative_display,
                     _last_emitted,
                     in_thinking,
-                    # Carried so the promoted answer is the WHOLE thought. Dropped once the
-                    # attempt has prose: the thought is then a thinking block, not the
-                    # answer, and the resume replays the prose instead.
                     "" if content_accum else _preempt_earlier_reasoning + reasoning_accum,
                 )
                 continue
@@ -44669,7 +44500,6 @@ class LlamaCppBackend:
                         # The synthesized final answer never returns to the prompt.
                         recall_budget_tokens = _retrieval_budget(
                             self._effective_context_length,
-                            # Reserve only the output this request may emit, leaving the rest for recall.
                             _final_fit_max_tokens,
                             truncation.get("prompt_tokens_after") or 0,
                         ),
@@ -44710,7 +44540,6 @@ class LlamaCppBackend:
             except Exception as exc:
                 logger.warning("Could not preflight the rolling context window: %s", exc)
 
-        # Re-cost the final pass (no catalogue): tool results and nudges may have grown since.
 
         stream_payload = {
             "messages": neutralize_control_markup_in_messages(
@@ -44732,7 +44561,6 @@ class LlamaCppBackend:
         if thinking_budget_tokens is not None:
             stream_payload["thinking_budget_tokens"] = thinking_budget_tokens
         stream_payload["max_tokens"] = _final_max_tokens
-        # Apart from the payload, so a re-cost that raises the allowance is not held down.
         _final_attempt_cap = _final_max_tokens
         if stop:
             stream_payload["stop"] = stop
@@ -44794,7 +44622,6 @@ class LlamaCppBackend:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
                     context_length = self._effective_context_length,
-                    # Pre-respawn window: a new window is not a new reservation.
                     max_tokens = _final_fit_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
                         neutralize_control_markup_in_messages(
@@ -45013,7 +44840,6 @@ class LlamaCppBackend:
         # left on instead of taking the reasoning-only recovery.
         _attempt_started_at = ""
         while True:
-            # Per attempt: a continuation appends the partial, which the payload carries.
             if on_conversation_grew is not None:
                 try:
                     _final_recosted_allowance = on_conversation_grew(
@@ -45021,11 +44847,8 @@ class LlamaCppBackend:
                     )
                     if _final_recosted_allowance is not None:
                         admission_output_allowance = _final_recosted_allowance
-                        # As in the loop: the respawn refit below is the one sizing left
-                        # under the re-cost, and this attempt's cap is what it sends.
                         _final_fit_max_tokens = min(_final_attempt_cap, _final_recosted_allowance)
                 except LlamaAdmissionRecostRefused:
-                    # As in the loop: not sent, and a continuation keeps what it has shown.
                     logger.info(
                         "Final answer: no cache room for this attempt; keeping the "
                         "partial answer instead of sending it"
@@ -45036,8 +44859,6 @@ class LlamaCppBackend:
                     return
                 except Exception:  # accounting must never break a run in progress
                     logger.debug("tool loop final recost failed", exc_info = True)
-            # After it, so a rewritten cap is bounded too. From the attempt cap, not the last
-            # payload: a continuation past its share earns the flat allowance just paid for.
             if admission_output_allowance is not None:
                 stream_payload["max_tokens"] = min(_final_attempt_cap, admission_output_allowance)
             try:
@@ -45596,8 +45417,6 @@ class LlamaCppBackend:
 
                 _preempt_stalled = _preemption.next_stall_count(_preempt_stalled, _pre_charged_f)
                 if _preemption.resumes_stalled(_preempt_stalled):
-                    # Churning rather than progressing; the admitted output clamp still
-                    # bounds what this request can occupy.
                     logger.warning(
                         "Not pausing the final answer again after %d resumes, %d without "
                         "output; finishing the turn instead",
@@ -45632,8 +45451,6 @@ class LlamaCppBackend:
                 # Yielded AFTER on_preempted, so the signal cannot reach the client before the
                 # lease it describes has gone back.
                 yield {"type": "preempt", "state": "paused"}
-                # Spent, as the plain path checks before waiting: a resume would replay the
-                # whole prompt to decode the one floored token that goes past the cap.
                 if _remaining_output_budget(0) == 0:
                     logger.info(
                         "Final answer paused with the caller's output cap spent; ending the turn"
@@ -45658,7 +45475,6 @@ class LlamaCppBackend:
                     if preempt_event is not None:
                         preempt_event.clear()
                 if cancel_event is not None and cancel_event.is_set():
-                    # Stop, not contention; see the round loop above.
                     return
                 if not _resumed_f:
                     logger.info(
@@ -45667,7 +45483,6 @@ class LlamaCppBackend:
                     )
                     yield from _final_pause_gave_up()
                     return
-                # Paired with the pause above, so a client that shows one shows the other.
                 yield {"type": "preempt", "state": "resumed"}
                 # The partial goes back as the turn to EXTEND, through the round loop's assembler.
                 # Assembling must never end the turn, so any failure re-issues the attempt whole.
@@ -45703,7 +45518,6 @@ class LlamaCppBackend:
                 # accumulator. Floored at 1: a request for zero tokens returns nothing.
                 _cap_left_p = _remaining_output_budget(0)
                 if _cap_left_p is not None:
-                    # The attempt cap too: the next attempt re-derives max_tokens from it.
                     _final_attempt_cap = max(1, _cap_left_p)
                     stream_payload["max_tokens"] = _final_attempt_cap
                 _stream_done = False
@@ -45966,10 +45780,7 @@ class LlamaCppBackend:
         detected: Optional[str],
         audio_codec_path: Optional[str] = None,
     ) -> bool:
-        """Apply a probed audio codec under self._lock. Returns True to continue
-        the load (codec inited OK, or nothing to init), False to abort (server
-        unhealthy or codec init failed). Shared by the fast-path retry and the
-        main load path."""
+        """Apply a probed audio codec under self._lock."""
         if detected in ("snac", "bicodec", "dac"):
             with self._lock:
                 if not self._healthy:
@@ -46120,14 +45931,7 @@ class LlamaCppBackend:
         cancel_event: Optional[threading.Event] = None,
         stats_holder: Optional[dict] = None,
     ) -> tuple:
-        """
-        Generate TTS audio via llama-server /completion + codec decode.
-        Returns (wav_bytes, sample_rate).
-
-        ``cancel_event`` lets a Stop or a forced model swap end the request: the
-        decode is one blocking POST, so a watcher closes the client out from under
-        it rather than polling. Raises RuntimeError once cancelled.
-        """
+        """Generate TTS audio via llama-server /completion + codec decode."""
         if audio_type not in self._TTS_PROMPTS:
             raise RuntimeError(f"GGUF TTS does not support '{audio_type}' codec.")
 

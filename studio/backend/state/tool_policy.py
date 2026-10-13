@@ -160,15 +160,7 @@ def round_may_prompt(
     never_needs = None,
     healed = None,
 ) -> bool:
-    """Whether any call of a parsed round could stop and ask, decided before any runs.
-
-    The same question ``needs_tool_confirmation`` answers per call, so "off" still counts the
-    calls it gates. Arguments arrive as a JSON string on the wire; any that do not parse, or a
-    classifier that raises, count as asking, which only costs the round its overlap.
-
-    ``healed`` maps a call to the ``(name, arguments)`` `prepare_call` classifies: a web_search
-    `href` heals to a `url`, a fetch that asks, so the raw dict would let a sibling start first.
-    """
+    """Whether any call of a parsed round could stop and ask, decided before any runs."""
     if not confirm_tool_calls or bypass_permissions:
         return False
     for call in calls or ():
@@ -181,7 +173,6 @@ def round_may_prompt(
             if isinstance(raw, dict) and _UNPARSED_ARGUMENTS_KEY in raw:
                 raw = None
         else:
-            # Named as `prepare_call` names it, so a padded name is gated as the tool it runs.
             name = str(fn.get("name") or "").strip()
             raw = fn.get("arguments")
             if isinstance(raw, str):
@@ -210,7 +201,6 @@ def round_may_prompt(
     return False
 
 
-# `tool_loop_controller.UNPARSED_ARGUMENTS_KEY`, spelled here so this module imports nothing of it.
 _UNPARSED_ARGUMENTS_KEY = "__unsloth_unparsed_arguments__"
 
 

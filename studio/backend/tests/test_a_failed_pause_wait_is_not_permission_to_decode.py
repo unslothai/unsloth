@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A wait that RAISED never granted anything.
-
-`on_preempted` has already handed the lease back, so treating the exception as a resume let
-the next request decode on room nobody booked. The turn ends with its partial instead.
-
-The same handshake carries Stop: a policy that cannot be told about the cancel event sits in
-the wait for a chat nobody is reading.
-"""
+"""A wait that RAISED never granted anything."""
 
 from __future__ import annotations
 

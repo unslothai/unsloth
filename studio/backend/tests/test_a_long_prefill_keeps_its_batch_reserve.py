@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A prefill that is still advancing keeps its batch reserve past the announcement TTL.
-
-The stream renews its first-token window on every increase in `prompt_progress`, so a long
-prompt can legitimately take longer than `PENDING_PREFILL_TTL_S`. Measured only from the
-announcement, the reserve dropped while later prompt batches were still to come.
-"""
+"""A prefill that is still advancing keeps its batch reserve past the announcement TTL."""
 
 from __future__ import annotations
 

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two `/slots` probes that overlap a measurement mark are ordered by when they started.
-
-The older probe started before the mark, the newer after it. The older one returned first and
-was recorded at a sequence past the newer probe's start, so the newer, larger reading was dropped
-as stale and the controller kept the undercount.
-"""
+"""Two `/slots` probes that overlap a measurement mark are ordered by when they started."""
 
 from __future__ import annotations
 

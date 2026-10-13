@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One chat on the cache has nobody to preempt, so it pays for no reading of it.
-
-The token callback fires every 32 chunks and read `/slots` behind it: a synchronous HTTP
-round trip with a three second timeout, on the reader's own thread, deciding nothing. The
-barriers that DO decide something -- admission, a resume wait, a reclaim -- pass `force`
-and still read.
-"""
+"""One chat on the cache has nobody to preempt, so it pays for no reading of it."""
 
 from __future__ import annotations
 

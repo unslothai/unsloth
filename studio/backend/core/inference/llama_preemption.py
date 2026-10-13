@@ -224,9 +224,6 @@ def resumes_stalled(stalled: int) -> bool:
     return int(stalled or 0) >= DEFAULT_MAX_STALLED_RESUMES
 
 
-# The plain (non-tool) chat resumes by re-entering its generator, one nesting level per
-# pause that made progress, and Python stops near 1000. Far past any real contention; the
-# turn ends continuable rather than with a RecursionError.
 MAX_NESTED_RESUMES = 128
 
 
@@ -235,8 +232,8 @@ def resumes_exhausted(resumes: int) -> bool:
     return int(resumes or 0) + 1 >= MAX_NESTED_RESUMES
 
 
-# A chat preempted this many times in a row outranks newest-first, so repeatedly losing
-# does not become never finishing.
+# A chat preempted this many times in a row outranks newest-first, so repeatedly losing does not
+# become never finishing.
 PROMOTE_AFTER_CONSECUTIVE_PREEMPTIONS = 3
 
 # What a chat running ALONE must leave clear. Without it a chat that outgrew the shared ceiling
@@ -352,7 +349,6 @@ class StreamCheckpoint:
 
     visible_text: str = ""
     reasoning_text: str = ""
-    # Carried rather than re-derived: the `context_truncated` SSE event is not idempotent.
     charged_tokens: int = 0
     resumes: int = 0
     reason: Optional[str] = None
@@ -435,7 +431,6 @@ class DeferredPreemptionPolicy:
         try:
             return bool(self._inner.await_resume(timeout, cancel_event = cancel_event))
         except TypeError:
-            # An inner policy written against the older protocol.
             return bool(self._inner.await_resume(timeout))
 
     def on_resumed(self) -> None:
@@ -498,8 +493,6 @@ class ParticipantState:
     # CANCEL and it is never a victim. Registered all the same, or the watermark fires late.
     STREAMING_RAW = "streaming_raw"
     PAUSED = "paused"
-    # Granted room and waiting for a slot to prefill into. Not a victim: a sweep would
-    # count cells as freed that its prefill is about to fill.
     RESUMING = "resuming"
     DONE = "done"
 
@@ -522,7 +515,6 @@ _PREEMPTABLE = frozenset(
     }
 )
 
-# Holding an IDLE slot: nothing is decoding, so an idle-slot erase takes these cells.
 _PARKED_ON_A_TOOL = frozenset(
     {
         ParticipantState.PARKED_ON_TOOL,
@@ -531,7 +523,6 @@ _PARKED_ON_A_TOOL = frozenset(
 )
 # PREEMPTING is absent on purpose: asking twice double-counts the room its pause will free.
 
-# States a generated token contradicts; `observe` moves such a holder to DECODING.
 _DECODES_WHEN_TOKENS_ARRIVE = frozenset(
     {
         ParticipantState.TOOLS_RUNNING,
@@ -638,7 +629,6 @@ def preemption_buffer_tokens(
     reserve = max(reserve, min(n_batch, max(0, int(pending_prefill or 0))))
     # Drafts are additional: cells the drafter puts in before acceptance, unseen by admission.
     reserve += max(0, int(draft_tokens or 0)) * slot_count
-    # Never the whole cache: a large draft window on a small -c degrades to a tight buffer.
     return min(reserve, max(1, budget // 2))
 
 
@@ -651,12 +641,7 @@ class Participant:
     # What admission charged. Live growth is ADDED to this, so a report of "n tokens generated"
     # cannot silently drop the prompt already resident.
     base_tokens: int = 0
-    # The prompt part of that charge, when the caller could split it. The REST of
-    # `base_tokens` is an output reservation, and generated tokens are written into it
-    # rather than added on top of it. Zero means the split is unknown.
     prompt_tokens: int = 0
-    # True once this prompt is known to be IN the cache. Until then its charge is a
-    # reservation the resident figure cannot see; after, adding it counts the cells twice.
     measured: bool = False
     state: str = ParticipantState.DECODING
     consecutive_preemptions: int = 0
@@ -667,43 +652,26 @@ class Participant:
     # True once an idle-slot reclaim erased this holder's cells while it was parked. Counting
     # them anyway kept two waiting chats out of an EMPTY cache for three minutes.
     cells_reclaimed: bool = False
-    # Erased but re-charged before the release ran, so it counts again: the next round
-    # boundary still replays the whole prompt, and must announce it so.
+    # Erased but re-charged before the release ran, so it counts again: the next round boundary
+    # still replays the whole prompt, and must announce it so.
     replay_pending: bool = False
-    # Bumped every time this holder stops on a tool. A reclaim is planned from a `/slots`
-    # reading and released after the erases, so the release has to tell the holder that
-    # reading saw parked from one that parked (or parked again) while the erases were in
-    # flight, whose cells no erase touched.
     park_seq: int = 0
-    # The lease's `charge_seq` when this holder parked: the commitment a reclaim hands back.
-    # Read at reclaim time instead, a round re-costed while the erases ran was handed back.
     park_charge_seq: Optional[int] = None
-    # The ONLY thing that puts the batch term in the buffer, so it must be set before the
-    # request carrying the prompt is sent. `measured` asks whether the charge is resident.
+    # The ONLY thing that puts the batch term in the buffer, so it must be set before the request
+    # carrying the prompt is sent.
     pending_prefill: int = 0
     pending_prefill_at: float = 0.0
     # Last count `observe` was given, so cumulative reports become a DELTA. Falls back to zero
     # rather than going negative when a resumed attempt restarts llama-server's counter.
     generated_seen: int = 0
-    # Set by `note_measured`: the charge stays on top of the resident figure until a sample
-    # STARTED after that call, the first reading that can hold its cells. Compared against
-    # the epoch the probe captured before its HTTP call, since a sample already in flight
-    # returns later while describing a cache from before the prefill.
     measured_at_seq: Optional[int] = None
-    # A measured holder's round growth no reading holds yet: on top of the resident figure,
-    # its prefix inside it. Stamped at the round's first decoded token, so only a sample
-    # STARTED after `growth_at_seq` lands can hold it; a probe before dispatch cannot.
     unconfirmed_growth: int = 0
     growth_at_seq: Optional[int] = None
-    # What admission charged and the prompt part of it, kept so a request that starts over
-    # (the next of `n` choices) can be put back to them.
     charged_tokens: int = 0
     charged_prompt_tokens: int = 0
-    # The state this holder was in when the sweep chose it. Only read while PREEMPTING, so
-    # a value left behind by an earlier round is never consulted.
+    # The state this holder was in when the sweep chose it. Only read while PREEMPTING, so a value
+    # left behind by an earlier round is never consulted.
     preempted_from: str = ""
-    # Who an unpausable holder's plan chose, for its route to wait on before it sends: the
-    # victims hold their cells until their streams see the signal.
     awaiting_victims: List[str] = field(default_factory = list)
 
     def in_reading_tokens(self) -> int:
@@ -723,17 +691,7 @@ class Participant:
         return self.prompt_tokens if self.prompt_tokens > 0 else self.tokens
 
     def resident_tokens(self, generated: int) -> int:
-        """Cells this holder occupies now that its prompt is in the cache.
-
-        Prompt plus what it has written. NOT the charge plus what it has written: the
-        output reservation inside `base_tokens` is the room those tokens are being written
-        into, so counting both charged the same cells twice -- four chats holding 3472
-        cells were counted as 7568 against a 7424 ceiling and the newest was preempted for
-        room nobody needed.
-
-        Without the split there is nothing safe to subtract, so the charge keeps carrying
-        the whole reservation and the old arithmetic stands.
-        """
+        """Cells this holder occupies now that its prompt is in the cache."""
         generated = max(0, int(generated or 0))
         if self.prompt_tokens <= 0:
             return self.base_tokens + generated
@@ -744,8 +702,6 @@ class Participant:
         submits nothing until the resume grant, which is where it announces again."""
         if self.pending_prefill <= 0 or not self.holds_kv:
             return 0
-        # Counted from the last progress the stream saw as well: a prefill still advancing
-        # keeps its first-token window renewed past this TTL, and still needs the batch.
         since = max(
             self.pending_prefill_at,
             float(getattr(self.preempt_event, "prefill_progress_at", 0.0) or 0.0),
@@ -776,16 +732,7 @@ class Participant:
 
     @property
     def parked_on_a_tool(self) -> bool:
-        """Whether an idle-slot erase takes THIS holder's cells.
-
-        The state alone is not enough once it has been chosen. `observe()` runs the sweep
-        and the reclaim reads the ledger after it, so a victim picked while parked is
-        already PREEMPTING when `parked_holders()` is taken; and an approval has no
-        upstream stream to abort, so its pause may not land until the user answers.
-        Invisible to the erase that took its cells, it would keep a phantom charge and a
-        commitment nobody can use for as long as the approval sits, and its next prefill
-        would be announced as the round's growth rather than the full replay it is.
-        """
+        """Whether an idle-slot erase takes THIS holder's cells."""
         if self.state in _PARKED_ON_A_TOOL:
             return True
         return (
@@ -815,10 +762,7 @@ class PreemptionSnapshot:
     holders: int = 0
 
 
-# How long the last good `/slots` reading outlives a failed one. A probe that times out once
-# must not turn what the cache was known to hold into the ledger's estimate, which is lower
-# whenever finished requests left residue: a resume granted on that gap overflows the pool.
-# A probe that keeps failing past this is gone, and the ledger is all that is left.
+# How long the last good `/slots` reading outlives a failed one.
 _RESIDENT_HOLD_S = 5.0
 
 
@@ -862,34 +806,21 @@ class PreemptionController:
         # Preemption reclaims only where an idle slot's cells can be purged, which upstream gates on
         # kv_unified ALONE. NOT idle_slot_clearing_active: that sweep's tasks are still alive.
         self._kv_unified = False
-        # Speculative drafts occupy cells no request is charged for.
         self._draft_tokens = 0
-        # --batch-size llama-server was launched with, so the buffer can cover one chunk.
         self._batch_tokens = 0
-        # Of `_resident`, how much is idle slots' cache: real, but erasable on demand.
         self._reclaimable = 0
         self._slots = 1
         # True cells resident from the last GET /slots, or None when it could not be read.
         # Includes the residue of FINISHED requests, which the ledger cannot see.
         self._resident: Optional[int] = None
-        # Bumped per successful reading, per `note_measured` and per probe start, so a mark can
-        # be ordered against a probe that was already in flight when it was made, and two
-        # probes against each other.
         self._resident_seq = 0
-        # The clock as it stood when the last reading was recorded: a probe that started
-        # before that is older than what is already here.
         self._last_sample_seq = 0
-        # The epoch the last recorded reading's probe STARTED at, what ordering compares: a
-        # mark between two overlapping probes moves `_last_sample_seq` past the newer one.
         self._last_sample_started = 0
-        # When the last good reading was taken, on `_clock` (monotonic; tests swap it).
         self._resident_at = 0.0
         self._clock = time.monotonic
         # Resume order, taken BEFORE the room test, so a later smaller resume cannot book the
         # space an older one waits for; the admission queue keeps the same rule one layer down.
         self._resume_tickets: "OrderedDict[str, int]" = OrderedDict()
-        # A revoked victim -> who the re-plan chose in its place, so a holder waiting on it
-        # waits on them. None while that re-plan is still running.
         self._replaced_by: Dict[str, Optional[List[str]]] = {}
         # Set by the route to a callable that re-reads GET /slots. Optional: everything works
         # from the ledger alone, less precisely.
@@ -964,7 +895,6 @@ class PreemptionController:
                 lease = lease,
                 tokens = max(0, int(tokens or 0)),
                 base_tokens = max(0, int(tokens or 0)),
-                # Never above the charge: the prompt is one term of it.
                 prompt_tokens = min(max(0, int(prompt_tokens or 0)), max(0, int(tokens or 0))),
                 state = state,
                 **({} if signal is None else {"preempt_event": signal}),
@@ -985,13 +915,7 @@ class PreemptionController:
             self._replaced_by.pop(gen_id, None)
 
     def begin_resume(self, gen_id: str, want: int) -> None:
-        """Take a place in the resume line, before asking whether there is room.
-
-        The order has to exist BEFORE the first room test, or a waiter that does not fit yet
-        is invisible to the smaller ones that do: they book the space one after another and
-        it never gets a turn. Re-taking a place moves this generation to the back, which is
-        what a fresh wait deserves.
-        """
+        """Take a place in the resume line, before asking whether there is room."""
         with self._lock:
             self._resume_tickets.pop(gen_id, None)
             self._resume_tickets[gen_id] = max(0, int(want or 0))
@@ -1002,17 +926,12 @@ class PreemptionController:
             self._resume_tickets.pop(gen_id, None)
 
     def resume_queue_depth(self) -> int:
-        """How many waits are in the resume line. Read by the tests; the mechanism itself
-        works off `_resume_reserved_locked`."""
+        """How many waits are in the resume line."""
         with self._lock:
             return len(self._resume_tickets)
 
     def _resume_reserved_locked(self, gen_id: str) -> int:
-        """Tokens the waits AHEAD of ``gen_id`` are coming back for.
-
-        A caller holding no place is held behind all of them: it has not queued, so it
-        cannot be owed room before somebody who has.
-        """
+        """Tokens the waits AHEAD of ``gen_id`` are coming back for."""
         total = 0
         for queued, want in self._resume_tickets.items():
             if queued == gen_id:
@@ -1069,14 +988,10 @@ class PreemptionController:
             if participant is not None:
                 need = max(0, int(want or 0))
                 if need > 0:
-                    # The replay, which is all the lease commits: the charge from before the
-                    # pause still carries an output allowance no cell holds yet.
                     participant.tokens = need
                     participant.base_tokens = need
                 if participant.prompt_tokens > 0:
-                    # `want` is the whole replayed prompt, which is what becomes resident.
                     participant.prompt_tokens = max(participant.prompt_tokens, need)
-                # The replay is not in yet, so no stamp or growth from the paused attempt holds.
                 participant.measured = False
                 participant.measured_at_seq = None
                 participant.unconfirmed_growth = 0
@@ -1097,15 +1012,7 @@ class PreemptionController:
                 participant.prefill_done()
 
     def _my_resident_locked(self, gen_id: str) -> int:
-        """Of the residency reading, the part this generation can claim as its own.
-
-        Only a holder whose prompt is known to be IN the cache owns cells. A PAUSED one
-        owns none, and neither does one whose cells an idle reclaim erased, so subtracting
-        its saved replay size from the reading credited it with room that reading says is
-        somebody else's: an 8000-token pause was granted a resume with 11000 of 16384
-        cells resident. A RESUMING holder has not prefilled yet either, which is what
-        ``measured`` says.
-        """
+        """Of the residency reading, the part this generation can claim as its own."""
         participant = self._participants.get(gen_id)
         if participant is None or not participant.holds_kv:
             return 0
@@ -1124,8 +1031,6 @@ class PreemptionController:
         ceiling = max(0, self._budget - self._buffer_locked(pending = pending))
         holders = [p for gid, p in self._participants.items() if p.holds_kv and gid != gen_id]
         measured = sum(p.in_reading_tokens() for p in holders)
-        # Not yet in any reading (a resume granted ahead of this one, a prefill under way): on
-        # top of it, as the watermark counts them, or two resumes are each granted the same room.
         unmeasured = sum(p.on_top_tokens() for p in holders)
         others = measured + unmeasured
         if self._resident is not None:
@@ -1171,10 +1076,6 @@ class PreemptionController:
                 self._progress_tokens += (reported - previous) if reported >= previous else reported
                 participant.tokens = participant.resident_tokens(reported)
                 if reported > 0:
-                    # Only a decoded token says the prompt is in: the round boundary's zero
-                    # follows `note_tokens`, and would undo a replay it just announced. Stamped
-                    # as `note_measured` stamps, not folded at once: a probe already in flight
-                    # read the cache before this prompt, and promoting on it drops the charge.
                     if not participant.measured and participant.measured_at_seq is None:
                         self._resident_seq += 1
                         participant.measured_at_seq = self._resident_seq
@@ -1190,7 +1091,6 @@ class PreemptionController:
                     participant.state = ParticipantState.DECODING
         if not plan:
             return []
-        # Outside the lock: plan_preemptions takes it, and it is not reentrant.
         return self.plan_preemptions(needed = 0)
 
     def set_residency_probe(self, probe: Optional[Callable[[], None]]) -> None:
@@ -1214,13 +1114,7 @@ class PreemptionController:
             _log.debug("residency probe failed", exc_info = True)
 
     def residency_epoch(self) -> int:
-        """The ordering clock, taken before a `/slots` probe is sent.
-
-        Hand it back to `note_resident` as ``started_at_seq`` so a sample that was already
-        in flight when a holder called `note_measured` is not mistaken for one taken after
-        its prefill. Advanced on every call, so two probes with nothing recorded between
-        their starts are still ordered, and the later one is not dropped as stale.
-        """
+        """The ordering clock, taken before a `/slots` probe is sent."""
         with self._lock:
             self._resident_seq += 1
             return self._resident_seq
@@ -1251,8 +1145,6 @@ class PreemptionController:
                     self._resident is not None
                     and self._clock() - self._resident_at <= _RESIDENT_HOLD_S
                 ):
-                    # One failed read keeps what the cache was known to hold; only the idle
-                    # residue it reported stops counting as room, since it may be gone.
                     self._reclaimable = 0
                     return None
                 self._resident = None
@@ -1263,7 +1155,6 @@ class PreemptionController:
             ceiling = self._budget if self._budget > 0 else int(resident)
             self._resident = max(0, min(int(resident), ceiling))
             self._reclaimable = max(0, min(int(reclaimable or 0), self._resident))
-            # Taken now when the start is unknown, so it outranks every probe already out.
             self._last_sample_started = (
                 self._resident_seq if started_at_seq is None else int(started_at_seq)
             )
@@ -1274,17 +1165,12 @@ class PreemptionController:
                 if participant.growth_at_seq is not None and not (
                     started_at_seq is not None and participant.growth_at_seq > started_at_seq
                 ):
-                    # Started after the round, so the growth it announced is inside.
                     participant.unconfirmed_growth = 0
                     participant.growth_at_seq = None
                 if participant.measured_at_seq is None:
                     continue
                 if started_at_seq is not None and participant.measured_at_seq > started_at_seq:
-                    # This sample was already in flight when the mark was made, so it
-                    # describes the cache from before the prefill. Promoting on it drops the
-                    # charge while the cells it covers are missing from the reading too.
                     continue
-                # Started after its prefill was announced done, so its cells are inside.
                 participant.measured = True
                 participant.measured_at_seq = None
             return self._last_sample_seq
@@ -1314,16 +1200,7 @@ class PreemptionController:
         tokens: int,
         prompt_tokens: Optional[int] = None,
     ) -> None:
-        """What a round boundary says this run now holds.
-
-        Also the third and last place a prefill is announced: only the difference from the
-        previous figure is submitted, which keeps the reserve honest on a chat whose 6000
-        token history grew by 40.
-
-        ``tokens`` is the re-costed CHARGE and ``prompt_tokens`` the part of it the cache
-        is about to hold; the round restates the whole conversation, so the previous
-        round's output is inside that prompt rather than added to it again.
-        """
+        """What a round boundary says this run now holds."""
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is not None:
@@ -1337,40 +1214,25 @@ class PreemptionController:
                 growth = participant.tokens - previous
                 replayed = participant.cells_reclaimed or participant.replay_pending
                 if replayed:
-                    # A reclaim erased every cell: the whole prompt goes in again, not the
-                    # round's growth. This runs before `note_state` sees DECODING.
                     participant.announce_prefill(participant.tokens)
                 elif growth > 0:
                     participant.announce_prefill(growth)
                 elif participant.pending_prefill > participant.tokens:
-                    # A fit that dropped messages: the prefill is no longer than the prompt.
                     participant.pending_prefill = participant.tokens
                 if growth > 0:
                     # Same counter as `observe`, for the same reason: a waiter must see it.
                     self._progress_tokens += growth
-                # Re-baselined: a round boundary restates the whole conversation. The
-                # charge, not the occupancy, since it is what admission now holds.
                 participant.base_tokens = charge
-                # This round has written nothing yet, and what the last one wrote is now
-                # part of the prompt above.
                 participant.generated_seen = 0
-                # Not after an erase: no reading can hold the replay until it is sent, so it is
-                # added on top until a token or a later sample says it is in.
                 if replayed:
                     participant.unconfirmed_growth = 0
                     participant.growth_at_seq = None
                 elif growth > 0 and participant.measured:
-                    # The prefix is in the cache, the growth is not: a reading from before this
-                    # round, larger than the ledger, would otherwise fold the growth into it.
                     participant.unconfirmed_growth += growth
-                    # Unstamped until a token shows the prefill ran.
                     participant.growth_at_seq = None
                 if replayed:
                     participant.measured = False
                     participant.measured_at_seq = None
-                # Otherwise as it was: one not yet measured (the first round, published before
-                # its request opens) is in no reading, and folded in here a probe from before its
-                # prefill swallowed the whole prompt. Its first token stamps it as usual.
                 participant.cells_reclaimed = False
                 participant.replay_pending = False
 
@@ -1391,9 +1253,6 @@ class PreemptionController:
         with self._lock:
             changed = self._note_state_locked(gen_id, state)
         if changed is None:
-            # The plan that chose it counted its cells as leaving, and nothing else may sweep
-            # before the room is used: an unpausable holder plans once and reports no growth.
-            # Planned again, in memory only, since the streaming drains call this on the loop.
             replacements: List[str] = []
             try:
                 replacements = [
@@ -1410,22 +1269,16 @@ class PreemptionController:
         then recorded), else whether the state changed."""
         revoked = False
         participant = self._participants.get(gen_id)
-        # Approval to tools is the same park: no request refilled the idle slot in between.
         was_parked = participant is not None and participant.parked_on_a_tool
         if (
             participant is not None
             and participant.state == ParticipantState.PREEMPTING
             and state in (ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING)
         ):
-            # Chosen as its stream finished a tool call: nothing reads the signal while the
-            # tool runs, so the choice is undone as `note_declined` undoes one. A tool holder
-            # is the cheapest room anyway: its idle cells are reclaimed, and the next sweep
-            # can choose it again.
             participant.preempt_chosen_at = 0.0
             participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
             participant.preempt_event.clear()
             participant.state = ParticipantState.DECODING
-            # Held pending for a waiter until the re-plan says who replaces it.
             self._replaced_by[gen_id] = None
             revoked = True
         if participant is None or participant.state not in self._LIVE_STATES:
@@ -1437,22 +1290,13 @@ class PreemptionController:
             participant.park_seq += 1
             participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
         if state == ParticipantState.DECODING:
-            # Back at the model: llama-server prefills the prompt in again, so the
-            # cells are real once more.
             if participant.cells_reclaimed:
-                # The WHOLE prompt, not a round's growth: the reclaim erased every
-                # cell, so there is no prefix left to hit.
                 participant.announce_prefill(participant.tokens)
             participant.cells_reclaimed = False
         return None if revoked else True
 
     def parked_holders(self) -> Dict[str, int]:
-        """Who is parked on a tool right now, with each one's park count.
-
-        Read BEFORE the `/slots` scrape a reclaim is planned from and handed back to
-        `note_cells_reclaimed`, so the release covers the holders whose idle cells that
-        reading counted and not one that parked while the erases were in flight.
-        """
+        """Who is parked on a tool right now, with each one's park count."""
         with self._lock:
             return {
                 gen_id: participant.park_seq
@@ -1461,27 +1305,13 @@ class PreemptionController:
             }
 
     def note_cells_reclaimed(self, only: Optional[Dict[str, int]] = None) -> int:
-        """An idle-slot reclaim just erased every idle slot. Tell the ledger.
-
-        A holder parked on an approval or running its tools has an idle slot by definition,
-        so the erase took its cells: its charge stops counting, and its lease hands the
-        commitment back the way `recost_waiting` does. Returns how many holders it applied
-        to.
-
-        `only` is a `parked_holders()` reading taken before the scrape the erases were
-        planned from. The erases are blocking HTTP calls that can take seconds, and a chat
-        that parks inside that window has idle cells no erase touched and was never in the
-        scrape's `idle_tokens`; releasing its commitment would let a waiter into KV that is
-        still resident. Omitted, every parked holder is released, as before.
-        """
+        """An idle-slot reclaim just erased every idle slot."""
         released = []
         with self._lock:
             for participant in self._participants.values():
                 if not participant.parked_on_a_tool:
                     continue
                 if only is not None and only.get(participant.gen_id) != participant.park_seq:
-                    # Parked after the reading, or parked again since: its cells are the
-                    # ones the erases did not take.
                     continue
                 if participant.cells_reclaimed:
                     continue
@@ -1491,9 +1321,6 @@ class PreemptionController:
                 participant.prefill_done()
                 released.append((participant, participant.park_seq, participant.park_charge_seq))
         for participant, park_seq, charge_seq in released:
-            # The lease call runs outside the lock, after erases that took seconds: a holder
-            # whose tool came back in between has restated its prompt and re-charged, and
-            # that commitment is for cells now filling, not for the ones erased.
             with self._lock:
                 if not participant.cells_reclaimed or participant.park_seq != park_seq:
                     continue
@@ -1508,39 +1335,30 @@ class PreemptionController:
                 except Exception:  # pragma: no cover - bookkeeping must not fail a run
                     _log.debug("could not yield a parked commitment", exc_info = True)
             if charge_seq is not None and getattr(lease, "charge_seq", charge_seq) != charge_seq:
-                # Re-charged before the scan, so the lease kept the new commitment: it is a
-                # prompt being prefilled again, and must count, reserve included.
+                # Re-charged before the scan, so the lease kept the new commitment: it is a prompt
+                # being prefilled again, and must count, reserve included.
                 with self._lock:
                     if participant.cells_reclaimed and participant.park_seq == park_seq:
                         participant.cells_reclaimed = False
                         participant.announce_prefill(participant.tokens)
-                        # The round publishing that charge has not run yet, and would read
-                        # this as a prefix kept: its whole prompt is still to go in.
                         participant.replay_pending = True
         return len(released)
 
     def note_cells_possibly_erased(self, only: Optional[Dict[str, int]] = None) -> int:
-        """An erase may have taken a slot another request was handed after the reading.
-
-        The holders that reading did not see parked (`only`, a `parked_holders()` reading
-        from before it) are the ones whose cells it could not account for, so their next
-        round replays the whole prompt rather than only its growth. Their charge stays: the
-        cells may well be there. Returns how many holders it applied to."""
+        """An erase may have taken a slot another request was handed after the reading."""
         marked = 0
         with self._lock:
             for participant in self._participants.values():
                 if not participant.holds_kv or participant.cells_reclaimed:
                     continue
                 if only is not None and only.get(participant.gen_id) == participant.park_seq:
-                    # Seen parked by the reading: `note_cells_reclaimed` accounts for it.
                     continue
                 participant.replay_pending = True
                 marked += 1
         return marked
 
     def restart(self, gen_id: str) -> None:
-        """The same request starts over from its original prompt: the next of `n` choices.
-        The replayed partials and the resume debt of the last choice are not its own."""
+        """The same request starts over from its original prompt: the next of `n` choices."""
         with self._lock:
             participant = self._participants.get(gen_id)
             if participant is None:
@@ -1570,8 +1388,6 @@ class PreemptionController:
             replayed = max(0, int(tokens or 0))
             participant.base_tokens = participant.base_tokens + replayed
             if participant.prompt_tokens > 0:
-                # It comes back as PROMPT, so it moves into the prompt term rather than
-                # being counted as output the next attempt has yet to write.
                 participant.prompt_tokens = participant.prompt_tokens + replayed
                 participant.tokens = max(participant.tokens, participant.prompt_tokens)
             else:
@@ -1593,9 +1409,7 @@ class PreemptionController:
         pending = list(gen_ids or ())
         while True:
             with self._lock:
-                # Per poll: a victim chosen again after it was replaced is examined again.
                 seen = set(pending)
-                # A victim revoked into a tool was replaced by the re-plan: wait on those too.
                 still: List[str] = []
                 work = list(pending)
                 while work:
@@ -1634,8 +1448,6 @@ class PreemptionController:
             participant = self._participants.get(gen_id)
             if participant is None:
                 return
-            # A park is counted once, however many times it is reported: a repeat would
-            # make a holder that really was in the reading look like a newcomer to it.
             if state in _PARKED_ON_A_TOOL and not participant.parked_on_a_tool:
                 participant.park_seq += 1
                 participant.park_charge_seq = getattr(participant.lease, "charge_seq", None)
@@ -1659,10 +1471,7 @@ class PreemptionController:
             if participant is None:
                 return
             if not participant.measured:
-                # Bumped so the stamp is strictly past any epoch a probe already in flight
-                # captured; a probe that starts after this reads the same value and matches.
-                # Stamped with no reading in hand too: the ledger counts it whole until one
-                # lands, and a probe already out when the prompt went in must not promote it.
+                # Bumped so the stamp is strictly past any epoch a probe already in flight captured.
                 self._resident_seq += 1
                 participant.measured_at_seq = self._resident_seq
             participant.cells_reclaimed = False
@@ -1686,14 +1495,10 @@ class PreemptionController:
             participant.state = ParticipantState.DECODING
             participant.preempt_chosen_at = 0.0
             participant.consecutive_preemptions = max(0, participant.consecutive_preemptions - 1)
-            # Held pending for a waiter until the re-plan says who replaces it.
             self._replaced_by[gen_id] = None
             # Last, and inside the lock: a signal still set aborts the very stream this is
             # letting run, and clearing it first leaves a window for a sweep to re-arm it.
             participant.preempt_event.clear()
-        # Its cells were counted as leaving: planned again, as a revoked choice is, so a
-        # direct holder waiting on it waits on whoever stops in its place. Without it: it
-        # has just said no, and later pressure in the turn may still ask it again.
         replacements: List[str] = []
         try:
             replacements = [
@@ -1715,8 +1520,7 @@ class PreemptionController:
             return not self._participants
 
     def committed_tokens(self) -> int:
-        """What the watermark compares against the ceiling. `snapshot().committed` for
-        callers that want the rest of it; this is the figure on its own."""
+        """What the watermark compares against the ceiling."""
         with self._lock:
             return self._committed_locked()
 
@@ -1774,7 +1578,6 @@ class PreemptionController:
         ]
         for gen_id in dead:
             del self._participants[gen_id]
-            # A place in line whose waiter is gone would hold room back forever.
             self._resume_tickets.pop(gen_id, None)
 
     def _committed_locked(self) -> int:
@@ -1796,7 +1599,6 @@ class PreemptionController:
         holders = 0
         for participant in self._participants.values():
             if participant.state in (ParticipantState.QUEUED, ParticipantState.PAUSED):
-                # Somebody is waiting for room, which is when a reading decides something.
                 return True
             if participant.holds_kv:
                 holders += 1
@@ -1805,13 +1607,7 @@ class PreemptionController:
         return False
 
     def contended(self) -> bool:
-        """Cheap enough for the token path: no HTTP, one lock, no arithmetic.
-
-        A chat alone on the cache has nobody to preempt and nobody waiting for its cells,
-        so the synchronous ``/slots`` read the sweep otherwise makes every 32 chunks buys
-        no decision. Admission and the resume wait read afresh regardless, since those are
-        the boundaries where a stale figure would hand out room that is not there.
-        """
+        """Cheap enough for the token path: no HTTP, one lock, no arithmetic."""
         with self._lock:
             if not self._kv_unified or self._budget <= 0 or not preemption_enabled():
                 return False
@@ -1833,15 +1629,11 @@ class PreemptionController:
                 # abort a stream it was about to park in place.
                 return []
             if not self._contended_locked():
-                # One holder and nobody waiting: the loop below always leaves one standing,
-                # so the scan can only ever return nothing.
                 return []
             buffer = self._buffer_locked()
             ceiling = max(0, self._budget - buffer)
             # Net of holders already chosen: they are on their way out, and counting them again
-            # would stop a second chat for room the first is already giving back. Not one parked
-            # on a tool: it cannot see the signal, so only the erase frees it, and an erase that
-            # failed or never ran leaves its cells resident while later plans netted them out.
+            # would stop a second chat for room the first is already giving back.
             total = self._committed_locked() - sum(
                 p.tokens
                 for p in self._participants.values()
@@ -1874,7 +1666,6 @@ class PreemptionController:
                     ledger,
                     ceiling,
                     buffer,
-                    # The batch term's input, so the ceiling's movement can be attributed.
                     self._pending_prefill_locked(),
                     want,
                     len(holders),
@@ -1922,19 +1713,15 @@ class PreemptionController:
                 if victim.state not in _PARKED_ON_A_TOOL:
                     total -= victim.tokens
                 victim.consecutive_preemptions += 1
-                # Before the state goes: PREEMPTING erases the only record that this
-                # holder's cells are an idle slot's, which is what the reclaim keys on.
                 victim.preempted_from = victim.state
                 victim.state = ParticipantState.PREEMPTING
-                # Chosen afresh: whoever replaced an earlier revoked choice is not its stand-in.
                 self._replaced_by.pop(victim.gen_id, None)
                 victim.preempt_chosen_at = time.monotonic()
                 victim.preempt_event.set()
                 chosen.append(victim)
             if chosen:
-                # A sweep that took others and left this one running broke its run of losses:
-                # the count is "in a row", so it starts again. Kept, it never fell, and once
-                # every chat was promoted the order was newest-first among them all again.
+                # A sweep that took others and left this one running broke its run of losses: the
+                # count is "in a row", so it starts again.
                 for passed_over in victims:
                     if passed_over not in chosen:
                         passed_over.consecutive_preemptions = 0
@@ -2088,19 +1875,11 @@ class ControllerPreemptionPolicy:
         deadline = started + timeout
         hard_deadline = started + timeout * MAX_RESUME_WAIT_MULTIPLE
         last = self._controller.progress_signature()
-        # The place in line is taken BEFORE the first room test: a wait that does not fit
-        # yet is otherwise invisible to the smaller resumes that do, and they book the
-        # space one after another until this one's deadline ends the turn. Dropped in the
-        # `finally` on every exit, grant included, so a booking is not also held back as
-        # a reservation.
         self._controller.begin_resume(self._gen_id, want)
         try:
-            # Fresh reading before the first question: this grant lets a chat back in carrying
-            # its whole replayed partial.
             self._controller.refresh_residency()
-            # try_grant_resume, not room_for: the room must be BOOKED at the instant it is
-            # found, or two waiters both find the same space and both take it. Stop is read
-            # before every attempt, since a grant that succeeds at once would otherwise skip it.
+            # try_grant_resume, not room_for: the room must be BOOKED at the instant it is found,
+            # or two waiters both find the same space and both take it.
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     # Stop pressed during the pause: there is nothing to resume, and the worker
@@ -2113,13 +1892,11 @@ class ControllerPreemptionPolicy:
                 now = time.monotonic()
                 current = self._controller.progress_signature()
                 # A holder parked on a tool moves nothing, so the signature freezes while a web
-                # search runs. A tool that never returns is caught by `hard_deadline` instead.
+                # search runs.
                 _snap = self._controller.snapshot()
                 if _snap.parked > 0 or getattr(_snap, "tools_running", 0) > 0:
                     deadline = now + timeout
                 if current != last:
-                    # ANY change resets it: the signature covers the whole backend, so "no
-                    # progress" claims NOTHING moved, which is what justifies abandoning a turn.
                     deadline = now + timeout
                     last = current
                 if now >= deadline:
@@ -2144,8 +1921,6 @@ class ControllerPreemptionPolicy:
             self._controller.end_resume(self._gen_id)
         try:
             try:
-                # The room wait's own hard deadline, not a fresh one: the absolute bound
-                # covers the whole pause, slot line included.
                 coro = lease.resume_async(
                     want,
                     timeout_s = timeout,
@@ -2162,7 +1937,6 @@ class ControllerPreemptionPolicy:
                         progress = self._controller.progress_signature,
                     )
                 except TypeError:
-                    # An older lease without the stall-aware wait.
                     coro = lease.resume_async(want, timeout_s = timeout, cancel_event = cancel_event)
             future = asyncio.run_coroutine_threadsafe(coro, self._loop)
             # A backstop for a loop that never runs the coroutine at all. resume_async resets
@@ -2184,11 +1958,6 @@ class ControllerPreemptionPolicy:
             )
             return got
         except Exception as exc:
-            # Includes the future timing out. Either way the room did not come back, and
-            # the grant above already moved this holder to RESUMING, raised its charge and
-            # announced a prefill: without the same rollback the `got == False` branch
-            # does, it is a phantom no sweep can choose, holding room nothing will fill
-            # until the outer stream finishes tearing down.
             self._controller.note_resume_failed(self._gen_id)
             _log.warning(
                 "llama preemption resume-failed: gen_id=%s want=%s error=%s",
@@ -2257,8 +2026,6 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
     resident = 0
     idle_tokens = 0
     idle = []
-    # The task each idle slot last ran: an erase is tied to it, since the slot can be handed
-    # to another request between this reading and the erase.
     idle_task = {}
     for slot in slots:
         # A parked slot (`is_preempted`) reports its logical sequence but holds no cells.
@@ -2293,7 +2060,6 @@ def read_slot_occupancy(fetch: Callable[[], Optional[list]]) -> Optional[dict]:
             idle_tokens += max(0, tokens)
             idle.append((slot.get("id"), max(0, tokens)))
             idle_task[slot.get("id")] = slot.get("id_task")
-    # Largest first: the fewest erases free the most.
     idle.sort(key = lambda pair: -pair[1])
     return {
         "resident": resident,
@@ -2339,7 +2105,6 @@ def reclaim_idle_slots(
         if recheck is not None:
             now = _slot_incarnation(recheck(), slot_id)
             if now is None or now[0] or now[1] != seen_task.get(slot_id, now[1]):
-                # Taken by another request, or unreadable: nothing here is dead residue.
                 continue
         try:
             freed += max(0, int(erase(slot_id) or 0))

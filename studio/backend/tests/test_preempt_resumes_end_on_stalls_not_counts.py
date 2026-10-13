@@ -38,7 +38,6 @@ def _policy(gen_id: str) -> ControllerPreemptionPolicy:
     controller = PreemptionController(f"stall-{gen_id}")
     controller.configure(budget = 16384, kv_unified = True)
     signal = PreemptSignal()
-    # No lease, so a granted wait answers at once and only the give-up rule is exercised.
     controller.register(gen_id, tokens = 100, signal = signal)
     return ControllerPreemptionPolicy(controller, gen_id, signal)
 

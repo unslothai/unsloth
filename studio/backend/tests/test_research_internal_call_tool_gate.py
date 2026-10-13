@@ -151,19 +151,13 @@ def test_the_opt_out_changes_nothing_a_default_install_does(monkeypatch, policy)
         preemption_enabled() is False
     ), "this test speaks for a default install, which does not opt into preemption"
     for _kwargs in (before_kwargs, after_kwargs):
-        # llama.cpp folds a non-None preempt_event into a POLLED composite cancel event, so
-        # handing one over is not free even when nobody ever sets it.
         assert _kwargs.get("preempt_event") is None
-        # And no sweep: `on_tokens` is the only thing that tells the controller a chat has
-        # grown, and llama.cpp skips the callback outright when it is None.
         assert _kwargs.get("on_tokens") is None
         # The policy object is still handed over, unbound, which is what it is for: it is the
         # callback a pause would land on, and there is no pause to land. Pinned inert rather
         # than absent, since it cannot be reached without a preempt_event.
         assert _kwargs["preempt_policy"].bound is False
         assert _kwargs["preempt_policy"].should_preempt() is False
-        # The re-pricing hook is admission, not preemption, and it stays: without it an
-        # overlong chat is sent the one-token floor the fit lifted.
         assert callable(_kwargs.get("on_prompt_fitted"))
     # `tools_withheld` reaches the compaction gate, never the prompt: it tells
     # `_can_reset_epoch` that THIS request withdrew the tool loop, which the process-wide
@@ -211,11 +205,8 @@ def test_json_mode_research_calls_send_llama_server_an_unchanged_body():
     assert json.loads(json.dumps(bodies[1]))["response_format"] == {"type": "json_object"}
 
 
-# ── A default install takes no preemption path ────────────────────────────────
-# The tests above pin what the research opt-out costs an ordinary run. These pin the same
-# thing for the KV preemption controller, which is opt-in: unless
-# `UNSLOTH_LLAMA_ADMISSION_PREEMPT=1` is set, a chat through these routes must reach
-# llama.cpp exactly as it did before the controller existed.
+# ── A default install takes no preemption path ──────────────────────────────── The tests above
+# pin what the research opt-out costs an ordinary run.
 
 _PREEMPT_KEY = "research-gate-default-install"
 
@@ -258,15 +249,10 @@ def test_a_default_install_takes_no_preemption_path(monkeypatch, tool_loop):
     assert preemption_enabled() is False, "nothing here opts in"
     response, kwargs = _one_chat(monkeypatch, tool_loop = tool_loop)
 
-    # Nothing that could pause the stream. llama.cpp folds a non-None preempt_event into a
-    # polled composite cancel event, and skips the token callback outright when on_tokens
-    # is None, so both of these are the difference between arming and not.
     assert kwargs.get("preempt_event") is None
     assert kwargs.get("on_tokens") is None
     assert kwargs["preempt_policy"].bound is False
 
-    # Nothing registered on the controller either: no participant to be chosen, and no
-    # residency probe, which is the only thing that would ever send a GET /slots.
     controller = get_preemption_controller(_PREEMPT_KEY)
     assert controller._residency_probe is None, "a default install registered a slots probe"
     snapshot = controller.snapshot()
@@ -277,12 +263,7 @@ def test_a_default_install_takes_no_preemption_path(monkeypatch, tool_loop):
 
 
 def test_a_default_install_is_charged_the_share(monkeypatch):
-    """The optimism is off, so the reservation is the plain fair-share arithmetic.
-
-    Charging less than that is safe only where a pause hands the difference back. Off, the
-    wire is still permitted `share - prompt` less the reserve, so a smaller charge would be
-    KV nobody reserved and nothing to reclaim it.
-    """
+    """The optimism is off, so the reservation is the plain fair-share arithmetic."""
     backend = _EligibleBackend()
     budget = inference_route._openai_llama_admission_budget(backend)
     share = budget // inference_route._openai_llama_admission_capacity(None, backend)
@@ -297,7 +278,6 @@ def test_a_default_install_is_charged_the_share(monkeypatch):
             share = share,
             preemption_active = active,
         ) == min(share - prompt, budget - prompt), f"prompt {prompt} is not charged its share"
-    # And a stated cap is charged in full, which is what serialises rather than overruns.
     assert (
         inference_route._openai_llama_admission_output_allowance(
             5000,
@@ -319,5 +299,4 @@ def test_the_opt_in_arms_the_same_call(monkeypatch, tool_loop):
     _response, kwargs = _one_chat(monkeypatch, tool_loop = tool_loop)
     assert kwargs.get("preempt_event") is not None, "the opt-in did not hand over a signal"
     assert callable(kwargs.get("on_tokens")), "the opt-in did not arm the sweep"
-    # And the probe the resume wait re-reads the cache with, refused on the default path.
     assert get_preemption_controller(_PREEMPT_KEY)._residency_probe is not None

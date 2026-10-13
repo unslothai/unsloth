@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""What the ledger is told after an erase, and how long a plain chat may keep resuming.
-
-An early idle-slot erase subtracts what it freed from the reading it planned from, and an
-approval erase takes a parked chat's cells: both must reach the ledger, or the next plan
-still sees cells that are gone, or the next round reserves only its growth for a whole
-prompt it prefills again. A plain chat resumes by nesting its generator, so productive
-pauses need a bound of their own.
-"""
+"""What the ledger is told after an erase, and how long a plain chat may keep resuming."""
 
 from __future__ import annotations
 
@@ -199,8 +192,8 @@ class TestAPlainChatCannotNestPastTheLimit:
             first_token_deadline = None,
             preempt_event = None,
         ):
-            # Every attempt decodes a token and is paused: progress each time, so the
-            # zero-output guard never ends it.
+            # Every attempt decodes a token and is paused: progress each time, so the zero-output
+            # guard never ends it.
             yield _delta("ab")
             signal.request("kv_pressure")
             raise preemption.LlamaStreamPreempted

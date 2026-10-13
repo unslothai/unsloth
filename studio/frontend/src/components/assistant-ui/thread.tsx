@@ -7574,8 +7574,6 @@ const GeneratingIndicator: FC = () => {
   );
 };
 
-// Placeholder when stop fires before any visible content (e.g. mid-think). Not for a turn
-// preemption paused and gave up on: it takes `cancelled` only for want of a better status.
 const CancelledIndicator: FC = () => {
   const show = useAuiState(
     ({ message }) =>
@@ -7668,8 +7666,8 @@ function useContinuation() {
       }),
     [messageContent, thoughtResumable, geminiReplayTurns],
   );
-  // The same question with the "there must be text" half dropped, for a turn the backend
-  // gave up on before its first token. Selected unconditionally: a hook cannot be conditional.
+  // The same question with the "there must be text" half dropped, for a turn the backend gave up
+  // on before its first token.
   const continuableIfEmpty = useMemo(
     () =>
       isContinuableContent(messageContent, {
@@ -7788,8 +7786,6 @@ const ContinueMessageBarForLastMessage: FC = () => {
 
   const resumable = Boolean(reason) && canResume;
 
-  // A cut with a remedy is one resuming cannot undo, so the way out replaces the button. So
-  // is a paused turn that cannot resume (its tool calls cannot be replayed): it still says why.
   const remedy = reason ? incompleteRemedyFor(reason, canResume) : null;
 
   // The parent is what every round of one logical turn shares; the message id changes

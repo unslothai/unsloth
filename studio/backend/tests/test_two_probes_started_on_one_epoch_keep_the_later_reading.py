@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two probes that start with nothing recorded between them are still ordered.
-
-Both used to read the same mutation epoch, so once the first one's reading was recorded the
-second was dropped as stale, even when it started later and saw a fuller cache. Planning a
-resume against the lower figure lets it prefill into cells that are occupied.
-"""
+"""Two probes that start with nothing recorded between them are still ordered."""
 
 from __future__ import annotations
 

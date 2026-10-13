@@ -60,7 +60,6 @@ test("a turn that gave up mid-round and then answered is complete", () => {
     replay([
       { finishReason: "tool_calls" },
       { gaveUp: true },
-      // The final synthesis pass the backend breaks into, finishing normally.
       { finishReason: "stop" },
     ]),
     null,

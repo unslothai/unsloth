@@ -82,7 +82,6 @@ class TestEveryChatIsPermittedItsWholeWindow:
             payload = _chat(max_tokens = 32768)
             enforced = _enforced(payload, backend)
             assert _prompt_tokens(payload) + enforced <= 32768
-            # And unchanged by how many slots exist: the window is the window.
             assert enforced > 32768 // max(2, slots) * 1.5
 
     @pytest.mark.parametrize(
@@ -106,8 +105,7 @@ class TestEveryChatIsPermittedItsWholeWindow:
 
 
 class TestThePoolIsNeverFilledToTheLastCell:
-    """Reserve room for template overhead and llama-server's next-token check.
-    Asked with preemption off, where nothing reclaims an overcommitted pool."""
+    """Reserve room for template overhead and llama-server's next-token check."""
 
     @pytest.fixture(autouse = True)
     def _no_reclaimer(self, monkeypatch):
@@ -173,8 +171,6 @@ class TestThePoolIsNeverFilledToTheLastCell:
         charged = _openai_llama_admission_tokens(
             payload, budget = window, capacity = slots, context_window = window
         )
-        # Nothing on top of `prompt + allowance`: the charge is what it was before there
-        # was a reserve at all.
         assert charged == prompt + allowance(
             None,
             budget = window,
@@ -182,7 +178,6 @@ class TestThePoolIsNeverFilledToTheLastCell:
             context_window = window,
             share = share,
         )
-        # The wire is the side that gives the cells up, and by exactly the reserve.
         sent = wire_bound(share = share, prompt_tokens = prompt, window = window, budget = window)
         assert sent == share - prompt - _RESERVE
 
@@ -195,8 +190,7 @@ class TestThePoolIsNeverFilledToTheLastCell:
 
 
 class TestTheMarkupTheBuilderRewrites:
-    """Price sanitized control markers, which can expand into multiple tokens.
-    Asked with preemption off, for the reason the class above gives."""
+    """Price sanitized control markers, which can expand into multiple tokens."""
 
     _MARKER = "<|im_start|>"
 
@@ -391,7 +385,6 @@ class TestWhatIsLeftAlone:
         backend = _backend(window = 16384, total = 16384, slots = 4)
         assert _enforced(_chat(max_tokens = 0), backend) is None
         assert _enforced(_chat(max_completion_tokens = 0), backend) is None
-        # An omitted cap is still the unstated case the bound exists for.
         assert _enforced(_chat(), backend) is not None
 
     def test_a_single_slot_is_unrestricted(self):
@@ -431,7 +424,6 @@ class TestWhereAStatedCapStopsBeingStated:
 
 
 class TestTheEdges:
-    # The window-sized bound this class measures against is the opted-in one.
     pytestmark = pytest.mark.usefixtures("preemption_opted_in")
 
     def test_a_prompt_that_fills_the_window_still_gets_a_token(self):
@@ -631,8 +623,7 @@ class TestTheGateIsTheEnforcementItself:
 
 
 class TestAnExactlyCountedPromptKeepsOnlyTheNextTokenCell:
-    """The 64-token reserve covers template overhead an ESTIMATE can miss. A tokenizer count
-    already includes the template, so only llama-server's next-token check is left."""
+    """The 64-token reserve covers template overhead an ESTIMATE can miss."""
 
     def test_the_boundary_with_preemption_active(self):
         from routes.inference import _openai_llama_admission_wire_output_bound as wire_bound
@@ -642,7 +633,6 @@ class TestAnExactlyCountedPromptKeepsOnlyTheNextTokenCell:
         estimated = wire_bound(preemption_active = True, **common)
         counted = wire_bound(preemption_active = True, prompt_counted = True, **common)
         assert estimated == window - 7000 - _RESERVE
-        # One cell short of the window: llama-server stops once n_past + 1 reaches n_ctx.
         assert counted == window - 7000 - 1
         assert 7000 + counted < window
 

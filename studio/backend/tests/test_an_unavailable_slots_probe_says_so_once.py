@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A `/slots` reading that cannot be taken is reported, not swallowed.
-
-GET /slots is on by default in every llama.cpp build Unsloth can launch, so None means
-`--no-slots`, an unauthorized read, or a socket error. Preemption still runs on the
-ledger, which is correct but blind to idle residue, and without this line the only
-symptom is a preemptor that arms and never reclaims.
-"""
+"""A `/slots` reading that cannot be taken is reported, not swallowed."""
 
 from __future__ import annotations
 

@@ -15,7 +15,6 @@ import {
 import { readSrc } from "./helpers/kit.ts";
 
 test("an unresumable paused turn gets a way out instead of nothing", () => {
-  // No remedy and no Resume made the bar render nothing at all.
   assert.equal(incompleteRemedy("paused"), null);
   const remedy = incompleteRemedyFor("paused", false);
   assert.ok(remedy, "the paused turn must still explain itself");
@@ -36,6 +35,5 @@ test("other reasons are unchanged either way", () => {
 test("the continue bar asks with whether the turn can resume", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /const remedy = reason \? incompleteRemedyFor\(reason, canResume\) : null;/);
-  // And still renders whenever a remedy is owed.
   assert.match(thread, /if \(!reason \|\| \(!remedy && !resumable\)\) \{\s+return null;/);
 });

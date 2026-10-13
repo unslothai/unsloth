@@ -1601,7 +1601,6 @@ function scheduleGenerationRecovery(
           maxTokens: run.requestPayload.max_tokens,
           completionTokens,
         });
-      // The live adapter's rule: a give-up is `paused` unless the run finished after it.
       const preemptGaveUp =
         isPreemptGaveUp(
           currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],

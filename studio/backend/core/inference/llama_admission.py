@@ -35,10 +35,8 @@ ADMISSION_QUEUE_PER_SLOT_ENV = "UNSLOTH_LLAMA_ADMISSION_QUEUE_PER_SLOT"
 # off restores slot-only admission: the escape hatch for a backend whose reported context length does not match the
 # cache llama-server allocated
 ADMISSION_KV_BUDGET_ENV = "UNSLOTH_LLAMA_ADMISSION_KV_BUDGET"
-# The one switch here that is OFF unless it is asked for: UNSLOTH_LLAMA_ADMISSION_PREEMPT=1 lets a chat that outgrows
-# its charge be paused and resumed instead of serialising the queue. Unset, admission prices every request against its
-# fair share and nothing is ever paused. Named in core/inference/llama_preemption.py as PREEMPT_ENV, which owns it;
-# listed beside its siblings here because this is where the admission environment is documented.
+# The one switch here that is OFF unless it is asked for: UNSLOTH_LLAMA_ADMISSION_PREEMPT=1 lets a
+# chat that outgrows its charge be paused and resumed instead of serialising the queue.
 
 # The UNSLOTH_OPENAI_COMPAT_* spellings predate this queue being shared with the Anthropic /v1/messages route (same
 # llama-server slots). Still honored; the neutral name above wins when both are set.
@@ -352,8 +350,6 @@ class LlamaAdmissionLease:
         self._tokens = max(0, int(tokens or 0))
         self._parked_tokens = 0
         self._park_id = None
-        # Bumped by every re-charge, so a deferred yield can tell the commitment it was asked
-        # to hand back from one the holder took on again meanwhile.
         self._charge_seq = 0
 
     @property
@@ -626,7 +622,6 @@ class LlamaAdmissionLease:
             patience = patience,
             hard_deadline = hard_deadline,
             progress = progress,
-            # A lease released mid-wait leaves the line now, not at its hard deadline.
             abandoned = lambda: self._released,
         )
         if slot is None:
@@ -652,12 +647,7 @@ class LlamaAdmissionLease:
         return True
 
     def recost(self, tokens: int) -> bool:
-        """Re-state what this lease actually occupies as its conversation grows.
-
-        True when the new figure is in force (including with no budget to account
-        against). False means the cache cannot back the growth, the previous commitment
-        still stands, and the caller is over its reservation.
-        """
+        """Re-state what this lease actually occupies as its conversation grows."""
         want = max(0, int(tokens or 0))
         # Held ACROSS try_recost: a release interleaving between the queue accepting the new figure and this lease
         # recording it would hand back the OLD number and strand the difference as committed for the life of the
@@ -666,8 +656,8 @@ class LlamaAdmissionLease:
             if self._released or self._queue is None:
                 return True
             if want == self._tokens:
-                # Restated all the same: a yield planned from a reading older than this
-                # round must find the epoch moved, or it hands back cells now filling.
+                # Restated all the same: a yield planned from a reading older than this round must
+                # find the epoch moved, or it hands back cells now filling.
                 self._charge_seq += 1
                 return True
             if not self._queue.try_recost(self._tokens, want):
@@ -857,7 +847,6 @@ class LlamaAdmissionReservation:
         self._lease = lease
         self._waiter = waiter
         self.snapshot = snapshot
-        # The tokenizer's count of the prompt this was priced from, when admission had one.
         self.counted_prompt_tokens: Optional[int] = None
 
     @property
@@ -969,8 +958,6 @@ class LlamaAdmissionQueue:
         # FIFO tickets for holders resuming from a park (see acquire_parked_slot). A bare count deadlocked: every
         # approved holder blocked every other one.
         self._unpark_tickets: Deque[int] = deque()
-        # The KV each ticket is coming back for. A ticket holds back a slot and, from here,
-        # its room too: the head-of-line rule the waiters already live by.
         self._unpark_tokens: dict[int, int] = {}
         self._unpark_lapsed: set = set()
         self._unpark_seq = 0
@@ -1038,8 +1025,6 @@ class LlamaAdmissionQueue:
         if not (bool(self._free) and (self._held + reserved) < self._capacity):
             return False
         # A free slot is not enough: with --kv-unified every slot reports the full n_ctx, so the pool can hand out more
-        # slots than the one cache can serve. ``reserved_tokens`` is the room the tickets ahead are coming back for, or
-        # a later, smaller resume overtakes an earlier one that could then wait out its deadline.
         return self._fits_budget_locked(tokens, reserved_tokens)
 
     def _take_slot_locked(

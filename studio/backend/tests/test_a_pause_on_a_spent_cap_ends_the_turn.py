@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A pause that lands on a fully charged cap ends the turn instead of resuming.
-
-The resumed attempt would be floored at one token, so it replays the whole prompt through
-admission to emit a token the caller never allowed. The plain path already stops there; the
-tool round loop and the final answering pass are the two surfaces that did not.
-"""
+"""A pause that lands on a fully charged cap ends the turn instead of resuming."""
 
 from __future__ import annotations
 
@@ -31,7 +26,6 @@ _TOOL = {
     },
 }
 
-# Eight characters, which the pause charges as two tokens: exactly the cap below.
 _CAP = 2
 _SPENDS_THE_CAP = "abcdefgh"
 

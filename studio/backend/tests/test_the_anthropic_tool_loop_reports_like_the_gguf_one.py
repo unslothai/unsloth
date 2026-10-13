@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The Anthropic tool loop is armed, so it owes the ledger what the GGUF one gives it.
-
-Both surfaces drive `generate_chat_completion_with_tools` against the same cache, but the
-Anthropic copy published neither its round charge nor its tool states. A round grew the
-prompt with the tool history and the ledger kept the opening figure, so the watermark fired
-late by that whole history; and a tool that may run for the configured 300 seconds left the
-holder marked DECODING, which is the one state `await_resume` does not extend its 90 second
-stall deadline for.
-"""
+"""The Anthropic tool loop is armed, so it owes the ledger what the GGUF one gives it."""
 
 from __future__ import annotations
 
@@ -39,7 +31,6 @@ def _controller(key: str = "test://anthropic") -> PreemptionController:
 
 
 def _backend():
-    # Unified and sized: arming takes the accounting gate, and without a cache nothing arms.
     return SimpleNamespace(
         base_url = "http://anthropic.test",
         admission_key = "test://anthropic",
@@ -83,8 +74,6 @@ class TestTheRoundChargeReachesTheLedger:
         assert held.base_tokens == 6000, "the round's charge is what admission now holds"
         assert held.prompt_tokens == expected_prompt
         assert held.prompt_tokens > 800, "the tool history grew the prompt the cache holds"
-        # The sweep runs on the new figure; recording it and not sweeping is what let three
-        # chats prefill past the cache together.
         assert swept == [0]
 
     def test_a_reservation_without_a_lease_publishes_nothing(self, monkeypatch):
@@ -136,11 +125,7 @@ class TestBothRecostsPublish:
 
 
 def _drive_tool_stream(events, note_state, **kwargs):
-    """Run `_anthropic_tool_stream` over canned events and return its SSE chunks.
-
-    ``events`` is a factory, not a list: the state a test reads between two events has to
-    be read while the stream is consuming them, not while they are being built.
-    """
+    """Run `_anthropic_tool_stream` over canned events and return its SSE chunks."""
 
     def run_gen():
         def gen():
@@ -188,8 +173,8 @@ class TestTheToolStatesReachTheController:
                 "tool_call_id": "c0",
                 "arguments": {},
             }
-            # Where the tool actually runs: the holder must not read as DECODING here, or a
-            # chat paused behind it gives up after 90 seconds of a working backend.
+            # Where the tool actually runs: the holder must not read as DECODING here, or a chat
+            # paused behind it gives up after 90 seconds of a working backend.
             seen.append(held.state)
             yield {
                 "type": "tool_end",
@@ -232,8 +217,6 @@ class TestTheToolStatesReachTheController:
 
         _drive_tool_stream(_gen_events, note_state)
 
-        # Parked while the user is asked, then running once they answer: a parked holder is
-        # the sweep's first victim, since it holds cells and consumes no compute.
         assert seen == [ParticipantState.PARKED_ON_TOOL, ParticipantState.TOOLS_RUNNING]
         assert held.state == ParticipantState.DECODING
 
@@ -360,8 +343,8 @@ class TestTheFinalPassIsNotChargedForACatalogueItDoesNotSend:
         with_tools = _publish(catalogue)
         without = _publish(None)
         assert with_tools > without, "the catalogue has to be worth measuring here"
-        # A round that sends none must not carry them as cells the cache holds: on a small
-        # context that difference is enough to preempt a healthy chat.
+        # A round that sends none must not carry them as cells the cache holds: on a small context
+        # that difference is enough to preempt a healthy chat.
         assert without < 100
 
     @pytest.mark.parametrize(
@@ -391,14 +374,11 @@ class TestEveryDrainReportsItsToolStates:
     @pytest.mark.parametrize(
         ("opener", "closer"),
         [
-            # The GGUF streaming loop and its non-streaming drain.
             (
                 "async def produce_openai_chat_completions(",
                 "\ndef _openai_messages_for_passthrough",
             ),
-            # The Anthropic streaming loop.
             ("async def _anthropic_tool_stream(", "\nasync def _anthropic_plain_stream("),
-            # The Anthropic non-streaming drain.
             ("def _collect_anthropic_events(", "\ndef _anthropic_tool_response_from_events("),
         ],
     )
@@ -413,8 +393,6 @@ class TestEveryDrainReportsItsToolStates:
 
     def test_the_reader_is_the_only_implementation(self):
         text = ROUTES.read_text(encoding = "utf-8")
-        # Written out at a call site, a later fix lands in one copy and not the others,
-        # which is how the non-streaming drains came to be three rounds behind.
         assert text.count("ParticipantState.PARKED_ON_TOOL\n") <= 2, (
             "the parked/tools-running transition is written out somewhere other than "
             "_note_tool_loop_state"
@@ -433,9 +411,6 @@ class TestAPausedAnthropicStreamKeepsTalking:
             ],
             None,
         )
-        # Dropped, the connection is silent for the whole pause: the wait's two-second
-        # keepalive completes next(gen) before the stall timer can fire, so an
-        # intermediary that drops an idle connection at ~100s cancels a resumable answer.
         assert inference_route._OPENAI_PREEMPT_SSE_PAUSED in chunks, "the pause was not forwarded"
         assert chunks.count(inference_route._OPENAI_PREEMPT_SSE_KEEPALIVE) == 2
         assert inference_route._OPENAI_PREEMPT_SSE_RESUMED in chunks

@@ -136,8 +136,6 @@ class TestThePauseSaysItIsStillWaiting:
         monkeypatch.setattr(llama_mod, "_PREEMPT_KEEPALIVE_S", 0.05)
 
         keepalive = {"type": "preempt", "state": "keepalive"}
-        # Released by the reader after the third keepalive, not after a fixed sleep: a slow
-        # runner fit two keepalives into 0.3s.
         go = threading.Event()
 
         class _Slow:
@@ -291,8 +289,6 @@ class TestARawHolderIsMeasuredOnceItProduces:
         controller.note_resident(4000)
         assert controller.snapshot().committed == 8000, "unmeasured: residency plus the charge"
         controller.note_measured("raw")
-        # Still on top: the reading in hand predates the mark, and the raw path has no
-        # probe of its own. The next reading is the first that can hold its cells.
         assert controller.snapshot().committed == 8000
         controller.note_resident(4000)
         assert controller.snapshot().committed == 4000
@@ -305,9 +301,6 @@ class TestARawHolderIsMeasuredOnceItProduces:
         assert source.count("_openai_llama_note_raw_measured(") >= 4  # the def and three calls
 
     def test_no_raw_request_is_measured_at_registration(self):
-        # Measured before its prefill, a residency sample from before it swallowed the
-        # charge and a missed pause overran the cache. A non-streaming request has no data
-        # line, so it stays counted on top of the residency for its answer: the safer side.
         source = inspect.getsource(inference)
         assert "measured = True" not in inspect.getsource(inference._openai_llama_count_raw_holder)
         assert source.count("_arm_anthropic(reservation, raw = raw)") == 2
@@ -326,7 +319,6 @@ class TestARawHolderIsMeasuredOnceItProduces:
             base_url = "http://127.0.0.1:1"
 
         inference._openai_llama_note_raw_measured(llama_backend = _Backend(), gen_id = "raw")
-        # No reading in hand: stamped, and promoted by the first probe that starts after it.
         assert controller.participant("raw").measured_at_seq is not None
         controller.note_resident(0, started_at_seq = controller.residency_epoch())
         assert controller.participant("raw").measured is True
@@ -386,8 +378,6 @@ class TestAPartialEraseReclaimsNothingGlobal:
             freed = 4000,
             readings = [
                 {"idle": [0, 1], "resident": 6000, "idle_tokens": 4000},
-                # A live chat prefilled while the erases ran: the cache is fuller than
-                # `old - freed` says.
                 {"idle": [], "resident": 5500, "idle_tokens": 0},
             ],
         )

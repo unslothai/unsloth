@@ -52,7 +52,6 @@ class CodexToolPolicy:
     nudge_tool_calls: bool | None = None
     deduplicate_tool_calls: bool | None = None
     sandbox_level: str = "high"
-    # The request's `parallel_tool_calls`; None keeps the process-wide behaviour.
     parallel_tool_calls: bool | None = None
 
 

@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A stopped overlapped tool round ends the threads driving its tools.
-
-Each call of a parallel GGUF round is read on a driver thread into a queue. Once the request is
-cancelled the tool wrapper heartbeats on every poll, and nothing reads that queue after the
-round is gone, so a tool that ignored the cancel kept a driver alive and its queue growing
-until it returned. The provider pump stops on the cancel; this driver now does too.
-"""
+"""A stopped overlapped tool round ends the threads driving its tools."""
 
 from __future__ import annotations
 
@@ -20,7 +14,6 @@ from core.inference.tool_stream_exec import stream_tool_execution
 
 def _blocked_tool(release: threading.Event):
     def invoke(_on_output):
-        # Ignores the cancel, as a slow tool can.
         release.wait(10)
         return "done"
 

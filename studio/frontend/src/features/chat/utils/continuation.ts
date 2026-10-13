@@ -93,8 +93,6 @@ export function incompleteReasonAfterError(
 export function isProviderReportedReason(
   reason: IncompleteReason | null | undefined,
 ): boolean {
-  // `paused` too: it has no assistant-ui status of its own, so a reload would relabel it
-  // "Response stopped", which reads as something the user did. The stamp wins.
   return reason === "context_window" || reason === "paused";
 }
 

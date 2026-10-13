@@ -57,8 +57,6 @@ test("an empty assistant turn is continuable only when it is allowed to be", () 
 });
 
 test("allowEmpty does not reopen the tool-call rule", () => {
-  // A continuation runs as a sibling, so the call and its result are missing from the
-  // outbound history whatever stopped the turn.
   const calledATool = [
     { type: "text", text: "" },
     { type: "tool-call", toolName: "web_search" },

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A plain chat whose oldest messages were fitted away is counted at its fitted size.
-
-The refit repriced the output allowance and left the preemptor holding the pre-fit prompt, so a
-chat sending a few tokens was counted at thousands: paused for room it never takes, then refused
-its resume as too large.
-"""
+"""A plain chat whose oldest messages were fitted away is counted at its fitted size."""
 
 from __future__ import annotations
 

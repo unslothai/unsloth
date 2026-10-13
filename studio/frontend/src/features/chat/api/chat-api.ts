@@ -1774,7 +1774,6 @@ function parseSseEvent(rawEvent: string): {
       dataLines.push(line.slice(5).trimStart());
       continue;
     }
-    // Last one wins: a block carrying both wait and done ends in the state it ended in.
     admission = readAdmissionComment(line) ?? admission;
   }
   return { dataLines, admission };
@@ -1872,7 +1871,7 @@ export async function* streamChatCompletions(
   let sawAssistantContent = false;
   let sawReasoningContent = false;
   // A turn the backend gave up on ends on `length` because that is the shape a continuation
-  // resumes from; thrown as a length error, the adapter never reached its `paused` verdict.
+  // resumes from.
   let sawPreemptGaveUp = false;
   // Reported by the server on the final chunk. Needed to tell the two walls apart: a finite Max
   // Tokens below the context length does not mean Max Tokens stopped the generation.

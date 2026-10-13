@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Two ways a parallel round's bookkeeping drifted from what the cache and the tools did.
-
-A parked holder whose tool came back and re-charged before the reclaim scanned it keeps its
-new commitment, so it must keep counting; and a padded tool name is the same tool to
-`prepare_call`, so it is the same call to the overlap gate.
-"""
+"""Two ways a parallel round's bookkeeping drifted from what the cache and the tools did."""
 
 from __future__ import annotations
 
@@ -42,7 +37,6 @@ class TestARefusedYieldRestoresTheHolder:
         controller.register("chat", lease = lease, tokens = 6000)
         controller.note_state("chat", ParticipantState.TOOLS_RUNNING)
         seen = controller.parked_holders()
-        # The tool came back and the round re-charged; the ledger has its new prompt.
         lease.charge_seq += 1
         controller.note_tokens("chat", 6400, 6400)
         assert controller.note_cells_reclaimed(seen) == 1
@@ -89,7 +83,6 @@ class TestAReplayedPromptIsNotMeasuredUntilItIsIn:
         lease = controller.participant("chat").lease
         lease.charge_seq = controller.participant("chat").park_charge_seq
         assert controller.note_cells_reclaimed(controller.parked_holders()) == 1
-        # Another chat's cells are what the post-erase reading holds.
         controller.note_resident(5000, started_at_seq = controller.residency_epoch())
         controller.note_tokens("chat", 6200, 6200)
         assert controller.participant("chat").measured is False
@@ -97,7 +90,6 @@ class TestAReplayedPromptIsNotMeasuredUntilItIsIn:
             controller.snapshot().committed == 5000 + 6200
         ), "the replay was folded into cells the cache holds for someone else"
         controller.observe("chat", 1)
-        # In once a reading taken after its first token lands, not on the token itself.
         controller.note_resident(11200, started_at_seq = controller.residency_epoch())
         assert controller.participant("chat").measured is True
 
@@ -128,7 +120,6 @@ class TestAChoiceThatLandsAsAToolStartsIsUndone:
         chosen = [p.gen_id for p in controller.plan_preemptions(needed = 4000)]
         assert chosen == ["chat"]
         assert chat.state == ParticipantState.PREEMPTING and chat.preempt_event.is_set()
-        # The stream had already emitted its tool call; the loop starts the tool.
         assert controller.note_state("chat", ParticipantState.TOOLS_RUNNING) is True
         assert chat.state == ParticipantState.TOOLS_RUNNING
         assert not chat.preempt_event.is_set()

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A pause holds no cells, so its replay estimate cannot come off the residency reading.
-
-Subtracting it credited the paused chat with room the reading says is somebody else's, and
-the residency check exists precisely to catch a ledger that has drifted below the truth.
-"""
+"""A pause holds no cells, so its replay estimate cannot come off the residency reading."""
 
 from __future__ import annotations
 
@@ -75,7 +71,6 @@ class TestAResidentHolderStillSubtractsItsOwn:
         controller.note_measured("mine")
         controller.note_resident(11000, reclaimable = 0)
 
-        # 11000 resident, 8000 of it this holder's: 3000 belongs to anybody else.
         assert controller.room_for("mine", 8000) is True
 
     def test_a_grant_that_has_not_prefilled_yet_owns_nothing(self):
@@ -88,9 +83,7 @@ class TestAResidentHolderStillSubtractsItsOwn:
 
 
 class TestARawHolderIsAddedOnTopUntilItsPrefillLands:
-    """A counted holder is inside the residency sample only once llama-server has its
-    prompt. Marked measured at registration, the sample from before its prefill swallows
-    it, and the decoders beside it read as under the watermark by its whole prompt."""
+    """A counted holder is inside the residency sample only once llama-server has its prompt."""
 
     def test_unmeasured_it_is_added_and_measured_it_is_inside_the_sample(self):
         controller = _controller("http://raw-holder")
@@ -99,11 +92,8 @@ class TestARawHolderIsAddedOnTopUntilItsPrefillLands:
         controller.note_resident(10000, reclaimable = 0)
         controller.register("raw", tokens = 3000, state = ParticipantState.STREAMING_RAW)
         assert controller.committed_tokens() == 13000
-        # Its first data line: the prompt is resident, but the reading in hand is from
-        # before it, and folding the charge into that reading would swallow it.
         controller.note_measured("raw")
         assert controller.committed_tokens() == 13000
-        # The next reading has it, so it is no longer added on top.
         controller.note_resident(13000, reclaimable = 0)
         assert controller.committed_tokens() == 13000
 
@@ -117,11 +107,9 @@ class TestARawHolderIsAddedOnTopUntilItsPrefillLands:
         controller.register("raw", tokens = 3000, state = ParticipantState.STREAMING_RAW)
         controller.note_measured("raw")
         controller.note_resident(None)
-        # One failed read keeps the last count, and the raw holder is still added on top.
         assert controller.committed_tokens() == 13000
         clock[0] += preemption._RESIDENT_HOLD_S + 1
         controller.note_resident(None)
-        # The probe is gone: the ledger is the only figure, and it has every holder.
         assert controller.committed_tokens() == 9000
         controller.note_resident(13000, reclaimable = 0)
         assert controller.committed_tokens() == 13000

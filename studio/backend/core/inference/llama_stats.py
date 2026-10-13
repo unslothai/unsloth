@@ -74,8 +74,7 @@ def erase_llama_slot(
 
 
 def _loopback_opener():
-    """No proxy, so the bearer only ever goes to the loopback server. No HTTPSHandler: it
-    builds an SSL context this scrape never needs."""
+    """No proxy, so the bearer only ever goes to the loopback server."""
     opener = urllib.request.OpenerDirector()
     for handler in (
         urllib.request.ProxyHandler({}),
@@ -114,8 +113,6 @@ def scrape_llama_metrics(
             value = float(v)
         except ValueError:
             continue
-        # float() overflows a long digit string to inf without raising; _env_float
-        # refuses the same text. No printed double reaches 1.8e308, so nothing is lost.
         if math.isfinite(value):
             out[k] = value
     return out

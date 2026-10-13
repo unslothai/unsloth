@@ -35,7 +35,6 @@ test("a recompute is read, and says nothing about what the run is doing", () => 
 });
 
 test("the space after the colon is optional", () => {
-  // SSE treats `:x` and `: x` as the same comment, and an intermediary may rewrite it.
   assert.equal(readAdmissionComment(":admission-wait"), "waiting");
   assert.equal(readAdmissionComment(":  admission-wait  "), "waiting");
 });

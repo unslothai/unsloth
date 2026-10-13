@@ -33,7 +33,6 @@ def test_a_probe_in_flight_does_not_fold_the_new_prompt_in():
     controller.note_measured("old")
     controller.note_resident(3000, started_at_seq = controller.residency_epoch())
     controller.register("new", lease = _Lease(), tokens = 5000, prompt_tokens = 5000)
-    # A probe leaves before the new prompt goes in, then the first token arrives.
     in_flight = controller.residency_epoch()
     controller.observe("new", 1)
     controller.note_resident(3000 + 4000, started_at_seq = in_flight)

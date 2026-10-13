@@ -482,7 +482,6 @@ class TestWhoStops:
         _register(controller, "a", 9000)
         _register(controller, "b", 6000)
         controller.plan_preemptions()
-        # The field and the state behind it are gone, not merely empty.
         assert not hasattr(controller.snapshot(), "winner")
         assert not hasattr(controller, "_epoch_winner")
 
@@ -1182,7 +1181,6 @@ class TestAChoiceInFlightIsCountedOnce:
             _register(controller, gen_id, ceiling // 3)
         _register(controller, "d", ceiling // 6)
         assert [v.gen_id for v in controller.plan_preemptions(needed = 0)] == ["d"]
-        # A sample past the cached reading, as the token path's refresh would bring in.
         controller.note_resident(ceiling)
         more = controller.plan_preemptions(needed = 0)
         assert more and "d" not in [v.gen_id for v in more], "the cache holds more than d frees"

@@ -36,7 +36,6 @@ def _two_chats() -> PreemptionController:
     for gen_id in ("live", "other"):
         controller.register(gen_id, lease = _Lease(), tokens = 2500)
         controller.note_measured(gen_id)
-    # Read a moment ago: the two chats plus a finished request's idle slot, over the ceiling.
     controller.note_resident(9000, 3000, started_at_seq = controller.residency_epoch())
     return controller
 

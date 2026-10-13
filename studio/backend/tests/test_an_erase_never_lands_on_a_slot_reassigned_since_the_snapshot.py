@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An idle-slot erase goes only to the slot the reading saw idle, on the task it saw.
-
-llama-server defers an erase aimed at a processing slot and runs it once that slot goes idle
-again, so a slot handed to another request after the `/slots` reading had the newer request's
-cache erased when it parked or finished. That holder was not in the reading, so its next round
-reserved only its growth while the whole conversation had to be prefilled again.
-"""
+"""An idle-slot erase goes only to the slot the reading saw idle, on the task it saw."""
 
 from __future__ import annotations
 
@@ -79,7 +73,6 @@ def test_a_slot_handed_to_another_request_is_not_erased(monkeypatch):
         _slot(1, task = 7, processing = False, tokens = 3000),
         _slot(0, task = 5, processing = True, tokens = 6000),
     ]
-    # By the erase, slot 1 runs another request's task.
     taken = [
         _slot(1, task = 9, processing = True, tokens = 200),
         _slot(0, task = 5, processing = True, tokens = 6000),
@@ -102,8 +95,6 @@ def test_a_slot_still_idle_on_the_same_task_is_erased(monkeypatch):
 
 
 def test_a_newer_task_seen_after_the_erase_replays_the_holder_parked_since(monkeypatch):
-    # Idle on the reading's task when checked, then handed over before the erase ran: the
-    # chat that parked meanwhile may have lost its cells, so its next round replays them.
     controller = _controller()
     controller.register("live", lease = _Lease(), tokens = 6000)
     controller.register("later", lease = _Lease(), tokens = 1000)

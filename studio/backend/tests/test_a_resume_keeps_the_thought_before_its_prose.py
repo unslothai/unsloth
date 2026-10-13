@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A pause that lands after the thought AND after the first prose keeps both.
-
-The visible-text resume replayed `content` alone, so a reasoning model's replacement request
-was conditioned on a different prefix from the one that produced the answer it is extending:
-the model reasons the turn out again, or contradicts the sentence it is finishing.
-"""
+"""A pause that lands after the thought AND after the first prose keeps both."""
 
 from __future__ import annotations
 
@@ -160,8 +155,6 @@ class TestAPausedReasoningChat:
         recorder = _Recorder(
             monkeypatch,
             [
-                # One chunk: the recorder pauses on the first `data: {` of the attempt, and
-                # what this is about is a pause with a thought AND prose behind it.
                 [
                     _thought_then_prose(
                         "The secret intermediate result is 42.", "Therefore the answer"
