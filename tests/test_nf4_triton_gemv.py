@@ -167,3 +167,95 @@ def test_decode_plan_is_rebuilt_or_bypassed_when_inputs_change():
     assert torch.equal(utils.fast_gemv(Xm, q, s), gemv_nf4(Xm.contiguous(), *_args(q, s)))
     assert getattr(copy.deepcopy(s), "_unsloth_gemv_plan", None) is None
     assert getattr(pickle.loads(pickle.dumps(s)), "_unsloth_gemv_plan", None) is None
+
+
+def _linear4bit(
+    n,
+    k,
+    seed = 0,
+):
+    bnb = pytest.importorskip("bitsandbytes")
+    torch.manual_seed(seed)
+    proj = bnb.nn.Linear4bit(k, n, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
+    W = torch.randn(n, k, dtype = torch.bfloat16)
+    proj.weight = bnb.nn.Params4bit(W, requires_grad = False, quant_type = "nf4")
+    return proj.to("cuda")
+
+
+@pytest.mark.parametrize("nested", [True, False], ids = ["nested", "flat"])
+@pytest.mark.parametrize("bsz", [2, 3, 8])
+@pytest.mark.parametrize("shape", [(1024, 4096), (4096, 14336), (1000, 192)], ids = str)
+def test_rows_kernel_is_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
+    """Each decode row equals gemv_nf4 on that row alone, bit for bit, written into a strided
+    out as fast_swiglu_inference passes up[:, :, :hd]."""
+    from unsloth.kernels.nf4_gemv import gemv_nf4_rows
+
+    q, s = _quant(*shape, torch.bfloat16, nested = nested)
+    a = _args(q, s)
+    X = torch.randn(bsz, 1, shape[1], dtype = torch.bfloat16, device = "cuda")
+    wide = torch.zeros(bsz, 1, shape[0] + 64, dtype = torch.bfloat16, device = "cuda")
+    gemv_nf4_rows(X, *a[:-1], wide[:, :, : shape[0]])
+    for i in range(bsz):
+        assert torch.equal(wide[i, :, : shape[0]], gemv_nf4(X[i : i + 1].contiguous(), *a)[0]), i
+    assert not wide[:, :, shape[0] :].any()
+
+
+@pytest.mark.parametrize("bsz", [2, 3, 4])
+def test_small_decode_batches_skip_the_dequantize(bsz, monkeypatch):
+    """Batched decode (q_len 1) of up to _GEMV_MAX_ROWS rows takes the GEMV instead of
+    dequantizing the whole weight to 16bit every token (#2798)."""
+    utils = _utils_with_kernels()
+    proj = _linear4bit(1024, 4096)
+    X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    ref = (
+        X.float().view(bsz, -1)
+        @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
+    )
+    monkeypatch.setattr(utils, "_gemv_rows_win", lambda *a: True)
+    monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: pytest.fail("dequantized"))
+    first = utils.fast_linear_forward(proj, X)
+    assert _rel_err(first.view(bsz, -1), ref) < TOL[torch.bfloat16]
+    # Later decode steps rerun the planned launch into the caller's buffer.
+    out = torch.empty(bsz, 1, 1024, dtype = torch.bfloat16, device = "cuda")
+    for _ in range(3):
+        assert torch.equal(utils.fast_linear_forward(proj, X, out = out), first)
+    import copy
+
+    assert getattr(copy.deepcopy(proj.weight.quant_state), "_unsloth_gemv_rows", None) is None
+
+
+def test_larger_decode_batches_still_dequantize(monkeypatch):
+    utils = _utils_with_kernels()
+    proj = _linear4bit(1024, 4096)
+    X = torch.randn(utils._GEMV_MAX_ROWS + 1, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    calls = []
+    real = utils.fast_dequantize
+    monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: calls.append(1) or real(*a, **k))
+    ref = (
+        X.float().view(X.shape[0], -1)
+        @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
+    )
+    assert (
+        _rel_err(utils.fast_linear_forward(proj, X).view(X.shape[0], -1), ref) < TOL[torch.bfloat16]
+    )
+    assert calls
+
+
+def test_rows_or_dequantize_is_timed_once_per_shape_and_rows(monkeypatch):
+    """The GEMV is taken only where it times clearly faster than dequantize + matmul on this GPU
+    (B200 dequantizes fast enough that it never is), decided once per weight shape and row count,
+    never while a CUDA graph is captured."""
+    utils = _utils_with_kernels()
+    monkeypatch.setattr(utils, "_GEMV_ROWS_WINS", {})
+    proj = _linear4bit(1024, 4096)
+    timings = iter([50.0, 100.0, 95.0, 100.0])  # rows, dequantize; twice
+    calls = []
+    monkeypatch.setattr(utils, "_time_us", lambda fn: calls.append(1) or next(timings))
+    W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
+    for bsz, wins in ((2, True), (3, False), (2, True), (3, False)):
+        X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+        assert (utils._gemv_rows(X, W, W_quant, None) is not None) is wins
+    assert len(calls) == 4
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    X = torch.randn(4, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    assert utils._gemv_rows(X, W, W_quant, None) is None and len(calls) == 4

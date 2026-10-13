@@ -599,6 +599,7 @@ def _nf4_kernels_supported():
 # UNSLOTH_BNB_TRITON=0 keeps the bitsandbytes ctypes path.
 _USE_NF4_KERNELS = False
 _TRITON_GEMV_EAGER = False
+_GEMV_MAX_ROWS = 1
 _is_compiling = torch.compiler.is_compiling
 _current_device = torch.cuda.current_device
 if (
@@ -610,7 +611,14 @@ if (
     try:
         import triton
         from .nf4 import dequantize_nf4, dequantize_nf4_planned
-        from .nf4_gemv import gemv_nf4, gemv_nf4_planned, triton_gemv_eager
+        from .nf4_gemv import GEMV_MAX_ROWS as _GEMV_MAX_ROWS
+        from .nf4_gemv import (
+            gemv_nf4,
+            gemv_nf4_planned,
+            gemv_nf4_rows,
+            gemv_nf4_rows_planned,
+            triton_gemv_eager,
+        )
 
         _USE_NF4_KERNELS = True
         # Eager decode uses the Triton GEMV where it is faster; compiled code always does.
@@ -1420,6 +1428,121 @@ def _quant_state_dtype(quant_state):
     return getattr(quant_state, "dtype", None)
 
 
+# (device, out_features, in_features, dtype, rows) -> whether gemv_nf4_rows beats dequantizing.
+_GEMV_ROWS_WINS = {}
+
+
+def _time_us(fn, reps = 3):
+    fn()
+    start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+    best = float("inf")
+    for _ in range(reps):
+        start.record()
+        fn()
+        end.record()
+        end.synchronize()
+        best = min(best, start.elapsed_time(end))
+    return best * 1000
+
+
+def _gemv_rows_win(X, W, quant_state, args):
+    """Each GEMV row costs about one batch-1 GEMV, while dequantize + matmul costs the same for
+    any small batch: 4.8x a GEMV on A100, 11x on T4, under 2x on B200. So time both once per
+    weight shape and row count on this GPU (eager, outside graph capture) and keep the winner."""
+    shape = args[-1]
+    key = (X.device.index, int(shape[0]), int(shape[1]), X.dtype, X.shape[0])
+    win = _GEMV_ROWS_WINS.get(key)
+    if win is not None or _is_compiling() or torch.cuda.is_current_stream_capturing():
+        return bool(win)
+    out = torch_empty((X.shape[0], 1, shape[0]), dtype = X.dtype, device = X.device)
+    with torch_gpu_device(X.device):
+        rows_us = _time_us(lambda: gemv_nf4_rows(X, W, *args, out))
+        dequant_us = _time_us(
+            lambda: torch_matmul(X, fast_dequantize(W.t(), quant_state, use_global_buffer = True))
+        )
+    # Only switch where the GEMV clearly wins, so the choice is stable across runs.
+    win = _GEMV_ROWS_WINS[key] = rows_us < 0.9 * dequant_us
+    return win
+
+
+def _gemv_rows(X, W, quant_state, out):
+    """Decode rows 2.._GEMV_MAX_ROWS through one gemv_nf4_rows launch where that beats
+    dequantizing the whole weight to 16bit every token (#2798). None when it does not apply;
+    the caller then dequantizes."""
+    M = X.shape[0]
+    eager = (
+        not _is_compiling()
+        and type(quant_state) is not list
+        and X.is_contiguous()
+        and X.device.index == _current_device()
+    )
+    if eager:
+        # As in fast_gemv: repeat this weight's launch for M rows, or go straight to dequantize.
+        plans = getattr(quant_state, "_unsloth_gemv_rows", None)
+        plan = plans.get(M) if plans is not None else None
+        if plan is False:
+            return None
+        if (
+            plan
+            and out is not None
+            and plan[0] == W.data_ptr()
+            and plan[1] is quant_state.absmax
+            and plan[2] is X.dtype
+            and X.data_ptr() & 15 == plan[3]
+            and out.dtype is X.dtype
+            and out.data_ptr() & 15 == 0
+            and out.stride(0) == plan[4]
+        ):
+            try:
+                if plan[5](X, out):
+                    return out
+            except Exception:
+                pass
+            plans.pop(M, None)
+    absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = _unpack_quant_state(
+        quant_state
+    )
+    if shape[1] % blocksize != 0 or X.dtype not in (torch.float16, torch.bfloat16):
+        return None
+    if out is not None and (out.dtype != X.dtype or out.stride(-1) != 1):
+        return None
+    if not X.is_contiguous():
+        X = X.contiguous()
+    args = (absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape)
+    try:
+        if not _gemv_rows_win(X, W, quant_state, args):
+            if eager and not torch.cuda.is_current_stream_capturing():
+                _rows_plans(quant_state)[M] = False
+            return None
+        if out is None:
+            out = torch_empty((M, 1, shape[0]), dtype = X.dtype, device = X.device)
+        if not eager or out.data_ptr() & 15:
+            return gemv_nf4_rows(X, W, *args, out)
+        rerun = gemv_nf4_rows_planned(X, W, *args, out)
+        if rerun is not None:
+            _rows_plans(quant_state)[M] = _NF4Plan(
+                [W.data_ptr(), quant_state.absmax, X.dtype, X.data_ptr() & 15, out.stride(0), rerun]
+            )
+        return out
+    except Exception as error:
+        if not _nf4_kernels_failed(error):
+            raise
+        return None
+
+
+class _NF4Plans(dict):
+    # Row count -> _NF4Plan, or False where dequantize + matmul won. Dropped by copies and pickles.
+    def __reduce__(self):
+        return (_no_plan, ())
+
+
+def _rows_plans(quant_state):
+    plans = getattr(quant_state, "_unsloth_gemv_rows", None)
+    if plans is None:
+        plans = quant_state._unsloth_gemv_rows = _NF4Plans()
+    return plans
+
+
 def fast_linear_forward(
     proj,
     X,
@@ -1458,6 +1581,14 @@ def fast_linear_forward(
     elif bsz == 1 and q_len == 1 and _quant_state_dtype(W_quant) != torch_float32:
         # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
+    elif (
+        bsz <= _GEMV_MAX_ROWS
+        and _USE_NF4_KERNELS
+        and _TRITON_GEMV_EAGER
+        and _quant_state_dtype(W_quant) != torch_float32
+        and (rows := _gemv_rows(X, W, W_quant, out)) is not None
+    ):
+        out = rows
     else:
         W = fast_dequantize(W.t(), W_quant, use_global_buffer = True)
         out = torch_matmul(X, W, out = out)
