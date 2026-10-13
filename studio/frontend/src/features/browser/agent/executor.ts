@@ -537,12 +537,13 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     }
     case "screenshot":
       return screenshot(ready);
+    // Where the tab is now: it may have finished loading somewhere else since `before`.
     case "move":
-      return moveTo(ready, action, context, before);
+      return moveTo(ready, action, context, tabUrl(ready));
     case "drag":
-      return dragBetween(ready, action, context, before);
+      return dragBetween(ready, action, context, tabUrl(ready));
     case "evaluate":
-      return runScript(ready, action, context, before);
+      return runScript(ready, action, context, tabUrl(ready));
   }
 
   // Acting on an element: what it is decides whether the user is asked first.
@@ -701,26 +702,27 @@ const DRAG_FRAME_MS = 16;
 /** browser_drag: both ends are asked about as clicks, since a drop can delete, send or buy too. */
 async function dragBetween(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
   const { signal } = context;
-  const start = await onScreen(tab, action.ref, action.x, action.y);
+  // A point is read off the screen as it is: a ref is scrolled to only when both ends are refs.
+  const scroll = Boolean(action.ref && action.toRef);
+  const start = await onScreen(tab, action.ref, action.x, action.y, scroll);
   if (typeof start === "string") return { ok: false, error: start };
-  const end = await onScreen(tab, action.toRef, action.toX, action.toY);
+  const end = await onScreen(tab, action.toRef, action.toX, action.toY, scroll);
   if (typeof end === "string") return { ok: false, error: end };
   // Bringing the end ref into view can scroll the start away.
-  const from = action.ref && action.toRef ? await onScreen(tab, action.ref, undefined, undefined, false) : start;
+  const from = scroll ? await onScreen(tab, action.ref, undefined, undefined, false) : start;
   if (typeof from === "string") {
     return { ok: false, error: "the start and end don't fit on screen together; drag by x and y, or in shorter steps." };
   }
-  let expect = "";
+  const hits: string[] = [];
   for (const point of [from, end]) {
     const described = await pageCall(tab, { op: "describe", ref: "", ...point });
     if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
     const refused = await pass(gateElement("click", described.info, before, action.policy, permissions()), signal);
     if (refused) return { ok: false, error: refused };
-    expect ||= described.hit ?? "";
+    hits.push(described.hit ?? "");
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  // The end isn't held to its element: a drag moves things under the pointer, and the drop is no click.
-  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect });
+  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0] });
   if (!down.ok) return { ok: false, error: down.error };
   // Paced like a hand: pages often take one move per frame, or wait for a distance before a drag starts.
   const steps = Math.min(25, Math.max(5, Math.round(Math.hypot(end.x - from.x, end.y - from.y) / DRAG_STEP_PX)));
@@ -735,11 +737,23 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     if (!moved?.ok) break;
     at = next;
   }
-  // Released where it got to, so the page is never left mid-drag.
-  const up = await pageCall(tab, { op: "pointer", phase: "up", ...at });
-  if (signal?.aborted) return { ok: false, error: STOPPED };
+  // Called off rather than dropped anywhere nobody checked, so the page is never left mid-drag.
+  const cancel = async (error: string): Promise<Result> => {
+    await pageCall(tab, { op: "pointer", phase: "cancel", ...from }).catch(() => null);
+    return { ok: false, error };
+  };
+  if (signal?.aborted) return cancel(STOPPED);
+  if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
+  // Many apps show their drop zones (Trash, Send to) only once a drag starts: what is at the end
+  // now is what takes the drop, so it is asked about if it isn't what was asked about before.
+  const target = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
+  if (!target?.ok || !target.info) return cancel(target?.error ?? "nothing is at the drag's end.");
+  if (target.hit !== hits[1]) {
+    const refused = await pass(gateElement("click", target.info, before, action.policy, permissions()), signal);
+    if (refused) return cancel(refused);
+  }
+  const up = await pageCall(tab, { op: "pointer", phase: "up", ...end });
   if (!up.ok) return { ok: false, error: up.error };
-  if (at.x !== end.x || at.y !== end.y) return { ok: false, error: "the drag stopped short; take a snapshot to see where things are." };
   return afterward(tab, before, action, context, up.note);
 }
 

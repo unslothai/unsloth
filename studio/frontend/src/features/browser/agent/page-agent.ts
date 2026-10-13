@@ -12,7 +12,7 @@ export type AgentCommand =
   | { op: "describe"; ref: string; x?: number; y?: number }
   | { op: "click"; ref: string; directLinks: boolean; x?: number; y?: number; expect?: string }
   | { op: "locate"; ref: string; scroll: boolean }
-  | { op: "pointer"; phase: "down" | "move" | "up"; x: number; y: number; expect?: string }
+  | { op: "pointer"; phase: "down" | "move" | "up" | "cancel"; x: number; y: number; expect?: string }
   | { op: "type"; ref: string; text: string; submit: boolean }
   | { op: "select"; ref: string; value: string }
   | { op: "scroll"; direction: "up" | "down"; ref?: string }
@@ -707,7 +707,12 @@ export function installPageAgent(): PageAgent {
     const inView = ({ x, y }: Point) => x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
     if (scroll && !inView(centre())) el.scrollIntoView({ block: "nearest", inline: "nearest" });
     const at = centre();
-    return inView(at) ? { ok: true, ...at } : { ok: true };
+    if (!inView(at)) return { ok: true };
+    // As for a ref click: an overlay over the ref would take the pointer instead.
+    if (!lineage(elementAt(at)).includes(el)) {
+      return { ok: false, error: `${ref} is covered by an overlay; snapshot to find its close button, or scroll first.` };
+    }
+    return { ok: true, ...at };
   };
 
   // A drag between the panel's down, move and up calls. `html`: the source is draggable, so a
@@ -748,6 +753,17 @@ export function installPageAgent(): PageAgent {
     }
     const html = drag?.html;
     drag = null;
+    if (phase === "cancel") {
+      // Called off, as a user would with Escape, and let go where it started: nothing is dropped.
+      key(document.activeElement ?? document.body, "Escape");
+      if (html) dragEvent(html.source, "dragend", at, html.data);
+      else {
+        hoverTo(el, at, 1);
+        mouse(el, "pointerup", at);
+        mouse(el, "mouseup", at);
+      }
+      return { ok: true };
+    }
     if (html) {
       if (html.accepted) dragEvent(el, "drop", at, html.data);
       dragEvent(html.source, "dragend", at, html.data);
