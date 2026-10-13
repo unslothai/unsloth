@@ -288,6 +288,15 @@ async def transcribe(
         return await _transcribe_source(
             caller, ctx, source, language = language, timestamps = timestamps, model = model
         )
+    if model is None:
+        # Without a model the multipart route runs its Transformers default, not the loaded one.
+        model, engine = await _resident_stt(caller)
+        # A whisper.cpp id is shared with Transformers, so only the stored-audio route keeps that engine.
+        if engine == "gguf" and not translate:
+            source = {"input_id": await upload_audio(caller, data, name)}
+            return await _transcribe_source(
+                caller, ctx, source, language = language, timestamps = timestamps, model = model
+            )
 
     async def send():
         return await _multipart(
@@ -313,18 +322,19 @@ async def transcribe(
         # This route answers with the text alone, so report what was asked for and what ran.
         # A translation is always English; its verbose form spells it "english".
         language = "en" if translate else (opt_text(payload.get("language")) or language),
-        model = model or await _resident_stt(caller),
+        model = model or (await _resident_stt(caller))[0],
         segments = _segments(payload) if timestamps else None,
         saved_to_history = False,
     )
 
 
-async def _resident_stt(caller: Caller) -> Optional[str]:
+async def _resident_stt(caller: Caller) -> tuple[Optional[str], Optional[str]]:
     payload = await try_json(caller, "/api/inference/audio/stt/status")
-    for state in payload.values() if isinstance(payload, dict) else ():
+    for engine in loading.STT_ENGINES:
+        state = payload.get(engine) if isinstance(payload, dict) else None
         if isinstance(state, dict) and opt_text(state.get("loaded_model")):
-            return state["loaded_model"]
-    return None
+            return state["loaded_model"], engine
+    return None, None
 
 
 TOOLS = ((generate_audio, WRITES, AudioResult.model_json_schema()), (transcribe, WRITES))

@@ -240,9 +240,22 @@ def test_without_a_model_the_resident_one_is_named(monkeypatch):
         TRANSCRIPTIONS: TRANSCRIPT,
         STT_STATUS_ROUTE: {"transformers": {"loaded_model": "small", "loading": False}},
     }
-    result, _studio = run_tool(monkeypatch, routes, "transcribe", _memo("memo.wav"))
+    result, studio = run_tool(monkeypatch, routes, "transcribe", _memo("memo.wav"))
     assert result["structuredContent"]["model"] == "small"
     assert result["structuredContent"]["language"] is None
+    assert form(studio, "/v1/audio/transcriptions")["model"][1] == b"small"
+
+
+def test_small_audio_runs_on_the_loaded_non_transformers_model(monkeypatch):
+    # Without the id the route would run its Transformers default and the result would name Qwen3-ASR.
+    asr = "unsloth/Qwen3-ASR-0.6B-GGUF"
+    routes = {
+        TRANSCRIPTIONS: TRANSCRIPT,
+        STT_STATUS_ROUTE: {"mtmd": {"loaded_model": asr, "loading": False}},
+    }
+    result, studio = run_tool(monkeypatch, routes, "transcribe", _memo())
+    assert result["structuredContent"]["model"] == asr
+    assert form(studio, "/v1/audio/transcriptions")["model"][1] == asr.encode()
 
 
 SEGMENTS = [
@@ -297,6 +310,8 @@ def test_a_missing_model_is_downloaded_then_the_transcription_retried_once(monke
     result, studio = run_tool(monkeypatch, routes, "transcribe", _memo())
     assert result["structuredContent"]["text"] == "Hello from Studio."
     assert [c[1] for c in studio.state.calls] == [
+        # Nothing loaded, so the route's default is asked for.
+        "/api/inference/audio/stt/status",
         "/v1/audio/transcriptions",
         "/api/inference/audio/stt/status",
         "/api/inference/audio/stt/download",
@@ -392,6 +407,24 @@ def test_a_stored_clip_is_transcribed_by_id_with_the_loaded_model(
             **extra,
         }
     ]
+
+
+def test_small_audio_keeps_a_loaded_whisper_cpp_model_on_its_engine(monkeypatch):
+    # The id is shared with Transformers, so multipart would quietly run another engine.
+    result, studio = _from_source(monkeypatch, _memo())
+    assert result["structuredContent"]["model"] == TURBO
+    assert "/v1/audio/transcriptions" not in [c[1] for c in studio.state.calls]
+    assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["engine"] == "gguf"
+
+
+def test_a_shared_whisper_id_runs_on_the_engine_holding_it(monkeypatch):
+    shared = {
+        "transformers": stt_state(downloaded = [WHISPER], models = [WHISPER]),
+        "gguf": stt_state(loaded = WHISPER, downloaded = [WHISPER], models = [WHISPER]),
+    }
+    args = {"audio": {"clip_id": "clip-7"}, "model": WHISPER}
+    _result, studio = _from_source(monkeypatch, args, status = shared)
+    assert bodies(studio, "/api/inference/audio/transcribe/source")[0]["engine"] == "gguf"
 
 
 def test_audio_over_25_mib_is_uploaded_then_transcribed(monkeypatch):

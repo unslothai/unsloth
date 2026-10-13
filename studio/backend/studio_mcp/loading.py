@@ -291,6 +291,11 @@ async def stt_status(caller: Caller, model: Optional[str] = None) -> dict:
 
 
 def stt_engine(status: dict, model: str) -> str:
+    # Whisper ids are shared across engines: the one holding the model wins.
+    for engine in STT_ENGINES:
+        state = status.get(engine)
+        if isinstance(state, dict) and state.get("loaded_model") == model:
+            return engine
     for engine in STT_ENGINES:
         state = status.get(engine)
         if isinstance(state, dict) and model in {

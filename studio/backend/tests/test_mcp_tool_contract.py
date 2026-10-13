@@ -312,7 +312,11 @@ PATH_CALLS = [
         "transcribe",
         lambda path: {"audio": {"path": path}},
         {("POST", "/v1/audio/transcriptions"): TRANSCRIPT},
-        ["/v1/audio/transcriptions", "/api/inference/audio/stt/status"],
+        [
+            "/api/inference/audio/stt/status",
+            "/v1/audio/transcriptions",
+            "/api/inference/audio/stt/status",
+        ],
         lambda result, studio: (
             result["structuredContent"]["text"] == "Hello from Studio."
             and form(studio, "/v1/audio/transcriptions")["file"] == ("mcp-input.wav", WAV)
