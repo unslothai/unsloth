@@ -2467,7 +2467,8 @@ def test_the_h3_load_scopes_its_record_lookup_to_the_card_it_selected(fake_setti
     source = inspect.getsource(video_mod)
     load = source[source.index("allow_install = _install_allowed()") :]
     assert "selected_card = selected_card_identity(gpu_ordinal)" in load
-    assert "preferred_accelerator(_install_accelerator_for(target.backend), selected_card)" in load
+    assert "requested_accelerator = _install_accelerator_for(target.backend)" in load
+    assert "preferred_accelerator(requested_accelerator, selected_card)" in load
     start = 0
     guarded = 0
     while True:

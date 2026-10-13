@@ -2701,6 +2701,9 @@ _NATIVE_CRASH_NEEDLES = (
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
     """A user-facing reason for a failed generation, built only from fixed text."""
     try:
+        native_memory = _native_memory_failure(exc)
+        if native_memory:
+            return f"{VIDEO_GENERATION_FAILED_MSG} {native_memory}"
         if _is_out_of_memory(exc):
             if (
                 request_shape is not None
@@ -2721,6 +2724,35 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
     except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
         pass
     return VIDEO_GENERATION_FAILED_MSG
+
+
+# Printed by a native renderer whose GPU driver gave up, which after a radv/amdgpu allocation failure is how a
+# Vulkan device runs out of memory: "radv/amdgpu: Not enough memory for command submission", then
+# "ggml_vulkan: device lost".
+_NATIVE_DEVICE_LOST_NEEDLES = ("device lost", "errordevicelost", "error_device_lost")
+
+NATIVE_MEMORY_ADVICE = (
+    "Set Memory mode to Low VRAM, pick a smaller resolution (864x480 is the smallest preset), or load a "
+    "smaller quant."
+)
+
+
+def _native_memory_failure(exc: BaseException) -> Optional[str]:
+    """The advice for a native (sd.cpp) renderer that ran out of GPU or GPU-mapped memory, else None."""
+    text = str(exc)
+    lowered = text.lower()
+    if not any(n in lowered for n in ("sd-cli exited", "sd-server", "stable-diffusion.cpp")):
+        return None
+    from .sd_cpp_backend import output_shows_capacity_failure
+
+    if output_shows_capacity_failure(text):
+        return f"The native renderer ran out of GPU or system memory. {NATIVE_MEMORY_ADVICE}"
+    if any(n in lowered for n in _NATIVE_DEVICE_LOST_NEEDLES):
+        return (
+            "The GPU driver reset the device during the render, which usually means it ran out of GPU or "
+            f"GPU-mapped system memory. {NATIVE_MEMORY_ADVICE}"
+        )
+    return None
 
 
 def _is_out_of_memory(exc: BaseException) -> bool:
@@ -3701,6 +3733,8 @@ class VideoBackend:
             _accelerator_fingerprint,
             _install_allowed,
             _installed_accelerator_of,
+            ACCELERATOR_FALLBACK_CLEAR_HINT,
+            accelerator_fallback_reason,
             accelerator_probe_failure_is_decisive,
             accelerator_verdict_keeps_gpu,
             usable_or_recorded_failure,
@@ -3755,7 +3789,18 @@ class VideoBackend:
         allow_install = _install_allowed() and not local_files_only
         # Read back per card, as it is recorded, so one card's failure does not divert another.
         selected_card = selected_card_identity(gpu_ordinal)
-        accelerator = preferred_accelerator(_install_accelerator_for(target.backend), selected_card)
+        requested_accelerator = _install_accelerator_for(target.backend)
+        accelerator = preferred_accelerator(requested_accelerator, selected_card)
+        if accelerator != requested_accelerator:
+            # Otherwise silent on every load after the first: the record alone diverts it.
+            logger.warning(
+                "video.sd_cpp_accelerator_recorded_fallback: using the %s stable-diffusion.cpp build, "
+                "not %s, because this host recorded the %s build as unable to run; %s",
+                accelerator,
+                requested_accelerator,
+                requested_accelerator,
+                ACCELERATOR_FALLBACK_CLEAR_HINT,
+            )
         binary = usable_or_recorded_failure(
             ensure_h3_sd_cpp_binary(
                 allow_install = allow_install,
@@ -3808,9 +3853,11 @@ class VideoBackend:
                     if fallback_verdict and fallback_class == fallback:
                         logger.warning(
                             "video.sd_cpp_accelerator_fallback: the %s stable-diffusion.cpp build "
-                            "does not run on this host, using the %s build instead",
+                            "does not run on this host (%s), using the %s build instead; %s",
                             accelerator,
+                            accelerator_fallback_reason(accelerator),
                             fallback,
+                            ACCELERATOR_FALLBACK_CLEAR_HINT,
                         )
                         # Proven only when the own build answered: a timeout is not proof, and a bare
                         # "CPU only" is proof only when the runtime is provably unloadable here.
@@ -4096,6 +4143,47 @@ class VideoBackend:
             .strip()
             not in ("", "0")
         )
+        # Before the pin, so a text encoder moved to the CPU is pinned there. A load that cannot fit is refused here,
+        # not left to die mid-render on a lost device.
+        native_fit_note: Optional[str] = None
+        if native_device != "cpu":
+            from .video_minimax_h3 import (
+                amdgpu_gtt_limit_bytes,
+                h3_host_capacity_bytes,
+                h3_native_memory_fit,
+            )
+
+            def _size(path: Any) -> int:
+                try:
+                    return os.path.getsize(path) if path else 0
+                except OSError:
+                    return 0
+
+            try:
+                import psutil
+
+                # Swap counts: only the pinned half cannot page out, and the GTT check covers that one.
+                host_available = h3_host_capacity_bytes() + int(psutil.swap_memory().free)
+            except Exception:  # noqa: BLE001 - an unreadable reading skips the host check
+                host_available = None
+            fit = h3_native_memory_fit(
+                native_offload,
+                accelerator = decided_accelerator
+                if isinstance(decided_accelerator, str)
+                else accelerator,
+                memory_mode = requested_mode,
+                dit_bytes = _size(resolved[0]),
+                te_bytes = _size(resolved[1]),
+                vae_bytes = _size(resolved[2]) + _size(resolved[3]),
+                pinned_limit_bytes = amdgpu_gtt_limit_bytes(),
+                host_available_bytes = host_available,
+            )
+            if fit.refusal:
+                raise RuntimeError(fit.refusal)
+            if fit.note:
+                logger.warning("video.h3_native_memory_fit: %s", fit.note)
+            native_offload = tuple(fit.flags)
+            native_fit_note = fit.note
         # After the policy, so the pin can see which modules it left on the CPU; without it sd.cpp uses ordinal 0
         # whatever was selected.
         native_offload += tuple(device_backend_flags(native_device_name, list(native_offload)))
@@ -4173,7 +4261,13 @@ class VideoBackend:
                         resolved = build_resolved_record(
                             {
                                 "family_override": _family_override_resolved(family_override, fam),
-                                "memory_mode": (memory_mode, policy, "native model offload"),
+                                "memory_mode": (
+                                    memory_mode,
+                                    policy,
+                                    f"native model offload; {native_fit_note}"
+                                    if native_fit_note
+                                    else "native model offload",
+                                ),
                                 "speed_mode": (
                                     speed_mode,
                                     SPEED_MAX if h3_sage else SPEED_OFF,

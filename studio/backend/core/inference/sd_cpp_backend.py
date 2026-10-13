@@ -1044,6 +1044,49 @@ def rocm_runtime_resolvable() -> Optional[bool]:
     return True
 
 
+def rocm_runtime_missing_sonames() -> list[str]:
+    """The ROCm runtime libraries the loader cannot open here; empty when all load or it cannot be asked."""
+    if os.name != "posix" or sys.platform == "darwin":
+        return []
+    try:
+        import ctypes
+    except Exception:  # noqa: BLE001
+        return []
+    missing = []
+    for soname in _ROCM_RUNTIME_SONAMES:
+        try:
+            ctypes.CDLL(soname)
+        except OSError:
+            missing.append(soname)
+        except Exception:  # noqa: BLE001 - an unexpected loader failure establishes nothing
+            return []
+    return missing
+
+
+ACCELERATOR_FALLBACK_CLEAR_HINT = (
+    "to retry the ROCm build after fixing that, clear the record with "
+    "DELETE /api/settings/diffusion-accelerator-fallback (or restart with "
+    "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0 to never fall back)"
+)
+
+
+def accelerator_fallback_reason(accelerator: Optional[str]) -> str:
+    """Why the ``accelerator`` build is being replaced, in words a user can act on."""
+    if _accelerator_class_of(accelerator) != "rocm":
+        return "its build did not list a GPU"
+    missing = rocm_runtime_missing_sonames()
+    if missing:
+        return (
+            "the ROCm build needs the host ROCm 7 runtime and the loader cannot find "
+            + ", ".join(missing)
+            + " (install ROCm 7.x userspace or add /opt/rocm/lib to the loader path)"
+        )
+    return (
+        "the ROCm build listed no GPU (the ROCm runtime loads, so the card's gfx target may be missing from the "
+        "prebuilt, or /dev/kfd is not accessible to this user)"
+    )
+
+
 def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:
     """Whether a NEGATIVE device probe for ``accelerator`` is explained, so one occurrence is enough.
 

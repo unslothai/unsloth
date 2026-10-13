@@ -1355,6 +1355,131 @@ def h3_native_render_flags(
     return [f for f in flags if f not in _H3_STREAM_ONLY_FLAGS], True
 
 
+# Under --offload-to-cpu sd.cpp keeps every module whose COMPUTE is on the GPU in that device's pinned host buffer
+# (ModelManager::params_buffer_type_for -> ggml_backend_dev_host_buffer_type) and releases none of it until the render
+# ends. On a Vulkan build over amdgpu (radv) that buffer is GTT, capped by TTM's pages_limit (half of system RAM by
+# default), and radv makes every allocation resident for each submission: past the cap the submit fails with
+# "radv/amdgpu: Not enough memory for command submission" and ggml reports the device lost. A module computed on the
+# CPU (--clip-on-cpu) keeps plain RAM instead. Measured on the master-951 Vulkan prebuilt, Q4_K + Q4_K_M, 864x480x124:
+# 31.35 GiB pinned with the encoder on the GPU, 15.49 GiB pinned (+15.86 GiB plain) with it on the CPU.
+H3_NATIVE_PINNED_MARGIN_BYTES = 1 << 30
+# sd-cli's own host use beyond the weights (CPU compute buffers, decoded frames, audio), and Studio itself.
+H3_NATIVE_HOST_OVERHEAD_BYTES = 3 << 30
+H3_NATIVE_FIT_ENV = "UNSLOTH_H3_NATIVE_FIT_CHECK"
+# Published sizes of the smallest pair (minimax_h3_fl2va_pruned-Q2_K + its Q2_K_M encoder), for the refusal text.
+H3_NATIVE_Q2_PAIR_BYTES = (int(6.26 * 1024**3), int(12.2 * 1024**3))
+
+
+def amdgpu_gtt_limit_bytes(sysfs_root: str = "/sys") -> Optional[int]:
+    """The smallest GTT pool any amdgpu card reports (``mem_info_gtt_total``), or None without one."""
+    best: Optional[int] = None
+    for path in Path(sysfs_root, "class", "drm").glob("card*/device/mem_info_gtt_total"):
+        try:
+            value = int(path.read_text(encoding = "utf-8").strip())
+        except (OSError, ValueError):
+            continue
+        if value > 0 and (best is None or value < best):
+            best = value
+    return best
+
+
+@dataclass(frozen = True)
+class H3NativeFit:
+    flags: tuple[str, ...]
+    # Why the flags changed, for the log and the resolved record; None when they did not.
+    note: Optional[str] = None
+    # A user-facing reason to refuse the load, or None.
+    refusal: Optional[str] = None
+
+
+def _gib(value: int) -> str:
+    return f"{value / 1024**3:.1f} GiB"
+
+
+def h3_native_memory_fit(
+    flags: "tuple[str, ...] | list[str]",
+    *,
+    accelerator: Optional[str],
+    memory_mode: Optional[str],
+    dit_bytes: int,
+    te_bytes: int,
+    vae_bytes: int,
+    pinned_limit_bytes: Optional[int],
+    host_available_bytes: Optional[int],
+    env: Optional[dict] = None,
+) -> H3NativeFit:
+    """Fit the committed sd-cli offload flags to the host before any render. Only the offloaded path is judged (its
+    weights all live in host memory); ``pinned_limit_bytes`` applies to a Vulkan build only. Memory ``auto`` moves
+    the text encoder to the CPU when that alone makes the pinned set fit; anything else that cannot fit is refused
+    with the setting that would."""
+    flags = tuple(flags)
+    environ = env if env is not None else os.environ
+    if str(environ.get(H3_NATIVE_FIT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):
+        return H3NativeFit(flags)
+    if "--offload-to-cpu" not in flags:
+        return H3NativeFit(flags)
+    mode = memory_mode or "auto"
+    vae_on_cpu = "--vae-on-cpu" in flags
+
+    def pinned(te_on_cpu: bool) -> int:
+        return dit_bytes + (0 if te_on_cpu else te_bytes) + (0 if vae_on_cpu else vae_bytes)
+
+    q2_dit, q2_te = H3_NATIVE_Q2_PAIR_BYTES
+    host_need = dit_bytes + te_bytes + vae_bytes + H3_NATIVE_HOST_OVERHEAD_BYTES
+    q2_host = q2_dit + q2_te + vae_bytes + H3_NATIVE_HOST_OVERHEAD_BYTES
+    if host_available_bytes is not None and host_need > host_available_bytes:
+        smaller = (
+            f" The Q2_K denoiser (with its Q2_K_M encoder) needs about {_gib(q2_host)}."
+            if q2_host < host_need
+            else ""
+        )
+        return H3NativeFit(
+            flags,
+            refusal = (
+                f"MiniMax-H3 GGUF keeps its denoiser, text encoder and VAEs in system RAM while it renders: about "
+                f"{_gib(host_need)} for this quant, and {_gib(host_available_bytes)} is available. Close other "
+                f"applications or load a smaller quant.{smaller}"
+            ),
+        )
+    if (accelerator or "").strip().lower() != "vulkan" or not pinned_limit_bytes:
+        return H3NativeFit(flags)
+    te_on_cpu = "--clip-on-cpu" in flags
+    budget = int(pinned_limit_bytes) - H3_NATIVE_PINNED_MARGIN_BYTES
+    if pinned(te_on_cpu) <= budget:
+        return H3NativeFit(flags)
+    limit = _gib(int(pinned_limit_bytes))
+    if not te_on_cpu and pinned(True) <= budget:
+        note = (
+            f"text encoder on the CPU: the Vulkan build keeps GPU-run weights in GPU-mapped system memory "
+            f"(GTT), {_gib(pinned(False))} here against a {limit} limit"
+        )
+        if mode == "auto":
+            return H3NativeFit(flags + ("--clip-on-cpu",), note = note)
+        return H3NativeFit(
+            flags,
+            refusal = (
+                f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: it maps "
+                f"{_gib(pinned(False))} of weights into GPU-accessible system memory (GTT), and this system "
+                f"allows {limit}. Set Memory mode to Auto or Low VRAM, which runs the text encoder on the CPU "
+                f"({_gib(pinned(True))})."
+            ),
+        )
+    q2_pinned = q2_dit + (0 if vae_on_cpu else vae_bytes)
+    smaller = (
+        f" The Q2_K denoiser needs about {_gib(q2_pinned)} with Memory mode Low VRAM."
+        if q2_pinned <= budget
+        else ""
+    )
+    return H3NativeFit(
+        flags,
+        refusal = (
+            f"MiniMax-H3 GGUF does not fit this system on the Vulkan build: even with the text encoder on the CPU it "
+            f"maps {_gib(pinned(True))} of weights into GPU-accessible system memory (GTT), and this system allows "
+            f"{limit} (half of system RAM by default; raise it with the ttm.pages_limit kernel parameter).{smaller}"
+        ),
+    )
+
+
 def h3_native_hub_files(transformer_filename: str) -> tuple[tuple[str, str], ...]:
     validate_h3_transformer_filename(transformer_filename)
     return (
