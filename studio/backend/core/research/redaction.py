@@ -187,6 +187,18 @@ def _sanitize_public_query(query: str) -> str:
         if token.strip(_TOKEN_PUNCTUATION + ".!?") not in exact
         and not any(piece in token for piece in credentials)
     ]
+    # A multiword credential echoed unquoted spans several tokens.
+    for words in {tuple(value.split()) for value in exact if len(value.split()) > 1}:
+        index = 0
+        while index <= len(plain) - len(words):
+            window = [
+                token.strip(_TOKEN_PUNCTUATION + ".!?")
+                for token in plain[index : index + len(words)]
+            ]
+            if tuple(window) == words:
+                del plain[index : index + len(words)]
+            else:
+                index += 1
     tokens = plain
     if with_authorization != plain:
         # 600 tokens cover the 500-character output; the matcher is quadratic past that.

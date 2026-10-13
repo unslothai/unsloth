@@ -287,6 +287,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     for text in (
         'Authorization: Custom token="abc,def,ghi" why did abc,def,ghi fail',
         'Authorization: Custom token="abc123" why did abc123 fail',
+        'Authorization: Custom token="correct horse battery staple" why did correct horse battery staple fail',
     ):
         assert _sanitize_public_query(text) == "why did fail", text
     escaped = '{\\"Authorization\\": \\"Basic dXNlcjpwYXNzd29yZA==\\"} why'
