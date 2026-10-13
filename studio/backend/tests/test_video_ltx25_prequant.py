@@ -306,7 +306,6 @@ def test_until_published_the_plan_keeps_the_dense_shards(fam, _planning):
     )
 
 
-# LTX-2.5 auto seeds the hosted int8 DiT even where bf16 fits resident; other schemes still yield to bf16.
 @pytest.mark.parametrize(
     "requested, scheme, expected",
     [

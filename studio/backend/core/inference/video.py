@@ -692,7 +692,6 @@ def _assert_video_precision_for_target(
         and h3_te_quant_scheme(te_mode) is not None
     ):
         return
-    # LTX-2.5's worker quantizes its own encoder (plain tensors, no torchao).
     if getattr(fam, "name", None) == "ltx-2.5":
         return
     te_effective = effective_te_quant(te_mode, getattr(fam, "name", None))

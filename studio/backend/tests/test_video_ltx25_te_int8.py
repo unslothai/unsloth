@@ -17,8 +17,7 @@ from core.inference.diffusion_convrot import build_convrot_hadamard, quantize_co
 
 
 def _comfy_kitchen_reference(weight: torch.Tensor, group: int) -> tuple[torch.Tensor, torch.Tensor]:
-    """comfy-kitchen's eager ``quantize_int8_convrot_weight``, in float32: kron powers of its H4, W @ H.T per group,
-    per-row absmax / 127, round, clamp."""
+    """comfy-kitchen's eager ``quantize_int8_convrot_weight`` in float32."""
     h4 = torch.tensor(
         [[1, 1, 1, -1], [1, 1, -1, 1], [1, -1, 1, 1], [-1, 1, 1, 1]], dtype = torch.float32
     )
@@ -99,13 +98,11 @@ def test_worker_swaps_every_decoder_projection_and_keeps_the_math():
     got = swapped(x).float()
     rel = (got - want).norm() / want.norm()
     assert rel < 0.02, rel
-    # Buffers move with the module, so the worker's per-encode onload / offload carries the int8 weights.
     model.to("meta")
     assert swapped.weight.device.type == "meta" and swapped.weight.dtype == torch.int8
 
 
 def test_release_mapped_pages_only_drops_file_backed_pages():
-    # Anonymous memory is refused (DONTNEED would zero it) and left exactly as it was.
     anon = torch.full((1 << 20,), 3.0)
     assert worker._release_mapped_pages(anon) is False
     assert float(anon.sum()) == 3.0 * (1 << 20)
@@ -114,8 +111,7 @@ def test_release_mapped_pages_only_drops_file_backed_pages():
 
 @pytest.mark.skipif(not __import__("sys").platform.startswith("linux"), reason = "MADV_DONTNEED is Linux only")
 def test_host_quantize_reads_projections_out_of_the_map_without_keeping_them(tmp_path):
-    """A host (non-resident) build reads each bf16 projection from the checkpoint's memory map and releases its pages,
-    so the other tensors stay mapped (no copy-out) and the codes match a quantize of the same weights in memory."""
+    """A host build quantizes from the memory map and releases pages; codes match an in-memory quantize."""
     from safetensors.torch import load_file, save_file
 
     torch.manual_seed(0)
@@ -178,7 +174,6 @@ def test_worker_load_quantizes_only_when_asked(monkeypatch):
 
 
 def test_te_quant_tristate(monkeypatch):
-    # int8 is opt-in: on the pack encoder its renders sat above the compile floor (LPIPS 0.310 vs 0.256).
     monkeypatch.delenv(v25.LTX25_TE_QUANT_ENV, raising = False)
     assert v25.ltx25_te_quant_scheme(None) is None
     assert v25.ltx25_te_quant_scheme("auto") is None

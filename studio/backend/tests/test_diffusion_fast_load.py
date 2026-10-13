@@ -362,8 +362,7 @@ def test_fast_upload_passes_tensor_subclasses_through(monkeypatch):
 
 @torch_cuda
 def test_fast_upload_stages_torchao_int8_weights_byte_for_byte(monkeypatch):
-    """A hosted int8 checkpoint's torchao ``Int8Tensor`` weights ride the ring too (their own ``.to`` copies the inner
-    tensors where the staging mode cannot see them); the device copy is the stock ``.to``'s, attribute for attribute."""
+    """torchao ``Int8Tensor`` weights ride the ring; the device copy equals the stock ``.to``'s."""
     torch = pytest.importorskip("torch")
     int8 = pytest.importorskip("torchao.quantization.quantize_.workflows.int8.int8_tensor")
     from torchao.quantization.granularity import PerRow

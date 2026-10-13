@@ -198,8 +198,7 @@ def _file_mapping_holds(start: int, end: int) -> bool:
 
 
 def _release_mapped_pages(tensor: Any) -> bool:
-    """MADV_DONTNEED a discarded tensor's file-mapped checkpoint pages; whether it did. Anonymous memory is never
-    touched: DONTNEED would zero it."""
+    """MADV_DONTNEED file-mapped pages only (DONTNEED zeroes anonymous memory); whether it did."""
     if not sys.platform.startswith("linux"):
         return False
     try:

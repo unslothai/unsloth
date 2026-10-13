@@ -84,8 +84,7 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
-# int8 ConvRot encoder is opt-in, NOT the unset default: on the Diffusers pack encoder it scored LPIPS 0.310 vs bf16,
-# above the 0.256 compile floor. UNSLOTH_LTX25_TE_INT8=1 makes int8 the unset default.
+# int8 encoder is opt-in: LPIPS 0.310 vs bf16, above the 0.256 compile floor.
 LTX25_TE_QUANT_DEFAULT = "int8"
 LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
 # Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
@@ -690,7 +689,6 @@ def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
 
 
 def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
-    """Scale on the bf16 encoder size for this request; unresolvable requests price bf16."""
     try:
         scheme = ltx25_te_quant_scheme(text_encoder_quant)
     except ValueError:
