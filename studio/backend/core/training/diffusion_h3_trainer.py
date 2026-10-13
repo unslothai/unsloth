@@ -534,7 +534,11 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     from peft import LoraConfig
     from peft.utils import get_peft_model_state_dict
 
-    from core.training.diffusion_dit_trainer import _int8_quantize_base, _make_optimizer
+    from core.training.diffusion_dit_trainer import (
+        _int8_quantize_base,
+        _make_optimizer,
+        _maybe_compile_transformer,
+    )
 
     out_dir = Path(cfg.output_dir).expanduser()
     clip_paths = [p for p, _ in pairs]
@@ -657,6 +661,10 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
         _int8_quantize_base(transformer, cfg.resolved_family)
 
     ema = LoRAEMA(transformer, decay = cfg.ema_decay) if getattr(cfg, "ema_decay", 0.0) else None
+    # dynamic=True keeps one graph per block across caption lengths; int8 stays eager like the DiT families.
+    compiled = _maybe_compile_transformer(
+        transformer, cfg, base_precision == "nf4", device, on_event, base_precision
+    )
     optimizer = _make_optimizer(lora_params, cfg.learning_rate)
     lr_sched = get_scheduler(
         cfg.lr_scheduler,
@@ -670,7 +678,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
     _emit(
         on_event,
         "model_load_completed",
-        compiled = False,
+        compiled = compiled,
         base_precision = base_precision,
         sequence_length = h3_packed_sequence_length(
             max(e.shape[1] for e in caption_embeds.values()), num_frames, height, width

@@ -1009,8 +1009,8 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
-        # H3 refuses compile_transformer="on" (its packed sequence changes length with every caption, so each step
-        # would re-trace), so advertising the control would offer a selection that always 400s.
+        # H3 compiles under the backend's auto rule (dynamic shapes cover its per-caption lengths); the panel control
+        # stays a DiT / SDXL one.
         supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
         if not is_dit or dit_block:
             fam_modes: list[str] = []
@@ -1652,14 +1652,6 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
             "MiniMax-H3 trains at batch size 1: one forward covers one packed sequence, whose "
             "row layout is set by the clip's own geometry and its caption's length. Use "
             "gradient_accumulation_steps to raise the effective batch."
-        )
-    # torch.compile is never invoked here (the packed layout changes shape with every caption length), so an explicit
-    # "on" would be accepted and then ignored.
-    if str(getattr(cfg, "compile_transformer", "auto") or "auto").strip().lower() == "on":
-        return (
-            "MiniMax-H3 does not compile: its packed sequence changes length with every clip's "
-            "caption, so torch.compile would re-trace each step. Use compile_transformer "
-            "'off' or 'auto'."
         )
     # No conditioning cache exists on this path, so accepting the directory would promise a saving that never happens.
     if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
