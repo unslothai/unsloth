@@ -210,7 +210,6 @@ export interface DiffusionGenerateRequest {
   loras?: LoraSpecInput[];
   // ControlNet conditioning for this generation. Rejected (400) when the loaded model cannot apply ControlNet.
   controlnet?: ControlNetSpecInput;
-  // Omitted = the model's shipped scheduler.
   sampler?: string;
   schedule_type?: string;
 }

@@ -75,7 +75,6 @@ export function samplerRecipeLabel(
 
 const KEY = "unsloth:images:sampler-by-model";
 
-/** Choices remembered per model key; a model without an entry runs its shipped scheduler. */
 export function readSamplerChoices(): Record<string, SamplerChoice> {
   try {
     const value = JSON.parse(localStorage.getItem(KEY) ?? "{}");
@@ -85,7 +84,6 @@ export function readSamplerChoices(): Record<string, SamplerChoice> {
   }
 }
 
-/** ``choices`` with ``modelKey`` set to ``choice`` (dropped when it is the default), persisted. */
 export function withSamplerChoice(
   choices: Record<string, SamplerChoice>,
   modelKey: string,

@@ -10449,7 +10449,6 @@ class DiffusionBackend:
         allow_oversized: bool = False,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
-        # diffusion_sampler ids; None = the loaded scheduler as shipped.
         sampler: Optional[str] = None,
         schedule_type: Optional[str] = None,
     ) -> dict[str, Any]:

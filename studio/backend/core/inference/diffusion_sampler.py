@@ -153,9 +153,8 @@ def build_scheduler(
     built = cls.from_config(resident.config, **overrides)
     set_begin_index = getattr(built, "set_begin_index", None)
     if callable(set_begin_index):
-        # Zero-SNR Karras grids repeat their first timestep ([999, 999, 998, ...]); without a begin index DPM++
-        # starts at the second 999 and overruns its sigmas. SDXL txt2img sets it, the ControlNet pipeline does
-        # not. img2img / inpaint set their own start after set_timesteps, which this leaves alone.
+        # Zero-SNR Karras grids repeat 999, so DPM++ without a begin index (SDXL ControlNet sets none) overruns
+        # its sigmas. img2img / inpaint set their own start after set_timesteps.
         set_timesteps = built.set_timesteps
 
         @wraps(set_timesteps)
