@@ -1367,13 +1367,8 @@ def h3_native_render_flags(
     return [f for f in flags if f not in _H3_STREAM_ONLY_FLAGS], True
 
 
-# Under --offload-to-cpu sd.cpp keeps every module whose COMPUTE is on the GPU in that device's pinned host buffer
-# (ModelManager::params_buffer_type_for -> ggml_backend_dev_host_buffer_type) and releases none of it until the render
-# ends. On a Vulkan build over amdgpu (radv) that buffer is GTT, capped by TTM's pages_limit (half of system RAM by
-# default), and radv makes every allocation resident for each submission: past the cap the submit fails with
-# "radv/amdgpu: Not enough memory for command submission" and ggml reports the device lost. A module computed on the
-# CPU (--clip-on-cpu) keeps plain RAM instead. Measured on the master-951 Vulkan prebuilt, Q4_K + Q4_K_M, 864x480x124:
-# 31.35 GiB pinned with the encoder on the GPU, 15.49 GiB pinned (+15.86 GiB plain) with it on the CPU.
+# --offload-to-cpu pins GPU-run weights in the device host buffer (GTT on Vulkan/radv, capped by TTM pages_limit,
+# overflow = "device lost"); --clip-on-cpu modules use plain RAM. Measured Q4_K, 864x480x124: 31.35 vs 15.49 GiB pinned.
 H3_NATIVE_PINNED_MARGIN_BYTES = 1 << 30
 # sd-cli's own host use beyond the weights (CPU compute buffers, decoded frames, audio), and Studio itself.
 H3_NATIVE_HOST_OVERHEAD_BYTES = 3 << 30
@@ -1481,15 +1476,8 @@ def h3_native_memory_fit(
     host_swap_bytes: int = 0,
     env: Optional[dict] = None,
 ) -> H3NativeFit:
-    """Fit the committed sd-cli offload flags to the host before any render. Only the offloaded path is judged (its
-    weights all live in host memory).
-
-    Under --offload-to-cpu every GPU-run module's weights sit in the device's page-locked host buffer, which can
-    never be swapped, so that pinned set (plus sd-cli's overhead) must fit ``host_ram_bytes`` alone; swap
-    (``host_swap_bytes``, already bounded by the cgroup) covers only the pageable rest, the CPU-run modules.
-    ``pinned_free_bytes`` (free GTT of the selected AMD card) additionally bounds the pinned set on a Vulkan build;
-    None skips it. Memory ``auto`` moves the text encoder to the CPU when that alone makes both fit; anything else
-    that cannot fit is refused with the setting that would."""
+    """Fit offloaded sd-cli flags to the host: pinned weights must fit RAM alone (swap covers only CPU-run modules)
+    and ``pinned_free_bytes`` (free GTT, None skips). ``auto`` may move the text encoder to the CPU; else refuse."""
     flags = tuple(flags)
     environ = env if env is not None else os.environ
     if str(environ.get(H3_NATIVE_FIT_ENV, "")).strip().lower() in ("0", "false", "no", "off"):

@@ -2787,9 +2787,7 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
     return VIDEO_GENERATION_FAILED_MSG
 
 
-# Printed by a native renderer whose GPU driver gave up, which after a radv/amdgpu allocation failure is how a
-# Vulkan device runs out of memory: "radv/amdgpu: Not enough memory for command submission", then
-# "ggml_vulkan: device lost".
+# How a Vulkan (radv) device reports running out of memory.
 _NATIVE_DEVICE_LOST_NEEDLES = ("device lost", "errordevicelost", "error_device_lost")
 
 NATIVE_MEMORY_ADVICE = (
@@ -4211,8 +4209,7 @@ class VideoBackend:
             .strip()
             not in ("", "0")
         )
-        # Before the pin, so a text encoder moved to the CPU is pinned there. A load that cannot fit is refused here,
-        # not left to die mid-render on a lost device. Auto commits nothing yet: a render may still go resident.
+        # Before the pin, so a CPU-moved text encoder is pinned there; Auto commits nothing (a render may go resident).
         native_fit_note: Optional[str] = None
         native_fit_flags: Optional[tuple[str, ...]] = None
         native_fit_refusal: Optional[str] = None
@@ -4256,10 +4253,7 @@ class VideoBackend:
             fit = h3_native_live_fit(native_fit_inputs, requested_mode)
             release_pending = False
             if fit.refusal or fit.note:
-                # The model this load replaces may still hold its sd-server in the keepalive window: its host RAM and
-                # GTT are about to be freed by the teardown, so free them now and measure again. The old model stays
-                # loaded (a failed load keeps it) and respawns its server on its next render. A server mid-render
-                # only stops at the render's end, so nothing is freed yet and the reading stands.
+                # Free the replaced model's idle sd-server (it respawns on demand) and re-measure.
                 released = self._release_native_server("a new MiniMax-H3 load is measuring host memory")
                 if released == "stopped":
                     fit = h3_native_live_fit(native_fit_inputs, requested_mode)
@@ -4267,9 +4261,7 @@ class VideoBackend:
             if fit.refusal and release_pending:
                 fit = dataclasses.replace(fit, refusal = fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
             if requested_mode == "auto" and (fit.refusal or fit.note):
-                # Auto renders resident whenever live free VRAM covers it, which needs neither the GTT pool nor the
-                # host copy: decide at render time, and refuse here only when even the smallest clip cannot go
-                # resident.
+                # Auto decides resident vs offloaded at render time; refuse only if even the smallest clip cannot fit.
                 fam_presets = [p for p in (fam.resolution_presets or ()) if len(p) == 2]
                 small_w, small_h = (
                     min(fam_presets, key = lambda p: p[0] * p[1]) if fam_presets else (864, 480)
