@@ -205,7 +205,7 @@ def test_int8_int4_lora_rank_below_group_size():
     # lora_B at rank 16 has in_features 16, which PerGroup(32) rejects.
     from peft import LoraConfig, get_peft_model
 
-    from unsloth.models._utils import _peft_untied_embedding_keys
+    from unsloth.models._utils import _peft_untied_lm_head
 
     peft_model = get_peft_model(
         _TiedModel(), LoraConfig(r = 16, target_modules = ["q_proj", "down_proj"])
@@ -215,44 +215,49 @@ def test_int8_int4_lora_rank_below_group_size():
     assert hasattr(block.q_proj.base_layer, "weight_fake_quantizer")
     assert hasattr(block.q_proj.lora_A["default"], "weight_fake_quantizer")
     assert not hasattr(block.q_proj.lora_B["default"], "weight_fake_quantizer")
-    assert _peft_untied_embedding_keys(peft_model) == ("embed_tokens.weight", "lm_head.weight")
     lm_head = peft_model.base_model.model.lm_head
+    assert _peft_untied_lm_head(peft_model) == ("lm_head.weight", lm_head.weight)
     assert lm_head.weight.data_ptr() != peft_model.base_model.model.embed_tokens.weight.data_ptr()
     assert not lm_head.weight.requires_grad
 
 
-@pytest.mark.parametrize("sharded", [False, True])
-def test_untie_merged_checkpoint(tmp_path, sharded):
+@pytest.mark.parametrize("layout", ["single", "consolidated", "sharded"])
+def test_untie_merged_checkpoint(tmp_path, layout):
     import json
 
     from safetensors import safe_open
     from safetensors.torch import save_file
 
-    embed = torch.randn(32, 8)
-    tensors = {"model.embed_tokens.weight": embed, "model.norm.weight": torch.ones(8)}
-    if sharded:
+    tensors = {
+        "thinker.model.embed_tokens.weight": torch.randn(32, 8),
+        "thinker.model.norm.weight": torch.ones(8),
+    }
+    if layout == "sharded":
         save_file(tensors, tmp_path / "model-00001-of-00001.safetensors")
         weight_map = {k: "model-00001-of-00001.safetensors" for k in tensors}
         (tmp_path / "model.safetensors.index.json").write_text(
             json.dumps({"metadata": {}, "weight_map": weight_map}), encoding = "utf-8"
         )
     else:
-        save_file(tensors, tmp_path / "model.safetensors")
+        name = "model.safetensors" if layout == "single" else "consolidated.safetensors"
+        save_file(tensors, tmp_path / name)
     config = {
-        "tie_word_embeddings": True,
         "thinker_config": {"text_config": {"tie_word_embeddings": True}},
+        "talker_config": {"tie_word_embeddings": True},
     }
     (tmp_path / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    # The model's own head, which can differ from the checkpoint's (trained) embedding.
+    lm_head = torch.randn(32, 8)
 
-    save_mod._untie_merged_checkpoint(str(tmp_path), "model.embed_tokens.weight", "lm_head.weight")
+    save_mod._untie_merged_checkpoint(str(tmp_path), "thinker.lm_head.weight", lm_head)
 
     config = json.loads((tmp_path / "config.json").read_text(encoding = "utf-8"))
-    assert config["tie_word_embeddings"] is False
     assert config["thinker_config"]["text_config"]["tie_word_embeddings"] is False
-    if sharded:
+    assert config["talker_config"]["tie_word_embeddings"] is True
+    if layout == "sharded":
         index = json.loads((tmp_path / "model.safetensors.index.json").read_text(encoding = "utf-8"))
-        shard = tmp_path / index["weight_map"]["lm_head.weight"]
+        shard = tmp_path / index["weight_map"]["thinker.lm_head.weight"]
     else:
-        shard = tmp_path / "model.safetensors"
+        shard = tmp_path / name
     with safe_open(str(shard), "pt") as h:
-        assert torch.equal(h.get_tensor("lm_head.weight"), embed)
+        assert torch.equal(h.get_tensor("thinker.lm_head.weight"), lm_head)

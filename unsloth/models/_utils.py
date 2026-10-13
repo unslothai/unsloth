@@ -7318,18 +7318,16 @@ def _peft_merged_module_name(fqn):
     return ".".join(p for p in parts if p != "base_layer")
 
 
-def _peft_untied_embedding_keys(model):
-    """(input embedding, lm_head) weight keys of the merged checkpoint when QAT untied them, else None."""
+def _peft_untied_lm_head(model):
+    """(merged checkpoint key, weight) of the lm_head when QAT untied it from the embedding, else None."""
     config = getattr(model, "_torchao_config", None)
     if getattr(config, "prequantization_transform", None) is not _untie_input_output_embeddings:
         return None
-    keys = []
-    for embedding in (model.get_input_embeddings(), model.get_output_embeddings()):
-        names = [_peft_merged_module_name(n) for n, m in model.named_modules() if m is embedding]
-        if not names or not names[0]:
-            return None
-        keys.append(names[0] + ".weight")
-    return tuple(keys)
+    lm_head = model.get_output_embeddings()
+    names = [_peft_merged_module_name(n) for n, m in model.named_modules() if m is lm_head]
+    if not names or not names[0]:
+        return None
+    return names[0] + ".weight", lm_head.weight
 
 
 def _merged_torchao_config_for_peft_qat(model):
