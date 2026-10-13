@@ -745,6 +745,8 @@ export interface OpenAIChatCompletionsRequest {
   max_tool_calls_per_message?: number;
   tool_call_timeout?: number;
   session_id?: string;
+  /** The user message that started this turn; keys the turn's file checkpoints for /rewind. */
+  user_message_id?: string;
   cancel_id?: string;
   provider_id?: string;
   provider_type?: string;
@@ -825,6 +827,8 @@ export interface OpenAIChatChunk {
     boundary_messages?: number;
     // true when this fit started a checkpoint, including inside the current tool loop
     checkpoint_started?: boolean;
+    // true while the checkpoint in force was started by /compact
+    manual?: boolean;
     // true when the provider summarized earlier turns instead of Unsloth dropping them
     summarized?: boolean;
     // boundary text lets the count be re-derived after deleting an already evicted prompt

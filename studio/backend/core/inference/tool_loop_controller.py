@@ -861,6 +861,46 @@ def is_tool_error(result: str) -> bool:
     return isinstance(result, str) and result.lstrip().startswith(TOOL_ERROR_PREFIXES)
 
 
+TOOL_MODEL_SUFFIX_KEY = "studio_model_suffix"
+
+
+def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
+    """Replayed tool results as the model saw them (error nudge, folded feedback from
+    ``extra_content``, no citation map), so the cached prefix holds. Idempotent."""
+    out = list(messages)
+    for i, message in enumerate(out):
+        if not isinstance(message, dict) or message.get("role") != "tool":
+            continue
+        content = message.get("content")
+        if not isinstance(content, str):
+            continue
+        # The source map is the card's; the live loop never showed it.
+        if message.get("name") in _SOURCE_MAP_TOOLS and "\n__RAG_SOURCES__:" in content:
+            content = _strip_rag_sources_sentinel(content)
+        extra = message.get("extra_content")
+        suffix = extra.get(TOOL_MODEL_SUFFIX_KEY) if isinstance(extra, dict) else None
+        suffix = suffix if isinstance(suffix, str) else ""
+        # `in`: restored output may carry feedback after the nudge.
+        nudge = (
+            TOOL_ERROR_NUDGE if is_tool_error(content) and TOOL_ERROR_NUDGE not in content else ""
+        )
+        restored = {**message, "content": content}
+        if nudge or suffix:
+            # Before any envelope, as live: text after the image array breaks its parse.
+            from core.inference.tools import _split_frontend_suffix
+            body, envelope = _split_frontend_suffix(content, message.get("name"))
+            restored["content"] = body + nudge + suffix + envelope
+        if isinstance(extra, dict) and TOOL_MODEL_SUFFIX_KEY in extra:
+            rest = {k: v for k, v in extra.items() if k != TOOL_MODEL_SUFFIX_KEY}
+            if rest:
+                restored["extra_content"] = rest
+            else:
+                restored.pop("extra_content", None)
+        if restored != message:
+            out[i] = restored
+    return out
+
+
 def _strip_mcp_ui_suffix(result: str) -> str:
     """The payload is one JSON line, so the scan stops there; images may follow."""
     marker = "\n__MCP_UI__:"

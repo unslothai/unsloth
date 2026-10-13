@@ -39,6 +39,8 @@ export {
   type KvCacheEstimate,
   type LocalModelInfo,
   type ScanFolderInfo,
+  CHAT_HISTORY_UPDATED_EVENT,
+  fetchSidebarThreadRows,
 } from "./api/chat-api";
 export type {
   ApiMonitorEntry,
@@ -61,6 +63,7 @@ export {
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
+export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
@@ -142,6 +145,28 @@ export {
   useForkBoundaryStore,
   type ForkBoundaryState,
 } from "./stores/fork-boundary-store";
+export { rewindChatThread } from "./api/rewind-api";
+export {
+  type RewindDialogRequest,
+  useRewindDialogStore,
+} from "./stores/rewind-dialog-store";
+export {
+  collectRewindTurnIds,
+  defaultRewindMode,
+  isRewindCommand,
+  type RewindMode,
+  type RewindResult,
+  rewindChangedCount,
+  rewindPickerEntries,
+  rewindSkippedCount,
+  rewindTouchesConversation,
+  rewindTouchesFiles,
+} from "./utils/rewind";
+export {
+  isCompactCommand,
+  requestThreadCompaction,
+  useCompactRequestStore,
+} from "./stores/compact-request-store";
 export {
   folderRingKey,
   planKey,
@@ -362,6 +387,7 @@ export {
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
   regenerateChatTitle,
+  regenerateChatTitleWithToast,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";
@@ -514,6 +540,22 @@ export {
   useChatSidebarItems,
   type SidebarItem,
 } from "./hooks/use-chat-sidebar-items";
+export {
+  fetchSidebarRowPage,
+  readAllSidebarRowIds,
+  readAllSidebarRows,
+  useSidebarRowPages,
+  type SidebarRowPages,
+  type SidebarRowSlot,
+} from "./hooks/use-sidebar-row-pages";
+export {
+  SIDEBAR_PAGE_SIZE,
+  holdRowsPastLoadedChats,
+  mergeManualOrderTail,
+  settledManualOrder,
+  sidebarRowQuery,
+  type SidebarRowQuery,
+} from "./utils/sidebar-row-query";
 export {
   createChatProject,
   deleteChatProject,

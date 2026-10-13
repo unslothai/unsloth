@@ -936,21 +936,6 @@ def _embeddings_are_tied(input_embeddings, output_embeddings):
     return w_in is w_out or w_in.data_ptr() == w_out.data_ptr()
 
 
-def _offload_embedding_unsupported_platform():
-    # Offloaded embeddings do not work on Windows or WSL.
-    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-        return "WSL"
-    if os.name == "nt":
-        return "Windows"
-    # Docker on WSL2 has no WSL_* variables but shares the *-microsoft-standard-WSL2 kernel (unslothai/unsloth#3511).
-    try:
-        if "microsoft" in os.uname().release.lower():
-            return "WSL"
-    except Exception:
-        pass
-    return None
-
-
 def _embedding_dispatch_device(input_embeddings):
     # accelerate's hook re-sends the ids to the device it recorded, after our offload pre-hook already sent them to the CPU weight. Returns that device, or None.
     hook = getattr(input_embeddings, "_hf_hook", None)
@@ -996,9 +981,6 @@ def _resolve_offload_embedding(
 
     if not automatic and not offload_embedding:
         return False
-    platform_name = _offload_embedding_unsupported_platform()
-    if platform_name is not None:
-        return _decline(f"offloading is unsupported on {platform_name}.")
     try:
         in_embed = model.get_input_embeddings()
         out_embed = (
@@ -1092,7 +1074,7 @@ def offload_spare_embeddings(model, require_frozen = True):
     """offload_embedding = "auto" under memory pressure: move every input-side embedding that
     lm_head does not share (and, after get_peft_model, that is frozen) to host RAM. A tied input
     embedding stays, but Gemma 3n / 4 per-layer tables still go. Returns the bytes moved."""
-    if _offload_embedding_unsupported_platform() is not None or is_distributed():
+    if is_distributed():
         return 0
     try:
         found, out_embed = _input_side_embeddings(model)
@@ -3486,9 +3468,7 @@ class FastBaseModel:
                 requested_device_map(device_map),
                 model_name,
                 max_seq_length = max_seq_length,
-                # Windows / WSL decline the offload later: a plan counting on it would leave a streamed table unhooked.
-                offload_embedding = bool(offload_embedding)
-                and _offload_embedding_unsupported_platform() is None,
+                offload_embedding = bool(offload_embedding),
                 planner_kwargs = planner_kwargs_with_max_memory(device_map_planner_kwargs, kwargs),
                 placement = "spread",
                 skip_reason = _planner_skip_reason
@@ -4688,18 +4668,7 @@ class FastBaseModel:
             )
 
         if _moe_module_targets:
-            if isinstance(target_modules, (list, tuple)):
-                target_modules = list(target_modules) + [
-                    target for target in _moe_module_targets if target not in target_modules
-                ]
-            elif isinstance(target_modules, str):
-                _expert_leaves = sorted({t.rsplit(".", 1)[0] for t in _moe_module_targets})
-                _expert_alt = (
-                    r".*\.experts\.(?:"
-                    + "|".join(re.escape(leaf) for leaf in _expert_leaves)
-                    + r")\.\d+"
-                )
-                target_modules = f"(?:{target_modules})|(?:{_expert_alt})"
+            target_modules = add_moe_target_modules(target_modules, _moe_module_targets)
             print(
                 f"Unsloth: Detected MoE model with per-expert Linear experts. "
                 f"Enabling LoRA on {len(_moe_module_targets)} expert projection modules."

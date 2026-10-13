@@ -7,6 +7,7 @@
 import { isRenderableRenderHtmlToolPart } from "../../features/chat/artifacts/html-fences.ts";
 import { searchImagesSignature } from "../../features/chat/search-images/search-images.ts";
 import {
+  type CompactionMarker,
   type ContextTruncation,
   compactionBoundary,
   shouldShowCompactionNotice,
@@ -128,33 +129,110 @@ export const compactionNoticeMessageIds = memoOnArray(
   },
 );
 
-const NO_COMPACTION_DIVIDERS: ReadonlyMap<string, ContextTruncation> =
-  new Map();
+type CompactionDividers = {
+  rows: ReadonlyMap<string, ContextTruncation>;
+  /** Keyed by reply: tool call ids are only unique within one. */
+  afterToolCalls: ReadonlyMap<string, CompactionMarker>;
+};
 
-/** maps each compaction to its triggering prompt row or, if absent, its reply row at the kept-context boundary so visible dividers match the context meter. */
-export const compactionDividerRows = memoOnArray(
-  (
-    messages: readonly MessageLike[],
-  ): ReadonlyMap<string, ContextTruncation> => {
+const NO_COMPACTION_DIVIDERS: CompactionDividers = {
+  rows: new Map(),
+  afterToolCalls: new Map(),
+};
+
+function compactionMarkersOf(
+  message: MessageLike,
+): readonly CompactionMarker[] | null {
+  const markers = (
+    message.metadata as { custom?: { compactionMarkers?: unknown } } | undefined
+  )?.custom?.compactionMarkers;
+  return Array.isArray(markers) && markers.length > 0
+    ? (markers as CompactionMarker[])
+    : null;
+}
+
+function hasToolCall(message: MessageLike, toolCallId: string): boolean {
+  const { parts, content } = message as { parts?: unknown; content?: unknown };
+  const list = Array.isArray(parts) ? parts : content;
+  return (
+    Array.isArray(list) &&
+    list.some(
+      (part) =>
+        (part as { type?: string }).type === "tool-call" &&
+        (part as { toolCallId?: string }).toolCallId === toolCallId,
+    )
+  );
+}
+
+/** Request-start fits go above their prompt, a reply's last in-loop fit after the tool call it followed. */
+const compactionDividers = memoOnArray(
+  (messages: readonly MessageLike[]): CompactionDividers => {
     const notices = compactionNoticeMessageIds(messages);
-    // streamed tokens create new arrays, so reuse this map until a thread compacts.
+    // streamed tokens create new arrays, so reuse this result until a thread compacts.
     if (notices.size === 0) return NO_COMPACTION_DIVIDERS;
     const rows = new Map<string, ContextTruncation>();
+    const afterToolCalls = new Map<string, CompactionMarker>();
     let previous: MessageLike | undefined;
+    let previousBoundary = 0;
     for (const message of messages) {
-      if (notices.has(message.id)) {
-        const row = previous?.role === "user" ? previous.id : message.id;
-        rows.set(
-          row,
-          (
-            message.metadata as {
-              custom: { contextTruncation: ContextTruncation };
-            }
-          ).custom.contextTruncation,
+      const row = previous?.role === "user" ? previous.id : message.id;
+      const markers =
+        message.role === "assistant" ? compactionMarkersOf(message) : null;
+      if (markers) {
+        // Only the last reset matters: everything above it was out of the model's view.
+        let lastInLoop: CompactionMarker | null = null;
+        for (const marker of markers) {
+          if (!shouldShowCompactionNotice(marker.truncation, previousBoundary)) {
+            continue;
+          }
+          previousBoundary = Math.max(
+            previousBoundary,
+            compactionBoundary(marker.truncation),
+          );
+          if (
+            marker.afterToolCallId !== null &&
+            hasToolCall(message, marker.afterToolCallId)
+          ) {
+            lastInLoop = marker;
+          } else if (!rows.has(row)) {
+            rows.set(row, marker.truncation);
+          }
+        }
+        if (lastInLoop?.afterToolCallId) {
+          afterToolCalls.set(message.id, lastInLoop);
+        }
+      } else if (notices.has(message.id)) {
+        const truncation = (
+          message.metadata as {
+            custom: { contextTruncation: ContextTruncation };
+          }
+        ).custom.contextTruncation;
+        rows.set(row, truncation);
+        previousBoundary = Math.max(
+          previousBoundary,
+          compactionBoundary(truncation),
         );
       }
       previous = message;
     }
-    return rows;
+    return rows.size === 0 && afterToolCalls.size === 0
+      ? NO_COMPACTION_DIVIDERS
+      : { rows, afterToolCalls };
   },
 );
+
+export const compactionDividerRows = (
+  messages: readonly MessageLike[],
+): ReadonlyMap<string, ContextTruncation> => compactionDividers(messages).rows;
+
+export const compactionToolCallDividers = (
+  messages: readonly MessageLike[],
+): ReadonlyMap<string, CompactionMarker> =>
+  compactionDividers(messages).afterToolCalls;
+
+export const compactionDividerCount = (
+  messages: readonly MessageLike[],
+): number => {
+  const dividers = compactionDividers(messages);
+  return dividers.rows.size + dividers.afterToolCalls.size;
+};
