@@ -2523,6 +2523,24 @@ def _progress(phase: Optional[str], **extra: Any) -> dict[str, Any]:
 # quantiser all act on ``pipe.transformer``. Wan2.2-A14B is a dual-expert MoE (transformer = high-noise, transformer_2 =
 # low-noise), so present the second DiT AS ``pipe.transformer`` via a thin proxy.
 # ── dual-DiT (Wan2.2-A14B MoE) helpers ────────────────────────────────────────
+def _calibration_revision(state: Any) -> Optional[str]:
+    """The exact weights this pipeline holds (cache snapshot commit / local fingerprint), read once per pipeline."""
+    pipe = getattr(state, "pipe", None)
+    cached = getattr(pipe, "_unsloth_calibration_revision", None)
+    if cached is not None:
+        return cached or None
+    from .diffusion_component_sizes import checkpoint_fingerprint
+
+    revision = checkpoint_fingerprint(
+        getattr(state, "repo_id", None), getattr(state, "gguf_filename", None)
+    )
+    try:
+        pipe._unsloth_calibration_revision = revision or ""
+    except Exception:  # noqa: BLE001
+        pass
+    return revision
+
+
 def _transformer_names(pipe: Any, fam: VideoFamily) -> tuple[str, ...]:
     """Attribute names of the denoiser(s) on ``pipe`` to optimise. Just
     ("transformer",) for a single-DiT family; also "transformer_2" for an MoE family
@@ -6326,11 +6344,9 @@ class VideoBackend:
         device_memory = settled_snapshot_device_memory(target)
         from .diffusion_component_sizes import video_components_gb
 
-        components_detail: dict = {}
         components = video_components_gb(
             fam,
             repo_id if kind == "pipeline" else None,
-            details = components_detail,
             allow_hub = not local_files_only,
             token = hf_token,
             # a dev (single-stage) LTX-2.5 load attaches no latent upsampler, so it is not a loaded role
@@ -6483,25 +6499,12 @@ class VideoBackend:
             # hard refusal.
             vae_gb = components[2] if components is not None else 0.0
             if components is not None and fam.name == "ltx-2.5":
-                from .video_ltx25 import (
-                    LTX25_WORKER_RESIDENT_GB,
-                    ltx25_uses_upsampler,
-                )
+                from .video_ltx25 import LTX25_WORKER_RESIDENT_GB
 
                 # The encoder worker is a second process on the card: its CUDA context and allocator slack stay
-                # resident on every tier, even when its weights are off the card.
+                # resident on every tier, even when its weights are off the card. The latent upsampler a dev (single
+                # stage) load never attaches is already out of components[2] (video_components_gb(dev=...)).
                 vae_gb += LTX25_WORKER_RESIDENT_GB
-                # The table's companions include the latent upsampler, which a dev (single stage) load never attaches.
-                if not ltx25_uses_upsampler(
-                    _ltx25_dev_load(fam, kind, gguf_filename, repo_id, display_repo_id)
-                ):
-                    from .diffusion_component_sizes import term_part_gb
-                    from .video_ltx25 import LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB
-
-                    # from the same answer components[2] came from (header snapshot, or the table's constant)
-                    vae_gb -= term_part_gb(
-                        components_detail, 2, LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB
-                    )
             vae_scale = 1.0 if getattr(fam, "vae_force_fp32", False) else dtype_scale
             scaled_te_gb = text_encoder_gb * dtype_scale
             scaled_vae_gb = vae_gb * vae_scale
@@ -9891,6 +9894,8 @@ class VideoBackend:
                         getattr(state, "repo_id", None),
                         state.offload_policy,
                         device_obj,
+                        # the exact weights: a mutable repo updated and reloaded must not reuse old peaks
+                        revision = _calibration_revision(state),
                         kind = getattr(state, "kind", None),
                         gguf_filename = getattr(state, "gguf_filename", None),
                         variant_id = getattr(state, "variant_id", None),

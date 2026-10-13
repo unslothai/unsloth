@@ -310,38 +310,6 @@ def test_hub_reads_are_disabled_offline(monkeypatch):
     assert dcs.hub_component_sizes("Wan-AI/Wan2.2-TI2V-5B-Diffusers") is None
 
 
-def test_ltx25_upsampler_share_comes_from_the_same_answer(monkeypatch, tmp_path):
-    from core.inference.video_ltx25 import LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB
-
-    fam = _fam("ltx-2.5")
-    # table answer (base repo, nothing cached): the table's constant
-    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: None)
-    detail: dict = {}
-    assert dcs.video_components_gb(fam, details = detail) == fam.bf16_components_gb
-    assert dcs.term_part_gb(detail, 2, LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB) == LTX25_LATENT_UPSAMPLER_GB
-    # header answer for a variant with a larger companion term: the upsampler from that same snapshot
-    _stub_for_table(tmp_path, fam)
-    _component(tmp_path, "connectors", 6.0)
-    _component(tmp_path, "latent_upsampler", 1.6)
-    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
-    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: tmp_path.name)
-    detail = {}
-    got = dcs.video_components_gb(fam, "o/ltx-variant", allow_hub = True, details = detail)
-    assert detail["sources"][2] == "header" and got[2] > fam.bf16_components_gb[2]
-    assert dcs.term_part_gb(detail, 2, LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB) == pytest.approx(1.6)
-
-
-def test_video_plan_reads_the_upsampler_from_the_resolved_answer():
-    import inspect
-
-    from core.inference import video
-
-    src = inspect.getsource(video.VideoBackend.load_pipeline)
-    assert "details = components_detail" in src
-    assert "term_part_gb(" in src and "ltx25_latent_upsampler_gb" not in src
-
-
-
 # Header-vs-table disagreements (Hub, 2026-10-13); each needs a human decision before a table changes.
 KNOWN_TABLE_DELTAS = {
     # 42.0 is the single-file DiT incl. ~4 GB connectors, already in the companion term: over-states the pack.
@@ -1180,7 +1148,11 @@ def test_loaded_role_with_unreadable_size_makes_its_term_unknown(tmp_path, monke
     monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
     monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: tmp_path.name)
     monkeypatch.setattr(dcs, "hub_component_sizes", lambda *a, **k: None)
-    assert dcs.video_components_gb(ltx, "o/ltx2-variant", allow_hub = True)[2] == ltx.bf16_components_gb[2]
+    # ... and the readable siblings stay a lower bound: never below their known sum
+    known = dcs.video_header_parts(ltx, dcs.local_component_sizes(tmp_path))[2]
+    assert known[1] is False
+    got = dcs.video_components_gb(ltx, "o/ltx2-variant", allow_hub = True)[2]
+    assert got == max(ltx.bf16_components_gb[2], round(known[0], 1))
 
 
 def test_no_index_fallback_takes_only_loader_names(tmp_path):
@@ -1308,11 +1280,6 @@ def test_latent_upsampler_is_loaded_only_when_attached(tmp_path, monkeypatch):
     monkeypatch.setattr(video_ltx25, "two_stage_enabled", lambda: False)
     assert "latent_upsampler" not in dcs.video_loaded_roles(fam)
     assert dcs.video_header_terms(fam, sizes)[2] is not None
-    # the dev plan subtracts nothing for an upsampler its header term never counted
-    from core.inference.video_ltx25 import LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB
-
-    detail = {"sources": ("table", "table", "header"), "sizes": sizes, "counted": frozenset({"vae"})}
-    assert dcs.term_part_gb(detail, 2, LATENT_UPSAMPLER_SUBFOLDER, LTX25_LATENT_UPSAMPLER_GB) == 0.0
 
 
 def test_load_pipeline_passes_the_dev_flag():
@@ -1344,3 +1311,125 @@ def test_moe_second_expert_is_optional_unless_shipped(tmp_path):
     assert dcs.video_header_terms(moe, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(57.2)
     # a non-MoE family never counts a stray transformer_2
     assert dcs.video_header_terms(_fam("wan2.2-ti2v-5b"), dcs.local_component_sizes(tmp_path))[0] == pytest.approx(28.6)
+
+
+# ---- review round 9 ----
+
+
+def test_partial_term_keeps_its_known_sum_as_a_lower_bound(tmp_path, monkeypatch):
+    import shutil
+
+    ltx = _fam("ltx-2")
+    _stub_for_table(tmp_path, ltx)
+    _component(tmp_path, "vae", ltx.bf16_components_gb[2] + 4.0)  # readable siblings far above the table term
+    shutil.rmtree(tmp_path / "vocoder")
+    (tmp_path / "vocoder").mkdir()
+    (tmp_path / "vocoder" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 8)
+    known, complete = dcs.video_header_parts(ltx, dcs.local_component_sizes(tmp_path))[2]
+    assert not complete and known > ltx.bf16_components_gb[2]
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
+    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: tmp_path.name)
+    monkeypatch.setattr(dcs, "hub_component_sizes", lambda *a, **k: None)
+    got = dcs.video_components_gb(ltx, "o/variant", allow_hub = True)
+    assert got[2] == round(known, 1)  # never below what did read
+    assert dcs.reconcile_with_table((None, None, None), (1.0, 1.0, 1.0), is_base = False, lower = (None, 2.04, None)) == (1.0, 2.0, 1.0)
+
+
+def test_dev_table_term_drops_the_upsampler_before_reconciling(monkeypatch, tmp_path):
+    from core.inference import video_ltx25
+
+    fam = _fam("ltx-2.5")
+    table = fam.bf16_components_gb
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: None)
+    monkeypatch.setattr(video_ltx25, "two_stage_enabled", lambda: True)
+    assert dcs.video_components_gb(fam) == table
+    # dev: the table's companion term loses the upsampler constant, so it compares with a header term without it
+    dev = dcs.video_components_gb(fam, dev = True)
+    assert dev == (table[0], table[1], round(table[2] - video_ltx25.LTX25_LATENT_UPSAMPLER_GB, 3))
+    monkeypatch.setattr(video_ltx25, "two_stage_enabled", lambda: False)
+    assert dcs.video_components_gb(fam) == dev
+    # a dev variant whose headers equal the table minus the upsampler agrees, no mismatch recorded
+    monkeypatch.setattr(dcs, "_MISMATCHES", {})
+    _stub_for_table(tmp_path, fam)  # two-stage off: no upsampler folder in the stub
+    _component(tmp_path, "vae", 0.1 + 0.0)  # shrink the stub's companion term by the upsampler the table includes
+    vae_known = dcs.video_header_parts(fam, dcs.local_component_sizes(tmp_path))[2][0]
+    _component(tmp_path, "vae", 0.1 + dev[2] - vae_known)
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: tmp_path)
+    monkeypatch.setattr(dcs, "resolve_ref", lambda *a, **k: tmp_path.name)
+    got = dcs.video_components_gb(fam, "o/ltx25-variant", allow_hub = True, dev = True)
+    assert got[2] == pytest.approx(dev[2], abs = 0.06) and not dcs.table_mismatches()
+
+
+def test_load_pipeline_no_longer_subtracts_the_upsampler_itself():
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video.VideoBackend.load_pipeline)
+    assert "LTX25_LATENT_UPSAMPLER_GB" not in src and "term_part_gb" not in src
+    assert "dev = _ltx25_dev_load(" in src
+
+
+def test_dev_load_never_probes_the_upsampler_on_the_hub(monkeypatch):
+    from core.inference import video_ltx25
+
+    fam = _fam("ltx-2.5")
+    monkeypatch.setattr(dcs, "local_snapshot_dir", lambda repo, cache_dir = None: None)
+    seen = []
+    monkeypatch.setattr(dcs, "hub_component_sizes", lambda repo, components = None, **k: seen.append(tuple(components)))
+    monkeypatch.setattr(video_ltx25, "two_stage_enabled", lambda: True)
+    dcs.video_components_gb(fam, "o/v", allow_hub = True, dev = True)
+    dcs.video_components_gb(fam, "o/v", allow_hub = True, dev = False)
+    assert "latent_upsampler" not in seen[0] and "latent_upsampler" in seen[1]
+    monkeypatch.setattr(video_ltx25, "two_stage_enabled", lambda: False)
+    dcs.video_components_gb(fam, "o/v", allow_hub = True)
+    assert "latent_upsampler" not in seen[2]
+
+
+def test_manifest_is_authoritative_for_the_second_expert(tmp_path):
+    moe = _fam("wan2.2-t2v-a14b")
+    _component(tmp_path, "transformer", 28.6)
+    _component(tmp_path, "transformer_2", 28.6)  # a stale folder
+    _component(tmp_path, "text_encoder", 11.4, stem = "model")
+    _component(tmp_path, "vae", 0.254, "F32")
+    assert dcs.video_header_terms(moe, dcs.local_component_sizes(tmp_path))[0] == pytest.approx(57.2)  # no manifest
+    (tmp_path / "model_index.json").write_text(json.dumps({"transformer": ["d", "W"], "transformer_2": [None, None]}))
+    sizes = dcs.local_component_sizes(tmp_path)
+    assert "transformer_2" not in dcs.video_loaded_roles(moe, sizes)
+    assert dcs.video_header_terms(moe, sizes)[0] == pytest.approx(28.6)
+
+
+def test_checkpoint_fingerprint_tracks_the_exact_weights(tmp_path, monkeypatch):
+    root = tmp_path / "pipe"
+    _component(root, "transformer", 0.001)
+    (root / "transformer" / "config.json").write_text('{"a": 1}')
+    (root / "model_index.json").write_text("{}")
+    first = dcs.checkpoint_fingerprint(str(root))
+    assert first and first == dcs.checkpoint_fingerprint(str(root))
+    (root / "transformer" / "config.json").write_text('{"a": 2}')
+    assert dcs.checkpoint_fingerprint(str(root)) != first
+    # a repo id resolves to its cache snapshot commit
+    from utils import hf_cache_settings
+
+    cache = tmp_path / "hub"
+    snap = cache / "models--o--r" / "snapshots" / ("f" * 40)
+    snap.mkdir(parents = True)
+    (snap / "model_index.json").write_text("{}")
+    (cache / "models--o--r" / "refs").mkdir()
+    (cache / "models--o--r" / "refs" / "main").write_text("f" * 40)
+    monkeypatch.setattr(hf_cache_settings, "active_hf_hub_cache", lambda: str(cache))
+    assert dcs.checkpoint_fingerprint("o/r") == "f" * 40
+    assert dcs.checkpoint_fingerprint("o/missing") is None
+
+
+def test_calibration_key_carries_the_revision():
+    import inspect
+
+    from core.inference import video
+
+    src = inspect.getsource(video)
+    key_at = src.index("video_stream_residency.calibration_key(")
+    call = src[key_at : src.index("\n                    )", key_at)]
+    assert "revision = _calibration_revision(state)" in call
+    a = vsr.calibration_key("ltx-2", "r", "group", "cuda:0", revision = "a" * 40)
+    assert a != vsr.calibration_key("ltx-2", "r", "group", "cuda:0", revision = "b" * 40)
