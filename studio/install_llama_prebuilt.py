@@ -18,6 +18,7 @@ import os
 import platform
 import random
 import re
+import shlex
 import shutil
 import signal
 import site
@@ -82,6 +83,10 @@ from backend.utils.prebuilt.llama_backend import (  # noqa: E402
     marker_backend,
     marker_backend_request,
     normalize_backend_request,
+)
+from backend.utils.prebuilt.runtime_libs import (
+    ONEAPI_LIB_DIRS_FILENAME,
+    oneapi_lib_dirs,
 )
 
 # Late-binding seam: core functions resolve collaborators (download_file,
@@ -3810,10 +3815,18 @@ def published_asset_choice_for_kind(
     install_kind: str,
     *,
     host: HostInfo | None = None,
+    runtime_line: str | None = None,
 ) -> AssetChoice | None:
     candidates = sorted(
-        (artifact for artifact in release.artifacts if artifact.install_kind == install_kind),
-        key = lambda artifact: (artifact.rank, artifact.asset_name),
+        (
+            artifact for artifact in release.artifacts if artifact.install_kind == install_kind
+            and (runtime_line is None or artifact.runtime_line in (runtime_line, None))
+        ),
+        key = lambda artifact: (
+            runtime_line is not None and artifact.runtime_line != runtime_line,
+            artifact.rank,
+            artifact.asset_name,
+        ),
     )
     for artifact in candidates:
         if host is not None and install_kind in VULKAN_INSTALL_KINDS:
@@ -4727,6 +4740,7 @@ def runtime_patterns_for_install_kind(
         "linux-arm64-cuda",
         "linux-rocm",
         "linux-arm64",
+          "linux-sycl",
         "linux-vulkan",
     }:
         return ["llama-server", "llama-quantize", "llama-diffusion-gemma-visual-server", "lib*.so*"]
@@ -5512,6 +5526,14 @@ def install_from_archives(
         source_dir = extract_dir
         overlay_dir = overlay_directory_for_choice(install_dir, choice, host)
         copy_globs(source_dir, overlay_dir, runtime_patterns_for_choice(choice), required = True)
+        if choice.install_kind == "linux-sycl":
+            oneapi_dirs = oneapi_runtime_lib_dirs()
+            if not oneapi_dirs:
+                raise PrebuiltFallback("no oneAPI runtime found for the SYCL prebuilt")
+            atomic_write_bytes(
+                overlay_dir / ONEAPI_LIB_DIRS_FILENAME,
+                (os.pathsep.join(oneapi_dirs) + "\n").encode("utf-8"),
+            )
         for _subdir in runtime_subdirs_for_choice(choice):
             _src_subdir = source_dir / _subdir
             if _src_subdir.is_dir():
@@ -5573,6 +5595,21 @@ def install_from_archives(
         create_exec_entrypoint(build_server, source_server)
     if source_quantize != build_quantize:
         create_exec_entrypoint(build_quantize, source_quantize)
+    if choice.install_kind == "linux-sycl":
+        oneapi_dirs = shlex.quote(os.pathsep.join(oneapi_lib_dirs(build_bin)))
+        script = "\n".join(
+            [
+                "#!/bin/sh",
+                f"LD_LIBRARY_PATH={oneapi_dirs}${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}",
+                "export LD_LIBRARY_PATH",
+                f'exec "$(dirname "$0")/{os.path.relpath(source_quantize, install_dir)}" "$@"',
+                "",
+            ]
+        )
+        if root_quantize.exists() or root_quantize.is_symlink():
+            root_quantize.unlink()
+        atomic_write_bytes(root_quantize, script.encode("utf-8"))
+        os.chmod(root_quantize, 0o755)
 
     return source_server, source_quantize
 
@@ -6473,6 +6510,21 @@ def scrubbed_environ() -> dict[str, str]:
     return env
 
 
+def oneapi_runtime_lib_dirs() -> list[str]:
+    venv_lib = Path(sys.prefix) / "lib"
+    return [str(venv_lib)] if any(venv_lib.glob("libsycl.so.*")) else []
+
+
+def oneapi_runtime_line(lib_dirs: Iterable[str]) -> str | None:
+    majors = {
+        int(match.group(1))
+        for directory in lib_dirs
+        for path in Path(directory).glob("libsycl.so.*")
+        if (match := re.fullmatch(r"libsycl\.so\.(\d+)", path.name))
+    }
+    return f"sycl{max(majors)}" if majors else None
+
+
 def binary_env(
     binary_path: Path,
     install_dir: Path,
@@ -6495,6 +6547,7 @@ def binary_env(
             str(binary_path.parent),
             str(install_dir),
             *linux_runtime_dirs(binary_path),
+            *oneapi_lib_dirs(binary_path.parent),
         ]
         # WSL: system HIP before the bundle's (which segfaults on /dev/dxg).
         _wsl_rocm = _wsl_system_rocm_lib_dirs()
@@ -6596,6 +6649,7 @@ def validate_server(
             "linux-cuda",
             "linux-arm64-cuda",
             "linux-rocm",
+            "linux-sycl",
             "linux-vulkan",
             "windows-cuda",
             "windows-arm64-cuda",
@@ -7141,6 +7195,17 @@ def _linux_published_attempts(host: HostInfo, bundle: PublishedReleaseBundle) ->
         if published_rocm is not None:
             attempts.append(published_rocm)
     else:
+        if (
+            host.has_intel_gpu
+            and not host.has_amd_gpu_without_rocm
+            and host.is_x86_64
+            and oneapi_runtime_lib_dirs()
+        ):
+            sycl_choice = published_asset_choice_for_kind(
+                bundle, "linux-sycl", runtime_line = oneapi_runtime_line(oneapi_runtime_lib_dirs())
+            )
+            if sycl_choice is not None:
+                attempts.append(sycl_choice)
         # Same condition as direct_upstream_release_plan and resolve_upstream_asset_choice,
         # which all three must state; this is the normal published-bundle branch. Reaching here
         # already means not has_rocm (it is the else).
@@ -8148,6 +8213,16 @@ def runtime_payload_health_groups(
             ["libggml-cpu*.so*"],
             ["libmtmd.so*"],
             ["libggml-hip.so*"],
+        ] + _linux_split_entrypoint_groups(source_label, tag)
+    if install_kind == "linux-sycl":
+        return [
+            ["libllama-common.so*"],
+            ["libllama.so*"],
+            ["libggml.so*"],
+            ["libggml-base.so*"],
+            ["libggml-cpu*.so*"],
+            ["libmtmd.so*"],
+            ["libggml-sycl.so*"],
         ] + _linux_split_entrypoint_groups(source_label, tag)
     if install_kind == "linux-vulkan":
         groups = [

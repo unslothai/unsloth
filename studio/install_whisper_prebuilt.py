@@ -183,6 +183,7 @@ SLIM_GGML_LIBRARY_GLOBS = (
     "libomp*.dll",
     "libomp*.so*",
     "libomp*.dylib",
+    llama.ONEAPI_LIB_DIRS_FILENAME,
 )
 SLIM_ROCM_LIBRARY_GLOBS = (
     "libamd*.so*",
