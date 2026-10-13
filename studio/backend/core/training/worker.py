@@ -3711,6 +3711,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
+    from utils.security.hub_data_files import install as guard_hub_data_files
+
+    guard_hub_data_files()
+
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
 
