@@ -836,6 +836,34 @@ def test_gpu_laya_answers_from_its_own_process_that_unload_ends(client, monkeypa
     assert not process.is_alive()
 
 
+@pytest.mark.parametrize("device", ["mlx", "mps"])
+def test_an_apple_gpu_load_that_training_overtook_lands_on_cpu(monkeypatch, tmp_path, device):
+    from utils import systemone_settings as settings
+
+    training, built = [False], []
+
+    def build(
+        root,
+        checkpoint,
+        where,
+        for_training = False,
+    ):
+        built.append(where)
+        training[0] = True
+        return SimpleNamespace(device = where), where
+
+    monkeypatch.setattr(settings, "get_device", lambda: "gpu")
+    monkeypatch.setattr(laya_runtime, "_device", lambda: device)
+    monkeypatch.setattr(laya_runtime, "_training_active", lambda: training[0])
+    monkeypatch.setattr(laya_runtime, "_checkpoint_dir", lambda checkpoint: tmp_path)
+    monkeypatch.setattr(laya_runtime, "_laya", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_evict", lambda: None)
+    monkeypatch.setattr(laya_runtime, "_build_laya", build)
+    checkpoint = catalog.Checkpoint(catalog.LOCAL_NAME, str(tmp_path), None, "")
+    agent, placed = _REAL_LOAD(checkpoint)
+    assert (built, placed) == ([device, "cpu"], "cpu")
+
+
 def test_gpu_on_apple_silicon_runs_mlx_and_falls_back_to_mps(monkeypatch):
     torch = pytest.importorskip("torch")
     from utils.hardware import hardware

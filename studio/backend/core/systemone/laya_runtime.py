@@ -1047,7 +1047,13 @@ def _load_checkpoint(checkpoint: Checkpoint):
             if not _training_active():
                 raise
         device, for_training = "cpu", True
-    return _build_laya(root, checkpoint, device, for_training)
+    agent, placed = _build_laya(root, checkpoint, device, for_training)
+    if placed != "cpu" and _training_active():
+        # Training may have started while an in-process MLX or MPS model built.
+        del agent
+        _release_memory()
+        return _build_laya(root, checkpoint, "cpu", True)
+    return agent, placed
 
 
 def _build_laya(
