@@ -3081,6 +3081,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         replacements["warmup_steps"] = 0.1
     else:
         replacements["warmup_ratio"] = 0.1
+    # GOLD's num_generations is samples per prompt (default 1), not a GRPO group: 8 would also lift its batch size to 8.
+    if trainer_file == "gold_trainer":
+        replacements.pop("num_generations")
 
     for k, v in replacements.items():
         x = rf"\b{k}( = [^,\n]{{1,}})?,\n"
@@ -3294,7 +3297,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         )
         extra_args += check_num_generations
     elif "per_device_train_batch_size" in call_args and "num_generations" in call_args:
-        # GOLD has num_generations without either knob; a print here would greet every `import unsloth`.
+        # GOLD has num_generations but no steps_per_generation; a print here would greet every `import unsloth`.
         if "steps_per_generation" not in call_args:
             logger.info(f"Unsloth: Could not find `steps_per_generation` in {trainer_file}")
         if "generation_batch_size" not in call_args:

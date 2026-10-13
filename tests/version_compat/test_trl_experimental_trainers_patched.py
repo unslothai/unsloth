@@ -77,6 +77,10 @@ for pkg, prefix in MOVED:
         "module_trainer": getattr(module, f"{prefix}Trainer").__name__,
         "config_has_unsloth_fields": "unsloth_num_chunks" in getattr(config, "__dataclass_fields__", {}),
         "mro": [f"{c.__module__}.{c.__name__}" for c in trainer.__mro__],
+        "num_generations": [
+            getattr(c, "__dataclass_fields__", {}).get("num_generations", None) and c.__dataclass_fields__["num_generations"].default
+            for c in (config, config.__mro__[1])
+        ],
         "relative_imports": re.findall(r"^\s*from \.+[\w.]* import .*$", inspect.getsource(sys.modules[trainer.__module__]), re.M),
         "leaked": [x for x in (f"{prefix}Trainer", f"{prefix}Config") if x in vars(trl) or x in vars(trl.trainer)]
         + ([f"trl.trainer.{pkg}_trainer"] if f"{pkg}_trainer" in vars(trl.trainer) else []),
@@ -160,3 +164,11 @@ def test_distillation_trainers_keep_trls_own_base_whatever_the_import_order(
         ), got
         assert not any(c.endswith(parent) and "Unsloth" in c for c in got["mro"][2:]), got
     assert after_unsloth[pkg]["mro"][2:] == before["mro"][2:]
+
+
+def test_gold_keeps_trls_num_generations_default(after_unsloth):
+    """GRPO's num_generations=8 default must not reach GOLD, where it is samples per prompt and would also lift the batch size to 8."""
+    if "gold" not in after_unsloth:
+        pytest.skip("no trl.experimental.gold on this TRL")
+    patched, pristine = after_unsloth["gold"]["num_generations"]
+    assert patched == pristine, after_unsloth["gold"]["num_generations"]
