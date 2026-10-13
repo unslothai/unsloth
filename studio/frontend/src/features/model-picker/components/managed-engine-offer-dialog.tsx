@@ -94,7 +94,7 @@ export function ManagedEngineOfferDialog() {
               Checking installed engines...
             </p>
           )
-        ) : (
+        ) : visible.length === 0 ? null : (
           <div className="space-y-3">
             {visible.map((engine) => (
               <section
