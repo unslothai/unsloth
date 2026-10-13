@@ -127,11 +127,53 @@ def test_freed_split_model_stops_syncing(monkeypatch, synced):
 
 
 def test_unregistered_split_syncs_off_current_device(monkeypatch, synced):
-    # A model the user dispatched without the Unsloth loader: the shard off the current device drains.
+    # A split nothing registered: the shard off the current device still drains.
     monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
     for index in [0, 0, 1, 1]:
         _rope(index)
     assert synced == [1, 1]
+
+
+def test_hand_dispatched_split_syncs_from_the_first_call(monkeypatch, synced):
+    # accelerate.dispatch_model called by hand after loading registers the split before the first forward,
+    # including through the names transformers bound at import.
+    import importlib
+    import sys
+
+    monkeypatch.setattr(RE, "DEVICE_COUNT", 2)
+    calls = []
+
+    def stub(model, device_map, **kwargs):
+        calls.append(device_map)
+
+    names = [
+        "accelerate",
+        "accelerate.big_modeling",
+        "transformers.modeling_utils",
+        "transformers.integrations.accelerate",
+        "transformers.integrations.peft",
+    ]
+    bound = []
+    importlib.import_module("accelerate.big_modeling")
+    for name in names:
+        module = sys.modules.get(name)
+        if module is not None and hasattr(module, "dispatch_model"):
+            monkeypatch.setattr(module, "dispatch_model", stub)
+            bound.append(module)
+    RE._register_splits_on_dispatch()
+    assert all(module.dispatch_model is not stub for module in bound)
+    RE._register_splits_on_dispatch()
+    assert not getattr(stub, "_unsloth_registers_split", False)
+
+    import accelerate
+
+    single, split = _Model({}), _Model({})
+    accelerate.dispatch_model(single, device_map = {"": 1})
+    accelerate.dispatch_model(split, {"model.layers.0": 0, "model.layers.1": "cuda:1"})
+    assert len(calls) == 2 and len(RE._SPLIT_MODELS) == 1 and split in RE._SPLIT_MODELS
+    for index in [0, 0, 1, 1]:
+        _rope(index)
+    assert synced == [0, 0, 1, 1]
 
 
 @pytest.mark.gpu

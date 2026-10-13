@@ -410,8 +410,9 @@ else:
     _current_device = None
 
 
-def register_split_model(model):
-    device_map = getattr(model, "hf_device_map", None)
+def register_split_model(model, device_map = None):
+    if device_map is None:
+        device_map = getattr(model, "hf_device_map", None)
     if DEVICE_COUNT <= 1 or not isinstance(device_map, dict):
         return False
     from ..models.rl import _accelerator_indices
@@ -422,11 +423,48 @@ def register_split_model(model):
     return True
 
 
+def _register_splits_on_dispatch():
+    # A model the user dispatches by hand after loading is registered too, before its first forward.
+    import sys
+    try:
+        import accelerate.big_modeling as big_modeling
+    except Exception:
+        return
+    original = big_modeling.dispatch_model
+    if getattr(original, "_unsloth_registers_split", False):
+        return
+
+    @functools.wraps(original)
+    def dispatch_model(model, device_map, *args, **kwargs):
+        out = original(model, device_map, *args, **kwargs)
+        try:
+            register_split_model(model, device_map)
+        except Exception:
+            pass
+        return out
+
+    dispatch_model._unsloth_registers_split = True
+    # transformers binds it by name at import (modeling_utils on 4.x, integrations on 5.x).
+    for name in (
+        "accelerate",
+        "accelerate.big_modeling",
+        "transformers.modeling_utils",
+        "transformers.integrations.accelerate",
+        "transformers.integrations.peft",
+    ):
+        module = sys.modules.get(name)
+        if module is not None and getattr(module, "dispatch_model", None) is original:
+            module.dispatch_model = dispatch_model
+
+
+if DEVICE_COUNT > 1:
+    _register_splits_on_dispatch()
+
+
 def _sync_if_split(Q):
     if DEVICE_COUNT <= 1:
         return
-    # A layer on another device than the current one is a split the loader did not see (a model the
-    # user dispatched): drain that call, as before.
+    # A layer on another device than the current one is a split nothing registered: drain that call.
     if _SPLIT_MODELS or Q.get_device() != _current_device():
         torch_device_stream(Q.device).synchronize()
 
