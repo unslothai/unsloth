@@ -102,7 +102,7 @@ SUPPORTS_GPTOSS = transformers_version >= Version("4.55.0")
 SUPPORTS_GEMMA4 = transformers_version >= Version("5.5.0")
 # unsloth_zoo cannot share these models' vLLM weights with the training model.
 VLLM_UNSUPPORTED_MODEL_TYPES = ("gpt_oss",)
-# Model types an older unsloth_zoo cannot rebuild from vLLM: model_type -> unsloth_zoo.empty_model symbol added with support.
+# model_type -> unsloth_zoo.empty_model symbol that rebuilds it from vLLM; an older zoo falls back.
 _VLLM_NEEDS_ZOO_SYMBOL = {"nemotron_h": "extract_nemotron_h_mixer"}
 
 
@@ -971,7 +971,7 @@ def _vllm_unavailable_error():
     )
 
 
-# load_vllm engine knobs a caller may pass through **kwargs; transformers' from_pretrained rejects them.
+# load_vllm-only kwargs; transformers' from_pretrained rejects them.
 _VLLM_ENGINE_KWARGS = (
     "max_loras",
     "use_async",

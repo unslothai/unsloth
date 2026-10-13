@@ -41,7 +41,6 @@ def test_nemotron_h_fast_inference_falls_back_on_an_older_zoo(capfd, monkeypatch
         load_in_4bit = False,
         fast_inference = True,
         gpu_memory_utilization = 0.1,
-        # vLLM engine knobs reach transformers' from_pretrained unless the fallback drops them.
         enforce_eager = True,
         max_num_seqs = 8,
     )

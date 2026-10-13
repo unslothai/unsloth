@@ -4671,7 +4671,7 @@ class FastBaseModel:
             target_parameters = packed_expert_target_parameters(
                 model, target_parameters, _packed_leaves
             )
-            # vLLM serves Nemotron-H's relu2 experts only through the 2D FusedMoEWithLoRA, which drops a stacked adapter, so load_lora would refuse it mid-run.
+            # vLLM serves Nemotron-H's relu2 experts only via the 2D FusedMoEWithLoRA; load_lora refuses a stacked adapter.
             if (
                 target_parameters
                 and getattr(model, "vllm_engine", None) is not None
