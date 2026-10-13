@@ -150,21 +150,23 @@ def test_host_quantize_copies_out_of_the_map_when_pages_cannot_be_released(monke
 
 
 def test_worker_load_quantizes_only_when_asked(monkeypatch):
-    import transformers
-
-    built = []
+    import sys
 
     class _Cls:
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
-            m = _TinyGemma()
-            built.append(m)
-            return m
+            return _TinyGemma()
 
-    monkeypatch.setattr(transformers, "__version__", "5.10.2", raising = False)
-    monkeypatch.setattr(transformers, "Gemma4UnifiedForConditionalGeneration", _Cls, raising = False)
-    monkeypatch.setattr(
-        transformers, "AutoTokenizer", SimpleNamespace(from_pretrained = lambda *a, **k: object())
+    # A stand-in module, not attributes patched onto the real one: touching the real Gemma 4 class lazily imports
+    # its modeling stack, which on some installs re-registers sys.modules["transformers"] and drops the patches.
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            __version__ = "5.10.2",
+            Gemma4UnifiedForConditionalGeneration = _Cls,
+            AutoTokenizer = SimpleNamespace(from_pretrained = lambda *a, **k: object()),
+        ),
     )
     base = {"repo": "Lightricks/LTX-2.5-Diffusers", "device": "cpu", "dtype": "bfloat16"}
     _tok, model = worker._load(dict(base, te_quant = "int8"))
