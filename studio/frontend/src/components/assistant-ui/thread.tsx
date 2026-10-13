@@ -76,6 +76,8 @@ import { ImageGenerationToolUI } from "@/components/assistant-ui/tool-ui-image-g
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
+import { RewindDialog } from "@/components/assistant-ui/rewind-dialog";
+import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -397,6 +399,7 @@ import {
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
+  UndoIcon,
   VolumeMute02Icon,
   WorkflowCircle05Icon,
 } from "@hugeicons/core-free-icons";
@@ -2381,6 +2384,7 @@ export const Thread: FC<{
       </ThreadPrimitive.Root>
       {/* Document preview, opened by citation badges. */}
       <DocumentPreviewMount />
+      <RewindDialog />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
   );
@@ -5332,6 +5336,20 @@ const Composer: FC<{
       pendingFollowUpBehaviorRef.current = behavior;
       if (isResearchActive) {
         event.preventDefault();
+        return;
+      }
+      // A command, not a prompt: ahead of the model and queue gates, so it works with no model loaded.
+      if (!overlay && !hasAttachments && isRewindCommand(composerText)) {
+        event.preventDefault();
+        if (threadIsRunning || aui.thread().getState().isRunning) {
+          toast.error(translate("rewind.waitForResponse"));
+          return;
+        }
+        aui.composer().setText("");
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId: null,
+        });
         return;
       }
       if (disabled || shouldBlockSend()) {
@@ -8542,7 +8560,29 @@ const ForkMessageMenuItem: FC = () => {
   );
 };
 
-// A prompt's More menu: Fork, then Delete.
+const RewindMessageMenuItem: FC = () => {
+  const aui = useAui();
+  const t = useT();
+  const messageId = useAuiState(({ message }) => message.id);
+  const isRunning = useAuiState(({ thread }) => thread.isRunning);
+  return (
+    <ActionBarMorePrimitive.Item
+      disabled={isRunning}
+      onSelect={() =>
+        useRewindDialogStore.getState().openRewind({
+          threadKey: aui.threadListItem().getState().id,
+          messageId,
+        })
+      }
+      className="aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-[12px] px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50"
+    >
+      <HugeiconsIcon icon={UndoIcon} strokeWidth={1.75} className="size-icon" />
+      {t("rewind.menuItem")}
+    </ActionBarMorePrimitive.Item>
+  );
+};
+
+// A prompt's More menu: Fork, Rewind, then Delete.
 const UserMoreMenu: FC = () => {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const collisionPadding = useWindowChromeCollisionPadding(undefined);
@@ -8563,6 +8603,7 @@ const UserMoreMenu: FC = () => {
         <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
           <MenuDismissGuard triggerRef={triggerRef} />
           <ForkMessageMenuItem />
+          <RewindMessageMenuItem />
           <DeleteMessageMenuItem />
         </div>
       </ActionBarMorePrimitive.Content>

@@ -957,6 +957,7 @@ async def _remove_sandboxes(thread_ids, delete_files: bool) -> "tuple[int, list[
             # with a tool call possibly running in here, so its folder is not this delete's to take.
             if get_chat_thread(thread_id) is not None:
                 continue
+            _drop_file_history(thread_id)
             # A fork clones the message content, cards and all, so the source
             # chat's files are still on screen in a chat the user kept.
             if delete_files and sandbox_is_referenced_elsewhere(thread_id):
@@ -1848,6 +1849,66 @@ class ChatForkCountResponse(BaseModel):
 
 class ChatThreadForkCountsResponse(BaseModel):
     counts: dict[str, int]
+
+
+def _drop_file_history(thread_id: str) -> None:
+    try:
+        from core.inference import file_history
+        file_history.store().delete_chat(thread_id)
+    except Exception:
+        logger.warning("Could not remove the file history of %s", thread_id, exc_info = True)
+
+
+class ChatRewindRequest(BaseModel):
+    # The user messages being rewound, from the chosen one to the tip of the selected branch.
+    turn_ids: list[Annotated[str, Field(min_length = 1, max_length = 256)]] = Field(max_length = 5000)
+    dry_run: bool = False
+    force: bool = False
+
+
+@router.post("/threads/{thread_id}/rewind")
+def rewind_thread_files(
+    thread_id: str,
+    payload: ChatRewindRequest,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Put back the files this chat's tool calls changed during ``turn_ids``. Moving the
+    conversation itself is the client's: it edits the chosen message, which keeps the old branch."""
+    from core.inference import file_history, tools
+    from hub.services.models import account_access
+    from state import active_generations
+
+    if get_chat_thread(thread_id) is None:
+        raise HTTPException(status_code = 404, detail = f"Thread {thread_id} not found")
+    if not payload.dry_run and thread_id in active_generations.active_thread_ids(
+        account_access.account_scope()
+    ):
+        raise HTTPException(
+            status_code = 409, detail = "This chat is still generating. Rewind it once it finishes."
+        )
+
+    def walk(workdir: str):
+        return tools._history_snapshot(tools._snapshot_workdir_files(workdir))
+
+    def busy(workdir: str) -> bool:
+        with tools._calls_lock:
+            return any(os.path.realpath(w) == workdir for w in tools._workdir_calls)
+
+    try:
+        report = file_history.store().rewind(
+            thread_id,
+            payload.turn_ids,
+            walk,
+            dry_run = payload.dry_run,
+            force = payload.force,
+            busy = busy,
+        )
+    except file_history.RewindBusy as exc:
+        raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    if report.undo_turn_id:
+        from core import library
+        library.invalidate_listing()
+    return report.as_dict()
 
 
 @router.post("/threads/{thread_id}/fork", response_model = ChatForkResponse)

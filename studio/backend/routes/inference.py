@@ -30378,6 +30378,9 @@ async def produce_openai_chat_completions(
     # still reachable. Otherwise it is dropped in silence and the answer looks legitimate.
     _reject_unsupported_content_parts(payload)
     await _materialize_sandbox_attachments(payload)
+    from core.inference import file_history
+
+    file_history.set_turn(payload.thread_id, payload.user_message_id)
 
     # ── External provider routing ────────────────────────────────
     # encrypted_api_key is optional -- local providers (llama.cpp / vLLM / Ollama) may run without auth.
