@@ -13572,8 +13572,7 @@ _MCP_ALIAS_DIGEST_LEN = 8
 _MCP_ALIAS_SUFFIX_LEN = _MCP_ALIAS_DIGEST_LEN + 1
 
 _MCP_SUMMARY_CHARS = 240
-# Above this share of the local window, MCP tools are deferred behind mcp_tool_search (Claude Code defers at
-# 10%, Codex past 100 tools). The full listing of a large catalog leaves no room for the chat (#10997).
+# Past this share of the local window, MCP tools are deferred behind mcp_tool_search (#10997).
 _MCP_TOOL_SEARCH_SHARE = 0.10
 _MCP_TOOL_SEARCH_LIMIT = 5
 # Up to this many tools ranked against the user's message are listed up front, within their own share of the
@@ -13876,7 +13875,6 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     room = ctx * _MCP_TOOL_PRELOAD_SHARE - _text_token_cost(
         json.dumps(listing, separators = (",", ":")), ctx
     )
-    # Then the tools this chat ran, newest first, and the ones its message asks for, within the preload share.
     ran = [name for name in reversed(_mcp_loaded_names()) if name in by_name]
     ranked = [specs[i]["function"]["name"] for i in _mcp_ranked(specs, _MCP_LISTING_QUERY.get())[0]]
     for name in dict.fromkeys(ran + ranked[:_MCP_TOOL_PRELOAD]):
@@ -13989,7 +13987,7 @@ def _mcp_ranked(specs: list[dict], query) -> tuple[list[int], int]:
     from core.rag import config as rag_config, retrieval  # noqa: PLC0415 -- RAG ranking, imported lazily
     from core.rag.store import conversation_match_queries  # noqa: PLC0415
 
-    # Ids match nothing a tool is named or described by, and a long paste would OR thousands of terms (seconds).
+    # A long paste would OR thousands of terms (seconds per request).
     query = query[:_MCP_SEARCH_QUERY_CHARS]
     expressions = conversation_match_queries(
         _MCP_SEARCH_ID_RE.sub(" ", query)

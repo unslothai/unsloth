@@ -1195,7 +1195,6 @@ class ToolLoopController:
         self._allowed_tool_names = {
             name for name in (_tool_name_from_schema(tool) for tool in self._tools) if name
         }
-        # Deferred MCP tools load into the listing when searched for or named (#10997).
         self._mcp_search = MCP_TOOL_SEARCH_NAME in self._allowed_tool_names
         self._listed_count = len(self._tools)
         self._mcp_loaded: list[dict[str, Any]] = []
