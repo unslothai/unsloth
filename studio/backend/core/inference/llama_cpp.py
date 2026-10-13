@@ -28471,14 +28471,15 @@ class LlamaCppBackend:
                             _mmproj_host_bytes = mmproj_size + int(
                                 mmproj_size * (self._MMPROJ_VRAM_SAFETY - 1.0)
                             )
-                        # A projector pinned to a GPU device: gpu_ids may widen the mask to a
-                        # companion card for it (_widen_pin_ids_for_companion_devices), so
-                        # whether model_size_fit's projector bytes sit on this card is unknown.
+                        # A projector pinned to a named device: a GPU may be a companion card
+                        # gpu_ids exposes (_widen_pin_ids_for_companion_devices) and CPU keeps it
+                        # off the card, so whether model_size_fit's projector bytes sit on this
+                        # card is unknown.
                         if _mmproj_dev is not None and effective_is_vision and mmproj_size > 0:
                             _mmproj_devs = [
                                 d.strip().lower() for d in str(_mmproj_dev).split(",") if d.strip()
                             ]
-                            if _mmproj_devs and not all(d in ("cpu", "none") for d in _mmproj_devs):
+                            if _mmproj_devs and not all(d == "none" for d in _mmproj_devs):
                                 return None
                         # A drafter model pinned by --spec-draft-device to a device this
                         # estimate cannot map to the card (common_base_params_to_speculative,

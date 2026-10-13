@@ -4903,10 +4903,12 @@ def test_a_gpu_pinned_projector_is_unpriced(
     assert seen == []
 
 
-def test_a_cpu_named_projector_device_is_still_priced(tmp_path, _moe_cache_host, monkeypatch):
+def test_a_cpu_named_projector_device_is_unpriced(tmp_path, _moe_cache_host, monkeypatch):
+    """--mmproj-device CPU names the CPU backend device (parse_device_list), which keeps the
+    projector off the card while model_size_fit still charges it there."""
     monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
-    cmd, seen = _vision_cache_launch(tmp_path, monkeypatch, ["--mmproj-device", "cpu"])
-    assert "--mmproj" in cmd and seen and seen[-1] is not None, cmd
+    _cmd, seen = _vision_cache_launch(tmp_path, monkeypatch, ["--mmproj-device", "CPU"])
+    assert seen == []
 
 
 def _drafter_cache_launch(tmp_path, monkeypatch, extra_args):
