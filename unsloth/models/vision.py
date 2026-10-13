@@ -4688,18 +4688,7 @@ class FastBaseModel:
             )
 
         if _moe_module_targets:
-            if isinstance(target_modules, (list, tuple)):
-                target_modules = list(target_modules) + [
-                    target for target in _moe_module_targets if target not in target_modules
-                ]
-            elif isinstance(target_modules, str):
-                _expert_leaves = sorted({t.rsplit(".", 1)[0] for t in _moe_module_targets})
-                _expert_alt = (
-                    r".*\.experts\.(?:"
-                    + "|".join(re.escape(leaf) for leaf in _expert_leaves)
-                    + r")\.\d+"
-                )
-                target_modules = f"(?:{target_modules})|(?:{_expert_alt})"
+            target_modules = add_moe_target_modules(target_modules, _moe_module_targets)
             print(
                 f"Unsloth: Detected MoE model with per-expert Linear experts. "
                 f"Enabling LoRA on {len(_moe_module_targets)} expert projection modules."

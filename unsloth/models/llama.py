@@ -3942,7 +3942,12 @@ class FastLlamaModel:
             # modules_to_tie, which to_dict() drops, so read the config object.
             requested_modules_to_save = modules_to_save
             modules_to_save = list(peft_config["modules_to_save"] or [])
-            old_target_modules = list(peft_config["target_modules"]) + modules_to_save
+
+            # A str target_modules is one regex: compare it whole, not character by character.
+            def _as_list(targets):
+                return [targets] if isinstance(targets, str) else list(targets or [])
+
+            old_target_modules = _as_list(peft_config["target_modules"]) + modules_to_save
             old_target_modules += list(
                 getattr(model.peft_config["default"], "modules_to_tie", None) or []
             )
@@ -3954,7 +3959,7 @@ class FastLlamaModel:
                 requested_modules_to_save,
                 skip = _vllm_unmovable_embedding_modules(model, target_modules),
             )
-            new_target_modules = list(requested_targets) + list(requested_saved or [])
+            new_target_modules = _as_list(requested_targets) + list(requested_saved or [])
             if isinstance(model, PeftModelForSequenceClassification):
                 # PeftModelForSequenceClassification.__init__ extends modules_to_save with these
                 # unconditionally, so the stored config names modules the caller never asked for. Mirror it, or
@@ -4137,16 +4142,21 @@ class FastLlamaModel:
                 f"to `modules_to_save`, so they are trained as full weight matrices.\n"
                 f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
             )
-        for module in target_modules:
-            try:
-                assert module in accepted_modules
-                final_modules.append(module)
-            except AssertionError as e:
-                final_modules.append(module)
-                print(
-                    "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"
-                    "Beware - your finetuning might be noticeably slower!"
-                )
+        if isinstance(target_modules, str):
+            # PEFT takes a str as one regex fullmatched against module paths, or "all-linear"; iterating it
+            # would shred it into single characters that suffix-match `layers.1` and friends.
+            final_modules = target_modules
+        else:
+            for module in target_modules:
+                try:
+                    assert module in accepted_modules
+                    final_modules.append(module)
+                except AssertionError as e:
+                    final_modules.append(module)
+                    print(
+                        "Unsloth: You added custom modules, but Unsloth hasn't optimized for this.\n"
+                        "Beware - your finetuning might be noticeably slower!"
+                    )
 
         if hasattr(model, "_need_to_train_embeddings"):
             # embed_tokens/lm_head may already be trained, either as LoRA targets in final_modules or via
@@ -4230,8 +4240,12 @@ class FastLlamaModel:
             )
 
         if _moe_module_targets:
-            _added = [t for t in _moe_module_targets if t not in final_modules]
-            final_modules.extend(_added)
+            _added = [
+                t
+                for t in _moe_module_targets
+                if isinstance(final_modules, str) or t not in final_modules
+            ]
+            final_modules = add_moe_target_modules(final_modules, _moe_module_targets)
             if _added:
                 print(
                     f"Unsloth: Detected MoE model with per-expert Linear experts. "
