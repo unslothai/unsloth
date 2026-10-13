@@ -22796,6 +22796,9 @@ def _history_begin(call_token: dict, session_id: "str | None", before: "dict[str
 def _history_end(call_token: "dict | None", after: "dict[str, tuple]") -> None:
     if not call_token or call_token.get("history") is None:
         return
+    if call_token.get("shared"):
+        # An upload or another call wrote here meanwhile: what changed is not all this turn's.
+        call_token["history"].ambiguous = True
     snap, complete = _history_snapshot(after)
     file_history.end_call(call_token["history"], snap, complete = complete)
 

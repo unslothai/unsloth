@@ -363,3 +363,29 @@ def test_one_call_stores_at_most_its_byte_budget(chat, monkeypatch):
         history._db.execute("SELECT rel_path, kind FROM workdir_state WHERE rel_path LIKE 'f%'")
     )
     assert sorted(kinds.values()).count("blob") == 1 and len(kinds) == 4
+
+
+def test_an_upload_during_a_call_is_never_undone_with_it(chat):
+    import contextvars
+    import threading
+    import time
+
+    workdir, history = chat
+    file_history.set_turn("chat-1", "u1")
+    _edit("seed.txt", "", "s\n")  # the baseline
+    worker = threading.Thread(
+        target = contextvars.copy_context().run,
+        args = (
+            execute_tool,
+            "python",
+            {"code": "import time; open('out.txt', 'w').write('x'); time.sleep(2)"},
+        ),
+        kwargs = {"session_id": "s"},
+    )
+    worker.start()
+    time.sleep(0.8)
+    tools.save_sandbox_upload("s", "upload.txt", [b"mine\n"])
+    worker.join()
+    report = _rewind(history, ["u1"])
+    assert "upload.txt" in report.conflicts
+    assert (workdir / "upload.txt").read_text(encoding = "utf-8") == "mine\n"
