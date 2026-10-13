@@ -28,6 +28,7 @@ from core._torchao_stub import (
     is_stubbed,
     torch_is_rocm,
 )
+from core.inference.diffusion_families import _FAMILIES as _IMAGE_REGISTRY
 from core.inference.diffusion_families import (
     detect_family,
     detect_family_for_pick,
@@ -35,8 +36,11 @@ from core.inference.diffusion_families import (
     trainable_family_names,
 )
 from core.inference.diffusion_torchao_patches import install_torchao_int_mm_patch
+from core.inference.video_families import _FAMILIES as _VIDEO_REGISTRY
 from core.inference.video_families import detect_video_family, supported_video_family_names
 from utils.paths.path_utils import drop_appledouble_metadata
+
+from core.training.diffusion_samples import SAMPLE_FAMILIES, validate_sample_settings
 
 # The trainers run in a spawned child that imports diffusers itself, so the inference-side install does not carry
 # over. Both import this module first.
@@ -70,9 +74,9 @@ _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
     {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2", "minimax-h3"}
 )
 
-# The video registry has no trainable flag, so the trainable set lives here and every name in it MUST resolve through
-# get_trainer; a video base outside it is refused by name.
-TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset({"ltx-2", "minimax-h3"})
+# ``VideoFamily.trainable``; every name in it MUST resolve through get_trainer, and a video base outside it is refused
+# by name.
+TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGISTRY if f.trainable)
 
 # Families whose flow_shift default is "auto" (reproduce the family's INFERENCE sigma distribution) rather than the
 # identity 1.0. Both schedulers set use_dynamic_shifting, so scheduler.sigmas is the unshifted uniform table and
@@ -536,19 +540,9 @@ def train_defaults(family: str) -> dict[str, Any]:
     return dict(FAMILY_TRAIN_DEFAULTS.get((family or "").strip().lower(), {}))
 
 
-# Display labels + a short VRAM/access note per trainable family, surfaced by the Train UI so users pick a base with
-# realistic expectations.
-_FAMILY_LABELS = {
-    "sdxl": "SDXL",
-    "flux.1": "FLUX.1-dev",
-    "qwen-image": "Qwen-Image",
-    "z-image": "Z-Image",
-    "krea-2": "Krea 2",
-    "flux.2-klein": "FLUX.2 Klein",
-    "flux.2-dev": "FLUX.2-dev",
-    "ltx-2": "LTX-2",
-    "minimax-h3": "MiniMax-H3",
-}
+# Display labels (the registries' ``label``) + a short VRAM/access note per trainable family, surfaced by the Train UI
+# so users pick a base with realistic expectations.
+_FAMILY_LABELS = {fam.name: fam.label for fam in (*_IMAGE_REGISTRY, *_VIDEO_REGISTRY) if fam.label}
 # params is the transformer size (SDXL is not quoted that way); note is the rest.
 _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     "sdxl": {"params": "", "qlora_vram_gb": 12, "gated": False, "note": "The lightest option."},
@@ -719,7 +713,7 @@ def xpu_native_bf16_probe() -> Optional[bool]:
     if not callable(fn):
         return None
     try:
-        return bool(fn(including_emulation = False))
+        return bool(fn(including_emulation = False)) or _xpu_is_known_bf16_part(torch)
     except TypeError:
         # A torch predating the including_emulation parameter: its answer is the only one there is.
         try:
@@ -728,6 +722,25 @@ def xpu_native_bf16_probe() -> Optional[bool]:
             return None
     except Exception:  # noqa: BLE001 -- unprobeable
         return None
+
+
+def _xpu_is_known_bf16_part(torch) -> bool:
+    """Whether the current XPU is an Arc / Data Center part, read from its PCI id. Never raises.
+
+    The SYCL runtime answers ``has_bfloat16_conversions`` through libocloc (the intel-ocloc
+    package, which the torch-xpu wheels do not ship), so without it the strict probe is False on
+    every device, BMG and PVC included; with it, True on every device. The PCI id does not depend
+    on the install."""
+    try:
+        props = torch.xpu.get_device_properties()
+        device_id = getattr(props, "device_id", None)
+        if isinstance(device_id, int) and device_id > 0:
+            from utils.hardware.hardware import _is_intel_xpu_pci_id
+            return _is_intel_xpu_pci_id(device_id)
+        # A torch without device_id: the marketing name is the only signal left.
+        return bool(re.search(r"\bArc\b|Data Center GPU", str(getattr(props, "name", "") or "")))
+    except Exception:  # noqa: BLE001 -- unprobeable keeps the strict answer
+        return False
 
 
 def native_bf16_supported_xpu() -> bool:
@@ -811,14 +824,147 @@ def bitsandbytes_optimizer_supported() -> bool:
 
     Keyed on get_device(), NOT torch.xpu.is_available(): a hybrid host with an Intel iGPU beside
     an NVIDIA card reports both and detection prefers CUDA. Answering the presence question there
-    would drop 8-bit on a CUDA run, and worse, change optimizer_key() so restore_resume_state
-    refuses every existing AdamW8bit checkpoint with a ResumeError.
+    would make make_lora_optimizer skip AdamW8bit, so restore_resume_state refuses every existing
+    AdamW8bit checkpoint with a ResumeError.
     """
     try:
         from utils.hardware import DeviceType, get_device
         return get_device() != DeviceType.XPU
     except Exception:  # noqa: BLE001 -- a probe failure must not block a start
         return True
+
+
+def _is_bnb_8bit_optimizer_key(name: Optional[str]) -> bool:
+    return isinstance(name, str) and name.startswith("bitsandbytes.") and "8bit" in name
+
+
+def recorded_optimizer_class(cfg: Any, identity: Any) -> Optional[str]:
+    """Optimizer class of the bundle being resumed, else None; never raises (restore_resume_state reports errors)."""
+    if not getattr(cfg, "resume_from_checkpoint", None):
+        return None
+    try:
+        from core.training.diffusion_checkpoint import preflight_resume, read_checkpoint
+        path, _step = preflight_resume(
+            cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+        )
+        value = (read_checkpoint(path) or {}).get("optimizer_class")
+    except Exception:  # noqa: BLE001
+        return None
+    return value if isinstance(value, str) else None
+
+
+def resume_steps_left(cfg: Any, identity: Any) -> int:
+    """Optimizer steps this process will run: the target minus the resumed bundle's step; the target when unknown."""
+    if not getattr(cfg, "resume_from_checkpoint", None):
+        return cfg.train_steps
+    try:
+        from core.training.diffusion_checkpoint import preflight_resume
+        _path, step = preflight_resume(
+            cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+        )
+    except Exception:  # noqa: BLE001 -- restore_resume_state reports the real problem
+        return cfg.train_steps
+    return max(0, cfg.train_steps - int(step))
+
+
+class TrainingPeakMemory:
+    """Training-only peak: ``pause`` banks it before a preview round, ``resume`` resets after, so VAE decode is excluded."""
+
+    def __init__(self, device: str):
+        self.device = device
+        self.banked = 0.0
+        reset_training_peak_memory(device)
+
+    def pause(self) -> None:
+        self.banked = max(self.banked, training_peak_memory_gb(self.device))
+
+    def resume(self) -> None:
+        reset_training_peak_memory(self.device)
+
+    def gb(self) -> float:
+        return max(self.banked, training_peak_memory_gb(self.device))
+
+
+def _accelerator_memory_module(device: str) -> Any:
+    import torch
+
+    module = getattr(torch, device, None) if device in ("cuda", "xpu") else None
+    if module is None or not hasattr(module, "max_memory_allocated"):
+        return None
+    return module
+
+
+def reset_training_peak_memory(device: str) -> None:
+    """Start the reported peak at the loop: the load / encode peak is higher and not the training cost."""
+    module = _accelerator_memory_module(device)
+    if module is not None:
+        try:
+            module.reset_peak_memory_stats()
+        except Exception:  # noqa: BLE001 -- reporting only
+            pass
+
+
+def training_peak_memory_gb(device: str) -> float:
+    """Peak allocated GB since reset_training_peak_memory on CUDA / XPU; 0.0 where unmeasured (reported as None)."""
+    module = _accelerator_memory_module(device)
+    if module is None:
+        return 0.0
+    try:
+        return round(module.max_memory_allocated() / 1e9, 2)
+    except Exception:  # noqa: BLE001 -- reporting only
+        return 0.0
+
+
+GC_MODE_ENV = "UNSLOTH_DIFFUSION_GC_MODE"
+GC_EVERY_N_ENV = "UNSLOTH_DIFFUSION_GC_EVERY_N"
+
+
+def enable_diffusion_gradient_checkpointing(model: Any, mode: Optional[str] = None) -> str:
+    """ "plain" checkpoints every block, "partial" every Nth; selective / CPU-offloaded were slower or diverged under regional compile."""
+    mode = (mode or os.environ.get(GC_MODE_ENV, "") or "plain").strip().lower()
+    every_n = 1
+    if mode == "partial":
+        try:
+            every_n = max(2, int(os.environ.get(GC_EVERY_N_ENV, "") or 2))
+        except ValueError:
+            every_n = 2
+    try:
+        from unsloth_zoo.block_checkpointing import enable_block_gradient_checkpointing
+    except ImportError:
+        import functools
+
+        import torch.utils.checkpoint as _ckpt
+
+        model.enable_gradient_checkpointing(
+            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
+        )
+        return "plain"
+    enable_block_gradient_checkpointing(model, every_n_blocks = every_n)
+    return "partial" if every_n > 1 else "plain"
+
+
+def make_lora_optimizer(
+    params: list,
+    lr: float,
+    resume_optimizer_class: Optional[str] = None,
+) -> Any:
+    """torch AdamW (AdamW8bit step() syncs per parameter); AdamW8bit only to resume its own bundle, never on XPU (dies at step())."""
+    import torch
+
+    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
+        return torch.optim.AdamW(params, lr = lr)
+    if _is_bnb_8bit_optimizer_key(resume_optimizer_class) and bitsandbytes_optimizer_supported():
+        try:
+            import bitsandbytes as bnb
+            return bnb.optim.AdamW8bit(params, lr = lr)
+        except Exception:  # noqa: BLE001 -- restore_resume_state then names the mismatch
+            pass
+    if torch.cuda.is_available():
+        try:
+            return torch.optim.AdamW(params, lr = lr, fused = True)
+        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
+            pass
+    return torch.optim.AdamW(params, lr = lr)
 
 
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
@@ -916,8 +1062,7 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
-        # H3 refuses compile_transformer="on" (its packed sequence changes length with every caption, so each step
-        # would re-trace), so advertising the control would offer a selection that always 400s.
+        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only.
         supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
         if not is_dit or dit_block:
             fam_modes: list[str] = []
@@ -962,6 +1107,8 @@ def family_train_infos() -> list[dict[str, Any]]:
                 # save_steps is REFUSED for a checkpointless family, not ignored, so a panel that keeps offering
                 # "Checkpoint every" turns a nonzero value into a rejected Start with no way to see why.
                 "supports_checkpoints": name not in CHECKPOINTLESS_FAMILIES,
+                # sample_every is refused elsewhere, so the panel offers "Sample every" only where it runs.
+                "supports_samples": name in SAMPLE_FAMILIES,
                 "supports_bucketing": name not in UNBUCKETED_FAMILIES,
                 # A batch > 1 is REFUSED for a family whose forward covers one packed sequence, so leaving the control
                 # unrestricted turns a reasonable 2 into a rejected Start with nothing to say why.
@@ -1051,6 +1198,10 @@ class DiffusionLoraConfig:
     save_steps: int = 0
     # How many checkpoint-<N> bundles to keep in the output dir; 0 keeps every one.
     save_total_limit: int = 2
+    # 0 disables. Not part of the resume identity: previews never touch the training math.
+    sample_every: int = 0
+    # Empty uses the instance prompt, else the first caption.
+    sample_prompts: tuple[str, ...] = ()
     # The run's output_dir, or one of its checkpoint-<N> directories; the start route resolves and validates it before
     # the trainer spawns.
     resume_from_checkpoint: Optional[str] = None
@@ -1162,6 +1313,9 @@ class DiffusionLoraConfig:
         # so valid decays live in [0, 1).
         if not 0.0 <= ema_decay < 1.0:
             raise ValueError("ema_decay must be in [0, 1); 0 disables the EMA adapter")
+        sample_every, sample_prompts = validate_sample_settings(
+            self.sample_every, self.sample_prompts, resolved_family
+        )
         # A blank cond_cache_dir (the Unsloth default when unset) means "off", not cwd.
         cond_cache_dir = (
             str(self.cond_cache_dir).strip() if self.cond_cache_dir is not None else ""
@@ -1249,6 +1403,10 @@ class DiffusionLoraConfig:
             raise ValueError("learning_rate must be > 0")
         alpha = self.lora_alpha if self.lora_alpha is not None else self.lora_rank
         targets = tuple(self.lora_target_modules) or DEFAULT_LORA_TARGETS
+        # Resume with unset targets keeps the recorded ones, so changing a family default never strands old runs.
+        if resume_from_checkpoint and resolved_family != "sdxl" and targets == DEFAULT_LORA_TARGETS:
+            from core.training.diffusion_checkpoint import recorded_resume_targets
+            targets = recorded_resume_targets(resume_from_checkpoint) or targets
         # A blank Hub token (the Unsloth default when none is configured) must load anonymously, not as an explicit
         # empty credential.
         token = self.hf_token.strip() if isinstance(self.hf_token, str) else self.hf_token
@@ -1300,6 +1458,8 @@ class DiffusionLoraConfig:
             bucketing = bucketing,
             save_steps = save_steps,
             save_total_limit = save_total_limit,
+            sample_every = sample_every,
+            sample_prompts = sample_prompts,
             resume_from_checkpoint = resume_from_checkpoint,
             cond_cache_dir = cond_cache_dir,
             ema_decay = ema_decay,
@@ -1574,14 +1734,6 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
             "MiniMax-H3 trains at batch size 1: one forward covers one packed sequence, whose "
             "row layout is set by the clip's own geometry and its caption's length. Use "
             "gradient_accumulation_steps to raise the effective batch."
-        )
-    # torch.compile is never invoked here (the packed layout changes shape with every caption length), so an explicit
-    # "on" would be accepted and then ignored.
-    if str(getattr(cfg, "compile_transformer", "auto") or "auto").strip().lower() == "on":
-        return (
-            "MiniMax-H3 does not compile: its packed sequence changes length with every clip's "
-            "caption, so torch.compile would re-trace each step. Use compile_transformer "
-            "'off' or 'auto'."
         )
     # No conditioning cache exists on this path, so accepting the directory would promise a saving that never happens.
     if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
@@ -2055,6 +2207,9 @@ def _reapply_lr_schedule(optimizer: Any, lr_scheduler: Any) -> None:
         pass
 
 
+_OPTIMIZER_KERNEL_KEYS = ("fused", "foreach")
+
+
 def restore_resume_state(
     cfg: DiffusionLoraConfig,
     *,
@@ -2090,9 +2245,7 @@ def restore_resume_state(
     load_trainable_state_dict(model, ckpt.tensors("adapter"))
     optimizer_state = ckpt.torch_state("optimizer")
     if optimizer_state is not None:
-        # The trainers pick their optimizer from the HOST (bnb present, fused kernel available,
-        # UNSLOTH_DIFFUSION_FP32_OPTIM), so foreign moments arrive legitimately (state1/state2 versus
-        # exp_avg/exp_avg_sq): shapes match, load_state_dict accepts them, and the first step dies on a bare KeyError.
+        # Foreign moments (AdamW8bit vs torch AdamW) load cleanly, then the first step dies on a bare KeyError.
         saved_optimizer = ckpt.optimizer_class
         live_optimizer = optimizer_key(optimizer)
         if not saved_optimizer:
@@ -2119,9 +2272,22 @@ def restore_resume_state(
                 "than this build produces, so its moments cannot be matched to this run's "
                 "tensors. Start a new run, or resume on the version that wrote it."
             )
-        # load_state_dict replaces the param groups too, so the checkpoint's learning rate wins over a changed cfg,
-        # the same semantics as HF Trainer's resume.
+        # Checkpoint lr wins (HF Trainer semantics); the fused/foreach kernel choice stays this host's.
+        kernels = [
+            {k: g[k] for k in _OPTIMIZER_KERNEL_KEYS if k in g} for g in optimizer.param_groups
+        ]
+        saved_groups = (
+            optimizer_state.get("param_groups") if isinstance(optimizer_state, dict) else None
+        )
+        if isinstance(saved_groups, list) and len(saved_groups) == len(kernels):
+            # torch places "step" by the SAVED fused flag: non-fused bundles keep it on CPU, which fused rejects.
+            optimizer_state = {
+                **optimizer_state,
+                "param_groups": [{**g, **kept} for g, kept in zip(saved_groups, kernels)],
+            }
         optimizer.load_state_dict(optimizer_state)
+        for group, kept in zip(optimizer.param_groups, kernels):
+            group.update(kept)
     elif optimizer is not None:
         # Every bundle this writer produces has an optimizer, so continuing without one restarts Adam's moments from
         # zero at step N while reporting a clean resume.
@@ -2311,6 +2477,8 @@ def _config_from_dict(config: dict) -> DiffusionLoraConfig:
         kwargs.pop("train_steps", None)
     if kwargs.get("lora_target_modules"):
         kwargs["lora_target_modules"] = tuple(kwargs["lora_target_modules"])
+    if isinstance(kwargs.get("sample_prompts"), (list, tuple)):
+        kwargs["sample_prompts"] = tuple(kwargs["sample_prompts"])
     if "gradient_checkpointing" in kwargs:
         kwargs["gradient_checkpointing"] = _coerce_gradient_checkpointing(
             kwargs["gradient_checkpointing"]

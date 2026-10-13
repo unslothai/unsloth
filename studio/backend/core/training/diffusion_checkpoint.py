@@ -1817,10 +1817,10 @@ def _join_clauses(items: list[str]) -> str:
 def _assert_optimizer_buildable(path: Path, manifest: dict[str, Any]) -> None:
     """Refuse moments this host provably cannot build an optimizer for, BEFORE teardown.
 
-    The trainers choose bitsandbytes AdamW8bit or torch AdamW from the HOST, so a bundle can arrive
-    with foreign moments, and the child's own check then fires after the route has evicted the
-    resident inference models and loaded a multi-GB base, for a run that is guaranteed to terminate
-    without training.
+    Bundles from older builds carry bitsandbytes AdamW8bit moments, which the trainers can only
+    restore into AdamW8bit. Without bitsandbytes the child's own check fires after the route has
+    evicted the resident inference models and loaded a multi-GB base, for a run that is guaranteed
+    to terminate without training.
 
     Deliberately one-directional, and deliberately import-free. ``find_spec`` answers "is
     bitsandbytes installed" without creating a CUDA context in the Unsloth process, but it cannot
@@ -1885,6 +1885,21 @@ def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
                 f"The '{role}' file in '{path.name}' could not be read back "
                 f"({type(error).__name__}), so this checkpoint cannot be resumed."
             ) from error
+
+
+def recorded_resume_targets(path_value: Any) -> Optional[tuple[str, ...]]:
+    """LoRA targets recorded by the bundle a resume would continue, else None. Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is not None and saved.lora_target_modules:
+                return tuple(saved.lora_target_modules)
+    except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
+        pass
+    return None
 
 
 def recorded_bucketing(path_value: str) -> bool:

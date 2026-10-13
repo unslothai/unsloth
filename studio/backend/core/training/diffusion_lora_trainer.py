@@ -46,7 +46,10 @@ from core.training.diffusion_train_common import (  # noqa: F401
     StopCb,
     DiffusionLoraConfig,
     LATENT_CACHE_OVER_BUDGET,
-    bitsandbytes_optimizer_supported,
+    enable_diffusion_gradient_checkpointing,
+    TrainingPeakMemory,
+    make_lora_optimizer,
+    recorded_optimizer_class,
     native_bf16_supported,
     _apply_perf_flags,
     _assert_trusted_base_model,
@@ -69,6 +72,15 @@ from core.training.diffusion_train_common import (  # noqa: F401
     resolve_train_steps,
     restore_resume_state,
     write_resume_checkpoint,
+)
+from core.training.diffusion_samples import (
+    discard_samples,
+    initial_noise,
+    isolated_sampling,
+    plan_samples,
+    run_sample_round,
+    sample_seed,
+    SampleRoundStopped,
 )
 from core.training.diffusion_train_extras import BucketBatchSampler, cover_resize_dims
 from core.training.diffusion_checkpoint import (
@@ -445,7 +457,7 @@ def run_diffusion_lora_training(
             )
         )
         if cfg.gradient_checkpointing:
-            unet.enable_gradient_checkpointing()
+            enable_diffusion_gradient_checkpointing(unet)
         # LoRA params must be fp32 for a stable optimizer under mixed precision.
         if weight_dtype != torch.float32:
             cast_training_params(unet, dtype = torch.float32)
@@ -459,7 +471,9 @@ def run_diffusion_lora_training(
         )
 
         lora_params = [p for p in unet.parameters() if p.requires_grad]
-        optimizer = _make_lora_optimizer(lora_params, cfg.learning_rate)
+        optimizer = _make_lora_optimizer(
+            lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
+        )
         # A frozen fp16 UNet (pre-Ampere / RDNA2 fallback) underflows the LoRA gradients without loss scaling.
         scaler = torch.amp.GradScaler("cuda", enabled = weight_dtype is torch.float16)
         # The scheduler advances once per optimizer update, so count warmup/decay in optimizer steps; the
@@ -478,6 +492,14 @@ def run_diffusion_lora_training(
         # CLIP encoders are freed afterwards.
         precompute = os.environ.get("UNSLOTH_DIFFUSION_NO_PRECOMPUTE", "") not in ("1", "true")
         caption_embeds: dict[str, tuple] = {}
+        sample_plan = plan_samples(cfg, "sdxl", [c for _, c in pairs])
+        # Kept past a failed round (which drops sample_plan) so a discard still removes what was written.
+        sample_owner = sample_plan
+        sample_embeds: dict[str, tuple] = {}
+        if sample_plan is not None:
+            for text in sample_plan.encode_texts:
+                pe, pooled_c = _encode_sdxl_prompts([text], tokenizers, text_encoders, device)
+                sample_embeds[text] = (pe.cpu(), pooled_c.cpu())
         if precompute:
             for cap in sorted({c for _, c in pairs}):
                 pe, pooled_c = _encode_sdxl_prompts([cap], tokenizers, text_encoders, device)
@@ -532,6 +554,8 @@ def run_diffusion_lora_training(
                 )
                 return str(out_dir)
             else:
+                if sample_plan is not None:
+                    sample_vae = vae.to("cpu")
                 try:
                     pipe.vae = None
                 except Exception:  # noqa: BLE001 -- a pipeline without a settable vae keeps it
@@ -541,6 +565,8 @@ def run_diffusion_lora_training(
                 gc.collect()
                 if device == "cuda":
                     torch.cuda.empty_cache()
+        if sample_plan is not None and vae is not None:
+            sample_vae = vae
         # Variant picks use their own stream so the loop index/noise draws stay seed-deterministic whether
         # or not the cache is enabled.
         variant_rng = random.Random(cfg.seed + 1)
@@ -606,6 +632,7 @@ def run_diffusion_lora_training(
         peak_gb = 0.0
         t_start = time.time()
         t_steady = None
+        t_rate = t_start
         # Starts at the resumed step so a no-op resume (nothing left to train) still reports the real step.
         done = resumed
 
@@ -631,7 +658,93 @@ def run_diffusion_lora_training(
                 preexisting = preexisting_checkpoints,
             )
 
+        def _interrupt_on_stop(p, _i, _t, _kwargs):
+            # The pipeline skips its remaining steps once _interrupt is set (pipeline_stable_diffusion_xl.py).
+            if _stop_during_sample():
+                p._interrupt = True
+            return {}
+
+        def _render_sdxl(index, prompt):
+            res = sample_plan.resolution
+            pe, pooled_c = (t.to(device, dtype = weight_dtype) for t in sample_embeds[prompt])
+            npe = npooled = None
+            if sample_plan.uses_cfg:
+                npe, npooled = (t.to(device, dtype = weight_dtype) for t in sample_embeds[""])
+                # Studio inference sends no negative, so the pipeline zeros it on SDXL base (force_zeros_for_empty_prompt).
+                if pipe.config.get("force_zeros_for_empty_prompt", False):
+                    npe, npooled = torch.zeros_like(npe), torch.zeros_like(npooled)
+            noise = initial_noise(sample_plan, index, (1, 4, res // 8, res // 8), device)
+            latents = pipe(
+                prompt_embeds = pe,
+                pooled_prompt_embeds = pooled_c,
+                negative_prompt_embeds = npe,
+                negative_pooled_prompt_embeds = npooled,
+                num_inference_steps = sample_plan.steps,
+                guidance_scale = sample_plan.guidance,
+                height = res,
+                width = res,
+                latents = noise.to(weight_dtype),
+                generator = torch.Generator(device = "cpu").manual_seed(
+                    sample_seed(sample_plan, index)
+                ),
+                output_type = "latent",
+                return_dict = False,
+                callback_on_step_end = _interrupt_on_stop,
+            )[0]
+            if stop_latched:
+                raise SampleRoundStopped()
+            return sample_vae.decode(latents.float() / vae_scale).sample
+
+        # The stop poll drains the request, so one seen mid-round is latched here for the loop to act on.
+        stop_latched = False
+
+        def _stop_during_sample() -> bool:
+            nonlocal stop_latched
+            if not stop_latched and _check_stop():
+                stop_latched = True
+            return stop_latched
+
+        def _sample(step: int) -> None:
+            nonlocal sample_plan, t_rate, t_steady
+            if sample_plan is None:
+                return
+            t_round = time.time()
+            parked = next(sample_vae.parameters()).device.type == "cpu"
+            try:
+                with isolated_sampling(device, compiled):
+                    unet.eval()
+                    if parked:
+                        sample_vae.to(device)
+                    run_sample_round(
+                        sample_plan, step, _render_sdxl, on_event, _emit, _stop_during_sample
+                    )
+            except Exception as exc:  # noqa: BLE001 -- previews never cost the run
+                _emit(on_event, "warning", message = f"Sample images disabled after an error: {exc}")
+                sample_plan = None
+            finally:
+                unet.train()
+                if parked:
+                    sample_vae.to("cpu")
+                    if device == "cuda":
+                        torch.cuda.empty_cache()
+                spent = time.time() - t_round
+                t_rate += spent
+                if t_steady is not None:
+                    t_steady += spent
+
+        if sample_plan is not None:
+            try:
+                pipe.set_progress_bar_config(disable = True)
+            except Exception:  # noqa: BLE001
+                pass
+            if resumed < cfg.train_steps:
+                _sample(resumed)
+
+        train_peak = TrainingPeakMemory(device)
         for opt_step in range(resumed, cfg.train_steps):
+            if stop_latched:
+                stopped = True
+                break
             optimizer.zero_grad(set_to_none = True)
             step_loss = 0.0
             for _ in range(cfg.gradient_accumulation_steps):
@@ -734,15 +847,14 @@ def run_diffusion_lora_training(
                 t_steady = now
             if done % cfg.log_every == 0 or done == cfg.train_steps:
                 # ``learning_rate`` (not ``lr``) is the field the Unsloth training pump reads.
-                if device == "cuda":
-                    peak_gb = round(torch.cuda.max_memory_allocated() / 1e9, 2)
+                peak_gb = train_peak.gb()
                 per_step = cfg.train_batch_size * cfg.gradient_accumulation_steps
                 if t_steady is not None and ran_here > 1:
                     samples_per_second = round(
                         (ran_here - 1) * per_step / max(now - t_steady, 1e-6), 3
                     )
                 else:
-                    samples_per_second = round(ran_here * per_step / max(now - t_start, 1e-6), 3)
+                    samples_per_second = round(ran_here * per_step / max(now - t_rate, 1e-6), 3)
                 _emit(
                     on_event,
                     "progress",
@@ -757,6 +869,11 @@ def run_diffusion_lora_training(
                 )
 
             stop_now = _check_stop()
+            if not stop_now and sample_plan is not None and sample_plan.due(done, cfg.train_steps):
+                train_peak.pause()
+                _sample(done)
+                train_peak.resume()
+                stop_now = stop_latched
             # Skipped on the final step and when stopping, since the stop path writes one at the exact step.
             if (
                 not stop_now
@@ -802,6 +919,7 @@ def run_diffusion_lora_training(
             # save_total_limit copies of the optimizer state in a directory the user got no artifact from:
             # invisible to every scanner, unresumable, with no delete path in the UI.
             clear_own_checkpoints(out_dir, preexisting_checkpoints)
+            discard_samples(sample_owner)
             try:
                 out_dir.rmdir()
             except OSError:
@@ -826,29 +944,12 @@ def run_diffusion_lora_training(
         _restore_perf_flags(snap)
 
 
-def _make_lora_optimizer(params: list, lr: float) -> Any:
-    """8-bit AdamW (bitsandbytes) by default -- half the optimizer state, no meaningful
-    quality cost for LoRA -- falling back to torch AdamW (fused on CUDA) when unavailable.
-    UNSLOTH_DIFFUSION_FP32_OPTIM forces plain (non-fused) AdamW: the accuracy guard wants the
-    reference optimizer, so it must not take the fused path."""
-    import torch
-
-    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
-        return torch.optim.AdamW(params, lr = lr)
-    # Checked before construction, not around it: on XPU the 8-bit optimizer builds fine and
-    # only dies at the first step(), which the except below would never see.
-    if bitsandbytes_optimizer_supported():
-        try:
-            import bitsandbytes as bnb
-            return bnb.optim.AdamW8bit(params, lr = lr)
-        except Exception:  # noqa: BLE001 -- bnb missing / no CUDA: fall back to torch AdamW
-            pass
-    if torch.cuda.is_available():
-        try:
-            return torch.optim.AdamW(params, lr = lr, fused = True)
-        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
-            pass
-    return torch.optim.AdamW(params, lr = lr)
+def _make_lora_optimizer(
+    params: list,
+    lr: float,
+    resume_optimizer_class = None,
+) -> Any:
+    return make_lora_optimizer(params, lr, resume_optimizer_class)
 
 
 def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:

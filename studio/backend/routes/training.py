@@ -3523,7 +3523,8 @@ async def start_diffusion_training(
     from core.training.diffusion_lora_trainer import _config_from_dict
 
     try:
-        normalized_cfg = _config_from_dict(config).normalized()
+        # Off the event loop: resume may read checkpoint bundles.
+        normalized_cfg = await asyncio.to_thread(_config_from_dict(config).normalized)
     except ValueError as e:
         raise HTTPException(status_code = 400, detail = str(e))
 
@@ -3797,6 +3798,50 @@ async def get_diffusion_training_run(
         # A malformed on-disk record (hand-edited / older shape) reads as absent rather than 500 the endpoint, like the
         # list route skips bad records.
         raise HTTPException(status_code = 404, detail = "No such training run.")
+
+
+@router.get("/diffusion/runs/{job_id}/sample")
+async def get_diffusion_training_sample(
+    job_id: str,
+    path: str,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Serve one preview image a run reported (``samples[].path``). Only a path the run itself
+    listed is served, from inside that run's output_dir under this account's outputs root: the
+    live job answers through the service's owner check, a finished one through its run record."""
+    from fastapi.responses import FileResponse
+
+    from core.training.diffusion_samples import SAMPLE_PATH_RE
+    from core.training.diffusion_training_service import (
+        get_diffusion_run,
+        get_diffusion_training_service,
+    )
+    from utils.paths import outputs_root
+
+    not_found = HTTPException(status_code = 404, detail = "Sample image not found.")
+    if not SAMPLE_PATH_RE.match(path or ""):
+        raise not_found
+    source = get_diffusion_training_service().sample_source(job_id)
+    if source is None:
+        rec = await asyncio.to_thread(get_diffusion_run, job_id)
+        if not isinstance(rec, dict):
+            raise not_found
+        samples = rec.get("samples") if isinstance(rec.get("samples"), list) else []
+        out_dir = rec.get("output_dir")
+    else:
+        out_dir, samples = source
+    if not out_dir or path not in {e.get("path") for e in samples if isinstance(e, dict)}:
+        raise not_found
+    try:
+        base = Path(out_dir).resolve(strict = True)
+        base.relative_to(outputs_root().resolve())
+        target = (base / path).resolve(strict = True)
+        target.relative_to(base)
+    except (OSError, ValueError):
+        raise not_found
+    if not target.is_file():
+        raise not_found
+    return FileResponse(str(target), media_type = "image/png")
 
 
 # Extensions accepted into a diffusion-training dataset folder: the media the trainer reads, plus its caption sources
