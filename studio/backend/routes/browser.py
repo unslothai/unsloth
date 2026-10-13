@@ -35,6 +35,7 @@ from core.inference.tools import (
     _normalize_url_scheme,
     _sniff_meta_charset,
 )
+from core.inference.web_access_policy import normalize_domain
 from loggers import get_logger
 from routes.browser_network import BROWSER_NETWORK_JS
 
@@ -62,6 +63,23 @@ _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 # Own pool, so slow sites can't starve chat inference's default executor.
 _FETCH_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-fetch")
 _DISCONNECT_POLL_S = 0.25
+# Pages' requests to their own sites (/request); a pool of their own, so a busy page can't hold up page loads.
+_REQUEST_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-request")
+_MAX_PAGE_REQUEST_BODY = 1024 * 1024
+_MAX_PAGE_RESPONSE_BYTES = 10 * 1024 * 1024
+_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}")
+# Fetch's forbidden methods and request headers: no page can send them, so neither does this.
+_FORBIDDEN_METHODS = frozenset({"CONNECT", "TRACE", "TRACK"})
+_FORBIDDEN_REQUEST_HEADERS = frozenset(
+    "accept-charset accept-encoding access-control-request-headers access-control-request-method "
+    "connection content-length cookie cookie2 date dnt expect host keep-alive origin referer "
+    "set-cookie te trailer transfer-encoding upgrade user-agent via".split()
+)
+# Unreadable by any page (Set-Cookie) or about the hop, not the response. Content-Length and
+# Content-Encoding stay: browsers show them with a decoded body too.
+_HIDDEN_RESPONSE_HEADERS = frozenset(
+    "set-cookie set-cookie2 connection keep-alive proxy-connection te trailer transfer-encoding upgrade".split()
+)
 
 # Quoted values are bounded and a bare "<" ends a tag, so stripping stays linear on hostile pages.
 _TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
@@ -1573,22 +1591,130 @@ def _build_response(
     )
 
 
+class BrowserPageRequest(BaseModel):
+    # The page's address as the panel loaded it; the request must be to its origin.
+    page: str = Field(..., min_length = 1, max_length = 8192)
+    url: str = Field(..., min_length = 1, max_length = 8192)
+    method: str = Field(default = "GET", pattern = r"^[A-Za-z]{1,16}$")
+    headers: list[tuple[str, str]] = Field(default_factory = list, max_length = 64)
+    # Base64.
+    body: Optional[str] = Field(default = None, max_length = 4 * (_MAX_PAGE_REQUEST_BODY // 3 + 1))
+
+
+def _origin(url: str) -> Optional[tuple[str, str, int]]:
+    """``(scheme, host, port)``, the host named as _fetch_url_raw names it to host_headers."""
+    try:
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        if scheme not in ("http", "https") or not parts.hostname:
+            return None
+        return (
+            scheme,
+            normalize_domain(parts.hostname),
+            parts.port or (443 if scheme == "https" else 80),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _allowed_header(name: str, value: str) -> bool:
+    lowered = name.lower()
+    return (
+        bool(_HEADER_NAME_RE.fullmatch(name))
+        and lowered not in _FORBIDDEN_REQUEST_HEADERS
+        and not lowered.startswith(("proxy-", "sec-"))
+        and "\r" not in value
+        and "\n" not in value
+    )
+
+
+def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) -> dict:
+    """The page's request, made as its browser would make a same-origin one; every status is the page's."""
+    origin = _origin(request.page)
+    if origin is None or _origin(request.url) != origin:
+        raise HTTPException(status_code = 403, detail = "Only requests to the page's own site.")
+    method = request.method.upper()
+    if method in _FORBIDDEN_METHODS:
+        raise HTTPException(status_code = 400, detail = f"{method} is not allowed.")
+    body = None
+    if request.body is not None and method not in ("GET", "HEAD"):
+        try:
+            body = base64.b64decode(request.body, validate = True)
+        except ValueError:
+            raise HTTPException(status_code = 400, detail = "The body is not base64.")
+        if len(body) > _MAX_PAGE_REQUEST_BODY:
+            raise HTTPException(status_code = 413, detail = "The body is too large.")
+    own = {name: value for name, value in request.headers if _allowed_header(name, value)}
+    named = {name.lower() for name in own}
+    scheme, host, port = origin
+    default_port = 443 if scheme == "https" else 80
+    # What a browser adds to a same-origin request: Referer (the default policy keeps the whole
+    # address), fetch metadata, and Origin on anything but GET and HEAD.
+    added = {
+        "Referer": request.page.split("#", 1)[0],
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    if method not in ("GET", "HEAD"):
+        added["Origin"] = f"{scheme}://{host}" + ("" if port == default_port else f":{port}")
+    if "accept" not in named:
+        added["Accept"] = "*/*"
+    if "accept-language" not in named:
+        added["Accept-Language"] = "en-US,en;q=0.9"
+    page_headers = {**added, **own}
+
+    def host_headers(current_host: str) -> dict:
+        # The page's headers go to its own host only, not to another a redirect leads to.
+        return {**_studio_headers(current_host), **(page_headers if current_host == host else {})}
+
+    meta: dict = {}
+    error, raw, _content_type = _fetch_url_raw(
+        request.url,
+        timeout = _FETCH_TIMEOUT_S,
+        extra_headers = {"User-Agent": _BROWSER_UA},
+        deadline = time.monotonic() + _FETCH_TIMEOUT_S,
+        raw_bytes_max = _MAX_PAGE_RESPONSE_BYTES,
+        post_data = body,
+        meta_out = meta,
+        cancel_event = cancel_event,
+        host_headers = host_headers,
+        method = method,
+        any_status = True,
+    )
+    status = meta.get("status")
+    if not isinstance(status, int) or not isinstance(raw, bytes):
+        raise HTTPException(status_code = 502, detail = error or "The request failed.")
+    if not 200 <= status <= 599:
+        raise HTTPException(status_code = 502, detail = f"HTTP {status}.")
+    final_url = meta.get("url") or request.url
+    # Redirected to another site, it is a CORS request from an opaque origin, as in a browser.
+    allow_origin = (meta.get("allow_origin") or "").strip()
+    if _origin(final_url) != origin and allow_origin not in ("*", "null"):
+        raise HTTPException(status_code = 502, detail = "Redirected to another site.")
+    return {
+        "status": status,
+        "statusText": meta.get("reason") or "",
+        "url": final_url,
+        "headers": [
+            [name, value]
+            for name, value in meta.get("headers") or []
+            if name.lower() not in _HIDDEN_RESPONSE_HEADERS
+        ],
+        "body": base64.b64encode(raw).decode("ascii"),
+    }
+
+
 def _fetch_and_build(request: BrowserFetchRequest, cancel_event: threading.Event) -> Response:
     error, body, content_type, meta = _fetch(request, cancel_event)
     return _build_response(request.url, error, body, content_type, meta, cancel_event)
 
 
-@router.post("/fetch")
-async def browser_fetch(
-    request: BrowserFetchRequest,
-    http_request: Request,
-    current_subject: str = Depends(get_current_subject),
-):
-    """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
-    request.url = _normalize_url_scheme(request.url.strip())
+async def _run_in_pool(pool: ThreadPoolExecutor, work, request, http_request: Request):
+    """``work(request, cancel_event)`` in ``pool``, cancelled when the client goes away."""
     cancel_event = threading.Event()
     loop = asyncio.get_running_loop()
-    task = loop.run_in_executor(_FETCH_POOL, _fetch_and_build, request, cancel_event)
+    task = loop.run_in_executor(pool, work, request, cancel_event)
     try:
         while True:
             done, _ = await asyncio.wait({task}, timeout = _DISCONNECT_POLL_S)
@@ -1599,6 +1725,27 @@ async def browser_fetch(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+
+
+@router.post("/fetch")
+async def browser_fetch(
+    request: BrowserFetchRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
+    request.url = _normalize_url_scheme(request.url.strip())
+    return await _run_in_pool(_FETCH_POOL, _fetch_and_build, request, http_request)
+
+
+@router.post("/request")
+async def browser_page_request(
+    request: BrowserPageRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """A page's fetch or XHR to its own site, which its opaque-origin sandbox can't make (browser_network.py)."""
+    return await _run_in_pool(_REQUEST_POOL, _page_request, request, http_request)
 
 
 @router.get("/print", include_in_schema = False)

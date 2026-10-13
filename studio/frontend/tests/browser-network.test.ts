@@ -13,9 +13,28 @@ const source = readFileSync(new URL("../../backend/routes/browser_network.py", i
 
 /** A stand-in for the browser's own XHR: a request ends when the test fires its loadend. */
 class NativeXHR extends EventTarget {
-  open() {}
-  send() {}
+  calls: unknown[][] = [];
+  state = 0;
+  get readyState() {
+    return this.state;
+  }
+  get status() {
+    return 0;
+  }
+  open(...args: unknown[]) {
+    this.calls.push(["open", ...args]);
+    this.state = 1;
+  }
+  setRequestHeader() {}
+  send(...args: unknown[]) {
+    this.calls.push(["send", ...args]);
+  }
+  abort() {
+    this.calls.push(["abort"]);
+  }
 }
+
+class ProgressEvent extends Event {}
 
 /** As a browser's: send() on a request already in flight throws InvalidStateError. */
 class StrictXHR extends NativeXHR {
@@ -33,7 +52,8 @@ class StrictXHR extends NativeXHR {
   }
 }
 
-function setup(XHR: typeof NativeXHR = NativeXHR) {
+/** `pageUrl`: the page's address; with none (a local file) nothing goes through the panel. */
+function setup(XHR: typeof NativeXHR = NativeXHR, pageUrl: string | null = null) {
   let now = 0;
   // The script patches its Response's body readers: a class of its own keeps that out of other tests.
   class PageResponse extends Response {}
@@ -42,13 +62,38 @@ function setup(XHR: typeof NativeXHR = NativeXHR) {
     fetch: () => new Promise<Response>((resolve) => answers.push(resolve)),
     XMLHttpRequest: XHR,
   });
-  runInNewContext(source, { window, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set });
+  // What the page sent its parent, the shell.
+  const posted: Array<Record<string, unknown>> = [];
+  const parent = {};
+  const base = pageUrl ?? "about:srcdoc";
+  const resolve = (href: string) => {
+    try {
+      return new URL(href, base).href;
+    } catch {
+      return null;
+    }
+  };
+  runInNewContext(source, {
+    window, Date: { now: () => now }, Response: PageResponse, Symbol, Object, Set,
+    cfg: { url: pageUrl }, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
+    document: { baseURI: base }, URL, Request, Headers, Blob, Event, ProgressEvent, DOMException, AbortController,
+    setTimeout, clearTimeout,
+  });
+  /** The panel's answer to request `id`, as the shell relays it. */
+  const reply = (id: unknown, answer: Record<string, unknown>, source: unknown = parent) =>
+    window.dispatchEvent(Object.assign(new Event("message"), {
+      source,
+      data: { type: "unsloth:browser-command", command: "response", id, ...answer },
+    }));
   const pending = (since: number) => (window as unknown as Record<symbol, (since: number) => number>)[Symbol.for("unsloth.browser.pending")](since);
   const page = window as unknown as { fetch: (url: string) => Promise<Response>; XMLHttpRequest: new () => NativeXHR };
   return {
     window: page, pending, advance: (ms: number) => (now += ms),
     answer: (i: number, body = "{}") => answers[i](new PageResponse(body)),
     Response: PageResponse,
+    native: answers,
+    posted,
+    reply,
   };
 }
 
@@ -120,4 +165,180 @@ test("a second send the browser refuses keeps counting the request in flight", (
   assert.equal(t.pending(0), 1);
   xhr.dispatchEvent(new Event("loadend"));
   assert.equal(t.pending(0), 0);
+});
+
+const ok = (body: string, extra: Record<string, unknown> = {}) => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  url: "https://site.test/models-json?q=1",
+  headers: [["Content-Type", "application/json"], ["X-Total", "3"]],
+  body: new TextEncoder().encode(body).buffer,
+  ...extra,
+});
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+// Objects from the page script's realm, for deepEqual.
+const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+
+test("a fetch to the page's own site goes through the panel and reads as same-origin", async () => {
+  const t = setup(NativeXHR, "https://site.test/models");
+  const request = t.window.fetch("/models-json?q=1");
+  await tick();
+  assert.equal(t.native.length, 0);
+  const sent = t.posted[0];
+  assert.equal(sent.type, "request");
+  // Resolved against the page's address, not the shell's.
+  assert.equal(sent.url, "https://site.test/models-json?q=1");
+  assert.equal(sent.method, "GET");
+  assert.equal(sent.body, null);
+  // Counted until answered, as a native request is.
+  assert.equal(t.pending(0), 1);
+  t.reply(sent.id, ok('{"models":[1]}'));
+  const response = await request;
+  assert.equal(t.pending(0), 0);
+  assert.equal(response.status, 200);
+  assert.equal(response.type, "basic");
+  assert.equal(response.url, "https://site.test/models-json?q=1");
+  assert.equal(response.redirected, false);
+  // Same-origin: every header is readable, not only the CORS-safelisted ones.
+  assert.equal(response.headers.get("x-total"), "3");
+  assert.equal(response.clone().url, "https://site.test/models-json?q=1");
+  assert.deepEqual(await response.json(), { models: [1] });
+});
+
+test("requests to other sites, and from a page with no address, stay the browser's", async () => {
+  const t = setup(NativeXHR, "https://site.test/models");
+  const other = t.window.fetch("https://api.other.test/x");
+  assert.equal(t.native.length, 1);
+  assert.equal(t.posted.length, 0);
+  t.answer(0);
+  await other;
+  const local = setup();
+  const file = local.window.fetch("/x");
+  assert.equal(local.native.length, 1);
+  local.answer(0);
+  await file;
+});
+
+test("a fetch body reaches the panel with the headers the browser would send", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  void t.window.fetch("/api", { method: "POST", headers: { "X-Test": "1" }, body: "hello" } as RequestInit);
+  await tick();
+  await tick();
+  const sent = t.posted[0];
+  assert.equal(sent.method, "POST");
+  assert.equal(new TextDecoder().decode(sent.body as ArrayBuffer), "hello");
+  assert.deepEqual(Object.fromEntries(sent.headers as Array<[string, string]>), {
+    "content-type": "text/plain;charset=UTF-8",
+    "x-test": "1",
+  });
+});
+
+test("a failed relay is fetch's network error; an abort rejects and tells the panel", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const failing = t.window.fetch("/a");
+  await tick();
+  t.reply(t.posted[0].id, { ok: false });
+  await assert.rejects(failing, (error: Error) => error.name === "TypeError");
+
+  const controller = new AbortController();
+  const aborted = t.window.fetch("/b", { signal: controller.signal } as RequestInit);
+  await tick();
+  controller.abort();
+  await assert.rejects(aborted, (error: Error) => error.name === "AbortError");
+  assert.deepEqual(plain(t.posted.at(-1)), { type: "requestAbort", id: t.posted[1].id });
+  assert.equal(t.pending(0), 0);
+});
+
+test("an answer from anything but the shell is ignored", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  let settled = false;
+  void t.window.fetch("/a").then(() => (settled = true));
+  await tick();
+  t.reply(t.posted[0].id, ok("{}"), {});
+  await tick();
+  assert.equal(settled, false);
+});
+
+type PageXHR = NativeXHR & {
+  readyState: number;
+  status: number;
+  responseURL: string;
+  setRequestHeader: (name: string, value: string) => void;
+  getResponseHeader: (name: string) => string | null;
+  getAllResponseHeaders: () => string;
+};
+
+test("an XHR to the page's site loads the panel's answer and shows the site's status and headers", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const xhr = new t.window.XMLHttpRequest() as PageXHR;
+  const events: string[] = [];
+  for (const type of ["loadstart", "readystatechange", "load", "loadend"]) xhr.addEventListener(type, () => events.push(type));
+  xhr.open("GET", "/api");
+  xhr.setRequestHeader("X-Test", "1");
+  xhr.send();
+  await tick();
+  assert.deepEqual(events, ["loadstart"]);
+  const sent = t.posted[0];
+  assert.deepEqual(plain(sent.headers), [["X-Test", "1"]]);
+  // OPENED while the panel makes it, as one in flight.
+  assert.equal(xhr.readyState, 1);
+  t.reply(sent.id, ok("{}", { status: 404, statusText: "Not Found" }));
+  await tick();
+  // The browser now loads the answer from a blob: URL.
+  const [open, send] = xhr.calls.slice(-2);
+  assert.equal(open[0], "open");
+  assert.match(String(open[2]), /^blob:/);
+  assert.deepEqual(send, ["send"]);
+  xhr.state = 4;
+  assert.equal(xhr.status, 404);
+  assert.equal(xhr.responseURL, "https://site.test/models-json?q=1");
+  assert.equal(xhr.getResponseHeader("X-TOTAL"), "3");
+  assert.equal(xhr.getAllResponseHeaders(), "content-type: application/json\r\nx-total: 3\r\n");
+  assert.equal(t.pending(0), 1);
+  xhr.dispatchEvent(new Event("loadend"));
+  assert.equal(t.pending(0), 0);
+});
+
+test("an XHR the panel can't make ends as a network error", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const xhr = new t.window.XMLHttpRequest() as PageXHR;
+  const events: string[] = [];
+  for (const type of ["readystatechange", "error", "loadend"]) xhr.addEventListener(type, () => events.push(`${type}:${xhr.readyState}`));
+  xhr.open("GET", "/api");
+  xhr.send();
+  await tick();
+  t.reply(t.posted[0].id, { ok: false });
+  await tick();
+  assert.deepEqual(events, ["readystatechange:4", "error:4", "loadend:4"]);
+  assert.equal(xhr.status, 0);
+  assert.equal(t.pending(0), 0);
+  assert.throws(() => xhr.send(), (error: Error) => error.name === "InvalidStateError");
+});
+
+test("aborting an XHR the panel is making ends it as the browser would", async () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const xhr = new t.window.XMLHttpRequest() as PageXHR;
+  const events: string[] = [];
+  for (const type of ["readystatechange", "abort", "loadend"]) xhr.addEventListener(type, () => events.push(`${type}:${xhr.readyState}`));
+  xhr.open("GET", "/api");
+  xhr.send();
+  await tick();
+  xhr.abort();
+  assert.deepEqual(events, ["readystatechange:4", "abort:4", "loadend:4"]);
+  assert.equal(xhr.readyState, 0);
+  assert.deepEqual(plain(t.posted.at(-1)), { type: "requestAbort", id: t.posted[0].id });
+  // A late answer changes nothing.
+  t.reply(t.posted[0].id, ok("{}"));
+  await tick();
+  assert.equal(xhr.calls.filter(([name]) => name === "send").length, 0);
+});
+
+test("a synchronous XHR, which can't wait for the panel, stays the browser's", () => {
+  const t = setup(NativeXHR, "https://site.test/");
+  const xhr = new t.window.XMLHttpRequest() as PageXHR;
+  xhr.open("GET", "/api", false);
+  xhr.send();
+  assert.equal(t.posted.length, 0);
+  assert.deepEqual(xhr.calls.at(-1), ["send", undefined]);
 });
