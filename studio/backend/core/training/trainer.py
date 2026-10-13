@@ -253,8 +253,13 @@ def _spark_tts_repo_dir(
     on_model_resolved: Optional[Callable[[str], None]] = None,
 ) -> str:
     """Spark-TTS repo root: LLM/ for training, BiCodec/ and wav2vec2 beside it for the codec."""
-    if local_files_only:
-        return os.path.abspath(lookup_name)
+    local = os.path.abspath(os.path.expanduser(lookup_name))
+    # Local folders are never cache-pinned, so local_files_only is False for them.
+    if local_files_only or os.path.isdir(local):
+        parent = os.path.dirname(local)
+        if os.path.basename(local) == "LLM" and os.path.isdir(os.path.join(parent, "BiCodec")):
+            return parent
+        return local
     from huggingface_hub import snapshot_download
 
     hf_repo = _spark_tts_hub_repo(model_name)

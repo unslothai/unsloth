@@ -136,6 +136,17 @@ def test_cached_snapshot_codec_gets_the_snapshot_root_offline(tmp_path):
     assert codec_roots == [str(snapshot)]
 
 
+@pytest.mark.parametrize("pick_llm", [False, True])
+def test_a_local_spark_folder_is_used_in_place(tmp_path, pick_llm):
+    root = tmp_path / "Spark-TTS-0.5B"
+    (root / "LLM").mkdir(parents = True)
+    (root / "BiCodec").mkdir()
+    picked = str(root / "LLM") if pick_llm else str(root)
+    downloads, codec_roots = _run(picked, picked)
+    assert downloads == []
+    assert codec_roots == [str(root)]
+
+
 @pytest.mark.parametrize("repo_dir", [r"C:\models\Spark-TTS-0.5B", "/srv/Spark-TTS-0.5B"])
 def test_a_root_load_model_already_set_is_kept(repo_dir):
     downloads, codec_roots = _run("unsloth/Spark-TTS-0.5B", repo_dir = repo_dir)
