@@ -173,9 +173,7 @@ def resolve_audio_cpp_stt_model(
         )
     found = resolve(base, variant or ref_variant, hf_token, network = network)
     if found is None and not network:
-        raise SttModelNotDownloadedError(
-            f"STT model '{base}' is not downloaded yet."
-        )
+        raise SttModelNotDownloadedError(f"STT model '{base}' is not downloaded yet.")
     if found is None:
         raise SttModelIdError(
             f"STT model '{model}' is not an audio GGUF the audio runtime can transcribe with."

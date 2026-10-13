@@ -584,10 +584,7 @@ class _FakeAudioCppServer:
         self.stopped = True
 
 
-def _resident_audiocpp(
-    model_id: str = _ACM_ID,
-    loaded_as = None,
-):
+def _resident_audiocpp(model_id: str = _ACM_ID, loaded_as = None):
     from core.inference.stt_audiocpp_sidecar import AudioCppSttSidecar
 
     sidecar = AudioCppSttSidecar(keep_alive_seconds = 999)
@@ -606,7 +603,9 @@ def _resident_audiocpp(
         (_ACM_ID, None, _ACM_ID + ":Q8_0"),
     ],
 )
-def test_an_audiocpp_scoped_unload_releases_the_same_model_under_any_spelling(model_id, loaded_as, expected):
+def test_an_audiocpp_scoped_unload_releases_the_same_model_under_any_spelling(
+    model_id, loaded_as, expected
+):
     sidecar = _resident_audiocpp(model_id, loaded_as)
     sidecar.unload(expected_model = expected)
     assert sidecar.loaded_model is None
@@ -648,7 +647,11 @@ def test_the_unload_route_reports_a_model_it_kept(monkeypatch):
 
 def test_no_stt_sidecar_points_at_a_settings_path_for_downloads():
     from pathlib import Path
-
     inference = Path(__file__).resolve().parents[1] / "core" / "inference"
-    for name in ("stt_audiocpp_sidecar.py", "stt_ggml_sidecar.py", "stt_mtmd_sidecar.py", "stt_sidecar.py"):
+    for name in (
+        "stt_audiocpp_sidecar.py",
+        "stt_ggml_sidecar.py",
+        "stt_mtmd_sidecar.py",
+        "stt_sidecar.py",
+    ):
         assert "Settings, then Voice" not in (inference / name).read_text(encoding = "utf-8"), name

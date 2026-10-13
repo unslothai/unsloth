@@ -342,7 +342,11 @@ def test_a_half_size_stage_unpacks_with_its_own_grid(monkeypatch):
     try:
         half = torch.randn(1, 16 * 11 * 20, 128, device = "cuda")
         # Full-size grid: 880 tokens per frame divides the 3520 of 16 half-size frames, so it "fits" but is wrong.
-        assert tuple(DP.latent_grid(half, prev.spec, prev.height, prev.width).shape) == (22, 40, 128)
+        assert tuple(DP.latent_grid(half, prev.spec, prev.height, prev.width).shape) == (
+            22,
+            40,
+            128,
+        )
         prev._prev = object()
         prev.set_render_size(352, 640)
         assert (prev.height, prev.width) == (352, 640) and prev._prev is None

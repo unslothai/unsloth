@@ -1495,9 +1495,7 @@ class WhisperSttSidecar:
                 )
         snapshot_path = _find_complete_cached_snapshot(model_id)
         if snapshot_path is None:
-            raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' is not downloaded yet."
-            )
+            raise SttModelNotDownloadedError(f"STT model '{model_id}' is not downloaded yet.")
 
         if model_id in STT_MODELS:
             return _CachedSttSnapshot(path = snapshot_path, is_multilingual = True)

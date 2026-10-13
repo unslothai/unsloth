@@ -832,9 +832,7 @@ class MtmdSttSidecar:
     def _ensure_model_downloaded(self, model_id: str) -> tuple[str, str]:
         paths = _cached_model_paths(model_id)
         if paths is None:
-            raise SttModelNotDownloadedError(
-                f"STT model '{model_id}' is not downloaded yet."
-            )
+            raise SttModelNotDownloadedError(f"STT model '{model_id}' is not downloaded yet.")
         return paths
 
     def load(
