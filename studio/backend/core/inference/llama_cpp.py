@@ -4582,7 +4582,8 @@ _CPU_MOE_COUNT_FLAGS = frozenset({"-ncmoe", "--n-cpu-moe"})
 _CPU_FFN_COUNT_FLAGS = frozenset({"-ncffn", "--n-cpu-ffn"})
 # User controls over llama.cpp's own fitter. Studio emits neither on Metal, so a launch carrying
 # one is placed by a fitter the Metal memory probe did not run.
-_FIT_CONTROL_FLAGS = frozenset({"-fitt", "--fit-target", "-fitc", "--fit-ctx"})
+_FIT_CTX_FLAGS = frozenset({"-fitc", "--fit-ctx"})
+_FIT_CONTROL_FLAGS = frozenset({"-fitt", "--fit-target"}) | _FIT_CTX_FLAGS
 _FIT_CONTROL_ENV_VARS = ("LLAMA_ARG_FIT_TARGET", "LLAMA_ARG_FIT_CTX")
 _CPU_PLACEMENT_PRESENCE_FLAGS = (_MOE_OFFLOAD_FLAGS - _CPU_MOE_COUNT_FLAGS) | frozenset(
     {"-ot", "--override-tensor"}
@@ -26022,6 +26023,8 @@ class LlamaCppBackend:
                 self._moe_spill_batch_restore: Optional[tuple[Optional[int], Optional[int]]] = None
                 _moe_cache_candidate = False
                 _moe_cache_ram_ok = False
+                # The raised batch state (then the pre-raise pair) the cache floor held back.
+                _moe_raise_held = None
                 _shared_gpus = frozenset()
                 # Sized inputs for the tensor-spill planner, None when the fit never
                 # priced them. Bound before the try like _placement_verdict_partial:
@@ -28374,6 +28377,35 @@ class LlamaCppBackend:
                     # Single-GPU VRAM shortfall vs free less --fit-target (None = unpriceable).
                     _model_size_fit_cb = _compute_buffer_pipeline
 
+                    def _fit_ctx_overridden(
+                        child_extras: Optional[Iterable[str]], child_env: Mapping[str, str]
+                    ) -> bool:
+                        """A --fit-ctx / -fitc (argv, else LLAMA_ARG_FIT_CTX) the child
+                        runs with that is not the value _ctx_integrity_flags emits."""
+                        _studio_fitc: Optional[int] = None
+                        if (
+                            use_fit
+                            and not (gpu_memory_mode == "manual" and gpu_layers >= 0)
+                            and server_caps.get("supports_fit_ctx")
+                        ):
+                            if requested_ctx > 0 and effective_ctx > 0:
+                                _studio_fitc = int(effective_ctx)
+                            elif gpu_memory_mode == "manual" and gpu_layers < 0:
+                                _studio_fitc = 8192
+                        try:
+                            _raw = _last_flag_value(child_extras, _FIT_CTX_FLAGS)
+                        except ValueError:
+                            return True
+                        # The emitted flag beats the env; argv after it beats both.
+                        if _raw is None and _studio_fitc is None:
+                            _raw = child_env.get("LLAMA_ARG_FIT_CTX")
+                        if _raw is None or not str(_raw).strip():
+                            return False
+                        try:
+                            return int(str(_raw).strip()) != _studio_fitc
+                        except ValueError:
+                            return True
+
                     def _fitter_vram_shortfall() -> Optional[float]:
                         if not (gpus and effective_ctx > 0 and self._can_estimate_kv()):
                             return None
@@ -28405,12 +28437,15 @@ class LlamaCppBackend:
                             gpu_indices = gpu_indices,
                         ):
                             return None
-                        # Priced at Unsloth's --parallel; a larger pass-through one wins.
+                        # Priced at Unsloth's --parallel; any other pass-through one wins.
                         _np_override = _extra_args_n_parallel(_child_extras, {})
-                        if _np_override is not None and _np_override > n_parallel:
+                        if _np_override is not None and _np_override != n_parallel:
                             return None
                         # A later pass-through -c 0 lets llama.cpp pick the context.
                         if parse_ctx_override(_child_extras) == 0:
+                            return None
+                        # A --fit-ctx Studio did not emit moves llama.cpp's fit.
+                        if _fit_ctx_overridden(_child_extras, _child_env):
                             return None
                         # A GPU projector Studio never sized; Vision off keeps only audio-only.
                         _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
@@ -28580,18 +28615,19 @@ class LlamaCppBackend:
                             if _moe_ub_switch == "auto" and _share_before is not None
                             else None
                         )
+                        _cache_follows = bool(
+                            _moe_cache_candidate
+                            and _moe_cache_share_admits(
+                                _share_after,
+                                drafter = _mtp_will_engage,
+                                switch = _moe_cache_switch,
+                            )
+                        )
                         if _moe_spill_raise_keeps_experts(
                             _share_before,
                             _share_after,
                             switch = _moe_ub_switch,
-                            cache_follows = bool(
-                                _moe_cache_candidate
-                                and _moe_cache_share_admits(
-                                    _share_after,
-                                    drafter = _mtp_will_engage,
-                                    switch = _moe_cache_switch,
-                                )
-                            ),
+                            cache_follows = _cache_follows,
                         ):
                             logger.info(
                                 "MoE experts are offloaded to system RAM; raising "
@@ -28605,6 +28641,20 @@ class LlamaCppBackend:
                             )
                             self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
                         else:
+                            # Dropped only for the cache: held, and put back below if the
+                            # cache is not launched after all.
+                            if _cache_follows and _moe_spill_raise_keeps_experts(
+                                _share_before, _share_after, switch = _moe_ub_switch
+                            ):
+                                _moe_raise_held = (
+                                    n_batch,
+                                    n_ubatch,
+                                    _effective_ubatch,
+                                    _compute_buffer_pipeline,
+                                    _compute_buffer_tensor,
+                                    _pre_raise[0],
+                                    _pre_raise[1],
+                                )
                             (
                                 n_batch,
                                 n_ubatch,
@@ -28998,7 +29048,6 @@ class LlamaCppBackend:
                         env = _fit_env,
                         lazy_read_bytes = _fit_lazy_bytes,
                     )
-                    _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
                     if _moe_cache_candidate:
                         _moe_share = (
                             _moe_resident_share_now() if _moe_cache_switch == "auto" else None
@@ -29058,6 +29107,69 @@ class LlamaCppBackend:
                                 "experts pinned; launching without --moe-cache-mib.",
                                 _moe_expert_bytes / (1024**3),
                             )
+                    if _moe_raise_held is not None and not (
+                        _moe_cache_candidate and _moe_cache_ram_ok
+                    ):
+                        # The cache floor dropped the raise and the cache is out: take it
+                        # back and re-price every term read at the micro-batch above.
+                        (
+                            n_batch,
+                            n_ubatch,
+                            _effective_ubatch,
+                            _compute_buffer_pipeline,
+                            _compute_buffer_tensor,
+                        ) = _moe_raise_held[:5]
+                        self._moe_spill_batch_restore = _moe_raise_held[5:]
+                        _moe_raise_held = None
+                        logger.info(
+                            "MoE experts: no MoE cache after all; raising --ubatch-size "
+                            "to %s for faster prompt processing.",
+                            n_ubatch,
+                        )
+                        _mtp_reserve_bytes = (
+                            _mtp_bytes(effective_ctx, n_parallel, _effective_ubatch)
+                            if _mtp_will_engage
+                            else 0
+                        )
+                        _spill_inputs["extra_gpu_bytes"] = (
+                            mmproj_size + _shared_pool_mmproj + _mtp_reserve_bytes
+                        )
+                        _spill_inputs["compute_buffer_flat"] = int(_compute_buffer_pipeline)
+                        _spill_inputs["kv_layer_weights"] = self._kv_layer_weights(
+                            effective_ctx,
+                            swa_full = swa_full,
+                            n_parallel = n_parallel,
+                            kv_unified = planned_kv_unified,
+                            n_ubatch = _effective_ubatch,
+                            flash_attn = planned_flash_attn,
+                            cache_type_kv = cache_type_kv,
+                        )
+                        _cpu_draft_fit_bytes = self._cpu_resident_draft_bytes(
+                            effective_ctx,
+                            drafter_path = _cpu_draft_path,
+                            draft_cache_type_k = _mtp_draft_ck,
+                            draft_cache_type_v = _mtp_draft_cv,
+                            n_parallel = n_parallel,
+                            swa_full = swa_full,
+                            kv_unified = planned_kv_unified,
+                            n_ubatch = _effective_ubatch,
+                            flash_attn = planned_flash_attn,
+                        )
+                        _fit_load_mode_kwargs.update(
+                            mtp_bytes = _mtp_bytes(effective_ctx, ubatch = _effective_ubatch),
+                            mtp_unsized = bool(
+                                _flat_mtp_engages
+                                or _cpu_draft_fit_bytes is None
+                                or _draft_split_across_host
+                            ),
+                            host_only_bytes = (_cpu_draft_fit_bytes or 0) + _ckpt_host_bytes,
+                            compute_buffer_flat = (
+                                _fit_devices * _compute_buffer_tensor
+                                if _tp_planned
+                                else _compute_buffer_pipeline
+                            ),
+                        )
+                    _fit_load_mode = self._fit_derived_load_mode(**_fit_load_mode_kwargs)
                 except Exception as e:
                     logger.warning(f"GPU selection failed ({e}), using --fit on")
                     gpu_indices, use_fit = None, True
@@ -29068,6 +29180,7 @@ class LlamaCppBackend:
                     # Same reasoning: an unpriced load keeps llama.cpp's default.
                     _fit_load_mode = None
                     _moe_cache_candidate = _moe_cache_ram_ok = False
+                    _moe_raise_held = None
                     # And a half-built snapshot is not a price either: the throw can
                     # land after the dict exists but before the later terms are added
                     # to it, which would plan against a footprint missing them.
@@ -29425,6 +29538,7 @@ class LlamaCppBackend:
                     cmd.append("--embedding")
 
                 # emitted before user extras so a pass-through -b / -ub still last-wins-overrides
+                _batch_tokens_at = len(cmd)
                 if n_batch is not None:
                     # Two separate aborts, both reachable from the picker since the input
                     # clamps into BATCH_MIN = 1 rather than rejecting:
@@ -29446,6 +29560,7 @@ class LlamaCppBackend:
                     cmd.extend(["--batch-size", str(_emit_batch)])
                 if n_ubatch is not None:
                     cmd.extend(["--ubatch-size", str(n_ubatch)])
+                _batch_tokens_end = len(cmd)
                 # The expert-spill raise, as emitted and as it was before, so a CPU
                 # replay (no GPU, nothing to stream) can hand back today's pair.
                 self._moe_spill_batch_tokens = None
@@ -30808,6 +30923,33 @@ class LlamaCppBackend:
                     logger.info(
                         "MoE experts spill to pinned system RAM on one GPU; adding "
                         "--moe-cache-mib auto so llama.cpp caches hot experts in VRAM."
+                    )
+                elif _moe_raise_held is not None and _placed_by_fitter:
+                    # Passed the RAM gate (every routed expert pinned bounds what the
+                    # raised split spills) and --fit on measures the larger buffer, so
+                    # the raise the cache floor held back goes in where it was emitted.
+                    _raised_batch, _raised_ubatch = _moe_raise_held[0], _moe_raise_held[1]
+                    _raised = [
+                        *(
+                            []
+                            if _raised_batch is None
+                            else ["--batch-size", str(_emitted_n_batch(_raised_batch, n_parallel))]
+                        ),
+                        "--ubatch-size",
+                        str(_raised_ubatch),
+                    ]
+                    _before = cmd[_batch_tokens_at:_batch_tokens_end]
+                    cmd[_batch_tokens_at:_batch_tokens_end] = _raised
+                    # Later than the splice, so it moves with the tail.
+                    _spec_start += len(_raised) - len(_before)
+                    n_batch, n_ubatch, _effective_ubatch = _moe_raise_held[:3]
+                    self._moe_spill_batch_restore = _moe_raise_held[5:]
+                    self._moe_spill_batch_tokens = (_raised, _before)
+                    _moe_raise_held = None
+                    logger.info(
+                        "MoE experts: no MoE cache after all; raising --ubatch-size "
+                        "to %s for faster prompt processing.",
+                        n_ubatch,
                     )
 
                 # A build with no --flash-attn cannot run a quantized V cache

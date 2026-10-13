@@ -4707,6 +4707,57 @@ def test_an_unpriceable_share_keeps_the_split(tmp_path, _moe_cache_host):
     assert backend._moe_cache_flags == []
 
 
+def test_a_smaller_pass_through_parallel_keeps_the_split(tmp_path, _moe_cache_host):
+    # Priced at 4 slots, launched with 1: the share would be understated, so it is unknown.
+    caps = dict(_CACHE_CAPS_ON, supports_kv_unified = True)
+    backend, cmd = _cache_launch(tmp_path, caps = caps, n_parallel = 4)
+    assert cmd[cmd.index("--parallel") + 1] == "4", cmd
+    assert _has_moe_cache(cmd), cmd
+
+    backend, cmd = _cache_launch(tmp_path, caps = caps, n_parallel = 4, extra_args = ["--parallel", "1"])
+    assert not _has_moe_cache(cmd), cmd
+    assert backend._moe_cache_flags == []
+    # The same value as Studio's is still priced.
+    backend, cmd = _cache_launch(tmp_path, caps = caps, n_parallel = 4, extra_args = ["-np", "4"])
+    assert _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--fit-ctx", "4096"], {}),
+        (["-fitc=65536"], {}),
+        ([], {"LLAMA_ARG_FIT_CTX": "4096"}),
+    ],
+    ids = ["argv", "short_equals", "env"],
+)
+def test_a_pass_through_fit_ctx_keeps_the_split(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, cmd = _cache_launch(tmp_path, extra_args = extra_args)
+
+    assert not _has_moe_cache(cmd), cmd
+    assert backend._moe_cache_flags == []
+
+
+def test_a_fit_ctx_equal_to_studios_still_prices_the_share(tmp_path, _moe_cache_host, monkeypatch):
+    caps = dict(_CACHE_CAPS_ON, supports_fit_ctx = True)
+    _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192)
+    assert cmd[cmd.index("--fit-ctx") + 1] == "8192", cmd
+    assert _has_moe_cache(cmd), cmd
+
+    _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192, extra_args = ["--fit-ctx", "8192"])
+    assert _has_moe_cache(cmd), cmd
+    # Studio's emitted --fit-ctx beats an inherited one.
+    monkeypatch.setenv("LLAMA_ARG_FIT_CTX", "4096")
+    _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192)
+    assert _has_moe_cache(cmd), cmd
+    _backend, cmd = _cache_launch(tmp_path, caps = caps, n_ctx = 8192, extra_args = ["--fit-ctx", "4096"])
+    assert not _has_moe_cache(cmd), cmd
+
+
 @pytest.mark.parametrize(
     "switch, free_mib, cached",
     [
@@ -4798,6 +4849,32 @@ def test_the_raise_is_dropped_when_it_would_leave_the_cache_under_half(
 
     assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
     assert _has_moe_cache(cmd) is cached, cmd
+
+
+@pytest.mark.parametrize(
+    "cell, kwargs",
+    [
+        # Refused in the fit: 15 GiB of experts + the prompt cache cannot be pinned.
+        ("ram", dict(ram_gib = 24)),
+        # Refused at launch: the user's mmap load is not pinned.
+        ("user_mmap", dict(load_mode = "mmap")),
+        ("user_mmap_extra", dict(extra_args = ["--load-mode", "mmap"])),
+    ],
+    ids = lambda v: v if isinstance(v, str) else "",
+)
+def test_a_raise_held_for_the_cache_comes_back_when_the_cache_is_refused(
+    tmp_path, _moe_cache_host, monkeypatch, cell, kwargs
+):
+    # Same launch as cache_keeps_default_ubatch above, minus one cache gate.
+    _ubatch_sized_compute_buffer(monkeypatch, 0.4)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, 15_000, 32_000)], **kwargs)
+
+    assert not _has_moe_cache(cmd), (cell, cmd)
+    assert _ubatch_values(cmd) == ["2048"], (cell, cmd)
+    assert backend._moe_spill_batch_restore is not None
+    # The CPU replay still hands back the pre-raise pair.
+    assert _ubatch_values(backend._undo_moe_spill_batch(cmd)) == [], cmd
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
 
 
 @pytest.mark.parametrize(
