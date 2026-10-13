@@ -53,7 +53,7 @@ export const ptBR = {
     agentSettings: {
       title: "Uso do navegador",
       enable: "Permitir que os modelos usem o navegador",
-      enableDescription: "Os modelos abrem páginas na própria aba do painel do navegador, leem e clicam e digitam por você. Também no menu + do campo de mensagem.",
+      enableDescription: "Os modelos abrem páginas na própria aba do navegador, leem e clicam e digitam por você. Também no menu + do campo de mensagem.",
       history: "Histórico de navegação",
       historyDescription: "Escolha se os modelos podem ler o histórico do navegador",
       alwaysAsk: "Sempre perguntar",

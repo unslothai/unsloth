@@ -54,7 +54,7 @@ export const ja = {
     agentSettings: {
       title: "ブラウザ操作",
       enable: "モデルにブラウザを使わせる",
-      enableDescription: "モデルがブラウザパネルの専用タブでページを開いて読み、代わりにクリックや入力を行います。入力欄の + メニューからも切り替えられます。",
+      enableDescription: "モデルが専用のブラウザタブでページを開いて読み、代わりにクリックや入力を行います。入力欄の + メニューからも切り替えられます。",
       history: "閲覧履歴",
       historyDescription: "モデルがブラウザの閲覧履歴を読めるかどうかを選びます",
       alwaysAsk: "毎回確認",
