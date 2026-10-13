@@ -117,7 +117,11 @@ def test_llada_frames_show_the_canvas_filling_in():
     assert masks[0] == 15 and masks[-1] == 0 and masks == sorted(masks, reverse = True)
     assert frames[-1]["tokens"] == out[0].tolist()
     ends = [f for f in frames if f["step"] == f["total"]]
-    assert [f["block"] for f in ends] == [0, 1]
+    assert [f["block"] for f in ends] == [
+        0,
+        1,
+    ]  # exactly one block-end frame per block, step == total
+    assert all(0 <= f["step"] < f["total"] for f in frames if f not in ends)
     # Frames never change what is generated.
     assert torch.equal(out, _sample(_Bidirectional()))
 
