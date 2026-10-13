@@ -5245,6 +5245,34 @@ def test_a_cpu_projector_turned_back_on_is_unpriced(tmp_path, _moe_cache_host, m
     assert seen == []
 
 
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--mmproj-device", "CUDA1"], {}),
+        (["-mmdev=CUDA0"], {}),
+        (["--mmproj-device", "none", "--mmproj-device", "CUDA1"], {}),
+        ([], {"MTMD_BACKEND_DEVICE": "CUDA1"}),
+    ],
+    ids = ["argv", "short_equals", "last_wins", "env"],
+)
+def test_a_gpu_pinned_projector_is_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """A projector pinned to a GPU device may sit on a companion card that gpu_ids
+    exposes, so the share cannot tell whether model_size_fit's projector is on this card."""
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    _cmd, seen = _vision_cache_launch(tmp_path, monkeypatch, extra_args)
+    assert seen == []
+
+
+def test_a_cpu_named_projector_device_is_still_priced(tmp_path, _moe_cache_host, monkeypatch):
+    monkeypatch.delenv("MTMD_BACKEND_DEVICE", raising = False)
+    cmd, seen = _vision_cache_launch(tmp_path, monkeypatch, ["--mmproj-device", "cpu"])
+    assert "--mmproj" in cmd and seen and seen[-1] is not None, cmd
+
+
 def _drafter_cache_launch(tmp_path, monkeypatch, extra_args):
     """Studio's MTP sidecar (--model-draft) with a sized draft KV, so the reserve is
     byte-accurate rather than the flat cushion the share never prices."""
