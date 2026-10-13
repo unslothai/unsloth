@@ -532,6 +532,9 @@ def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
                     continue
                 per_document = [len(ids)]
             lengths.extend(int(x) for x in per_document)
+        if not lengths:
+            # enable_sample_packing: no lengths at all means one document per input_ids row.
+            lengths = [len(row["input_ids"]) for row in sample if row.get("input_ids") is not None]
     except Exception:
         return None
     lengths = [x for x in lengths if x > 0]

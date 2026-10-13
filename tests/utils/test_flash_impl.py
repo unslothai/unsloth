@@ -453,6 +453,8 @@ def test_mean_document_length_reads_packed_and_padding_free_rows():
     mixed = datasets.Dataset.from_dict({"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], None]})
     assert fi._mean_document_length(mixed) == pytest.approx(14 / 3)
     # The key enable_sample_packing was given, not the packed row.
+    empty = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300], "seq_lengths": [[], []]})
+    assert fi._mean_document_length(empty) == 200
     custom = datasets.Dataset.from_dict({"input_ids": [[1] * 2000], "doc_lens": [[100] * 20]})
     assert fi._mean_document_length(custom, key = "doc_lens") == 100
     assert fi._mean_document_length(custom) == 2000
