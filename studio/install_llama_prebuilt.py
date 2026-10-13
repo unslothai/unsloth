@@ -3977,6 +3977,32 @@ def published_rocm_choice_for_host(
     return None
 
 
+def _published_rocm_choice_for_other_gpu(
+    release: PublishedReleaseBundle, host: HostInfo, install_kind: str
+) -> AssetChoice | None:
+    """The bundle for another detected AMD GPU when the active one has none (an RX 5700 XT
+    gfx1010 at device 0 beside an RX 6500 XT gfx1034). The runtime arch gate (#7624) reads
+    the recorded mapped_targets and pins llama-server to the covered card. Not under a HIP
+    mask or UNSLOTH_ROCM_GFX_ARCH, which chose the active card on purpose, and never for a
+    shadowing iGPU (#7776)."""
+    if _hip_visible_device_mask_set() or os.environ.get("UNSLOTH_ROCM_GFX_ARCH"):
+        return None
+    active = _active_rocm_gfx_target(host)
+    for gfx in _host_rocm_gfx_targets(host):
+        if gfx == active or gfx in SHADOWING_INTEGRATED_GFX:
+            continue
+        choice = published_rocm_choice_for_host(
+            release, dataclasses_replace(host, rocm_gfx_target = gfx), install_kind
+        )
+        if choice is not None:
+            log(
+                f"no {install_kind} bundle covers the active AMD GPU ({active}); "
+                f"installing {choice.name} for the {gfx} on this host"
+            )
+            return choice
+    return None
+
+
 def resolve_upstream_asset_choice(host: HostInfo, llama_tag: str) -> AssetChoice:
     upstream_assets = github_release_assets(UPSTREAM_REPO, llama_tag)
     if host.is_linux and host.is_x86_64:
@@ -4301,7 +4327,9 @@ def resolve_release_asset_choice(
         # prebuilt. We still avoid hard-pinning windows-cpu here so a CPU bundle
         # never shadows that ROCm path.
         if host.has_rocm:
-            published_choice = published_rocm_choice_for_host(release, host, "windows-rocm")
+            published_choice = published_rocm_choice_for_host(
+                release, host, "windows-rocm"
+            ) or _published_rocm_choice_for_other_gpu(release, host, "windows-rocm")
         else:
             published_choice = published_asset_choice_for_kind(release, "windows-cpu")
     elif host.is_windows and host.is_arm64:

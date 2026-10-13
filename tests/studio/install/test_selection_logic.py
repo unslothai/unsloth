@@ -3697,6 +3697,117 @@ class TestPublishedRocmGfxSelection:
         assert choice.name == "app-b9457-windows-x64-rocm-gfx120X.zip"
 
 
+class TestWindowsRocmBundleForAnotherDetectedGpu:
+    """RX 5700 XT (gfx1010) at device 0 beside an RX 6500 XT (gfx1034): the release has no gfx1010
+    bundle, so the gfx103X one for the second card is installed and the runtime arch gate pins
+    llama-server to it, instead of failing with "no compatible published prebuilt"."""
+
+    TAG = "b11541-mix-2500203"
+    ROCM = f"app-{TAG}-windows-x64-rocm-gfx103X.zip"
+    ROCM_110X = f"app-{TAG}-windows-x64-rocm-gfx110X.zip"
+    VULKAN = f"app-{TAG}-windows-x64-vulkan.zip"
+    CPU = f"app-{TAG}-windows-x64-cpu.zip"
+
+    def _release(self, with_110x = False):
+        artifacts = [
+            make_cpu_artifact(
+                self.ROCM,
+                install_kind = "windows-rocm",
+                rank = 1000,
+                gfx_target = "gfx103X",
+                mapped_targets = ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
+            ),
+            make_cpu_artifact(self.VULKAN, install_kind = "windows-vulkan", rank = 1000),
+            make_cpu_artifact(self.CPU, install_kind = "windows-cpu", rank = 1000),
+        ]
+        if with_110x:
+            artifacts.append(
+                make_cpu_artifact(
+                    self.ROCM_110X,
+                    install_kind = "windows-rocm",
+                    rank = 1000,
+                    gfx_target = "gfx110X",
+                    mapped_targets = ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+                )
+            )
+        return make_release(artifacts, release_tag = self.TAG, upstream_tag = "b9457")
+
+    def _host(self, targets = ("gfx1010", "gfx1034")):
+        # What detect_host() returned on the real host.
+        return make_host(
+            system = "Windows",
+            machine = "AMD64",
+            nvidia_smi = None,
+            driver_cuda_version = None,
+            compute_caps = [],
+            has_physical_nvidia = False,
+            has_usable_nvidia = False,
+            has_rocm = True,
+            has_amd_gpu_without_rocm = True,
+            rocm_gfx_target = targets[0],
+            rocm_gfx_targets = list(targets),
+        )
+
+    def _resolve(
+        self,
+        host,
+        release = None,
+    ):
+        return resolve_release_asset_choice(
+            host,
+            self.TAG,
+            release or self._release(),
+            make_checksums([self.ROCM, self.ROCM_110X, self.VULKAN, self.CPU]),
+        )
+
+    @pytest.fixture(autouse = True)
+    def _unmasked(self, monkeypatch):
+        for var in (
+            "HIP_VISIBLE_DEVICES",
+            "ROCR_VISIBLE_DEVICES",
+            "CUDA_VISIBLE_DEVICES",
+            "UNSLOTH_ROCM_GFX_ARCH",
+        ):
+            monkeypatch.delenv(var, raising = False)
+        monkeypatch.setattr(
+            INSTALL_LLAMA_PREBUILT,
+            "github_release_assets",
+            lambda repo, tag: pytest.fail("listed an upstream release"),
+        )
+
+    def test_takes_the_bundle_for_the_covered_second_card(self):
+        result = self._resolve(self._host())
+        assert [c.name for c in result] == [self.ROCM]
+        # The runtime gate reads these from the install marker to drop the gfx1010 card.
+        assert result[0].mapped_targets == ["gfx1030", "gfx1031", "gfx1032", "gfx1034"]
+
+    def test_the_active_card_still_wins_when_it_is_covered(self):
+        result = self._resolve(self._host(("gfx1100", "gfx1034")), self._release(with_110x = True))
+        assert [c.name for c in result] == [self.ROCM_110X]
+
+    @pytest.mark.parametrize(
+        "var, value",
+        [
+            ("HIP_VISIBLE_DEVICES", "0"),
+            ("ROCR_VISIBLE_DEVICES", "0"),
+            ("UNSLOTH_ROCM_GFX_ARCH", "gfx1010"),
+        ],
+    )
+    def test_a_pinned_card_is_never_swapped(self, monkeypatch, var, value):
+        monkeypatch.setenv(var, value)
+        with pytest.raises(PrebuiltFallback, match = "no compatible published prebuilt"):
+            self._resolve(self._host())
+
+    def test_a_shadowing_igpu_does_not_pick_the_bundle(self):
+        # gfx1103 (Phoenix) is in gfx110X, but #7776 never lets an iGPU decide the bundle.
+        with pytest.raises(PrebuiltFallback):
+            self._resolve(self._host(("gfx1010", "gfx1103")), self._release(with_110x = True))
+
+    def test_no_covered_card_still_falls_back(self):
+        with pytest.raises(PrebuiltFallback):
+            self._resolve(self._host(("gfx1010", "gfx900")))
+
+
 class TestPublishedRocmBundleCoverage:
     """Every arch the installer routes torch for needs a llama.cpp bundle or a KNOWN_GAPS entry. The gap is silent:
     the GPU trains fine and inference drops to a HIP source build, which is correct but much slower to install."""
