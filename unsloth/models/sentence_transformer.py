@@ -1111,7 +1111,7 @@ class FastSentenceTransformer(FastModel):
         """Helper to create and configure a Transformer module."""
         from sentence_transformers.models import Transformer
 
-        # A repo's own Transformer subclass (modules.json "type") keeps its preprocessing and methods, built around our model.
+        # A repo's Transformer subclass, built around our model.
         if transformer_class is not None:
             Transformer = transformer_class
 
@@ -2068,7 +2068,7 @@ class FastSentenceTransformer(FastModel):
                         cache_dir = cache_dir,
                         revision = revision,
                     )
-                    # Subclasses that inherit the stock load() too: it would read the weights a second time, without Unsloth's patches or trust_remote_code. A subclass with its own load() keeps it.
+                    # Stock load() would re-read the weights unpatched; a subclass's own load() may restore its state, so keep it.
                     is_transformer_module = (
                         isinstance(module_class, type)
                         and issubclass(module_class, Transformer)
