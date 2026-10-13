@@ -224,6 +224,7 @@ const AGENT_ERRORS = [
   /^r\d{1,9} is covered by an overlay; snapshot to find its close button, or scroll first\.$/,
   /^r\d{1,9} is not a text field\.$/,
   /^r\d{1,9} is disabled or read-only\.$/,
+  /^r\d{1,9} takes a value like (2026-03-14|09:30|2026-03-14T09:30|2026-03|2026-W11)\.$/,
   /^r\d{1,9} is a radio button; select another option in its group instead\.$/,
   /^that key does nothing in this field; click or type instead\.$/,
   /^r\d{1,9} has no such option; snapshot it to see its options\.$/,
@@ -269,6 +270,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
           formHasPassword: info.formHasPassword === true,
           submits: info.submits === true,
           ...(typeof info.option === "string" ? { option: info.option.slice(0, 200) } : {}),
+          ...(typeof info.submitter === "string" ? { submitter: info.submitter.slice(0, 200) } : {}),
         }
       : undefined,
   };
@@ -366,8 +368,12 @@ async function observe(tab: BrowserTab, note?: string, op: Record<string, unknow
   }
   const answer = await pageCall(tab, op);
   if (!answer.ok) return { ok: false, error: answer.error ?? "the page could not be read." };
-  if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(answer.links ?? []);
   const fresh = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tab.id) ?? tab;
+  // A page that moved during the read is one nobody checked: its words and links stay out.
+  if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
+    return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
+  }
+  if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(answer.links ?? []);
   return {
     ok: true,
     url: tabUrl(fresh),
@@ -515,6 +521,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (action.op === "select") {
     // The option the page will select: its value can differ from the label the user sees.
     const chosen = info.role === "combobox" ? { ...info, name: info.option || action.value || "" } : info;
+    // A card-expiry or other secret dropdown is the user's to fill, as its text field would be.
+    if (info.tag === "select" || info.role === "combobox") gates.push(gateElement("type", info, before, action.policy, permissions()));
     gates.push(gateElement("select", chosen, before, action.policy, permissions()));
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.

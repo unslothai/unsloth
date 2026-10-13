@@ -2247,6 +2247,7 @@ def update_chat_thread(
     expected_title: Optional[str] = None,
     expected_opening_message_id: Optional[str] = None,
     settings_write: Optional[dict] = None,
+    preserve_title_modified_at: bool = False,
 ) -> Optional[dict]:
     """Patch a thread. With expected_title, the write only lands while the row still holds that title,
     so a concurrent rename wins instead of being lost. expected_opening_message_id guards a title
@@ -2298,11 +2299,14 @@ def update_chat_thread(
             "fork_title_base = CASE WHEN title = ? THEN fork_title_base ELSE NULL END"
         )
         values.append(patch.get("title"))
-    # Stamp real renames, moves and (un)archives. The CASE reads the pre-update row.
+    # Generated title refreshes preserve recency. Moves and (un)archives still stamp it.
+    # The CASE reads the pre-update row.
     edited = [
         (column, value)
         for key, (column, value) in allowed.items()
-        if key in patch and key in ("title", "projectId", "archived")
+        if key in patch
+        and key in ("title", "projectId", "archived")
+        and not (key == "title" and preserve_title_modified_at)
     ]
     if edited:
         changed = " OR ".join(f"{column} IS NOT ?" for column, _ in edited)

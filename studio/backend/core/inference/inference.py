@@ -747,6 +747,8 @@ class InferenceBackend:
                     if config.is_lora and config.base_model:
                         # LoRA adapter: base_model is .../Spark-TTS-0.5B/LLM;
                         # BiCodec weights live in the parent dir.
+                        from utils.models.spark_tts_adapter import spark_tts_adapter_load_target
+
                         base_path = config.base_model
                         abs_repo_path = audio_codec_path or resolve_bicodec_repo_path(
                             base_path, hf_token = hf_token
@@ -755,16 +757,19 @@ class InferenceBackend:
                         logger.info(
                             f"Spark-TTS LoRA: loading adapter from {config.path}, BiCodec from {abs_repo_path}"
                         )
-                        model, tokenizer = FastModel.from_pretrained(
-                            config.path,
-                            dtype = torch.float32,
-                            # Flash Attention cannot run float32
-                            attn_implementation = "sdpa",
-                            load_in_4bit = False,
-                            device_map = device_map,
-                            token = _hf_token_for_loader(hf_token),
-                            trust_remote_code = trust_remote_code,
-                        )
+                        with spark_tts_adapter_load_target(
+                            config.path, hf_token = _hf_token_for_loader(hf_token)
+                        ) as load_target:
+                            model, tokenizer = FastModel.from_pretrained(
+                                load_target,
+                                dtype = torch.float32,
+                                # Flash Attention cannot run float32
+                                attn_implementation = "sdpa",
+                                load_in_4bit = False,
+                                device_map = device_map,
+                                token = _hf_token_for_loader(hf_token),
+                                trust_remote_code = trust_remote_code,
+                            )
                     elif config.is_local and os.path.isdir(config.path):
                         # A merged export saves the LLM straight into the export directory, so
                         # there is no repo to download and no LLM/ child. snapshot_download on

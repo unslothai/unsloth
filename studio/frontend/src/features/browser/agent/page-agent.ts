@@ -29,6 +29,8 @@ export type ElementInfo = {
   formHasPassword: boolean;
   /** For a dropdown described with a value: the label of the option that value selects. */
   option?: string;
+  /** For Enter in a field: the label of the button that will submit its form. */
+  submitter?: string;
   submits: boolean;
 };
 
@@ -77,7 +79,14 @@ export function installPageAgent(): PageAgent {
   // Mirrors gate.ts, which can't be imported here (this function ships as source).
   const SECRET = /\b(current-password|new-password|one-time-code|cc-[a-z-]+)\b/i;
   const SECRET_NAME = /\b(password|passcode|card ?number|cvc|cvv|security code|ssn|social security)\b/i;
-  const TEXT_INPUTS = new Set(["text", "search", "email", "url", "tel", "number", "password", ""]);
+  // Date and time fields are textboxes to the model too; they take their ISO-like value as typed.
+  const TEXT_INPUTS = new Set([
+    "text", "search", "email", "url", "tel", "number", "password", "",
+    "date", "time", "datetime-local", "month", "week",
+  ]);
+  const DATE_FORMATS: Record<string, string> = {
+    date: "2026-03-14", time: "09:30", "datetime-local": "2026-03-14T09:30", month: "2026-03", week: "2026-W11",
+  };
   const BUTTON_INPUTS = new Set(["button", "submit", "reset", "image"]);
   const NOT_TEXT = new Set([...BUTTON_INPUTS, "checkbox", "radio", "range", "file", "color", "hidden"]);
   const EDITABLE_TAGS = new Set(["input", "textarea"]);
@@ -198,6 +207,7 @@ export function installPageAgent(): PageAgent {
     }
     const tag = el.tagName.toLowerCase();
     if (tag === "input" && ["button", "submit", "reset"].includes(field.type) && field.value) return clean(field.value);
+    if (tag === "input" && field.type === "image" && el.getAttribute("alt")) return clean(el.getAttribute("alt"));
     if (tag === "input" || tag === "textarea") {
       const hint = el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("name");
       return clean(hint);
@@ -480,9 +490,14 @@ export function installPageAgent(): PageAgent {
     node instanceof HTMLButtonElement
       ? node.type === "submit"
       : node instanceof HTMLInputElement && (node.type === "submit" || node.type === "image");
-  /** The button Enter in a field submits with, as a browser picks it: the form's first submit button. */
+  /** The button Enter in a field submits with, as a browser picks it: the form's first submit button
+   *  in tree order (form.elements leaves out <input type=image>). */
   const defaultButton = (form: HTMLFormElement | null) =>
-    Array.from(form?.elements ?? []).find(isSubmitter) as HTMLButtonElement | HTMLInputElement | undefined;
+    form
+      ? (Array.from(document.querySelectorAll("button, input")).find(
+          (node) => (node as HTMLInputElement).form === form && isSubmitter(node),
+        ) as HTMLButtonElement | HTMLInputElement | undefined)
+      : undefined;
 
   /** No ref: the focused element, which a key press would act on. */
   const describe = (ref: string, value?: unknown): Record<string, unknown> => {
@@ -520,6 +535,7 @@ export function installPageAgent(): PageAgent {
       ...(el instanceof HTMLSelectElement && typeof value === "string"
         ? { option: clean(findOption(el, value)?.text ?? "", 200) }
         : {}),
+      ...(!submits && submitter ? { submitter: clean(nameOf(submitter), 200) } : {}),
     };
     return { ok: true, info };
   };
@@ -712,10 +728,19 @@ export function installPageAgent(): PageAgent {
     (el as HTMLElement).focus?.({ preventScroll: true });
     const tag = el.tagName.toLowerCase();
     const field = el as HTMLInputElement;
-    if ((tag === "textarea" || tag === "input") && (field.disabled || field.readOnly)) {
+    if ((tag === "textarea" || tag === "input") && (field.matches(":disabled") || field.readOnly)) {
       return { ok: false, error: `${ref} is disabled or read-only.` };
     }
     if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has(field.type.toLowerCase()))) {
+      // A date or time field drops a value it can't parse: tried on a detached field of the same
+      // type first, so a bad value never blanks the page's field or fires its change handlers.
+      const format = DATE_FORMATS[field.type.toLowerCase()];
+      if (format && text) {
+        const probe = document.createElement("input");
+        probe.type = field.type;
+        probe.value = text;
+        if (!probe.value) return { ok: false, error: `${ref} takes a value like ${format}.` };
+      }
       setValue(field, text);
     } else if ((el as HTMLElement).isContentEditable) {
       const selection = window.getSelection();
@@ -743,6 +768,8 @@ export function installPageAgent(): PageAgent {
   const choose = (ref: string, value: string): Record<string, unknown> => {
     const el = lookup(ref);
     if (el instanceof HTMLSelectElement) {
+      // :disabled, not .disabled: a disabled fieldset disables what is inside it.
+      if (el.matches(":disabled")) return { ok: false, error: `${ref} is disabled or read-only.` };
       const option = findOption(el, value);
       if (!option) return { ok: false, error: `${ref} has no such option; snapshot it to see its options.` };
       el.value = option.value;

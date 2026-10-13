@@ -135,6 +135,12 @@ test("buying, posting, signing in and POST forms ask; ordinary clicks and search
   assert.equal(gateElement("select", element({ role: "checkbox", tag: "input", type: "checkbox", name: "Subscribe" }), page, open, NONE).kind, "ask");
   assert.equal(gateElement("select", element({ role: "combobox", tag: "select", name: "Large" }), page, open, NONE).kind, "allow");
   assert.equal(gateElement("select", element({ role: "combobox", tag: "select", name: "Delete my account" }), page, open, NONE).kind, "ask");
+  // Enter in a field presses the form's default button, so that button's words decide.
+  const quantity = element({ role: "textbox", tag: "input", type: "number", name: "Quantity", formAction: "https://shop.example/c" });
+  assert.equal(gateElement("submit", { ...quantity, submitter: "Buy now" }, page, open, NONE).kind, "ask");
+  assert.equal(gateElement("submit", { ...search, submitter: "Search" }, page, open, NONE).kind, "allow");
+  const expiry = element({ role: "combobox", tag: "select", name: "Month", autocomplete: "cc-exp-month" });
+  assert.equal(gateElement("type", expiry, page, open, NONE).kind, "block");
   // The executor's name for Delete pressed outside a text field.
   assert.equal(gateElement("click", element({ role: "row", name: "delete key on Invoice 42" }), page, open, NONE).kind, "ask");
 });
