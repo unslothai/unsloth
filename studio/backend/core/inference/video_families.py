@@ -24,6 +24,7 @@ from typing import Optional
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, without_nvfp4
 from .family_name_match import normalize_family_name, token_in_name, token_length
+from .family_profile import AutoPrefer, ConvRotSpec, FamilyProfile, UntiledVae
 
 # The request model's ceiling on num_frames, declared HERE so the shape gate and the bound cannot drift: the gate's
 # refusal names the lattice point above the request, and suggesting one the request model would itself reject is a
@@ -36,11 +37,12 @@ VIDEO_CANCELLED_MSG = "Video generation was cancelled."
 VIDEO_GENERATION_BUSY_MSG = "A video generation is already in progress."
 VIDEO_MODEL_CHANGED_MSG = "The requested video model changed before generation was reserved."
 
-# One LTX version token: ltx / ltxv / ltx-video, optional separator, major 2, then ".N" / "_N" (minor), "N" ending the
+# One LTX version token: ltx / ltxv / ltx-video, optional separator, major 2, then ".N" / "_N" (minor, any digits, so
+# "ltx-2.10" reads as 2.10), "N" ending the
 # token ("ltx25"), or nothing ("ltx-2-19b" = 2.0). Anything else ("ltx-24fps", "ltx-transformer") is no name evidence,
 # as is a bare "ltx23" / "ltx-23" (no release uses that spelling, so it cannot outrank the repo).
 _LTX_VERSION = re.compile(
-    r"(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9])(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))"
+    r"(?<![a-z0-9])ltx(?:v|[-_ ]?video)?[-_ ]?2(?:[._]([0-9]+)(?![0-9])|([0-9])(?![0-9a-z])|(?![0-9a-z]|[._][0-9]))"
 )
 
 
@@ -51,22 +53,77 @@ def ltx_name_version(name: Optional[str]) -> Optional[str]:
     return None
 
 
+# Family per LTX release: 2.0 / 2.3 run the LTX-2 assembly, 2.5 (diffusers called its pre-release "2.4") its own family.
+LTX2_FAMILY = "ltx-2"
+LTX25_FAMILY = "ltx-2.5"
+LTX_FAMILIES = (LTX2_FAMILY, LTX25_FAMILY)
+
+
+def ltx_family_for_version(version: Optional[str]) -> Optional[str]:
+    """``ltx-2`` for 2.0-2.3, ``ltx-2.5`` for 2.4 / 2.5, None for a release Studio does not know (2.6+)."""
+    if not version:
+        return None
+    minor = int(version[2:])
+    if minor <= 3:
+        return LTX2_FAMILY
+    if minor <= 5:
+        return LTX25_FAMILY
+    return None
+
+
 def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
-    # LTX > 2.3 (diffusers calls the 2.5 pre-release "2.4") is not drop-in LTX-2.
+    # Releases after 2.5 are unknown: neither LTX family can claim their weights.
     for name in names:
         version = ltx_name_version(name)
-        if version is not None and int(version[2:]) >= 4:
+        if version is not None and ltx_family_for_version(version) is None:
             return version
     return None
 
 
 def unsupported_ltx_message(version: str, subject: str) -> str:
     return (
-        f"{subject} is LTX-{version}, which Studio does not support yet. LTX-{version} is not a drop-in LTX-2.3: "
-        "it uses a new Gemma 4 text encoder, a new video decoder and its own sampling schedule, so loading it as "
-        "LTX-2 would fail or produce a broken video. Use LTX-2.3 (Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) "
-        "for now."
+        f"{subject} is LTX-{version}, which Studio does not support yet. Studio runs LTX-2.0 / LTX-2.3 "
+        "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers)."
     )
+
+
+def wrong_ltx_family_message(version: str, family: str, subject: str) -> str:
+    expected = ltx_family_for_version(version)
+    return (
+        f"{subject} is LTX-{version}, which loads as the '{expected}' family, not '{family}'. "
+        "LTX-2.5 is not a drop-in LTX-2.3 (Gemma 4 text encoder, no video FFN bias, keyframe position "
+        "embedding), so one family cannot load the other's weights. Pick the "
+        f"'{expected}' family, or leave the family on Auto."
+    )
+
+
+def _ltx_leaf(name: Optional[str]) -> str:
+    # Last segment only: a local parent folder must not decide.
+    return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
+
+
+def ltx_pick_version(
+    repo_id: Optional[str],
+    filename: Optional[str] = None,
+    display_repo_id: Optional[str] = None,
+) -> Optional[tuple[str, str]]:
+    """``(version, shown)`` the pick's names declare. A file whose own name has a versioned LTX token decides alone
+    (an ltx-2.3 file in an ``ltx-2.5-tests`` folder is 2.3); any other file name (``model``, ``ltx-transformer``)
+    defers to the display id, then the repo id."""
+    base = _ltx_leaf(filename)
+    if ltx_name_version(base) is not None:
+        picks: tuple[tuple[str, Optional[str]], ...] = ((base, filename),)
+    else:
+        picks = (
+            (base, filename),
+            (_ltx_leaf(display_repo_id), display_repo_id),
+            (_ltx_leaf(repo_id), repo_id),
+        )
+    for name, shown in picks:
+        version = ltx_name_version(name)
+        if version is not None:
+            return version, str(shown)
+    return None
 
 
 def assert_supported_ltx_version(
@@ -74,26 +131,20 @@ def assert_supported_ltx_version(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """A file whose own name has a versioned LTX token decides alone (an ltx-2.3 file in an ``ltx-2.5-tests`` folder
-    loads); any other file name (``model``, ``ltx-transformer``) defers to the repo / display id."""
+    """Refuse a pick whose names declare an LTX release no family supports (2.6 and later)."""
+    found = ltx_pick_version(repo_id, filename, display_repo_id)
+    if found is not None and ltx_family_for_version(found[0]) is None:
+        raise ValueError(unsupported_ltx_message(found[0], f"'{found[1]}'"))
 
-    def leaf(name: Optional[str]) -> str:
-        # Last segment only: a local parent folder must not decide.
-        return os.path.basename((name or "").replace("\\", "/").rstrip("/"))
 
-    base = leaf(filename)
-    if ltx_name_version(base) is not None:
-        picks: tuple[tuple[str, Optional[str]], ...] = ((base, filename),)
-    else:
-        picks = (
-            (base, filename),
-            (leaf(display_repo_id), display_repo_id),
-            (leaf(repo_id), repo_id),
-        )
-    for name, shown in picks:
-        version = unsupported_ltx_version(name)
-        if version is not None:
-            raise ValueError(unsupported_ltx_message(version, f"'{shown}'"))
+def ltx_family_by_name(
+    repo_id: Optional[str],
+    filename: Optional[str] = None,
+    display_repo_id: Optional[str] = None,
+) -> Optional[str]:
+    """The LTX family the pick's names declare, or None (no versioned LTX token, or an unknown release)."""
+    found = ltx_pick_version(repo_id, filename, display_repo_id)
+    return ltx_family_for_version(found[0]) if found is not None else None
 
 
 def assert_ltx_pick_supported(
@@ -102,32 +153,72 @@ def assert_ltx_pick_supported(
     filename: Optional[str] = None,
     display_repo_id: Optional[str] = None,
 ) -> None:
-    """Name guard for a pick already resolved to ``family``; a non-LTX family never trips on an ltx-2.5 token."""
-    if family == "ltx-2":
-        assert_supported_ltx_version(repo_id, filename, display_repo_id)
+    """Name guard for a pick already resolved to ``family``: an LTX family never loads another release's weights
+    (LTX-2.5 never reaches the 2.3 assembly, and the reverse), and a release after 2.5 is refused. A non-LTX family
+    never trips on an LTX token."""
+    if family not in LTX_FAMILIES:
+        return
+    found = ltx_pick_version(repo_id, filename, display_repo_id)
+    if found is None:
+        return
+    version, shown = found
+    expected = ltx_family_for_version(version)
+    if expected is None:
+        raise ValueError(unsupported_ltx_message(version, f"'{shown}'"))
+    if expected != family:
+        raise ValueError(wrong_ltx_family_message(version, family, f"'{shown}'"))
 
 
-def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
-    """Refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
+def local_ltx_pipeline_family(path: Optional[str]) -> Optional[str]:
+    """The LTX family a local diffusers folder's ``model_index.json`` declares: ``ltx-2.5`` for a Gemma 4 encoder or a
+    ``diffusion_decoder`` / ``duration_head`` component, ``ltx-2`` for any other LTX2 pipeline; None when the folder
+    has no readable LTX2 index."""
     import json
     from pathlib import Path
 
     try:
         index = Path(str(path or "")).expanduser() / "model_index.json"
         if not path or not index.is_file():
-            return
+            return None
         spec = json.loads(index.read_text(encoding = "utf-8"))
     except (OSError, ValueError, TypeError):
-        return
+        return None
     if not isinstance(spec, dict) or not str(spec.get("_class_name", "")).startswith("LTX2"):
-        return
+        return None
     encoder = spec.get("text_encoder")
     encoder_class = encoder[1] if isinstance(encoder, list) and len(encoder) == 2 else ""
+    # An empty or null component entry is absent, like a malformed text_encoder above.
     if str(encoder_class).startswith("Gemma4") or any(
-        isinstance(spec.get(k), list) and spec.get(k)[0]
+        isinstance(spec.get(k), list) and bool(spec.get(k)) and spec.get(k)[0]
         for k in ("diffusion_decoder", "duration_head")
     ):
-        raise ValueError(unsupported_ltx_message("2.5", f"'{path}' (by its model_index.json)"))
+        return LTX25_FAMILY
+    return LTX2_FAMILY
+
+
+def assert_local_pipeline_family(path: Optional[str], family: Optional[str]) -> None:
+    """Refuse a local diffusers LTX folder whose ``model_index.json`` declares the other LTX family."""
+    if family not in LTX_FAMILIES:
+        return
+    declared = local_ltx_pipeline_family(path)
+    if declared is not None and declared != family:
+        version = "2.5" if declared == LTX25_FAMILY else "2.3"
+        raise ValueError(
+            wrong_ltx_family_message(version, family, f"'{path}' (by its model_index.json)")
+        )
+
+
+def ltx25_training_message(subject: str) -> str:
+    return (
+        f"{subject} is LTX-2.5, which Studio can run on the Video page but cannot train yet. "
+        "Train on LTX-2 (Lightricks/LTX-2) instead."
+    )
+
+
+def assert_local_pipeline_not_ltx25(path: Optional[str]) -> None:
+    """Training guard: refuse a local diffusers LTX-2.5 folder whose name does not say so; unreadable passes."""
+    if local_ltx_pipeline_family(path) == LTX25_FAMILY:
+        raise ValueError(ltx25_training_message(f"'{path}' (by its model_index.json)"))
 
 
 @dataclass(frozen = True)
@@ -193,6 +284,8 @@ class VideoFamily:
     # One config per reduction instead of a per-process benchmark that can change the render (diffusion_speed.
     # pin_reduction_configs). Off by default: it can keep a slower config (HunyuanVideo-1.5 ~2% per step).
     filter_reduction_configs: bool = False
+    # Same spelling as DiffusionFamily: pin the filter only on these (major, minor) archs.
+    filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
@@ -238,10 +331,27 @@ class VideoFamily:
     default_audio_flow_shift: Optional[float] = None
     # First/last-frame conditioning: the request may carry keyframe images.
     supports_keyframes: bool = False
+    # False for a keyframe family that takes a first frame only (LTX-2.5); MiniMax-H3 takes both.
+    accepts_last_frame: bool = True
+    # Diffusers class serving a first-frame request over the loaded pipeline's components (video_i2v).
+    i2v_pipeline_class: Optional[str] = None
+    i2v_pipeline_config: tuple[tuple[str, object], ...] = field(default_factory = tuple)
+    # (identifier regex, ((kwarg, value), ...)); first matching row applies.
+    i2v_call_kwargs: tuple[tuple[str, tuple[tuple[str, object], ...]], ...] = field(
+        default_factory = tuple
+    )
+    # (identifier regex, refusal) for checkpoints the name tokens claim but this family cannot run.
+    unsupported_checkpoints: tuple[tuple[str, str], ...] = field(default_factory = tuple)
     # Omni-reference conditioning. MiniMax-H3 loads this in a separate denoiser partition.
     supports_references: bool = False
     # Guidance-distilled families expose neither CFG nor a negative prompt.
     supports_cfg: bool = True
+    # True when Unsloth can TRAIN a LoRA on this family (every such name must resolve through get_trainer).
+    trainable: bool = False
+    # Display label (Train UI); None = the family name.
+    label: Optional[str] = None
+    # Per-family policy data; see family_profile.FamilyProfile.
+    profile: FamilyProfile = field(default_factory = FamilyProfile)
 
 
 # MiniMax-H3 at ComfyUI's template default (ResolutionSelector 16:9, 0.4 MP, multiple 32 -> 864x480). Both sides are
@@ -255,9 +365,96 @@ def _h3_480p_presets() -> tuple[tuple[int, int], ...]:
     return ((864, 480), (480, 864))  # fastest
 
 
+# LTX-Video 0.9.x matches ltx-2's "ltx-video"/"ltxv" tokens but is another architecture; names of LTX-2 itself pass.
+_LTX_VIDEO_09_RE = (
+    r"^(?!.*(?<![a-z0-9])ltx[-_ ]?2(?:$|[-_ /.]))"
+    r"(?=.*(?<![a-z0-9])ltx(?:[-_ ]?video|v)(?:$|[-_ /.](?!2(?:$|[-_ /.]|\.\d))))"
+)
+_LTX_VIDEO_09_REFUSAL = (
+    "This is an LTX-Video 0.9.x checkpoint, a different architecture from LTX-2 that Studio does not "
+    "run. Load LTX-2 or LTX-2.3 instead (for example unsloth/LTX-2.3-GGUF)."
+)
+# Last path segment of each identifier only: an owner or parent folder named i2v does not make a checkpoint I2V.
+_HV15_I2V_RE = r"(?<![a-z0-9])i2v(?![a-z0-9])(?=[^/\\|]*[/\\]*\s*(?:$|\|))"
+_HV15_I2V_REFUSAL = (
+    "This is a HunyuanVideo-1.5 image-to-video checkpoint. It needs its own image-conditioned "
+    "transformer and SigLIP image encoder, which Studio does not load yet. Load a HunyuanVideo-1.5 "
+    "text-to-video checkpoint (hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v or "
+    "720p_t2v) instead."
+)
+
+
+# --- Shared FamilyProfile data (see family_profile.FamilyProfile) ---
+
+# int8 small-M exclusions (on top of diffusion_transformer_quant._INT8_EXCLUDE_NAME_TOKENS); baked into the published
+# int8 artifacts, so each moves only with a rebuild and republish.
+# HunyuanVideo-1.5's attention trim shrinks the text / image streams from their padded lengths to the VALID token
+# counts, so every text-stream Linear runs at a tiny M the int8 dynamic path cannot handle. Both failures measured on
+# B200. M = 0 (t2v byt5 / image streams trim to zero tokens): torchao returns the input UNPROJECTED (a quantized 1472
+# -> 2048 Linear maps [1, 0, 1472] to [1, 0, 1472]), so the 2048-wide cond-type add crashes -- context_embedder_2 /
+# image_embedder. M <= 16 (a short prompt, or the empty negative prompt's ~6 tokens): torch._int_mm requires M > 16
+# and raises -- the TokenRefiner and every block's context-stream projections. These run at M = text tokens (tens)
+# against the video stream's M ~ 32k+, so bf16 here costs nothing measurable and the video-stream linears keep full
+# int8 coverage. "context_embedder" also matches "context_embedder_2" (substring check).
+_HUNYUAN15_INT8_EXCLUDES = (
+    "context_embedder",
+    "image_embedder",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "ff_context",
+)
+# nvfp4 raises on an empty activation; HunyuanVideo-1.5's attention trim hits it every t2v render.
+_HUNYUAN15_NVFP4_ZERO_ROW_TOKENS = ("image_embedder", "context_embedder_2")
+# LTX-2 is audiovisual: every block carries an audio-side stream (audio_attn1 / audio_attn2 / audio_ff, fed by
+# audio_proj_in) plus the a2v / v2a cross attentions. A video-only run feeds a MINIMAL audio stream -- one token for a
+# still -- so those linears run at M = 1, under the same _int_mm floor of 16. The audio stream is inert on a
+# video-only run (isolated modalities, out of the loss, out of the LoRA targets), so leaving it in bf16 costs nothing
+# while the video-stream linears keep full int8 coverage. One token covers every audio-side name, including
+# video_to_audio_attn, whose keys/values are that same one-token stream.
+# The audio token alone is not enough. LTX-2 also carries LTX2AdaLayerNormSingle projections whose names say nothing
+# about audio -- av_cross_attn_video_scale_shift / av_cross_attn_video_a2v_gate (the cross-modality modulation,
+# computed unconditionally in forward, isolate_modalities or not) and prompt_adaln / audio_prompt_adaln. Each is a
+# Linear over a BATCH-sized input, so M = batch = 1 for a default training run: the same _int_mm floor, reached
+# whatever the audio stream does.
+_LTX2_INT8_EXCLUDES = ("audio", "av_cross_attn", "adaln")
+# Untiled decode peaks (video_vae_untiled), measured fp16 on a B200. Wan: per latent pixel (h x w), frame count does not
+# enter (the causal cache decodes one latent frame at a time), plus the (spatial, temporal) RGB output Wan's decode
+# holds about twice (per-frame torch.cat, then clamp); 1021 frames at 1280x704 is 5.2 GiB per fp16 copy. A14B and
+# Wan2.1 share the Wan2.1 VAE (8x spatial), measured <= 0.58 MiB per latent pixel at 480p / 720p.
+_WAN21_VAE_UNTILED = UntiledVae(bytes_per_latent_pixel = 0.6 * 2**20, output_scale = (8, 4))
+# LTX-2 / 2.3 holds every frame: peak per output frame x latent pixel, 0.102-0.105 MiB measured bf16 (B200). LTX-2.5
+# has the same conv decoder layout (vae/ of the Diffusers pack); unmeasured, priced as 2.3.
+_LTX2_VAE_UNTILED = UntiledVae(bytes_per_frame_latent_pixel = 0.11 * 2**20, temporal_scale = 8)
+
 _FAMILIES: tuple[VideoFamily, ...] = (
     VideoFamily(
         name = "minimax-h3",
+        trainable = True,
+        label = "MiniMax-H3",
+        profile = FamilyProfile(
+            # Same small-M story as HunyuanVideo-1.5 with one extra trap: the adaLN projection is ``adaln_proj``,
+            # which no generic token matches ("norm" does not appear in the name). On the DENSE checkpoint it is
+            # Linear(2688 -> 96768), clears min_features = 512, gets quantized, then runs at M = 1 and raises
+            # ``self.size(0) needs to be greater than 16, but got 1`` at the first denoise (the offline builder
+            # happily bakes it, and torch.compile then dies on that module). On the pruned-modulation form it is
+            # Linear(8 -> 96768), under min_features and skipped for free (verified on the fl2va_pruned build: all 51
+            # rejected), so the exclusion makes the DENSE path correct and is a no-op on the pruned one.
+            int8_exclude_tokens = ("adaln_proj",),
+            # H3's OTHER small-M linears (context_embedder + the two token_refiner blocks: 13 Linears, 798 M params,
+            # 0.80 GB bf16, 3.9% of the int8 checkpoint) are row-PADDED to the _int_mm floor instead of excluded:
+            # padding returns the caller's rows bitwise unchanged (per-row activation scales, asserted in
+            # diffusion_quant_pad). Measured on B200, 640x384 x 124 frames (h3_quant/README_int8.md). qwen-image,
+            # qwen-image-edit and hunyuanvideo-1.5 have the same small-M shape but each has a PUBLISHED int8
+            # checkpoint whose metadata bakes its exclusion set, so they move only with a rebuild and republish.
+            int8_pad_tokens = ("context_embedder", "token_refiner"),
+            # The packed sequence runs three modalities through one set of linears, so its activation range is not the
+            # per-family range the fp8 filter was measured against. The trainer refuses both outright; declaring it
+            # here keeps /diffusion/info from advertising a start that is guaranteed to 400.
+            train_scheme_deny = frozenset({"fp8", "mxfp8"}),
+            auto_static_skip = (("minimaxai/minimax-h3", (("max", 2), ("steps", 30))),),
+        ),
         pipeline_class = "ModularPipeline",
         transformer_class = "MiniMaxH3Transformer3DModel",
         base_repo = "MiniMaxAI/MiniMax-H3",
@@ -346,11 +543,82 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         supports_references = True,
         supports_cfg = False,
     ),
+    # LTX-2.5 (diffusers >= 0.40): the 22B LTX-2.3 DiT without the video FFN bias plus a keyframe position embedding,
+    # conditioned by a fine-tuned Gemma 4 12B (Gemma4UnifiedForConditionalGeneration, transformers >= 5.10.1). That
+    # encoder runs in a spawned worker on the .venv_t5_510 sidecar (video_ltx25_te_worker); everything else runs here.
+    # Defaults are the reference two-stage distilled recipe (video_ltx25): 8 distilled sigmas at half resolution, x2
+    # latent upsample, 3 sigmas at full resolution, CFG 1. Two stages need a 64 px canvas (32 px per stage), so the
+    # reference 1280x720 resolves to the 1280x704 latent canvas it actually renders.
+    VideoFamily(
+        name = "ltx-2.5",
+        profile = FamilyProfile(
+            # the 2.3 DiT less the video FFN bias
+            int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
+            # Hosted rotated int8 build only: rotation baked into the file (every quantized Linear, group 256) and read
+            # back from its metadata. No runtime ConvRot spec (group 0), so quantizing at load stays plain int8;
+            # default_on only picks the hosted rotated file (the env's ``0`` picks the plain one).
+            int8_convrot = ConvRotSpec(
+                group = 0,
+                suffixes = (),
+                variant_repos = ("unsloth/LTX-2.5-FP8",),
+                default_on = True,
+            ),
+            untiled_vae = _LTX2_VAE_UNTILED,
+            # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
+            compile_static = True,
+            stg_compile_adapter = True,
+            preview_factors = "ltx2",
+            # The split single-file repo next to the Diffusers pack (safetensors, no remote code).
+            trusted_repos = ("lightricks/ltx-2.5",),
+        ),
+        pipeline_class = "LTX2Pipeline",
+        transformer_class = "LTX2VideoTransformer3DModel",
+        base_repo = "Lightricks/LTX-2.5-Diffusers",
+        aliases = ("ltx2.5", "ltx25", "ltxv-2.5", "ltx-video-2.5"),
+        has_audio = True,
+        default_steps = 8,
+        default_guidance = 1.0,
+        default_num_frames = 121,
+        default_fps = 24,
+        frame_step = 8,
+        resolution_multiple = 64,
+        resolution_presets = ((1280, 704), (704, 1280), (960, 512), (768, 512)),
+        # transformer 42.0 bf16 (both DiT files are 42,018,190,584 bytes); Gemma 4 12B 23.9 (text_encoder/ shards),
+        # held by the encoder worker; VAE 1.45 + connectors 6.34 + latent upsampler 1.0 + audio VAE / vocoder 0.37.
+        bf16_components_gb = (42.0, 23.9, 9.2),
+        # Hosted DiTs baked from the pack's distilled transformer/ (tensor-identical to the single-file distilled DiT).
+        # Keyed on the pack: only a pipeline load seeds a hosted denoiser, and the pack never loads its dev DiT. int8
+        # resolves LTX-2.5-INT8-ConvRot.safetensors (rotation in its metadata), LTX-2.5-INT8 with
+        # UNSLOTH_DIFFUSION_INT8_CONVROT=0; fp8 resolves LTX-2.5-FP8.safetensors.
+        prequant_variant_repos = (
+            ("lightricks/ltx-2.5-diffusers", "int8", "unsloth/LTX-2.5-FP8"),
+            ("lightricks/ltx-2.5-diffusers", "fp8", "unsloth/LTX-2.5-FP8"),
+        ),
+        # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
+        prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
+        supports_keyframes = True,
+        accepts_last_frame = False,
+        # Same DiT layout as LTX-2.3, so the same measured knobs.
+        cudnn_benchmark = False,
+        filter_reduction_configs = True,
+    ),
     # LTX-2 (diffusers >= 0.39): ~19B single-stream video DiT generating synchronized audio + video in one pass. The
     # Gemma3-12B encoder is stored fp32 on the hub (~49 GB download, ~24 GB resident bf16). The base repo carries the
     # dev config (40 steps, CFG 4).
     VideoFamily(
         name = "ltx-2",
+        trainable = True,
+        label = "LTX-2",
+        profile = FamilyProfile(
+            int8_exclude_tokens = _LTX2_INT8_EXCLUDES,
+            # 2.3 is the same audiovisual DiT, and builders spell it by its version.
+            quant_names = ("ltx-2.3",),
+            untiled_vae = _LTX2_VAE_UNTILED,
+            compile_static = True,
+            stg_compile_adapter = True,
+            preview_factors = "ltx2",
+            trusted_repos = ("lightricks/ltx-2.3-fp8",),
+        ),
         pipeline_class = "LTX2Pipeline",
         transformer_class = "LTX2VideoTransformer3DModel",
         base_repo = "Lightricks/LTX-2",
@@ -376,11 +644,22 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         cudnn_benchmark = False,
         # Block RMSNorm (hidden 4096) R0_BLOCK 4096 vs 2048 tie on B200: 3 of 6 cold servers rendered another clip.
         filter_reduction_configs = True,
+        i2v_pipeline_class = "LTX2ImageToVideoPipeline",
+        # LTX-2.3's reference workflow re-compresses the frame at CRF 18; LTX-2.0 keeps diffusers' 33.
+        i2v_call_kwargs = ((r"ltx[-_ ]?2[-_.]?3(?![0-9])", (("image_crf", 18),)),),
+        unsupported_checkpoints = ((_LTX_VIDEO_09_RE, _LTX_VIDEO_09_REFUSAL),),
     ),
     # Wan2.2-TI2V-5B (diffusers >= 0.35, verified on 0.39): ~5B single-stream DiT (UMT5 encoder), no audio. Its VAE's
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
     VideoFamily(
         name = "wan2.2-ti2v-5b",
+        profile = FamilyProfile(
+            untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
+            preview_factors = "wan22_5b",
+            auto_static_skip = (
+                ("wan-ai/wan2.2-ti2v-5b-diffusers", (("default", 2), ("max", 3), ("steps", 50))),
+            ),
+        ),
         comfy_flow_shift = 8.0,  # ComfyUI ModelSamplingSD3 8 (TI2V-5B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
@@ -416,12 +695,22 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         fp16_guard = "native",
         # Byte-identical mirror of QuantStack/Wan2.2-TI2V-5B-GGUF (13 quants + companion VAE).
         gguf_repo = "unsloth/Wan2.2-TI2V-5B-GGUF",
+        # expand_timesteps on the loaded config keeps the first-frame latent clean.
+        i2v_pipeline_class = "WanImageToVideoPipeline",
     ),
     # Wan2.2-T2V-A14B (diffusers >= 0.35, verified on 0.39): the dual-expert MoE. Both transformers are
     # WanTransformer3DModel with boundary_ratio 0.875; high-noise steps route through transformer, low-noise through
     # transformer_2, so cfg2_kwarg is threaded only here.
     VideoFamily(
         name = "wan2.2-t2v-a14b",
+        profile = FamilyProfile(
+            auto_prefer = AutoPrefer(
+                floor = (10, 0),
+                schemes = ("nvfp4", "int8", "fp8", "mxfp8"),
+                backend = "flashinfer",
+            ),
+            untiled_vae = _WAN21_VAE_UNTILED,
+        ),
         comfy_flow_shift = 5.0,  # ComfyUI ModelSamplingSD3 5 (T2V-A14B template)
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
@@ -469,6 +758,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-1.3B: 480P only (upstream calls 720P unstable for 1.3B).
     VideoFamily(
         name = "wan2.1-t2v-1.3b",
+        profile = FamilyProfile(untiled_vae = _WAN21_VAE_UNTILED),
         comfy_flow_shift = 8.0,  # reference workflow shift; replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
@@ -489,6 +779,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # Wan2.1-T2V-14B: same keys as one Wan2.2 A14B expert, run as a single denoiser.
     VideoFamily(
         name = "wan2.1-t2v-14b",
+        profile = FamilyProfile(untiled_vae = _WAN21_VAE_UNTILED),
         comfy_flow_shift = 5.0,  # reference 14B workflow shift (the 1.3B uses 8); replaces the repo's flow_shift 3.0
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
@@ -511,10 +802,19 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # so only the community repacks load.
     VideoFamily(
         name = "hunyuanvideo-1.5",
+        profile = FamilyProfile(
+            int8_exclude_tokens = _HUNYUAN15_INT8_EXCLUDES,
+            nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+            preview_factors = "hv15",
+            auto_static_skip = (
+                ("hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v", (("max", 2), ("steps", 50))),
+            ),
+        ),
         comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-480p_t2v-NVFP4.pt"),),
         prequant_resident_gb_by_scheme = (("nvfp4", 4.8),),
@@ -544,10 +844,16 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # own family so a 720p load defaults to 720p sizes; the full-path alias outranks the generic token.
     VideoFamily(
         name = "hunyuanvideo-1.5-720p",
+        profile = FamilyProfile(
+            int8_exclude_tokens = _HUNYUAN15_INT8_EXCLUDES,
+            nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
+            preview_factors = "hv15",
+        ),
         comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
         pipeline_class = "HunyuanVideo15Pipeline",
         transformer_class = "HunyuanVideo15Transformer3DModel",
         base_repo = "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        unsupported_checkpoints = ((_HV15_I2V_RE, _HV15_I2V_REFUSAL),),
         # RTN, not GPTQ: the 720p transformer is separately trained; 480p corrections do not apply.
         prequant_repos = (("nvfp4", "unsloth/HunyuanVideo-1.5-NVFP4"),),
         prequant_filenames = (("nvfp4", "HunyuanVideo-1.5-Diffusers-720p_t2v-NVFP4.pt"),),
@@ -699,9 +1005,17 @@ def pipeline_available_video_families(*, device: Optional[str] = None) -> tuple[
     )
 
 
-def resolve_video_base_repo(fam: VideoFamily, base_repo: Optional[str]) -> str:
-    """The companion diffusers repo: caller-supplied if given, else the family fallback."""
+def resolve_video_base_repo(
+    fam: VideoFamily,
+    base_repo: Optional[str],
+    repo_id: Optional[str] = None,
+) -> str:
+    """The companion diffusers repo: caller-supplied if given, else the family fallback. An LTX-2.5 DiT picked from the
+    split single-file release (or a local copy of it) defaults to that release, whose companion files sit beside it."""
     base = (base_repo or "").strip()
+    if not base and fam.name == LTX25_FAMILY and repo_id:
+        from .video_ltx25 import ltx25_default_base
+        base = ltx25_default_base(repo_id) or ""
     return base or fam.base_repo
 
 
@@ -958,8 +1272,111 @@ def validate_video_request_shape(
             )
 
 
+def video_family_accepts_first_frame(fam: VideoFamily) -> bool:
+    return bool(
+        getattr(fam, "supports_keyframes", False) or getattr(fam, "i2v_pipeline_class", None)
+    )
+
+
+def video_family_accepts_last_frame(fam: VideoFamily) -> bool:
+    return bool(getattr(fam, "supports_keyframes", False)) and bool(
+        getattr(fam, "accepts_last_frame", True)
+    )
+
+
+def video_family_uses_i2v_pipeline(fam: VideoFamily) -> bool:
+    return bool(getattr(fam, "i2v_pipeline_class", None)) and not getattr(
+        fam, "supports_keyframes", False
+    )
+
+
+def _identifier_blob(identifiers: tuple[Optional[str], ...]) -> list[str]:
+    return [str(i).strip().lower() for i in identifiers if i and str(i).strip()]
+
+
+def video_checkpoint_refusal(fam: VideoFamily, *identifiers: Optional[str]) -> Optional[str]:
+    """Identifiers are joined into one line so an LTX-2.3 filename excuses an ``ltx-video`` folder; the last segment
+    of the most specific identifier is also judged alone, so an LTX-2 folder cannot excuse an LTX-Video 0.9 file."""
+    names = _identifier_blob(identifiers)
+    joined = " | ".join(names)
+    pick = os.path.basename(names[-1].replace("\\", "/").rstrip("/")) if names else ""
+    for entry in getattr(fam, "unsupported_checkpoints", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        pattern, message = entry
+        try:
+            if any(text and re.search(pattern, text) for text in (pick, joined)):
+                return str(message)
+        except re.error:
+            continue
+    return None
+
+
+def video_i2v_call_kwargs(fam: VideoFamily, *identifiers: Optional[str]) -> dict[str, object]:
+    names = _identifier_blob(identifiers)
+    for entry in getattr(fam, "i2v_call_kwargs", ()) or ():
+        if not isinstance(entry, (tuple, list)) or len(entry) != 2:
+            continue
+        pattern, pairs = entry
+        try:
+            if any(re.search(pattern, name) for name in names):
+                return {str(k): v for k, v in pairs}
+        except (re.error, TypeError, ValueError):
+            continue
+    return {}
+
+
+def snap_canvas_within_cap(
+    width: float, height: float, multiple: int, max_pixels: int
+) -> tuple[int, int]:
+    """Snap a "match source" canvas to ``multiple`` without leaving ``max_pixels``: each side rounds to the nearest
+    multiple, and when that rounding pushes the area past the cap a side rounds down instead (the largest area under
+    the cap, then the aspect nearest the unsnapped one). The frontend's matchedCanvas mirrors this."""
+    import math
+
+    def down(value: float) -> int:
+        return max(multiple, math.floor(value / multiple) * multiple)
+
+    def near(value: float) -> int:
+        return max(multiple, math.floor(value / multiple + 0.5) * multiple)
+
+    w, h = near(width), near(height)
+    if w * h <= max_pixels:
+        return w, h
+    target = math.log(width / height)
+    fits = [
+        (cw, ch)
+        for cw, ch in ((down(width), h), (w, down(height)), (down(width), down(height)))
+        if cw * ch <= max_pixels
+    ]
+    if not fits:
+        return down(width), down(height)
+    return max(fits, key = lambda wh: (wh[0] * wh[1], -abs(math.log(wh[0] / wh[1]) - target)))
+
+
+def first_frame_canvas(
+    fam: VideoFamily, aspect_width: float, aspect_height: float
+) -> tuple[int, int]:
+    """Nearest-aspect preset in log space; ties keep table order so the family default wins."""
+    import math
+
+    if aspect_width <= 0 or aspect_height <= 0:
+        raise ValueError(
+            f"The first frame has no usable aspect ratio ({aspect_width}x{aspect_height})."
+        )
+    presets = tuple((int(w), int(h)) for w, h in fam.resolution_presets)
+    if not presets:
+        return snap_video_size(fam, int(aspect_width), int(aspect_height))
+    target = math.log(aspect_width / aspect_height)
+    return min(presets, key = lambda wh: abs(math.log(wh[0] / wh[1]) - target))
+
+
 def validate_video_keyframe_conditioning(
-    fam: VideoFamily, h3_task: Optional[str], *, has_keyframes: bool
+    fam: VideoFamily,
+    h3_task: Optional[str],
+    *,
+    has_keyframes: bool,
+    has_last_frame: bool = False,
 ) -> None:
     """Raise ``ValueError`` when a checkpoint cannot take the keyframes a request supplies.
 
@@ -968,14 +1385,16 @@ def validate_video_keyframe_conditioning(
     one. Without that, an auto-switch evicts a working pipeline and spends minutes loading a
     target for a request that was already known to be unservable.
     """
-    if not has_keyframes:
+    if not (has_keyframes or has_last_frame):
         return
     from .video_minimax_h3 import H3_TASK_REFERENCES
 
-    if not fam.supports_keyframes:
+    if not video_family_accepts_first_frame(fam):
         raise ValueError(
             f"{fam.name} generates from the prompt alone; it takes no first or last frame."
         )
+    if has_last_frame and not video_family_accepts_last_frame(fam):
+        raise ValueError(f"{fam.name} animates from a first frame only; it takes no last frame.")
     if h3_task == H3_TASK_REFERENCES:
         raise ValueError(
             "The MiniMax-H3 checkpoint is the Ref2VA partition, which conditions on references "
@@ -1090,18 +1509,43 @@ _NAME_SEGMENT_DEFAULT_KEYS = frozenset(
 
 
 def default_video_generation_params(
-    *identifiers: Optional[str], fallback: tuple[int, float] = (40, 4.0)
+    *identifiers: Optional[str],
+    fallback: tuple[int, float] = (40, 4.0),
+    family: Optional[str] = None,
 ) -> tuple[int, float]:
     """Default ``(steps, guidance)`` for a loaded video model; the first identifier
     naming a known variant wins, so a GGUF filename ('...distilled...Q4_K_M.gguf')
     beats the family base repo. ``fallback`` is used when no identifier names a variant --
     callers pass the resolved family's own default so a Wan model loaded from an opaque local
     path under an explicit family_override still gets 50/5.0, not the hardcoded LTX 40/4.0."""
+    if family == LTX25_FAMILY:
+        # The generic table's "ltx" key is the LTX-2 dev recipe, and 2.5's Diffusers pack names no variant at all.
+        return LTX25_DEV_DEFAULTS if ltx25_is_dev(*identifiers) else LTX25_DISTILLED_DEFAULTS
     variant = video_generation_variant(*identifiers)
     for key, steps, guidance in _VIDEO_GENERATION_DEFAULTS:
         if key == variant:
             return steps, guidance
     return fallback
+
+
+# LTX-2.5 defaults: distilled = the reference two-stage recipe's 8 stage-1 sigmas at CFG 1; dev = the diffusers pipeline's
+# SFT recipe (30 steps, CFG 3).
+LTX25_DISTILLED_DEFAULTS: tuple[int, float] = (8, 1.0)
+LTX25_DEV_DEFAULTS: tuple[int, float] = (30, 3.0)
+_LTX25_DEV = re.compile(r"(?<![a-z0-9])(?:dev|full|sft)(?![a-z0-9])|transformer_full")
+_LTX25_DISTILLED = re.compile(r"(?<![a-z0-9])distill")
+
+
+def ltx25_is_dev(*identifiers: Optional[str]) -> bool:
+    """The first identifier naming a variant decides (selected file before repo); unnamed means distilled, which is
+    what the Diffusers pack's default ``transformer/`` and the reference workflow ship."""
+    for identifier in identifiers:
+        leaf = _ltx_leaf(identifier).lower()
+        if _LTX25_DISTILLED.search(leaf):
+            return False
+        if _LTX25_DEV.search(leaf):
+            return True
+    return False
 
 
 def video_generation_variant(*identifiers: Optional[str]) -> Optional[str]:

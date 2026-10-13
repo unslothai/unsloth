@@ -71,10 +71,13 @@ function userTexts(
     .filter((message) => message?.role === "user")
     .map((message) => messageText(message.content));
 }
+import { endBrowserAgentRun } from "@/features/browser/agent/agent-store";
+import { browserAgentToolsForTurn } from "@/features/browser/agent/tools";
 import { projectHasSources } from "@/features/rag/api/rag-api";
 import {
   IMAGE_SENTINEL_TOOLS,
   SANDBOX_FILE_TOOLS,
+  SANDBOX_RUN_TOOLS,
   extractCreatedFiles,
   isSandboxFileList,
   isSandboxToolResult,
@@ -2303,12 +2306,14 @@ export async function buildLocalTokenCountExtras(
     codeToolsEnabled,
     userTexts(messages),
   );
+  const browserTools = browserAgentToolsForTurn();
   if (
     !toolsEnabled &&
     !codeToolsEnabled &&
     !mcpEnabledForChat &&
     !ragOn &&
     !deepResearchEnabled &&
+    browserTools.length === 0 &&
     skillTools.length === 0
   ) {
     // Explicit false, not omission: the server defaults tools on. The permission level rides
@@ -2340,6 +2345,7 @@ export async function buildLocalTokenCountExtras(
       ...(codeToolsEnabled ? ["python", "terminal", "edit_file", "view_image"] : []),
       // match the request gate so token pricing includes only sent skill tools.
       ...skillTools,
+      ...browserTools,
     ],
     mcp_enabled: mcpEnabledForChat,
     // Top level, not inside rag_scope: an archived thread puts search_conversation and its
@@ -4968,6 +4974,7 @@ export function createOpenAIStreamAdapter(
         runtime.deepResearchEnabled &&
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
+      const browserTools = browserAgentToolsForTurn();
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane AND thread; the
       // reader has only threadListItem.remoteId.
@@ -6828,6 +6835,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
+                browserTools.length > 0 ||
                 // Armed research needs Studio's loop: deep_research is appended past every tool filter, but
                 // only for a request that asked for the loop at all.
                 deepResearchArmed)
@@ -6840,6 +6848,7 @@ export function createOpenAIStreamAdapter(
                       ...(toolsEnabled ? ["web_search"] : []),
                       ...skillTools,
                       ...studioLocalCodeTools,
+                      ...browserTools,
                       // Hosted tools with no local stand-in; their pills stay lit regardless, so listing only local
                       // names dropped Images/Fetch whenever another tool selected this branch. Search is excluded
                       // (Unsloth runs it above); Code rides along only when it resolved to the provider's sandbox.
@@ -6866,7 +6875,8 @@ export function createOpenAIStreamAdapter(
                     auto_heal_tool_calls: runtime.autoHealToolCalls,
                     // false, not omitted: omission follows UNSLOTH_TOOL_CALL_NUDGE, which the
                     // launchers set to 1 when unset, so this loop would keep nudging (#9686, #9125).
-                    nudge_tool_calls: false,
+                    // Browser use is the exception: a step announced and not taken ends the task.
+                    nudge_tool_calls: browserTools.length > 0 ? runtime.nudgeToolCalls : false,
                     deduplicate_tool_calls: runtime.deduplicateToolCalls,
                     // This branch runs the tools here, so say so by name: enabled_tools ["web_search"] is
                     // byte-identical to an older bundle's hosted search.
@@ -7056,6 +7066,7 @@ export function createOpenAIStreamAdapter(
                 ragEnabled ||
                 projectRagEnabled ||
                 skillTools.length > 0 ||
+                browserTools.length > 0 ||
                 deepResearchArmed)
               ? {
                   enable_tools: true,
@@ -7069,6 +7080,7 @@ export function createOpenAIStreamAdapter(
                     ...(codeToolsEnabled
                       ? ["python", "terminal", "edit_file", "view_image"]
                       : []),
+                    ...browserTools,
                   ],
                   mcp_enabled: mcpEnabledForChat,
                   // Scope: thread_id = this thread's docs, kb_id = a KB, project_id = the thread's project
@@ -7556,6 +7568,40 @@ export function createOpenAIStreamAdapter(
                   };
                   continue;
                 }
+                if (toolEvent.type === "tool_output" && toolEvent.browser_action) {
+                  // A browser tool asking this tab to act; it answers on its own request, so the stream never waits.
+                  const request = toolEvent.browser_action;
+                  const userText = userTexts(survivingMessages).join("\n");
+                  void import("@/features/browser/agent/executor").then(
+                    ({ parseBrowserAction, runBrowserAction }) => {
+                      const action = parseBrowserAction(request);
+                      if (action) {
+                        void runBrowserAction(action, {
+                          runKey: cancelId,
+                          // Resolved per action: a first turn is re-keyed from "__default" to its id.
+                          scope: liveThreadKey(serverCancel),
+                          userText,
+                          signal: runSignal,
+                        });
+                      }
+                    },
+                    // A stale chunk after an update: answer now rather than leave the tool waiting.
+                    () => {
+                      const raw = (request ?? {}) as Record<string, unknown>;
+                      if (typeof raw.id !== "string") return;
+                      void authFetch("/api/inference/browser-action-result", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action_id: raw.id,
+                          session_id: typeof raw.session_id === "string" ? raw.session_id : "",
+                          result: { ok: false, error: "the browser panel could not load; ask the user to reload Studio." },
+                        }),
+                      }).catch(() => undefined);
+                    },
+                  );
+                  continue;
+                }
                 if (toolEvent.type === "tool_output") {
                   // Incremental stdout from a running tool: append to the live store so the card renders it.
                   // The final result arrives via tool_end.
@@ -7829,7 +7875,7 @@ export function createOpenAIStreamAdapter(
                       }
                     } else if (
                       createdFiles.length > 0 ||
-                      SANDBOX_FILE_TOOLS.has(toolCallParts[idx].toolName ?? "")
+                      SANDBOX_RUN_TOOLS.has(toolCallParts[idx].toolName ?? "")
                     ) {
                       // Structured even with neither files nor images, because the session is the only record of
                       // WHERE this call ran: _created_file_sentinels emits nothing when a concurrent call shared
@@ -9160,6 +9206,7 @@ export function createOpenAIStreamAdapter(
         // serverCancel narrows both clears: runs with no resolved thread id share the "__default" key.
         runtime.setThreadRunning(cleanupKey, false, { owner: serverCancel });
         runtime.clearThreadServerCancel(cleanupKey, serverCancel);
+        if (browserTools.length > 0) endBrowserAgentRun(cancelId);
       }
     },
   } satisfies ChatModelAdapter;

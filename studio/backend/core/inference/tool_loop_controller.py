@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any, Collection, Literal, Mapping, Sequence
 from urllib.parse import urlparse
 
+from core.inference.browser_agent import BROWSER_TOOL_NAMES
 from core.inference.llama_tool_schema import unrelaxed
 from core.inference.mcp_images import is_image_tool, split_images as split_mcp_images
 
@@ -978,6 +979,8 @@ def _strip_rag_sources_sentinel(result: str) -> str:
 # Only these emit the file envelope, and only their output is defused first. An MCP tool or a fetched page ending in a
 # well-formed __FILES__ line is content, not an envelope, and stripping it would take that line away from the model.
 _SANDBOX_TOOLS = frozenset({"python", "terminal"})
+# edit_file emits it too, for a file it created.
+_FILE_SENTINEL_TOOLS = _SANDBOX_TOOLS | {"edit_file"}
 
 # Only an MCP result can carry the UI envelope; mcp_client defuses tool-written ones.
 _MCP_TOOL_PREFIX = "mcp__"
@@ -1046,7 +1049,7 @@ def strip_result_for_model(
     # After the image strip, which leaves the UI envelope as the tail.
     if tool_name is None or tool_name.startswith(_MCP_TOOL_PREFIX):
         result = _strip_mcp_ui_suffix(result)
-    if tool_name is None or tool_name in _SANDBOX_TOOLS:
+    if tool_name is None or tool_name in _FILE_SENTINEL_TOOLS:
         result = _strip_files_sentinel(result)
     if tool_name is None or tool_name in _IMAGE_SENTINEL_TOOLS:
         result = _strip_images_sentinel(result)
@@ -1247,7 +1250,13 @@ class ToolLoopController:
         elif self._restrict_to_allowed and tool_name not in self._allowed_tool_names:
             action = "disabled"
             noop = _noop_result("disabled", tool_name)
-        elif self._deduplicate_tool_calls and key in self._successful_keys:
+        elif (
+            self._deduplicate_tool_calls
+            and key in self._successful_keys
+            and tool_name not in BROWSER_TOOL_NAMES
+        ):
+            # Not the browser tools: each acts on or reads the page as it is now, so a second
+            # scroll down or a snapshot after a click is new work, and two such no-ops ended the turn.
             action = "duplicate"
             noop = _noop_result("duplicate", tool_name)
 

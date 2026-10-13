@@ -275,7 +275,7 @@ export function FindInPage({ enabled = true }: { enabled?: boolean }) {
         typeof origin.focus === "function" &&
         (active === null || active === document.body)
       ) {
-        origin.focus();
+        origin.focus({ preventScroll: true });
       }
     });
   }, []);

@@ -868,6 +868,12 @@ async def lifespan(app: FastAPI):
             _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
     try:
+        from hub.services.models.local_inventory import register_launch_scan_folders
+        _run_as(_owner_account, register_launch_scan_folders)
+    except Exception as exc:
+        _lifespan_log.warning("--models-dir registration failed at startup: %s", exc)
+
+    try:
         # The boot pass above only settles runs orphaned by the previous process. A run that wedges while this one
         # keeps serving needs the same reconciliation on an interval, bounded to runs whose progress lease has
         # expired.
@@ -1433,10 +1439,10 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
-# RAG document uploads (knowledge base, thread, project): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
+# RAG document uploads (knowledge base, thread, project, extract-text): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
 # spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
 _RAG_DOCUMENT_UPLOAD_RE = _re.compile(
-    r"^/api/rag/(?:knowledge-bases|threads|projects)/[^/]+/documents/?$"
+    r"^/api/rag/(?:(?:knowledge-bases|threads|projects)/[^/]+/documents|extract-text)/?$"
 )
 # One file into a chat's sandbox folder (multipart, capped by the route), on both mounts of the router.
 _SANDBOX_UPLOAD_RE = _re.compile(r"^/(?:api/inference|v1)/sandbox/[^/]+/upload/?$")
@@ -2290,12 +2296,27 @@ async def desktop_shutdown_server(request: Request):
     return _schedule_shutdown(request)
 
 
+_shutdown_thread_lock = threading.Lock()
+
+
 def _schedule_shutdown(request: Request) -> dict:
     async def _delayed_shutdown():
         await asyncio.sleep(0.2)  # Let the HTTP response return first
         trigger = getattr(request.app.state, "trigger_shutdown", None)
         if trigger is not None:
-            trigger()
+            # On its own thread, like the signal path: the cleanup waits seconds on subprocesses
+            # (llama-server alone up to 5 s SIGTERM + 5 s SIGKILL), and run on this loop it kept
+            # uvicorn from closing the port until all of it was done. The main thread still waits
+            # for it (_shutdown_event) before the process exits. One cleanup per launch: keyed by
+            # the trigger, since an embedded host's next run_server() installs a new one.
+            with _shutdown_thread_lock:
+                state = request.app.state
+                if getattr(state, "_shutdown_trigger", None) is not trigger:
+                    state._shutdown_trigger = trigger
+                    state._shutdown_thread = threading.Thread(
+                        target = trigger, name = "studio-shutdown"
+                    )
+                    state._shutdown_thread.start()
         else:
             # Fallback when not launched via run_server() (e.g. direct uvicorn)
             import signal

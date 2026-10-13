@@ -40,6 +40,7 @@ from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
 from .context_window import _RESULT_NOTICE_RESERVE, compaction_receipt_field
+from .browser_agent import BROWSER_TOOL_NAMES, execute_browser_tool, is_browser_tool
 
 # The window of the model THIS request is served by, set by execute_tool for the call's duration. Left unset it falls
 # back to the process-global probe, which is wrong for an external-provider request: that runs Unsloth's tool loop
@@ -7277,6 +7278,9 @@ _ALWAYS_SAFE_TOOLS = frozenset(
         "deep_research",
         "mcp_tool_schema",
         "view_image",
+        # Gated in the chat tab instead, which knows what each ref on the live page is: submits,
+        # purchases, sign-ins and new sites ask there, in every permission mode.
+        *BROWSER_TOOL_NAMES,
     }
 )
 
@@ -12510,6 +12514,28 @@ def _edit_file_replace_all(value: object) -> "bool | None":
     return None
 
 
+def _edit_file_created_sentinel(target: str, workdir: str) -> str:
+    """The ``__FILES__`` row for a file edit_file just created, so its card offers the download
+    python and terminal cards do. Only files the download route can serve: inside the workdir,
+    within its depth, every segment servable. Edits are not reported; the creating call's row
+    already downloads the current bytes."""
+    try:
+        root = os.path.realpath(workdir)
+        relative = os.path.relpath(target, root)
+        size = os.stat(target).st_size
+    except (OSError, ValueError):
+        return ""
+    parts = relative.split(os.sep)
+    if (
+        parts[0] == os.pardir
+        or os.path.isabs(relative)
+        or len(_user_path_parts(parts, root)) > _MAX_SANDBOX_PATH_SEGMENTS
+        or not all(_servable_segment(part) for part in parts)
+    ):
+        return ""
+    return "\n__FILES__:" + json.dumps([{"name": "/".join(parts), "size": size}])
+
+
 def _edit_file_create(
     target: str,
     new: str,
@@ -12766,7 +12792,18 @@ def _edit_file(
     session_id: "str | None" = None,
     disable_sandbox: bool = False,
 ) -> str:
-    """Replace exact strings in a file. See the notes above."""
+    """Replace exact strings in a file. See the notes above. The receipt can echo a model-chosen name, so it is
+    defused before the files row of a created file is appended."""
+    created: "list[str]" = []
+    text = _defuse_sentinels(_edit_file_apply(arguments, session_id, disable_sandbox, created))
+    if session_id and created:
+        text += _edit_file_created_sentinel(created[0], _get_workdir(session_id))
+    return text
+
+
+def _edit_file_apply(
+    arguments: dict, session_id: "str | None", disable_sandbox: bool, created: "list[str]"
+) -> str:
     # The receipt echoes a window of the file back, so an edit is a read, and Bypass Permissions
     # lifts the containment that would otherwise keep it out.
     if _references_studio_credential(str(arguments.get("path") or "")):
@@ -12795,13 +12832,16 @@ def _edit_file(
                 f"combined with the other {len(edits) - 1} edit(s). Create the file "
                 "in one call, then edit it in the next."
             )
-        return _edit_file_create(
+        result = _edit_file_create(
             target,
             edits[0][1],
             name,
             "\n",
             workdir = None if disable_sandbox else _get_workdir(session_id),
         )
+        if result.startswith("Created "):
+            created.append(target)
+        return result
     for index, (old, new, _) in enumerate(edits, 1):
         if not old:
             return (
@@ -14194,6 +14234,16 @@ def execute_tool(
     effective_timeout = (
         timeout if timeout is None or isinstance(timeout, (int, float)) else _EXEC_TIMEOUT
     )
+    if is_browser_tool(name):
+        return execute_browser_tool(
+            name,
+            arguments,
+            cancel_event = cancel_event,
+            output_callback = output_callback,
+            session_id = session_id,
+            website_policy = website_policy,
+            timeout = effective_timeout,
+        )
     if name == "create_skill":
         from .skills import SkillError, create_skill
 
@@ -21511,6 +21561,14 @@ _DIR_FD_WRITES = (
 )
 
 
+# A tool sharing the directory can swap an in-flight temp name for a symlink. Linking must not follow it, or the
+# backend hard-links the symlink's target (any host file it can read) into the sandbox. Windows hard links never
+# follow a symlink source, and os.link there takes no such flag.
+_LINK_NOFOLLOW = (
+    {"follow_symlinks": False} if os.link in getattr(os, "supports_follow_symlinks", set()) else {}
+)
+
+
 def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
     """Write one spill into ``target_dir``, without following a link at any point.
 
@@ -21545,7 +21603,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             ) as handle:
                 handle.write(body)
             installed = os.path.join(target_dir, name)
-            os.link(tmp, installed)
+            os.link(tmp, installed, **_LINK_NOFOLLOW)
             _quiet_unlink(tmp)
             return _spill_stamp(installed)
         except OSError:
@@ -21562,7 +21620,7 @@ def _write_spill_file(target_dir: str, name: str, body: str) -> "str | None":
             handle.write(body)
         # `os.link` rather than a rename: rename replaces the destination silently on POSIX, and the name may have
         # been taken since the caller looked. link fails with EEXIST instead, which is the answer this wants.
-        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd)
+        os.link(tmp_name, name, src_dir_fd = dir_fd, dst_dir_fd = dir_fd, **_LINK_NOFOLLOW)
         _quiet_unlink(tmp_name, dir_fd = dir_fd)
         # Through the same descriptor, so it is the file just linked rather than whatever the name resolves to by the
         # time this returns.
@@ -21688,7 +21746,7 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
             ):
                 shutil.copyfileobj(src, out, 1 << 20)
             with contextlib.suppress(FileExistsError):
-                os.link(tmp, os.path.join(target, name))
+                os.link(tmp, os.path.join(target, name), **_LINK_NOFOLLOW)
         finally:
             _quiet_unlink(tmp)
         return
@@ -21708,7 +21766,7 @@ def _install_attachment_copy(workdir: str, relative: str, source: Path) -> None:
             ):
                 shutil.copyfileobj(src, out, 1 << 20)
             with contextlib.suppress(FileExistsError):
-                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1])
+                os.link(tmp, name, src_dir_fd = fds[-1], dst_dir_fd = fds[-1], **_LINK_NOFOLLOW)
         finally:
             _quiet_unlink(tmp, dir_fd = fds[-1])
     finally:
@@ -21784,7 +21842,7 @@ def _install_upload(workdir: str, name: str, chunks: "Iterable[bytes]", overwrit
         if not existed:
             try:
                 # link, not rename: it fails when a tool took the name since the check.
-                os.link(tmp, dest, **pair)
+                os.link(tmp, dest, **pair, **_LINK_NOFOLLOW)
                 return False
             except FileExistsError:
                 if not overwrite:
@@ -22186,7 +22244,7 @@ def _restore_pruned_path(private: str, path: str) -> None:
     last resort is to leave the data under the private name and say where it went, rather than
     unlink it."""
     try:
-        os.link(private, path)
+        os.link(private, path, **_LINK_NOFOLLOW)
         _quiet_unlink(private)
         return
     except OSError:
@@ -22586,6 +22644,16 @@ def _defuse_sentinels(text: str) -> str:
 _MAX_SNAPSHOT_HASH_BYTES = 64 * 1024 * 1024
 
 
+# Dependency and bytecode trees. Walked early, their thousands of files spent the walk's budget and a file the call
+# wrote beside them got no download row.
+_SNAPSHOT_SKIP_DIRS = frozenset({"node_modules", "__pycache__"})
+
+
+def _snapshot_skips_dir(base: str, name: str) -> bool:
+    """`node_modules`, `__pycache__`, or a virtualenv (marked by its pyvenv.cfg, whatever it is named)."""
+    return name in _SNAPSHOT_SKIP_DIRS or os.path.isfile(os.path.join(base, name, "pyvenv.cfg"))
+
+
 def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
     """relative path -> change key for every regular file, for the post-run diff. All files, not
     just images: a .csv the model wrote used to be invisible. Size rides along with mtime because
@@ -22616,6 +22684,7 @@ def _snapshot_workdir_files(workdir: str | None) -> "dict[str, tuple]":
                 for d in dirs
                 if (not d.startswith(".") or (base == workdir and d == _ATTACHMENTS_DIR))
                 and _servable_segment(d)
+                and not _snapshot_skips_dir(base, d)
             ]
         )
         for name in names:

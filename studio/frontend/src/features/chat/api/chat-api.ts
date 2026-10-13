@@ -1114,6 +1114,8 @@ export async function saveChatThread(
 export interface UpdateChatThreadOptions {
   /** Apply only while the row still holds this title, else 409. */
   expectedTitle?: string;
+  /** Regenerate a title without changing conversation recency. */
+  preserveTitleModifiedAt?: boolean;
   /** And only while this is still the thread's opening user message. */
   expectedOpeningMessageId?: string;
   /** Off for one update inside a bulk action, which announces itself once at the end. Every notification is a
@@ -1141,6 +1143,9 @@ export async function updateChatThread(
   const body: Record<string, unknown> = { ...patch };
   if (options.expectedTitle !== undefined) {
     body.expectedTitle = options.expectedTitle;
+  }
+  if (options.preserveTitleModifiedAt !== undefined) {
+    body.preserveTitleModifiedAt = options.preserveTitleModifiedAt;
   }
   if (options.expectedOpeningMessageId !== undefined) {
     body.expectedOpeningMessageId = options.expectedOpeningMessageId;
