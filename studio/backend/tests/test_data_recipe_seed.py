@@ -1443,8 +1443,8 @@ def test_seed_preview_file_follows_the_config_data_dir(monkeypatch, tmp_path):
     assert response.resolved_path == "datasets/org/repo/fr/train*.parquet"
 
 
-@pytest.mark.parametrize("outside", [True, False])
-def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch, tmp_path, outside):
+@pytest.mark.parametrize("case", ["outside", "own", "symlink", "malformed"])
+def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch, tmp_path, case):
     from core.training import account_jobs
 
     seed_route = _load_seed_route(monkeypatch, tmp_path)
@@ -1477,10 +1477,19 @@ def test_a_managed_account_inspects_only_hub_ids_or_its_own_folders(monkeypatch,
             allow_ambient_token = False,
         )
 
-    if outside:
+    refusals = {
+        "outside": (str(owner_rows), 403),
+        # Its sandbox can plant a link to the owner's file inside its own folder.
+        "symlink": (str(workspace / "linked"), 403),
+        "malformed": ("org/\x00repo", 400),
+    }
+    (workspace / "linked").mkdir()
+    (workspace / "linked" / "train.csv").symlink_to(owner_rows / "train.csv")
+    if case in refusals:
+        name, status = refusals[case]
         with pytest.raises(HTTPException) as refused:
-            inspect(str(owner_rows))
-        assert refused.value.status_code == 403
+            inspect(name)
+        assert refused.value.status_code == status
         assert read == []
     else:
         # A Hub id and a folder in the account's own workspace still preview.

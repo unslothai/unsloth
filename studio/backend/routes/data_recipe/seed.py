@@ -1098,6 +1098,21 @@ def _read_preview_rows_from_multi_files(
     )
 
 
+def _require_own_seed_source(dataset_name: str) -> None:
+    """load_dataset also takes a local directory and follows symlinks in it, so a managed account may
+    only name its own folder, and every entry under it must resolve inside its workspace too."""
+    if not managed_account():
+        return
+    try:
+        account_path(dataset_name, reference = True)
+        local = Path(dataset_name).expanduser()
+        if local.exists():
+            for entry in local.rglob("*") if local.is_dir() else (local,):
+                account_path(entry)
+    except (ValueError, RuntimeError, OSError) as exc:
+        raise HTTPException(status_code = 400, detail = "dataset_name is not a valid path") from exc
+
+
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
 def inspect_seed_dataset(
     payload: SeedInspectRequest, allow_ambient_token: bool = Depends(allow_ambient_hf_token)
@@ -1108,8 +1123,7 @@ def inspect_seed_dataset(
             status_code = 400,
             detail = "dataset_name must be a Hugging Face repo id like org/repo",
         )
-    # load_dataset also takes a local directory; a managed account may only name its own.
-    account_path(dataset_name, reference = True)
+    _require_own_seed_source(dataset_name)
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)
