@@ -35,6 +35,7 @@ test("a dotted file or project name is a search, not a host", () => {
   assert.equal(resolveAddress("docs.rs/serde", "duckduckgo"), "https://docs.rs/serde");
   assert.equal(resolveAddress("docs.python.org/3", "duckduckgo"), "https://docs.python.org/3");
   assert.equal(resolveAddress("github.com/ggml-org/llama.cpp", "duckduckgo"), "https://github.com/ggml-org/llama.cpp");
+  assert.equal(resolveAddress("build.ts:8443", "duckduckgo"), "https://build.ts:8443");
 });
 
 test("search engines' click-tracking hops are skipped, only to another web page", () => {
