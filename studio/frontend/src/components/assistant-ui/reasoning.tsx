@@ -598,7 +598,7 @@ function ReasoningTail({
             aria-hidden={true}
             className={cn(
               "size-3.5 shrink-0 transition-transform duration-200 ease-out",
-              expanded && "rotate-180",
+              !expanded && "-rotate-90",
             )}
           />
         </button>
