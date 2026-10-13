@@ -148,7 +148,7 @@ def gpu(home, monkeypatch):
     monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.CUDA)
     monkeypatch.setattr(torch_device_probe, "device_can_allocate", lambda device: True)
     # The real loader around a stand-in model; placing it only records where it would go.
-    state = SimpleNamespace(training = False, placed = [], on_build = None)
+    state = SimpleNamespace(training = False, placed = [], on_build = None, oom = False, closed = 0)
 
     def build(path, **kwargs):
         if state.on_build:
@@ -159,7 +159,24 @@ def gpu(home, monkeypatch):
         state.placed.append(device.type)
         agent.device = device
 
+    class Worker:
+        def __init__(self, root, checkpoint, device, cancelled):
+            build(root)
+            if cancelled():
+                raise laya_runtime.LayaWorkerError("A training run took the GPU while Laya loaded.")
+            state.placed.append(device)
+            self.device = device
+
+        def predict(self, decision_state, questions):
+            if state.oom:
+                self.device = "cpu"
+            return _answer(self, decision_state, questions)
+
+        def close(self):
+            state.closed += 1
+
     monkeypatch.setattr(laya_runtime, "_load_checkpoint", _REAL_LOAD)
+    monkeypatch.setattr(laya_runtime, "LayaWorker", Worker)
     monkeypatch.setattr(laya_runtime, "_load_laya", build)
     monkeypatch.setattr(laya_runtime, "_place", place)
     monkeypatch.setattr(laya_runtime, "_training_active", lambda: state.training)
@@ -182,6 +199,28 @@ def test_the_model_returns_to_the_gpu_after_training(home, client, gpu):
     assert _post(client).status_code == 200
     assert gpu.placed == ["cuda", "cpu", "cuda"]
     assert client.get("/api/settings/systemone").json()["loaded_device"] == "cuda"
+
+
+def test_a_gpu_worker_that_fell_back_to_cpu_reports_cpu(home, client, gpu):
+    assert _put(client, enabled = True, model = _fine_tune(home, "laya_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    assert client.get("/api/settings/systemone").json()["loaded_device"] == "cuda"
+    gpu.oom = True
+    assert _post(client).status_code == 200
+    assert client.get("/api/settings/systemone").json()["loaded_device"] == "cpu"
+    assert laya_runtime.status()["holds_gpu"]
+    gpu.training = True
+    assert _post(client).status_code == 200
+    assert gpu.closed == 1
+    assert gpu.placed == ["cuda", "cpu"]
+
+
+def test_shutdown_ends_a_gpu_worker(home, client, gpu):
+    assert _put(client, enabled = True, model = _fine_tune(home, "laya_served_1")).status_code == 200
+    assert _post(client).status_code == 200
+    laya_runtime.shutdown()
+    assert gpu.closed == 1
+    assert client.get("/api/settings/systemone").json()["loaded_device"] is None
 
 
 def test_training_takes_the_gpu_from_a_load_in_flight_or_a_model_it_missed(home, client, gpu):

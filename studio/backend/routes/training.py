@@ -2289,7 +2289,7 @@ async def start_training(
 
             try:
                 from core.systemone import laya_runtime
-                if laya_runtime.status()["device"] not in (None, "cpu"):
+                if laya_runtime.status()["holds_gpu"]:
                     logger.info("Unloading the Decision API model to free GPU memory for training")
                     laya_runtime.unload()
             except Exception as e:

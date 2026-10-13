@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .catalog import CHECKPOINTS, GGUF_COMPANIONS, LOCAL_NAME, MLX_COMPANIONS, Checkpoint
+from .laya_worker import LayaWorker, LayaWorkerError
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,6 @@ class Unavailable(Exception):
 def _device() -> str:
     from utils.systemone_settings import get_device as preferred_device
 
-    # CPU unless asked: a CUDA context opened in the backend process is never returned (see core.rag.embeddings._device).
     if preferred_device() != "gpu":
         return "cpu"
     from utils.hardware.hardware import DeviceType, get_device
@@ -861,6 +861,7 @@ def _evict(external: bool = False) -> None:
         _generation += 1
         _unloads += external
     _close(agent)
+    del agent
     _release_memory()
 
 
@@ -1038,6 +1039,28 @@ def _load_checkpoint(checkpoint: Checkpoint):
     # While training holds the GPU, a GPU model loads on CPU, as dictation does; see _misplaced.
     for_training = _training_active() and preferred_device() == "gpu"
     device = "cpu" if for_training else _device()
+    if device in ("cuda", "xpu"):
+        try:
+            agent = LayaWorker(root, checkpoint, device, cancelled = _training_active)
+            return agent, agent.device
+        except LayaWorkerError:
+            if not _training_active():
+                raise
+        device, for_training = "cpu", True
+    agent, placed = _build_laya(root, checkpoint, device, for_training)
+    if placed != "cpu" and _training_active():
+        del agent
+        _release_memory()
+        return _build_laya(root, checkpoint, "cpu", True)
+    return agent, placed
+
+
+def _build_laya(
+    root: Path,
+    checkpoint: Checkpoint,
+    device: str,
+    for_training: bool = False,
+):
     folder = root / checkpoint.subfolder if checkpoint.subfolder else root
     fp16_checkpoint = checkpoint.name in CHECKPOINTS or _stored_fp16(folder)
     if device == "mlx":
@@ -1051,9 +1074,6 @@ def _load_checkpoint(checkpoint: Checkpoint):
     agent = _load_laya(
         str(root), subfolder = checkpoint.subfolder, device = "cpu", embedding_dtype = weights
     )
-    # Training may have started while this built.
-    if device != "cpu" and _training_active():
-        device, for_training = "cpu", True
     _place(agent, torch.device(device), fp16_checkpoint)
     agent.__dict__["_unsloth_for_training"] = for_training
     return agent, str(agent.device.type)
@@ -1426,11 +1446,16 @@ def evict_for_gpu() -> None:
     _close(agent, release_gpu = False)
 
 
+def _holds_gpu() -> bool:
+    # A worker that fell back to CPU still holds its CUDA or XPU context until it ends.
+    return _device_name not in (None, "cpu") or isinstance(_agent, LayaWorker)
+
+
 def _misplaced() -> bool:
     # The resident model follows the same rule: off the GPU while training holds it, back on it after.
     if getattr(_agent, "_unsloth_for_training", False):
         return not _training_active()
-    return _device_name not in (None, "cpu") and _training_active()
+    return _holds_gpu() and _training_active()
 
 
 def _clef_blocked_by_training(checkpoint: Checkpoint) -> None:
@@ -2163,7 +2188,7 @@ def _decide(
     questions: dict[str, dict[str, Any]],
     images: list[str] | None = None,
 ) -> dict[str, Any]:
-    global _last_used
+    global _last_used, _device_name
     agent = _agent_for(checkpoint, LOAD_WAIT_S)
     if not _run_lock.acquire(timeout = RUN_WAIT_S):
         raise Unavailable(529, "overloaded", "System One is busy; retry shortly", retry_after = 1)
@@ -2190,9 +2215,16 @@ def _decide(
             return _decide_clef(checkpoint, agent, state, questions)
         laya_questions = {name: _to_laya(q) for name, q in questions.items()}
         try:
-            result, truncated = _predict(agent, state, laya_questions)
+            if isinstance(agent, LayaWorker):
+                result, truncated = agent.predict(state, laya_questions)
+                _device_name = agent.device
+            else:
+                result, truncated = _predict(agent, state, laya_questions)
         except ValueError as exc:
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
+        except LayaWorkerError as exc:
+            threading.Thread(target = _evict_agent, args = (agent,), daemon = True).start()
+            raise Unavailable(503, "model_unavailable", str(exc), retry_after = 5) from None
     finally:
         _run_lock.release()
     return {
@@ -2263,6 +2295,7 @@ def status() -> dict[str, Any]:
             # Laya never falls back, so a reason left by an earlier Clef is not its status.
             "fallback_reason": _fallback_reason if _loaded and _loaded.layout != "laya" else None,
             "device": _device_name,
+            "holds_gpu": _holds_gpu(),
             "loading_model": _loading.name if _loading else None,
             # Kept for the settings API: laya is vendored, so there is never an install in flight.
             "installing": False,
@@ -2288,12 +2321,14 @@ def unload() -> bool:
         _generation += 1
         _unloads += 1
     _close(agent)
+    # Dropped first, so an in-process MLX or MPS Laya is collected before the allocator caches are cleared.
+    del agent
     _release_memory()
     return was_loaded
 
 
 def shutdown() -> None:
-    """Studio shutdown: end a llama.cpp decision server (in-process models go with the process)."""
+    """Studio shutdown: end a llama.cpp decision server or Laya worker (in-process models go with the process)."""
     global _agent, _loaded, _device_name, _generation, _unloads
     with _state_lock:
         timer = _idle_timer
@@ -2301,7 +2336,7 @@ def shutdown() -> None:
         timer.cancel()
     with _run_lock:
         _unloads += 1
-        if not _is_native(_loaded):
+        if not _is_native(_loaded) and not isinstance(_agent, LayaWorker):
             return
         agent, _agent, _loaded, _device_name = _agent, None, None, None
         _generation += 1

@@ -278,6 +278,12 @@ from .diffusion_flow_shift import (
     pipe_sample_sigmas,
     sample_sigmas_for_steps,
 )
+from .diffusion_sampler import (
+    DEFAULT_SAMPLER,
+    apply_checkpoint_prediction_type,
+    build_scheduler,
+    sampler_options,
+)
 from .diffusion_single_file_converters import (
     CONVERTERS as _ORIGINAL_LAYOUT_CONVERTERS,
     load_original_layout_transformer,
@@ -809,60 +815,12 @@ def _layered_canvas(family: Any, size: tuple[int, int]) -> tuple[int, int]:
     return max(32, int(round(width / 32)) * 32), max(32, int(round(height / 32)) * 32)
 
 
-# Official non-unsloth pipeline bases: safetensors-only, no remote code, exact lowercased match
-_TRUSTED_NON_GGUF_REPOS = frozenset(
-    {
-        "stabilityai/stable-diffusion-xl-base-1.0",
-        "stabilityai/sdxl-turbo",
-        # Vendor safetensors-only bases: LoRA training bases + the BF16 artifact per group. FLUX.1 is Hub-gated;
-        # Qwen/Z-Image open.
-        "black-forest-labs/flux.1-dev",
-        "black-forest-labs/flux.1-schnell",
-        "black-forest-labs/flux.1-kontext-dev",
-        # Krea: guidance-distilled FLUX.1-dev finetune, same arch and gating; detected via "flux.1"
-        "black-forest-labs/flux.1-krea-dev",
-        # FLUX.2 LoRA training bases (dev gated, klein-4B open); reloaded as a pipeline by "Deploy to Create".
-        "black-forest-labs/flux.2-dev",
-        "black-forest-labs/flux.2-klein-4b",
-        # The other klein sizes and variants. One family covers both sizes and defaults to 4B, on the understanding
-        # that the real base comes from the base_model card tag. Leaving these out made that tag untrusted, so a
-        # klein-9B GGUF silently resolved to the 4B config and died in the GGUF quantizer with a bare shape mismatch.
-        "black-forest-labs/flux.2-klein-9b",
-        "black-forest-labs/flux.2-klein-base-4b",
-        "black-forest-labs/flux.2-klein-base-9b",
-        "tongyi-mai/z-image-turbo",
-        # The undistilled Z-Image: the base the upstream DreamBooth recipe trains on, and the base_model tag of
-        # unsloth/Z-Image-GGUF. Leaving it out made that tag untrusted, so the GGUF fell back to the Turbo companions
-        # and denoised on its shift 3.0 scheduler.
-        "tongyi-mai/z-image",
-        "qwen/qwen-image",
-        "qwen/qwen-image-2512",
-        "qwen/qwen-image-edit-2511",
-        "qwen/qwen-image-layered",
-        # Qwen-Image-2.1: the family's own base_repo, and a family whose base is not listed here is
-        # not a family at all. Detection resolves it, the version gate passes once the pinned main
-        # build is in, and then validate_load_request refuses it as a non-unsloth repo before the
-        # pipeline is ever built.
-        "qwen/qwen-image-2.1",
-        "qwen/qwen-image-2.1-turbo",
-        # Krea 2: assembled per-component. Turbo = inference; Raw = the LoRA training base.
-        "krea/krea-2-turbo",
-        "krea/krea-2-raw",
-        # Lumina Image 2.0: standard diffusers layout, generic from_pretrained path.
-        "alpha-vllm/lumina-image-2.0",
-        # HunyuanImage 2.1: open community diffusers mirror, safetensors-only.
-        "hunyuanvideo-community/hunyuanimage-2.1-diffusers",
-        # HiDream-I1: open MIT weights, all three variants one family; Llama TE from the unsloth mirror.
-        "hidream-ai/hidream-i1-full",
-        "hidream-ai/hidream-i1-dev",
-        "hidream-ai/hidream-i1-fast",
-        # Ideogram 4: no bf16 ships. -fp8 stores both DiTs as raw float8 (the family base); both nf4 repos are
-        # identical.
-        "ideogram-ai/ideogram-4-fp8",
-        "ideogram-ai/ideogram-4-nf4",
-        "ideogram-ai/ideogram-4-nf4-diffusers",
-    }
-)
+# Official non-unsloth bases allowed to load as full (non-GGUF) artifacts: safetensors-only, no remote code, exact
+# lowercased match. Derived from the registry rows (base_repo, variant / training bases, FamilyProfile.trusted_repos).
+from .diffusion_families import _FAMILIES as _IMAGE_REGISTRY  # noqa: E402
+from .family_profile import trusted_repo_ids as _trusted_repo_ids  # noqa: E402
+
+_TRUSTED_NON_GGUF_REPOS = _trusted_repo_ids(_IMAGE_REGISTRY)
 
 
 def _is_trusted_diffusion_repo(repo_id: str) -> bool:
@@ -5587,12 +5545,11 @@ class DiffusionBackend:
         pinned: tuple[str, ...] = (),
     ) -> Optional[int]:
         """A half load narrows only a file stored wider throughout (a mixed file pins its fp32 norms)."""
+        from .diffusion_component_sizes import read_safetensors_header
         try:
-            with open(path, "rb") as fh:
-                length = int.from_bytes(fh.read(8), "little")
-                if length > 100_000_000:
-                    return None
-                header = json.loads(fh.read(length))
+            header = read_safetensors_header(path, max_bytes = 100_000_000)
+            if header is None:
+                return None
             tensors = []
             for name, meta in header.items():
                 if name == "__metadata__" or not isinstance(meta, dict):
@@ -5935,10 +5892,11 @@ class DiffusionBackend:
     def _safetensors_param_count(path: Path) -> int:
         """Total tensor elements in a safetensors file, read from its JSON header without touching
         the tensor data. 0 on any read/parse failure."""
+        from .diffusion_component_sizes import read_safetensors_header
         try:
-            with open(path, "rb") as fh:
-                header_len = int.from_bytes(fh.read(8), "little")
-                header = json.loads(fh.read(header_len))
+            header = read_safetensors_header(path)
+            if header is None:
+                return 0
             total = 0
             for name, meta in header.items():
                 if name == "__metadata__" or not isinstance(meta, dict):
@@ -7409,6 +7367,8 @@ class DiffusionBackend:
                                 pipe = pipeline_cls.from_single_file(
                                     single_file_path, **sf_pipe_kwargs
                                 )
+                                # The base repo's scheduler is epsilon; a v-pred checkpoint says so only in its header.
+                                apply_checkpoint_prediction_type(pipe, single_file_path, logger)
                         else:
                             # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
                             sf_kwargs: dict[str, Any] = {
@@ -10489,6 +10449,8 @@ class DiffusionBackend:
         allow_oversized: bool = False,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
+        sampler: Optional[str] = None,
+        schedule_type: Optional[str] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -10521,6 +10483,7 @@ class DiffusionBackend:
                 self._gen = _GenState(total_steps = steps)
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
+            restore_scheduler: Optional[tuple[Any, Any]] = None
             restore_vae: Optional[Callable[[], None]] = None
             restore_resident: Optional[Callable[[], None]] = None
             bg = None
@@ -10779,6 +10742,14 @@ class DiffusionBackend:
                     # reconciles.
                     self._make_vae_encode_dtype_safe(pipe)
 
+                # getattr like the status poll: a pipeline without a scheduler offers no samplers, so the default
+                # request keeps it as is and any other sampler is refused by build_scheduler.
+                swapped, resolved_schedule = build_scheduler(
+                    getattr(pipe, "scheduler", None), sampler, schedule_type
+                )
+                if swapped is not None:
+                    restore_scheduler = (pipe, pipe.scheduler)
+                    pipe.scheduler = swapped
                 # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
                 call_params = inspect.signature(pipe.__call__).parameters
 
@@ -11363,6 +11334,10 @@ class DiffusionBackend:
                     "workflow": workflow,
                     "reference_resolution": ref_resolution,
                     "localized_edit": localized_edit.mode if localized_edit is not None else None,
+                    "sampler": sampler
+                    if swapped is not None and sampler != DEFAULT_SAMPLER
+                    else None,
+                    "schedule_type": resolved_schedule,
                 }
                 logger.info(
                     "diffusion.generated: %s",
@@ -11376,6 +11351,8 @@ class DiffusionBackend:
                 )
                 return result
             finally:
+                if restore_scheduler is not None:
+                    restore_scheduler[0].scheduler = restore_scheduler[1]
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 if static_skip_pipe is not None:
@@ -11675,6 +11652,7 @@ class DiffusionBackend:
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "supports_negative_prompt": state.family.uses_negative_prompt,
+            "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),
@@ -11969,14 +11947,9 @@ def _pipeline_components_from_index(
         if not isinstance(payload, dict):
             raise ValueError(f"{repo_id}/model_index.json is not an object")
         if explicit_components is None:
+            from .diffusion_component_sizes import manifest_entry_loaded
             selected = {
-                str(name)
-                for name, spec in payload.items()
-                if not str(name).startswith("_")
-                and isinstance(spec, (list, tuple))
-                and len(spec) >= 2
-                and spec[0] is not None
-                and spec[1] is not None
+                str(name) for name, spec in payload.items() if manifest_entry_loaded(name, spec)
             }
         else:
             selected = {str(name) for name in explicit_components}

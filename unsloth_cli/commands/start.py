@@ -132,6 +132,7 @@ _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
 _VIBE_PROVIDER = "unsloth-studio"
 _VIBE_MODEL_ALIAS = "unsloth"
@@ -451,20 +452,7 @@ _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_command() -> tuple[str, bool]:
-    resolved_v2 = _which_with_install_dirs("opencode2")
-    if resolved_v2:
-        return resolved_v2, True
-    return "opencode", False
-
-
-def _opencode_supports_native_auto(command: str = "opencode") -> bool:
-    if Path(command).stem.lower() == "opencode2":
-        return True
-    executable = _which_with_install_dirs(command)
-    if executable is None:
-        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
-        return True
+def _opencode_version(executable: str) -> Optional[tuple[int, int, int]]:
     try:
         output = subprocess.check_output(
             [executable, "--version"],
@@ -476,11 +464,30 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
             env = _probe_env(),
         )
     except Exception:
-        return False
+        return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
-    return bool(match) and tuple(int(part) for part in match.groups()) >= (
-        _OPENCODE_NATIVE_AUTO_MIN_VERSION
-    )
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _opencode_command() -> tuple[str, bool]:
+    resolved_v2 = _which_with_install_dirs("opencode2")
+    if resolved_v2:
+        return resolved_v2, True
+    # Distro packages (Arch extra, opencode-beta) ship V2 as plain `opencode`, which rejects V1's --model flag.
+    resolved = _which_with_install_dirs("opencode")
+    version = _opencode_version(resolved) if resolved else None
+    return "opencode", bool(version) and version[0] >= 2
+
+
+def _opencode_supports_native_auto(command: str = "opencode") -> bool:
+    if Path(command).stem.lower() == "opencode2":
+        return True
+    executable = _which_with_install_dirs(command)
+    if executable is None:
+        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
+        return True
+    version = _opencode_version(executable)
+    return bool(version) and version >= _OPENCODE_NATIVE_AUTO_MIN_VERSION
 
 
 def _opencode_subcommand(args: list[str]) -> tuple[Optional[str], Optional[int]]:
@@ -3058,6 +3065,10 @@ def _claude_local_env(
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+        # claude reserves min(max output, 20k) + 13k before compacting, so its 32k default output leaves a 32k window nothing; above 20k the cap gains no room.
+        output = opencode_output_limit(int(window))
+        if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(output)
     if extra_body:
         env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(extra_body)
     return env
@@ -6767,7 +6778,9 @@ def opencode(
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
         route_native_auto = (
-            yolo and _opencode_supports_native_auto(command_name) and (launch or bool(ctx.args))
+            yolo
+            and (opencode_v2 or _opencode_supports_native_auto(command_name))
+            and (launch or bool(ctx.args))
         )
         opencode_args = list(ctx.args)
         if opencode_v2:
@@ -6819,7 +6832,7 @@ def opencode(
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
     # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag. Only add --model for an interactive bare launch, as a convenience so the TUI opens on our model: it is omitted for passthrough, where inserting it before a subcommand can be misparsed, and for --no-launch, where the printed command is consumed by drivers that append a subcommand such as `run <prompt>` and a leading --model would land before it. Those paths rely on the inline pin instead.
     native_auto = False
-    route_native_auto = yolo and _opencode_supports_native_auto(command_name)
+    route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
         opencode_args = list(ctx.args)
         if opencode_v2:

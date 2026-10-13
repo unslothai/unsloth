@@ -84,6 +84,130 @@ def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     return {} if load_in_4bit else {"load_in_4bit": False}
 
 
+_OFFLOAD_FIT_FRACTION = 0.9
+
+
+def _loader_repo(path: str, load_in_4bit: bool) -> str:
+    """The repo Unsloth's mapper will load for `path`, else `path`."""
+    try:
+        from unsloth.models import loader, loader_utils
+
+        if not loader.ALLOW_BITSANDBYTES:
+            load_in_4bit = False
+        tables = (
+            loader_utils.FLOAT_TO_INT_MAPPER,
+            loader_utils.INT_TO_FLOAT_MAPPER,
+            loader_utils.MAP_TO_UNSLOTH_16bit,
+        )
+        # Unknown names would fetch the remote mapper.
+        name = path.lower()
+        if name in loader_utils.BAD_MAPPINGS or not any(name in t for t in tables):
+            return path
+        return loader_utils.get_model_name(path, load_in_4bit = load_in_4bit) or path
+    except Exception:
+        return path
+
+
+def _complete_local_safetensors_bytes(folder: Path) -> Optional[int]:
+    """None while a shard the index names is missing (interrupted download)."""
+    try:
+        index = folder / "model.safetensors.index.json"
+        if index.is_file():
+            shards = set(json.loads(index.read_text(encoding = "utf-8"))["weight_map"].values())
+            files = [folder / shard for shard in shards]
+            if not all(f.is_file() for f in files):
+                return None
+        else:
+            files = list(folder.glob("*.safetensors"))
+        return sum(f.stat().st_size for f in files) or None
+    except Exception:
+        return None
+
+
+def _checkpoint_bytes(name: str, hf_token = None) -> Optional[int]:
+    folder = Path(name)
+    if not folder.is_dir():
+        try:
+            from huggingface_hub import snapshot_download
+            folder = Path(snapshot_download(name, local_files_only = True, allow_patterns = ["*.json"]))
+        except Exception:
+            folder = None
+    if folder is not None:
+        local = _complete_local_safetensors_bytes(folder)
+        if local:
+            return local
+    if Path(name).is_dir():
+        return None
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(name, token = hf_token, files_metadata = True)
+        total = sum(
+            s.size or 0
+            for s in info.siblings or ()
+            if s.rfilename.endswith(".safetensors") and "/" not in s.rfilename
+        )
+        return total or None
+    except Exception:
+        return None
+
+
+def _offload_kwargs_for_fit(
+    name: str,
+    device_map,
+    load_in_4bit: bool,
+    hf_token = None,
+    mapped: bool = True,
+) -> dict:
+    """Gemma 4 E2B 4-bit is 8.1 GB on an 8 GB card (#13388); "auto" still loads it all onto the GPU if it fits."""
+    # "sequential" over several visible cards pools them; "auto" would plan for one.
+    if device_map != "sequential" or not torch.cuda.is_available():
+        return {}
+    try:
+        if torch.cuda.device_count() != 1:
+            return {}
+        free = torch.cuda.mem_get_info(0)[0]
+    except Exception:
+        return {}
+    # mapped = False: use_exact_model_name reads `name` verbatim.
+    size = _checkpoint_bytes(_loader_repo(name, load_in_4bit) if mapped else name, hf_token)
+    if not size or size < _OFFLOAD_FIT_FRACTION * free:
+        return {}
+    logger.info(
+        f"Checkpoint is {size / 2**30:.2f} GiB with {free / 2**30:.2f} GiB free; loading with offload_layers='auto'"
+    )
+    return {"offload_layers": "auto"}
+
+
+def _load_with_offload_fallback(load, **kwargs):
+    """A single-GPU load the size check missed that spills to the CPU: free it, retry with offload_layers = "auto"."""
+    try:
+        return load(**kwargs)
+    except ValueError as e:
+        text = str(e)
+        spilled = "does not fit in GPU memory" in text or text.startswith(
+            "Some modules are dispatched on the CPU or the disk"
+        )
+        if (
+            not spilled
+            or "offload_layers" in kwargs
+            or kwargs.get("device_map") != "sequential"
+            or not torch.cuda.is_available()
+            or torch.cuda.device_count() != 1
+        ):
+            raise
+    # After the except block: its traceback's frames held the half-built model.
+    import gc
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    logger.info(
+        f"Model did not fit in GPU memory; retrying with offload_layers='auto' "
+        f"({torch.cuda.memory_allocated() / 2**30:.2f} GiB still allocated)"
+    )
+    return load(offload_layers = "auto", **kwargs)
+
+
 def _hf_token_for_loader(hf_token: Optional[str] | bool) -> Optional[str] | bool:
     if hf_token is False:
         return False
@@ -900,8 +1024,33 @@ class InferenceBackend:
             exact_model_name = _exact_model_name_for_load(config, load_in_4bit)
             use_exact_model_name = exact_model_name is not None
             load_path = exact_model_name or config.path
-            if config.is_vision:
-                model, processor = FastVisionModel.from_pretrained(
+            from utils.models.diffusion_lm import (
+                diffusion_lm_profile_for_model,
+                loaded_diffusion_profile,
+            )
+
+            diffusion_lm_profile = diffusion_lm_profile_for_model(
+                load_path, hf_token = _hf_token_for_loader(hf_token)
+            )
+            if not diffusion_lm_profile and config.is_lora and config.base_model:
+                # A Hub LoRA has no config.json: classify its base before the vision branch claims DiffusionGemma.
+                diffusion_lm_profile = diffusion_lm_profile_for_model(
+                    config.base_model, hf_token = _hf_token_for_loader(hf_token)
+                )
+            # A LoRA loads its base model.
+            offload_kwargs = _offload_kwargs_for_fit(
+                config.base_model if config.is_lora and config.base_model else load_path,
+                device_map,
+                load_in_4bit,
+                _hf_token_for_loader(hf_token),
+                mapped = not use_exact_model_name,
+            )
+            if diffusion_lm_profile:
+                # Text-diffusion LMs (LLaDA, Dream, DiffusionGemma, ...) decode with their own sampler,
+                # never left-to-right generate(); DiffusionGemma's vision tower is not used here.
+                from unsloth import FastModel
+
+                model, tokenizer = FastModel.from_pretrained(
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
@@ -910,6 +1059,36 @@ class InferenceBackend:
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                     use_exact_model_name = use_exact_model_name,
+                )
+                FastModel.for_inference(model)
+                loaded_profile = loaded_diffusion_profile(model)
+                if not loaded_profile:
+                    # As training does: an autoregressive load must never reach the diffusion sampler.
+                    raise RuntimeError(
+                        f"'{load_path}' is a text-diffusion model ({diffusion_lm_profile}), but the installed "
+                        "Unsloth loaded it as an ordinary model. Update with `unsloth studio update`."
+                    )
+                self.models[model_name]["diffusion_lm_profile"] = loaded_profile
+                self.models[model_name]["is_vision"] = False
+                self.models[model_name]["model"] = model
+                self.models[model_name]["tokenizer"] = tokenizer
+                logger.info(
+                    f"Loaded text-diffusion model for chat (profile: "
+                    f"{self.models[model_name]['diffusion_lm_profile']})"
+                )
+
+            elif config.is_vision:
+                model, processor = _load_with_offload_fallback(
+                    FastVisionModel.from_pretrained,
+                    model_name = load_path,
+                    max_seq_length = max_seq_length,
+                    dtype = dtype,
+                    **_load_in_4bit_kwargs(load_in_4bit),
+                    device_map = device_map,
+                    token = _hf_token_for_loader(hf_token),
+                    trust_remote_code = trust_remote_code,
+                    use_exact_model_name = use_exact_model_name,
+                    **offload_kwargs,
                 )
 
                 FastVisionModel.for_inference(model)
@@ -950,7 +1129,8 @@ class InferenceBackend:
                 self.models[model_name]["processor"] = processor
 
             else:
-                model, tokenizer = FastLanguageModel.from_pretrained(
+                model, tokenizer = _load_with_offload_fallback(
+                    FastLanguageModel.from_pretrained,
                     model_name = load_path,
                     max_seq_length = max_seq_length,
                     dtype = dtype,
@@ -959,12 +1139,19 @@ class InferenceBackend:
                     token = _hf_token_for_loader(hf_token),
                     trust_remote_code = trust_remote_code,
                     use_exact_model_name = use_exact_model_name,
+                    **offload_kwargs,
                 )
 
                 FastLanguageModel.for_inference(model)
 
                 self.models[model_name]["model"] = model
                 self.models[model_name]["tokenizer"] = tokenizer
+                # A Hub LoRA has no config.json for the probe above, but core still loads a diffusion base
+                # through its diffusion path: decode it with its sampler, never left-to-right.
+                loaded_profile = loaded_diffusion_profile(model)
+                if loaded_profile:
+                    self.models[model_name]["diffusion_lm_profile"] = loaded_profile
+                    logger.info(f"Loaded text-diffusion model for chat (profile: {loaded_profile})")
 
             raise_if_offloaded(self.models[model_name]["model"], device_map, "Inference")
             self.models[model_name]["context_length"] = runtime_context_length(
@@ -1428,6 +1615,22 @@ class InferenceBackend:
             raise RuntimeError("No active model")
 
         model_info = self.models[self.active_model_name]
+        if model_info.get("diffusion_lm_profile"):
+            template_messages = (
+                [{"role": "system", "content": system_prompt}] + messages
+                if system_prompt
+                else messages
+            )
+            yield from self._generate_diffusion_lm(
+                model_info,
+                messages = _without_image_parts(template_messages),
+                temperature = temperature,
+                max_new_tokens = max_new_tokens,
+                cancel_event = cancel_event,
+                _adapter_state = _adapter_state,
+                stop = stop,
+            )
+            return
         is_vision = model_info.get("is_vision", False)
         tokenizer = model_info.get("tokenizer") or model_info.get("processor")
         tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
@@ -2401,6 +2604,66 @@ class InferenceBackend:
                 )
                 yield cleaned
 
+    def _generate_diffusion_lm(
+        self,
+        model_info: dict,
+        prompt: Optional[str] = None,
+        messages: Optional[list] = None,
+        temperature: float = 0.0,
+        max_new_tokens: Optional[int] = 256,
+        cancel_event = None,
+        _adapter_state = None,
+        stop: Optional[list] = None,
+    ) -> Generator[str, None, None]:
+        """A text-diffusion LM fills a whole block at once, so the answer arrives as one completion: there is
+        no left-to-right token stream to forward. Holds the generation lock until the sampler returns, and
+        the sampler polls ``cancel_event`` between denoising steps."""
+        # No token stats come back from the sampler; a previous request's must not be reported for this one.
+        self.last_generation_stats = None
+        from utils.models.diffusion_lm import require_diffusion_api
+
+        if messages:
+            # Same choke point as the left-to-right renderer: role / turn markup inside message text is
+            # neutralised before the sampler renders the chat template.
+            from core.inference.chat_template_helpers import neutralize_for_render
+            tokenizer = model_info["tokenizer"]
+            messages, _, _ = neutralize_for_render(
+                getattr(tokenizer, "tokenizer", tokenizer), messages, None
+            )
+        generate_text = getattr(require_diffusion_api("FastDiffusionModel"), "generate_text", None)
+        if generate_text is None:
+            raise RuntimeError(
+                "Unsloth: chatting with a text-diffusion model needs a newer Unsloth "
+                "(FastDiffusionModel.generate_text). Update with `unsloth studio update`."
+            )
+        try:
+            from unsloth.models.diffusion_samplers import (
+                DiffusionGenerationCancelled as cancelled_error,
+            )
+        except ImportError:  # an older core: no cancellation error to catch
+            cancelled_error = ()
+        with self._generation_lock:
+            if _adapter_state is not None:
+                self._apply_adapter_state(_adapter_state)
+            try:
+                text = generate_text(
+                    model_info["model"],
+                    model_info["tokenizer"],
+                    prompt = prompt,
+                    messages = messages,
+                    max_new_tokens = int(max_new_tokens or 256),
+                    temperature = float(temperature or 0.0),
+                    stop_callback = (lambda: cancel_event is not None and cancel_event.is_set()),
+                )
+            except cancelled_error:
+                return
+        text = text or ""
+        for sequence in stop or ():
+            if sequence and sequence in text:
+                text = text[: text.index(sequence)]
+        if text and not (cancel_event is not None and cancel_event.is_set()):
+            yield text
+
     def generate_stream(
         self,
         prompt: str,
@@ -2436,6 +2699,17 @@ class InferenceBackend:
         self.last_generation_stats = None
 
         model_info = self.models[self.active_model_name]
+        if model_info.get("diffusion_lm_profile"):
+            yield from self._generate_diffusion_lm(
+                model_info,
+                prompt = prompt,
+                temperature = temperature,
+                max_new_tokens = max_new_tokens,
+                cancel_event = cancel_event,
+                _adapter_state = _adapter_state,
+                stop = stop,
+            )
+            return
         model = model_info["model"]
         # For VLMs the stored "tokenizer" is actually the processor. Unwrap to
         # the real tokenizer so TextIteratorStreamer's skip_prompt /

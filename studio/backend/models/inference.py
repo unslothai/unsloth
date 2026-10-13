@@ -2902,6 +2902,16 @@ class ChatCompletionRequest(BaseModel):
             "for checkpoint compaction. Unset keeps the process default."
         ),
     )
+    compact_context: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Compact now (Studio's /compact). A local GGUF or MLX chat starts "
+            "a checkpoint on this request even when it still fits: older turns are "
+            "archived and searchable, and the model keeps the newest turn plus standing "
+            "instructions until the chat outgrows the window again. Needs "
+            "context_overflow=truncate_oldest and a saved thread; otherwise ignored."
+        ),
+    )
     studio_tool_history: Optional[bool] = Field(
         None,
         description = (
@@ -2946,6 +2956,14 @@ class ChatCompletionRequest(BaseModel):
     thread_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
+    )
+    user_message_id: Optional[str] = Field(
+        None,
+        max_length = 256,
+        description = (
+            "[x-unsloth] The user message this turn answers. With thread_id it keys the chat's file "
+            "history, so /rewind can put back what this turn's tool calls changed."
+        ),
     )
     rag_scope: Optional[dict] = Field(
         None,
@@ -3666,6 +3684,7 @@ class ResponsesFunctionCallInputItem(BaseModel):
         description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
@@ -3867,8 +3886,16 @@ class ResponsesOutputFunctionCall(BaseModel):
     id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_namespace(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("namespace") is None:
+            data.pop("namespace", None)
+        return data
 
 
 class ResponsesOutputCustomToolCall(BaseModel):
@@ -4824,6 +4851,16 @@ class DiffusionGenerateRequest(BaseModel):
         "Omitted applies none and behaves exactly as before. Rejected with a clear message when "
         "the loaded model or its quantisation can't apply ControlNet.",
     )
+    sampler: Optional[Literal["default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_sde"]] = Field(
+        None,
+        description = "Sampler for this generation, one of the loaded model's status `samplers` ids. "
+        "Omitted or 'default' keeps the model's shipped scheduler.",
+    )
+    schedule_type: Optional[Literal["automatic", "uniform", "karras", "exponential"]] = Field(
+        None,
+        description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
+        "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
+    )
 
     @field_validator("loras")
     @classmethod
@@ -4991,6 +5028,12 @@ class GalleryImage(BaseModel):
     )
     localized_edit: Optional[str] = Field(
         None, description = "Localized edit convention used: annotate, paint or mask"
+    )
+    sampler: Optional[str] = Field(
+        None, description = "Sampler id the image ran with; null = the model's shipped scheduler"
+    )
+    schedule_type: Optional[str] = Field(
+        None, description = "Schedule type the sampler ran with (resolved); null = the config's"
     )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
@@ -5293,6 +5336,12 @@ class DiffusionStatusResponse(BaseModel):
         description = "Whether the loaded model applies a negative prompt on this engine "
         "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
         "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    samplers: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Samplers the loaded model can run, each {id, label, schedule_types}; the "
+        "first is 'default' (the shipped scheduler). Empty when there is no choice: flow-matching "
+        "models, the native and MLX engines, or nothing loaded.",
     )
     # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
