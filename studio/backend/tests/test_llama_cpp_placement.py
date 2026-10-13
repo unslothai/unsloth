@@ -1326,6 +1326,8 @@ def test_the_restored_slots_relaunch_at_their_own_context(tmp_path, refuses_unif
 
     assert [c[c.index("-c") + 1] for c in cmds] == ctxs
     assert backend._effective_context_length == int(ctxs[-1])
+    if not refuses_unified_kv:
+        assert backend._max_context_length == 8192
 
 
 def test_an_env_slot_count_does_not_block_the_cut(tmp_path, monkeypatch):

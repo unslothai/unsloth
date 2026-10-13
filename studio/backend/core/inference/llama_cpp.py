@@ -33044,9 +33044,9 @@ class LlamaCppBackend:
                         if _mtp_slots_target_ctx and "-c" in fallback_cmd:
                             effective_ctx = _mtp_slots_target_ctx
                             fallback_cmd[fallback_cmd.index("-c") + 1] = str(effective_ctx)
-                            self._effective_context_length = effective_ctx
-                            self._max_context_length = max(
-                                self._max_context_length or 0, effective_ctx
+                            # The ceiling was priced at the cut count; this is the one proven here.
+                            self._effective_context_length = self._max_context_length = (
+                                effective_ctx
                             )
                         # The checkpoint cap is per slot; same re-decide as the single-seq rung.
                         if _auto_ckpt_emitted:
