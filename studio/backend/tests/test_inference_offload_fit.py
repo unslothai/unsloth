@@ -82,6 +82,12 @@ def test_nothing_changes_where_the_guess_cannot_apply(device_map, cuda, size):
     assert fit("m", device_map, True) == {}
 
 
+def test_sequential_over_several_visible_cards_is_left_pooled():
+    # Transformers fills every visible card in order; a one-card plan would push most of it to the host.
+    fit, _ = _fit(free = 7 * _GiB, size = 13 * _GiB, devices = 2)
+    assert fit("m", "sequential", True) == {}
+
+
 def _local_bytes():
     tree = ast.parse(_SRC.read_text(encoding = "utf-8"))
     node = next(

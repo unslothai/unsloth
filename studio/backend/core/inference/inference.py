@@ -161,11 +161,14 @@ def _offload_kwargs_for_fit(
     hf_token = None,
     mapped: bool = True,
 ) -> dict:
-    """offload_layers = "auto" for a single-GPU load whose checkpoint nearly fills free VRAM (#13388): Gemma 4 E2B in 4-bit is 8.1 GB, 4.4 GB of it one bf16 token table, so an 8 GB card cannot hold it. The planner then keeps large tables (and decoder layers if needed) in host RAM, and loads everything onto the GPU when it fits after all. Multi-GPU maps go through Unsloth's balanced planner instead, which cannot load into host RAM."""
+    """offload_layers = "auto" for a single-GPU load whose checkpoint nearly fills free VRAM (#13388): Gemma 4 E2B in 4-bit is 8.1 GB, 4.4 GB of it one bf16 token table, so an 8 GB card cannot hold it. The planner then keeps large tables (and decoder layers if needed) in host RAM, and loads everything onto the GPU when it fits after all. Several cards are left to the multi-GPU placement, which cannot load into host RAM."""
+    # "sequential" over several visible cards pools them; "auto" would plan for one.
     if device_map != "sequential" or not torch.cuda.is_available():
         return {}
     try:
-        free = sum(torch.cuda.mem_get_info(i)[0] for i in range(torch.cuda.device_count()))
+        if torch.cuda.device_count() != 1:
+            return {}
+        free = torch.cuda.mem_get_info(0)[0]
     except Exception:
         return {}
     # `mapped` = False: the loader reads `name` verbatim (use_exact_model_name).
