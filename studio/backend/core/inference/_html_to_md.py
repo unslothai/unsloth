@@ -290,6 +290,54 @@ _SCOPE_BARRIERS = frozenset(
 _SVG_SCOPE_BARRIERS = frozenset({"foreignobject", "desc", "title"})
 _MATHML_SCOPE_BARRIERS = frozenset({"mi", "mo", "mn", "ms", "mtext", "annotation-xml"})
 _MATHML_TEXT_INTEGRATION_POINTS = frozenset({"mi", "mo", "mn", "ms", "mtext"})
+_FOREIGN_HTML_BREAKOUT_START_TAGS = frozenset(
+    {
+        "b",
+        "big",
+        "blockquote",
+        "body",
+        "br",
+        "center",
+        "code",
+        "dd",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "embed",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "head",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "listing",
+        "menu",
+        "meta",
+        "nobr",
+        "ol",
+        "p",
+        "pre",
+        "ruby",
+        "s",
+        "small",
+        "span",
+        "strike",
+        "strong",
+        "sub",
+        "sup",
+        "table",
+        "tt",
+        "u",
+        "ul",
+        "var",
+    }
+)
 _LIST_ITEM_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"ol", "ul"}
 _BUTTON_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"button"}
 _TABLE_SCOPE_BARRIERS = frozenset({"html", "table", "template"})
@@ -300,7 +348,6 @@ _TABLE_CELL_TAGS = frozenset({"td", "th"})
 _TABLE_NESTING_TAGS = _TABLE_CELL_TAGS | {"caption"}
 _TABLE_SECTION_TAGS = frozenset({"tbody", "tfoot", "thead"})
 _TABLE_SECTION_START_TAGS = _TABLE_SECTION_TAGS | {"caption", "col", "colgroup"}
-_FOREIGN_ROOT_TAGS = frozenset({"math", "svg"})
 _INDEXED_OPEN_TAGS = _SKIP_RECOVERY_END_TAGS | _SCOPE_BARRIERS
 # repeated span cells use half the 16k fetch limit to leave room for text after the table
 _MAX_SPAN_CHARS = 8_000
@@ -627,6 +674,8 @@ class _TitleButtonScan:
     def __init__(self) -> None:
         self.keep: set[tuple[int, int]] = set()  # HTMLParser.getpos() of each kept <button>
         self._open: list[str] = []
+        self._namespaces: list[str] = []
+        self._html_integration: list[bool] = []
         self._closable_open = (
             0  # open tags with an optional end tag, as _MarkdownRenderer counts them
         )
@@ -639,11 +688,15 @@ class _TitleButtonScan:
         self._headings: list[list] = []
 
     def starttag(self, tag: str, attrs: list[tuple[str, str | None]], pos: tuple[int, int]) -> None:
+        attr_dict = dict(attrs)
+        self._prepare_foreign_html_start(tag, attr_dict)
         self._close_implicit(tag)
         if tag in _VOID_TAGS:
             return
-        attr_dict = dict(attrs)
+        namespace = self._next_namespace(tag)
         self._open.append(tag)
+        self._namespaces.append(namespace)
+        self._html_integration.append(self._is_html_integration_point(tag, namespace, attr_dict))
         if tag in _IMPLICIT_CLOSERS:
             self._closable_open += 1
         index = len(self._open) - 1
@@ -675,6 +728,39 @@ class _TitleButtonScan:
     def finish(self) -> None:
         # a page cut inside a heading (the fetch cap) still keeps its title
         self._close_headings(0)
+
+    def _next_namespace(self, tag: str) -> str:
+        if not self._namespaces or self._namespaces[-1] == "html":
+            return "svg" if tag == "svg" else "math" if tag == "math" else "html"
+        if self._html_integration[-1] and not (
+            self._namespaces[-1] == "math" and tag in {"mglyph", "malignmark"}
+        ):
+            return "svg" if tag == "svg" else "math" if tag == "math" else "html"
+        return self._namespaces[-1]
+
+    @staticmethod
+    def _is_html_integration_point(tag: str, namespace: str, attrs: dict) -> bool:
+        if namespace == "svg":
+            return tag in _SVG_SCOPE_BARRIERS
+        if namespace != "math":
+            return False
+        if tag in _MATHML_TEXT_INTEGRATION_POINTS:
+            return True
+        encoding = (attrs.get("encoding") or "").strip().lower()
+        return tag == "annotation-xml" and encoding in {"text/html", "application/xhtml+xml"}
+
+    def _prepare_foreign_html_start(self, tag: str, attrs: dict) -> None:
+        if not self._open or self._namespaces[-1] == "html":
+            return
+        if tag not in _FOREIGN_HTML_BREAKOUT_START_TAGS and not (
+            tag == "font" and any(name in attrs for name in {"color", "face", "size"})
+        ):
+            return
+        for i in range(len(self._open) - 1, -1, -1):
+            if self._namespaces[i] == "html" or self._html_integration[i]:
+                self._pop_to(i + 1)
+                return
+        self._pop_to(0)
 
     def _close_implicit(self, tag: str) -> None:
         """The renderer's optional-end-tag recovery (``_MarkdownRenderer._close_implicit``), so both see one tree."""
@@ -708,6 +794,8 @@ class _TitleButtonScan:
         self._close_headings(i)
         self._closable_open -= sum(1 for name in self._open[i:] if name in _IMPLICIT_CLOSERS)
         del self._open[i:]
+        del self._namespaces[i:]
+        del self._html_integration[i:]
 
     def _close_headings(self, i: int) -> None:
         while self._headings and self._headings[-1][0] >= i:
@@ -1489,24 +1577,41 @@ class _MarkdownRenderer(HTMLParser):
         self._close_open_target(target)
         return False
 
+    def _prepare_foreign_html_start(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if not self._skip_tags or self._skip_namespaces[-1] == "html":
+            return
+        if tag not in _FOREIGN_HTML_BREAKOUT_START_TAGS and not (
+            tag == "font" and any(name in {"color", "face", "size"} for name, _ in attrs)
+        ):
+            return
+        for i in range(len(self._skip_tags) - 1, -1, -1):
+            if self._skip_namespaces[i] == "html" or self._skip_html_integration[i]:
+                self._truncate_skip_tags(i + 1)
+                return
+        self._clear_skip_tags()
+
     def _prepare_table_start(self, tag: str) -> None:
         if not self._in_table or tag not in _TABLE_ONLY_START_TAGS:
             return
         tables = self._open_at.get("table")
         table = tables[-1] if tables else -1
         if caption := self._latest_indexed_open_tag(frozenset({"caption"}), table):
+            self._clear_skip_tags()
             self._close_rendered_tag(caption[1])
         if self._in_cell:
             cell = self._latest_indexed_open_tag(_TABLE_CELL_TAGS, table)
             if cell:
+                self._clear_skip_tags()
                 self._close_rendered_tag(cell[1])
         if self._in_row and tag not in _TABLE_CELL_TAGS:
             row = self._latest_indexed_open_tag(frozenset({"tr"}), table)
             if row:
+                self._clear_skip_tags()
                 self._close_rendered_tag(row[1])
         if tag in _TABLE_SECTION_START_TAGS:
             section = self._latest_indexed_open_tag(_TABLE_SECTION_TAGS, table)
             if section:
+                self._clear_skip_tags()
                 self._close_rendered_tag(section[1])
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -1520,10 +1625,17 @@ class _MarkdownRenderer(HTMLParser):
             button = self._last_skip_position("button", "html")
             if button >= 0 and self._skip_target_in_scope(tag, button):
                 self._truncate_skip_tags(button)
+        self._prepare_foreign_html_start(tag, attrs)
         if tag in _TABLE_ONLY_START_TAGS and not self._in_table:
             return
         if tag == "table" and self._prepare_sibling_table_start():
             return
+        if (
+            self._skip_tags
+            and tag in _TABLE_ONLY_START_TAGS
+            and self._last_skip_position("table", "html") < 0
+        ):
+            self._prepare_table_start(tag)
 
         if self._skip_tags:
             if tag not in _VOID_TAGS:
@@ -1702,8 +1814,16 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_tags:
             at = self._skip_at.get(tag)
             template = self._last_skip_position("template", "html")
-            if tag == "form" and template < 0 and self._skip_namespaces[-1] == "html":
-                self._form_pointer = False
+            if tag == "form" and template < 0:
+                if at and self._skip_namespaces[at[-1]] == "html":
+                    self._form_pointer = False
+                elif not (
+                    at
+                    and self._skip_namespaces[at[-1]] != "html"
+                    and (not self._skip_html_at or self._skip_html_at[-1] <= at[-1])
+                ):
+                    self._form_pointer = False
+                    return
             # template is a scope boundary, so end tags outside it are ignored
             if at and (template < 0 or at[-1] >= template):
                 i = at[-1]
@@ -1846,10 +1966,8 @@ class _MarkdownRenderer(HTMLParser):
         if self._skip_barrier_after(barriers, "html", target):
             return False
         target_namespace = self._skip_namespaces[target]
-        if (
-            tag in _FOREIGN_ROOT_TAGS
-            and target_namespace == tag
-            and (not self._skip_html_at or self._skip_html_at[-1] <= target)
+        if target_namespace != "html" and (
+            not self._skip_html_at or self._skip_html_at[-1] <= target
         ):
             return True
         return not self._foreign_skip_barrier_after(target)

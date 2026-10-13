@@ -336,7 +336,7 @@ def test_skipped_tag_implicitly_closes_hidden_paragraph():
         assert "VISIBLE" in out
 
 
-@pytest.mark.parametrize("skipped", ["nav", "footer", "svg", "button"])
+@pytest.mark.parametrize("skipped", ["nav", "footer", "button"])
 @pytest.mark.parametrize("main_content", [False, True])
 def test_skipped_tag_closed_by_its_parent_keeps_the_rest_of_the_page(skipped, main_content):
     html = (
@@ -346,6 +346,24 @@ def test_skipped_tag_closed_by_its_parent_keeps_the_rest_of_the_page(skipped, ma
     out = html_to_markdown(html, main_content = main_content)
     assert "Menu" not in out
     assert "Real text of the page" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_html_block_start_breaks_out_of_svg(main_content):
+    html = (
+        "<body><div><svg><div><a href=/x>Menu</a></div></div>"
+        "<main><h1>Title</h1><p>Real text of the page.</p></main></body>"
+    )
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Menu" in out
+    assert "Real text of the page" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_heading_button_after_foreign_breakout_is_kept(main_content):
+    html = "<svg><h1><button>Title</button></h1><p>Body text</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Title" in out and "Body text" in out
 
 
 @pytest.mark.parametrize(
@@ -436,6 +454,14 @@ def test_caption_start_closes_the_active_cell_before_skip_recovery(main_content)
 
 
 @pytest.mark.parametrize("main_content", [False, True])
+def test_table_cell_start_reconciles_while_content_is_skipped(main_content):
+    html = "<table><tr><td><nav>Hidden<td></nav>Visible</td></tr></table>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "Visible" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
 def test_nested_button_start_replaces_outer_skipped_button(main_content):
     html = "<button>Title<button>Inner</button><nav>Hidden</button>Menu text</nav><p>After</p>"
     out = html_to_markdown(html, main_content = main_content)
@@ -464,6 +490,21 @@ def test_foreign_root_end_closes_through_foreign_descendant(root, descendant, ma
     out = html_to_markdown(html, main_content = main_content)
     assert "Hidden" not in out
     assert "Real text" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_end_tag_closes_through_integration_point(main_content):
+    html = "<svg><g><foreignObject></g><p>Visible</p></svg><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Visible" in out and "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_breakout_keeps_html_skipped_ancestor(main_content):
+    html = "<nav><svg><g><foreignObject></g><p>Hidden</p></nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "After" in out
 
 
 @pytest.mark.parametrize(
@@ -503,6 +544,22 @@ def test_nested_form_start_is_ignored_before_datalist_end(main_content):
     out = html_to_markdown(html, main_content = main_content)
     assert "Hidden" not in out and "ignored" not in out
     assert "Visible article" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_foreign_form_end_clears_html_form_pointer(main_content):
+    html = "<form><svg><g>Hidden</form></g></svg><form hidden><p>SECRET</p></form><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "SECRET" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_matching_foreign_form_end_keeps_html_form_pointer(main_content):
+    html = "<form><svg><form>Hidden</form></svg><form hidden><p>SECRET</p></form><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out
+    assert "SECRET" in out and "After" in out
 
 
 @pytest.mark.parametrize("item", ["dd", "dt", "li"])
