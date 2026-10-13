@@ -474,6 +474,11 @@ def snapshot(entry: Callable) -> dict:
     from core.inference import diffusion_transformer_quant
 
     patch.setattr(diffusion_transformer_quant, "_is_consumer_gpu", lambda *a, **k: True)
+    # The fused fp16 RoPE and Wan gates ask whether Triton imports (CPU torch from pip has none); pin them too.
+    from core.inference import diffusion_flux2_rope, video_wan_fused
+
+    patch.setattr(diffusion_flux2_rope, "_kernel", lambda: (lambda *a, **k: None))
+    patch.setattr(video_wan_fused, "_kernels", lambda: {})
     out: dict = {}
     try:
         for backend, fam in _families():
