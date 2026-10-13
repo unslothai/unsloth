@@ -767,6 +767,13 @@ class Ltx25TextEncoderClient:
             run_without_native_path_secret,
         )
 
+        from utils.process_lifetime import is_process_shutting_down
+
+        # A quit during an LTX-2.5 load must not start an encoder worker the shutdown sweep has already passed.
+        if is_process_shutting_down():
+            raise TextEncoderWorkerError(
+                "Unsloth is shutting down; not starting the LTX-2.5 text encoder worker."
+            )
         ctx = mp.get_context("spawn")
         cache_env = get_hf_cache_paths().child_env({})
         with child_environment_for_spawn(cache_env), native_path_secret_removed_for_child_start():
@@ -790,6 +797,24 @@ class Ltx25TextEncoderClient:
             adopt_pid(proc.pid)
         except Exception:  # noqa: BLE001 -- the daemon flag still ties it to this process
             pass
+        # Recheck once the pid is recorded: the latch can be set between the gate above and the record.
+        if is_process_shutting_down():
+            logger.info(
+                "video.ltx25_te: shutdown began during the spawn; reaping the encoder worker"
+            )
+            self._proc = None
+            try:
+                if proc.is_alive():
+                    proc.terminate()
+                    proc.join(5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join(5)
+            except Exception:  # noqa: BLE001 -- the reap is best-effort
+                pass
+            raise TextEncoderWorkerError(
+                "Unsloth is shutting down; stopped the LTX-2.5 text encoder worker it had just started."
+            )
         logger.info("video.ltx25_te: started the Gemma 4 encoder worker (pid %s)", proc.pid)
 
     def alive(self) -> bool:
