@@ -52,6 +52,10 @@ import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messa
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
+import {
+  composerColumnInset,
+  readViewportBox,
+} from "@/components/assistant-ui/composer-column-inset";
 import { MessageTiming } from "@/components/assistant-ui/message-timing";
 import { attachThreadFastCopy } from "@/components/assistant-ui/thread-fast-copy";
 import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wheel-hover";
@@ -2564,6 +2568,31 @@ const ThreadComposerDock: FC<{
     };
   }, [onHeightChange]);
 
+  // Pad the composer onto the message column's edges: the viewport's gutter and padding are
+  // measured, so the two match at every pane width, interface scale and scrollbar style.
+  const dockInnerRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const dock = dockRef.current;
+    const inner = dockInnerRef.current;
+    const viewport = dock?.parentElement?.querySelector<HTMLElement>(
+      ":scope > .aui-thread-viewport",
+    );
+    if (!dock || !inner || !viewport) return;
+    const apply = () => {
+      const inset = composerColumnInset(
+        readViewportBox(viewport),
+        dock.getBoundingClientRect(),
+      );
+      inner.style.setProperty("--composer-dock-inset-left", `${inset.left}px`);
+      inner.style.setProperty("--composer-dock-inset-right", `${inset.right}px`);
+    };
+    apply();
+    const resizeObserver = new ResizeObserver(apply);
+    resizeObserver.observe(viewport);
+    resizeObserver.observe(dock);
+    return () => resizeObserver.disconnect();
+  }, []);
+
   return (
     <div
       ref={dockRef}
@@ -2584,9 +2613,7 @@ const ThreadComposerDock: FC<{
             : "top-[calc(10px*var(--ui-space-scale,1))]",
         )}
       />
-      {/* Narrow panes spend the gutter on the composer instead; index.css
-          trims it off the pane's width, not the window's. */}
-      <div className="unsloth-composer-dock-inner relative px-5 pb-2">
+      <div ref={dockInnerRef} className="unsloth-composer-dock-inner relative pb-2">
         <div className="pointer-events-auto mx-auto w-full max-w-(--thread-max-width)">
           <ComposerAnimated
             disabled={disabled}

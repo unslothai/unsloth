@@ -3744,16 +3744,11 @@ html[data-chat-font] .aui-root {
 		font-weight: 500;
 	}
 
-	/* Narrow panes shrink the greeting along with the composer under it, or a
-	   30px title wraps over two lines above a tightened box. Sized off the
-	   text tokens so the UI font scale still applies.
-
-	   The gutters here are on the pane's width, not the window's: an artifact
-	   split can leave a 42% thread pane inside a wide window, and a viewport
-	   breakpoint would keep the full 20px there. */
-	:where(.aui-thread-root[data-thread-narrow]) .unsloth-composer-dock-inner {
-		padding-left: calc(0.75rem * var(--ui-space-scale, 1));
-		padding-right: calc(0.75rem * var(--ui-space-scale, 1));
+	/* The dock measures the message column's edges (ThreadComposerDock); the fallback is the
+	   viewport's own px-5 until the first measurement. */
+	.unsloth-composer-dock-inner {
+		padding-left: var(--composer-dock-inset-left, 1.25rem);
+		padding-right: var(--composer-dock-inset-right, 1.25rem);
 	}
 
 	/* Pull back into the viewport's gutter, or the empty state is 40px narrower than the thread. */
@@ -3765,6 +3760,8 @@ html[data-chat-font] .aui-root {
 		width: calc(100% + 1rem * var(--ui-space-scale, 1));
 	}
 
+	/* Narrow panes shrink the greeting, or a 30px title wraps over two lines. Sized off the
+	   text tokens so the UI font scale still applies. */
 	:where(.aui-thread-root[data-thread-narrow]) .unsloth-welcome-title {
 		font-size: var(--text-2xl);
 	}
