@@ -15,6 +15,7 @@ Regenerate (only when a registry change is intended): run ``snapshot(legacy_entr
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -23,6 +24,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 import pytest
+
+# The fixture records real diffusers classes (repeated blocks, attention patches); without diffusers every case
+# differs. The Studio VAE seam guard job installs the pinned diffusers and runs this file.
+if importlib.util.find_spec("diffusers") is None:
+    pytest.skip("needs diffusers (run by the Studio VAE seam guard job)", allow_module_level = True)
 
 _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:

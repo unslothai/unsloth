@@ -42,6 +42,10 @@ function restoreSettingsWith(negativeCapable: boolean) {
     matchAspect: () => ({ key: "1:1", portrait: false }),
     restoreInputsNote: () => null,
     CONDITIONED_WORKFLOW_INPUTS: {},
+    DEFAULT_SAMPLER: "default",
+    AUTOMATIC_SCHEDULE: "automatic",
+    samplerOptions: [],
+    changeSamplerChoice: () => {},
     toast: { success: () => {} },
   };
   const scope = new Proxy(known, {

@@ -10742,7 +10742,10 @@ class DiffusionBackend:
                     # reconciles.
                     self._make_vae_encode_dtype_safe(pipe)
 
-                swapped, resolved_schedule = build_scheduler(pipe.scheduler, sampler, schedule_type)
+                # Same read as the status poll: a pipeline without a scheduler offers no samplers.
+                swapped, resolved_schedule = build_scheduler(
+                    getattr(pipe, "scheduler", None), sampler, schedule_type
+                )
                 if swapped is not None:
                     restore_scheduler = (pipe, pipe.scheduler)
                     pipe.scheduler = swapped
