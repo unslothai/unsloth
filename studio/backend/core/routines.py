@@ -118,7 +118,10 @@ class RoutineSupervisor:
                 credential = (current_account().username, None), via_api_key = False,
             )["job_id"]
         from core.rag.folder_sync import request_sync
-        return request_sync(step["folder_id"])
+        try:
+            return request_sync(step["folder_id"])
+        except KeyError as exc:
+            raise RuntimeError("The linked folder was removed. Edit this routine to choose another folder.") from exc
 
     def _execute(self, account_id: str, run: dict) -> None:
         statuses = [
