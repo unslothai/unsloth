@@ -307,7 +307,13 @@ def stt_engine(status: dict, model: str) -> str:
 
 
 async def download_stt(
-    caller: Caller, ctx: Optional[Context], *, model: str, engine: str, hf_token: Optional[str]
+    caller: Caller,
+    ctx: Optional[Context],
+    *,
+    model: str,
+    engine: str,
+    hf_token: Optional[str],
+    variant: Optional[str] = None,
 ) -> None:
     """Download an STT model and wait for it; the download route reads the Hub token from its header."""
     if hf_token:
@@ -316,7 +322,11 @@ async def download_stt(
         "POST",
         "/api/inference/audio/stt/download",
         caller = caller,
-        json_body = {"model": model, "engine": engine},
+        json_body = {
+            "model": model,
+            "engine": engine,
+            **({"gguf_variant": variant} if variant else {}),
+        },
         hub_header = True,
     )
     download_id = started.get("download_id") if isinstance(started, dict) else None
@@ -352,8 +362,12 @@ async def load_stt(
     engine = stt_engine(status, model)
     state = as_dict(status.get(engine))
     # Load refuses a model that is not on disk, so download first and load only once that finished.
-    if model not in strings(state.get("downloaded_models")):
-        await download_stt(caller, ctx, model = model, engine = engine, hf_token = hf_token)
+    # The route folds a variant into "model:variant"; another cached variant does not count.
+    wanted = f"{model}:{variant}" if variant and ":" not in model else model
+    if wanted not in strings(state.get("downloaded_models")):
+        await download_stt(
+            caller, ctx, model = model, engine = engine, hf_token = hf_token, variant = variant
+        )
     body: dict[str, Any] = {"model": model, "engine": engine}
     if variant:
         body["gguf_variant"] = variant

@@ -399,6 +399,23 @@ def test_a_downloaded_stt_model_loads_straight_away(monkeypatch):
     assert bodies(studio, f"{STT}/load") == [{"model": q5, "engine": "gguf"}]
 
 
+def test_a_requested_variant_is_downloaded_even_when_another_is_cached(monkeypatch, fast_polls):
+    moon = "audio-cpp/audio.cpp-gguf/Moonshine-Streaming-GGUF"
+    done = {"downloading": False, "completed_download_ids": ["d1"]}
+    studio = _stt_studio(
+        [
+            {"audiocpp": {**stt_state(downloaded = [moon]), "models": [moon]}},
+            {"audiocpp": {**stt_state(downloaded = [moon, f"{moon}:small/Q8_0"]), "download": done}},
+        ]
+    )
+    args = {"model": moon, "kind": "stt", "variant": "small/Q8_0"}
+    result, _studio = run_tool(monkeypatch, studio, "load_model", args)
+    assert result["isError"] is False
+    expected = [{"model": moon, "engine": "audiocpp", "gguf_variant": "small/Q8_0"}]
+    assert bodies(studio, f"{STT}/download") == expected
+    assert bodies(studio, f"{STT}/load") == expected
+
+
 def test_a_failed_download_never_loads(monkeypatch, fast_polls):
     failed = {"downloading": False, "error": "401 gated repo"}
     studio = _stt_studio(
