@@ -340,6 +340,11 @@ _FOREIGN_HTML_BREAKOUT_START_TAGS = frozenset(
 )
 _LIST_ITEM_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"ol", "ul"}
 _BUTTON_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"button"}
+_IMPLICIT_CLOSE_BARRIERS = {
+    tag: _CLOSE_BARRIERS.get(tag, frozenset())
+    | (_BUTTON_SCOPE_BARRIERS if tag in _P_CLOSING_TAGS else frozenset())
+    for tag in _CLOSE_BARRIERS.keys() | _P_CLOSING_TAGS
+}
 _TABLE_SCOPE_BARRIERS = frozenset({"html", "table", "template"})
 _TABLE_END_TAGS = frozenset({"caption", "table", "tbody", "td", "tfoot", "th", "thead", "tr"})
 _TABLE_CONTEXT_END_TAGS = _TABLE_END_TAGS - {"table"}
@@ -766,9 +771,7 @@ class _TitleButtonScan:
         """The renderer's optional-end-tag recovery (``_MarkdownRenderer._close_implicit``), so both see one tree."""
         if not self._closable_open:
             return
-        barriers = _CLOSE_BARRIERS.get(tag, frozenset())
-        if tag in _P_CLOSING_TAGS:
-            barriers = barriers | _BUTTON_SCOPE_BARRIERS
+        barriers = _IMPLICIT_CLOSE_BARRIERS.get(tag, frozenset())
         while True:
             close_at = None
             for i in range(len(self._open) - 1, -1, -1):
@@ -1302,9 +1305,7 @@ class _MarkdownRenderer(HTMLParser):
         for skipped ``<nav>``/``<footer>``, which also close ``<p>``."""
         if not self._closable_open:
             return
-        barriers = _CLOSE_BARRIERS.get(tag, frozenset())
-        if tag in _P_CLOSING_TAGS:
-            barriers = barriers | _BUTTON_SCOPE_BARRIERS
+        barriers = _IMPLICIT_CLOSE_BARRIERS.get(tag, frozenset())
         while True:
             close_at = None
             for i in range(len(self._open_tags) - 1, -1, -1):
@@ -1962,6 +1963,9 @@ class _MarkdownRenderer(HTMLParser):
         ) or self._skip_barrier_after(_MATHML_SCOPE_BARRIERS, "math", target)
 
     def _skip_target_in_scope(self, tag: str, target: int) -> bool:
+        # nothing above the innermost element can be a barrier
+        if target == len(self._skip_tags) - 1:
+            return True
         barriers = self._scope_barriers(tag)
         if self._skip_barrier_after(barriers, "html", target):
             return False
