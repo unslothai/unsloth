@@ -284,6 +284,18 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     ):
         assert "dXNlcjpwYXNzd29yZA" not in _sanitize_public_query(text), text
     assert _sanitize_public_query("Authorization: Basic YTpi why did YTpi fail") == "why did fail"
+    for text in (
+        'Authorization: Custom token="abc,def,ghi" why did abc,def,ghi fail',
+        'Authorization: Custom token="abc123" why did abc123 fail',
+    ):
+        assert _sanitize_public_query(text) == "why did fail", text
+    escaped = '{\\"Authorization\\": \\"Basic dXNlcjpwYXNzd29yZA==\\"} why'
+    assert "dXNlcjpwYXNzd29yZA" not in _sanitize_public_query(escaped)
+    assert (
+        _sanitize_public_query('Authorization: Digest , response="abcdefghijklmnop" why') == "why"
+    )
+    kept = 'Authorization: Digest realm="api", response="abcdefghijklmnop" how does the api work'
+    assert _sanitize_public_query(kept) == "how does the api work"
     question = _sanitize_public_query('Authorization: Digest realm="private\nexplain oauth refresh')
     assert "explain oauth refresh" in question
 

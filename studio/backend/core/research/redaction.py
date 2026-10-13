@@ -31,8 +31,15 @@ _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
 _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?ix)(?<![A-Za-z0-9])authorization["'”’]?[ \t]*[:=][ \t]*["'“‘]?[\w!#$%&'*+.^`|~-]+[ \t]+
-    (?P<credentials>{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
+    rf"""(?ix)(?<![A-Za-z0-9])authorization\\?["'”’]?[ \t]*[:=][ \t]*\\?["'“‘]?[\w!#$%&'*+.^`|~-]+[ \t]+
+    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
+)
+_AUTH_PARAM_PAIR = re.compile(
+    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
+)
+# Digest parameters that describe the challenge rather than prove identity.
+_PUBLIC_AUTH_PARAMS = frozenset(
+    {"algorithm", "charset", "domain", "nc", "qop", "realm", "stale", "uri", "userhash"}
 )
 _TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
 _QUERY_CREDENTIAL = re.compile(
@@ -158,20 +165,26 @@ def _sanitize_public_query(query: str) -> str:
     plain = _redact_public_query(query, authorization = False)
     with_authorization = _redact_public_query(query, authorization = True)
     # An echoed copy of an identified credential (an error repeating it) goes too.
-    credentials, short_credentials = set(), set()
+    credentials, exact = set(), set()
     for match in _QUERY_AUTHORIZATION.finditer(query):
         found = match["credentials"]
-        if re.fullmatch(r"[\w.~+/-]+=*", found):
-            short_credentials.add(found)
-        for piece in re.split(r"[\s,]+", re.sub(r"\\(.)", r"\1", found)):
-            credentials.update(
-                part.strip(_TOKEN_PUNCTUATION) for part in (piece, piece.partition("=")[2])
-            )
-    credentials = {piece for piece in credentials if len(piece) >= 8}
+        values = (
+            [found]
+            if re.fullmatch(r"[\w.~+/-]+=*", found)
+            else [
+                value
+                for name, value in _AUTH_PARAM_PAIR.findall(found)
+                if name.lower() not in _PUBLIC_AUTH_PARAMS
+            ]
+        )
+        for value in values:
+            value = re.sub(r"\\(.)", r"\1", value.strip("\"'“”‘’"))
+            exact.add(value)
+            credentials.update(piece for piece in [value, *value.split()] if len(piece) >= 8)
     plain = [
         token
         for token in plain
-        if token.strip(_TOKEN_PUNCTUATION + ".!?") not in short_credentials
+        if token.strip(_TOKEN_PUNCTUATION + ".!?") not in exact
         and not any(piece in token for piece in credentials)
     ]
     tokens = plain
