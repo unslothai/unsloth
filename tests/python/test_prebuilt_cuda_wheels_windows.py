@@ -147,8 +147,7 @@ class TestMatrix:
             prebuilt_wheels.torch_minor(v)
             for platform, target in prebuilt_wheels.PLATFORMS.items()
             if target["os"] == "windows"
-            for v in prebuilt_wheels._platform(platform, "torches")
-            or prebuilt_wheels.TORCH_VERSIONS
+            for v in prebuilt_wheels._platform_torches(platform)
         }
         assert set(prebuilt_wheels.TRITON_WINDOWS) == minors
         assert prebuilt_wheels.TRITON_WINDOWS["2.11"].startswith("3.6.0.post")
@@ -177,6 +176,16 @@ class TestMatrix:
             ("win_amd64", "2.13.0"),
             ("linux_x86_64", "2.13.0"),
         }
+
+    def test_win_amd64_inherits_a_new_global_torch(self, monkeypatch):
+        monkeypatch.setattr(prebuilt_wheels, "TORCH_VERSIONS", ("2.13.0", "2.14.0", "2.15.0"))
+        assert prebuilt_wheels._platform_torches("win_amd64") == (
+            "2.11.0",
+            "2.13.0",
+            "2.14.0",
+            "2.15.0",
+        )
+        assert prebuilt_wheels._platform_torches("linux_x86_64")[-1] == "2.15.0"
 
     def test_pytorch_nvcc_paths_have_no_spaces(self):
         """torch writes PYTORCH_NVCC into build.ninja verbatim; a space would split a path."""
@@ -256,6 +265,33 @@ class TestNames:
             text = True,
         ).stdout.strip()
         assert out == "causal_conv1d-1.7.0+cu13torch2.13cxx11abiTRUE-cp313-cp313-win_amd64.whl"
+
+    def test_wheel_name_cli_refuses_a_cell_nothing_builds(self):
+        def name(*platform):
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "prebuilt_wheels.py"),
+                    "wheel-name",
+                    "--package",
+                    "mamba-ssm",
+                    "--torch",
+                    "2.11.0",
+                    "--python",
+                    "3.12",
+                    *platform,
+                ],
+                capture_output = True,
+                text = True,
+            )
+
+        for platform in ([], ["--platform", "linux_x86_64"], ["--platform", "win_arm64"]):
+            result = name(*platform)
+            assert result.returncode != 0
+            assert "not built for" in result.stderr
+        result = name("--platform", "win_amd64")
+        assert result.returncode == 0
+        assert result.stdout.strip().endswith("torch2.11cxx11abiTRUE-cp312-cp312-win_amd64.whl")
 
     def test_round_trip_on_both_platforms(self):
         for platform in prebuilt_wheels.PLATFORMS:
