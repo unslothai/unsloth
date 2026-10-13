@@ -212,7 +212,7 @@ LLAMA_CHANGELOG = {
     "release_url": "https://github.com/unslothai/llama.cpp/releases/tag/b10333-mix-e34b418",
     "error": None,
 }
-# The same card, renamed: whisper.cpp is not a second banner.
+# whisper.cpp renames the shared runtime card instead of adding a banner.
 WHISPER_STATUS = dict(
     LLAMA_STATUS,
     llama_update_available = False,
@@ -226,7 +226,7 @@ WHISPER_STATUS = dict(
         "skip_reason": None,
     },
 )
-# All three behind at once share that card with a row each, so it is the tallest runtime card there is.
+# pending runtimes share one card with one row each.
 BUNDLE_STATUS = dict(
     LLAMA_STATUS,
     whisper = WHISPER_STATUS["whisper"],
@@ -239,14 +239,14 @@ BUNDLE_STATUS = dict(
     },
 )
 
-# 921x534 and 768x500 are where the report reproduces; the taller ones prove the fix costs nothing when there is room.
+# 921x534 and 768x500 reproduce the issue; taller viewports guard roomy layouts.
 VIEWPORTS = [
     (1440, 900),
     (1280, 830),
     (921, 534),
     (768, 500),
     (390, 844),
-    # Narrow enough to wrap the action row, short enough to hit the card's floor.
+    # narrow enough to wrap the action row and short enough to hit the card's floor.
     (390, 500),
 ]
 ROUTES = [("new chat", "/"), ("train", "/train"), ("model hub", "/model-hub")]
@@ -1253,7 +1253,7 @@ def main() -> int:
                 if path == "/":
                     exercise_llama_changelog(page, f"{size} {name}")
 
-            # whisper.cpp renames the same card rather than adding a second one.
+            # whisper.cpp must reuse the shared runtime card.
             llama_payload[0] = WHISPER_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat whisper")
@@ -1266,7 +1266,7 @@ def main() -> int:
                 f"rows={rows} text={facts['llamaText']!r}",
             )
 
-            # Three pending runtimes are still one card, now with three rows under the app card.
+            # pending runtimes add rows without adding cards.
             llama_payload[0] = BUNDLE_STATUS
             boot(page, "/")
             facts = measure(page, f"{width}x{height} new chat bundle")
@@ -1280,7 +1280,7 @@ def main() -> int:
             llama_payload[0] = LLAMA_STATUS
             context.close()
 
-        # Exercise the compact app card omitted by the notes-bearing fixtures.
+        # notes-bearing fixtures omit the compact app card.
         for width, height in NO_PREVIEW_VIEWPORTS[:1] if SPOT else NO_PREVIEW_VIEWPORTS:
             phase(f"app card with no notes preview at {width}x{height}")
             context = browser.new_context(

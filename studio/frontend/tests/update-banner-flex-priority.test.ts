@@ -191,13 +191,11 @@ test("the two update cards do not drift apart", () => {
 });
 
 test("the llama.cpp card takes the desktop updater's floor only with its changelog open", () => {
-  // A collapsed changelog leaves nothing for the floor to protect.
   const slot = LLAMA.slice(
     LLAMA.indexOf("pointer-events-auto flex "),
     LLAMA.indexOf('data-testid="llama-update-banner"'),
   );
-  // The constants match the desktop card, though their gates differ. The llama.cpp
-  // card adds one text-xs row per extra bundled component, zero for a single one.
+  // each bundled component after the first adds one 18px text-xs row to the shared floor.
   for (const [base, text] of [
     ["117px", "93px"],
     ["24px", "224px"],
@@ -221,14 +219,12 @@ test("the llama.cpp card takes the desktop updater's floor only with its changel
     /changelogPanelOpen\s*\n?\s*\?\s*"min-h-\[calc\(117px/,
     "the floor is back on every state of the card, including the collapsed one",
   );
-  // The floor and panel share the same predicate.
   assert.match(LLAMA, /\{changelogPanelOpen &&/);
   assert.match(
     slot,
     /"shrink-0"/,
     "with no notes to give up, the card must hold its height and let the rail scroll",
   );
-  // Only the conditional branch may carry a floor.
   assert.doesNotMatch(classes(LLAMA, "pointer-events-auto flex "), /min-h-/);
   assert.doesNotMatch(slot, /\bmin-h-0\b/);
   assert.ok(LLAMA.includes("max-w-[calc(448px*var(--ui-space-scale,1))]"));

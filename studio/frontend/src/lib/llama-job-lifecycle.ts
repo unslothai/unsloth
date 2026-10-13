@@ -76,7 +76,7 @@ export interface UpdateComponentFlags {
   audio: boolean;
 }
 
-// In the order the backend names them, which is also the order the job installs them.
+// backend naming order matches the job installation order.
 const UPDATE_COMPONENT_KEYS: Record<
   UpdateComponent,
   keyof UpdateComponentFlags
@@ -86,19 +86,13 @@ const UPDATE_COMPONENT_KEYS: Record<
   "audio.cpp": "audio",
 };
 
-/** The notification channel and status field that answer for a component. */
 export function updateComponentKey(
   component: UpdateComponent,
 ): keyof UpdateComponentFlags {
   return UPDATE_COMPONENT_KEYS[component];
 }
 
-/**
- * Which components the single update card lists, in install order.
- *
- * Update installs everything pending in one job, so the card names all of it,
- * including components whose notifications are off.
- */
+/** pending components remain listed even when their notifications are muted. */
 export function updateBannerComponents(
   pending: UpdateComponentFlags,
 ): UpdateComponent[] {
@@ -107,7 +101,6 @@ export function updateBannerComponents(
   );
 }
 
-/** The listed components whose notifications are on: they open the card and are recorded. */
 export function audibleComponents(
   listed: readonly UpdateComponent[],
   muted: UpdateComponentFlags,
@@ -115,12 +108,7 @@ export function audibleComponents(
   return listed.filter((component) => !muted[UPDATE_COMPONENT_KEYS[component]]);
 }
 
-/**
- * Whether the update card may appear.
- *
- * Only a component whose notifications are on can open it, when it is due. Once open
- * it stays, until every listed component has its notifications turned off.
- */
+/** an audible due component opens the card; it stays open until every listed component is muted. */
 export function updateBannerAllowed(
   listed: readonly UpdateComponent[],
   due: UpdateComponentFlags,
@@ -134,13 +122,7 @@ export function updateBannerAllowed(
   );
 }
 
-/**
- * The rows a running job keeps on its card.
- *
- * A chained apply clears each component from the status as its phase lands, so the
- * card holds the rows it started with while the job runs. Only while it runs: a failed
- * phase hands back the live rows, so a retry names only what is still pending.
- */
+/** holds initial rows as phases leave status; releasing the hold lets retries use remaining rows. */
 export function heldJobRows<T>(
   held: T[] | null,
   applying: boolean,
@@ -152,7 +134,6 @@ export function heldJobRows<T>(
   return held ?? (live.length > 0 ? live : null);
 }
 
-/** "llama.cpp", "llama.cpp and whisper.cpp", "llama.cpp, whisper.cpp and audio.cpp". */
 export function updateComponentsLabel(
   components: readonly UpdateComponent[],
 ): string {
@@ -162,12 +143,7 @@ export function updateComponentsLabel(
   return `${components.slice(0, -1).join(", ")} and ${components[components.length - 1]}`;
 }
 
-/**
- * The tag a finished update reports.
- *
- * The job's `to_tag` is the llama.cpp build by definition, so a card showing the
- * whisper.cpp or audio.cpp offer reports the release it advertised instead of llama's.
- */
+/** non-llama offers use their advertised tag because job `to_tag` always identifies llama.cpp. */
 export function updateToastTag(
   component: UpdateComponent,
   jobTag: string | null | undefined,
@@ -177,15 +153,7 @@ export function updateToastTag(
   return preferred ?? offerTag ?? jobTag ?? null;
 }
 
-/**
- * Which notification switch answers for the update card, held across a job.
- *
- * The card is allowed by the components it lists, and a chained apply drops each
- * one from the status as its phase lands, leaving only components that may be
- * muted. Reading the live switch there would take a running update off screen
- * halfway through, so the switch the card started under is held until the job is
- * over. `null` means nothing is held and the live switch applies.
- */
+/** holds the opening preference because completed phases disappear during a chained job. */
 export function heldUpdateBannerPref(
   held: boolean | null,
   inFlight: boolean,
@@ -194,14 +162,7 @@ export function heldUpdateBannerPref(
   return inFlight ? (held ?? live) : null;
 }
 
-/**
- * Whether the banner's version line has anything to say.
- *
- * `updateAvailable` is the only field reporting that the release moved. The tags cannot:
- * `installed_tag` is normalized (`b9596`) while `latest_tag` is the full identity
- * (`b9596-mix-<sha>`), so a fork install shows them differing at the release it is
- * running -- which is exactly where a migration is offered.
- */
+/** trust `updateAvailable` because installed tags are normalized but fork identities are not. */
 export function llamaReleaseChanged(
   updateAvailable: boolean,
   installedTag: string | null,
@@ -212,13 +173,7 @@ export function llamaReleaseChanged(
   );
 }
 
-/** What to tell the user a finished Update actually did.
- *
- * A migration runs at the release already installed and can end on the backend already
- * installed, so "updated to <tag>" describes neither -- and the tag is llama's even when
- * a pending whisper update named the toast. The job's own message is accurate.
- * A `null` tag is for a toast naming several components, where no one tag fits.
- */
+/** migration messages avoid misleading tags; null tags omit versions for bundled updates. */
 export function llamaUpdateToastMessage({
   component,
   migrating,
@@ -238,7 +193,7 @@ export function llamaUpdateToastMessage({
     const toTag = updatedTag === null ? "" : ` to ${updatedTag}`;
     return `${component} updated${toTag}.${reloadHint}`;
   }
-  // The phase appends its own reload hint when it has one to give.
+  // avoid duplicating a reload hint already supplied by the phase.
   return migrationMessage.includes("Reload")
     ? migrationMessage
     : `${migrationMessage}${reloadHint}`;

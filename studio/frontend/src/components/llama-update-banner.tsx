@@ -39,11 +39,10 @@ import {
   useRef,
   useState,
 } from "react";
-// Creep toward this cap between coarse backend progress updates.
+// cap for interpolation between coarse backend progress updates.
 const RUNNING_CAP = 0.95;
 
-// The banner is not translated, so these mirror features/settings/lib/llama-backend-
-// labels.ts. An unknown backend prints its own identifier rather than nothing.
+// untranslated labels mirror llama-backend-labels.ts; unknown backends keep their identifiers.
 const BACKEND_LABELS: Record<string, string> = {
   auto: "Automatic",
   cpu: "CPU",
@@ -155,7 +154,7 @@ function VersionLine({
   const sizeSuffix = rowSize ? ` · ${rowSize}` : "";
   return (
     <p
-      // One line each, so the changelog floor can count them.
+      // one row per line keeps the changelog height calculation exact.
       className={cn(
         "mt-0.5 text-xs text-muted-foreground",
         bundled && "truncate",
@@ -176,12 +175,11 @@ function VersionLine({
   );
 }
 
-/** Bottom-right llama.cpp, whisper.cpp and audio.cpp update toast. */
 export function LlamaUpdateBanner({
   enabled = true,
   positioned = true,
 }: LlamaUpdateBannerProps): ReactElement | null {
-  // The open card stays allowed after it records its components as shown.
+  // an open card remains allowed after recording its components as shown.
   const [shownChannels, setShownChannels] = useState<
     readonly NotificationChannel[]
   >([]);
@@ -196,10 +194,7 @@ export function LlamaUpdateBanner({
     audio: useNotificationFrequency("audio") === "off",
   };
   const [changelogVersion, setChangelogVersion] = useState<string | null>(null);
-  // Not gated on showBannerPref: this hook instance is the app-wide listener
-  // for a cross-tab reload_required resync (the settings-sheet's own instance
-  // only runs during an MTP-fallback rebuild), so muting the banner must not
-  // also silence that resync -- it only suppresses the UI below.
+  // listen regardless of banner preference so muting the UI does not silence cross-tab reload_required resync.
   const { status, visible, applying, apply, dismiss, snooze } =
     useLlamaUpdateCheck({
       enabled,
@@ -212,12 +207,11 @@ export function LlamaUpdateBanner({
     whisper: Boolean(status?.whisper?.update_available),
     audio: Boolean(status?.audio?.update_available),
   });
-  // Muted components are listed, since Update installs them, but never recorded.
+  // muted components stay listed because update installs them, but they are not recorded.
   const recordKey = audibleComponents(listed, muted)
     .map(updateComponentKey)
     .join(" ");
-  // Each component's own release pair and download size, not the top-level ones: those
-  // are llama's whatever the card lists.
+  // use each component's release pair and size because the top-level fields belong to llama.cpp.
   const liveRows: UpdateRow[] = listed.map((component) => {
     const offer = status?.[updateComponentKey(component)];
     const installedTag = offer?.installed_tag ?? null;
@@ -234,7 +228,7 @@ export function LlamaUpdateBanner({
       ),
     };
   });
-  // An error counts as in flight so a failed phase keeps its retry on screen.
+  // treat errors as in flight so a failed phase keeps its retry visible.
   const jobState = status?.job.state;
   const inFlight = applying || jobState === "error";
   const [jobRows, setJobRows] = useState<UpdateRow[] | null>(null);
@@ -249,9 +243,7 @@ export function LlamaUpdateBanner({
   const primary = rows[0] ?? null;
 
   async function handleUpdate() {
-    // Read before applying (the status refreshes mid-job). An audio.cpp update may keep
-    // the old runtime, and a chained job reports every phase, so only the job's message
-    // says what happened, as for a migration.
+    // prefer the job message for bundles, migrations, and unchanged audio runtimes after refresh.
     const fromJob =
       migrationPending || bundled || primary?.component === "audio.cpp";
     const offerTag = primary?.latestTag ?? null;
@@ -274,7 +266,7 @@ export function LlamaUpdateBanner({
         }),
       );
     } else if (result) {
-      // The failing phase need not be the component the card names.
+      // the failing phase may differ from the component named by the card.
       toast.error(`Update failed: ${result.error ?? "unknown error"}`);
     }
   }
@@ -285,7 +277,7 @@ export function LlamaUpdateBanner({
     muted,
     shownChannels.length > 0,
   );
-  // Held across a chained apply, whose status drops each component as it lands.
+  // keep the preference while a chained apply removes completed components from status.
   const [heldPref, setHeldPref] = useState<boolean | null>(null);
   useEffect(() => {
     setHeldPref((prev) => heldUpdateBannerPref(prev, inFlight, livePref));
@@ -299,8 +291,7 @@ export function LlamaUpdateBanner({
     (llamaUpdateOffered(status) || applying);
   const tabVisible = useDocumentVisible();
   useEffect(() => {
-    // Every listed component counts as seen, so none of them returns on a card of its
-    // own within its quiet period.
+    // record every audible listed component to suppress separate cards during the quiet period.
     if (show && tabVisible && livePref) {
       const fresh = (recordKey.split(" ") as NotificationChannel[])
         .filter(Boolean)
@@ -315,24 +306,21 @@ export function LlamaUpdateBanner({
       setShownChannels([]);
     }
   }, [show, tabVisible, livePref, recordKey, shownChannels]);
-  // A migration re-applies the install's own automatic choice, so it can be offered at a
-  // release the machine already has, where the backend pair replaces the version line.
+  // a migration can reapply the automatic backend at the installed release.
   const backendChange =
     llamaRow && status?.backend_migration_available && status.to_backend
       ? `${backendLabel(status.from_backend)} \u2192 ${backendLabel(status.to_backend)}`
       : null;
   const llamaVersionChanged = Boolean(llamaRow?.versionChanged);
   const backendOnly = Boolean(backendChange) && !llamaVersionChanged;
-  // A migration at the installed release has no version pair, so llama.cpp's row
-  // shows the backend pair instead.
+  // show the backend pair when a migration has no version change.
   const backendPair = backendOnly
     ? ([
         backendLabel(status?.from_backend),
         backendLabel(status?.to_backend),
       ] as const)
     : null;
-  // Only the migration offer, and only the pair it was measured on: a version update
-  // or a hand-picked switch keeps the plain line.
+  // only the measured migration pair gets the speed note; other updates do not.
   const restartNote =
     backendOnly &&
     status?.from_backend === "rocm" &&
@@ -349,16 +337,13 @@ export function LlamaUpdateBanner({
   const changelogAvailable = Boolean(changelogKey && !status?.source_build);
   const changelogOpen =
     changelogKey !== null && changelogVersion === changelogKey;
-  // Use the same predicate for the panel and its protective height floor.
+  // the panel and its protective height floor must use the same predicate.
   const changelogPanelOpen = Boolean(
     !applying && changelogAvailable && changelogOpen && changelogTags,
   );
-  // A bundle shows each download beside its own release instead of one total, since
-  // not every component reports a size.
+  // bundles omit a total because some components do not report a download size.
   const sizeLabel = bundled ? null : sizeLabelOf(primary?.sizeBytes);
-  // A bundle names its components on the rows below the title. While it installs, the
-  // job's own phase record says which one is running: the status alone cannot, since
-  // a migration or source-build offer is not reported while a job runs.
+  // use the phase record because migration and source-build offers disappear while jobs run.
   const runningPhase = status?.job.runningPhase ?? null;
   const phaseIndex = rows.findIndex(
     (row) => updateComponentKey(row.component) === runningPhase,
@@ -378,14 +363,14 @@ export function LlamaUpdateBanner({
   }
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";
-  // Display value animates; aria uses the real progress.
+  // aria reports real progress while the visible value is smoothed.
   const displayProgress = useSmoothedProgress(
     applying,
     updateProgress,
     jobSucceeded,
   );
 
-  // Avoid opacity/transform transitions; GPU layer churn can flash.
+  // opacity and transform transitions can flash during gpu layer churn.
   return show ? (
     <div
       className={cn(
@@ -393,8 +378,7 @@ export function LlamaUpdateBanner({
           ? "fixed bottom-4 right-4 z-[9998] w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))]"
           : cn(
               "pointer-events-auto flex w-[calc(100vw-2rem)] max-w-[calc(448px*var(--ui-space-scale,1))] flex-col",
-              // Only an open changelog needs a shrinkable height floor. Each extra
-              // bundled row adds one text-xs line to the header above it.
+              // each bundled row adds one text-xs line to the open changelog's height floor.
               changelogPanelOpen
                 ? "min-h-[calc(117px+(93px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))] max-[383px]:min-h-[calc(24px+(224px+18px*var(--llama-update-extra-rows,0))*var(--ui-font-scale,1))]"
                 : "shrink-0",
@@ -407,7 +391,7 @@ export function LlamaUpdateBanner({
       }
       data-testid="llama-update-banner"
     >
-      {/* Paint the full floor even when the changelog content is short. */}
+      {/* fill the height floor even when the changelog content is short. */}
       <div className="relative flex max-h-[calc(100dvh_-_2rem_-_var(--studio-window-chrome-top,0px))] min-h-0 grow flex-col overflow-hidden rounded-[24px] bg-white px-5 pb-4 pt-5 shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-[0_8px_28px_-6px_var(--background)]">
         {applying ? null : (
           <button
@@ -526,7 +510,7 @@ export function LlamaUpdateBanner({
               </Button>
               <Button
                 size="sm"
-                // Align pill edge with card padding.
+                // align the pill edge with the card padding.
                 className="-mr-1 h-auto whitespace-nowrap rounded-full px-3 py-2 text-ui-13"
                 onClick={handleUpdate}
                 data-testid="llama-update-button"
