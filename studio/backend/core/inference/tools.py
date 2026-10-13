@@ -13582,12 +13582,10 @@ _MCP_TOOL_PRELOAD = 5
 _MCP_TOOL_PRELOAD_SHARE = 0.33
 # Tools a turn loads by search or by name, newest first; older ones leave the listing to stay within it.
 _MCP_TOOL_LOAD_SHARE = 0.5
-# Each tool the search tool names carries this much of its description, so the model can tell what to search for.
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
-# Deferred names the search tool lists, so the model knows what exists without paying for the schemas.
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread has loaded stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds.
+# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -13596,7 +13594,7 @@ _MCP_LISTING_THREAD: ContextVar = ContextVar("mcp_listing_thread", default = Non
 _MCP_LISTING_QUERY: ContextVar = ContextVar("mcp_listing_query", default = "")
 _MCP_LISTING_FORCED: ContextVar = ContextVar("mcp_listing_forced", default = None)
 _MCP_LISTING_IMAGE: ContextVar = ContextVar("mcp_listing_image", default = False)
-# (account, thread) -> MCP tools the thread loaded through mcp_tool_search, oldest first.
+# (account, thread) -> MCP tools the thread ran while they were deferred, oldest first.
 _MCP_LOADED_THREADS: "OrderedDict[tuple, list[str]]" = OrderedDict()
 _MCP_LOADED_LOCK = threading.Lock()
 # Digest of the catalog's searchable text -> its in-memory FTS5 index, rebuilt only when that text changes.
@@ -13810,7 +13808,7 @@ def _mcp_loaded_names() -> list[str]:
 
 
 def mcp_record_loaded_tools(thread_id, names) -> None:
-    """Remember tools a thread loaded, so its next turns list them up front."""
+    """Remember tools a thread ran, so its next turns list them up front."""
     if not isinstance(thread_id, str) or not thread_id or not names:
         return
     key = (current_account_id(), thread_id)
