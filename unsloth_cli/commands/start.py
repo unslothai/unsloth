@@ -6107,7 +6107,7 @@ def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
 
 _VSCODE_GROUP = "Unsloth"
 _VSCODE_DEFAULT_CONTEXT = 32768
-# Copilot's Agent prompt (instructions + tool schemas) measured ~19K tokens in VS Code 1.141.
+# Copilot's Agent prompt (instructions + tool schemas) does not fit in a smaller window.
 _VSCODE_AGENT_MIN_CONTEXT = 32768
 
 
