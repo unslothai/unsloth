@@ -2395,6 +2395,40 @@ def test_layer_split_defaults_also_carry_the_microbatch_count(monkeypatch) -> No
     assert "--microbatches 32" in _emitted(seen)
 
 
+def test_the_legacy_backend_gets_its_own_default_schedule(monkeypatch) -> None:
+    """legacy's 1f1b deadlocks and spark_pipeline refuses it; the wrapper forcing 1f1b made the
+    advertised control arm exit at once."""
+    seen, result = _run_spark_cli(
+        monkeypatch, ["train", "--layer-split", "some/model", "--pp-backend", "legacy"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "--schedule" not in _emitted(seen)
+
+
+def test_train_refuses_both_modes_at_once(monkeypatch) -> None:
+    seen, result = _run_spark_cli(
+        monkeypatch, ["train", "--layer-split", "some/model", "--script", "train.py"]
+    )
+    assert result.exit_code == 2 and (
+        "exactly one" in result.output or "different modes" in result.output
+    )
+
+
+def test_multi_node_vllm_recipes_start_ray_and_stage_a_local_model(tmp_path) -> None:
+    """Ray is not in the Studio environment and every node opens the same model path; the
+    pipeline-parallel recipe also never started a Ray cluster at all."""
+    sc = _load("studio/spark_cluster.py")
+    model = tmp_path / "ckpt"
+    model.mkdir()
+    for axis in ("tensor-parallel", "pipeline-parallel"):
+        lines = sc._serve_commands(axis, 2, str(model))
+        text = "\n".join(lines)
+        assert "pip install 'ray[default]'" in text, axis
+        assert "ray start --head" in text and "ray start --address" in text, axis
+        assert f"rsync -a --mkpath {model}/ <other-spark>:{model}/" in text, axis
+        assert text.index("ray start --head") < text.index("vllm serve"), axis
+
+
 def test_grad_checkpoint_is_off_unless_asked(monkeypatch) -> None:
     seen, result = _run_spark_cli(monkeypatch, ["train", "--layer-split", "some/model"])
     assert result.exit_code == 0, result.output

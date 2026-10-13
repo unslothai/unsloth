@@ -3821,6 +3821,25 @@ def _q(model: str) -> str:
     return shlex.quote(str(model))
 
 
+def _ray_cluster(model: str) -> List[str]:
+    """What a multi-node vLLM launch needs first: Ray is not in the Studio environment, and every
+    node opens the model at the same path."""
+    lines = [
+        "uv pip install 'ray[default]'          # on EVERY Spark; vLLM's multi-node backend",
+        "ray start --head --port=6379            # on THIS Spark",
+        "ray start --address=<this-spark>:6379   # on each of the other Sparks",
+    ]
+    path = osp.expanduser(model)
+    if model != "<model>" and osp.exists(path):
+        src = osp.abspath(path).rstrip("/") + ("/" if osp.isdir(path) else "")
+        lines.insert(
+            0,
+            f"rsync -a --mkpath {shlex.quote(src)} <other-spark>:{shlex.quote(src)}   "
+            f"# every node opens this path",
+        )
+    return lines
+
+
 def _serve_commands(
     axis: str,
     n_nodes: int,
@@ -3831,8 +3850,7 @@ def _serve_commands(
     if axis == "tensor-parallel":
         return [
             env,
-            "ray start --head --port=6379            # on THIS Spark",
-            "ray start --address=<this-spark>:6379   # on each of the other Sparks",
+            *_ray_cluster(model),
             f"vllm serve {qmodel} --tensor-parallel-size {n_nodes} "
             f"--distributed-executor-backend ray",
         ]
@@ -3858,6 +3876,7 @@ def _serve_commands(
         if not gguf:
             return [
                 env,
+                *_ray_cluster(model),
                 f"vllm serve {qmodel} --pipeline-parallel-size {n_nodes} "
                 f"--distributed-executor-backend ray",
             ]
@@ -4366,6 +4385,8 @@ def _cmd_estimate(
     if size is None:
         print(f"Cannot size {model}: {sized['why']}. Refusing to guess.")
         return 1
+    # What a stage holds after the bf16 cast, as _cmd_pipeline sizes it.
+    size = max(size, bf16_resident_gib(model) or 0.0)
     dims = model_dimensions(model)
     if dims is None:
         print(f"  model      : {model}  ({size:.1f} GiB)")

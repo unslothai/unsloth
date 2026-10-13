@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import shlex
+from typing import Optional
 
 import typer
 
@@ -809,8 +810,8 @@ def train(
         "as a control arm -- it is slower and its 1f1b and "
         "interleaved deadlock.",
     ),
-    schedule: str = typer.Option(
-        "1f1b",
+    schedule: Optional[str] = typer.Option(
+        None,
         "--schedule",
         help = "On --pp-backend torch. Against a healthy single-Spark "
         "control: 1f1b 1.57x at 2B and 1.77x at 9B, dualpipev "
@@ -903,12 +904,15 @@ def train(
             raise typer.Exit(2)
         extra = [
             f"--microbatches {microbatches}",
-            f"--schedule {schedule}",
             f"--pp-backend {pp_backend}",
             f"--steps {steps}",
             f"--batch {batch}",
             f"--seq {seq}",
         ]
+        # Unset, spark_pipeline picks the backend's own default (1f1b on torch, gpipe on legacy,
+        # whose 1f1b deadlocks).
+        if schedule:
+            extra.append(f"--schedule {schedule}")
         if data:
             extra.append(f"--data {shlex.quote(data)}")
         if save:
