@@ -15,6 +15,7 @@ through a preview or a load. A Hub card may name relative paths and hf / http(s)
 import functools
 import importlib.abc
 import importlib.util
+import re
 import sys
 
 _HUB_URL_PROTOCOLS = frozenset({"hf", "http", "https"})
@@ -23,6 +24,13 @@ _PATCHES = {
     "datasets.load": ("create_builder_configs_from_metadata_configs", "_card_guard"),
 }
 _MARK = "_unsloth_hub_card_guard"
+# A cached Hub snapshot is loaded as a local folder, but its card is still the Hub's.
+_SNAPSHOT = re.compile(r"[\\/]datasets--[^\\/]+[\\/]snapshots[\\/]")
+
+
+def _hub_base(base_path) -> bool:
+    text = str(base_path or "")
+    return text.startswith("hf://") or bool(_SNAPSHOT.search(text + "/"))
 
 
 def _stays_on_the_hub(value, *, urls: bool) -> bool:
@@ -56,7 +64,7 @@ def _patterns(data_files):
 def _pattern_guard(resolve_pattern):
     @functools.wraps(resolve_pattern)
     def guarded(pattern, base_path, *args, **kwargs):
-        if str(base_path).startswith("hf://") and not _stays_on_the_hub(pattern, urls = True):
+        if _hub_base(base_path) and not _stays_on_the_hub(pattern, urls = True):
             _refuse(pattern)
         return resolve_pattern(pattern, base_path, *args, **kwargs)
 
@@ -73,7 +81,7 @@ def _card_guard(create_builder_configs):
         **kwargs,
     ):
         # The card's own values, while their Hub origin is still known: a later join drops it.
-        if str(base_path or "").startswith("hf://"):
+        if _hub_base(base_path):
             for params in (metadata_configs or {}).values():
                 data_dir = params.get("data_dir")
                 if data_dir and not _stays_on_the_hub(data_dir, urls = False):

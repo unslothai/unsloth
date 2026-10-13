@@ -46,6 +46,11 @@ def card(data_dir):
     return dict(configs[0].data_files)
 
 show("DATA_DIR", lambda: card(owner))
+# A cached Hub snapshot is loaded as a local folder; its card is still the Hub's.
+snapshot = sys.argv[3]
+show("SNAPSHOT", lambda: datasets.data_files.resolve_pattern(secret, base_path = snapshot))
+own_rows = datasets.data_files.resolve_pattern("train.csv", base_path = snapshot)
+print("SNAPSHOT_OWN", "read" if own_rows and own_rows[0].endswith("train.csv") else "other")
 # A local dataset may still name its own files by absolute path.
 show(
     "LOCAL_DATASET", lambda: datasets.data_files.resolve_pattern(secret, base_path = local_base)
@@ -55,16 +60,19 @@ print("DOUBLE", getattr(wrapped, "_unsloth_hub_card_guard", False))
 print("FINDERS", sum(isinstance(f, hub_data_files._Finder) for f in sys.meta_path))
 """
 
-HUB_ROUTES = ("ABSOLUTE", "FILE_URL", "LOCAL_URL", "CHAINED", "DATA_DIR")
+HUB_ROUTES = ("ABSOLUTE", "FILE_URL", "LOCAL_URL", "CHAINED", "DATA_DIR", "SNAPSHOT")
 
 
 def _probe(tmp_path, before, after):
     owner = tmp_path / "owner"
     owner.mkdir()
     (owner / "private.csv").write_text("secret\n1\n")
+    snapshot = tmp_path / "hub" / "datasets--org--repo" / "snapshots" / "abc123"
+    snapshot.mkdir(parents = True)
+    (snapshot / "train.csv").write_text("a\n1\n")
     code = textwrap.dedent(PROBE.format(before = before, after = after))
     out = subprocess.run(
-        [sys.executable, "-c", code, str(owner), str(tmp_path)],
+        [sys.executable, "-c", code, str(owner), str(tmp_path), str(snapshot)],
         cwd = BACKEND,
         capture_output = True,
         text = True,
@@ -89,6 +97,7 @@ def test_a_hub_card_cannot_reach_a_host_file(tmp_path, before, after):
 
     assert {route: seen[route] for route in HUB_ROUTES} == dict.fromkeys(HUB_ROUTES, "refused")
     assert seen["LOCAL_DATASET"] == "read"
+    assert seen["SNAPSHOT_OWN"] == "read"
     assert seen["DOUBLE"] == "False"
     assert seen["FINDERS"] == "1"
 
