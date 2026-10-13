@@ -89,17 +89,20 @@ _OFFLOAD_FIT_FRACTION = 0.9
 
 
 def _loader_repo(path: str, load_in_4bit: bool) -> str:
-    """The repo Unsloth's mapper loads for `path` (its bnb-4bit twin for a 4-bit load), else `path`."""
+    """The repo Unsloth's mapper loads for `path` (a 4-bit load's bnb-4bit twin, a 16-bit load's full-precision one), else `path`."""
     try:
         from unsloth.models import loader, loader_utils
 
         if not loader.ALLOW_BITSANDBYTES:
             load_in_4bit = False
-        table = (
-            loader_utils.FLOAT_TO_INT_MAPPER if load_in_4bit else loader_utils.MAP_TO_UNSLOTH_16bit
+        tables = (
+            loader_utils.FLOAT_TO_INT_MAPPER,
+            loader_utils.INT_TO_FLOAT_MAPPER,
+            loader_utils.MAP_TO_UNSLOTH_16bit,
         )
         # Unknown names would fetch the remote mapper.
-        if path.lower() not in table or path.lower() in loader_utils.BAD_MAPPINGS:
+        name = path.lower()
+        if name in loader_utils.BAD_MAPPINGS or not any(name in t for t in tables):
             return path
         return loader_utils.get_model_name(path, load_in_4bit = load_in_4bit) or path
     except Exception:
