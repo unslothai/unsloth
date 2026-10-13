@@ -30370,6 +30370,14 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
     return (value or "").strip() == "1"
 
 
+def _accepts_keyword(fn, name: str) -> bool:
+    import inspect
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 # The loaded model serves the request, so a caller that cannot use speech says so per request.
 REQUIRE_TEXT_HEADER = "X-Unsloth-Require-Text"
 
@@ -34701,6 +34709,16 @@ async def produce_openai_chat_completions(
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
     _sf_context_truncation_holder: dict = {"value": None}
+    # Diffusion canvas frames only for a streaming, single-choice reply to a client rendering Studio events.
+    _sf_ui_events = _ui_stream_events_enabled(request)
+    _sf_frame_kwargs = (
+        {"diffusion_frames": True}
+        if payload.stream
+        and _sf_ui_events
+        and (payload.n or 1) == 1
+        and _accepts_keyword(backend.generate_chat_response, "diffusion_frames")
+        else {}
+    )
 
     if payload.use_adapter is not None:
 
@@ -34709,6 +34727,7 @@ async def produce_openai_chat_completions(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
+                **_sf_frame_kwargs,
                 **kw,
             )
     else:
@@ -34717,6 +34736,7 @@ async def produce_openai_chat_completions(
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
+                **_sf_frame_kwargs,
                 **kw,
             )
 
@@ -34849,6 +34869,12 @@ async def produce_openai_chat_completions(
                                 model_name,
                                 {key: value for key, value in cumulative.items() if key != "type"},
                             )
+                        elif cumulative.get("type") == "diffusion_frame":
+                            # As on the GGUF path: never in the transcript.
+                            if _sf_ui_events:
+                                yield f"data: {json.dumps(cumulative)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if isinstance(cumulative, GenStreamError):
                         backend.reset_generation_state(cancel_event)
