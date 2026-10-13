@@ -40,6 +40,7 @@ from functools import lru_cache
 from core._torchao_stub import is_stubbed, torch_is_rocm
 
 from .diffusion_nvfp4_flag import nvfp4_blocked, nvfp4_disabled_message
+from .family_profile import profile_table as _profile_table
 
 TE_QUANT_FP8 = "fp8"
 TE_QUANT_NVFP4 = "nvfp4"
@@ -53,15 +54,9 @@ _TE_TORCHAO_MODES = frozenset({TE_QUANT_INT8, TE_QUANT_FP8_DYNAMIC, TE_QUANT_NVF
 _TEXT_ENCODER_ATTRS = ("text_encoder", "text_encoder_2", "text_encoder_3")
 
 # int8 degrades on large text encoders unless the quant-sensitive decoder blocks stay bf16. Per-family (skip_first,
-# skip_last) blocks to keep dense, from measured hidden-state fidelity; absent families have no schedule clearing the
-# bar, so int8 falls back to fp8. qwen-image (Qwen2.5-VL-7B): first+last 6 gives ~0.997 cosine; flux.2-dev
-# (Mistral-Small-24B): first 3 gives ~0.98 (early-layer seeding).
-_TE_INT8_SKIP: dict[str, tuple[int, int]] = {
-    "qwen-image": (6, 6),
-    "qwen-image-edit": (6, 6),
-    "qwen-image-layered": (6, 6),
-    "flux.2-dev": (3, 0),
-}
+# skip_last) blocks to keep dense (``FamilyProfile.te_int8_skip``, measured hidden-state fidelity); absent families
+# have no schedule clearing the bar, so int8 falls back to fp8.
+_TE_INT8_SKIP: dict[str, tuple[int, int]] = _profile_table("te_int8_skip")
 
 
 def normalize_te_quant(value: Optional[str]) -> Optional[str]:

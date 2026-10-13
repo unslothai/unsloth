@@ -130,6 +130,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.toolResultLimit",
     "settings.chat.autoScroll",
     "settings.chat.scrollToBottomButton",
+    "settings.chat.replyNotification",
     "settings.profile.greetingSloth",
     "settings.chat.thinking.visibility",
     "settings.chat.tools.visibility",
@@ -140,6 +141,11 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.chat.groups.menu.title",
   ],
   browser: [
+    "browser.agentSettings.title",
+    "browser.agentSettings.enable",
+    "browser.agentSettings.history",
+    "browser.agentSettings.scripts",
+    "browser.agentSettings.permissionsTitle",
     "browser.linksTitle",
     "browser.openLinksSetting",
     "browser.openFilesSetting",
@@ -432,6 +438,9 @@ export const SETTINGS_SEARCH_KEYWORDS: Partial<
   "settings.chat.tools.foldIntoThinking": "settings.chat.visibilityKeywords",
   "settings.chat.autoScroll": "settings.chat.autoScrollKeywords",
   "settings.chat.scrollToBottomButton": "settings.chat.scrollToBottomButtonKeywords",
+  "settings.chat.replyNotification": "settings.chat.replyNotificationKeywords",
   // match protocol and agent names omitted from the title.
   "settings.apiKeys.mcp.title": "settings.apiKeys.mcp.keywords",
+  // the intro names only some agents; every listed one has to find this page.
+  "settings.agents.agent": "settings.agents.agentKeywords",
 };

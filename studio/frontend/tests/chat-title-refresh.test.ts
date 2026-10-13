@@ -126,9 +126,21 @@ test("a refresh follows the connection that answered, and asks a local model onl
     source.indexOf("async function titleModelServing"),
     source.indexOf("export async function regenerateChatTitle"),
   );
-  // An idle-unloaded local model is reloaded by any completion naming it, so residency is read first.
-  assert.match(serving, /const status = await getInferenceStatus\(undefined, checkpoint\);/);
+  // An idle-unloaded local model is reloaded by any completion naming it, so residency is read first,
+  // bounded: a stalled status check must still reach the heuristic fallback.
+  // With the WebKitGTK-safe helper (no AbortSignal.timeout before 2.38), disposed once settled.
+  assert.match(serving, /const wait = disposableTimeoutSignal\(TITLE_STATUS_WAIT_MS\);/);
+  assert.match(serving, /const status = await Promise\.race\(\[getInferenceStatus\(wait\.signal, checkpoint\), timedOut\]\);/);
+  assert.match(serving, /finally \{ wait\.dispose\(\); \}/);
+  assert.doesNotMatch(source, /AbortSignal\.timeout\(/);
   assert.match(serving, /if \(!status\.active_model \|\| status\.is_audio \|\| status\.is_diffusion\) return false;/);
+  // The model's wait covers building the request (a stored key is encrypted through the backend) as well as the stream.
+  const fromModel = source.slice(
+    source.indexOf("async function titleFromModel"),
+    source.indexOf("async function titleModelServing"),
+  );
+  assert.match(fromModel, /await Promise\.race\(\[buildTitleRefreshRequest\(checkpoint, excerpt\), timedOut\]\)/);
+  assert.match(fromModel, /await Promise\.race\(\[titleFromStream\(streamChatCompletions\(request, controller\.signal\)\), timedOut\]\)/);
   const body = source.slice(
     source.indexOf("export async function regenerateChatTitle"),
     source.indexOf("/** The sandbox"),
@@ -145,7 +157,17 @@ test("a refresh follows the connection that answered, and asks a local model onl
     body,
     /\(serving \? await titleFromModel\(checkpoint, excerpt\) : null\) \?\? heuristicChatTitle\(branch\)/,
   );
-  assert.match(body, /updateChatThread\(id, \{ title \}, startTitle === undefined \? \{\} : \{ expectedTitle: startTitle \}\)/);
+  // One deadline over the whole regeneration releases the busy mark whichever step stalls.
+  assert.match(body, /return await Promise\.race\(\[regenerateChatTitleNow\(item, run\), deadline\]\);/);
+  // A run that lost the race never writes: a retry may already own the chat.
+  assert.match(body, /run\.expired = true; resolve\("failed"\);/);
+  assert.match(body, /if \(run\.expired\) return "failed"; const targets = panes/);
+  assert.match(body, /finally \{ clearTimeout\(timer\); regeneratingTitles\.delete\(item\.id\); \}/);
+  // Unchanged only when every pane already has the title.
+  assert.match(body, /if \(panes \? panes\.every\(\(pane\) => pane\.title === title\) : title === startTitle\) return "unchanged";/);
+  // Each pane is guarded with its own starting title: a comparison's panes can differ.
+  assert.match(body, /item\.type === "single" \? Promise\.resolve\(null\) : listStoredChatThreads\(\{ pairId: item\.id, includeArchived: true \}\)/);
+  assert.match(body, /updateChatThread\(id, \{ title \}, \{ expectedTitle: before, preserveTitleModifiedAt: true \}\)/);
 });
 
 test("a locally answered chat is never sent to a selected external provider", () => {
@@ -230,4 +252,54 @@ test("without a model reasoning and tool output never pick the title", () => {
     ]);
   assert.equal(title, "Day trip to Kyoto in autumn");
   assert.doesNotMatch(title ?? "", /database|migration/i);
+});
+
+test("the Library's Regenerate title is off while any of the chat's panes is generating", () => {
+  const source = readFileSync(
+    new URL("../src/features/library/chats/chats-items.tsx", import.meta.url),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  const item = source.slice(
+    source.indexOf("function RegenerateTitleItem"),
+    source.indexOf("function ForkItem"),
+  );
+  // A comparison's id is its pair's; runningByThreadId is keyed by each pane's thread.
+  assert.match(
+    item,
+    /\(chat\.threadIds\?\.length \? chat\.threadIds : \[chat\.id\]\)\.some\(\(id\) => Boolean\(s\.runningByThreadId\[id\]\)\)/,
+  );
+  assert.match(item, /disabled=\{generating\}/);
+});
+
+test("a second Regenerate title while one runs leaves the running request's toast alone", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/components/chat-row-menu.ts", import.meta.url),
+    "utf8",
+  ).replace(/\s+/g, " ");
+  const fn = source.slice(
+    source.indexOf("async function regenerateChatTitleWithToast"),
+    source.indexOf("async function regenerateChatTitleNow"),
+  );
+  assert.match(fn, /if \(outcome === "busy"\) return; if \(outcome === "empty"\)/);
+});
+
+test("the chat header menu offers Regenerate title like the Library, off while generating", () => {
+  const menu = readFileSync(
+    new URL("../src/features/chat/components/chat-header-menu.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    menu,
+    /icon=\{Refresh01Icon\}\s*onSelect=\{\(\) => void regenerateChatTitleWithToast\(menu\.item\)\}\s*disabled=\{generating\}/,
+  );
+  assert.match(menu, /t\("library\.menu\.regenerateTitle"\)/);
+  assert.match(
+    menu,
+    /getSidebarItemThreadIds\(menu\.item\)\.some\(\(id\) => Boolean\(s\.runningByThreadId\[id\]\)\)/,
+  );
+  const library = readFileSync(
+    new URL("../src/features/library/chats/chats-library.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(library, /regenerateTitle: \(chat\) => void regenerateChatTitleWithToast\(chat\)/);
 });

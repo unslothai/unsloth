@@ -1175,9 +1175,9 @@ function GpuMemorySettings({
                     </span>
                   </div>
                 )}
-                {/* Not for diffusion: that runner drives one device and matches_gpu_ids
-                    reduces the request to its lowest id, so the arrows would move a row
-                    without moving the model, under help text promising the opposite. */}
+                {/* Not for diffusion: that runner uses the lowest id, or splits in id
+                    order, so the arrows would move a row without moving the model, under
+                    help text promising the opposite. */}
                 {isGpuChecked(d.index) && !singleGpuInUse && !isDiffusion && (
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
@@ -3700,7 +3700,7 @@ export function ModelConfigPage({
       />
       <div className="space-y-5">
         {!target.isGguf && !targetIsMlx && !targetIsNpu && !classifiedIsDiffusion && !target.meta.isLora && !target.meta.audioType && (
-          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
+          <InferenceEnginePicker parallelism={config.engineParallelism ?? "tensor"} onParallelismChange={engineParallelism => update({ engineParallelism })} precision={config.enginePrecision ?? "auto"} onPrecisionChange={enginePrecision => update({ enginePrecision })} kvCacheDtype={config.engineKvCacheDtype ?? "auto"} onKvCacheDtypeChange={engineKvCacheDtype => update({ engineKvCacheDtype })} gpuMemoryUtilization={config.engineGpuMemoryUtilization ?? null} onGpuMemoryUtilizationChange={engineGpuMemoryUtilization => update({ engineGpuMemoryUtilization })} seed={config.engineSeed ?? null} onSeedChange={engineSeed => update({ engineSeed })} value={config.engine ?? "auto"} onChange={engine => update({ engine })} onReadyChange={setEngineReady} onUse={handleRun} gpuIds={config.selectedGpuIds} onGpuChange={ids => update({ selectedGpuIds: ids, selectedGpuIndexKind: "physical" })} />
         )}
         {audioRuntimeGguf ? (
           <p className="text-ui-12 leading-snug text-muted-foreground">

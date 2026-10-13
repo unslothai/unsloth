@@ -48,6 +48,7 @@ import {
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { ForkIcon } from "@/lib/fork-icon";
 import type { ReactNode } from "react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import {
   type ActiveChatMenu,
   useActiveChatMenuStore,
@@ -57,6 +58,7 @@ import {
   chatExportOptions,
   exportConversationByFormat,
   getSidebarItemThreadIds,
+  regenerateChatTitleWithToast,
 } from "./chat-row-menu";
 import { OpenChatFolderItem, UploadToChatFolderItem } from "./open-chat-folder-item";
 
@@ -153,6 +155,9 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
   const favorite = useChatFavoritesStore((state) =>
     state.chatIds.includes(menu.item.id),
   );
+  const generating = useChatRuntimeStore((s) =>
+    getSidebarItemThreadIds(menu.item).some((id) => Boolean(s.runningByThreadId[id])),
+  );
   // As the Library exports one: each thread behind the chat, a comparison's two included.
   const exportAs = async (format: ConversationExportFormat) => {
     try {
@@ -172,8 +177,8 @@ function ChatMenuItems({ menu }: { menu: ActiveChatMenu }) {
       </Item>
       <Item
         icon={Refresh01Icon}
-        onSelect={menu.regenerateTitle}
-        disabled={!menu.canRegenerateTitle}
+        onSelect={() => void regenerateChatTitleWithToast(menu.item)}
+        disabled={generating}
       >
         {t("library.menu.regenerateTitle")}
       </Item>

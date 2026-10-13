@@ -24,6 +24,9 @@ import {
 export interface PerModelConfig {
   engineParallelism?: "tensor" | "pipeline" | "data";
   enginePrecision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engineKvCacheDtype?: "auto" | "fp8";
+  engineSeed?: number | null;
+  engineGpuMemoryUtilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   customContextLength: number | null;
   maxSeqLength: number | null;
@@ -74,6 +77,9 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   engine: "auto",
   enginePrecision: "auto",
   engineParallelism: "tensor",
+  engineKvCacheDtype: "auto",
+  engineSeed: null,
+  engineGpuMemoryUtilization: null,
   customContextLength: null,
   maxSeqLength: null,
   kvCacheDtype: null,
@@ -95,6 +101,28 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   disableVision: false,
   chatTemplateOverride: null,
 };
+
+/** vLLM --seed / SGLang --random-seed; the backend bounds it to a non-negative int32. */
+export function normalizeEngineSeed(value: unknown): number | null {
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= 2 ** 31 - 1
+    ? value
+    : null;
+}
+
+/** Ceiling on the share of each GPU a managed engine may claim, as the backend bounds it. */
+export function normalizeEngineGpuMemoryUtilization(
+  value: unknown,
+): number | null {
+  return typeof value === "number" &&
+    Number.isFinite(value) &&
+    value >= 0.05 &&
+    value <= 0.99
+    ? Math.round(value * 1000) / 1000
+    : null;
+}
 
 // Mirrors llama_server_args.py PARALLEL_MIN/MAX; null = follow the server-wide default.
 export const N_PARALLEL_MIN = 1;
@@ -1079,6 +1107,11 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
       partial.engine === "vllm" || partial.engine === "sglang"
         ? partial.engine
         : "auto",
+    engineKvCacheDtype: partial.engineKvCacheDtype === "fp8" ? "fp8" : "auto",
+    engineSeed: normalizeEngineSeed(partial.engineSeed),
+    engineGpuMemoryUtilization: normalizeEngineGpuMemoryUtilization(
+      partial.engineGpuMemoryUtilization,
+    ),
     customContextLength:
       typeof partial.customContextLength === "number" &&
       Number.isFinite(partial.customContextLength) &&
@@ -1357,6 +1390,9 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
     (config.engine ?? "auto") === "auto" &&
     (config.enginePrecision ?? "auto") === "auto" &&
     (config.engineParallelism ?? "tensor") === "tensor" &&
+    (config.engineKvCacheDtype ?? "auto") === "auto" &&
+    config.engineSeed == null &&
+    config.engineGpuMemoryUtilization == null &&
     config.customContextLength == null &&
     config.maxSeqLength == null &&
     (config.kvCacheDtype ?? null) === DEFAULT_PER_MODEL_CONFIG.kvCacheDtype &&

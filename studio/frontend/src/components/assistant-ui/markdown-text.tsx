@@ -910,8 +910,9 @@ function StreamdownBlockContent(props: BlockProps) {
         source={settledFence.text}
       />
     ) : (
-      <PlainFenceBlock
+      <LiveThinkingFence
         language={settledFence.language}
+        settled
         source={settledFence.text}
       />
     );
@@ -1161,14 +1162,16 @@ function PlainFenceBlock({
 
 function LiveThinkingFence({
   language,
+  settled = false,
   source,
 }: {
   language: string | null;
+  settled?: boolean;
   source: string;
 }) {
   const languageToken = language?.trim().split(/\s+/)[0] || null;
   const host = useRef<HTMLDivElement | null>(null);
-  const colour = useThinkingCodeColour(host, source, languageToken, false);
+  const colour = useThinkingCodeColour(host, source, languageToken, settled);
   const result = useMemo(
     () =>
       colour === null
@@ -1182,7 +1185,7 @@ function LiveThinkingFence({
         <PlainFenceShell language={languageToken} source={source} />
       ) : (
         <FenceBody
-          isIncomplete
+          isIncomplete={!settled}
           language={languageToken}
           result={result}
           source={source}

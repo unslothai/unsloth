@@ -31,7 +31,6 @@ import {
   downloadInventoryHintKind,
   scopedDownloadInventoryKind,
 } from "./download-manager-types";
-import { breakdownOfPersisted } from "./download-breakdown";
 import { presentationForExpectedBytesUpdate } from "./download-presentation";
 import {
   clearRuntimeTimer,
@@ -155,7 +154,6 @@ function sanitizePersistedJob(
     ...(typeof value.checkpoint === "boolean"
       ? { checkpoint: value.checkpoint }
       : {}),
-    ...breakdownOfPersisted(value.breakdown),
     ...inventoryKindOfPersisted(value, variant),
     // A held reading must survive the reload: dropping the flag restores the stale downloadedBytes reading as measured, the "0 B left" the guard exists to stop.
     // Absent means "never polled" only since the field existed, so a legacy record already carrying counters is read as held.
@@ -169,6 +167,9 @@ function sanitizePersistedJob(
       : {}),
     ...(isResolvedTransport(value.cancelTransport)
       ? { cancelTransport: value.cancelTransport }
+      : {}),
+    ...(typeof value.downloadDir === "string" || value.downloadDir === null
+      ? { downloadDir: value.downloadDir }
       : {}),
   };
 }
@@ -217,7 +218,6 @@ function toPersistedJob(
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.checkpoint !== undefined ? { checkpoint: job.checkpoint } : {}),
-    ...(job.breakdown !== undefined ? { breakdown: job.breakdown } : {}),
     ...(job.inventoryKind !== undefined
       ? { inventoryKind: job.inventoryKind }
       : {}),
@@ -229,6 +229,7 @@ function toPersistedJob(
     ...(job.cancelTransport !== undefined
       ? { cancelTransport: job.cancelTransport }
       : {}),
+    ...(job.downloadDir !== undefined ? { downloadDir: job.downloadDir } : {}),
   };
 }
 
