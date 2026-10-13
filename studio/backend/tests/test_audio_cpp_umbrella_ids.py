@@ -101,7 +101,6 @@ def hub(tmp_path, monkeypatch):
 
 def _path(repo_id: str, variant: str) -> dict:
     import routes.models as rm
-
     return asyncio.run(
         rm.get_cached_model_path(repo_id = repo_id, variant = variant, current_subject = "x")
     )
@@ -116,7 +115,13 @@ def _left(hub: Path) -> list[str]:
     )
 
 
-def _idle(monkeypatch, *, active = None, loading = (), stt = None):
+def _idle(
+    monkeypatch,
+    *,
+    active = None,
+    loading = (),
+    stt = None,
+):
     from core.inference import orchestrator, stt_audiocpp_sidecar
 
     side = stt_audiocpp_sidecar.AudioCppSttSidecar()
@@ -217,7 +222,7 @@ def test_folder_guard_maps_a_legacy_dictation_key_to_its_folder(monkeypatch):
 def test_delete_impact_of_a_folder_row_counts_only_its_files(hub):
     from hub.services.models import companion_cleanup
 
-    qwen_bytes = (hub / SNAPSHOT / QWEN_FILE)
+    qwen_bytes = hub / SNAPSHOT / QWEN_FILE
     size = qwen_bytes.stat().st_size
     for variant in ("Q8_0", None):
         impact = asyncio.run(companion_cleanup.delete_impact_response(QWEN, variant))

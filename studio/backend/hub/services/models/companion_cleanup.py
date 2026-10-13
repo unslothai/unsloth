@@ -230,11 +230,7 @@ class _SingleRepoScan:
 
 
 def _folder_delete_impact_blocking(
-    repo_id: str,
-    variant: Optional[str],
-    umbrella: str,
-    keys: list[str],
-    cache_path: Optional[str],
+    repo_id: str, variant: Optional[str], umbrella: str, keys: list[str], cache_path: Optional[str]
 ) -> dict:
     """The impact of deleting an umbrella folder row: the sum over its own variant keys."""
     impacts = [_delete_impact_blocking(umbrella, key, cache_path) for key in keys]
