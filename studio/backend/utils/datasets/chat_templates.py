@@ -200,7 +200,130 @@ def _row_tools(tools):
     return normalized
 
 
+def _sharegpt_tool_turns(conversation, content = "", probe = False):
+    """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
+    markers ``probe`` put in place of each call's arguments and each result; the conversation
+    itself when it has neither role."""
+    if not any(
+        isinstance(message, dict) and message.get("role") in ("observation", "function_call")
+        for message in conversation
+    ):
+        return conversation, []
+    turns = []
+    markers = []
+    result_ids = []
+    calls_made = 0
+    for index, message in enumerate(conversation):
+        role = message.get("role") if isinstance(message, dict) else None
+        if role == "observation":
+            message = {**message, "role": "tool"}
+            if result_ids:
+                message["tool_call_id"] = result_ids.pop(0)
+            if probe:
+                markers.append(f"unslothresult{len(markers)}end")
+                message["content"] = markers[-1]
+        elif role == "function_call":
+            try:
+                calls = json.loads(message.get("content"))
+            except (TypeError, ValueError, RecursionError):
+                calls = None
+            calls = calls if isinstance(calls, list) else [calls]
+            if calls and all(isinstance(call, dict) and call.get("name") for call in calls):
+                tool_calls = []
+                for call in calls:
+                    arguments = call.get("arguments", {})
+                    # A JSON string keeps explicit nulls through _drop_none_values.
+                    if not isinstance(arguments, str):
+                        arguments = json.dumps(arguments, ensure_ascii = False)
+                    name = call["name"]
+                    if probe:
+                        markers.append(f"unslothname{len(markers)}end")
+                        name = markers[-1]
+                        markers.append(f"unslothcall{len(markers)}end")
+                        arguments = json.dumps({"probe": markers[-1]})
+                    calls_made += 1
+                    tool_calls.append(
+                        {
+                            # Nine alphanumerics, as Mistral requires.
+                            "id": f"call{calls_made:05d}",
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        }
+                    )
+                message = {"role": "assistant", "content": content, "tool_calls": tool_calls}
+                results = 0
+                for later in conversation[index + 1 :]:
+                    if not (isinstance(later, dict) and later.get("role") == "observation"):
+                        break
+                    results += 1
+                # Results pair with calls by position only when there is one per call.
+                result_ids = [call["id"] for call in tool_calls] if results == len(calls) else []
+            else:
+                result_ids = []
+                if probe:
+                    # Kept as written: a template skipping unknown roles must not pass on its result.
+                    markers.append(f"unslothraw{len(markers)}end")
+                    message = {**message, "content": markers[-1]}
+        turns.append(message)
+    return turns, markers
+
+
+def _one_call_per_message(turns):
+    # Each call then its own result: gpt-oss names a result after the latest call.
+    split = []
+    index = 0
+    while index < len(turns):
+        message = turns[index]
+        index += 1
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not calls or len(calls) < 2:
+            split.append(message)
+            continue
+        run = []
+        while (
+            index < len(turns)
+            and isinstance(turns[index], dict)
+            and turns[index].get("role") == "tool"
+        ):
+            run.append(turns[index])
+            index += 1
+        results = {result.get("tool_call_id"): result for result in run}
+        paired = len(run) == len(calls) and all(call.get("id") in results for call in calls)
+        for i, call in enumerate(calls):
+            # Later pieces repeat no text, but keep a None content for templates gating on it.
+            content = message.get("content")
+            split.append({**message, "tool_calls": [call], "content": "" if i and content else content})
+            if paired:
+                split.append(results[call["id"]])
+        if not paired:
+            split.extend(run)
+    return split if len(split) != len(turns) else turns
+
+
 def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
+    candidates = []
+    # None content for DeepSeek-style templates; one call per message for Llama 3.x and gpt-oss.
+    for content in ("", None):
+        turns, _ = _sharegpt_tool_turns(conversation, content)
+        if turns is conversation:
+            break
+        probe, markers = _sharegpt_tool_turns(conversation, content, probe = True)
+        candidates.append((turns, probe, markers))
+        split = _one_call_per_message(turns)
+        if split is not turns:
+            candidates.append((split, _one_call_per_message(probe), markers))
+    for turns, probe, markers in candidates:
+        # Templates may ignore tool_calls, drop tool turns, or render only the first call (gpt-oss).
+        try:
+            shown = _render_messages(tokenizer, probe, tools, fallback_without_tools)
+            if all(marker in shown for marker in markers):
+                return _render_messages(tokenizer, turns, tools, fallback_without_tools)
+        except Exception:
+            pass
+    return _render_messages(tokenizer, conversation, tools, fallback_without_tools)
+
+
+def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
     attempts = []
@@ -220,7 +343,7 @@ def _render_conversation(tokenizer, conversation, tools = None, fallback_without
             if first_error is None:
                 first_error = error
     if tools and fallback_without_tools:
-        return _render_conversation(tokenizer, conversation)
+        return _render_messages(tokenizer, conversation)
     raise first_error
 
 

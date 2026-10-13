@@ -1,0 +1,1016 @@
+{
+"Lightricks/LTX-2.5/diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors": {
+"meta": {
+"model_version": "2.5.0"
+},
+"shapes": {
+"model.diffusion_model.adaln_single.emb.timestep_embedder.linear_1.bias": [
+4096
+],
+"model.diffusion_model.adaln_single.emb.timestep_embedder.linear_1.weight": [
+4096,
+256
+],
+"model.diffusion_model.adaln_single.emb.timestep_embedder.linear_2.bias": [
+4096
+],
+"model.diffusion_model.adaln_single.emb.timestep_embedder.linear_2.weight": [
+4096,
+4096
+],
+"model.diffusion_model.adaln_single.linear.bias": [
+36864
+],
+"model.diffusion_model.adaln_single.linear.weight": [
+36864,
+4096
+],
+"model.diffusion_model.audio_adaln_single.emb.timestep_embedder.linear_1.bias": [
+2048
+],
+"model.diffusion_model.audio_adaln_single.emb.timestep_embedder.linear_1.weight": [
+2048,
+256
+],
+"model.diffusion_model.audio_adaln_single.emb.timestep_embedder.linear_2.bias": [
+2048
+],
+"model.diffusion_model.audio_adaln_single.emb.timestep_embedder.linear_2.weight": [
+2048,
+2048
+],
+"model.diffusion_model.audio_adaln_single.linear.bias": [
+18432
+],
+"model.diffusion_model.audio_adaln_single.linear.weight": [
+18432,
+2048
+],
+"model.diffusion_model.audio_patchify_proj.bias": [
+2048
+],
+"model.diffusion_model.audio_patchify_proj.weight": [
+2048,
+128
+],
+"model.diffusion_model.audio_proj_out.bias": [
+128
+],
+"model.diffusion_model.audio_proj_out.weight": [
+128,
+2048
+],
+"model.diffusion_model.audio_prompt_adaln_single.emb.timestep_embedder.linear_1.bias": [
+2048
+],
+"model.diffusion_model.audio_prompt_adaln_single.emb.timestep_embedder.linear_1.weight": [
+2048,
+256
+],
+"model.diffusion_model.audio_prompt_adaln_single.emb.timestep_embedder.linear_2.bias": [
+2048
+],
+"model.diffusion_model.audio_prompt_adaln_single.emb.timestep_embedder.linear_2.weight": [
+2048,
+2048
+],
+"model.diffusion_model.audio_prompt_adaln_single.linear.bias": [
+4096
+],
+"model.diffusion_model.audio_prompt_adaln_single.linear.weight": [
+4096,
+2048
+],
+"model.diffusion_model.audio_scale_shift_table": [
+2,
+2048
+],
+"model.diffusion_model.av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_1.bias": [
+4096
+],
+"model.diffusion_model.av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_1.weight": [
+4096,
+256
+],
+"model.diffusion_model.av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_2.bias": [
+4096
+],
+"model.diffusion_model.av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_2.weight": [
+4096,
+4096
+],
+"model.diffusion_model.av_ca_a2v_gate_adaln_single.linear.bias": [
+4096
+],
+"model.diffusion_model.av_ca_a2v_gate_adaln_single.linear.weight": [
+4096,
+4096
+],
+"model.diffusion_model.av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_1.bias": [
+2048
+],
+"model.diffusion_model.av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_1.weight": [
+2048,
+256
+],
+"model.diffusion_model.av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_2.bias": [
+2048
+],
+"model.diffusion_model.av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_2.weight": [
+2048,
+2048
+],
+"model.diffusion_model.av_ca_audio_scale_shift_adaln_single.linear.bias": [
+8192
+],
+"model.diffusion_model.av_ca_audio_scale_shift_adaln_single.linear.weight": [
+8192,
+2048
+],
+"model.diffusion_model.av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_1.bias": [
+2048
+],
+"model.diffusion_model.av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_1.weight": [
+2048,
+256
+],
+"model.diffusion_model.av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_2.bias": [
+2048
+],
+"model.diffusion_model.av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_2.weight": [
+2048,
+2048
+],
+"model.diffusion_model.av_ca_v2a_gate_adaln_single.linear.bias": [
+2048
+],
+"model.diffusion_model.av_ca_v2a_gate_adaln_single.linear.weight": [
+2048,
+2048
+],
+"model.diffusion_model.av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_1.bias": [
+4096
+],
+"model.diffusion_model.av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_1.weight": [
+4096,
+256
+],
+"model.diffusion_model.av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_2.bias": [
+4096
+],
+"model.diffusion_model.av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_2.weight": [
+4096,
+4096
+],
+"model.diffusion_model.av_ca_video_scale_shift_adaln_single.linear.bias": [
+16384
+],
+"model.diffusion_model.av_ca_video_scale_shift_adaln_single.linear.weight": [
+16384,
+4096
+],
+"model.diffusion_model.keyframes_abs_pos_embedding": [
+1,
+4096
+],
+"model.diffusion_model.patchify_proj.bias": [
+4096
+],
+"model.diffusion_model.patchify_proj.weight": [
+4096,
+128
+],
+"model.diffusion_model.proj_out.bias": [
+128
+],
+"model.diffusion_model.proj_out.weight": [
+128,
+4096
+],
+"model.diffusion_model.prompt_adaln_single.emb.timestep_embedder.linear_1.bias": [
+4096
+],
+"model.diffusion_model.prompt_adaln_single.emb.timestep_embedder.linear_1.weight": [
+4096,
+256
+],
+"model.diffusion_model.prompt_adaln_single.emb.timestep_embedder.linear_2.bias": [
+4096
+],
+"model.diffusion_model.prompt_adaln_single.emb.timestep_embedder.linear_2.weight": [
+4096,
+4096
+],
+"model.diffusion_model.prompt_adaln_single.linear.bias": [
+8192
+],
+"model.diffusion_model.prompt_adaln_single.linear.weight": [
+8192,
+4096
+],
+"model.diffusion_model.scale_shift_table": [
+2,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.k_norm.weight": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.q_norm.weight": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_gate_logits.bias": [
+32
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_gate_logits.weight": [
+32,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_k.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_k.weight": [
+4096,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_out.0.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_out.0.weight": [
+4096,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_q.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_q.weight": [
+4096,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_v.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn1.to_v.weight": [
+4096,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.k_norm.weight": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.q_norm.weight": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_gate_logits.bias": [
+32
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_gate_logits.weight": [
+32,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_k.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_k.weight": [
+4096,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_out.0.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_out.0.weight": [
+4096,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_q.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_q.weight": [
+4096,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_v.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.attn2.to_v.weight": [
+4096,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.k_norm.weight": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.q_norm.weight": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_gate_logits.bias": [
+32
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_gate_logits.weight": [
+32,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_k.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_k.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_out.0.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_out.0.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_q.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_q.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_v.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn1.to_v.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.k_norm.weight": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.q_norm.weight": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_gate_logits.bias": [
+32
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_gate_logits.weight": [
+32,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_k.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_k.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_out.0.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_out.0.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_q.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_q.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_v.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_attn2.to_v.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_ff.net.0.proj.bias": [
+8192
+],
+"model.diffusion_model.transformer_blocks.0.audio_ff.net.0.proj.weight": [
+8192,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_ff.net.2.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_ff.net.2.weight": [
+2048,
+8192
+],
+"model.diffusion_model.transformer_blocks.0.audio_prompt_scale_shift_table": [
+2,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_scale_shift_table": [
+9,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.k_norm.weight": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.q_norm.weight": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_gate_logits.bias": [
+32
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_gate_logits.weight": [
+32,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_k.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_k.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_out.0.bias": [
+4096
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_out.0.weight": [
+4096,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_q.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_q.weight": [
+2048,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_v.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.audio_to_video_attn.to_v.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.ff.net.0.proj.weight": [
+16384,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.ff.net.2.weight": [
+4096,
+16384
+],
+"model.diffusion_model.transformer_blocks.0.prompt_scale_shift_table": [
+2,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.scale_shift_table": [
+9,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.scale_shift_table_a2v_ca_audio": [
+5,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.scale_shift_table_a2v_ca_video": [
+5,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.k_norm.weight": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.q_norm.weight": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_gate_logits.bias": [
+32
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_gate_logits.weight": [
+32,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_k.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_k.weight": [
+2048,
+4096
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_out.0.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_out.0.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_q.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_q.weight": [
+2048,
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_v.bias": [
+2048
+],
+"model.diffusion_model.transformer_blocks.0.video_to_audio_attn.to_v.weight": [
+2048,
+4096
+]
+}
+},
+"vantagewithai/LTX-2.5-GGUF/distilled/ltx-2.5-22b-distilled-transformer-Q4_K_M.gguf": {
+"meta": {
+"general.architecture": "ltxv"
+},
+"shapes": {
+"adaln_single.emb.timestep_embedder.linear_1.bias": [
+4096
+],
+"adaln_single.emb.timestep_embedder.linear_1.weight": [
+4096,
+256
+],
+"adaln_single.emb.timestep_embedder.linear_2.bias": [
+4096
+],
+"adaln_single.emb.timestep_embedder.linear_2.weight": [
+4096,
+4096
+],
+"adaln_single.linear.bias": [
+36864
+],
+"adaln_single.linear.weight": [
+36864,
+4096
+],
+"audio_adaln_single.emb.timestep_embedder.linear_1.bias": [
+2048
+],
+"audio_adaln_single.emb.timestep_embedder.linear_1.weight": [
+2048,
+256
+],
+"audio_adaln_single.emb.timestep_embedder.linear_2.bias": [
+2048
+],
+"audio_adaln_single.emb.timestep_embedder.linear_2.weight": [
+2048,
+2048
+],
+"audio_adaln_single.linear.bias": [
+18432
+],
+"audio_adaln_single.linear.weight": [
+18432,
+2048
+],
+"audio_patchify_proj.bias": [
+2048
+],
+"audio_patchify_proj.weight": [
+2048,
+128
+],
+"audio_proj_out.bias": [
+128
+],
+"audio_proj_out.weight": [
+128,
+2048
+],
+"audio_prompt_adaln_single.emb.timestep_embedder.linear_1.bias": [
+2048
+],
+"audio_prompt_adaln_single.emb.timestep_embedder.linear_1.weight": [
+2048,
+256
+],
+"audio_prompt_adaln_single.emb.timestep_embedder.linear_2.bias": [
+2048
+],
+"audio_prompt_adaln_single.emb.timestep_embedder.linear_2.weight": [
+2048,
+2048
+],
+"audio_prompt_adaln_single.linear.bias": [
+4096
+],
+"audio_prompt_adaln_single.linear.weight": [
+4096,
+2048
+],
+"audio_scale_shift_table": [
+2,
+2048
+],
+"av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_1.bias": [
+4096
+],
+"av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_1.weight": [
+4096,
+256
+],
+"av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_2.bias": [
+4096
+],
+"av_ca_a2v_gate_adaln_single.emb.timestep_embedder.linear_2.weight": [
+4096,
+4096
+],
+"av_ca_a2v_gate_adaln_single.linear.bias": [
+4096
+],
+"av_ca_a2v_gate_adaln_single.linear.weight": [
+4096,
+4096
+],
+"av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_1.bias": [
+2048
+],
+"av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_1.weight": [
+2048,
+256
+],
+"av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_2.bias": [
+2048
+],
+"av_ca_audio_scale_shift_adaln_single.emb.timestep_embedder.linear_2.weight": [
+2048,
+2048
+],
+"av_ca_audio_scale_shift_adaln_single.linear.bias": [
+8192
+],
+"av_ca_audio_scale_shift_adaln_single.linear.weight": [
+8192,
+2048
+],
+"av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_1.bias": [
+2048
+],
+"av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_1.weight": [
+2048,
+256
+],
+"av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_2.bias": [
+2048
+],
+"av_ca_v2a_gate_adaln_single.emb.timestep_embedder.linear_2.weight": [
+2048,
+2048
+],
+"av_ca_v2a_gate_adaln_single.linear.bias": [
+2048
+],
+"av_ca_v2a_gate_adaln_single.linear.weight": [
+2048,
+2048
+],
+"av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_1.bias": [
+4096
+],
+"av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_1.weight": [
+4096,
+256
+],
+"av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_2.bias": [
+4096
+],
+"av_ca_video_scale_shift_adaln_single.emb.timestep_embedder.linear_2.weight": [
+4096,
+4096
+],
+"av_ca_video_scale_shift_adaln_single.linear.bias": [
+16384
+],
+"av_ca_video_scale_shift_adaln_single.linear.weight": [
+16384,
+4096
+],
+"keyframes_abs_pos_embedding": [
+1,
+4096
+],
+"patchify_proj.bias": [
+4096
+],
+"patchify_proj.weight": [
+4096,
+128
+],
+"proj_out.bias": [
+128
+],
+"proj_out.weight": [
+128,
+4096
+],
+"prompt_adaln_single.emb.timestep_embedder.linear_1.bias": [
+4096
+],
+"prompt_adaln_single.emb.timestep_embedder.linear_1.weight": [
+4096,
+256
+],
+"prompt_adaln_single.emb.timestep_embedder.linear_2.bias": [
+4096
+],
+"prompt_adaln_single.emb.timestep_embedder.linear_2.weight": [
+4096,
+4096
+],
+"prompt_adaln_single.linear.bias": [
+8192
+],
+"prompt_adaln_single.linear.weight": [
+8192,
+4096
+],
+"scale_shift_table": [
+2,
+4096
+],
+"transformer_blocks.0.attn1.k_norm.weight": [
+4096
+],
+"transformer_blocks.0.attn1.q_norm.weight": [
+4096
+],
+"transformer_blocks.0.attn1.to_gate_logits.bias": [
+32
+],
+"transformer_blocks.0.attn1.to_gate_logits.weight": [
+32,
+4096
+],
+"transformer_blocks.0.attn1.to_k.bias": [
+4096
+],
+"transformer_blocks.0.attn1.to_k.weight": [
+4096,
+4096
+],
+"transformer_blocks.0.attn1.to_out.0.bias": [
+4096
+],
+"transformer_blocks.0.attn1.to_out.0.weight": [
+4096,
+4096
+],
+"transformer_blocks.0.attn1.to_q.bias": [
+4096
+],
+"transformer_blocks.0.attn1.to_q.weight": [
+4096,
+4096
+],
+"transformer_blocks.0.attn1.to_v.bias": [
+4096
+],
+"transformer_blocks.0.attn1.to_v.weight": [
+4096,
+4096
+],
+"transformer_blocks.0.attn2.k_norm.weight": [
+4096
+],
+"transformer_blocks.0.attn2.q_norm.weight": [
+4096
+],
+"transformer_blocks.0.attn2.to_gate_logits.bias": [
+32
+],
+"transformer_blocks.0.attn2.to_gate_logits.weight": [
+32,
+4096
+],
+"transformer_blocks.0.attn2.to_k.bias": [
+4096
+],
+"transformer_blocks.0.attn2.to_k.weight": [
+4096,
+4096
+],
+"transformer_blocks.0.attn2.to_out.0.bias": [
+4096
+],
+"transformer_blocks.0.attn2.to_out.0.weight": [
+4096,
+4096
+],
+"transformer_blocks.0.attn2.to_q.bias": [
+4096
+],
+"transformer_blocks.0.attn2.to_q.weight": [
+4096,
+4096
+],
+"transformer_blocks.0.attn2.to_v.bias": [
+4096
+],
+"transformer_blocks.0.attn2.to_v.weight": [
+4096,
+4096
+],
+"transformer_blocks.0.audio_attn1.k_norm.weight": [
+2048
+],
+"transformer_blocks.0.audio_attn1.q_norm.weight": [
+2048
+],
+"transformer_blocks.0.audio_attn1.to_gate_logits.bias": [
+32
+],
+"transformer_blocks.0.audio_attn1.to_gate_logits.weight": [
+32,
+2048
+],
+"transformer_blocks.0.audio_attn1.to_k.bias": [
+2048
+],
+"transformer_blocks.0.audio_attn1.to_k.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_attn1.to_out.0.bias": [
+2048
+],
+"transformer_blocks.0.audio_attn1.to_out.0.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_attn1.to_q.bias": [
+2048
+],
+"transformer_blocks.0.audio_attn1.to_q.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_attn1.to_v.bias": [
+2048
+],
+"transformer_blocks.0.audio_attn1.to_v.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_attn2.k_norm.weight": [
+2048
+],
+"transformer_blocks.0.audio_attn2.q_norm.weight": [
+2048
+],
+"transformer_blocks.0.audio_attn2.to_gate_logits.bias": [
+32
+],
+"transformer_blocks.0.audio_attn2.to_gate_logits.weight": [
+32,
+2048
+],
+"transformer_blocks.0.audio_attn2.to_k.bias": [
+2048
+],
+"transformer_blocks.0.audio_attn2.to_k.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_attn2.to_out.0.bias": [
+2048
+],
+"transformer_blocks.0.audio_attn2.to_out.0.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_attn2.to_q.bias": [
+2048
+],
+"transformer_blocks.0.audio_attn2.to_q.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_attn2.to_v.bias": [
+2048
+],
+"transformer_blocks.0.audio_attn2.to_v.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_ff.net.0.proj.bias": [
+8192
+],
+"transformer_blocks.0.audio_ff.net.0.proj.weight": [
+8192,
+2048
+],
+"transformer_blocks.0.audio_ff.net.2.bias": [
+2048
+],
+"transformer_blocks.0.audio_ff.net.2.weight": [
+2048,
+8192
+],
+"transformer_blocks.0.audio_prompt_scale_shift_table": [
+2,
+2048
+],
+"transformer_blocks.0.audio_scale_shift_table": [
+9,
+2048
+],
+"transformer_blocks.0.audio_to_video_attn.k_norm.weight": [
+2048
+],
+"transformer_blocks.0.audio_to_video_attn.q_norm.weight": [
+2048
+],
+"transformer_blocks.0.audio_to_video_attn.to_gate_logits.bias": [
+32
+],
+"transformer_blocks.0.audio_to_video_attn.to_gate_logits.weight": [
+32,
+4096
+],
+"transformer_blocks.0.audio_to_video_attn.to_k.bias": [
+2048
+],
+"transformer_blocks.0.audio_to_video_attn.to_k.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.audio_to_video_attn.to_out.0.bias": [
+4096
+],
+"transformer_blocks.0.audio_to_video_attn.to_out.0.weight": [
+4096,
+2048
+],
+"transformer_blocks.0.audio_to_video_attn.to_q.bias": [
+2048
+],
+"transformer_blocks.0.audio_to_video_attn.to_q.weight": [
+2048,
+4096
+],
+"transformer_blocks.0.audio_to_video_attn.to_v.bias": [
+2048
+],
+"transformer_blocks.0.audio_to_video_attn.to_v.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.ff.net.0.proj.weight": [
+16384,
+4096
+],
+"transformer_blocks.0.ff.net.2.weight": [
+4096,
+16384
+],
+"transformer_blocks.0.prompt_scale_shift_table": [
+2,
+4096
+],
+"transformer_blocks.0.scale_shift_table": [
+9,
+4096
+],
+"transformer_blocks.0.scale_shift_table_a2v_ca_audio": [
+5,
+2048
+],
+"transformer_blocks.0.scale_shift_table_a2v_ca_video": [
+5,
+4096
+],
+"transformer_blocks.0.video_to_audio_attn.k_norm.weight": [
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.q_norm.weight": [
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.to_gate_logits.bias": [
+32
+],
+"transformer_blocks.0.video_to_audio_attn.to_gate_logits.weight": [
+32,
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.to_k.bias": [
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.to_k.weight": [
+2048,
+4096
+],
+"transformer_blocks.0.video_to_audio_attn.to_out.0.bias": [
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.to_out.0.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.to_q.bias": [
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.to_q.weight": [
+2048,
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.to_v.bias": [
+2048
+],
+"transformer_blocks.0.video_to_audio_attn.to_v.weight": [
+2048,
+4096
+]
+}
+}
+}

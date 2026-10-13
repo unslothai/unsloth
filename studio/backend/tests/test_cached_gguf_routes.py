@@ -2681,6 +2681,11 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("flux") == "text-to-image"
     assert models_route._arch_to_task("z_image") == "text-to-image"
     assert models_route._arch_to_task("qwen_image") == "text-to-image"
+    # Qwen-Image-2.1 GGUFs that carry a header declare their own arch (#13328)
+    assert (
+        models_route._arch_to_task("qwen_image21", ("abenzerps/Qwen-Image-2.1-Uncensored-GGUF",))
+        == "text-to-image"
+    )
     assert models_route._arch_to_task("llama") == "text-generation"
     assert models_route._arch_to_task(None) is None
     # Known-but-unsupported diffusion archs get a task that is neither chat nor a loadable image task, so both pickers skip them.

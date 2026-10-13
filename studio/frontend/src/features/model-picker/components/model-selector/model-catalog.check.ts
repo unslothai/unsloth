@@ -130,6 +130,36 @@ const qwen21Turbo = groupForRepoId("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG);
 assert.ok(qwen21Turbo);
 assert.equal(qwen21Turbo.canonicalId, "Qwen/Qwen-Image-2.1-Turbo");
 assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-FP8", IMAGE_CATALOG), qwen21Turbo);
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG), qwen21Turbo);
+assert.equal(loadSpecFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG)?.kind, "gguf");
+assert.equal(groupForRepoId("unsloth/Qwen-Image-2.1-GGUF", IMAGE_CATALOG)?.canonicalId, "unsloth/Qwen-Image-2.1");
+{
+  const qwen21 = groupForRepoId("unsloth/Qwen-Image-2.1", IMAGE_CATALOG);
+  assert.ok(qwen21);
+  for (const host of [
+    { gpuGb: 0, systemRamGb: 64 },
+    { gpuGb: 12, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] },
+    { gpuGb: 24, systemRamGb: 64, denseQuantSchemes: ["int8", "fp8"] },
+    { gpuGb: 80, systemRamGb: 256, denseQuantSchemes: ["int8", "fp8"] },
+  ]) {
+    const input = { ...host, isDownloaded: () => false };
+    const base = pickDefaultArtifact(qwen21, input);
+    const turbo = pickDefaultArtifact(qwen21Turbo, input);
+    assert.equal(turbo.format, base.format, JSON.stringify(host));
+    assert.equal(
+      turbo.repoId,
+      base.format === "gguf" ? "unsloth/Qwen-Image-2.1-Turbo-GGUF" : "Qwen/Qwen-Image-2.1-Turbo",
+    );
+  }
+  assert.equal(
+    curatedRowLabelFor("Qwen/Qwen-Image-2.1-Turbo", IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    "Qwen-Image 2.1 Turbo (Fast FP8)",
+  );
+  assert.equal(
+    curatedRowLabelFor("unsloth/Qwen-Image-2.1-Turbo-GGUF", IMAGE_CATALOG, "dense-quant", ["fp8"])?.name,
+    "Qwen-Image-2.1-Turbo-GGUF (Slow)",
+  );
+}
 assert.notEqual(groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG), qwen21);
 assert.equal(
   groupForRepoId("Qwen/Qwen-Image", IMAGE_CATALOG)?.canonicalId,
@@ -145,6 +175,25 @@ assert.equal(groupForRepoId("lightricks/ltx-2.3", VIDEO_CATALOG), ltx23);
 assert.equal(groupForRepoId("lightricks/ltx-2.3-fp8", VIDEO_CATALOG), ltx23);
 // ...but the LTX-2.0 base stays its own group (different model).
 assert.notEqual(groupForRepoId("Lightricks/LTX-2", VIDEO_CATALOG), ltx23);
+// LTX-2.5 is its own group (different DiT and encoder); the hosted prequant repo id finds it, never 2.3.
+const ltx25 = groupForRepoId("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG);
+assert.ok(ltx25);
+assert.notEqual(ltx25, ltx23);
+assert.equal(groupForRepoId("unsloth/LTX-2.5-FP8", VIDEO_CATALOG), ltx25);
+assert.equal(groupForRepoId("lightricks/ltx-2.5-diffusers", VIDEO_CATALOG), ltx25);
+assert.equal(curatedArtifactTakesDenseQuant("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG), true);
+assert.equal(
+  curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name,
+  "LTX 2.5 distilled (Diffusers) (Fast FP8)",
+);
+assert.equal(
+  curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "dense-quant", ["int8", "fp8"])?.name,
+  "LTX 2.5 distilled (Diffusers) (Fast FP8)",
+);
+// Only a host that runs the dense quant gets the qualifier; other video rows stay bare there.
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "accelerated")?.name, "LTX 2.5 distilled (Diffusers)");
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2.5-Diffusers", VIDEO_CATALOG, "gguf-only")?.name, "LTX 2.5 distilled (Diffusers)");
+assert.equal(curatedRowLabelFor("Lightricks/LTX-2", VIDEO_CATALOG, "dense-quant", ["fp8"])?.name, "LTX 2 (base)");
 // SDXL Turbo and Base stay separate groups (different checkpoints).
 assert.notEqual(
   groupForRepoId("stabilityai/sdxl-turbo", IMAGE_CATALOG),

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core._torchao_stub import (
+    alias_torchao_fqn_to_config,
     hide_xformers_built_for_another_torch,
     install_torchao_windows_rocm_stub,
     install_xformers_windows_rocm_stub,
@@ -42,6 +43,7 @@ from utils.paths.path_utils import drop_appledouble_metadata
 install_xformers_windows_rocm_stub()
 hide_xformers_built_for_another_torch()
 install_torchao_windows_rocm_stub()
+alias_torchao_fqn_to_config()
 # Same child: the DiT trainer's int8 base-weight quantisation goes through torchao.
 install_torchao_int_mm_patch()
 
@@ -278,6 +280,14 @@ def training_pipeline_import_error(resolved_family: str) -> Optional[str]:
 
 
 def resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
+    family = _resolve_trainable_family(base_model, model_family)
+    from core.inference.video_families import assert_ltx_pick_supported
+
+    assert_ltx_pick_supported(family, base_model)
+    return family
+
+
+def _resolve_trainable_family(base_model: str, model_family: Optional[str] = None) -> str:
     """Resolve the trainer family for a base model, or raise ValueError with a clear reason.
     Positive resolution, before anything is downloaded: a ``.gguf`` name can never be a training
     base; an explicit ``model_family`` must name a registry family, and that family must be
@@ -311,6 +321,10 @@ def resolve_trainable_family(base_model: str, model_family: Optional[str] = None
     # Same shape as the component-only refusal: the name resolves to a real, trainable family, but the repo is not
     # something the training loader can open.
     _refuse_ltx23_training_base(base_model)
+    # Before either branch: model_family="ltx-2" must not train a local LTX-2.5 pipeline.
+    from core.inference.video_families import assert_local_pipeline_not_ltx25
+
+    assert_local_pipeline_not_ltx25(base_model)
     if model_family and str(model_family).strip():
         key = str(model_family).strip().lower()
         fam = detect_family("", override = key)
@@ -756,12 +770,12 @@ def bf16_unsupported_reason(resolved_family: str) -> Optional[str]:
 
 def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
     """Reason a DiT family cannot train on this host at all, else None. Never raises. nf4 is not a
-    CPU fallback: the 4-bit base load goes through diffusers' bitsandbytes quantizer, whose
-    validate_environment raises "No GPU found. A GPU is needed for quantization." unless CUDA,
-    XPU or MPS is present. Without this gate a GPU-less host accepts the default nf4 start,
-    evicts the resident Images pipeline, downloads the text encoders, and only then dies in the
-    child. SDXL keeps its own fp32-on-CPU path; MiniMax-H3 is covered too, since it loads its
-    denoiser through the same quantizer."""
+    CPU fallback: the 4-bit base load goes through diffusers' bitsandbytes quantizer, which needs
+    the model on CUDA or XPU. Without this gate such a host accepts the default nf4 start, evicts
+    the resident Images pipeline, downloads the text encoders, and only then dies in the child.
+    Apple MPS is not enough: resolve_train_device trains there on the CPU, and the quantizer
+    refuses a CPU device_map. SDXL keeps its own fp32-on-CPU path; MiniMax-H3 is covered too,
+    since it loads its denoiser through the same quantizer."""
     if (resolved_family or "").strip().lower() not in _FLOW_TRAIN_FAMILIES:
         return None
     try:
@@ -775,18 +789,14 @@ def dit_accelerator_missing_reason(resolved_family: str) -> Optional[str]:
             except Exception:  # noqa: BLE001
                 return False
 
-        if (
-            probe(torch.cuda)
-            # torch.backends.mps has carried is_available() since torch 1.12.
-            or probe(getattr(torch, "xpu", None))
-            or probe(getattr(torch.backends, "mps", None))
-        ):
+        if probe(torch.cuda) or probe(getattr(torch, "xpu", None)):
             return None
     except Exception:  # noqa: BLE001 -- probe failure must not block a start
         return None
     return (
-        "Training the DiT families needs a GPU: even the 4-bit (nf4) base load requires "
-        "CUDA, XPU or MPS, and this host has none. Train SDXL here, or use a GPU machine."
+        "Training the DiT families needs an NVIDIA, AMD or Intel GPU: even the 4-bit (nf4) base "
+        "load requires CUDA, ROCm or XPU, and this host has none (Apple Silicon included). Train "
+        "SDXL here, or use a GPU machine."
     )
 
 
@@ -999,7 +1009,8 @@ class DiffusionLoraConfig:
     lr_scheduler: str = "constant"
     lr_warmup_steps: int = 0
     center_crop: bool = False
-    random_flip: bool = True
+    # Off by default: flipping mirrors text, logos and one-sided features in half the samples.
+    random_flip: bool = False
     bucketing: Optional[bool] = None
     caption_column: str = "text"
     adapter_name: str = "default"
@@ -1025,8 +1036,7 @@ class DiffusionLoraConfig:
     # eager), "int8" (torchao weight-only), "fp8" (Ada/Hopper/Blackwell + compile) or "auto". Non-nf4 needs a dense
     # base.
     base_precision: str = "nf4"
-    # None resolves per family in normalized(); a number applies s*u/(1+(s-1)*u), and "auto" without dynamic shifting
-    # falls back to identity.
+    # None: model's own schedule ("auto" for AUTO_FLOW_SHIFT_FAMILIES); a number is the effective shift on unshifted u.
     flow_shift: Optional[Any] = None
     # Per-sample probability of replacing the caption with the empty prompt (classifier-free-guidance dropout). 0.0
     # disables.
@@ -1196,11 +1206,9 @@ class DiffusionLoraConfig:
                     f"base_precision={base_precision!r} is not validated for training "
                     f"{resolved_family}. Use 'nf4', 'int8', 'bf16', or 'auto'."
                 )
-        # flow_shift: None resolves to the family default ("auto" only for qwen-image, whose scheduler skips its
-        # static shift under use_dynamic_shifting); an explicit value is validated and kept.
         flow_shift = self.flow_shift
-        if flow_shift is None:
-            flow_shift = "auto" if resolved_family in AUTO_FLOW_SHIFT_FAMILIES else 1.0
+        if flow_shift is None and resolved_family in AUTO_FLOW_SHIFT_FAMILIES:
+            flow_shift = "auto"
         if isinstance(flow_shift, str):
             flow_shift = flow_shift.strip().lower()
             if flow_shift != "auto":
@@ -1210,7 +1218,7 @@ class DiffusionLoraConfig:
                     raise ValueError(
                         f"flow_shift must be a positive number or 'auto', got {self.flow_shift!r}"
                     ) from exc
-        if not isinstance(flow_shift, str):
+        if flow_shift is not None and not isinstance(flow_shift, str):
             flow_shift = float(flow_shift)
             # isfinite as well as positive: JSON accepts 1e309, which floats to inf and would poison every sampled
             # sigma while progress looks normal.
@@ -1585,8 +1593,7 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
     return None
 
 
-# These have a DEFAULT the H3 loop disagrees with, so they are normalised rather than refused (which would 422 every
-# untouched request): one centre cover-crop, nothing flipped, a plain unweighted MSE, and exactly one cached tuple.
+# Normalised, not refused: several are request defaults, refusing would 422 every untouched request.
 _H3_FIXED_RECIPE: dict[str, Any] = {
     "center_crop": True,
     "random_flip": False,
@@ -1602,11 +1609,15 @@ def train_recipe_overrides(cfg: Any) -> dict[str, Any]:
     for the same reason ``h3_train_unsupported_reason`` is: the trainer applies these in the
     CHILD, while the run record is written by the PARENT from the config handed to
     ``service.start``. Normalising in the trainer alone therefore fixed what ran and left
-    Previous Runs describing cropping, flipping and min-SNR weighting that never happened. Empty
-    for every other family: their loops honour all three."""
-    if (getattr(cfg, "resolved_family", "") or "").strip().lower() != "minimax-h3":
-        return {}
-    return dict(_H3_FIXED_RECIPE)
+    Previous Runs describing cropping, flipping and min-SNR weighting that never happened. The
+    other flow-matching families drop only min-SNR; SDXL honours all of them."""
+    family = (getattr(cfg, "resolved_family", "") or "").strip().lower()
+    if family == "minimax-h3":
+        return dict(_H3_FIXED_RECIPE)
+    # Min-SNR is an SDXL (epsilon-prediction) weighting; the flow-matching loops never read it.
+    if family and family != "sdxl":
+        return {"snr_gamma": None}
+    return {}
 
 
 # LTX-2 is deliberately not here: it trains a style LoRA FROM still images, so it keeps the image discovery.
@@ -2238,6 +2249,8 @@ def _write_lora_sidecar(
         "trigger_prompt": cfg.instance_prompt,
         "created_at": time.time(),
         "source": "studio-trained",
+        # diffusion_lora.LORA_SIDECAR_KIND: marks the adapter as an image LoRA wherever it is copied.
+        "kind": "diffusion-lora",
     }
     sidecar_path.write_text(json.dumps(meta, indent = 2), encoding = "utf-8")
 

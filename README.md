@@ -38,16 +38,20 @@ Download the native Unsloth Desktop app for your operating system:
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux x64 / Ubuntu (deb)</b></td>
+    <td><b>Linux / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><b>Linux / Ubuntu (ARM64) (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux x64 (AppImage)</b></td>
+    <td><b>Linux (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
+  </tr>
+  <tr>
+    <td><b>Windows (ARM64)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
 
@@ -60,18 +64,23 @@ Or if you prefer to install manually:
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 
-On macOS, you can also install Unsloth Desktop with Homebrew:
-```bash
-brew install --cask unsloth
-```
-
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
-#### Docker
+#### Docker:
 
 The [Unsloth Docker image](https://hub.docker.com/r/unsloth/unsloth) `unsloth/unsloth` is available on Docker. [Read guide.](https://unsloth.ai/docs/get-started/install/docker)
+
+#### Homebrew:
+```bash
+brew install --cask unsloth
+```
+
+#### Winget (Windows):
+```bash
+winget install --id UnslothAI.Unsloth -e
+```
 
 #### Community:
 
@@ -110,9 +119,9 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 | Claude Code | `unsloth start claude` |
 | OpenAI Codex | `unsloth start codex` |
 | DeepSeek Harness | `unsloth start dsh` |
-| Hermes Agent | `unsloth start hermes` |
-| Mistral Vibe | `unsloth start vibe` |
 | OpenCode | `unsloth start opencode` |
+| Hermes Agent | `unsloth start hermes` |
+| Pi | `unsloth start pi` |
 | OpenClaw | `unsloth start openclaw` |
 
 ## 📥 Install
@@ -134,20 +143,20 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-MacOS.dmg'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux x64 / Ubuntu (deb)</b></td>
+    <td><b>Linux / Ubuntu (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux ARM64 / Ubuntu 24.04+ (deb)</b></td>
+    <td><b>Linux / Ubuntu (ARM64) (deb)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Ubuntu-ARM64.deb'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Linux x64 (AppImage)</b></td>
+    <td><b>Linux (AppImage)</b></td>
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Linux.AppImage'>Download</a></td>
   </tr>
   <tr>
-    <td><b>Windows ARM64</b></td>
-    <td><a href='https://github.com/unslothai/unsloth/releases/download/v0.1.811-beta/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
+    <td><b>Windows (ARM64)</b></td>
+    <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
 
@@ -158,15 +167,36 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
 curl -fsSL https://unsloth.ai/install.sh | sh
 ```
 
-On macOS, you can also install Unsloth Desktop with Homebrew:
-```bash
-brew install --cask unsloth
-```
-
 #### Windows:
 ```powershell
 irm https://unsloth.ai/install.ps1 | iex
 ```
+
+#### Homebrew:
+```bash
+brew install --cask unsloth
+```
+
+#### Docker
+Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux and Mac, set up GPU access once with
+```bash
+curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh
+```
+For Windows instructions and more information, read our [Unsloth Docker Guide](https://unsloth.ai/docs/get-started/install/docker).
+
+**Linux / WSL (Bash):**
+```bash
+# for a public Cloudflare HTTPS link: use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000, and  -p 127.0.0.1:8888:8888  instead of -p 8888:8888
+docker run -d --name unsloth --gpus all --ipc=host \
+  -p 8000:8000 -p 8888:8888 \
+  -v "$PWD":/workspace/host \
+  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
+  -v unsloth-studio:/opt/unsloth-studio \
+  unsloth/unsloth && docker logs -f unsloth
+```
+See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more information. For notebooks only, use the `unsloth/unsloth:core` tag; all tags and options are on [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).<br>For **AMD** there is a separate image: [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm).
+
+---
 
 #### Launch
 ```bash
@@ -177,23 +207,6 @@ unsloth studio
 ```bash
 unsloth studio --secure
 ```
-
-#### Docker
-Use our [Docker image](https://hub.docker.com/r/unsloth/unsloth) ```unsloth/unsloth```. On Linux, set up GPU access once with `curl -fsSL https://raw.githubusercontent.com/unslothai/unsloth/main/docker/install_nvidia_toolkit.sh -o install_nvidia_toolkit.sh && sudo -E bash install_nvidia_toolkit.sh` (Windows: [Docker Desktop with WSL 2](https://unsloth.ai/docs/get-started/install/docker)).
-
-**Linux / WSL (Bash):**
-```bash
-# use  -e UNSLOTH_STUDIO_SECURE=1  instead of -p 8000:8000 for a public Cloudflare HTTPS link
-docker run -d --name unsloth --gpus all --ipc=host \
-  -p 8000:8000 -p 8888:8888 \
-  -v "$PWD":/workspace/host \
-  -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
-  -v unsloth-studio:/opt/unsloth-studio \
-  unsloth/unsloth && docker logs -f unsloth
-```
-See [Docker docs](https://unsloth.ai/docs/get-started/install/docker) for more information. For cloud hosting / global serving, add `-e UNSLOTH_STUDIO_SECURE=1`, drop `-p 8000:8000` and bind JupyterLab to `-p 127.0.0.1:8888:8888`, or bind both to `127.0.0.1` and use an SSH tunnel. Tags (`unsloth/unsloth:core` for notebooks only), GPU support and options: [Docker Hub](https://hub.docker.com/r/unsloth/unsloth).
-
-On AMD there is a separate image, [`unsloth/unsloth-rocm`](https://hub.docker.com/r/unsloth/unsloth-rocm), with the run command and the supported cards on its [Docker Hub page](https://hub.docker.com/r/unsloth/unsloth-rocm).
 
 #### Remote HTTPS & LAN Access
 Server-side tools are on by default - so **be careful**! Keep your password safe, or use `--disable-tools` when exposing Unsloth.

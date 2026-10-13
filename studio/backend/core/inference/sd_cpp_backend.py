@@ -69,6 +69,7 @@ from core.inference.diffusion_memory import (
     OFFLOAD_NONE,
     OFFLOAD_SEQUENTIAL,
 )
+from core.inference import sd_cpp_args as sd_cpp_args_mod
 from core.inference.sd_cpp_args import (
     CPU_BACKEND_FLAGS,
     SdCppGenParams,
@@ -254,14 +255,43 @@ def _base_sample_sigmas(
     return grid, base
 
 
+def _cgroup_cpu_limit(
+    root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup"
+) -> Optional[int]:
+    """Tightest cgroup v2 cpu.max over this cgroup and its parents, in whole CPUs; None if unreadable."""
+    try:
+        with open(proc_cgroup, encoding = "utf-8") as f:
+            rel = next(line.split("::", 1)[1].strip() for line in f if line.startswith("0::"))
+    except (OSError, StopIteration):
+        rel = "/"
+    limit: Optional[int] = None
+    path = os.path.normpath(os.path.join(root, rel.lstrip("/")))
+    while True:
+        try:
+            with open(os.path.join(path, "cpu.max"), encoding = "utf-8") as f:
+                quota, period = f.read().split()[:2]
+            if quota != "max":
+                cpus = max(1, -(-int(quota) // int(period)))
+                limit = cpus if limit is None else min(limit, cpus)
+        except (OSError, ValueError):
+            pass
+        if len(path) <= len(root.rstrip("/")) or path == os.path.dirname(path):
+            return limit
+        path = os.path.dirname(path)
+
+
 def _default_threads() -> int:
-    """Physical-core thread count for the sd.cpp CPU backend. ``threads = None`` lets sd.cpp pick
-    its own default, which is the logical-core count (all hyperthreads). For the compute-bound
-    GGML matmuls the diffusion CPU path runs, oversubscribing the hyperthreads adds scheduling
-    contention without extra throughput, so pin to physical cores instead. Falls back to 8 when
-    the count is unknown, and clamps to at least 1."""
+    """``UNSLOTH_CPU_THREADS``, else ``os.cpu_count() // 2`` capped by the cgroup quota ``os.cpu_count()`` ignores."""
+    try:
+        configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
+    except ValueError:
+        configured = 0
+    if configured > 0:
+        return configured
     cpu = os.cpu_count()
-    return max(1, cpu // 2 if cpu else 8)
+    threads = cpu // 2 if cpu else 8
+    limit = _cgroup_cpu_limit() if sys.platform.startswith("linux") else None
+    return max(1, min(threads, limit) if limit else threads)
 
 
 def _server_binary_runnable(binary: str) -> bool:
@@ -2079,6 +2109,16 @@ def note_unlaunchable_accelerator_build(
         logger.debug("could not record the sd.cpp launch failure: %s", exc)
 
 
+def _install_kwargs(accelerator: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"accelerator": accelerator}
+    if _accelerator_class_of(accelerator) == "cuda":
+        from core.inference.sd_cpp_engine import host_cuda_runtime_major
+        major = host_cuda_runtime_major()
+        if major:
+            kwargs["cuda_major"] = major
+    return kwargs
+
+
 def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu") -> Optional[str]:
     """Path to a usable ``sd-cli`` binary, installing the prebuilt once if needed. Returns the
     binary path, or None when it is absent and cannot be installed (install disabled, no network,
@@ -2109,7 +2149,7 @@ def ensure_sd_cpp_binary(*, allow_install: bool = True, accelerator: str = "cpu"
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                path = _install(accelerator = accelerator)
+                path = _install(**_install_kwargs(accelerator))
                 logger.info("sd-cli installed at %s", path)
                 return str(path)
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
@@ -2168,7 +2208,7 @@ def ensure_sd_server_binary(
             if not claimed:
                 return fallback  # something is running in there; retry on a later load
             try:
-                _install(accelerator = accelerator)  # extracts sd-cli AND sd-server
+                _install(**_install_kwargs(accelerator))  # extracts sd-cli AND sd-server
             except Exception as exc:  # noqa: BLE001 -- download/extract failure -> fall back
                 logger.warning("sd-server auto-install failed: %s", exc)
                 # Also when only the CLI survives (a legacy server-less tree): the router probes ensure_sd_cpp_binary
@@ -3016,6 +3056,9 @@ class SdCppDiffusionBackend:
                 if off_torch is not None
                 else resolve_diffusion_device_target().device
             )
+            # A paravirtual Mac GPU runs sd.cpp on the CPU backend (see metal_text_encoder_flags), so record that.
+            if sd_cpp_args_mod.forces_cpu_backend(device):
+                device = "cpu"
             spawn_env = off_torch.child_env() if off_torch is not None else None
             # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
             offload: tuple[str, ...] = ()

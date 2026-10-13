@@ -15,6 +15,7 @@ for turned into one it was not: thread_reopen NOT RUN, and the job red.
 
 from __future__ import annotations
 
+import contextlib
 import sys
 from pathlib import Path
 
@@ -46,6 +47,18 @@ class _Button:
         raise TimeoutError(f"Timeout {timeout}ms exceeded.")
 
 
+class _Chooser:
+    def __init__(self, page: "_Page") -> None:
+        self._page = page
+
+    @property
+    def value(self) -> "_Chooser":
+        return self
+
+    def set_files(self, _path) -> None:
+        self._page.attachments += 1
+
+
 class _Locator:
     def __init__(self, page: "_Page") -> None:
         self._page = page
@@ -71,7 +84,10 @@ class _Page:
         menu_closes_on_escape: bool = True,
         already_open: tuple = (),
         click_dismisses_open_menu: bool = False,
+        chooser_opens: bool = False,
     ) -> None:
+        self.chooser_opens = chooser_opens
+        self.attachments = 0
         self.click_opens_menu = click_opens_menu
         self.menu_closes_on_escape = menu_closes_on_escape
         self.click_dismisses_open_menu = click_dismisses_open_menu
@@ -81,6 +97,16 @@ class _Page:
 
     def locator(self, _selector: str) -> _Locator:
         return _Locator(self)
+
+    @contextlib.contextmanager
+    def expect_file_chooser(self, timeout = None):
+        chooser = _Chooser(self)
+        yield chooser
+        if not (self.chooser_opens and "attachments" in self.menus):
+            raise TimeoutError(
+                f'Timeout {timeout}ms exceeded while waiting for event "filechooser"'
+            )
+        self.menus.remove("attachments")  # picking "Add photos" closes the menu
 
     def evaluate(
         self,
@@ -94,7 +120,9 @@ class _Page:
             return any(menu not in self._before for menu in self.menus)
         if '[role="menu"]' in script:
             return bool(self.menus)  # a presence-only query
-        return 0  # the attachment count
+        if "menuItemByText" in script:
+            return None
+        return self.attachments  # the attachment count
 
     def wait_for_timeout(self, _ms) -> None:
         return None
@@ -117,12 +145,25 @@ def _upload(page: _Page):
     return image_upload(ctx)
 
 
+def test_a_click_that_opened_the_menu_and_timed_out_still_uploads():
+    """The menu opened on pointerdown and the bounded click timed out on the modal open."""
+    page = _Page(click_opens_menu = True, chooser_opens = True)
+    result = _upload(page)
+
+    assert result.ran is True, result.reason
+    assert result.expect_ok is True
+    assert result.expect["click_overran"] is True
+    assert page.attachments == 1
+    assert page.menus == []
+    assert page.keyboard.pressed == []
+
+
 def test_a_click_that_opened_the_menu_and_timed_out_closes_it():
     page = _Page(click_opens_menu = True)
     result = _upload(page)
 
     assert result.ran is False
-    assert "could not be clicked: TimeoutError" in result.reason
+    assert "the file chooser never opened" in result.reason
     assert page.menus == [], "the modal menu was left open over the next action"
     assert page.keyboard.pressed == ["Escape"]
     assert "closed the menu it opened" in result.reason

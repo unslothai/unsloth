@@ -47,12 +47,16 @@ import { StudioSpeechSynthesisAdapter } from "./adapters/studio-speech-synthesis
 import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
+  findLatestUserAudioBase64,
+  findLatestUserVideoBase64,
+  messagesContainImage,
 } from "./api/chat-adapter";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
+import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -97,6 +101,7 @@ import {
   loadExternalProviders,
   parseExternalModelId,
   externalModelSupportsStudioTools,
+  isExternalModelId,
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
 } from "./external-providers";
@@ -107,6 +112,7 @@ import {
 } from "./image-normalize";
 import { chatModelLoaded } from "./lib/chat-model-loaded";
 import {
+  MAX_OPEN_DOCUMENT_ARCHIVE_BYTES,
   type OpenDocumentAttachmentContent,
   readActiveOpenDocumentAttachmentContent,
   readOpenDocumentAttachmentContent,
@@ -114,7 +120,9 @@ import {
 import {
   OPEN_DOCUMENT_ATTACHMENT_ACCEPT,
   RTF_ATTACHMENT_ACCEPT,
+  SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS,
   TOOL_ONLY_ATTACHMENT_EXTENSIONS,
+  isToolOnlyAttachmentName,
 } from "./open-document-accept";
 import {
   providerHostsCodeExecution,
@@ -151,6 +159,7 @@ import {
   createRecoveryPublishSchedule,
   registerRecoveredRunStop,
   threadHasDurableGenerationRun,
+  threadHasLiveGenerationRun,
   generationNeedsRecovery,
   requestParsesThinkTags,
   restoreCarriedPartsFromRaw,
@@ -229,6 +238,7 @@ import {
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import {
+  attachmentContentText,
   attachmentsSample,
 } from "./utils/pasted-text";
 import { annotationsOfFile } from "./utils/document-annotations";
@@ -724,8 +734,9 @@ class HtmlAttachmentAdapter implements AttachmentAdapter {
 }
 
 class DocxAttachmentAdapter implements AttachmentAdapter {
+  // The extension too: a .docx can arrive with an empty MIME type.
   accept =
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
   // The archive's own parts are checked too: a small .docx can declare a part that only mammoth's
   // inflate grows past the cap, and refusing that at send() would empty the composer.
@@ -876,6 +887,174 @@ class RtfAttachmentAdapter implements AttachmentAdapter {
   remove(attachment: Attachment): Promise<void> {
     this.texts.delete(attachment.id);
     return Promise.resolve();
+  }
+}
+
+class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
+  accept = SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS;
+  // null: no text to inline, so the python tool opens the file, as when .epub/.odp were tool-only.
+  private readonly texts = new Map<string, Promise<string | null>>();
+
+  owns(id: string): boolean {
+    return this.texts.has(id);
+  }
+
+  private read(file: File): Promise<string | null> {
+    // Loaded on use: the first screen has no document to read.
+    const text = import("./server-document").then((m) => m.extractServerDocumentText(file));
+    return text.catch((cause: unknown) => {
+      // Not PDFs: their originals stop at 50 MB (chat_originals.max_bytes), so a textless one here is refused.
+      if (
+        (cause as Error | undefined)?.name === "NoDocumentTextError" &&
+        isToolOnlyAttachmentName(file.name) &&
+        pythonToolOpensAttachments()
+      ) {
+        return null;
+      }
+      throw cause;
+    });
+  }
+
+  async *add({
+    file,
+  }: {
+    file: File;
+  }): AsyncGenerator<PendingAttachment, void> {
+    const attachment = {
+      id: crypto.randomUUID(),
+      type: "document",
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "running", reason: "uploading", progress: 0 },
+    } satisfies PendingAttachment;
+    const text = this.read(file);
+    this.texts.set(attachment.id, text);
+    yield attachment;
+    let error: string | null = null;
+    try {
+      await text;
+    } catch (cause) {
+      error = (cause as Error).message;
+    }
+    // Removed or sent while reading: yielding again would put the chip back.
+    if (this.texts.get(attachment.id) !== text) return;
+    if (error) {
+      toast.error(error);
+      yield { ...attachment, status: { type: "incomplete", reason: "error" } };
+      return;
+    }
+    yield {
+      ...attachment,
+      status: { type: "requires-action", reason: "composer-send" },
+    };
+  }
+
+  async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    const pending = this.texts.get(attachment.id) ?? this.read(attachment.file);
+    this.texts.delete(attachment.id);
+    let text: string | null;
+    try {
+      text = await pending;
+    } catch (cause) {
+      // Thrown, not sent as text: PreStreamAwareAttachmentAdapter then cancels the run.
+      toast.error((cause as Error).message);
+      throw cause;
+    }
+    // Rechecked: without the python tool no original is kept, leaving the model only the placeholder.
+    if (text === null && !pythonToolOpensAttachments()) {
+      const error = `${attachment.name} has no text to read. Turn on Code so the python tool can open it.`;
+      toast.error(error);
+      throw new Error(error);
+    }
+    return {
+      id: attachment.id,
+      type: "document",
+      name: attachment.name,
+      contentType: attachment.contentType,
+      content: [
+        {
+          type: "text",
+          text:
+            text === null
+              ? `[${attachment.name}: only the python tool can read this file]`
+              : attachmentContentText(attachment.name, text, false),
+        },
+      ],
+      status: { type: "complete" },
+    };
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    this.texts.delete(attachment.id);
+    return Promise.resolve();
+  }
+}
+
+class LargeDocumentFallbackAdapter implements AttachmentAdapter {
+  private readonly browser: AttachmentAdapter;
+  private readonly server: ServerDocumentAttachmentAdapter;
+
+  constructor(
+    browser: AttachmentAdapter,
+    server: ServerDocumentAttachmentAdapter,
+  ) {
+    this.browser = browser;
+    this.server = server;
+  }
+
+  get accept(): string {
+    return this.browser.accept;
+  }
+
+  add(state: { file: File }) {
+    return state.file.size > MAX_OPEN_DOCUMENT_ARCHIVE_BYTES
+      ? this.server.add(state)
+      : this.browser.add(state);
+  }
+
+  send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return this.server.owns(attachment.id)
+      ? this.server.send(attachment)
+      : this.browser.send(attachment);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.server.owns(attachment.id)
+      ? this.server.remove(attachment)
+      : this.browser.remove(attachment);
+  }
+}
+
+/** .dot/.pot are Graphviz and gettext text unless their bytes are a Word or PowerPoint template. */
+class OfficeTemplateAdapter implements AttachmentAdapter {
+  accept = ".dot,.pot";
+  private readonly text: AttachmentAdapter;
+  private readonly server: ServerDocumentAttachmentAdapter;
+
+  constructor(text: AttachmentAdapter, server: ServerDocumentAttachmentAdapter) {
+    this.text = text;
+    this.server = server;
+  }
+
+  async *add(state: { file: File }): AsyncGenerator<PendingAttachment, void> {
+    if (await isBinaryOfficeTemplate(state.file)) {
+      yield* this.server.add(state);
+      return;
+    }
+    yield await (this.text.add(state) as Promise<PendingAttachment>);
+  }
+
+  send(attachment: PendingAttachment): Promise<CompleteAttachment> {
+    return this.server.owns(attachment.id)
+      ? this.server.send(attachment)
+      : this.text.send(attachment);
+  }
+
+  remove(attachment: Attachment): Promise<void> {
+    return this.server.owns(attachment.id)
+      ? this.server.remove(attachment)
+      : this.text.remove(attachment);
   }
 }
 
@@ -2225,19 +2404,20 @@ function createPersistedRunAdapter(
       let adoptedThreadId: string | undefined;
       try {
         adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
-        throwIfReservationCancelled();
       } catch (error) {
         if (reservationToken) {
           releasePreStreamRunReservation(reservationToken);
         }
-        // Queued runs carry no direct-send reservation and their persisted preflight can still fail
-        // before the model adapter consumes the queued settings, so match pending/waiting work too.
+        // The history write ignores abortSignal, so a rejection here is a real failure (or clear-all)
+        // even after a steer. Queued runs carry no reservation, so this also stops pending work.
         requestPromptQueueStop(persistedRunThreadIds);
         notifyPromptQueueRunFailed(
           options.unstable_threadId ?? persistedRunThreadIds[0] ?? null,
         );
         throw error;
       }
+      // Outside the catch: steering's reservation cancel is not a history write failure.
+      throwIfReservationCancelled();
       if (reservationToken && adoptedThreadId) {
         adoptPreStreamRunReservation(reservationToken, [
           ...reservationThreadIds,
@@ -2889,21 +3069,27 @@ function useStudioRuntimeAdapters(
         : undefined,
     [],
   );
-  const attachments = useMemo(
-    () =>
-      new PreStreamAwareAttachmentAdapter(
+  const attachments = useMemo(() => {
+    const server = new ServerDocumentAttachmentAdapter();
+    const text = new TextAttachmentAdapter();
+    const largeFallback = (browser: AttachmentAdapter) =>
+      new LargeDocumentFallbackAdapter(browser, server);
+    return new PreStreamAwareAttachmentAdapter(
         new CompositeAttachmentAdapter([
           new VisionImageAdapter(),
           new AudioAttachmentAdapter(),
           // Before the document adapters: a composite takes the first match, and .mkv/.mov must not fall
           // through to them.
           new VideoAttachmentAdapter(),
-          new TextAttachmentAdapter(),
+          // Before text, which claims message/rfc822 (.mht), and tool-only, which lists .epub/.docm/.odp.
+          server,
+          new OfficeTemplateAdapter(text, server),
+          text,
           new HtmlAttachmentAdapter(),
-          new PDFAttachmentAdapter(),
-          new DocxAttachmentAdapter(),
-          new OfficeAttachmentAdapter(),
-          new OpenDocumentAttachmentAdapter(),
+          largeFallback(new PDFAttachmentAdapter()),
+          largeFallback(new DocxAttachmentAdapter()),
+          largeFallback(new OfficeAttachmentAdapter()),
+          largeFallback(new OpenDocumentAttachmentAdapter()),
           new RtfAttachmentAdapter(),
           new ToolOnlyAttachmentAdapter(),
         ]),
@@ -2914,9 +3100,8 @@ function useStudioRuntimeAdapters(
             useChatRuntimeStore.getState().activeThreadId,
           );
         },
-      ),
-    [aui],
-  );
+      );
+  }, [aui]);
   const adapters = useMemo(
     () => ({ history, dictation, speech, attachments }),
     [history, dictation, speech, attachments],
@@ -3617,6 +3802,25 @@ function ActiveBranchRegistrar({
   return null;
 }
 
+// The header meter sits outside AssistantRuntimeProvider, so the count is published upward.
+// Same set the thread renders notices for, so the meter never disagrees with the transcript.
+function CompactionCountRegistrar({
+  onCountChange,
+}: {
+  onCountChange: (threadId: string, count: number) => void;
+}): ReactElement | null {
+  const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
+  const count = useAuiState(
+    ({ thread }) => compactionNoticeMessageIds(thread.messages).size,
+  );
+
+  useEffect(() => {
+    if (threadId) onCountChange(threadId, count);
+  }, [count, onCountChange, threadId]);
+
+  return null;
+}
+
 // include hidden panes because background replies also move the branch head
 function BranchHeadRecorder(): ReactElement | null {
   useBranchHeadRecorder();
@@ -3627,6 +3831,7 @@ function BranchHeadRecorder(): ReactElement | null {
 function ThreadContextUsageRecount({
   enabled,
 }: { enabled: boolean }): ReactElement | null {
+  const aui = useAui();
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const loadedContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
@@ -3659,6 +3864,58 @@ function ThreadContextUsageRecount({
     runActive,
     modelLoading,
   ]);
+
+  // No exact count follows (cloud model, none, or a local model on a branch the recount declines),
+  // and a mounted chat never reruns the history loader, so estimate from the branch it shows. No
+  // storage read: a just-sent chat has no server row yet.
+  useEffect(() => {
+    if (!enabled || !activeThreadId || runActive || modelLoading) return;
+    // An estimate is replaced, so a run that ends without usage still re-prices the new turn.
+    const shown = useChatRuntimeStore.getState().contextUsage;
+    if (shown != null && !shown.estimated) return;
+    let messages: readonly ThreadMessage[];
+    try {
+      if (aui.threads().getState().mainThreadId !== activeThreadId) return;
+      messages = aui.thread().getState().messages;
+    } catch {
+      return;
+    }
+    const localWindow =
+      checkpoint && !isExternalModelId(checkpoint) ? loadedContextLength : null;
+    // The same media checks refreshContextUsage declines on, so exactly one of the two answers.
+    if (
+      localWindow != null &&
+      !messagesContainImage(messages) &&
+      !findLatestUserAudioBase64(messages) &&
+      !findLatestUserVideoBase64(messages)
+    ) {
+      return;
+    }
+    // Only the tip's count describes the branch: a later turn whose run never answered is unpriced.
+    const tip = messages.at(-1);
+    const saved = (tip?.role === "assistant" ? tip.metadata?.custom?.contextUsage : undefined) as
+      | (NonNullable<typeof shown> & { modelId?: string })
+      | undefined;
+    // The history loader's rules, keyed on the SELECTED model (a resident GGUF stays loaded under a
+    // cloud pick): llama.cpp stops at its window (MLX runs past it), and legacy usage without a
+    // modelId is trusted only under a local window.
+    const store = useChatRuntimeStore.getState();
+    const ggufWindow = store.loadedIsGguf ? localWindow : null;
+    const withinWindow =
+      !ggufWindow || (saved?.contextTokens ?? saved?.totalTokens ?? 0) <= ggufWindow;
+    const modelMatches = saved?.modelId
+      ? saved.modelId === checkpoint
+      : localWindow != null && localWindow > 0;
+    const usage =
+      saved && withinWindow && modelMatches
+        ? saved
+        : estimateContextUsage(
+            messages.map((m, index) => ({ ...m, createdAt: index })) as unknown as MessageRecord[],
+          );
+    if (!usage) return;
+    store.setThreadContextUsage(activeThreadId, usage);
+    store.setContextUsage(usage);
+  }, [activeThreadId, aui, checkpoint, enabled, loadedContextLength, modelLoading, runActive]);
 
   return null;
 }
@@ -3867,7 +4124,10 @@ function ThreadBackendAutosave({
   const checkpointsRef = useRef<RunCheckpointScheduler | null>(null);
   const checkpoints = useCallback((): RunCheckpointScheduler => {
     checkpointsRef.current ??= createRunCheckpointScheduler(
-      (threadId) => queueSaveRef.current(threadId),
+      (threadId) =>
+        threadHasLiveGenerationRun(threadId)
+          ? Promise.resolve()
+          : queueSaveRef.current(threadId),
       {
         isActive: (threadId) => isRunActiveRef.current(threadId),
         isBounded: (threadId) => threadHasDurableGenerationRun(threadId),
@@ -3944,6 +4204,7 @@ export function ChatRuntimeProvider({
   listThreads = true,
   backgrounded = false,
   onInitialHistoryReady,
+  onCompactionCountChange,
 }: {
   children: ReactNode;
   modelType?: ModelType;
@@ -3957,6 +4218,7 @@ export function ChatRuntimeProvider({
   // stays alive, and everything driving the shared single-chat state stands down.
   backgrounded?: boolean;
   onInitialHistoryReady?: () => void;
+  onCompactionCountChange?: (threadId: string, count: number) => void;
 }): ReactElement {
   const signalReady = useAppShellReadySignal();
   // Read by the history adapter's own active-thread publication, the sibling of
@@ -4044,6 +4306,9 @@ export function ChatRuntimeProvider({
         <ThreadContextUsageRecount
           enabled={modelType === "base" && !pairId && !backgrounded}
         />
+        {onCompactionCountChange ? (
+          <CompactionCountRegistrar onCountChange={onCompactionCountChange} />
+        ) : null}
         <ThreadBackendAutosave
           modelType={modelType}
           pairId={pairId}

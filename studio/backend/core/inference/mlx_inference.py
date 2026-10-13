@@ -3399,7 +3399,9 @@ class _RowStream:
         if self._normalizer is not None:
             return self._normalize(self.sampled[self._released : self._cut])
         if not self._sequences:
-            return [self._prefix + self.sampled]
+            # Re-decoded snapshots hold back an unfinished character, as in _generate_text.
+            held = self.sampled.rstrip("\ufffd") if self._decode is not None else self.sampled
+            return [self._prefix + held]
         if self._decode is not None:
             return []
         if self._cut > self._released:
@@ -3409,6 +3411,8 @@ class _RowStream:
 
     def settle(self):
         if not self._sequences:
+            if self._decode is not None and self.sampled.endswith("\ufffd"):
+                return [self._prefix + self.sampled]
             return []
         if not self.stopped:
             self._cut = len(self.sampled)
@@ -5667,7 +5671,9 @@ class MLXInferenceBackend:
                                 ),
                             )
                         if not sequences:
-                            yield think_prefix + sampled
+                            # A character whose bytes span tokens decodes to U+FFFD until its last token lands, and
+                            # consumers diff snapshots by length, so yielding that would replace it for good (#8594).
+                            yield think_prefix + sampled.rstrip("\ufffd")
                         else:
                             # Matched every step, delivered once at the end: this decode revises earlier snapshots,
                             # and consumers diff them by length, so a revised one splices two renderings into text
@@ -5715,6 +5721,8 @@ class MLXInferenceBackend:
             sampled += streamed_text.finish(sampled)
             if sequences:
                 cut, stopped = _mlx_stop_cut(sampled, sequences)
+        if not sequences and streamed_text is None and sampled.endswith("\ufffd"):
+            yield think_prefix + sampled
         if sequences or streamed_text is not None:
             if not stopped:
                 cut = len(sampled)

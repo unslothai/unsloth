@@ -143,6 +143,7 @@ function Install-UnslothStudio {
     # statement re-assigns unconditionally.
     $script:UvExe = 'uv'
     $script:UvInstallDestDir = $null
+    $script:StudioPrivateUvDir = $null
     # Same reason, and this one caches a decision about the machine: a policy added or
     # removed between two runs in one console, or a replaced launcher under a hash rule,
     # would otherwise be answered from the first run's probe.
@@ -2005,7 +2006,12 @@ function Install-UnslothStudio {
     $ShortcutsOnly = $false
     $WithLlamaCppDir = ""
     $argList = $args
+    $PythonRequestArg = $null
     for ($i = 0; $i -lt $argList.Count; $i++) {
+        if ([string]$argList[$i] -like "--python=*") {
+            $PythonRequestArg = ([string]$argList[$i]).Substring(9)
+            continue
+        }
         switch ($argList[$i]) {
             "--local"    { $StudioLocalInstall = $true }
             "--tauri"    { $TauriMode = $true }
@@ -2022,6 +2028,14 @@ function Install-UnslothStudio {
                     return (Exit-InstallFailure "--package requires an argument.")
                 }
                 $PackageName = $argList[$i]
+            }
+            "--python"  {
+                $i++
+                if ($i -ge $argList.Count) {
+                    Write-StudioLine "[ERROR] --python requires a version argument, e.g. --python 3.13." -ForegroundColor Red
+                    return (Exit-InstallFailure "--python requires a version argument.")
+                }
+                $PythonRequestArg = [string]$argList[$i]
             }
             "--with-llama-cpp-dir" {
                 $i++
@@ -2058,20 +2072,22 @@ function Install-UnslothStudio {
         return (Exit-InstallFailure "--package name contains invalid characters")
     }
 
-    # UNSLOTH_PYTHON pins the version (mirrors install.sh --python); default 3.13.
-    $PythonVersion = if ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON } else { "3.13" }
-    # python.org fallback patch when winget and the live listing fail; bump with $PythonVersion.
-    $PythonFallbackFullVersion = "3.13.13"
+    # Always a uv-managed CPython: --python > UNSLOTH_PYTHON > the existing environment's minor > 3.13.
+    $PythonExplicitRequest = if ($null -ne $PythonRequestArg) { $PythonRequestArg.Trim() } elseif ($env:UNSLOTH_PYTHON) { $env:UNSLOTH_PYTHON.Trim() } else { "" }
+    if (($null -ne $PythonRequestArg -or $PythonExplicitRequest) -and $PythonExplicitRequest -notmatch '^3\.1[1-3](\.\d+)?$') {
+        Write-StudioLine "[ERROR] Unsupported Python request '$PythonExplicitRequest': use 3.11, 3.12 or 3.13 (optionally with a patch, e.g. 3.13.9)." -ForegroundColor Red
+        return (Exit-InstallFailure "Unsupported Python request '$PythonExplicitRequest'")
+    }
+    $PythonPatchRequest = if ($PythonExplicitRequest -match '^3\.1[1-3]\.\d+$') { $PythonExplicitRequest } else { "" }
+    $PythonVersion = if ($PythonExplicitRequest) { (($PythonExplicitRequest -split '\.')[0..1]) -join '.' } else { "3.13" }
     # Patch releases the stack cannot run; mirrors PYTHON_SKIP in install.sh.
-    # Windows resolves an installed interpreter and hands uv its path rather
-    # than a version, so uv never picks one of these -- but the machine may
-    # already have it, and $PythonFallbackFullVersion above is what replaces it.
     $PythonSkip = @("3.13.8")
-    # The entry above is skipped for one reason: it cannot `import torch`. A
-    # -NoTorch install never imports it, so refusing the interpreter would send a
-    # locked-down GGUF-only machine into winget/python.org recovery it may not be
-    # able to complete, over a package it will not install.
+    # It cannot `import torch`, which a -NoTorch install never does.
     if ($SkipTorch) { $PythonSkip = @() }
+    if ($PythonPatchRequest -and ($PythonSkip -contains $PythonPatchRequest)) {
+        Write-StudioLine "[ERROR] Python $PythonPatchRequest cannot import torch; request $PythonVersion or another patch." -ForegroundColor Red
+        return (Exit-InstallFailure "Python $PythonPatchRequest cannot import torch")
+    }
 
     # An elevated run writes the install root as Administrators and the same account cannot
     # read it back afterwards. Twin in studio/setup.ps1.
@@ -4915,8 +4931,8 @@ function Install-UnslothStudio {
     $script:UnslothCmdShimMarker = "unsloth-studio-managed-launcher"
     $script:UnslothCliTrampoline = "import sys, os; sys.path[:1] = [x for x in sys.path[:1] if getattr(sys.flags, 'safe_path', False) or x not in ('', os.getcwd())]; sys.argv[0] = 'unsloth'; from unsloth_cli import app; sys.exit(app())"
 
-    # Recognize ERROR_ACCESS_DISABLED_BY_POLICY through PowerShell's wrapper exceptions,
-    # the same way Test-AccessDeniedError above recognizes ERROR_ACCESS_DENIED.
+    # Policy refusal through PowerShell's wrapper exceptions: AppLocker 1260, App Control
+    # for Business and Smart App Control 4551 (ERROR_SYSTEM_INTEGRITY_POLICY_VIOLATION).
     # $LASTEXITCODE cannot answer this: no process was created, so it still holds the
     # exit code of whichever native command ran last.
     function Test-ApplicationControlBlock {
@@ -4925,9 +4941,9 @@ function Install-UnslothStudio {
         $ex = if ($ErrorRecord -is [System.Management.Automation.ErrorRecord]) { $ErrorRecord.Exception } else { $ErrorRecord }
         while ($ex) {
             # Win32Exception carries NativeErrorCode; outer wrappers keep only the HRESULT
-            # form of the same code (0x800704EC).
-            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -eq 1260) { return $true }
-            if ($ex.HResult -eq -2147023636) { return $true }
+            # form of the same code (0x800704EC, 0x800711C7).
+            if ($ex -is [System.ComponentModel.Win32Exception] -and $ex.NativeErrorCode -in @(1260, 4551)) { return $true }
+            if ($ex.HResult -in @(-2147023636, -2147020345)) { return $true }
             $ex = $ex.InnerException
         }
         return $false
@@ -4940,11 +4956,11 @@ function Install-UnslothStudio {
         param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Path)
 
         Write-StudioLine "[ERROR] Windows Application Control blocked the managed Python runtime." -ForegroundColor Red
-        Write-StudioLine "        Windows error 1260 (ERROR_ACCESS_DISABLED_BY_POLICY)" -ForegroundColor Yellow
+        Write-StudioLine "        AppLocker, App Control for Business or Smart App Control refused to start it." -ForegroundColor Yellow
         Write-StudioLine "        Blocked program: $Path" -ForegroundColor Yellow
-        Write-StudioLine "        Ask your administrator to review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
+        Write-StudioLine "        Review AppLocker `"EXE and DLL`" event 8004," -ForegroundColor Yellow
         Write-StudioLine "        or CodeIntegrity/Operational event 3077." -ForegroundColor Yellow
-        return "Windows Application Control blocked the managed Python runtime at $Path (Windows error 1260)."
+        return "Windows Application Control blocked the managed Python runtime at $Path."
     }
 
     # One pre-quoted command line, not an argument array: Start-Process joins
@@ -4995,8 +5011,8 @@ function Install-UnslothStudio {
     # Does Application Control deny this launcher here? Windows cannot be asked without
     # trying: AppLocker's cmdlets need the policy and an admin token, WDAC and Smart App
     # Control expose nothing. A denial is free (CreateProcess fails synchronously, no
-    # child, 1260 straight back); an unaffected machine pays one `--version`, measured
-    # at a quarter second. A process that started is not blocked whatever it does next,
+    # child, the policy code straight back); an unaffected machine pays one `--version`,
+    # measured at a quarter second. A process that started is not blocked whatever it does next,
     # so the timeout path still answers "not blocked" and just stops waiting.
     function Test-ShimLaunchBlocked {
         param([Parameter(Mandatory = $true)][string]$Path)
@@ -6536,6 +6552,8 @@ exit 0
     $studioAutoStartProcess = $null
     $hadPreviousUvCacheDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_CACHE_DIR")
     $previousUvCacheDir = [Environment]::GetEnvironmentVariable("UV_CACHE_DIR", "Process")
+    $hadPreviousUvPythonInstallDir = [Environment]::GetEnvironmentVariables().ContainsKey("UV_PYTHON_INSTALL_DIR")
+    $previousUvPythonInstallDir = [Environment]::GetEnvironmentVariable("UV_PYTHON_INSTALL_DIR", "Process")
     try {
         if ($studioNeedsRuntimeLock) {
             try {
@@ -6617,19 +6635,6 @@ exit 0
         substep "Get it from https://aka.ms/getwinget if Python / uv are not already on PATH." "Yellow"
     }
 
-    # ── Detect Python 3.11-3.13, skipping conda and venvs whose base_prefix is conda. ──
-    $script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
-
-    function Test-IsCondaPython {
-        param([string]$Exe)
-        if ($Exe -match $script:CondaSkipPattern) { return $true }
-        try {
-            $basePrefix = (& $Exe -S -c "import sys; print(sys.base_prefix)" 2>$null | Out-String).Trim()
-            if ($basePrefix -match $script:CondaSkipPattern) { return $true }
-        } catch { }
-        return $false
-    }
-
     # The interpreter's own arch, asked of it: win-amd64|win-arm64|win32|"".
     # -S: the caller compares this with -eq, so a sitecustomize banner would read as
     # "unknown" and lose the x64-over-ARM64 preference.
@@ -6640,298 +6645,6 @@ exit 0
         } catch { return "" }
     }
 
-    # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
-    # The resolved Path is passed to `uv venv --python` to prevent uv from
-    # re-resolving the version string back to a conda interpreter.
-    # Candidates on $PythonSkip are dropped as they are enumerated, so no caller
-    # can be handed an interpreter that cannot import torch and the usual
-    # 3.13 -> 3.12 -> 3.11 fallback still applies when the preferred minor is bad.
-    function Find-CompatiblePython {
-        # -X64Only: best installed x64 interpreter or $null, never ARM64. Last resort for
-        # Install-X64Python, where x64 of a lower-priority minor beats ARM64.
-        param([switch]$X64Only)
-        # Windows on ARM: prefer x64. pyarrow (via datasets) and hf-transfer ship no
-        # win_arm64 wheel, so a native ARM64 Python source-builds both and dies on CMake /
-        # Rust minutes in; x64 runs fine emulated. ARM64 is still returned when it is all
-        # there is, and the caller then bootstraps x64 or warns.
-        # ARM64 first on a native host, so a leftover x64 interpreter does not capture the venv.
-        # And when UNSLOTH_ALLOW_ARM64_PYTHON is set: the opt-out has to reach the SELECTION,
-        # not only the swap after it. On a machine that already has x64 the swap never runs,
-        # so the variable would do nothing at all. -X64Only is Install-X64Python's own lookup
-        # and is never the place to honour it.
-        $preferArm64 = (-not $X64Only) -and (
-            $script:WoaNativeCudaTorch -or
-            ((Get-HostMachineArch) -eq "arm64" -and (Test-Arm64PythonOptOut))
-        )
-        $preferX64 = $X64Only -or ((Get-HostMachineArch) -eq "arm64" -and -not $preferArm64)
-        $rankByArch = $preferX64 -or $preferArm64
-        $candidates = @()
-        # Try the Python Launcher first (most reliable on Windows)
-        # py.exe resolves to the standard CPython install, not conda.
-        # Prefer the requested $PythonVersion, then newest-first fallback.
-        $minors = @($PythonVersion) + (@("3.13", "3.12", "3.11") | Where-Object { $_ -ne $PythonVersion })
-        # -All: Windows PowerShell 5.1 returns only the first launcher without it.
-        foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
-            if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
-            foreach ($minor in $minors) {
-                try {
-                    $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
-                    if ($out -match "Python ((3\.1[1-3])\.\d+)") {
-                        # Both captures first: Test-IsCondaPython below runs -match
-                        # and overwrites $Matches. Screening the patch here costs no
-                        # extra subprocess (the text is already in hand) and lets the
-                        # loop carry on to the next launcher and the next minor.
-                        $full = $Matches[1]
-                        $ver = $Matches[2]
-                        if ($PythonSkip -contains $full) { continue }
-                        # Resolve the actual executable path and verify it is not conda-based
-                        $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            if (-not $rankByArch) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
-                            $candidates += @{ Version = $ver; Path = $resolvedExe }
-                        }
-                    }
-                } catch {}
-            }
-        }
-        # -All looks past shadowing stubs. Skip WindowsApps (alias stubs) and conda.
-        foreach ($name in @("python3", "python")) {
-            foreach ($cmd in @(Get-Command $name -All -ErrorAction SilentlyContinue)) {
-                if (-not $cmd.Source) { continue }
-                if ($cmd.Source -like "*\WindowsApps\*") { continue }
-                if (Test-IsCondaPython $cmd.Source) { continue }
-                try {
-                    $out = & $cmd.Source --version 2>&1 | Out-String
-                    if ($out -match "Python ((3\.1[1-3])\.\d+)") {
-                        $full = $Matches[1]
-                        $ver = $Matches[2]
-                        if ($PythonSkip -contains $full) { continue }
-                        # PATH entries may be wrappers (e.g. pyenv-win's python.bat).
-                        # Resolve the real executable so uv bypasses wrapper re-resolution.
-                        $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
-                        if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
-                            if (-not $rankByArch) { return @{ Version = $ver; Path = $resolvedExe; Arch = "" } }
-                            $candidates += @{ Version = $ver; Path = $resolvedExe }
-                        }
-                    }
-                } catch {}
-            }
-        }
-        # `py -3.12` runs the launcher's preferred build, normally the native ARM64 one, so
-        # a same-minor x64 install that is neither preferred nor on PATH never becomes a
-        # candidate. `-3.12-64` cannot disambiguate (deprecated, it only means "not
-        # 32-bit"), so enumerate every registration with -0p and probe each path.
-        if ($rankByArch) {
-            foreach ($pyLauncher in @(Get-Command py -All -CommandType Application -ErrorAction SilentlyContinue)) {
-                if ($pyLauncher.Source -match $script:CondaSkipPattern) { continue }
-                $listed = @()
-                try { $listed = @(& $pyLauncher.Source "-0p" 2>$null) } catch {}
-                foreach ($line in $listed) {
-                    # " -V:3.12 *   C:\...\python.exe": tag, optional default marker, path.
-                    $m = [regex]::Match([string]$line, '(?i)^\s*-\S+\s+\*?\s*"?(?<p>\S.*?\.exe)"?\s*$')
-                    if (-not $m.Success) { continue }
-                    $exe = $m.Groups['p'].Value.Trim()
-                    if ($candidates | Where-Object { $_.Path -eq $exe }) { continue }
-                    if (-not (Test-Path -LiteralPath $exe)) { continue }
-                    if (Test-IsCondaPython $exe) { continue }
-                    try {
-                        $out = & $exe --version 2>&1 | Out-String
-                        if ($out -match "Python ((3\.1[1-3])\.\d+)") {
-                            $full = $Matches[1]
-                            $ver = $Matches[2]
-                            if ($PythonSkip -contains $full) { continue }
-                            $candidates += @{ Version = $ver; Path = $exe }
-                        }
-                    } catch {}
-                }
-            }
-        }
-        # Prefer x64, but only within one minor: $minors is the caller's version preference,
-        # so ranking on arch alone would answer UNSLOTH_PYTHON=3.12 with an x64 3.13 and
-        # never bootstrap x64 3.12. Probing costs a subprocess, so non-ARM returned above.
-        foreach ($c in $candidates) {
-            $tag = Get-PythonPlatformTag $c.Path
-            $c.Arch = if ($tag -eq "win-amd64") { "x86_64" } elseif ($tag -eq "win-arm64") { "arm64" } else { "unknown" }
-        }
-        # The per-minor loop answers the VERSION preference first, so with x64 3.13 and
-        # ARM64 3.12 installed the opt-out still produced an x64 environment. Sweep every
-        # supported minor for an ARM64 build first, then fall through.
-        if ($preferArm64) {
-            foreach ($minor in $minors) {
-                $arm = $candidates |
-                    Where-Object { $_.Version -eq $minor -and $_.Arch -eq "arm64" } |
-                    Select-Object -First 1
-                if ($arm) { return $arm }
-            }
-        }
-        foreach ($minor in $minors) {
-            $sameMinor = @($candidates | Where-Object { $_.Version -eq $minor })
-            if ($sameMinor.Count -eq 0) { continue }
-            if ($preferArm64) {
-                # x64 is still returned when no ARM64 build exists; the torch step re-checks the tag.
-                $arm = $sameMinor | Where-Object { $_.Arch -eq "arm64" } | Select-Object -First 1
-                if ($arm) { return $arm }
-                return $sameMinor[0]
-            }
-            $x64 = $sameMinor | Where-Object { $_.Arch -eq "x86_64" } | Select-Object -First 1
-            if ($x64) { return $x64 }
-            if (-not $X64Only) { return $sameMinor[0] }
-        }
-        if (-not $X64Only -and $candidates.Count -gt 0) { return $candidates[0] }
-        return $null
-    }
-
-    # Which PATH switch the python.org installer gets. PrependPath=1 puts the interpreter at
-    # the FRONT of the User PATH, which inside an active conda environment permanently
-    # demotes conda's own entries (#5871). AppendPath registers it just as well.
-    function Get-PythonInstallerPathSwitch {
-        if (Test-ActiveCondaEnvironment) { return "AppendPath=1" }
-        return "PrependPath=1"
-    }
-
-    # ── Fallback when winget fails (msstore 0x8a15005e): silent per-user python.org, no UAC. ──
-    function Install-PythonFromPythonOrg {
-        # $Arch overrides the host arch, to pull x64 onto an ARM64 box.
-        param([string]$Arch = "")
-        # python.org ships one installer per architecture.
-        $targetArch = if ($Arch) { $Arch } else { Get-TauriDiagArch }
-        $archSuffix = switch ($targetArch) {
-            "x86_64" { "-amd64" }
-            "arm64"  { "-arm64" }
-            "x86"    { "" }
-            default  { $null }
-        }
-        if ($null -eq $archSuffix) {
-            substep "No python.org installer is available for this architecture." "Yellow"
-            return $null
-        }
-
-        # The pinned full version applies only to a matching minor, so 3.12 cannot install 3.13.
-        $full = if ($PythonFallbackFullVersion -like "$PythonVersion.*") { $PythonFallbackFullVersion } else { "$PythonVersion.0" }
-        try {
-            $listing = [string](Invoke-RestMethod -Uri "https://www.python.org/ftp/python/" -UseBasicParsing -TimeoutSec 20)
-            $patches = [regex]::Matches($listing, ([regex]::Escape($PythonVersion) + '\.(\d+)/')) |
-                ForEach-Object { [int]$_.Groups[1].Value } | Sort-Object -Descending
-            if ($patches.Count -gt 0) { $full = "$PythonVersion.$($patches[0])" }
-        } catch {}
-
-        $file = "python-$full$archSuffix.exe"
-        $url  = "https://www.python.org/ftp/python/$full/$file"
-        $dest = Join-Path ([System.IO.Path]::GetTempPath()) $file
-        substep "downloading Python $full from python.org..." "Yellow"
-        try {
-            Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing
-        } catch {
-            substep "python.org download failed: $($_.Exception.Message)" "Yellow"
-            return $null
-        }
-
-        # Same trust boundary as the VC++ runtime in studio/setup.ps1: $full moves per patch
-        # release, so there is no SHA-256 to pin and the publisher is what we can check.
-        # Inspection itself can fail (antivirus quarantining the download first), and the
-        # script-wide 'Stop' would let that escape the function, skipping the $null fallback
-        # and leaving the executable behind. Unreadable is unverified, so it takes the same
-        # route as a bad signature.
-        $sig = $null
-        try { $sig = Get-AuthenticodeSignature -LiteralPath $dest } catch { $sig = $null }
-        if ($null -eq $sig -or
-            $sig.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or
-            $null -eq $sig.SignerCertificate -or
-            $sig.SignerCertificate.Subject -notmatch '(^|,\s*)O="?Python Software Foundation"?(,|$)') {
-            $sigStatus = if ($null -eq $sig) { "could not be read" } else { $sig.Status }
-            substep "python.org installer is not validly signed by the Python Software Foundation (signature status: $sigStatus); not running it." "Yellow"
-            Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
-            return $null
-        }
-
-        # Per-user install => no UAC. The PATH switch puts python + py on PATH;
-        # Include_launcher installs py.exe (preferred by Find-CompatiblePython).
-        substep "installing Python $full (silent, per-user)..."
-        $installArgs = @(
-            "/quiet",
-            "InstallAllUsers=0",
-            (Get-PythonInstallerPathSwitch),
-            "Include_launcher=1",
-            # Launcher per-user too: Include_launcher defaults to all-users, which needs admin.
-            "InstallLauncherAllUsers=0",
-            "Include_pip=1",
-            "AssociateFiles=0",
-            "Shortcuts=0"
-        )
-        $rc = 1
-        try {
-            $proc = Start-Process -FilePath $dest -ArgumentList $installArgs -Wait -PassThru
-            $rc = $proc.ExitCode
-        } catch {
-            substep "python.org installer failed to start: $($_.Exception.Message)" "Yellow"
-        } finally {
-            Remove-Item -LiteralPath $dest -Force -ErrorAction SilentlyContinue
-        }
-        if ($rc -ne 0) {
-            substep "python.org installer exited with code $rc." "Yellow"
-        }
-        Refresh-SessionPath
-        return (Find-CompatiblePython)
-    }
-
-    # Backstop for the screen inside Find-CompatiblePython, for an interpreter that
-    # reports one version to --version and another to sys.version_info (a wrapper or
-    # a shim). Returning $null sends the caller down the install path, which pins
-    # $PythonFallbackFullVersion.
-    function Remove-SkippedPython {
-        param($Candidate)
-        if (-not $Candidate) { return $null }
-        try {
-            $raw = (& $Candidate.Path -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
-        } catch {
-            return $Candidate  # unreadable: not evidence of a bad version
-        }
-        if ($raw -and ($PythonSkip -contains $raw.Trim())) {
-            substep "Python $($raw.Trim()) cannot import torch -- installing another." "Yellow"
-            return $null
-        }
-        return $Candidate
-    }
-
-    # ── Windows on ARM: get an x64 CPython ──
-    # --architecture x64 forces winget off the ARM64 build; python.org takes the same override.
-    function Install-X64Python {
-        # python.org first inside conda, same as the generic bootstrap below: winget's Python
-        # package hard-codes PrependPath=1 and offers no switch to ask otherwise, so a winget
-        # install recreates #5871. winget stays the fallback: no x64 Python at all is a STOP.
-        $pythonOrgTried = $false
-        if (Test-ActiveCondaEnvironment) {
-            substep "conda environment active ($env:CONDA_PREFIX) -- installing x64 Python from python.org, which can be installed without taking PATH priority." "Yellow"
-            $pythonOrgTried = $true
-            $found = Install-PythonFromPythonOrg -Arch "x86_64"
-            if ($found -and $found.Arch -eq "x86_64") { return $found }
-            if ($script:WingetAvailable) {
-                substep "python.org could not provide an x64 Python -- falling back to winget, whose package always puts Python ahead of conda on PATH." "Yellow"
-            }
-        }
-        if ($script:WingetAvailable) {
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try {
-                & $script:WingetExe install -e --id "Python.Python.$PythonVersion" --source winget --architecture x64 --accept-package-agreements --accept-source-agreements
-            } catch { }
-            $ErrorActionPreference = $prevEAP
-            Refresh-SessionPath
-            $found = Find-CompatiblePython
-            if ($found -and $found.Arch -eq "x86_64") { return $found }
-            substep "winget could not provide an x64 Python -- trying python.org..." "Yellow"
-        }
-        # $pythonOrgTried, so an offline box inside conda does not sit through the same
-        # failing download twice.
-        if (-not $pythonOrgTried) {
-            $found = Install-PythonFromPythonOrg -Arch "x86_64"
-            if ($found -and $found.Arch -eq "x86_64") { return $found }
-        }
-        # Nothing installable (offline / no winget): an x64 build of another supported minor
-        # still runs the wheels ARM64 cannot, so take it over the native interpreter.
-        return (Find-CompatiblePython -X64Only)
-    }
-
     # "I want the native ARM64 interpreter." One reader, because both places that would
     # otherwise replace an ARM64 environment have to agree: the fresh selection and the
     # mismatch re-check on a migrated venv. Read at each site, not captured.
@@ -6939,79 +6652,8 @@ exit 0
         return ($env:UNSLOTH_ALLOW_ARM64_PYTHON -in @('1', 'true', 'yes', 'on'))
     }
 
-    # ── Windows on ARM: the interpreter handed to uv has to be x64 ──
-    # PyPI has no win_arm64 pyarrow (via datasets) or hf-transfer, so a native ARM64
-    # interpreter source-builds both and dies minutes in (#8495). $null means this host
-    # cannot be served, which is a STOP rather than a warning (#10875).
-    # UNSLOTH_ALLOW_ARM64_PYTHON=1 opts out.
-    function Resolve-WindowsOnArmX64Python {
-        param($SelectedPython)
-        if (-not $SelectedPython) { return $null }
-        # Read BEFORE the x64 install is attempted, or the variable does nothing on the
-        # machines where that install succeeds. ARM64 only: discovery reports 32-bit `win32`
-        # and probe-failed "unknown" interpreters as "not x64" too.
-        if ((Test-Arm64PythonOptOut) -and ($SelectedPython.Arch -eq "arm64")) {
-            Write-StudioLine "[WARN] UNSLOTH_ALLOW_ARM64_PYTHON is set, so keeping native ARM64 Python $($SelectedPython.Version)." -ForegroundColor Yellow
-            Write-StudioLine "       pyarrow (via datasets) and hf-transfer publish no win_arm64 wheels, so they will be" -ForegroundColor Yellow
-            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
-            Write-StudioLine "       Unset UNSLOTH_ALLOW_ARM64_PYTHON to have x64 Python installed and used instead." -ForegroundColor Yellow
-            return $SelectedPython
-        }
-        substep "windows on arm: only a native ARM64 Python $($SelectedPython.Version) was found." "Yellow"
-        substep "pyarrow and hf-transfer publish no win_arm64 wheels, so installing x64 Python..." "Yellow"
-        $X64Python = Install-X64Python
-        if ($X64Python) {
-            step "python" "using x64 Python $($X64Python.Version) under emulation"
-            return $X64Python
-        }
-        Write-StudioLine "[ERROR] Could not install an x64 Python on this ARM64 machine." -ForegroundColor Red
-        Write-StudioLine "        pyarrow (via datasets) and hf-transfer ship no win_arm64 wheels, so an install" -ForegroundColor Yellow
-        Write-StudioLine "        on ARM64 Python $($SelectedPython.Version) fails while building them from source." -ForegroundColor Yellow
-        Write-StudioLine "        Fix: install x64 Python from https://www.python.org/downloads/windows/" -ForegroundColor Yellow
-        Write-StudioLine "        (choose 'Windows installer (64-bit)', not ARM64), then re-run this installer." -ForegroundColor Yellow
-        Write-StudioLine "        To attempt the install on ARM64 Python anyway, with CMake, MSVC and Rust" -ForegroundColor Yellow
-        Write-StudioLine "        already installed, set UNSLOTH_ALLOW_ARM64_PYTHON=1." -ForegroundColor Yellow
-        return $null
-    }
-
-    function Get-StudioVenvBasePython {
-        param([Parameter(Mandatory = $true)][string]$VenvDir)
-        # The ARM64 interpreter the EXISTING environment was built from, for when the machine
-        # registers none of its own: the selection can only prefer what discovery sees, so
-        # the opt-out would rebuild on x64 anyway. pyvenv.cfg still names it. Read before the
-        # reinstall moves the environment aside.
-        $cfg = Join-Path $VenvDir "pyvenv.cfg"
-        if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $null }
-        $venvHome = $null
-        $baseExe = $null
-        foreach ($line in @(Get-Content -LiteralPath $cfg -ErrorAction SilentlyContinue)) {
-            if ($line -match '^\s*home\s*=\s*(.+?)\s*$') { $venvHome = $Matches[1] }
-            elseif ($line -match '^\s*base-executable\s*=\s*(.+?)\s*$') { $baseExe = $Matches[1] }
-        }
-        # base-executable names the interpreter exactly; home is its directory, which is what
-        # a venv built by an older Python records on its own.
-        $candidates = @()
-        if ($baseExe) { $candidates += $baseExe }
-        if ($venvHome) { $candidates += (Join-Path $venvHome "python.exe") }
-        foreach ($exe in $candidates) {
-            if (-not $exe) { continue }
-            if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
-            if (Test-IsCondaPython $exe) { continue }
-            # ARM64 and a supported minor only: anything not provably native is no better
-            # than the x64 selection it would replace.
-            if ((Get-PythonPlatformTag $exe) -ne "win-arm64") { continue }
-            $out = (& $exe --version 2>&1 | Out-String)
-            if ($out -notmatch "Python ((3\.1[1-3])\.\d+)") { continue }
-            $full = $Matches[1]
-            $ver = $Matches[2]
-            if ($PythonSkip -contains $full) { continue }
-            return @{ Version = $ver; Path = $exe; Arch = "arm64" }
-        }
-        return $null
-    }
-
-    # Does an environment we are about to REUSE still match the interpreter we chose? The
-    # swap above only changes a FRESH selection, so a migrated venv keeps whatever built it,
+    # Does an environment we are about to REUSE still match the interpreter we chose? A
+    # migrated venv keeps whatever built it,
     # which on Windows on ARM is native ARM64 CPython (#8495, #10875). True only with an x64
     # interpreter in hand, so a host served by native ARM64 wheels is left alone.
     function Test-StudioVenvArchMismatch {
@@ -7033,9 +6675,7 @@ exit 0
         # Asked before the opt-out, so the message below is only printed when there really is
         # a native ARM64 environment to keep.
         if ($tag -ne "win-arm64") { return $false }
-        # Honoured HERE too: Resolve-WindowsOnArmX64Python never runs when the ordinary probe
-        # already found x64, so on a host with both interpreters this branch would otherwise
-        # replace the very ARM64 environment the user asked to keep.
+        # Honoured here too, or a migrated ARM64 environment the user asked to keep is replaced.
         if (Test-Arm64PythonOptOut) {
             # Two outcomes, so two sentences: with an ARM64 interpreter the environment is
             # really not rebuilt on x64, and with none the reinstall has already moved the
@@ -7052,193 +6692,53 @@ exit 0
         return $true
     }
 
-    # ── Install Python if no compatible version (3.11-3.13) found ──
+    # uv writes version_info to pyvenv.cfg, the stdlib venv writes version.
+    function Get-StudioVenvPythonMinor {
+        param([Parameter(Mandatory = $true)][string]$VenvDir)
+        $cfg = Join-Path $VenvDir "pyvenv.cfg"
+        if (-not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $null }
+        foreach ($line in @(Get-Content -LiteralPath $cfg -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+            if ($line -match '^\s*version(_info)?\s*=\s*(3\.1[1-3])\.\d+') { return $Matches[2] }
+        }
+        return $null
+    }
+
+    # ── uv-managed Python: minor and arch now, the interpreter once uv is installed ──
     Write-TauriLog "STEP" "Installing Python"
+    # A reinstall keeps its minor so cached cp3XX wheels (torch) are reused; UNSLOTH_TORCH_UPGRADE=1 moves it.
+    if (-not $PythonExplicitRequest -and $env:UNSLOTH_TORCH_UPGRADE -ne '1') {
+        $_existingPythonMinor = Get-StudioVenvPythonMinor -VenvDir $VenvDir
+        # Legacy layouts keep their minor too (checked in the order they are migrated below).
+        if (-not $_existingPythonMinor -and $studioUsesLegacyLayout) {
+            $_legacyDirs = @((Join-Path $StudioHome ".venv"))
+            if ($env:USERPROFILE) { $_legacyDirs += (Join-Path $env:USERPROFILE "unsloth_studio") }
+            foreach ($_legacyDir in $_legacyDirs) {
+                $_existingPythonMinor = Get-StudioVenvPythonMinor -VenvDir $_legacyDir
+                if ($_existingPythonMinor) { break }
+            }
+        }
+        if ($_existingPythonMinor) { $PythonVersion = $_existingPythonMinor }
+    }
+    # uv's builds are GIL-enabled, which is what this probe assumes.
     Initialize-WoaNativeCudaTorch -PythonMinor $PythonVersion
     if ($script:WoaNativeCudaTorch) {
         step "gpu" "Windows on ARM + NVIDIA: native CUDA wheels available -- installing the ARM64 stack" "Green"
         substep "torch index: $(Remove-IndexUrlCredentials $script:WoaTorchIndexUrl)"
     }
-    $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
-
-    # No usable interpreter: uv provides one once it is installed below, instead of a
-    # system-wide winget / python.org install (#7802). Windows on ARM keeps the system
-    # install, whose x64-vs-ARM64 choice the steps below depend on.
-    $PythonFromUv = (-not $DetectedPython) -and ((Get-HostMachineArch) -ne "arm64")
-    if ($DetectedPython) {
-        step "python" "Python $($DetectedPython.Version) already installed"
-    } elseif ($PythonFromUv) {
-        step "python" "no Python 3.11-3.13 found; uv will provide Python $PythonVersion"
-    }
-    # Dot-sourced so $DetectedPython lands in this scope; also the fallback when uv cannot.
-    $InstallSystemPython = {
-        substep "installing Python ${PythonVersion}..."
-        $pythonPackageId = "Python.Python.$PythonVersion"
-        $wingetExit = $null
-
-        # winget's Python package hard-codes PrependPath=1 with no switch to ask otherwise,
-        # so inside conda take the python.org route first, where we choose the switch. winget
-        # stays the fallback: a failed install is worse than a PATH we warn about.
-        $pythonOrgTried = $false
-        if (Test-ActiveCondaEnvironment) {
-            substep "conda environment active ($env:CONDA_PREFIX) -- installing Python from python.org, which can be installed without taking PATH priority." "Yellow"
-            $pythonOrgTried = $true
-            $DetectedPython = Install-PythonFromPythonOrg
-            if (-not $DetectedPython -and $script:WingetAvailable) {
-                substep "python.org could not provide Python -- falling back to winget, whose package always puts Python ahead of conda on PATH." "Yellow"
-            }
-        }
-
-        if ($script:WingetAvailable -and -not $DetectedPython) {
-            # --source winget avoids msstore, whose cert-pinning (0x8a15005e) can abort the install.
-            $prevEAP = $ErrorActionPreference
-            $ErrorActionPreference = "Continue"
-            try {
-                & $script:WingetExe install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements
-                $wingetExit = $LASTEXITCODE
-            } catch { $wingetExit = 1 }
-            $ErrorActionPreference = $prevEAP
-            Refresh-SessionPath
-
-            # Re-detect after install (PATH may have changed)
-            $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
-
-            if (-not $DetectedPython) {
-                # Covers real failures and "already installed" codes where Python is not on PATH.
-                substep "Python not found on PATH after winget. Retrying with --force..." "Yellow"
-                $ErrorActionPreference = "Continue"
-                try {
-                    & $script:WingetExe install -e --id $pythonPackageId --source winget --accept-package-agreements --accept-source-agreements --force
-                    $wingetExit = $LASTEXITCODE
-                } catch { $wingetExit = 1 }
-                $ErrorActionPreference = $prevEAP
-                Refresh-SessionPath
-                $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
-            }
-        }
-
-        # $pythonOrgTried, so an offline box inside conda does not sit through the same
-        # failing download twice and then read "falling back to python.org" for a fallback
-        # that already ran.
-        if (-not $DetectedPython -and -not $pythonOrgTried) {
-            if ($script:WingetAvailable) {
-                substep "winget could not install Python -- falling back to python.org..." "Yellow"
-            } else {
-                substep "winget is unavailable -- installing Python from python.org..." "Yellow"
-            }
-            $DetectedPython = Install-PythonFromPythonOrg
-        }
-
-        if (-not $DetectedPython) {
-            $exitNote = if ($null -ne $wingetExit) { " (winget exit code $wingetExit)" } else { "" }
-            Write-StudioLine "[ERROR] Python installation failed$exitNote" -ForegroundColor Red
-            Write-StudioLine "        Please install Python $PythonVersion manually from https://www.python.org/downloads/" -ForegroundColor Yellow
-            Write-StudioLine "        Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
-            Write-StudioLine "        Then re-run this installer." -ForegroundColor Yellow
+    # Windows on ARM: x64 under emulation unless the native CUDA stack applies (no win_arm64 pyarrow / hf-transfer, #8495).
+    $PythonArch = "x86_64"
+    if ((Get-HostMachineArch) -eq "arm64" -and ($script:WoaNativeCudaTorch -or (Test-Arm64PythonOptOut))) {
+        $PythonArch = "arm64"
+        if (-not $script:WoaNativeCudaTorch) {
+            Write-StudioLine "[WARN] UNSLOTH_ALLOW_ARM64_PYTHON is set, so using native ARM64 Python $PythonVersion." -ForegroundColor Yellow
+            Write-StudioLine "       pyarrow (via datasets) and hf-transfer publish no win_arm64 wheels, so they will be" -ForegroundColor Yellow
+            Write-StudioLine "       built from source, which needs CMake plus the MSVC and Rust toolchains." -ForegroundColor Yellow
+            Write-StudioLine "       Unset UNSLOTH_ALLOW_ARM64_PYTHON to use x64 Python instead." -ForegroundColor Yellow
         }
     }
-    if (-not $DetectedPython -and -not $PythonFromUv) {
-        . $InstallSystemPython
-        if (-not $DetectedPython) { return (Exit-InstallFailure "Python installation failed") }
-    }
-    # Re-probe for the interpreter actually selected: every native decision is keyed to a cp3XX tag.
-    $WoaProbedMinor = $PythonVersion
-    $WoaProbedFreeThreaded = $false
-    $WoaDetectedFreeThreaded = $false
-    if ($DetectedPython -and (Get-HostMachineArch) -eq "arm64") {
-        $WoaDetectedFreeThreaded = Test-PythonFreeThreaded -PythonExe $DetectedPython.Path
-    }
-    if ($DetectedPython -and (
-            ($DetectedPython.Version -ne $WoaProbedMinor) -or
-            ($WoaDetectedFreeThreaded -ne $WoaProbedFreeThreaded))) {
-        $WoaNativeBeforeReprobe = $script:WoaNativeCudaTorch
-        $WoaProbedMinor = $DetectedPython.Version
-        $WoaProbedFreeThreaded = $WoaDetectedFreeThreaded
-        Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version `
-            -FreeThreaded $WoaDetectedFreeThreaded
-        if ($script:WoaNativeCudaTorch -ne $WoaNativeBeforeReprobe) {
-            $ReselectedPython = Remove-SkippedPython (Find-CompatiblePython)
-            if ($ReselectedPython) {
-                # The reselection can hand back an interpreter the probe has not answered for, so that one is probed too; when it has no stack the probe's interpreter is kept and its answer restored.
-                $_woaReselectedFreeThreaded = $false
-                if ((Get-HostMachineArch) -eq "arm64") {
-                    $_woaReselectedFreeThreaded = Test-PythonFreeThreaded -PythonExe $ReselectedPython.Path
-                }
-                if (($ReselectedPython.Version -ne $WoaProbedMinor) -or
-                    ($_woaReselectedFreeThreaded -ne $WoaProbedFreeThreaded)) {
-                    Initialize-WoaNativeCudaTorch -PythonMinor $ReselectedPython.Version `
-                        -FreeThreaded $_woaReselectedFreeThreaded
-                    if ($script:WoaNativeCudaTorch) {
-                        $WoaProbedMinor = $ReselectedPython.Version
-                        $WoaProbedFreeThreaded = $_woaReselectedFreeThreaded
-                        $DetectedPython = $ReselectedPython
-                    } else {
-                        substep "windows on arm: Python $($ReselectedPython.Version) has no win_arm64 CUDA stack; keeping Python $($DetectedPython.Version), which has one." "Yellow"
-                        Initialize-WoaNativeCudaTorch -PythonMinor $WoaProbedMinor `
-                            -FreeThreaded $WoaProbedFreeThreaded
-                    }
-                } else {
-                    $DetectedPython = $ReselectedPython
-                }
-            }
-            if ($script:WoaNativeCudaTorch) {
-                step "gpu" "Windows on ARM + NVIDIA: native CUDA wheels available -- installing the ARM64 stack" "Green"
-                substep "torch index: $(Remove-IndexUrlCredentials $script:WoaTorchIndexUrl)"
-            } else {
-                substep "windows on arm: no win_arm64 CUDA stack for Python $($DetectedPython.Version) -- using the x64 stack." "Yellow"
-            }
-        }
-    }
-    # An emulated x64 python cannot load the win_arm64 wheels the probe just found.
-    if ($script:WoaNativeCudaTorch -and $DetectedPython -and $DetectedPython.Arch -eq "x86_64") {
-        substep "windows on arm: found an x64 Python $($DetectedPython.Version); installing the native ARM64 build..." "Yellow"
-        $Arm64Python = Install-PythonFromPythonOrg -Arch "arm64"
-        if ($Arm64Python -and $Arm64Python.Arch -ne "x86_64") {
-            $DetectedPython = $Arm64Python
-            step "python" "using native ARM64 Python $($DetectedPython.Version)"
-            $_woaNewFreeThreaded = Test-PythonFreeThreaded -PythonExe $DetectedPython.Path
-            if (($DetectedPython.Version -ne $WoaProbedMinor) -or
-                ($_woaNewFreeThreaded -ne $WoaProbedFreeThreaded)) {
-                $WoaProbedMinor = $DetectedPython.Version
-                $WoaProbedFreeThreaded = $_woaNewFreeThreaded
-                Initialize-WoaNativeCudaTorch -PythonMinor $DetectedPython.Version `
-                    -FreeThreaded $_woaNewFreeThreaded
-                if (-not $script:WoaNativeCudaTorch) {
-                    substep "windows on arm: no win_arm64 CUDA stack for Python $($DetectedPython.Version) -- using the x64 stack." "Yellow"
-                }
-            }
-        } else {
-            substep "could not install a native ARM64 Python; falling back to the x64 stack." "Yellow"
-            $script:WoaNativeCudaTorch = $false
-            $script:WoaTorchIndexUrl = $null
-        }
-    }
-    # ── Windows on ARM: the opt-out's last ARM64 interpreter ──
-    # The selection prefers ARM64 under UNSLOTH_ALLOW_ARM64_PYTHON, but only among the
-    # interpreters discovery can see. With none left, an x64 one is selected and the native
-    # environment is rebuilt on it -- exactly what the variable asks against -- so the
-    # environment's own base interpreter, which pyvenv.cfg still names, is tried first.
-    if ((Get-HostMachineArch) -eq "arm64" -and (Test-Arm64PythonOptOut) -and
-            (-not $DetectedPython -or $DetectedPython.Arch -ne "arm64")) {
-        $ArmBasePython = Get-StudioVenvBasePython -VenvDir $VenvDir
-        if ($ArmBasePython) {
-            step "python" "windows on arm: UNSLOTH_ALLOW_ARM64_PYTHON is set and no other ARM64 Python is registered; using the ARM64 Python $($ArmBasePython.Version) the existing environment was built from"
-            $DetectedPython = $ArmBasePython
-        }
-    }
-
-    # ── Windows on ARM: swap a native ARM64 interpreter for x64 ──
-    # No x64 interpreter means no install, so this stops rather than warning: see
-    # Resolve-WindowsOnArmX64Python.
-    # Not on a native CUDA torch host: there an ARM64 interpreter is the correct one
-    # and swapping it away would break sm_121.
-    if (-not $script:WoaNativeCudaTorch -and
-            $DetectedPython -and (Get-HostMachineArch) -eq "arm64" -and $DetectedPython.Arch -ne "x86_64") {
-        $DetectedPython = Resolve-WindowsOnArmX64Python -SelectedPython $DetectedPython
-        if (-not $DetectedPython) {
-            return (Exit-InstallFailure "windows on arm: no x64 Python could be installed, and ARM64 Python cannot resolve pyarrow or hf-transfer")
-        }
-    }
+    $PythonRequestLabel = if ($PythonPatchRequest) { $PythonPatchRequest } else { $PythonVersion }
+    step "python" "uv will provide Python $PythonRequestLabel ($PythonArch); a Python already on this machine is not used"
+    $DetectedPython = $null
 
     $DiagPythonVersion = $PythonVersion
     if ($DetectedPython) { $DiagPythonVersion = $DetectedPython.Version }
@@ -7413,8 +6913,10 @@ exit 0
 
         # Same destination priority as astral's installer, so an existing uv is
         # replaced in place and the PATH probe further below still finds it.
-        $destDir = $null
-        foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
+        # Read safely: extracted, this runs under a caller's strict mode.
+        $privateDir = Get-Variable -Name StudioPrivateUvDir -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+        $destDir = $privateDir
+        foreach ($candidate in @($destDir, $env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
             if ($candidate) { $destDir = $candidate; break }
         }
         if (-not $destDir -and $env:XDG_DATA_HOME) { $destDir = Join-Path $env:XDG_DATA_HOME "../bin" }
@@ -7533,7 +7035,7 @@ exit 0
 
         # Same PATH treatment and opt-outs astral's installer uses: an unmanaged
         # install forces no-modify-path there, so it must here too.
-        if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL) {
+        if (-not $env:UV_NO_MODIFY_PATH -and -not $env:UV_UNMANAGED_INSTALL -and -not $privateDir) {
             Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
         }
         $env:PATH = "$destDir;$env:PATH"
@@ -7543,7 +7045,31 @@ exit 0
         return $true
     }
 
-    if (-not (Test-UvVersionOk)) {
+    # A custom home gets its own uv in <home>\uv: winget and the default edit the profile and user PATH.
+    $script:StudioKeepsTools = (-not $studioUsesLegacyLayout) -and (Test-StudioHomeIsCustom)
+    if ($script:StudioKeepsTools) {
+        # Claimed before uv or python\ lands in it: the claim needs an empty root. A no-op once claimed.
+        Write-StudioRootOwnerMarker -Root $StudioHome
+        # Created even when unused: Studio reads it as this choice at runtime.
+        try { [System.IO.Directory]::CreateDirectory((Join-Path $StudioHome "python")) | Out-Null } catch {}
+    }
+    $script:StudioPrivateUvDir = $null
+    $script:StudioPrivateUvStale = $false
+    if ($script:StudioKeepsTools -and
+        -not ($env:UV_INSTALL_DIR -or $env:UV_UNMANAGED_INSTALL -or $env:XDG_BIN_HOME)) {
+        $script:StudioPrivateUvDir = Join-Path $StudioHome "uv"
+        $privateUv = Join-Path $script:StudioPrivateUvDir "uv.exe"
+        if (Test-Path -LiteralPath $privateUv -PathType Leaf) {
+            # Studio puts this one first at runtime, so a stale copy is replaced even when PATH has a good uv.
+            if (Test-UvCandidateVersion $privateUv) {
+                $env:PATH = "$($script:StudioPrivateUvDir);$env:PATH"
+            } else {
+                $script:StudioPrivateUvStale = $true
+            }
+        }
+    }
+
+    if ($script:StudioPrivateUvStale -or -not (Test-UvVersionOk)) {
         # Resolve-UvExecutable, not a bare Get-Command: a profile alias named uv would
         # otherwise report "updating" on what is in fact a first install.
         if (Resolve-UvExecutable) {
@@ -7551,7 +7077,7 @@ exit 0
         } else {
             substep "installing uv package manager..."
         }
-        if ($script:WingetAvailable) {
+        if ($script:WingetAvailable -and -not $script:StudioPrivateUvDir) {
             $prevEAP = $ErrorActionPreference
             $ErrorActionPreference = "Continue"
             try { & $script:WingetExe upgrade --id=astral-sh.uv -e --source winget --accept-package-agreements --accept-source-agreements } catch {}
@@ -7562,8 +7088,9 @@ exit 0
             Refresh-SessionPath
         }
         # winget unavailable or it didn't put uv on PATH: install the pinned
-        # release directly (ARM64 runners, machines without the Store).
-        if (-not (Test-UvVersionOk)) {
+        # release directly (ARM64 runners, machines without the Store). A stale private uv is
+        # replaced even when PATH has a good one: Studio puts the private one first.
+        if ($script:StudioPrivateUvStale -or -not (Test-UvVersionOk)) {
             if (@(Install-UvFromRelease)[-1] -ne $true -and $script:UvReleaseUnfetched -and (Use-MirrorSpare uvbin)) { Install-UvFromRelease | Out-Null }
             Refresh-SessionPath
         }
@@ -7595,6 +7122,11 @@ exit 0
     # tests/python/test_windows_python_venv_hardening.py, where a call into the rest of the
     # installer is a command-not-found.
     Write-StudioRootOwnerMarker -Root $StudioHome
+    # Never the shared cache: new wheels would land on the profile drive.
+    if ($script:StudioKeepsTools -and
+        (Test-StudioUvCacheUsable -Cache (Join-Path (Join-Path $StudioHome "cache") "uv"))) {
+        $IsolateUvCache = $true
+    }
     Set-StudioUvCacheEnvironment -StudioRoot $StudioHome -Isolated $IsolateUvCache -UvExecutable $script:UvExe
     # Bytecode compilation can exceed uv's 60s default on slow machines ("0" disables).
     if (-not $env:UV_COMPILE_BYTECODE_TIMEOUT) {
@@ -7608,50 +7140,108 @@ exit 0
         $env:UV_HTTP_TIMEOUT = "180"
     }
 
-    # --no-bin / --no-registry: only uv's own Python store changes, nothing on PATH or in
-    # the py launcher. --system: `find` otherwise answers with an active venv's python.
-    # $null sends the caller to the system install.
+    # --no-bin / --no-registry leave PATH and the py launcher alone; --system skips an active venv;
+    # --managed-python never returns an interpreter uv did not install.
     function Resolve-UvManagedPython {
-        # A range excluding $PythonSkip, as install.sh's _python_request: a bare "3.13" can
-        # resolve to 3.13.8, and a pinned patch may be newer than this uv knows or a cached one.
-        $request = $PythonVersion
-        $bad = @($PythonSkip | Where-Object { $_ -like "$PythonVersion.*" })
-        if ($bad.Count -gt 0 -and $PythonVersion -match '^(\d+)\.(\d+)$') {
-            $request = ">=$PythonVersion,<$($Matches[1]).$([int]$Matches[2] + 1)" + (($bad | ForEach-Object { ",!=$_" }) -join "")
+        param([string]$Minor, [string]$Patch = "", [string]$Arch = "x86_64")
+        $uvArch = if ($Arch -eq "arm64") { "aarch64" } else { "x86_64" }
+        $wantTag = if ($Arch -eq "arm64") { "win-arm64" } else { "win-amd64" }
+        # Arch-qualified keys take no range: past a skipped patch try the next, then an older (cached) one.
+        $queue = [System.Collections.Generic.List[string]]::new()
+        $queue.Add($(if ($Patch) { $Patch } else { $Minor }))
+        $tried = @{}
+        while ($queue.Count -gt 0 -and $tried.Count -lt 5) {
+            $version = $queue[0]
+            $queue.RemoveAt(0)
+            if ($tried.ContainsKey($version)) { continue }
+            $tried[$version] = $true
+            $key = "cpython-$version-windows-$uvArch-none"
+            $null = Invoke-InstallCommand -NoMirror -Label "install uv-managed Python $key" {
+                & $script:UvExe python install --no-bin --no-registry $key
+            }
+            # Asked even when the install failed: a runtime installed earlier serves an offline machine.
+            $exe = ""
+            try {
+                $exe = (& $script:UvExe python find --system --managed-python $key 2>$null | Select-Object -First 1)
+            } catch {}
+            $exe = "$exe".Trim()
+            if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { continue }
+            $facts = ""
+            try {
+                $facts = (& $exe -S -I -c "import sys, sysconfig; print('{}.{}.{}'.format(*sys.version_info[:3]), sysconfig.get_platform(), int(bool(sysconfig.get_config_var('Py_GIL_DISABLED'))))" 2>$null | Select-Object -First 1)
+            } catch {}
+            $parts = @("$facts".Trim() -split '\s+')
+            if ($parts.Count -ne 3) { return $null }
+            $full = $parts[0]
+            if ($full -notlike "$Minor.*" -or $parts[1].ToLowerInvariant() -ne $wantTag -or $parts[2] -ne "0") { return $null }
+            if ($Patch -and $full -ne $Patch) { return $null }
+            if ($PythonSkip -notcontains $full) {
+                return @{ Version = $Minor; Full = $full; Path = $exe; Arch = $Arch }
+            }
+            if ($Patch) { return $null }
+            $skipped = [int]($full.Split('.')[2])
+            foreach ($n in @(($skipped + 1), ($skipped - 1), ($skipped + 2), ($skipped - 2))) {
+                if ($n -ge 0) { $queue.Add("$Minor.$n") }
+            }
         }
-        $installExit = Invoke-InstallCommand -NoMirror -Label "install uv-managed Python $request" {
-            & $script:UvExe python install --no-bin --no-registry $request
-        }
-        if ($installExit -ne 0) { return $null }
-        $exe = ""
-        try {
-            $exe = (& $script:UvExe python find --system --managed-python $request 2>$null | Select-Object -First 1)
-        } catch {}
-        $exe = "$exe".Trim()
-        if (-not $exe -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) { return $null }
-        # -S: a sitecustomize banner would otherwise be read as the version.
-        $full = ""
-        try {
-            $full = (& $exe -S -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
-        } catch {}
-        $full = "$full".Trim()
-        if ($full -notmatch '^(3\.1[1-3])\.\d+$') { return $null }
-        $minor = $Matches[1]
-        # find answers through uv's per-minor link, which can still name a skipped patch.
-        if ($PythonSkip -contains $full) { return $null }
-        return @{ Version = $minor; Path = $exe; Arch = "" }
+        return $null
     }
 
-    if ($PythonFromUv) {
-        $DetectedPython = Resolve-UvManagedPython
-        if ($DetectedPython) {
-            step "python" "using uv-managed Python $($DetectedPython.Version)"
-        } else {
-            substep "uv could not provide Python $PythonVersion -- installing it system-wide instead." "Yellow"
-            . $InstallSystemPython
-            if (-not $DetectedPython) { return (Exit-InstallFailure "Python installation failed") }
+    # Reuse a legacy environment only on uv's store and the resolved Python (exact patch if requested).
+    function Test-LegacyVenvReusable {
+        param([Parameter(Mandatory = $true)][string]$VenvDir, $Python, [bool]$Exact = $false)
+        $cfg = Join-Path $VenvDir "pyvenv.cfg"
+        if (-not $Python -or -not (Test-Path -LiteralPath $cfg -PathType Leaf)) { return $false }
+        $venvHome = $null
+        $venvVersion = $null
+        # uv writes pyvenv.cfg as UTF-8 without a BOM; Windows PowerShell 5.1 would read it as ANSI.
+        foreach ($line in @(Get-Content -LiteralPath $cfg -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+            if ($line -match '^\s*home\s*=\s*(.+?)\s*$') { $venvHome = $Matches[1] }
+            elseif ($line -match '^\s*version(_info)?\s*=\s*(\d+\.\d+\.\d+)') { $venvVersion = $Matches[2] }
         }
+        if (-not $venvHome -or -not $venvVersion) { return $false }
+        # uv names each build's directory cpython-<version>-windows-<arch>-none.
+        $wantArch = if ($Python.Arch -eq "arm64") { "aarch64" } else { "x86_64" }
+        if ((Split-Path -Leaf $venvHome.TrimEnd('\', '/')) -notmatch "-windows-$wantArch-") { return $false }
+        if ($Exact) {
+            if ($venvVersion -ne $Python.Full) { return $false }
+        } elseif ($venvVersion -notlike "$($Python.Version).*") {
+            return $false
+        }
+        $store = ""
+        try { $store = (& $script:UvExe python dir 2>$null | Select-Object -First 1) } catch {}
+        $store = "$store".Trim()
+        if (-not $store) { return $false }
+        try {
+            $sep = [System.IO.Path]::DirectorySeparatorChar
+            $venvHome = [System.IO.Path]::GetFullPath($venvHome).TrimEnd('\', '/') + $sep
+            $store = [System.IO.Path]::GetFullPath($store).TrimEnd('\', '/') + $sep
+        } catch { return $false }
+        return $venvHome.StartsWith($store, [System.StringComparison]::OrdinalIgnoreCase)
     }
+
+    # The venv is built on this interpreter, so a custom home keeps it too.
+    if ($script:StudioKeepsTools -and [string]::IsNullOrWhiteSpace($env:UV_PYTHON_INSTALL_DIR)) {
+        $env:UV_PYTHON_INSTALL_DIR = Join-Path $StudioHome "python"
+    }
+    $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+    if (-not $DetectedPython -and $PythonArch -eq "arm64" -and -not (Test-Arm64PythonOptOut)) {
+        substep "could not get a native ARM64 Python; falling back to the x64 stack." "Yellow"
+        $script:WoaNativeCudaTorch = $false
+        $script:WoaTorchIndexUrl = $null
+        $PythonArch = "x86_64"
+        $DetectedPython = Resolve-UvManagedPython -Minor $PythonVersion -Patch $PythonPatchRequest -Arch $PythonArch
+    }
+    if (-not $DetectedPython) {
+        $_uvArchKey = if ($PythonArch -eq "arm64") { "aarch64" } else { "x86_64" }
+        Write-StudioLine "[ERROR] uv could not provide Python $PythonRequestLabel ($PythonArch)." -ForegroundColor Red
+        Write-StudioLine "        Unsloth Studio always runs on its own uv-managed Python, never one already installed." -ForegroundColor Yellow
+        Write-StudioLine "        Offline, or downloads blocked: point UV_PYTHON_INSTALL_MIRROR at a python-build-standalone" -ForegroundColor Yellow
+        Write-StudioLine "        mirror, or run 'uv python install cpython-$PythonRequestLabel-windows-$_uvArchKey-none' once while online," -ForegroundColor Yellow
+        Write-StudioLine "        then re-run this installer. Your existing environment was not changed." -ForegroundColor Yellow
+        return (Exit-InstallFailure "uv could not provide Python $PythonRequestLabel ($PythonArch)")
+    }
+    step "python" "using uv-managed Python $($DetectedPython.Full) ($($DetectedPython.Arch))"
 
     # ── Create the venv; hand uv the resolved exe path so it does not re-resolve back to conda. ──
     Write-TauriLog "STEP" "Creating virtual environment"
@@ -7679,6 +7269,7 @@ exit 0
     # Reset per run: under `irm | iex` the script scope IS the caller's session.
     $script:PrevTorchVer = ""
     $script:PrevTorchPin = $null
+    $script:ExistingInstall = $false
 
     function Test-VenvPythonReady {
         param([Parameter(Mandatory = $true)][string]$PythonExe)
@@ -8146,6 +7737,37 @@ exit 0
         } catch { return $null }
     }
 
+    function Get-TorchVersionFromDisk {
+        param([string]$VenvRoot)
+        $versionPy = Join-Path $VenvRoot "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $versionPy -PathType Leaf)) { return $null }
+        try {
+            foreach ($line in [System.IO.File]::ReadAllLines($versionPy)) {
+                if ($line -match "^__version__\s*=\s*'([^']*)'") { return $Matches[1] }
+            }
+        } catch {}
+        return $null
+    }
+
+    # Before anything below moves an environment aside; a broken legacy .venv still counts.
+    $_legacyVenvDir = Join-Path $StudioHome ".venv"
+    $_cwdVenvPy = if ($env:USERPROFILE) { Join-Path $env:USERPROFILE "unsloth_studio\Scripts\python.exe" } else { $null }
+    if ((Test-Path -LiteralPath $VenvPython) -or (Test-DirectoryHasEntries -Path $VenvDir)) {
+        $script:ExistingInstall = $true
+    } elseif ($studioUsesLegacyLayout -and (Test-DirectoryHasEntries -Path $_legacyVenvDir)) {
+        $script:ExistingInstall = $true
+        if (-not $SkipTorch) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot $_legacyVenvDir }
+    } elseif ($studioUsesLegacyLayout -and $_cwdVenvPy -and (
+            (Test-Path -LiteralPath $_cwdVenvPy) -or
+            (Test-Path -LiteralPath (Join-Path (Split-Path (Split-Path $_cwdVenvPy -Parent) -Parent) "pyvenv.cfg") -PathType Leaf))) {
+        # A CWD-relative venv whose interpreter is gone is still an earlier install.
+        $script:ExistingInstall = $true
+        if (-not $SkipTorch) {
+            if (Test-Path -LiteralPath $_cwdVenvPy) { $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $_cwdVenvPy }
+            if (-not $script:PrevTorchVer) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot (Split-Path (Split-Path $_cwdVenvPy -Parent) -Parent) }
+        }
+    }
+
     $studioVenvReplacementCommitted = $false
     try {
     # Replace occupied venvs even when python.exe is missing, as in #9479.
@@ -8175,6 +7797,9 @@ exit 0
         # Record the release before the rollback move; only the new-layout replace needs it.
         if (-not $SkipTorch) {
             $script:PrevTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
+            # A missing or broken interpreter still leaves torch's version.py: without it a
+            # 2.13/2.14 install would fall to the <2.12 default on a plain re-run.
+            if (-not $script:PrevTorchVer) { $script:PrevTorchVer = Get-TorchVersionFromDisk -VenvRoot $VenvDir }
         }
         # And the interpreter's architecture, for the same reason and while it can still be
         # read: the move below takes $VenvPython with it, and the Windows-on-ARM rebuild
@@ -8217,7 +7842,9 @@ exit 0
             $legacyOk = ($LASTEXITCODE -eq 0)
         } catch { $legacyOk = $false }
         $ErrorActionPreference = $prevEAP2
-        if ($legacyOk) {
+        if ($legacyOk -and -not (Test-LegacyVenvReusable -VenvDir $OldVenv -Python $DetectedPython -Exact ([bool]$PythonPatchRequest))) {
+            substep "legacy environment is not on the uv-managed Python $($DetectedPython.Full) -- creating a fresh environment; the old one stays at $OldVenv" "Yellow"
+        } elseif ($legacyOk) {
             substep "legacy environment is healthy -- migrating..."
             try {
                 Clear-MigrationTargetDirectory -Path $VenvDir
@@ -8240,16 +7867,20 @@ exit 0
         # CWD-relative venv from old install.ps1 -> migrate to absolute path.
         # Skip custom-root env-mode so it is not relocated into a workspace root.
         $CwdVenv = Join-Path $env:USERPROFILE "unsloth_studio"
-        substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
-        try {
-            Clear-MigrationTargetDirectory -Path $VenvDir
-        } catch {
-            Write-StudioLine "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
-            return (Exit-InstallFailure "Could not clear $VenvDir for the environment migration")
+        if (-not (Test-LegacyVenvReusable -VenvDir $CwdVenv -Python $DetectedPython -Exact ([bool]$PythonPatchRequest))) {
+            substep "found a CWD-relative Unsloth environment not on the uv-managed Python $($DetectedPython.Full) -- creating a fresh environment; the old one stays at $CwdVenv" "Yellow"
+        } else {
+            substep "found CWD-relative Unsloth environment, migrating to $VenvDir..."
+            try {
+                Clear-MigrationTargetDirectory -Path $VenvDir
+            } catch {
+                Write-StudioLine "[ERROR] $($_.Exception.Message)" -ForegroundColor Red
+                return (Exit-InstallFailure "Could not clear $VenvDir for the environment migration")
+            }
+            Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
+            substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
+            $_Migrated = $true
         }
-        Move-Item -LiteralPath $CwdVenv -Destination $VenvDir -Force
-        substep "moved ~/unsloth_studio -> ~/.unsloth/studio/unsloth_studio"
-        $_Migrated = $true
     }
 
     # Re-check what is about to be REUSED, not only what was selected: see
@@ -8312,12 +7943,8 @@ exit 0
         $_Migrated = $false
     }
 
-    # The opt-out has to keep something, or it only changes the wording. On a host that
-    # already has an x64 Python, Find-CompatiblePython picks it and the ordinary reinstall
-    # has already moved the ARM64 environment into a rollback that success would delete, so
-    # "not rebuilt on x64" would have been true of the message and of nothing else. The tree
-    # is kept, under the same unsloth_studio.arm64.* name the rebuild branch uses, and the
-    # user is told where it is and how to go back to it.
+    # The reinstall already moved the ARM64 environment into a rollback success would delete, so
+    # the opt-out keeps it as unsloth_studio.arm64.*.
     if ($script:PrevVenvPlatformTag -eq "win-arm64" -and (Test-Arm64PythonOptOut) -and
         $script:StudioVenvRollbackActive) {
         $script:StudioVenvRollbackPreserve = $true
@@ -10622,9 +10249,10 @@ main()
         param(
             [string]$TorchVersion,
             # Named -Constraint: the Windows port keeps no shell-style constraint variable.
-            [Parameter(Mandatory = $true)][string]$Constraint
+            [Parameter(Mandatory = $true)][string]$Constraint,
+            [switch]$Keep
         )
-        if ($env:UNSLOTH_TORCH_UPGRADE -eq '1') { return $null }
+        if ($env:UNSLOTH_TORCH_UPGRADE -eq '1' -and -not $Keep) { return $null }
         $release = ConvertTo-TorchNumericRelease $TorchVersion
         if (-not $release) { return $null }
         if (-not (Test-TorchReleaseInWindow -Release $release -Constraint $Constraint)) { return $null }
@@ -10634,7 +10262,106 @@ main()
             Release    = $release
             TorchSpec  = "torch==$($release.PublicBase)"
             VisionSpec = "torchvision==0.$visionMinor.*"
-            AudioSpec  = "torchaudio==2.$($release.Minor).*"
+            # torchaudio 2.11 is the last release (stable ABI), so newer torch minors pair with it.
+            AudioSpec  = "torchaudio==2.$([Math]::Min($release.Minor, 11)).*"
+        }
+    }
+
+    # Port of install.sh's cu130 torch 2.13 route (the only one prebuilt-wheels-cu13 serves).
+    $script:Cu130TorchCeiling = "2.15.0"
+    $script:Cu130NewInstallTorchSpec = "torch>=2.13.0,<2.14.0"
+    $script:Cu130NewInstallVisionSpec = "torchvision>=0.28.0,<0.29.0"
+
+    # Local facts only: decides the keep window, so a PyPI outage cannot shrink it.
+    function Test-Cu130Torch213Platform {
+        param([string]$IndexUrl, [string]$PythonExe)
+        if (-not $IndexUrl -or (Get-TorchIndexLeafName $IndexUrl) -ne "cu130") { return $false }
+        if ((Get-HostMachineArch) -ne "x86_64") { return $false }
+        $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code "import sys, sysconfig; print('%d.%d' % sys.version_info[:2], sysconfig.get_platform())"
+        if (-not $probe.Ok) { return $false }
+        $lines = @($probe.Output -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        if ($lines.Count -eq 0) { return $false }
+        return ($lines[-1].ToLowerInvariant() -eq "3.13 win-amd64")
+    }
+
+    # An existing home never takes 2.13 unasked; UNSLOTH_TORCH_UPGRADE=1 (Settings > Repair) asks.
+    # The PyPI check reads unsloth's metadata, so a `--package` other than unsloth keeps the default.
+    function Resolve-Cu130TorchRoute {
+        param([string]$IndexUrl, [string]$PythonExe, [Parameter(Mandatory = $true)][string]$DefaultSpec, [bool]$ExistingInstall, [string]$PackageName = "unsloth")
+        $result = [pscustomobject]@{ PreserveSpec = $DefaultSpec; NewInstall = $false }
+        if (-not (Test-Cu130Torch213Platform -IndexUrl $IndexUrl -PythonExe $PythonExe)) { return $result }
+        $result.PreserveSpec = "torch>=2.4,<$($script:Cu130TorchCeiling)"
+        if ($PackageName -eq "unsloth" -and (-not $ExistingInstall -or $env:UNSLOTH_TORCH_UPGRADE -eq '1') -and
+                (Test-PypiUnslothAdmitsTorch -Want "2.13.0")) {
+            $result.NewInstall = $true
+        }
+        return $result
+    }
+
+    # UPGRADE=1 with the route closed must not move a resident 2.13/2.14 down.
+    function Get-UpgradeKeptTorchPin {
+        param(
+            [string]$TorchVersion,
+            [Parameter(Mandatory = $true)][string]$DefaultSpec,
+            [Parameter(Mandatory = $true)][string]$PreserveSpec,
+            [bool]$NewInstallRoute
+        )
+        if ($env:UNSLOTH_TORCH_UPGRADE -ne '1' -or $NewInstallRoute -or $PreserveSpec -eq $DefaultSpec) { return $null }
+        $release = ConvertTo-TorchNumericRelease $TorchVersion
+        if (-not $release -or (Test-TorchReleaseInWindow -Release $release -Constraint $DefaultSpec)) { return $null }
+        return (Get-PreviousTorchPin -TorchVersion $TorchVersion -Constraint $PreserveSpec -Keep)
+    }
+
+    # Exactly one unconditional torch requirement of plain comparisons, else no.
+    function Test-RequiresDistAdmitsTorch {
+        param([string[]]$RequiresDist, [Parameter(Mandatory = $true)][string]$Want)
+        $toTuple = {
+            param([string]$v)
+            $nums = @([regex]::Matches($v, '\d+') | Select-Object -First 3 | ForEach-Object { [long]$_.Value })
+            while ($nums.Count -lt 3) { $nums += [long]0 }
+            return $nums
+        }
+        $compare = {
+            param($a, $b)
+            for ($i = 0; $i -lt 3; $i++) {
+                if ($a[$i] -lt $b[$i]) { return -1 }
+                if ($a[$i] -gt $b[$i]) { return 1 }
+            }
+            return 0
+        }
+        $specs = @($RequiresDist | Where-Object { $_ -match '^torch\s*[<>=!~(]' -and $_ -notmatch 'extra ==' })
+        if ($specs.Count -ne 1) { return $false }
+        $body = ($specs[0] -split ';', 2)[0].Substring("torch".Length).Trim().Trim('(', ')')
+        $wantTuple = & $toTuple $Want
+        foreach ($part in @($body -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+            if ($part -notmatch '^(<=|>=|==|!=|<|>)\s*([0-9][0-9.]*)$') { return $false }
+            $c = & $compare $wantTuple (& $toTuple $Matches[2])
+            $ok = switch ($Matches[1]) {
+                "<"  { $c -lt 0 }
+                "<=" { $c -le 0 }
+                ">"  { $c -gt 0 }
+                ">=" { $c -ge 0 }
+                "==" { $c -eq 0 }
+                "!=" { $c -ne 0 }
+            }
+            if (-not $ok) { return $false }
+        }
+        return $true
+    }
+
+    # `studio update` re-resolves under the INSTALLED release's cap, so only a release admitting $Want
+    # opens the route. Any failure, offline mode, upload cutoff or other index answers no.
+    function Test-PypiUnslothAdmitsTorch {
+        param([Parameter(Mandatory = $true)][string]$Want)
+        if (Test-UvEnvFlag -Name "UV_OFFLINE") { return $false }
+        if ($env:UV_EXCLUDE_NEWER -or $env:UV_EXCLUDE_NEWER_PACKAGE) { return $false }
+        if (Test-MirrorConfigured -Tool uv) { return $false }
+        $url = if ($env:UNSLOTH_PYPI_JSON_URL) { $env:UNSLOTH_PYPI_JSON_URL } else { "https://pypi.org/pypi/unsloth/json" }
+        try {
+            $info = (Invoke-RestMethod -Uri $url -UseBasicParsing -TimeoutSec 15 -ErrorAction Stop).info
+            return (Test-RequiresDistAdmitsTorch -RequiresDist @($info.requires_dist) -Want $Want)
+        } catch {
+            return $false
         }
     }
 
@@ -10969,7 +10696,7 @@ main()
 
     $_desktopMinVer = if ($env:UNSLOTH_DESKTOP_BACKEND_VERSION) { $env:UNSLOTH_DESKTOP_BACKEND_VERSION.Trim() } else { "" }
     $_unslothDesktopInstallSpec = if ($_desktopMinVer) { "unsloth>=$_desktopMinVer" } else { $null }
-    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.3" }
+    $_unslothReleaseInstallSpec = if ($_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { "unsloth>=2026.10.4" }
 
     if ($_Migrated) {
         Write-TauriLog "STEP" "Installing unsloth"
@@ -10980,7 +10707,7 @@ main()
             # --no-deps means unsloth's own metadata is never read, so this spec IS the zoo
             # floor for this path. Keep it equal to the unsloth_zoo floor in pyproject.toml
             # (tests/test_installer_zoo_floor_parity.py enforces that).
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.4" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -10999,7 +10726,23 @@ main()
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+            # As install.sh: freeze the trio for this with-deps resolve, then keep the release for the
+            # flavor repair below, which would otherwise reinstall the default range.
+            $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
+            $_migOverrides = @()
+            if ($script:TorchOverridesFile) { $_migOverrides = @("--overrides", $script:TorchOverridesFile) }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { & $script:UvExe pip install --python $VenvPython @_migOverrides --reinstall-package unsloth --reinstall-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.4" }
+            if ($script:TorchOverridesFile) {
+                Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
+                $script:TorchOverridesFile = $null
+            }
+            Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
+            $_migTorchVer = Get-InstalledTorchVersionRaw -PythonExe $VenvPython
+            if ($_migTorchVer -and -not $ROCmIndexUrl -and ((Get-TorchIndexLeafName $TorchIndexUrl) -match '^cu\d+$')) {
+                $_migWindow = if (Test-Cu130Torch213Platform -IndexUrl $TorchIndexUrl -PythonExe $VenvPython) { "torch>=2.4,<$($script:Cu130TorchCeiling)" } else { "torch>=2.4,<2.12.0" }
+                $script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion $_migTorchVer -Constraint $_migWindow
+                if ($script:PrevTorchPin) { $env:UNSLOTH_KEPT_TORCH = $script:PrevTorchPin.Release.PublicBase }
+            }
         }
         if ($baseInstallExit -ne 0) {
             Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -11025,20 +10768,38 @@ main()
         $_pinTorchSpec = "torch>=2.4,<2.12.0"
         $_pinVisionSpec = "torchvision>=0.19,<0.27.0"
         $_pinAudioSpec = "torchaudio>=2.4,<2.12.0"
+        $_preserveTorchSpec = $_pinTorchSpec
+        $_cu130NewInstallRoute = $false
+        if (-not $SkipTorch -and -not $ROCmIndexUrl) {
+            $_cu130Route = Resolve-Cu130TorchRoute -IndexUrl $TorchIndexUrl -PythonExe $VenvPython `
+                -DefaultSpec $_pinTorchSpec -ExistingInstall ([bool]$script:ExistingInstall) -PackageName $PackageName
+            $_preserveTorchSpec = $_cu130Route.PreserveSpec
+            $_cu130NewInstallRoute = $_cu130Route.NewInstall
+        }
         # Release preservation, after every floor choice. Exported as UNSLOTH_KEPT_TORCH.
         $script:PrevTorchPin = $null
         # An interrupted run leaks a stale pin, so clear before deciding.
         Remove-Item Env:UNSLOTH_KEPT_TORCH -ErrorAction SilentlyContinue
         if (-not $SkipTorch -and $script:PrevTorchVer -and -not $ROCmMultiArch) {
-            $_routeWindow = $_pinTorchSpec
+            $_routeWindow = $_preserveTorchSpec
             # Vet the kept release against the XPU window, or a kept 2.5 becomes an unsatisfiable pin.
             if ((Get-TorchIndexLeafName $TorchIndexUrl) -eq "xpu") { $_routeWindow = (Get-XpuTorchSpecs -Platform (Get-VenvPlatformTag -PythonExe $VenvPython))[0] }
             if ($ROCmIndexUrl -and $ROCmTorchFloor) { $_routeWindow = $ROCmTorchFloor }
             $script:PrevTorchPin = Get-PreviousTorchPin -TorchVersion $script:PrevTorchVer -Constraint $_routeWindow
+            if (-not $script:PrevTorchPin -and $_routeWindow -eq $_preserveTorchSpec) {
+                $script:PrevTorchPin = Get-UpgradeKeptTorchPin -TorchVersion $script:PrevTorchVer `
+                    -DefaultSpec $_pinTorchSpec -PreserveSpec $_preserveTorchSpec -NewInstallRoute $_cu130NewInstallRoute
+            }
             if ($script:PrevTorchPin) {
                 $env:UNSLOTH_KEPT_TORCH = $script:PrevTorchPin.Release.PublicBase
                 substep "existing install has torch $script:PrevTorchVer -- keeping it (set UNSLOTH_TORCH_UPGRADE=1 to get the newest release)"
             }
+        }
+        # A kept release that fails to reinstall falls back to the pre-route default below, never to 2.13.
+        if (-not $script:PrevTorchPin -and $_cu130NewInstallRoute) {
+            $_pinTorchSpec = $script:Cu130NewInstallTorchSpec
+            $_pinVisionSpec = $script:Cu130NewInstallVisionSpec
+            substep "cu130 + Python 3.13: installing torch 2.13, which the prebuilt flash-attn / causal-conv1d / mamba-ssm wheels are built for"
         }
         if ($SkipTorch) {
             substep "skipping PyTorch (--no-torch flag set)." "Yellow"
@@ -11251,7 +11012,7 @@ main()
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
             # --no-deps: this spec IS the zoo floor here. Kept equal to pyproject.toml's.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { & $script:UvExe pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.4" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { & $script:UvExe pip install --python $VenvPython pydantic }
@@ -11271,11 +11032,11 @@ main()
             # Freeze the trio so this with-deps resolve cannot downgrade the pinned build.
             $script:TorchOverridesFile = New-UnslothTorchOverridesFile -PythonExe $VenvPython
             if ($script:TorchOverridesFile) {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth --overrides $script:TorchOverridesFile "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.4" }
                 Remove-UnslothTempFileQuietly -Path $script:TorchOverridesFile
                 $script:TorchOverridesFile = $null
             } else {
-                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.3" }
+                $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { & $script:UvExe pip install --python $VenvPython --upgrade-package unsloth "$_unslothReleaseInstallSpec" "unsloth-zoo>=2026.10.4" }
             }
         } else {
             $_unslothPkg = if ($PackageName -eq "unsloth" -and $_unslothDesktopInstallSpec) { $_unslothDesktopInstallSpec } else { $PackageName }
@@ -11312,7 +11073,7 @@ main()
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.10.3" "$_unslothReleaseInstallSpec" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { & $script:UvExe pip install --python $VenvPython "unsloth-zoo>=2026.10.4" "$_unslothReleaseInstallSpec" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-StudioLine "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -12149,6 +11910,11 @@ sys.exit(2 if conflict else (0 if installed else 1))
     }
     } finally {
         Restore-StudioUvCacheEnvironment -WasPresent $hadPreviousUvCacheDir -PreviousValue $previousUvCacheDir
+        if ($hadPreviousUvPythonInstallDir) {
+            Set-Item -LiteralPath Env:UV_PYTHON_INSTALL_DIR -Value $previousUvPythonInstallDir
+        } elseif (Test-Path -LiteralPath Env:UV_PYTHON_INSTALL_DIR) {
+            Remove-Item -LiteralPath Env:UV_PYTHON_INSTALL_DIR
+        }
         for ($i = $studioRuntimeMutexes.Count - 1; $i -ge 0; $i--) {
             Exit-StudioInstallMutex -Mutex $studioRuntimeMutexes[$i]
         }

@@ -241,6 +241,7 @@ export interface DiffusionLoraInfo {
   families: string[];
   size_bytes: number;
   weight_default: number;
+  fine_tuned?: boolean;
 }
 
 // A persisted image's full generation recipe (also embedded in the PNG).
@@ -608,6 +609,12 @@ export interface DiffusionTrainingStartRequest {
   seed?: number;
   mixed_precision?: "bf16" | "fp16" | "no";
   gradient_checkpointing?: boolean;
+  random_flip?: boolean;
+  // Chance of training a sample on the empty prompt (DiT families; MiniMax-H3 refuses it). 0 when omitted.
+  cfg_dropout?: number;
+  lora_dropout?: number;
+  // Not sdxl. "auto" = family inference schedule; omitted = family default.
+  flow_shift?: number | "auto";
   lr_scheduler?: string;
   lr_warmup_steps?: number;
   // DiT-family quantised base precision (nf4 QLoRA by default). Ignored for sdxl, which uses mixed_precision.

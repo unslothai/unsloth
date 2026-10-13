@@ -10,7 +10,12 @@ import {
 import type { AttachmentSource } from "@/components/assistant-ui/use-attachment-source";
 import { AttachmentBrowserOpenContext } from "@/components/assistant-ui/attachment-browser-open-context";
 import { filesOpenInBrowser } from "@/features/browser";
-import { DocumentView, documentKind, isMarkdown } from "@/components/file-viewer";
+import {
+  DocumentView,
+  MAX_DOCUMENT_PREVIEW_BYTES,
+  documentKind,
+  isMarkdown,
+} from "@/components/file-viewer";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import {
   type MediaViewerActions,
@@ -185,6 +190,10 @@ const DocumentBody: FC<{ name: string; contentType?: string; loaded: Loaded; sca
   }
   const kind = documentKind(name, contentType);
   if (!loaded.blob || !kind) return <Spinner className="m-auto size-6" />;
+  // The Library's ceiling: a larger file was read on the server, and parsing it here blocks the main thread.
+  if (loaded.blob.size > MAX_DOCUMENT_PREVIEW_BYTES) {
+    return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
+  }
   return <DocumentView file={loaded.blob} kind={kind} name={name} contentType={contentType} scale={scale} />;
 };
 
@@ -220,7 +229,13 @@ const DocumentDialog: FC<
               : truncateAttachmentPreviewText(await blob.text());
           next = { blob, text, truncated };
         } else if (textFallback && blob.type.startsWith("text/")) {
-          const { text, truncated } = truncateAttachmentPreviewText(await blob.text());
+          // A File decodes as the composer does (BOM, UTF-16); a code page it refuses still shows raw.
+          const { text, truncated } =
+            blob instanceof File
+              ? await readAttachmentText(blob, source.name, blob.type).catch(async () =>
+                  truncateAttachmentPreviewText(await blob.text()),
+                )
+              : truncateAttachmentPreviewText(await blob.text());
           next = { blob, plain: text, truncated };
         }
         if (!cancelled) setLoaded(next);
@@ -280,6 +295,33 @@ const SentOriginalDialog: FC<
     </DocumentDialog>
   );
 };
+
+/** A file outside any message, such as a chat with files source, read on open: pages, markdown or
+ *  text (a text/* blob). */
+export const LocalFileDialog: FC<PropsWithChildren<{ name: string; load: () => Promise<Blob> }>> = ({
+  children,
+  name,
+  load,
+}) => (
+  <DocumentDialog
+    source={{
+      kind: "document",
+      name,
+      contentType: undefined,
+      file: undefined,
+      src: undefined,
+      audio: undefined,
+      video: undefined,
+      text: undefined,
+      hasOriginal: true,
+    }}
+    load={load}
+    redactFromReload={false}
+    textFallback={true}
+  >
+    {children}
+  </DocumentDialog>
+);
 
 export const AttachmentDocumentDialog: FC<
   PropsWithChildren<{ source: AttachmentSource; redactFromReload: boolean }>

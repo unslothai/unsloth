@@ -1828,12 +1828,9 @@ def _attention_dits(pipe: Any) -> list:
     """Every DiT the denoise loop runs: the primary ``transformer`` plus a second expert some
     families carry (Ideogram's ``unconditional_transformer``, an MoE ``transformer_2``). The
     backend must be set on ALL of them, else the second DiT keeps the native default."""
-    dits: list = []
-    for attr in ("transformer", "transformer_2", "unconditional_transformer"):
-        m = getattr(pipe, attr, None)
-        if m is not None and m not in dits:
-            dits.append(m)
-    return dits
+    from .diffusion_autoopt.targets import denoiser_dits
+
+    return denoiser_dits(pipe)
 
 
 # head_dim 256 (Ideogram 4) has no cuDNN kernel on torch 2.11-2.13 (cuDNN 9.19/9.20); a pinned cuDNN then has no fallback.
@@ -1949,11 +1946,12 @@ def _configure_native_attention(pipe: Any, target: Any, logger: Any) -> None:
             guard_rocm_fused_sdpa(target, logger)
         except Exception as exc:
             _warn(logger, "ROCm fused SDPA check", exc)
-    if rocm and sdpa_math_only(target):
+    mps = getattr(target, "device", None) == "mps"
+    if mps or (rocm and sdpa_math_only(target)):
         try:
             from .diffusion_qwenimage21_math import install
             if install(pipe, target, logger):
-                if logger is not None:
+                if logger is not None and not mps:
                     logger.warning(
                         "diffusion.attention: Qwen-Image-2.1 is using bounded math attention; "
                         "check the AMD device packages if fused kernels are expected on this GPU"
