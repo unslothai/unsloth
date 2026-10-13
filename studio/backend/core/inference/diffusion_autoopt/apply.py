@@ -19,6 +19,12 @@ from typing import Any, Callable, Optional
 from . import patches, plan as plan_mod, targets
 
 DISCOVER_ENV = plan_mod.DISCOVER_ENV
+# Video loads do not take the image backend's persistent compile cache yet: it repoints the process-wide
+# TORCHINDUCTOR_CACHE_DIR, which an image backend loaded in the same server may be compiling under, and its save /
+# restore lifecycle is not wired into the video state. Recorded so the status says so.
+VIDEO_COMPILE_CACHE_DECLINE = (
+    "not wired for video loads yet (process-wide inductor cache dir shared with the image backend)"
+)
 
 _CURRENT_AUDIT: contextvars.ContextVar = contextvars.ContextVar("unsloth_autoopt_audit", default = None)
 
@@ -338,6 +344,7 @@ def record_load_steps(
     step_cache: Optional[str] = None,
     step_cache_reason: Optional[str] = None,
     compile_cache: Optional[bool] = None,
+    compile_cache_reason: Optional[str] = None,
     speed_deferred: bool = False,
 ) -> None:
     """Record the load-path steps that run outside ``run_speed_layer`` (attention backend, step cache, compile
@@ -360,6 +367,8 @@ def record_load_steps(
             "engaged" if compile_cache else "declined",
             None
             if compile_cache
+            else compile_cache_reason
+            if compile_cache_reason
             else "deferred: engages with the compile profile on the 3rd image"
             if speed_deferred
             else "no compile on this load",

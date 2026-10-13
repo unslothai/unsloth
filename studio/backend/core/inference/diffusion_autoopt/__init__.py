@@ -16,7 +16,15 @@ Import is torch-free; every submodule imports torch / diffusers lazily.
 
 from __future__ import annotations
 
-from .apply import Audit, finalize, install_patches, new_audit, record_load_steps, run_speed_layer
+from .apply import (
+    VIDEO_COMPILE_CACHE_DECLINE,
+    Audit,
+    finalize,
+    install_patches,
+    new_audit,
+    record_load_steps,
+    run_speed_layer,
+)
 from .patches import (
     GROUP_EAGER,
     GROUP_FUSED_DIT,
@@ -35,6 +43,7 @@ from .patches import (
 from .plan import build_plan, compile_cache_kwargs
 
 __all__ = [
+    "VIDEO_COMPILE_CACHE_DECLINE",
     "Audit",
     "GROUP_EAGER",
     "GROUP_FUSED_DIT",

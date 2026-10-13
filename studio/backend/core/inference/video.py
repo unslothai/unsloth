@@ -7781,6 +7781,8 @@ class VideoBackend:
                 attention = attention_engaged,
                 step_cache = cache_engaged,
                 step_cache_reason = cache_reason,
+                compile_cache = False,
+                compile_cache_reason = autoopt.VIDEO_COMPILE_CACHE_DECLINE,
             )
             autoopt.finalize(load_audit, speed_optims, resolved)
 
@@ -9013,6 +9015,8 @@ class VideoBackend:
             attention = attention_engaged,
             step_cache = h3_cache_engaged,
             step_cache_reason = h3_cache_reason,
+            compile_cache = False,
+            compile_cache_reason = autoopt.VIDEO_COMPILE_CACHE_DECLINE,
         )
         autoopt.finalize(h3_audit, speed_optims, resolved)
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
