@@ -33,6 +33,11 @@ import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
 import { ImageDropzone } from "@/components/image-dropzone";
+import {
+  readNativeAttachmentFile,
+  registerNativeAttachmentPath,
+  useNativeDropTarget,
+} from "@/features/native-intents";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildImagesTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
@@ -2548,10 +2553,11 @@ export function ImagesPage({
   // comes first; an AUTOMATIC1111-style parameters block is the fallback.
   const importFileRef = useRef<HTMLInputElement>(null);
   const importSettingsFromFile = useCallback(
-    async (file: File) => {
+    async (file: File | Uint8Array) => {
       let recipe = null;
       try {
-        recipe = importedRecipe(readEmbeddedRecipe(new Uint8Array(await file.arrayBuffer())));
+        const bytes = file instanceof Uint8Array ? file : new Uint8Array(await file.arrayBuffer());
+        recipe = importedRecipe(readEmbeddedRecipe(bytes));
       } catch {
         recipe = null;
       }
@@ -2583,6 +2589,27 @@ export function ImagesPage({
     },
     [restoreSettings, width, height, steps, guidance, status],
   );
+  // Desktop: Tauri delivers OS drops as paths and suppresses the DOM drop event.
+  const importNativePath = useCallback(
+    async (path: string | undefined) => {
+      if (!path) return;
+      if (!["png", "jpg", "jpeg", "webp"].includes(path.split(".").pop()?.toLowerCase() ?? "")) {
+        toast.error("Drop a PNG, JPEG or WebP image to load its settings");
+        return;
+      }
+      try {
+        const intent = await registerNativeAttachmentPath(path);
+        const file = await readNativeAttachmentFile(intent.path.token);
+        await importSettingsFromFile(Uint8Array.from(atob(file.base64), (c) => c.charCodeAt(0)));
+      } catch (error) {
+        toast.error("Could not read the image", {
+          description: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+    [importSettingsFromFile],
+  );
+  const previewDropRef = useNativeDropTarget({ onDrop: (paths) => void importNativePath(paths[0]) });
   const onImportDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
     if (event.dataTransfer.types.includes("Files")) {
       event.preventDefault();
@@ -5803,6 +5830,7 @@ export function ImagesPage({
         </div>
 
         <div
+          ref={previewDropRef}
           data-tour="images-preview"
           className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden @[50rem]:min-h-0"
           onDragOver={onImportDragOver}

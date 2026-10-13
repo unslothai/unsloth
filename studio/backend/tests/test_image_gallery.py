@@ -121,8 +121,8 @@ def test_parameters_carry_strength_version_and_the_recipe_the_engine():
             params = im.text["parameters"]
             recipe = _json.loads(im.text["unsloth"])
         assert ("Denoising strength: 0.35" in params) is expected, (workflow, params)
-        assert ", Version: Unsloth Studio" in params
-        assert recipe["generator"].startswith("Unsloth Studio")
+        assert ", Version: Unsloth " in params
+        assert recipe["generator"].startswith("Unsloth")
         assert "engine" in recipe
 
 

@@ -20,7 +20,7 @@ const TEXT_CHUNKS = new Set(["tEXt", "iTXt", "zTXt"]);
 const RECIPE_KEY = "unsloth";
 const PARAMETERS_KEY = "parameters";
 const MAKER_NOTE_PREFIX = "Unsloth\0";
-const SOFTWARE = "Unsloth Studio";
+const SOFTWARE = "Unsloth";
 
 interface Chunk {
   type: string;

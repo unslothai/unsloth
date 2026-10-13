@@ -98,9 +98,9 @@ def _png_bytes(image: Any, meta: dict[str, Any]) -> bytes:
 def _generator() -> str:
     try:
         from utils.studio_version import get_studio_version
-        return f"Unsloth Studio {get_studio_version()}"
+        return f"Unsloth {get_studio_version()}"
     except Exception:
-        return "Unsloth Studio"
+        return "Unsloth"
 
 
 def _engine() -> Optional[str]:

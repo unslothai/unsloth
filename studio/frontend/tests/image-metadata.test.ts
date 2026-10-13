@@ -469,13 +469,20 @@ test("the ComfyUI model is the loader feeding the sampler, through a LoRA loader
 
 test("a file drop on the preview is always claimed before the image filter", () => {
   const page = readSrc("features/images/images-page.tsx");
+  const start = page.indexOf("const onImportDrop");
   const drop = page.slice(
-    page.indexOf("const onImportDrop"),
-    page.indexOf("[importSettingsFromFile],"),
+    start,
+    page.indexOf("[importSettingsFromFile],", start),
   );
   assert.ok(
     drop.indexOf("event.preventDefault()") <
       drop.indexOf('f.type.startsWith("image/")'),
   );
   assert.match(drop, /toast\.error\(/);
+  // Desktop: Tauri hands drops over as paths, so the preview is a native drop target too.
+  assert.match(page, /ref=\{previewDropRef\}/);
+  assert.match(
+    page,
+    /useNativeDropTarget\(\{ onDrop: \(paths\) => void importNativePath\(paths\[0\]\) \}\)/,
+  );
 });
