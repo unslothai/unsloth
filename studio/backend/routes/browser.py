@@ -1611,6 +1611,8 @@ class BrowserPageRequest(BaseModel):
     body: Optional[str] = Field(default = None, max_length = 4 * (_MAX_PAGE_REQUEST_BODY // 3 + 1))
     # Fetch's redirect mode: "error" fails at a redirect, "manual" stops there (an opaque redirect).
     redirect: Literal["follow", "error", "manual"] = "follow"
+    # Fetch's integrity metadata; a body that doesn't match is a network error.
+    integrity: str = Field(default = "", max_length = 4096)
 
 
 def _origin(url: str) -> Optional[tuple[str, str, int]]:
@@ -1800,6 +1802,8 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         raise HTTPException(status_code = 502, detail = error or "The request failed.")
     if not 200 <= status <= 599:
         raise HTTPException(status_code = 502, detail = f"HTTP {status}.")
+    if not _integrity_ok(raw, request.integrity):
+        raise HTTPException(status_code = 502, detail = "The body does not match its integrity.")
     final_url = meta.get("url") or request.url
     headers = [
         (name, value)

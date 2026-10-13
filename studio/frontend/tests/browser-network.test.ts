@@ -325,11 +325,12 @@ test("requests to other sites, and from a page with no address, stay the browser
 
 test("a fetch body reaches the panel with the headers the browser would send", async () => {
   const t = setup(NativeXHR, "https://site.test/");
-  void t.window.fetch("/api", { method: "POST", headers: { "X-Test": "1" }, body: "hello"});
+  void t.window.fetch("/api", { method: "POST", headers: { "X-Test": "1" }, body: "hello", integrity: "sha256-abc" });
   await tick();
   await tick();
   const sent = t.posted[0];
   assert.equal(sent.method, "POST");
+  assert.equal(sent.integrity, "sha256-abc");
   assert.equal(new TextDecoder().decode(sent.body as ArrayBuffer), "hello");
   assert.deepEqual(Object.fromEntries(sent.headers as Array<[string, string]>), {
     "content-type": "text/plain;charset=UTF-8",

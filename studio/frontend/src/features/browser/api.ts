@@ -134,6 +134,7 @@ export async function requestForPage(page: string, request: PageRequest, signal:
       method: request.method,
       headers: request.headers,
       redirect: request.redirect,
+      integrity: request.integrity,
       body: request.body ? toBase64(new Uint8Array(request.body)) : null,
     }),
     signal,

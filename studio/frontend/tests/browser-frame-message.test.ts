@@ -80,13 +80,13 @@ test("a snapshot is markup or nothing", () => {
 
 test("a page's request is checked field by field, and one the panel won't make still gets an answer", () => {
   const body = new ArrayBuffer(4);
-  const request = { url: "https://site.test/api", method: "POST", headers: [["X-A", "1"]], body, redirect: "manual" };
+  const request = { url: "https://site.test/api", method: "POST", headers: [["X-A", "1"]], body, redirect: "manual", integrity: "sha256-x" };
   assert.deepEqual(from({ type: "request", id: "q1", ...request }), { type: "request", id: "q1", request });
   // Fetch's default redirect mode when the page names none.
-  assert.deepEqual(from({ type: "request", id: "q1", ...request, body: null, redirect: undefined }), {
+  assert.deepEqual(from({ type: "request", id: "q1", ...request, body: null, redirect: undefined, integrity: undefined }), {
     type: "request",
     id: "q1",
-    request: { ...request, body: null, redirect: "follow" },
+    request: { ...request, body: null, redirect: "follow", integrity: "" },
   });
   // Without an id there is no one to answer.
   assert.equal(from({ type: "request", ...request }), null);

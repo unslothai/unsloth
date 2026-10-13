@@ -7,6 +7,7 @@ same-origin request, through the SSRF-guarded fetcher, and only to the page's ow
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import sys
 import threading
@@ -231,6 +232,19 @@ def test_a_repeated_header_is_combined_as_setrequestheader_does(monkeypatch):
     headers = sent[0]["headers"]
     assert headers["accept"] == "text/html, application/json"
     assert headers["x-tag"] == "a"
+
+
+def test_a_body_that_does_not_match_its_integrity_is_a_network_error(monkeypatch):
+    _serve(monkeypatch, {"site.test/app.wasm": (200, b"wasm", {})})
+    good = "sha256-" + base64.b64encode(hashlib.sha256(b"wasm").digest()).decode()
+    assert (
+        base64.b64decode(_request(url = "https://site.test/app.wasm", integrity = good)["body"])
+        == b"wasm"
+    )
+    bad = "sha256-" + base64.b64encode(hashlib.sha256(b"other").digest()).decode()
+    with pytest.raises(HTTPException) as raised:
+        _request(url = "https://site.test/app.wasm", integrity = bad)
+    assert raised.value.status_code == 502
 
 
 def test_forbidden_methods_are_refused(monkeypatch):

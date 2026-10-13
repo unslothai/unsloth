@@ -41,6 +41,8 @@ export type PageRequest = {
   headers: Array<[string, string]>;
   body: ArrayBuffer | null;
   redirect: RedirectMode;
+  /** Fetch's integrity metadata, checked against the body. */
+  integrity: string;
 };
 
 const REDIRECT_MODES = new Set<unknown>(["follow", "error", "manual"]);
@@ -156,8 +158,9 @@ function pageRequest(message: Record<string, unknown>): PageRequest | null {
   if (!url || !method || !/^[A-Za-z]+$/.test(method) || !headers) return null;
   if (body !== null && !(body instanceof ArrayBuffer && body.byteLength <= MAX_REQUEST_BODY_BYTES)) return null;
   const redirect = message.redirect ?? "follow";
-  if (!REDIRECT_MODES.has(redirect)) return null;
-  return { url, method, headers, body, redirect: redirect as RedirectMode };
+  const integrity = text(message.integrity ?? "", 4096);
+  if (!REDIRECT_MODES.has(redirect) || integrity === null) return null;
+  return { url, method, headers, body, redirect: redirect as RedirectMode, integrity };
 }
 
 /** A message from a page, checked field by field: pages can post anything. */

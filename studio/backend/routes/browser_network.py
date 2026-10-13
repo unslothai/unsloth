@@ -91,7 +91,7 @@ BROWSER_NETWORK_JS = r"""
         const relayFetch = async (request) => {
           const body = bodiless(request.method) ? null : await request.arrayBuffer();
           const reply = await relay(
-            { url: request.url, method: request.method, headers: [...request.headers], body, redirect: request.redirect },
+            { url: request.url, method: request.method, headers: [...request.headers], body, redirect: request.redirect, integrity: request.integrity },
             request.signal,
           );
           // redirect: "manual" stopped at a redirect, which a page sees only as an opaque one.
