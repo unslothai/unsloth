@@ -613,6 +613,7 @@ def test_a_lookup_that_cannot_answer_keeps_a_complete_install(monkeypatch, tmp_p
     assert _tree_digest(root) == before
 
 
+@pytest.mark.parametrize("how", ["flag", "env"])
 @pytest.mark.parametrize(
     "exc",
     [
@@ -620,15 +621,19 @@ def test_a_lookup_that_cannot_answer_keeps_a_complete_install(monkeypatch, tmp_p
         pytest.param(M.GitHubRateLimited("rate limited"), id = "rate-limited"),
     ],
 )
-def test_the_in_app_pin_never_keeps_the_old_tree_when_the_lookup_cannot_answer(
-    monkeypatch, tmp_path, capsys, exc
+def test_a_pinned_release_never_keeps_the_old_tree_when_the_lookup_cannot_answer(
+    monkeypatch, tmp_path, capsys, exc, how
 ):
-    # The in-app update installs the release it offered; exit 0 would report an update that never happened.
+    # A pin names the release to install; exit 0 would report a release that was never installed.
     root = _installed_then_stale(monkeypatch, tmp_path)
     before = _tree_digest(root)
     _lookup_fails(monkeypatch, exc)
     capsys.readouterr()
-    argv = ["--install-dir", str(root), "--published-release-tag", FORK_TAG]
+    argv = ["--install-dir", str(root)]
+    if how == "flag":
+        argv += ["--published-release-tag", FORK_TAG]
+    else:
+        monkeypatch.setenv("UNSLOTH_AUDIO_CPP_TAG", FORK_TAG)
     assert M.main(argv) == M.EXIT_FAILED
     assert M.KEPT_EXISTING_LINE not in capsys.readouterr().out
     assert _tree_digest(root) == before

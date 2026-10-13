@@ -1045,9 +1045,10 @@ def _install_locked(
         )
     except (ReleaseLookupUnavailable, GitHubRateLimited) as exc:
         # The lookup could not answer, which says nothing about the tree on disk. Keep a complete one
-        # unless this run asked for something it is not (--force, another explicit accelerator, or
-        # --published-release-tag: the in-app update must not pass while the release it offered is missing).
-        kept = None if force or release_tag else _intact_install(target, existing)
+        # unless this run asked for something it is not (--force, another explicit accelerator, or a
+        # pinned release: --published-release-tag or UNSLOTH_AUDIO_CPP_TAG, which an installed tree that
+        # matched it already answered above without a lookup).
+        kept = None if force or pin else _intact_install(target, existing)
         if kept is None or (requested != "auto" and existing.get("accelerator") != requested):
             raise
         # "keeping the existing complete install" is the substring setup.sh and setup.ps1 grep for.
