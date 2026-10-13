@@ -773,6 +773,22 @@ def test_a_file_name_two_directories_share_names_neither(hub):
     assert acm._cached_variants_named(variants, "small/Q8_0", "Moon-GGUF") == [variants[1]]
 
 
+def test_a_compound_scope_names_the_one_cached_size(hub):
+    # Irodori-TTS-v4-Small-GGUF: the Hub keys `v4-small/Q8_0` and `v4.1-anime/Q8_0`, every part of
+    # `v4-small` is also a folder word, and a cache holding one size keys it bare `Q8_0`.
+    folder = "Irodori-TTS-v4-Small-GGUF"
+    small = acm.AudioCppVariant("Q8_0", (), f"{folder}/irodori-tts-v4-small-q8_0.gguf")
+    anime = acm.AudioCppVariant("Q8_0", (), f"{folder}/irodori-tts-v4.1-anime-q8_0.gguf")
+    assert acm._cached_variants_named([small], "v4-small/Q8_0", folder) == [small]
+    assert acm._cached_variants_named([small], "v4.1-anime/Q8_0", folder) == []
+    assert acm._cached_variants_named([anime], "v4.1-anime/Q8_0", folder) == [anime]
+    assert acm._cached_variants_named([anime], "v4-small/Q8_0", folder) == []
+    assert acm._state_key_named(f"{folder}/irodori-tts-v4-small-q8_0", "v4-small/Q8_0", folder)
+    assert not acm._state_key_named(
+        f"{folder}/irodori-tts-v4.1-anime-q8_0", "v4-small/Q8_0", folder
+    )
+
+
 def test_cached_path_of_a_folder_skips_a_newer_snapshot_missing_voice_files(hub):
     blobs = hub / "models--audio-cpp--audio.cpp-gguf" / "blobs"
     rel = "PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf"

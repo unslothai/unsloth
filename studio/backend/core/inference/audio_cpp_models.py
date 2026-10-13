@@ -2663,7 +2663,16 @@ def _state_key_named(key: str, wanted: str, folder: str) -> bool:
     dirs = set(path.split("/")[1:-1])
     folder_words = set(re.split(r"[-_.]+", folder.lower()))
     words = dirs | (set(re.split(r"[-_.]+", stem)) - folder_words)
-    return all(w in words for w in parts[:-1])
+    return all(_scope_word_matches(w, words, stem) for w in parts[:-1])
+
+
+def _scope_word_matches(word: str, scope: set[str], stem: str) -> bool:
+    """A scope word is one of ``scope``, or a compound (``v4-small``) whose every part is a word of the
+    file stem: its parts can all be folder words, which ``scope`` leaves out."""
+    if word in scope:
+        return True
+    parts = [p for p in re.split(r"[-_.]+", word) if p]
+    return len(parts) > 1 and set(parts) <= set(re.split(r"[-_.]+", stem))
 
 
 def _cached_variants_named(
@@ -2699,17 +2708,21 @@ def _variants_matching(
     words = parts[:-1] if quant else parts
     folder_words = set(re.split(r"[-_.]+", folder.lower()))
 
+    def stem_of(v: AudioCppVariant) -> str:
+        return v.main_file.rsplit("/", 1)[-1].lower().removesuffix(".gguf")
+
     def scope(v: AudioCppVariant) -> set[str]:
         # A size or edition: a directory of the key, or a word of the file name the folder's own
         # name does not supply (``tiny`` in ``moonshine-streaming-tiny-q8_0``).
-        stem = v.main_file.rsplit("/", 1)[-1].lower().removesuffix(".gguf")
-        return set(v.key.lower().split("/")[:-1]) | (set(re.split(r"[-_.]+", stem)) - folder_words)
+        return set(v.key.lower().split("/")[:-1]) | (
+            set(re.split(r"[-_.]+", stem_of(v))) - folder_words
+        )
 
     found = [
         v
         for v in variants
         if (quant is None or quant_label(v.main_file).lower() == quant)
-        and all(w in scope(v) for w in words)
+        and all(_scope_word_matches(w, scope(v), stem_of(v)) for w in words)
     ]
     return found, quant is not None
 
