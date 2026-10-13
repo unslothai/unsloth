@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useAppShellReadySignal } from "@/components/app-readiness";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { authFetch } from "@/features/auth";
@@ -61,6 +62,61 @@ const INTERVALS = [
   [1440, "Every day"],
   [10080, "Every week"],
 ] as const;
+
+function scheduleLabel(minutes: number): string {
+  return INTERVALS.find(([value]) => value === minutes)?.[1] ?? `Every ${minutes} minutes`;
+}
+
+function statusLabel(status: string): string {
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const tone = status === "completed"
+    ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+    : status === "failed" || status === "cancelled"
+      ? "border-destructive/20 bg-destructive/10 text-destructive"
+      : "border-primary/20 bg-primary/10 text-primary";
+  return <Badge variant="outline" className={tone}>{statusLabel(status)}</Badge>;
+}
+
+function RunResult({ run }: { run: RoutineRun }) {
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <StatusBadge status={run.status} />
+          <span className="text-sm text-muted-foreground">{run.trigger === "schedule" ? "Scheduled run" : "Started manually"}</span>
+        </div>
+        <span className="text-xs text-muted-foreground">{when(run.created_at)}</span>
+      </div>
+      {run.step_statuses.length === 0 ? (
+        <p className="mt-4 text-sm text-muted-foreground">Waiting for the first step to start.</p>
+      ) : (
+        <ol className="mt-4 divide-y divide-border/70">
+          {run.step_statuses.map((step, index) => (
+            <li key={index} className="flex gap-3 py-3 first:pt-0 last:pb-0">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-muted text-xs font-semibold text-muted-foreground">{index + 1}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-medium text-foreground">{step.label}</span>
+                  <span className="text-xs text-muted-foreground">{statusLabel(step.status)}</span>
+                </div>
+                {step.summary && <p className="mt-1 text-xs text-muted-foreground">{Object.entries(step.summary).map(([key, count]) => `${count} ${key}`).join(" · ")}</p>}
+                {step.artifact_path && <details className="mt-1 text-xs text-muted-foreground">
+                  <summary className="w-fit cursor-pointer text-primary">Dataset saved · Show location</summary>
+                  <p className="mt-1 break-all">{step.artifact_path}</p>
+                </details>}
+                {step.error && <p className="mt-1 text-xs text-destructive">{step.error}</p>}
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+      {run.error && !run.step_statuses.some((step) => step.error) && <p className="mt-3 text-sm text-destructive">{run.error}</p>}
+    </div>
+  );
+}
 
 export function RoutinesPage() {
   const [routines, setRoutines] = useState<Routine[]>([]);
@@ -189,99 +245,169 @@ export function RoutinesPage() {
   const choices = stepKind === "recipe" ? recipes : folders;
 
   return (
-    <main className="mx-auto w-full max-w-6xl flex-1 overflow-y-auto px-6 py-8">
-      <div className="mb-7 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="font-heading text-3xl font-semibold">Routines</h1>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Run Studio work on a schedule, or start it yourself. Scheduled work runs while Studio is running.
-          </p>
-        </div>
-        <Button onClick={beginCreate}>New routine</Button>
-      </div>
-      {error && <p role="alert" className="mb-4 rounded-lg bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</p>}
-      <div className="grid gap-6 lg:grid-cols-[minmax(260px,1fr)_minmax(0,2fr)]">
-        <section aria-label="Saved routines" className="space-y-3">
-          {routines.length === 0 && <div className="rounded-xl border p-6 text-sm text-muted-foreground">No routines yet. Create one to automate a Data Recipe or linked folder sync.</div>}
-          {routines.map((routine) => (
-            <button key={routine.id} type="button" onClick={() => selectRoutine(routine)}
-              className={`w-full rounded-xl border p-4 text-left transition-colors hover:bg-muted/50 ${selectedId === routine.id ? "border-primary bg-muted/40" : ""}`}>
-              <span className="font-medium">{routine.name}</span>
-              <span className="ml-2 text-xs text-muted-foreground">{routine.enabled ? "Active" : "Paused"}</span>
-              <span className="mt-2 block text-xs text-muted-foreground">
-                {routine.steps.length} {routine.steps.length === 1 ? "step" : "steps"} · {routine.enabled ? `Next ${when(routine.next_run_at)}` : "Paused"}
-              </span>
-            </button>
-          ))}
-        </section>
-        <section className="rounded-xl border p-5">
-          {editing ? (
-            <div className="space-y-5">
-              <h2 className="text-xl font-semibold">{selectedId ? "Edit routine" : "Create routine"}</h2>
-              <label className="block space-y-2 text-sm font-medium">Name
-                <Input value={name} maxLength={120} onChange={(event) => setName(event.target.value)} placeholder="Weekly dataset refresh" />
-              </label>
-              <label className="block space-y-2 text-sm font-medium">Schedule
-                <select className="h-10 w-full rounded-md border bg-background px-3" value={intervalMinutes}
-                  onChange={(event) => setIntervalMinutes(Number(event.target.value))}>
-                  {INTERVALS.map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}
-                </select>
-              </label>
-              <div className="space-y-2">
-                <h3 className="text-sm font-medium">Steps run in this order</h3>
+    <main className="mx-auto w-full max-w-5xl flex-1 overflow-y-auto px-5 py-8 sm:px-8">
+      {error && <p role="alert" className="mb-6 rounded-xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</p>}
+
+      {editing ? (
+        <div className="mx-auto max-w-3xl">
+          <Button variant="ghost" className="mb-5 -ml-3 text-muted-foreground" onClick={() => setEditing(false)}>
+            ← {selectedId ? "Back to routine" : "All routines"}
+          </Button>
+          <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Studio automation</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight">{selectedId ? "Edit routine" : "Create a routine"}</h1>
+              <p className="mt-2 text-sm text-muted-foreground">Choose when it runs, then add the work in the order it should happen.</p>
+            </div>
+            <Button disabled={busy} onClick={() => void save()}>Save routine</Button>
+          </div>
+          <div className="space-y-7 rounded-2xl border border-border/70 bg-card p-5 sm:p-7">
+            <section className="space-y-3">
+              <div><h2 className="font-semibold">1. Name</h2><p className="text-sm text-muted-foreground">A short name you will recognize in run history.</p></div>
+              <Input aria-label="Routine name" value={name} maxLength={120} onChange={(event) => setName(event.target.value)} placeholder="Daily dataset refresh" />
+            </section>
+            <section className="space-y-3 border-t border-border/70 pt-6">
+              <div><h2 className="font-semibold">2. Schedule</h2><p className="text-sm text-muted-foreground">Runs automatically while Studio is running. You can also run it any time.</p></div>
+              <select aria-label="Schedule" className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm" value={intervalMinutes}
+                onChange={(event) => setIntervalMinutes(Number(event.target.value))}>
+                {INTERVALS.map(([minutes, label]) => <option key={minutes} value={minutes}>{label}</option>)}
+              </select>
+            </section>
+            <section className="space-y-4 border-t border-border/70 pt-6">
+              <div><h2 className="font-semibold">3. Steps</h2><p className="text-sm text-muted-foreground">Steps run from top to bottom. A failed step stops the routine.</p></div>
+              <ol className="space-y-2">
                 {steps.map((step, index) => (
-                  <div key={`${step.kind}-${index}`} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
-                    <span>{index + 1}. {step.label} <span className="text-muted-foreground">({step.kind === "recipe" ? "Data Recipe" : "Folder sync"})</span></span>
+                  <li key={`${step.kind}-${index}`} className="flex items-center gap-3 rounded-xl border border-border/70 bg-background p-3">
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">{index + 1}</span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium">{step.label}</p>
+                      <p className="text-xs text-muted-foreground">{step.kind === "recipe" ? "Data Recipe" : "Linked folder sync"}</p>
+                    </div>
                     <Button variant="ghost" size="sm" onClick={() => setSteps(steps.filter((_, position) => position !== index))}>Remove</Button>
-                  </div>
+                  </li>
                 ))}
-                <div className="flex flex-wrap gap-2">
-                  <select aria-label="Step type" className="h-10 rounded-md border bg-background px-3" value={stepKind}
-                    onChange={(event) => { setStepKind(event.target.value as typeof stepKind); setStepId(""); }}>
-                    <option value="recipe">Data Recipe</option><option value="folder_sync">Linked folder sync</option>
-                  </select>
-                  <select aria-label="Step source" className="h-10 min-w-44 flex-1 rounded-md border bg-background px-3" value={stepId}
-                    onChange={(event) => setStepId(event.target.value)}>
-                    <option value="">Choose {stepKind === "recipe" ? "a recipe" : "a folder"}</option>
-                    {choices.map((item) => <option key={item.id} value={item.id}>{"name" in item ? item.name : item.displayName}</option>)}
-                  </select>
-                  <Button variant="outline" disabled={!stepId} onClick={addStep}>Add step</Button>
+              </ol>
+              {steps.length === 0 && <p className="rounded-xl border border-dashed p-5 text-sm text-muted-foreground">No steps yet. Choose a saved recipe or linked folder below.</p>}
+              <div className="rounded-xl bg-muted/50 p-4">
+                <p className="mb-3 text-sm font-medium">Add a step</p>
+                <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)_auto]">
+                  <label className="space-y-1 text-xs text-muted-foreground">Type
+                    <select className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground" value={stepKind}
+                      onChange={(event) => { setStepKind(event.target.value as typeof stepKind); setStepId(""); }}>
+                      <option value="recipe">Data Recipe</option>
+                      <option value="folder_sync">Linked folder sync</option>
+                    </select>
+                  </label>
+                  <label className="space-y-1 text-xs text-muted-foreground">Saved item
+                    <select className="h-10 w-full rounded-lg border border-border bg-background px-3 text-sm text-foreground" value={stepId}
+                      onChange={(event) => setStepId(event.target.value)}>
+                      <option value="">Choose {stepKind === "recipe" ? "a recipe" : "a folder"}</option>
+                      {choices.map((item) => <option key={item.id} value={item.id}>{"name" in item ? item.name : item.displayName}</option>)}
+                    </select>
+                  </label>
+                  <Button className="self-end" variant="outline" disabled={!stepId} onClick={addStep}>Add step</Button>
                 </div>
-                {choices.length === 0 && <p className="text-xs text-muted-foreground">Create a {stepKind === "recipe" ? "Data Recipe" : "linked folder"} first.</p>}
+                {choices.length === 0 && <p className="mt-3 text-xs text-muted-foreground">Create a {stepKind === "recipe" ? "Data Recipe" : "linked folder"} first.</p>}
               </div>
-              <div className="flex gap-2">
-                <Button disabled={busy} onClick={() => void save()}>Save routine</Button>
-                <Button variant="outline" onClick={() => setEditing(false)}>Cancel</Button>
+            </section>
+          </div>
+        </div>
+      ) : selected ? (
+        <div>
+          <Button variant="ghost" className="mb-5 -ml-3 text-muted-foreground" onClick={() => { setSelectedId(null); setRuns([]); }}>
+            ← All routines
+          </Button>
+          <header className="flex flex-wrap items-start justify-between gap-5">
+            <div>
+              <div className="mb-3 flex items-center gap-2">
+                <Badge variant="outline" className={selected.enabled ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}>
+                  {selected.enabled ? "Active" : "Paused"}
+                </Badge>
+                <span className="text-sm text-muted-foreground">{scheduleLabel(selected.interval_minutes)}</span>
               </div>
+              <h1 className="text-3xl font-semibold tracking-tight">{selected.name}</h1>
+              <p className="mt-2 text-sm text-muted-foreground">
+                {selected.enabled ? `Next run ${when(selected.next_run_at)}` : "Automatic runs are paused"}
+              </p>
             </div>
-          ) : selected ? (
-            <div className="space-y-6">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div><h2 className="text-xl font-semibold">{selected.name}</h2><p className="text-sm text-muted-foreground">Next run {selected.enabled ? when(selected.next_run_at) : "paused"}</p></div>
-                <div className="flex flex-wrap gap-2">
-                  <Button disabled={busy} onClick={() => void act("run", selected)}>Run now</Button>
-                  <Button variant="outline" disabled={busy} onClick={() => void act("enabled", selected)}>{selected.enabled ? "Pause" : "Resume"}</Button>
-                  <Button variant="outline" onClick={() => setEditing(true)}>Edit</Button>
-                </div>
-              </div>
-              <div><h3 className="mb-2 text-sm font-semibold">Workflow</h3>{selected.steps.map((step, index) => <p key={index} className="border-l-2 border-primary/30 py-1 pl-3 text-sm">{index + 1}. {step.label}</p>)}</div>
-              <div><h3 className="mb-3 text-sm font-semibold">Run history</h3>
-                {runs.length === 0 && <p className="text-sm text-muted-foreground">No runs yet.</p>}
-                <div className="space-y-3">{runs.map((run) => <div key={run.id} className="rounded-lg border p-3 text-sm">
-                  <div className="flex justify-between gap-3"><span className="font-medium">{run.status}</span><span className="text-muted-foreground">{when(run.created_at)} · {run.trigger}</span></div>
-                  {run.step_statuses.map((step, index) => <div key={index} className="mt-2 text-muted-foreground">
-                    <p>{step.label}: {step.status}</p>
-                    {step.summary && <p className="text-xs">{Object.entries(step.summary).map(([key, count]) => `${key}: ${count}`).join(" · ")}</p>}
-                    {step.artifact_path && <p className="break-all text-xs">Output: {step.artifact_path}</p>}
-                    {step.error && <p className="text-xs text-destructive">{step.error}</p>}
-                  </div>)}
-                  {run.error && <p className="mt-2 text-destructive">{run.error}</p>}
-                </div>)}</div>
-              </div>
+            <div className="flex flex-wrap gap-2">
+              <Button disabled={busy} onClick={() => void act("run", selected)}>Run now</Button>
+              <Button variant="outline" disabled={busy} onClick={() => void act("enabled", selected)}>{selected.enabled ? "Pause" : "Resume"}</Button>
+              <Button variant="outline" onClick={() => setEditing(true)}>Edit</Button>
             </div>
-          ) : <div className="space-y-3 text-sm text-muted-foreground"><p>Select a routine to view its runs, or create one.</p><Link className="text-primary underline" to="/data-recipes">Browse Data Recipes</Link></div>}
-        </section>
-      </div>
+          </header>
+          <div className="mt-8 grid items-start gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+            <section className="rounded-2xl border border-border/70 bg-card p-5 sm:p-6" aria-label="Workflow">
+              <div className="flex items-baseline justify-between gap-3">
+                <h2 className="text-lg font-semibold">What runs</h2>
+                <span className="text-xs text-muted-foreground">{selected.steps.length} {selected.steps.length === 1 ? "step" : "steps"}</span>
+              </div>
+              <ol className="mt-5 space-y-4">
+                {selected.steps.map((step, index) => (
+                  <li key={index} className="flex gap-3">
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-semibold text-primary">{index + 1}</span>
+                    <div className="min-w-0 pt-0.5"><p className="break-words text-sm font-medium">{step.label}</p><p className="mt-0.5 text-xs text-muted-foreground">{step.kind === "recipe" ? "Data Recipe" : "Linked folder sync"}</p></div>
+                  </li>
+                ))}
+              </ol>
+            </section>
+            <section className="rounded-2xl border border-border/70 bg-card p-5 sm:p-6" aria-label="Latest run">
+              <h2 className="text-lg font-semibold">Latest run</h2>
+              {runs[0] ? <div className="mt-5"><RunResult run={runs[0]} /></div> : (
+                <div className="mt-5 rounded-xl bg-muted/50 p-5 text-sm text-muted-foreground">This routine has not run yet. Use Run now to try it.</div>
+              )}
+            </section>
+          </div>
+          {runs.length > 1 && (
+            <details className="mt-6 rounded-2xl border border-border/70 bg-card p-5 sm:p-6">
+              <summary className="cursor-pointer text-sm font-semibold">Earlier runs ({runs.length - 1})</summary>
+              <div className="mt-5 space-y-4 border-t border-border/70 pt-5">
+                {runs.slice(1).map((run) => <div key={run.id} className="rounded-xl border border-border/70 p-4"><RunResult run={run} /></div>)}
+              </div>
+            </details>
+          )}
+        </div>
+      ) : (
+        <div>
+          <header className="flex flex-wrap items-start justify-between gap-5">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Studio automation</p>
+              <h1 className="mt-2 text-3xl font-semibold tracking-tight">Routines</h1>
+              <p className="mt-2 max-w-xl text-sm text-muted-foreground">Schedule saved work and see the result in one place. Routines run while Studio is running.</p>
+            </div>
+            <Button onClick={beginCreate}>Create routine</Button>
+          </header>
+          {routines.length === 0 ? (
+            <div className="mt-9 rounded-2xl border border-dashed border-border bg-card px-6 py-12 text-center">
+              <h2 className="text-lg font-semibold">Your first routine starts here</h2>
+              <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">Choose a saved Data Recipe or linked folder, then set how often Studio should run it.</p>
+              <div className="mt-5 flex justify-center gap-3"><Button onClick={beginCreate}>Create routine</Button><Button variant="outline" asChild><Link to="/data-recipes">Browse recipes</Link></Button></div>
+            </div>
+          ) : (
+            <section className="mt-9" aria-label="Saved routines">
+              <h2 className="mb-4 text-sm font-semibold text-muted-foreground">Your routines</h2>
+              <div className="space-y-3">
+                {routines.map((routine) => (
+                  <button key={routine.id} type="button" onClick={() => selectRoutine(routine)}
+                    className="group w-full rounded-2xl border border-border/70 bg-card p-5 text-left transition-colors hover:border-primary/40 hover:bg-muted/20 focus-visible:outline-2 focus-visible:outline-primary">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="text-base font-semibold">{routine.name}</h3>
+                          <Badge variant="outline" className={routine.enabled ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "text-muted-foreground"}>{routine.enabled ? "Active" : "Paused"}</Badge>
+                        </div>
+                        <p className="mt-2 text-sm text-muted-foreground">{scheduleLabel(routine.interval_minutes)} · {routine.steps.length} {routine.steps.length === 1 ? "step" : "steps"}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{routine.enabled ? `Next run ${when(routine.next_run_at)}` : "Automatic runs paused"}</p>
+                      </div>
+                      <span className="text-lg text-muted-foreground transition-transform group-hover:translate-x-1" aria-hidden="true">→</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+        </div>
+      )}
     </main>
   );
 }
