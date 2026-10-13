@@ -1752,10 +1752,10 @@ def make_token_batches(tok, args, device):
         labels = ids.masked_fill(enc.attention_mask == 0, -100)
         reps = (need + len(ids) - 1) // len(ids)
         return (
-            ids.repeat(reps, 1)[:need].to(device),
-            labels.repeat(reps, 1)[:need].to(device),
+            ids.repeat(reps, 1)[:need],
+            labels.repeat(reps, 1)[:need],
         )
-    ids = torch.randint(0, tok.vocab_size, (need, args.seq), device = device)
+    ids = torch.randint(0, tok.vocab_size, (need, args.seq))
     return ids, ids
 
 
@@ -1921,8 +1921,9 @@ def _main_data_parallel(args) -> int:
     t0 = time.perf_counter()
     for step in range(args.steps):
         opt.zero_grad(set_to_none = True)
-        whole = ids_all[step * args.batch : (step + 1) * args.batch]
-        whole_y = labels_all[step * args.batch : (step + 1) * args.batch]
+        # On the CPU until its step, as in the layer split.
+        whole = ids_all[step * args.batch : (step + 1) * args.batch].to(device)
+        whole_y = labels_all[step * args.batch : (step + 1) * args.batch].to(device)
         mine = whole[rank * per_rank : (rank + 1) * per_rank]
         mine_y = whole_y[rank * per_rank : (rank + 1) * per_rank]
         # Whole-step token mean: the ranks' gradient average divides by world again.
