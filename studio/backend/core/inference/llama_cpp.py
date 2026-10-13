@@ -37092,18 +37092,19 @@ class LlamaCppBackend:
         stall timeout instead of the long prefill timeout."""
         import httpcore
 
-        def _live_read_timeout() -> Optional[float]:
+        def _live_read_timeout(snapshot: Optional[float]) -> Optional[float]:
             if response is None:
-                return None
+                return snapshot
             try:
                 ext = response.request.extensions.get("timeout")
-                if isinstance(ext, dict):
-                    value = ext.get("read")
-                    if isinstance(value, (int, float)):
-                        return float(value)
+                if isinstance(ext, dict) and "read" in ext:
+                    value = ext["read"]
+                    # None is a live value too: an unlimited first-token wait has no read bound.
+                    if value is None or isinstance(value, (int, float)):
+                        return value
             except Exception:
                 pass
-            return None
+            return snapshot
 
         try:
             pool = getattr(getattr(client, "_transport", None), "_pool", None)
@@ -37119,8 +37120,7 @@ class LlamaCppBackend:
                     timeout = None,
                     _orig = orig_read,
                 ):
-                    live = _live_read_timeout()
-                    effective = live if live is not None else timeout
+                    effective = _live_read_timeout(timeout)
                     deadline = None if effective is None else time.monotonic() + effective
                     while True:
                         if cancel_event.is_set():
@@ -37187,6 +37187,9 @@ class LlamaCppBackend:
             if first_token_deadline is None:
                 first_token_deadline = start_first_token_wait()
             prefill_read_timeout = max(0.1, first_token_deadline - time.monotonic())
+            if sys.platform == "win32":
+                # Stop cannot wake a Winsock recv parked before headers, so that wait keeps the default bound.
+                prefill_read_timeout = min(prefill_read_timeout, _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
             prefill_timeout = httpx.Timeout(
                 connect = 30,
                 read = socket_timeout(prefill_read_timeout),

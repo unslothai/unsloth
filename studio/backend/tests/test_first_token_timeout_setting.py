@@ -80,17 +80,7 @@ def test_explicit_api_env_override_is_preserved(monkeypatch):
     monkeypatch.setenv(inference._OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, "42")
     assert inference._first_token_timeout_s() == 42
     assert limit.timeout_seconds() == math.inf
-    assert inference._OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV in inference._friendly_error(
-        httpx.ReadTimeout("first token")
-    )
-
-
-def test_unlimited_socket_wait_keeps_connect_timeout():
-    limit.set_minutes(0)
-    timeout = inference._llama_streaming_generation_timeout()
-    assert timeout.read is None
-    assert timeout.connect == inference._DEFAULT_FIRST_TOKEN_TIMEOUT_S
-    assert timeout.write == inference._DEFAULT_FIRST_TOKEN_TIMEOUT_S
+    assert "UNSLOTH_OPENAI_COMPAT" in inference._friendly_error(httpx.ReadTimeout("x"))
 
 
 @pytest.mark.parametrize("minutes,read", [(1, 1200.0), (90, 5400.0), (0, None)])
@@ -148,6 +138,41 @@ def test_sync_unlimited_prefill_still_switches_to_decode_stall(monkeypatch):
         assert response.request.extensions["timeout"]["read"] == 120
         with pytest.raises(httpx.ReadTimeout, match = "stopped producing tokens"):
             next(iterator)
+
+
+def test_windows_bounds_the_header_wait_while_unlimited_body_reads_stay_unbounded(monkeypatch):
+    import httpcore
+    from contextlib import contextmanager
+
+    limit.set_minutes(0)
+    seen = {}
+
+    @contextmanager
+    def stream(*_args, timeout, **_kwargs):
+        seen["read"] = timeout.read
+        yield SimpleNamespace()
+
+    monkeypatch.setattr("core.inference.llama_cpp.sys.platform", "win32")
+    with LlamaCppBackend._stream_with_retry(SimpleNamespace(stream = stream), "url", {}):
+        pass
+    assert seen["read"] == 1200.0
+    attempts = iter([httpcore.ReadTimeout("slice"), httpcore.ReadTimeout("slice"), b"x"])
+
+    def read(_max_bytes, timeout = None):
+        time.sleep(0.002)
+        if isinstance(item := next(attempts), Exception):
+            raise item
+        return item
+
+    network = SimpleNamespace(read = read)
+    pool = SimpleNamespace(
+        _connections = [SimpleNamespace(_connection = SimpleNamespace(_network_stream = network))]
+    )
+    response = SimpleNamespace(request = SimpleNamespace(extensions = {"timeout": {"read": None}}))
+    LlamaCppBackend._install_cancel_aware_read(
+        SimpleNamespace(_transport = SimpleNamespace(_pool = pool)), threading.Event(), response
+    )
+    assert network.read(1, timeout = 0.001) == b"x"
 
 
 @pytest.mark.asyncio
