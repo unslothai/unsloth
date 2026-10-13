@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { withPlanBreakdown } from "@/features/hub/download-manager/download-breakdown";
-
 type DiffusionPickSource = "hub" | "lora" | "exported" | "local" | "external";
 
 /** A cached row pinned to its validated snapshot loads by path; `displayRepoId` keeps the logical id for planning. */
@@ -22,25 +20,22 @@ export function diffusionStagingEntries(
     repo_id: string;
     files: string[];
     bytes: number;
-    file_bytes?: Record<string, number>;
     gguf_filename: string | null;
     checkpoint?: boolean;
   }[],
   repoId: string,
-  opts: { filename?: string; displayRepoId?: string; checkpointBytes?: number },
+  opts: { filename?: string; displayRepoId?: string },
 ) {
   const planRepoId = opts.displayRepoId ?? repoId;
-  const staged = entries
+  return entries
     .map((e) => ({
       repoId: e.repo_id,
       files: e.files,
       bytes: e.bytes,
-      fileBytes: e.file_bytes,
       ggufFilename: e.gguf_filename,
       // `??`, not `||`: a planner answering false is an answer; the fallback is only for older backends.
       checkpoint:
         e.checkpoint ?? (opts.filename ? e.files.includes(opts.filename) : e.repo_id === planRepoId),
     }))
     .filter((e) => planRepoId === repoId || !e.checkpoint);
-  return withPlanBreakdown(staged, opts.checkpointBytes);
 }

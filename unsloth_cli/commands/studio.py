@@ -1809,6 +1809,33 @@ def _format_context_length_line(load_result: dict) -> Optional[str]:
     return f"  Context length: {value_int} tokens"
 
 
+_MODELS_DIRS_ENV = "UNSLOTH_STUDIO_MODELS_DIRS"
+
+
+def _export_models_dirs(models_dir: Optional[List[Path]]) -> None:
+    """Hand --models-dir to the backend through the env, which both launch paths keep; the backend adds each as a Custom Folder."""
+    if not models_dir:
+        return
+    resolved = []
+    for raw in models_dir:
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            typer.echo(f"Error: --models-dir {raw} is not an existing folder.", err = True)
+            raise typer.Exit(2)
+        resolved_path = str(path.resolve())
+        if os.pathsep in resolved_path:
+            typer.echo(
+                f"Error: --models-dir {raw} contains '{os.pathsep}', which cannot be passed "
+                "to Studio. Rename the folder or add it from Custom Folders in the model picker.",
+                err = True,
+            )
+            raise typer.Exit(2)
+        resolved.append(resolved_path)
+    existing = [p for p in os.environ.get(_MODELS_DIRS_ENV, "").split(os.pathsep) if p]
+    merged = list(dict.fromkeys(existing + resolved))
+    os.environ[_MODELS_DIRS_ENV] = os.pathsep.join(merged)
+
+
 @studio_app.callback(invoke_without_command = True)
 def studio_default(
     ctx: typer.Context,
@@ -1886,11 +1913,19 @@ def studio_default(
         "`--password -` to read one line from stdin. A literal value is visible in the "
         "process list and shell history. Rotate later with `unsloth studio reset-password`.",
     ),
+    models_dir: Optional[List[Path]] = typer.Option(
+        None,
+        "--models-dir",
+        help = "Add a folder of local models to Studio (repeatable). It is saved as a "
+        "Custom Folder, so its models show up in the Chat and Train model pickers on this "
+        "and later launches; remove it from Custom Folders in the model picker.",
+    ),
 ):
     """Launch the Unsloth Studio server."""
     # --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
     _ensure_studio_env_exported()
+    _export_models_dirs(models_dir)
     if ctx.invoked_subcommand is not None:
         # Typer does not forward parent options, so `unsloth studio --parallel N run` would drop N.
         if parallel != _PARALLEL_DEFAULT_PLAIN:
@@ -3799,6 +3834,33 @@ def _with_studio_uv_cache(env: Optional[dict], cwd: Optional[Path] = None) -> Op
     return {**(env or os.environ), "UV_CACHE_DIR": str(studio_cache)}
 
 
+def _with_studio_uv(env: Optional[dict]) -> Optional[dict]:
+    """An install with a custom UNSLOTH_STUDIO_HOME keeps its uv-managed Python in <home>/python
+    and its own uv in <home>/uv; only that installer creates <home>/python. Without this, setup
+    would put a missing or stale uv, and any managed Python, in the profile. setup version-checks
+    the uv it finds there and replaces it in place; a uv already on PATH is used as before."""
+    try:
+        if (
+            not _STUDIO_HOME_IS_CUSTOM
+            or STUDIO_HOME.resolve() == (Path.home() / ".unsloth" / "studio").resolve()
+        ):
+            return env
+    except (OSError, RuntimeError, ValueError):
+        return env
+    if not (STUDIO_HOME / "python").is_dir():
+        return env
+    out = {**(env if env is not None else os.environ)}
+    if not (out.get("UV_PYTHON_INSTALL_DIR") or "").strip():
+        out["UV_PYTHON_INSTALL_DIR"] = str(STUDIO_HOME / "python")
+    # astral's unmanaged mode: that directory, no profile or user PATH edit (setup.sh, setup.ps1).
+    if not any(
+        (out.get(k) or "").strip()
+        for k in ("UV_INSTALL_DIR", "UV_UNMANAGED_INSTALL", "XDG_BIN_HOME")
+    ):
+        out["UV_UNMANAGED_INSTALL"] = str(STUDIO_HOME / "uv")
+    return out
+
+
 def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None) -> None:
     script = _find_setup_script(repo_root)
     if not script:
@@ -3815,6 +3877,7 @@ def _run_setup_script(*, verbose: bool = False, repo_root: Optional[Path] = None
     # Where setup runs uv from: setup.sh cds into its own directory, setup.ps1 keeps this cwd.
     setup_cwd = None if platform.system() == "Windows" else script.parent
     env = _with_studio_uv_cache(env, cwd = setup_cwd)
+    env = _with_studio_uv(env)
     # Saves setup.ps1 the process walk. A HINT, not a promise: only the desktop spawn guarantees
     # the managed venv's python, while a pip install, a checkout or a staged run puts an
     # interpreter here that is nowhere near $VenvDir. Get-SetupHostInterpreterInVenv tests

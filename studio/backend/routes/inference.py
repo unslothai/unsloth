@@ -16635,6 +16635,26 @@ def _guard_chat_load_against_training(
             required_override_gb, diffusion_ngl, _gguf_layer_count(config)
         )
 
+    # Without a manual split the runner layer-splits a GGUF its one device cannot hold
+    # (#6347): budget the devices that same decision picks, from the same weight bytes the
+    # launcher reads. A GGUF not on disk yet keeps the stricter single-device budget.
+    guard_gpu_ids = requested_gpu_ids
+    _gguf_file = getattr(config, "gguf_file", None) if is_gguf else None
+    if diffusion_gpu and diffusion_ngl is None and _gguf_file and os.path.isfile(_gguf_file):
+        try:
+            _assets = get_llama_cpp_backend()._find_diffusion_assets()
+            fit_gpus = LlamaCppBackend._diffusion_fit_gpus(
+                LlamaCppBackend._get_gguf_size_bytes(_gguf_file),
+                requested_gpu_ids,
+                diffusion_gpu,
+                _assets[1] if _assets else None,
+            )
+        except Exception as e:
+            logger.debug("Diffusion GPU fit skipped in the training guard: %s", e)
+            fit_gpus = None
+        if fit_gpus:
+            diffusion_gpu, guard_gpu_ids = None, fit_gpus
+
     vulkan_free_vram_gb = None
     if is_gguf:
         if is_vulkan_backend and (gpu_ids_are_vulkan_ordinals or diffusion_kind is False):
@@ -16672,7 +16692,7 @@ def _guard_chat_load_against_training(
         hf_token = request.hf_token,
         load_in_4bit = load_in_4bit,
         max_seq_length = request.max_seq_length,
-        requested_gpu_ids = requested_gpu_ids,
+        requested_gpu_ids = guard_gpu_ids,
         is_gguf = is_gguf,
         gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
         vulkan_free_vram_gb = vulkan_free_vram_gb,
@@ -18529,7 +18549,7 @@ async def _load_model_impl(
         ollama_advertised_id = (
             await asyncio.to_thread(ollama_model_ref_public_id, request.model_path)
             if resolved_ollama_path is not None
-            else None
+            else request._advertised_id
         )
         # Version switching is handled by the subprocess-based inference
         # backend -- no ensure_transformers_version() needed here.
@@ -18685,6 +18705,8 @@ async def _load_model_impl(
                     await asyncio.to_thread(acquire_for_request, CHAT)
                 if replacing:
                     account_access.join_resident("chat")
+                if request._advertised_id:
+                    backend._openai_advertised_id = request._advertised_id
                 return LoadResponse(
                     engine = request.engine,
                     engine_parallelism = request.engine_parallelism,
@@ -19301,7 +19323,7 @@ async def _load_model_impl(
             llama_backend._openai_gguf_companion_state = gguf_companion_state
             if replacing:
                 await asyncio.to_thread(note_model_loaded, llama_backend)
-            # None elsewhere: only an Ollama load has an identifier no client should be handed.
+            # Else None, or the catalog id a /models/load named: only those loads have an alias to keep.
             llama_backend._openai_advertised_id = ollama_advertised_id
 
             # Audio detection moved into load_model under _serial_load_lock (#5642).
@@ -19516,6 +19538,8 @@ async def _load_model_impl(
                 list(request.gpu_ids) if request.gpu_ids else None
             )
 
+        if request._advertised_id:
+            backend._openai_advertised_id = request._advertised_id
         logger.info(
             f"Loaded model: {model_log_label if native_grant_backed else config.identifier}"
         )
@@ -36479,6 +36503,12 @@ def _servable_catalog_rows(
     ]
 
 
+def _with_openai_residency(entry: dict) -> dict:
+    # Open WebUI's llama.cpp provider reads status.value and calls a row without one loaded (#10610).
+    loaded = bool(entry.get("loaded"))
+    return {**entry, "loaded": loaded, "status": {"value": "loaded" if loaded else "unloaded"}}
+
+
 def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
     """Downloaded audio.cpp speech, music and separation GGUFs, found by header in the HF cache. The
     cache scan lists a dedicated repo as a GGUF but cannot key an umbrella folder, and none loads in
@@ -36521,11 +36551,12 @@ def _audio_cpp_speech_model_objects(created: int) -> list[dict]:
         return []
 
 
-async def _openai_catalog_objects() -> list[dict]:
+async def _openai_catalog_objects(quant_pins: bool = False) -> list[dict]:
     """Every model the server knows about for ``GET /v1/models``: the loaded
     model(s) plus locally available (downloaded/cached) models discovered by
     scanning. Loaded entries keep their context fields and are marked
-    ``loaded: true``. All ids are clean public ids (never absolute paths)."""
+    ``loaded: true``. All ids are clean public ids (never absolute paths). ``quant_pins``
+    adds a ``<id>:<quant>`` row per on-disk quant of a multi-quant GGUF repo."""
     _created = int(time.time())
     # Loaded models first (clean ids + context fields), marked loaded.
     by_id: dict[str, dict] = {}
@@ -36544,11 +36575,16 @@ async def _openai_catalog_objects() -> list[dict]:
         catalog = await asyncio.to_thread(account_access.filter_model_rows, catalog)
         visible = {id(info) for info in catalog}
         rows = [row for row in rows if id(row[0]) in visible]
+    pins: dict[str, tuple[str, ...]] = {}
     for info, is_gguf, quants, loaded in rows:
         if account_access.resident_hidden("chat"):
             loaded = False
         cid = getattr(info, "model_id", None) or public_model_id(getattr(info, "id", None))
-        if not cid or cid in by_id:
+        if not cid:
+            continue
+        if is_gguf and len(quants) > 1:
+            pins.setdefault(cid, quants)
+        if cid in by_id:
             continue
         if loaded and not is_gguf:
             if resident_id in by_id:
@@ -36583,7 +36619,40 @@ async def _openai_catalog_objects() -> list[dict]:
     for obj in media:
         by_id.setdefault(obj["id"], obj)
 
-    return list(by_id.values())
+    rows = list(by_id.values())
+    if quant_pins and pins:
+        # Off-loop: a loaded row on a cold index reads residency from every slot.
+        rows = await asyncio.to_thread(_with_quant_pin_rows, rows, pins)
+    return [_with_openai_residency(entry) for entry in rows]
+
+
+def _with_quant_pin_rows(objects: list[dict], pins: dict[str, tuple[str, ...]]) -> list[dict]:
+    """*objects* plus, after each multi-quant repo's bare row, one ``<id>:<quant>`` row per on-disk
+    quant, as ``GET /v1/models/<id>:<quant>`` returns it: dropdown clients cannot type a pin (#9340)."""
+    from core.inference.local_model_resolver import (
+        index_is_built,
+        local_gguf_pinned_variant,
+        warm_index_soon,
+    )
+
+    # Never rebuild per listing (5 s TTL, multi-root scan); build only if it never was, or a
+    # client that lists once at connect sees no pins.
+    allow_scan = not index_is_built()
+    warm_index_soon()
+    listed = {obj["id"] for obj in objects}
+    resident_quants = functools.lru_cache(maxsize = 1)(_resident_gguf_quants)
+    out: list[dict] = []
+    for obj in objects:
+        out.append(obj)
+        if obj.get("task"):
+            continue
+        out.extend(
+            _quant_pin_object(obj, quant, resident_quants)
+            for quant in pins.get(obj["id"], ())
+            if f"{obj['id']}:{quant}" not in listed
+            and local_gguf_pinned_variant(f"{obj['id']}:{quant}", allow_scan = allow_scan) == quant
+        )
+    return out
 
 
 @studio_router.get("/loaded-models")
@@ -36617,10 +36686,10 @@ async def openai_list_models(
     """
     wanted = {m.strip() for m in (output_modalities or "").split(",")}
     if not wanted & {"all", "decisions"}:
-        return {"object": "list", "data": await _openai_catalog_objects()}
+        return {"object": "list", "data": await _openai_catalog_objects(quant_pins = True)}
     from routes.systemone import decision_model_objects
 
-    data = [] if wanted == {"decisions"} else await _openai_catalog_objects()
+    data = [] if wanted == {"decisions"} else await _openai_catalog_objects(quant_pins = True)
     data += await asyncio.to_thread(decision_model_objects)
     return {"object": "list", "data": data}
 
@@ -36658,10 +36727,15 @@ def _pinned_quant_object(model_id: str, objects: list[dict]) -> Optional[dict]:
     variant = local_gguf_pinned_variant(f"{listed['id']}:{model_id[len(base) + 1:]}")
     if not variant:
         return None
+    return _quant_pin_object(listed, variant, _resident_gguf_quants)
+
+
+def _quant_pin_object(listed: dict, variant: str, resident_quants) -> dict:
+    """*listed* pinned to its on-disk *variant*: the loaded row when that quant is resident."""
     pinned_id = f"{listed['id']}:{variant}"
     if listed.get("loaded"):
         # A cold index leaves "quant" off the loaded row until it can prove the pin.
-        resident = listed.get("quant") or _resident_gguf_quants().get(listed["id"].lower())
+        resident = listed.get("quant") or resident_quants().get(listed["id"].lower())
         if str(resident or "").lower() == variant.lower():
             return {**listed, "id": pinned_id, "quant": variant}
     # The listed row's context fields describe the resident quant, not this one.
@@ -36693,7 +36767,7 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
     for entry in _loaded:
         eid = entry["id"]
         if isinstance(eid, str) and eid.lower() == model_id.lower():
-            return {**entry, "loaded": True}
+            return _with_openai_residency({**entry, "loaded": True})
 
     objects = await _openai_catalog_objects()
     for model in objects:
@@ -36721,10 +36795,10 @@ async def openai_retrieve_model(model_id: str, current_subject: str = Depends(ge
         if model_id_matches(model_id, raw):
             for entry in _loaded:
                 if entry["id"] == clean:
-                    return {**entry, "loaded": True}
+                    return _with_openai_residency({**entry, "loaded": True})
     pinned = await asyncio.to_thread(_pinned_quant_object, model_id, objects)
     if pinned is not None:
-        return pinned
+        return _with_openai_residency(pinned)
     raise HTTPException(
         status_code = 404,
         detail = openai_error_body(

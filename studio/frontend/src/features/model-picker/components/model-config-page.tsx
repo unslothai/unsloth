@@ -1175,9 +1175,9 @@ function GpuMemorySettings({
                     </span>
                   </div>
                 )}
-                {/* Not for diffusion: that runner drives one device and matches_gpu_ids
-                    reduces the request to its lowest id, so the arrows would move a row
-                    without moving the model, under help text promising the opposite. */}
+                {/* Not for diffusion: that runner uses the lowest id, or splits in id
+                    order, so the arrows would move a row without moving the model, under
+                    help text promising the opposite. */}
                 {isGpuChecked(d.index) && !singleGpuInUse && !isDiffusion && (
                   <div className="flex shrink-0 items-center gap-0.5">
                     <button
