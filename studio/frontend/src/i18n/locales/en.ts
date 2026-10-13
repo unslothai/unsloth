@@ -594,6 +594,27 @@ export const en = {
     more: "Chat options",
     copy: "Copy",
   },
+  // The empty chat's greeting; {name} is the user's nickname or first name.
+  welcome: {
+    goodToSeeYou: "Good to see you",
+    goodToSeeYouName: "Good to see you, {name}",
+    readyWhenYouAre: "Ready when you are",
+    onYourMind: "What’s on your mind today?",
+    howCanIHelp: "How can I help?",
+    goodMorning: "Good morning",
+    goodMorningName: "Good morning, {name}",
+    goodEvening: "Good evening",
+    goodEveningName: "Good evening, {name}",
+    tonight: "What’s on for tonight?",
+    nightOwl: "Night owl mode?",
+    lateNightIdeas: "Late night ideas?",
+    upLate: "Up late with an idea?",
+    nightShift: "The night shift begins",
+    nightShiftName: "The night shift begins, {name}",
+    temporaryChat: "Temporary chat",
+    temporaryChatDescription:
+      "This chat won't appear in your history and isn't saved. It disappears when you leave.",
+  },
   picker: {
     onDevice: "On Device",
     huggingFace: "Hugging Face",
