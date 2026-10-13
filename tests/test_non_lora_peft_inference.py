@@ -64,10 +64,8 @@ def _q_proj(method):
 @pytest.mark.parametrize("q_len", [1, 5])
 def test_fast_linear_forward_runs_non_lora_adapter(method, q_len):
     from unsloth.kernels import fast_linear_forward
-    from unsloth.kernels.utils import _has_non_lora_adapter
 
     proj = _q_proj(method)
-    assert _has_non_lora_adapter(proj)
     X = torch.randn(1, q_len, H, device = "cuda", dtype = torch.bfloat16)
     with torch.no_grad():
         expected = proj(X)
@@ -79,7 +77,10 @@ def test_fast_linear_forward_runs_non_lora_adapter(method, q_len):
         assert got.data_ptr() == out.data_ptr()
 
 
-def test_lora_and_plain_linear_keep_the_fast_path():
+def test_only_non_lora_adapters_leave_the_fast_path():
     from unsloth.kernels.utils import _has_non_lora_adapter
+
+    for method in ("vera", "loha", "lokr", "ia3", "adalora"):
+        assert _has_non_lora_adapter(_q_proj(method))
     assert not _has_non_lora_adapter(_q_proj("lora"))
     assert not _has_non_lora_adapter(torch.nn.Linear(H, H))
