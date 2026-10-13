@@ -179,7 +179,10 @@ async def _multipart(
     timestamps: bool,
     model: Optional[str],
 ):
-    fields = {"response_format": "verbose_json" if timestamps else "json"}
+    fields: dict[str, Any] = {"response_format": "verbose_json" if timestamps else "json"}
+    if timestamps and not translate:
+        # The route times segments only when asked, and refuses loudly on an engine that cannot.
+        fields["timestamp_granularities[]"] = "segment"
     if model:
         fields["model"] = model
     if language and not translate:

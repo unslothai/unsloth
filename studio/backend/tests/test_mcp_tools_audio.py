@@ -269,6 +269,8 @@ def test_small_audio_goes_as_multipart_with_openai_field_names(
     assert fields["file"] == ("memo.wav", WAV)
     assert {k: v[1] for k, v in fields.items() if k != "file"} == {
         "response_format": b"verbose_json" if timestamps else b"json",
+        # Without it the route returns verbose_json with no segments at all.
+        **({"timestamp_granularities[]": b"segment"} if timestamps else {}),
         **({"model": model.encode()} if model else {}),
         "language": b"en",
     }
