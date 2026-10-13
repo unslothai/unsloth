@@ -203,7 +203,11 @@ def _enable_hf_packed_attention() -> None:
         logging.getLogger(__name__).info(f"Unsloth: packed varlen attention not enabled ({exc})")
 
 
-def _scope_flash_attention_impl(model, trainer, sequence_lengths_key = "seq_lengths") -> None:
+def _scope_flash_attention_impl(
+    model,
+    trainer,
+    sequence_lengths_key = "seq_lengths",
+) -> None:
     try:
         from .flash_impl import scope_flash_attention_impl_to_train
         scope_flash_attention_impl_to_train(trainer, model, sequence_lengths_key)

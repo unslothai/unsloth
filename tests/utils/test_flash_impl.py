@@ -438,23 +438,32 @@ def test_mean_document_length_reads_packed_and_padding_free_rows():
     rows = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300], "labels": [[1], [1]]})
     assert fi._mean_document_length(rows) == 200
     assert fi._mean_document_length(rows, rows = 1) == 100
-    longest_first = datasets.Dataset.from_dict({"input_ids": [[1] * n for n in (400, 300, 200, 100)]})
+    longest_first = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * n for n in (400, 300, 200, 100)]}
+    )
     assert fi._mean_document_length(longest_first, rows = 2) == 250
     # The sample reaches the tail when the size is not a multiple of rows: 128 x 1200 then 72 x 100.
     tail = datasets.Dataset.from_dict({"input_ids": [[1] * 1200] * 128 + [[1] * 100] * 72})
     assert fi._mean_document_length(tail) < 1024
-    mixed = datasets.Dataset.from_dict({"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], None]})
+    mixed = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], None]}
+    )
     assert fi._mean_document_length(mixed) == pytest.approx(14 / 3)
     # The last row is always sampled: 128 one-document rows, then one row of many short documents.
     last = datasets.Dataset.from_dict(
-        {"input_ids": [[1] * 1024] * 128 + [[1] * 1024], "seq_lengths": [[1024]] * 128 + [[8] * 128]}
+        {
+            "input_ids": [[1] * 1024] * 128 + [[1] * 1024],
+            "seq_lengths": [[1024]] * 128 + [[8] * 128],
+        }
     )
     assert fi._mean_document_length(last) < 1024
     # Columns hidden by the format are not read: the collator sees one document per row.
     hidden = datasets.Dataset.from_dict({"input_ids": [[1] * 8192], "seq_lengths": [[64] * 128]})
     hidden.set_format("torch", columns = ["input_ids"])
     assert fi._mean_document_length(hidden) == 8192
-    empty = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300], "seq_lengths": [[], []]})
+    empty = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 100, [1] * 300], "seq_lengths": [[], []]}
+    )
     assert fi._mean_document_length(empty) == 200
     custom = datasets.Dataset.from_dict({"input_ids": [[1] * 2000], "doc_lens": [[100] * 20]})
     assert fi._mean_document_length(custom, key = "doc_lens") == 100
@@ -474,7 +483,9 @@ def test_mean_document_length_with_dataset_transforms_is_unknown():
         calls[0] += 1
         return {"input_ids": [ids[:10] for ids in batch["input_ids"]]}
 
-    stored = datasets.Dataset.from_dict({"input_ids": [[1] * 4096, [1] * 4096]}).with_transform(truncate)
+    stored = datasets.Dataset.from_dict({"input_ids": [[1] * 4096, [1] * 4096]}).with_transform(
+        truncate
+    )
     assert fi._mean_document_length(stored) is None
 
     def tokenize(batch):

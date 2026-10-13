@@ -510,7 +510,11 @@ def _sampled_rows(dataset, indices, key):
     return list(dataset.with_format(None).select_columns(wanted).select(indices))
 
 
-def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
+def _mean_document_length(
+    dataset,
+    rows = 128,
+    key = "seq_lengths",
+):
     # Rows spread across the dataset: TRL BFD puts the longest documents first.
     try:
         total = len(dataset)
@@ -538,7 +542,11 @@ def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
     return sum(lengths) / len(lengths) if lengths else None
 
 
-def scope_flash_attention_impl_to_train(trainer, model, sequence_lengths_key = "seq_lengths") -> None:
+def scope_flash_attention_impl_to_train(
+    trainer,
+    model,
+    sequence_lengths_key = "seq_lengths",
+) -> None:
     """Active only during trainer.train: FA4's launch cost makes decode attention ~6x slower."""
     if trainer is None or getattr(trainer, "_unsloth_flash_impl_wrapped", False):
         return
