@@ -3139,7 +3139,7 @@ def _claude_local_env(
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
-        # claude sets aside min(max output, 20k) plus 13k of the window before compacting; with its 32k default output a 32k window leaves nothing, so it compacts every turn until it aborts. Above 20k the cap buys no room, so larger windows keep claude's own.
+        # claude reserves min(max output, 20k) + 13k before compacting, so its 32k default output leaves a 32k window nothing; above 20k the cap gains no room.
         output = opencode_output_limit(int(window))
         if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
             env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(output)

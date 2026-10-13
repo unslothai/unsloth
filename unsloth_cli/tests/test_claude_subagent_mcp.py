@@ -315,7 +315,6 @@ def test_local_child_uses_unsloth_without_overwriting_parent_auth(
     assert command[command.index("--settings") + 1] == str(settings_path)
     assert command[command.index("--permission-mode") + 1] == permission
     assert "--no-session-persistence" in command
-    # The full tool set takes most of a 32k window, so the child gets only the file and shell tools.
     assert command[command.index("--tools") + 1] == "Bash,Read,Edit,Write,Grep,Glob,NotebookEdit"
     assert "--disallowedTools" not in command
     assert captured["cwd"] == str(tmp_path)

@@ -173,7 +173,6 @@ def test_claude_settings_overlay_pins_local_routing_and_auth():
     ("window", "output"), [(32768, "8192"), (65536, "16384"), (98304, None), (131072, None)]
 )
 def test_claude_local_env_leaves_room_to_compact_a_small_window(window, output):
-    # claude's 32k default output reserve made a 32k window compact every turn until it aborted.
     local_env = start._claude_local_env(
         BASE, "sk-unsloth-test", {**MODEL, "context_length": window}
     )
