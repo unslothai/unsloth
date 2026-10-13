@@ -25,6 +25,9 @@ from typing import Iterator, Literal, Mapping, Optional
 CACHE_HOME_SETTING_KEY = "hugging_face_cache_home"
 CACHE_HISTORY_SETTING_KEY = "hugging_face_cache_history"
 MAX_CACHE_HISTORY = 16
+# Download to folders, kept apart from the Models folder history so neither list evicts the other.
+DOWNLOAD_HOMES_SETTING_KEY = "hugging_face_download_homes"
+MAX_DOWNLOAD_HOMES = 64
 
 CacheSource = Literal["default", "studio", "environment"]
 
@@ -321,10 +324,18 @@ def _validate_cache_home(raw_path: str) -> Path:
 
 
 def _stored_history() -> list[Path]:
+    return _stored_paths(CACHE_HISTORY_SETTING_KEY, MAX_CACHE_HISTORY)
+
+
+def _stored_download_homes() -> list[Path]:
+    return _stored_paths(DOWNLOAD_HOMES_SETTING_KEY, MAX_DOWNLOAD_HOMES)
+
+
+def _stored_paths(setting_key: str, limit: int) -> list[Path]:
     try:
         from storage.studio_db import get_app_setting
         from utils.account_context import OWNER, run_as
-        raw = run_as(OWNER, get_app_setting, CACHE_HISTORY_SETTING_KEY, [])
+        raw = run_as(OWNER, get_app_setting, setting_key, [])
     except Exception:
         raw = []
     if not isinstance(raw, list):
@@ -343,7 +354,7 @@ def _stored_history() -> list[Path]:
             continue
         seen.add(key)
         out.append(path)
-    return out[:MAX_CACHE_HISTORY]
+    return out[:limit]
 
 
 def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
@@ -373,7 +384,57 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
                 CACHE_HISTORY_SETTING_KEY: deduped,
             }
         )
-    # Invalidate after persistence so the next scan sees the new root.
+    _invalidate_cache_views()
+    return get_hf_cache_paths()
+
+
+def download_cache_paths(download_dir: Optional[str]) -> HuggingFaceCachePaths:
+    """Cache paths for one download: the Models folder, or a chosen folder laid out the same way.
+
+    Raises ValueError for a folder the Models folder setting would also refuse.
+    """
+    active = get_hf_cache_paths()
+    if download_dir is None or not download_dir.strip():
+        return active
+    home = _validate_cache_home(download_dir)
+    if os.path.normcase(str(home)) == os.path.normcase(str(_canonical(active.cache_home))):
+        return active
+    xet = _EXPLICIT_CACHE_ENV.get("HF_XET_CACHE")
+    return HuggingFaceCachePaths(
+        home,
+        home / "hub",
+        _canonical(xet) if xet else home / "xet",
+        "studio",
+    )
+
+
+def remember_cache_home(cache_home: Path) -> None:
+    """Keep a download folder among the known caches, like a previous Models folder.
+
+    Progress, resume, delete and the cached-model checks read only known caches. Idempotent.
+    """
+    home = _canonical(cache_home)
+    key = os.path.normcase(str(home))
+    with _settings_lock:
+        homes = _stored_download_homes()
+        if len(homes) >= MAX_DOWNLOAD_HOMES or any(
+            os.path.normcase(str(path)) == key for path in homes
+        ):
+            return
+        from storage.studio_db import upsert_app_settings
+        from utils.account_context import OWNER, run_as
+
+        run_as(
+            OWNER,
+            upsert_app_settings,
+            {DOWNLOAD_HOMES_SETTING_KEY: [*(str(path) for path in homes), str(home)]},
+        )
+    _invalidate_cache_views()
+
+
+def _invalidate_cache_views() -> None:
+    # Inventory scans are cached independently from settings. Invalidate after
+    # persistence so the next request sees both the new active root and history.
     from hub.utils.inventory_scan import invalidate_hf_cache_scans
 
     invalidate_hf_cache_scans()
@@ -383,7 +444,6 @@ def set_hf_cache_home(cache_home: Optional[str]) -> HuggingFaceCachePaths:
     from utils.cache_inventory import invalidate_hf_rooted_sizes
 
     invalidate_hf_rooted_sizes()
-    return get_hf_cache_paths()
 
 
 def effective_cache_home() -> Path:
@@ -402,7 +462,7 @@ def known_hf_cache_homes() -> list[Path]:
         candidates.append(_canonical(explicit_home))
     if stored is not None:
         candidates.append(stored)
-    candidates.extend([*_stored_history(), _default_cache_home()])
+    candidates.extend([*_stored_history(), *_stored_download_homes(), _default_cache_home()])
     out: list[Path] = []
     seen: set[str] = set()
     for candidate in candidates:

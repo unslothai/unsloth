@@ -186,6 +186,35 @@ def _spawn_download_worker(
     )
 
 
+def _download_cache_paths(download_dir: Optional[str]):
+    """The Models folder, or the chosen Download to folder registered as a known cache and a Custom Folder."""
+    from utils.hf_cache_settings import (
+        download_cache_paths,
+        get_hf_cache_paths,
+        remember_cache_home,
+    )
+
+    if not (download_dir or "").strip():
+        return get_hf_cache_paths()
+    if account_access.managed_account():
+        raise HTTPException(status_code = 403, detail = "Only the owner can choose a download folder.")
+    try:
+        paths = download_cache_paths(download_dir)
+    except ValueError as e:
+        raise HTTPException(status_code = 400, detail = str(e)) from e
+    if paths.cache_home == get_hf_cache_paths().cache_home:
+        return paths
+    remember_cache_home(paths.cache_home)
+    from hub.services.models.local_inventory import add_scan_folder_response
+
+    try:
+        add_scan_folder_response(str(paths.cache_home))
+    except HTTPException as e:
+        # Still listed through the known caches; Custom Folders only makes it visible there.
+        logger.warning("Download folder not added to Custom Folders: %s", e.detail)
+    return paths
+
+
 async def _audio_cpp_target(
     repo_id: str,
     variant: Optional[str],
@@ -278,9 +307,9 @@ async def download_model_response(
     )
     transport = download_lifecycle.resolve_transport(use_xet, largest_file_bytes = largest_file_bytes)
     logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    cache_paths = get_hf_cache_paths()
+    cache_paths = await asyncio.to_thread(
+        _download_cache_paths, getattr(body, "download_dir", None)
+    )
     cache_env = cache_paths.child_env({})
     variant_blob_hashes = frozenset()
     variant_progress_blob_hashes = frozenset()
@@ -317,8 +346,13 @@ async def download_model_response(
                 download_registry.scrub_secrets(str(e), hf_token = hf_token),
             )
         has_variant_resume_state = (
-            download_manifest.has_cancel_marker("model", repo_id, variant)
-            or download_manifest.read_manifest("model", repo_id, variant) is not None
+            download_manifest.has_cancel_marker(
+                "model", repo_id, variant, hub_cache = cache_paths.hub_cache
+            )
+            or download_manifest.read_manifest(
+                "model", repo_id, variant, hub_cache = cache_paths.hub_cache
+            )
+            is not None
         )
         if variant_progress_blob_hashes and not has_variant_resume_state:
             completed_baseline_bytes = await asyncio.to_thread(
@@ -326,6 +360,7 @@ async def download_model_response(
                 "model",
                 repo_id,
                 variant_progress_blob_hashes,
+                root = cache_paths.hub_cache,
             )
 
     def claim_and_launch():

@@ -867,7 +867,7 @@ def _mlx_inference_patch(name):
 
 
 @contextmanager
-def _mlx_optional_fusion(name, model):
+def _mlx_optional_fusion(name, model, *args):
     """Hold an optional Zoo fusion scope, or yield the model unfused. Guard ENTRY only:
     an open scope must unwind through the ExitStack as an unguarded `with` would, or an
     interrupted generation stops restoring the module tree. A dead Metal queue is not guarded."""
@@ -876,7 +876,7 @@ def _mlx_optional_fusion(name, model):
         active = model
         if patch is not None:
             try:
-                entered = scope.enter_context(patch(model))
+                entered = scope.enter_context(patch(model, *args))
             except Exception as error:
                 if is_metal_queue_dead(error):
                     raise
@@ -909,6 +909,14 @@ def _mlx_fused_moe_routed_experts(model):
 
 def _mlx_fused_residual_norm_handoff(model):
     return _mlx_optional_fusion("fused_residual_norm_handoff", model)
+
+
+def _mlx_fused_packed_gated_delta(model):
+    return _mlx_optional_fusion("fused_packed_gated_delta", model)
+
+
+def _mlx_exact_speculative_verify(model):
+    return _mlx_optional_fusion("exact_speculative_verify", model)
 
 
 def _int8_prefill_zoo():
@@ -3704,7 +3712,7 @@ class _VisionBatchSession:
                 self._held.enter_context(
                     _temporary_mlx_adapter_state(backend._model, adapter_state)
                 )
-            self._held.enter_context(backend._int8_prefill_scope(zoo_generation = True))
+            self._held.enter_context(backend._int8_prefill_scope())
             self._speculative = getattr(backend, "_speculative_draft", None)
             self.stream = BatchStream(
                 backend._model,
@@ -4167,14 +4175,16 @@ class MLXInferenceBackend:
             max_new_tokens = max(1, min(int(max_new_tokens), int(budget) - len(prompt_tokens)))
         return max_new_tokens
 
-    def _int8_prefill_scope(self, zoo_generation = False):
-        """Outermost scope of a generation, which every Zoo scope nested in it inherits. A path
-        running Zoo's own generation scopes is pinned off when inactive, or they read the env."""
+    def _int8_prefill_scope(self):
+        """Outermost scope of a generation, which every Zoo scope nested in it inherits. Pinned
+        off when inactive, so Zoo's full-precision NAX routes still run and no scope reads the Int8
+        Prefill env."""
         scope = (getattr(self, "_int8_prefill", None) or {}).get("scope")
         if scope is not None:
             return scope(self._model, True)
-        zoo = _int8_prefill_zoo() if zoo_generation else None
-        return zoo.nax_quantized_linear(self._model, False) if zoo is not None else nullcontext()
+        if _int8_prefill_zoo() is None:
+            return nullcontext()
+        return _mlx_optional_fusion("nax_quantized_linear", self._model, False)
 
     def _kv_quant_bits(self):
         return (getattr(self, "_kv_quant", None) or {}).get("kv_bits")
@@ -5310,6 +5320,7 @@ class MLXInferenceBackend:
             _mlx_fused_moe_router(self._model),
             _mlx_fused_moe_routed_experts(self._model),
             _mlx_fused_residual_norm_handoff(self._model),
+            _mlx_fused_packed_gated_delta(self._model),
         ):
             (
                 gen_prompt,
@@ -6062,11 +6073,13 @@ class MLXInferenceBackend:
                 generation_scope.enter_context(_mlx_fused_moe_router(self._model))
                 generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
                 generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
+                generation_scope.enter_context(_mlx_fused_packed_gated_delta(self._model))
                 final_response = None
                 clip_path = None
                 if draft is not None:
                     from unsloth_zoo.mlx.generate import SamplingParams
 
+                    generation_scope.enter_context(_mlx_exact_speculative_verify(self._model))
                     # Under the lock: the load's one draft serves one generation at a time.
                     draft.prepare(
                         vlm_kwargs["input_ids"][0].tolist(),
@@ -6395,7 +6408,7 @@ class MLXInferenceBackend:
         with (
             self._generation_lock,
             _temporary_mlx_adapter_state(self._model, _adapter_state),
-            self._int8_prefill_scope(zoo_generation = True),
+            self._int8_prefill_scope(),
         ):
             if any(plan.images for plan in plans):
                 self._release_vlm_snapshots()
@@ -6581,6 +6594,7 @@ class MLXInferenceBackend:
             generation_scope.enter_context(_mlx_fused_moe_router(self._model))
             generation_scope.enter_context(_mlx_fused_moe_routed_experts(self._model))
             generation_scope.enter_context(_mlx_fused_residual_norm_handoff(self._model))
+            generation_scope.enter_context(_mlx_fused_packed_gated_delta(self._model))
             final_response = None
             try:
                 with closing(

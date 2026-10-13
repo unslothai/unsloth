@@ -185,7 +185,10 @@ class TestSpawnPathsHonorFailedShutdown:
 
         o = ExportOrchestrator.__new__(ExportOrchestrator)
         o._lock = threading.RLock()
-        o._proc = _FakeProc(dies_on = None)
+        o._op_lock = threading.Lock()
+        o._active_op_id = None
+        o._cancelled_op_ids = set()
+        o._proc = _FakeProc(dies_on = None)  # survivor
         o.clear_logs = lambda: None
         o._cancel_requested = False
         o._active_op_kind = None

@@ -729,3 +729,16 @@ def test_verbose_restores_every_thread_poll_line(logs, monkeypatch):
     for _ in range(3):
         _run(mw(_http_scope("/api/chat/threads/abc"), _noop_receive, _drop))
     assert len(_paths_logged(logs)) == 3
+
+
+def test_sidebar_rows_post_read_is_quiet_but_errors_and_other_posts_log(logs):
+    rows = "/api/chat/sidebar/rows"
+    _run(LoggingMiddleware(_status_app(200))(_http_scope(rows, "POST"), _noop_receive, _drop))
+    assert logs.events == []
+    _run(LoggingMiddleware(_status_app(500))(_http_scope(rows, "POST"), _noop_receive, _drop))
+    _run(
+        LoggingMiddleware(_status_app(200))(
+            _http_scope("/api/chat/threads", "POST"), _noop_receive, _drop
+        )
+    )
+    assert _paths_logged(logs) == [rows, "/api/chat/threads"]

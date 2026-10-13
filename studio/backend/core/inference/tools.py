@@ -36,6 +36,7 @@ import sys
 import tempfile
 import contextlib
 import threading
+import zlib
 from contextvars import ContextVar
 
 # Truncation notice cost, charged where the cut is decided.
@@ -13894,6 +13895,80 @@ class _HTMLBodyLocator(HTMLParser):
         self.handle_entityref("#" + name)
 
 
+# What _ContentDecoder undoes, and what the fetcher's Accept-Encoding names: with none, any coding is
+# acceptable (RFC 9110 12.5.3), brotli and zstd included.
+_DECODED_CODINGS = ("gzip", "x-gzip", "deflate")
+
+
+class _ContentDecoder:
+    """Undoes a gzip or deflate Content-Encoding as the body is read. Servers send one unasked (python.org
+    does even for ``Accept-Encoding: identity``). Output is bounded per read and input by ``wire_limit``,
+    so a small compressed body can't expand past the caller's budget."""
+
+    def __init__(self, coding):
+        self.gzip = coding != "deflate"
+        self.inflater = None
+        # Before the first byte, or between gzip members: an end of input here is a complete body.
+        self.at_boundary = True
+        self.members = 0
+        self.unread = b""
+        self.wire = 0
+        self.wire_limit = 0
+        self.finished = False
+
+    def read(self, read_wire, size):
+        """At most ``size`` decoded bytes. ``b""`` before ``finished`` means only input was consumed: call again."""
+        if self.finished:
+            return b""
+        data, self.unread = self.unread, b""
+        draining = False
+        if len(data) < 2 and (self.inflater is None or not data):
+            more = read_wire(65536)
+            self.wire += len(more)
+            if self.wire > self.wire_limit:
+                raise ValueError("compressed response exceeds the byte limit")
+            if not more:
+                # An empty coded body (a 204, or Content-Length: 0) has nothing to decode; after a member, a
+                # stray byte is padding.
+                if self.at_boundary and (not data or self.members):
+                    self.finished = True
+                    return b""
+                if self.inflater is None:
+                    raise ValueError("truncated compressed response")
+                # zlib can hold output back past a full buffer with all the input consumed (raw deflate).
+                draining = True
+            data += more
+            if self.inflater is None and len(data) < 2:
+                self.unread = data
+                return b""
+        if self.inflater is None:
+            if self.gzip:
+                if self.members and not data.startswith(b"\x1f\x8b"):
+                    # Bytes after the last member are padding, which browsers ignore too.
+                    self.finished = True
+                    return b""
+                # Concatenated gzip members are one body (RFC 1952 2.2).
+                self.inflater = zlib.decompressobj(31)
+            else:
+                # "deflate" is meant to be zlib-wrapped (RFC 9110 8.4.1.2); some servers send it raw.
+                wrapped = data[0] & 0x0F == 8 and (data[0] << 8 | data[1]) % 31 == 0
+                self.inflater = zlib.decompressobj(15 if wrapped else -15)
+            self.at_boundary = False
+        out = self.inflater.decompress(data, size)
+        if draining and not out and not self.inflater.eof:
+            raise ValueError("truncated compressed response")
+        if not self.inflater.eof:
+            self.unread = self.inflater.unconsumed_tail
+        elif self.gzip:
+            self.members += 1
+            self.unread = self.inflater.unused_data
+            self.inflater = None
+            self.at_boundary = True
+        else:
+            self.finished = True
+        return out
+
+
 def _read_capped_body(
     resp,
     max_bytes,
@@ -13902,13 +13977,18 @@ def _read_capped_body(
     cancel_event,
     body_window = None,
     charset = None,
+    decoder = None,
 ):
-    """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
+    """read at most ``max_bytes`` (decoded, with a ``decoder``), and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
     # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
     # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
+    if decoder is not None:
+        read_wire = read
+        decoder.wire_limit = decoder.wire + max_bytes + 65536
+        read = lambda size: decoder.read(read_wire, size)
     chunks = []
     remaining = max_bytes
     body_at = None
@@ -13926,8 +14006,18 @@ def _read_capped_body(
                 sock.settimeout(_fetch_hop_timeout(timeout, deadline))
             except Exception:
                 pass
-        chunk = read(min(65536, remaining))
+        try:
+            chunk = read(min(65536, remaining))
+        except (ValueError, zlib.error) as exc:
+            if decoder is None:
+                raise
+            if decoder.wire > decoder.wire_limit:
+                return f"(compressed content exceeds the {decoder.wire_limit} byte limit)", b""
+            return f"Failed to decode the compressed response: {exc}", b""
         if not chunk:
+            # Checks the budget between compressed chunks that decode to nothing yet.
+            if decoder is not None and not decoder.finished:
+                continue
             break
         chunks.append(chunk)
         remaining -= len(chunk)
@@ -14097,6 +14187,7 @@ def _fetch_url_raw(
             headers = {
                 "User-Agent": ua,
                 "Host": validated_netloc,
+                "Accept-Encoding": "gzip, deflate",
             }
             if extra_headers:
                 headers.update(extra_headers)
@@ -14139,6 +14230,11 @@ def _fetch_url_raw(
                         return hop_error, "", ""
                     continue
 
+            coding = (resp.headers.get("Content-Encoding") or "").strip().lower()
+            if coding not in ("", "identity", *_DECODED_CODINGS):
+                return f"Failed to fetch URL: unsupported Content-Encoding {coding[:40]!r}.", "", ""
+            decoder = _ContentDecoder(coding) if coding in _DECODED_CODINGS else None
+
             # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
@@ -14167,6 +14263,7 @@ def _fetch_url_raw(
                 cancel_event,
                 body_window = max_bytes if declared_html else None,
                 charset = resp.headers.get_content_charset() if declared_html else None,
+                decoder = decoder,
             )
             if body_error is not None:
                 return body_error, "", ""
@@ -14190,6 +14287,7 @@ def _fetch_url_raw(
                     timeout,
                     deadline,
                     cancel_event,
+                    decoder = decoder,
                 )
                 if tail_error is not None:
                     return tail_error, "", ""
@@ -14402,9 +14500,11 @@ def _tool_result_char_budget() -> int:
     return _result_char_budget(cap)
 
 
-def _other_tool_result_char_budget() -> int:
-    """Non-code tools keep the install cap: the setting names Python and Terminal, and these results have no spill to
-    page back through."""
+def _other_tool_result_char_budget(name = None) -> int:
+    """Web, edit and the other built-in tools keep the install cap: their results are bounded by their own caps. An MCP
+    result has none, so it follows the Settings > Chat limit like Python and Terminal (#13576)."""
+    if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX):
+        return _tool_result_char_budget()
     return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
@@ -18373,15 +18473,37 @@ def _truncate(
 
 
 def _fit_result_to_room(text, name = None):
-    """Caps output a tool did not cap itself; no spill file, as code execution may be off."""
-    if _request_result_room() is None or not isinstance(text, str) or not text:
+    """Cap a tool that does not cap its own output, when this request priced its room.
+
+    `python` and `terminal` truncate against this same budget before they return, so this is a no-op
+    for them. The other tools hand their string back whole: an MCP response is unbounded, a fetched
+    page or an edit receipt runs to a few thousand characters, and any of them can overflow a nearly
+    full local thread and then be protected as its newest exchange, which is the failure the budget
+    exists to prevent.
+
+    No spill file: these tools have no sandbox of their own, and `edit_file` must not have a workdir
+    created underneath a caller running with code execution off. So the cap comes with the plain
+    notice and no paging hint.
+
+    With no priced room (external providers, the hosted path, any loop that does not measure its own
+    conversation) the text is returned untouched, except an MCP result under a lowered setting.
+    """
+    if not isinstance(text, str) or not text:
         return text
-    # Only the model-visible part is measured; the frontend envelope must stay byte-identical
-    # (a cut JSON array replays broken base64).
+    if _request_result_room() is None:
+        # Against the shipped default: an environment cap sets `_MAX_OUTPUT_CHARS` too.
+        lowered = _tool_result_max_chars() < tool_result_limit.DEFAULT_MAX_CHARS
+        if not (lowered and isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)):
+            return text
+    # Only the part the model will actually be shown is measured and cut. The rest is a frontend-only envelope (an MCP
+    # image array, web_search thumbnails, RAG sources) which `strip_result_for_model` removes before the result is
+    # replayed, so it costs the window nothing and must come back byte-identical: every consumer of the __MCP_IMAGES__
+    # envelope requires the whole valid JSON array, and a cut anywhere inside a megabyte of base64 does not lose the
+    # image quietly, it replays the broken fragment to the model instead.
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body, _other_tool_result_char_budget())
+    fitted = _truncate(body, _other_tool_result_char_budget(name))
     return fitted + suffix if fitted is not body else text
 
 

@@ -47,8 +47,15 @@ def _params_text(meta: dict[str, Any]) -> str:
     negative = meta.get("negative_prompt")
     if negative:
         lines.append(f"Negative prompt: {negative}")
+    from core.inference.diffusion_sampler import sampler_label, schedule_label
+
+    sampler = sampler_label(meta.get("sampler"))
+    schedule = schedule_label(meta.get("schedule_type"))
     lines.append(
-        f"Steps: {meta.get('steps')}, CFG scale: {meta.get('guidance')}, "
+        f"Steps: {meta.get('steps')}, "
+        + (f"Sampler: {sampler}, " if sampler else "")
+        + (f"Schedule type: {schedule}, " if schedule else "")
+        + f"CFG scale: {meta.get('guidance')}, "
         f"Seed: {meta.get('seed')}, Size: {meta.get('width')}x{meta.get('height')}, "
         f"Model: {meta.get('model', '')}"
     )

@@ -291,9 +291,11 @@ def test_an_unknown_start_request_id_is_still_refused_without_a_record(monkeypat
 
 
 def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
-    """stop_training/get_training_status return dicts; a refused start raises."""
-    import mcp_server
+    """The MCP tool forwards to the real training route under the agent's API key, so the
+    route's own guard refuses it, and the agent sees the 409 detail as a tool error."""
     import routes.training as training_routes
+
+    from .mcp_harness import route_studio, run_tool
 
     monkeypatch.setattr(
         training_routes,
@@ -307,26 +309,13 @@ def test_the_mcp_tool_surfaces_the_409_as_a_tool_error_not_a_dict(monkeypatch):
     )
     monkeypatch.setattr(training_routes, "_background_video_generation_active", lambda: False)
 
-    server = mcp_server.create_studio_mcp()
+    studio = route_studio(training_routes.router, "/api/train")
+    result, _studio = run_tool(monkeypatch, studio, "start_training", {"config": _config()})
 
-    # Public fastmcp API only: _call_tool_mcp was dropped in 4.0 and the pin is >=3.0.2.
-    async def run_tool_body():
-        tool = await server.get_tool("start_training")
-        assert tool is not None, "start_training must be registered on the studio MCP server"
-        return await tool.fn(config = _config())
-
-    with pytest.raises(HTTPException) as excinfo:
-        asyncio.run(run_tool_body())
-    assert excinfo.value.status_code == 409
-
-    from fastmcp.exceptions import ToolError
-
-    with pytest.raises(ToolError) as tool_error:
-        asyncio.run(server.call_tool("start_training", {"config": _config()}))
-
-    # mask_error_details defaults False, so the 409 detail reaches the client as tool error text.
-    assert "inference request is in progress" in str(tool_error.value)
-    assert "Error calling tool 'start_training'" in str(tool_error.value)
+    # An isError result with the route's detail, not a raised HTTPException or a status dict.
+    assert result["isError"] is True
+    assert "inference request is in progress" in result["content"][0]["text"]
+    assert "(HTTP 409)" in result["content"][0]["text"]
 
 
 def test_two_concurrent_mcp_starts_during_a_stream_both_refuse(monkeypatch):

@@ -278,6 +278,12 @@ from .diffusion_flow_shift import (
     pipe_sample_sigmas,
     sample_sigmas_for_steps,
 )
+from .diffusion_sampler import (
+    DEFAULT_SAMPLER,
+    apply_checkpoint_prediction_type,
+    build_scheduler,
+    sampler_options,
+)
 from .diffusion_single_file_converters import (
     CONVERTERS as _ORIGINAL_LAYOUT_CONVERTERS,
     load_original_layout_transformer,
@@ -6449,6 +6455,8 @@ class DiffusionBackend:
                                 pipe = pipeline_cls.from_single_file(
                                     single_file_path, **sf_pipe_kwargs
                                 )
+                                # The base repo's scheduler is epsilon; a v-pred checkpoint says so only in its header.
+                                apply_checkpoint_prediction_type(pipe, single_file_path, logger)
                         else:
                             sf_kwargs: dict[str, Any] = {
                                 "torch_dtype": dtype,
@@ -9194,6 +9202,8 @@ class DiffusionBackend:
         allow_oversized: bool = False,
         # None = on unless UNSLOTH_DIFFUSION_PREVIEW=0.
         live_preview: Optional[bool] = None,
+        sampler: Optional[str] = None,
+        schedule_type: Optional[str] = None,
     ) -> dict[str, Any]:
         import torch
         from PIL import Image
@@ -9220,6 +9230,7 @@ class DiffusionBackend:
                     raise DiffusionModelReplacedError(expected_load, loaded_id)
                 self._gen = _GenState(total_steps = steps)
             static_skip_pipe = None
+            restore_scheduler: Optional[tuple[Any, Any]] = None
             restore_vae: Optional[Callable[[], None]] = None
             restore_resident: Optional[Callable[[], None]] = None
             bg = None
@@ -9451,6 +9462,11 @@ class DiffusionBackend:
                     # Also match the dtype the pipeline itself hands the encoder.
                     self._make_vae_encode_dtype_safe(pipe)
 
+                swapped, resolved_schedule = build_scheduler(pipe.scheduler, sampler, schedule_type)
+                if swapped is not None:
+                    restore_scheduler = (pipe, pipe.scheduler)
+                    pipe.scheduler = swapped
+                # Pipelines vary in accepted kwargs, so gate every optional one on the signature.
                 call_params = inspect.signature(pipe.__call__).parameters
 
                 kwargs: dict[str, Any] = {
@@ -9960,6 +9976,10 @@ class DiffusionBackend:
                     "workflow": workflow,
                     "reference_resolution": ref_resolution,
                     "localized_edit": localized_edit.mode if localized_edit is not None else None,
+                    "sampler": sampler
+                    if swapped is not None and sampler != DEFAULT_SAMPLER
+                    else None,
+                    "schedule_type": resolved_schedule,
                 }
                 logger.info(
                     "diffusion.generated: %s",
@@ -9973,6 +9993,8 @@ class DiffusionBackend:
                 )
                 return result
             finally:
+                if restore_scheduler is not None:
+                    restore_scheduler[0].scheduler = restore_scheduler[1]
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 if static_skip_pipe is not None:
@@ -10244,6 +10266,7 @@ class DiffusionBackend:
             # Workflows the loaded family supports, so the UI can gate its tabs.
             "workflows": _family_workflows(state.family),
             "supports_negative_prompt": state.family.uses_negative_prompt,
+            "samplers": sampler_options(getattr(state.pipe, "scheduler", None)),
             "conditioning": conditioning_capabilities(
                 state.family, _family_workflows(state.family)
             ),

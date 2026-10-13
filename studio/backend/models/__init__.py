@@ -35,6 +35,7 @@ from .auth import (
 )
 from .export import (
     LoadCheckpointRequest,
+    ExportCancelRequest,
     ExportStatusResponse,
     ExportOperationResponse,
     ExportMergedModelRequest,
@@ -97,6 +98,7 @@ __all__ = [
     "ModelCheckpoints",
     "CheckpointListResponse",
     "LoadCheckpointRequest",
+    "ExportCancelRequest",
     "ExportStatusResponse",
     "ExportOperationResponse",
     "ExportMergedModelRequest",

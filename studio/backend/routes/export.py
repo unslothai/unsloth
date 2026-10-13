@@ -44,6 +44,7 @@ except ImportError:
 
 from models import (
     LoadCheckpointRequest,
+    ExportCancelRequest,
     ExportStatusResponse,
     ExportOperationResponse,
     ExportMergedModelRequest,
@@ -143,6 +144,7 @@ async def load_checkpoint(
             hf_token = export_hf_token,
             allow_ambient = allow_ambient,
             subject = current_subject,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -191,7 +193,9 @@ async def cleanup_export_memory(current_subject: str = Depends(get_current_subje
 
 
 @router.post("/cancel", response_model = ExportOperationResponse)
-async def cancel_export(current_subject: str = Depends(get_current_subject)):
+async def cancel_export(
+    body: Optional[ExportCancelRequest] = None, current_subject: str = Depends(get_current_subject)
+):
     """Cancel the in-flight export by terminating its worker subprocess.
 
     Only the export subprocess is killed; training and inference run in their
@@ -200,7 +204,11 @@ async def cancel_export(current_subject: str = Depends(get_current_subject)):
     require_job_owner(get_export_backend())
     try:
         backend = get_export_backend()
-        cancelled = await asyncio.to_thread(backend.cancel_export)
+        expected = body.expected_op_id if body is not None else None
+        if expected is None:
+            cancelled = await asyncio.to_thread(backend.cancel_export)
+        else:
+            cancelled = await asyncio.to_thread(backend.cancel_export, expected_op_id = expected)
         return ExportOperationResponse(
             success = True,
             message = "Export cancelled" if cancelled else "No active export to cancel",
@@ -411,6 +419,8 @@ async def export_merged_model(
             private = request.private,
             compressed_method = request.compressed_method,
             install_missing_dependencies = request.install_missing_dependencies,
+            expected_checkpoint = request.expected_checkpoint,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -470,6 +480,8 @@ async def export_base_model(
             ),
             private = request.private,
             base_model_id = request.base_model_id,
+            expected_checkpoint = request.expected_checkpoint,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -523,6 +535,8 @@ async def export_gguf(
             imatrix_file = imatrix_file,
             private = request.private,
             npu_q4nx = request.npu_q4nx,
+            expected_checkpoint = request.expected_checkpoint,
+            op_id = request.op_id,
         )
 
         if not success:
@@ -679,6 +693,8 @@ async def export_lora_adapter(
             gguf = request.gguf,
             gguf_outtype = request.gguf_outtype,
             adapter_format = request.adapter_format,
+            expected_checkpoint = request.expected_checkpoint,
+            op_id = request.op_id,
         )
 
         if not success:

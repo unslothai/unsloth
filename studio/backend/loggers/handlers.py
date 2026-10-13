@@ -140,8 +140,18 @@ _SELF_READ_PATHS = {
 }
 
 
+_CHAT_LIST_POST_READ_PATHS = frozenset({"/api/chat/sidebar/rows"})
+
+
 def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) -> bool:
-    """Suppress only signal-free 2xx GET polls and bootstrap pre-auth 401s; mutations always log."""
+    """GET-only, plus the listed POST reads. Suppress a 2xx poll line that carries no signal, plus a chat list
+    poll's transient pre-auth 401 (only in the bootstrap window before the first successful token refresh).
+    Mutations, real (post-refresh) auth failures, and all other errors always log. --verbose disables the whole
+    suppressor, except for the log viewer's own reads."""
+    if method == "POST" and path in _CHAT_LIST_POST_READ_PATHS:
+        if _VERBOSE_ACCESS_LOG:
+            return False
+        return 200 <= status_code < 300 or (pre_auth and status_code == 401)
     if method != "GET":
         return False
     if 200 <= status_code < 300 and path in _SELF_READ_PATHS:
