@@ -19332,10 +19332,14 @@ def _check_signal_escape_patterns(code: str):
                             target_other.add(name)
                         break
                     owner = parents[owner]
-        return roots, {
-            scope: (frozenset(imported), frozenset(other))
-            for scope, (imported, other) in bindings.items()
-        }
+        return (
+            roots,
+            {
+                scope: (frozenset(imported), frozenset(other))
+                for scope, (imported, other) in bindings.items()
+            },
+            declarations,
+        )
 
     # bindings that can still resolve to `urllib.request.Request`.
     _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
@@ -19567,6 +19571,9 @@ def _check_signal_escape_patterns(code: str):
             self.local_databases: "tuple[frozenset, frozenset] | None" = None
             self.local_database_bindings: "dict[int, tuple[frozenset, frozenset]] | None" = None
             self.local_database_scopes: "dict[int, ast.AST] | None" = None
+            self.local_database_declarations: (
+                "dict[int, tuple[frozenset, frozenset]] | None"
+            ) = None
             self.local_database_class_imports: "dict[int, dict[str, list[tuple[int, int]]]]" = {}
             # collect literals only when egress is possible to avoid three extra tree walks
             nodes = _tree_nodes(tree) if network_possible else ()
@@ -19967,13 +19974,21 @@ def _check_signal_escape_patterns(code: str):
                 (
                     self.local_database_scopes,
                     self.local_database_bindings,
+                    self.local_database_declarations,
                 ) = _local_database_scope_bindings(tree)
             assert self.local_database_bindings is not None
+            assert self.local_database_declarations is not None
             last = len(self.scope_stack) - 1
-            for index in range(last, -1, -1):
+            index = last
+            while index >= 0:
                 scope = self.scope_stack[index]
                 root = self.local_database_scopes[scope]
                 if isinstance(root, ast.ClassDef) and index != last:
+                    index -= 1
+                    continue
+                global_names, _ = self.local_database_declarations[scope]
+                if owner.id in global_names and index != 0:
+                    index = 0
                     continue
                 imported, other = self.local_database_bindings[scope]
                 if owner.id in other:
@@ -20004,8 +20019,10 @@ def _check_signal_escape_patterns(code: str):
                             where < call_position
                             for where in self.local_database_class_imports[scope].get(owner.id, ())
                         ):
+                            index -= 1
                             continue
                     return True
+                index -= 1
             return False
 
         def _is_shadowed(
