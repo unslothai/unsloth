@@ -436,7 +436,7 @@ type Input = { blocked: boolean; exclude: Bounds[] };
 
 const NO_INPUT: Input = { blocked: false, exclude: [] };
 
-function panelInput(rect: DOMRect): Input {
+function panelInput(rect: DOMRect, area: DOMRect | null): Input {
   // A menu away from the page owns it too, so a click on the page closes the menu, as anywhere else.
   if (overlays(BLOCKING_SELECTOR, rect).length > 0 || overlays(MENU_SELECTOR, null, HOVER_ONLY).length > 0) {
     return { blocked: true, exclude: [] };
@@ -448,6 +448,22 @@ function panelInput(rect: DOMRect): Input {
     height: Math.ceil(box.height) + 1,
     viewportWidth: window.innerWidth,
   }));
+  // The page view past the panel's edge, painted over by the app (holeClip): after a split drag it
+  // keeps its old frame until the resize lands, and input there belongs to the chat it sits under.
+  const frame = shownBounds ?? { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+  const left = Math.max(rect.left, area?.left ?? rect.left);
+  const right = Math.min(rect.right, area?.right ?? rect.right);
+  const strip = (from: number, to: number) =>
+    to - from >= 1 &&
+    exclude.push({
+      x: Math.floor(from),
+      y: frame.y,
+      width: Math.ceil(to - from),
+      height: frame.height,
+      viewportWidth: window.innerWidth,
+    });
+  strip(frame.x, left);
+  strip(right, frame.x + frame.width);
   return { blocked: false, exclude };
 }
 
@@ -628,7 +644,11 @@ function insetToasts(rect: DOMRect | null): void {
 
 function desiredView(): Desired {
   const page = pageRect();
-  if (layered) sendInput(page ? panelInput(page.rect) : NO_INPUT);
+  if (layered) {
+    const element = page ? placeholder(page.tab.id) : null;
+    const area = element ? (panelArea(element)?.getBoundingClientRect() ?? null) : null;
+    sendInput(page ? panelInput(page.rect, area) : NO_INPUT);
+  }
   else insetToasts(page?.rect ?? null);
   if (!page) return null;
   const { tab, entry, rect } = page;

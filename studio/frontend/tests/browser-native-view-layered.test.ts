@@ -172,6 +172,11 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
       assert.equal(section.vars.get("--native-hole-w"), `${1000 - left}px`);
     }
     assert.equal(calls.filter(({ command }) => command === "browser_view_show").length, showsBeforeDrag, "the page view keeps its frame");
+    // input over the covered strip goes to the app, not the page view still under it
+    assert.deepEqual(lastInput(), {
+      blocked: false,
+      exclude: [{ x: 500, y: 100, width: 250, height: 600, viewportWidth: 1000 }],
+    });
     Object.assign(placeholder, { closest: unpinned });
     await frame();
     assert.equal(section.vars.get("--native-hole-x"), "500px", "released: the whole page again");
