@@ -24,6 +24,7 @@ from .import_fixes import (
     fix_message_factory_issue,
     patch_torch_missing_attribute_error,
     check_triton_py_ssize_t_clean,
+    fix_triton_module_cache_python_key,
     check_transformers_prequantized_vlm_quant_state,
     fix_torch_check_is_size,
     fix_torchao_torch_symbol_skew,
@@ -100,6 +101,8 @@ propagate_torchao_fix_to_subprocesses()
 check_transformers_dependency_versions()
 # Same reason: nothing has failed yet, and a run that launches no Triton kernel never will.
 check_triton_py_ssize_t_clean()
+# Before triton's driver first compiles and caches cuda_utils (#2760).
+fix_triton_module_cache_python_key()
 check_fbgemm_gpu_version()
 torchvision_compatibility_check()
 # Ahead of `import unsloth_zoo` below, deliberately not down with the other import fixes: unsloth_zoo's
@@ -122,6 +125,7 @@ del propagate_torchao_fix_to_subprocesses
 del check_fbgemm_gpu_version
 del check_transformers_dependency_versions
 del check_triton_py_ssize_t_clean
+del fix_triton_module_cache_python_key
 del torchvision_compatibility_check
 del fix_diffusers_warnings
 del fix_huggingface_hub
@@ -726,6 +730,10 @@ from .import_fixes import patch_bitsandbytes_paged_optimizer_resume
 
 patch_bitsandbytes_paged_optimizer_resume()
 del patch_bitsandbytes_paged_optimizer_resume
+from .import_fixes import patch_bitsandbytes_optimizer_step_sync
+
+patch_bitsandbytes_optimizer_step_sync()
+del patch_bitsandbytes_optimizer_step_sync
 
 from .models import *
 from .models import __version__

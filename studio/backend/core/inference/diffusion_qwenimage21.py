@@ -7,18 +7,15 @@ Kill switch: ``UNSLOTH_DIFFUSION_Q21_FAST_STEP=0``."""
 
 from __future__ import annotations
 
-import ast
 import functools
-import hashlib
 import inspect
-import io
 import math
 import os
-import textwrap
 import threading
-import tokenize
 import weakref
 from typing import Any, Optional
+
+from .diffusion_autoopt.patches import source_digest
 
 FAST_STEP_ENV = "UNSLOTH_DIFFUSION_Q21_FAST_STEP"
 COMPACT_KV_ENV = "UNSLOTH_DIFFUSION_Q21_COMPACT_KV"
@@ -45,34 +42,8 @@ def fast_step_disabled() -> bool:
     return (os.environ.get(FAST_STEP_ENV) or "").strip().lower() in ("0", "off", "false", "no")
 
 
-def _digest(fn: Any) -> Optional[str]:
-    """Source text, not ``ast.dump``, whose output changes between Python versions."""
-    try:
-        src = textwrap.dedent(inspect.getsource(inspect.unwrap(fn)))
-        tree = ast.parse(src)
-        comments = [
-            tok.start
-            for tok in tokenize.generate_tokens(io.StringIO(src).readline)
-            if tok.type == tokenize.COMMENT
-        ]
-    except (OSError, TypeError, SyntaxError, ValueError, tokenize.TokenError):
-        return None
-    lines = src.splitlines()
-    for row, col in comments:
-        lines[row - 1] = lines[row - 1][:col]
-    for node in ast.walk(tree):
-        body = getattr(node, "body", None)
-        if (
-            isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            and body
-            and isinstance(body[0], ast.Expr)
-            and isinstance(getattr(body[0], "value", None), ast.Constant)
-            and isinstance(body[0].value.value, str)
-        ):
-            for row in range(body[0].lineno, body[0].end_lineno + 1):
-                lines[row - 1] = ""
-    text = "\n".join(line.rstrip() for line in lines if line.strip())
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
+# One fingerprint util for every patch module (diffusion_autoopt.patches); kept under this name for importers.
+_digest = source_digest
 
 
 def stock_digests(module: Any) -> dict[str, Optional[str]]:

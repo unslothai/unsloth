@@ -20,7 +20,33 @@ export type FrameCommand =
   | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
-  | { command: "annotateNumbers"; numbers: Array<[number, number]> };
+  | { command: "annotateNumbers"; numbers: Array<[number, number]> }
+  | { command: "agent"; id: string; op: Record<string, unknown>; code?: string };
+
+type AgentReply = { installed: boolean; result: Record<string, unknown> | null };
+const agentRequests = new Map<string, (reply: AgentReply | null) => void>();
+let agentCounter = 0;
+
+/** Runs a browser agent command in `tabId`'s page; null when the page didn't answer. */
+export function requestFrameAgent(
+  tabId: string,
+  op: Record<string, unknown>,
+  code?: string,
+  timeoutMs = 5000,
+): Promise<AgentReply | null> {
+  return new Promise((resolve) => {
+    // Not randomUUID: Studio on a LAN address is not a secure context.
+    const id = `a${++agentCounter}-${Math.random().toString(36).slice(2)}`;
+    const finish = (reply: AgentReply | null) => {
+      clearTimeout(timer);
+      agentRequests.delete(id);
+      resolve(reply);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    agentRequests.set(id, finish);
+    if (!sendFrameCommand(tabId, { command: "agent", id, op, ...(code ? { code } : {}) })) finish(null);
+  });
+}
 
 const annotateListeners = new Map<string, (event: AnnotateEvent) => void>();
 
@@ -80,6 +106,7 @@ export function PageFrame({
   html,
   url,
   base,
+  ownBase = false,
   refresh,
   title,
   tabId,
@@ -93,6 +120,7 @@ export function PageFrame({
   html: string;
   url: string | null;
   base: string | null;
+  ownBase?: boolean;
   refresh?: { delay: number; url: string } | null;
   title: string;
   onMessage: (message: FrameMessage) => void;
@@ -123,6 +151,10 @@ export function PageFrame({
       }
       if (message.type === "snapshot") {
         snapshotRequests.get(tabIdRef.current)?.(message.html);
+        return;
+      }
+      if (message.type === "agent") {
+        agentRequests.get(message.id)?.({ installed: message.installed, result: message.result });
         return;
       }
       if (isUserAction(message)) {
@@ -189,6 +221,7 @@ export function PageFrame({
             html,
             url,
             base,
+            ownBase,
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,

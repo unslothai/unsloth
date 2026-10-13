@@ -74,6 +74,8 @@ class LoadRequest(BaseModel):
     # Auto-switch only: the alias its owner-override lookup used, so the managed path-flag
     # check reads the same override row.
     _override_alias_id: Optional[str] = PrivateAttr(default = None)
+    # The catalog id a load by path should keep advertising (Open WebUI /models/load).
+    _advertised_id: Optional[str] = PrivateAttr(default = None)
     load_request_id: Optional[str] = Field(
         None,
         min_length = 1,
@@ -2900,6 +2902,16 @@ class ChatCompletionRequest(BaseModel):
             "for checkpoint compaction. Unset keeps the process default."
         ),
     )
+    compact_context: Optional[bool] = Field(
+        None,
+        description = (
+            "[x-unsloth] Compact now (Studio's /compact). A local GGUF or MLX chat starts "
+            "a checkpoint on this request even when it still fits: older turns are "
+            "archived and searchable, and the model keeps the newest turn plus standing "
+            "instructions until the chat outgrows the window again. Needs "
+            "context_overflow=truncate_oldest and a saved thread; otherwise ignored."
+        ),
+    )
     studio_tool_history: Optional[bool] = Field(
         None,
         description = (
@@ -2944,6 +2956,14 @@ class ChatCompletionRequest(BaseModel):
     thread_id: Optional[str] = Field(
         None,
         description = "[x-unsloth] Conversation ID for scoping stateful tool sessions (e.g. stdio MCP); stays per-thread where session_id may be shared project-wide.",
+    )
+    user_message_id: Optional[str] = Field(
+        None,
+        max_length = 256,
+        description = (
+            "[x-unsloth] The user message this turn answers. With thread_id it keys the chat's file "
+            "history, so /rewind can put back what this turn's tool calls changed."
+        ),
     )
     rag_scope: Optional[dict] = Field(
         None,
@@ -3411,6 +3431,14 @@ class ToolConfirmRequest(BaseModel):
     session_id: Optional[str] = None
     approval_id: Optional[str] = None
     decision: Literal["allow", "deny"] = "deny"
+
+
+class BrowserActionResultRequest(BaseModel):
+    """What the chat tab's browser did for one ``browser_action`` (``state.browser_actions``)."""
+
+    session_id: Optional[str] = None
+    action_id: str = Field(min_length = 1, max_length = 64)
+    result: dict[str, Any]
 
 
 class ToolApprovalStatusRequest(BaseModel):
@@ -4814,6 +4842,16 @@ class DiffusionGenerateRequest(BaseModel):
         "Omitted applies none and behaves exactly as before. Rejected with a clear message when "
         "the loaded model or its quantisation can't apply ControlNet.",
     )
+    sampler: Optional[Literal["default", "euler", "euler_a", "dpmpp_2m", "dpmpp_2m_sde"]] = Field(
+        None,
+        description = "Sampler for this generation, one of the loaded model's status `samplers` ids. "
+        "Omitted or 'default' keeps the model's shipped scheduler.",
+    )
+    schedule_type: Optional[Literal["automatic", "uniform", "karras", "exponential"]] = Field(
+        None,
+        description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
+        "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
+    )
 
     @field_validator("loras")
     @classmethod
@@ -4982,6 +5020,12 @@ class GalleryImage(BaseModel):
     localized_edit: Optional[str] = Field(
         None, description = "Localized edit convention used: annotate, paint or mask"
     )
+    sampler: Optional[str] = Field(
+        None, description = "Sampler id the image ran with; null = the model's shipped scheduler"
+    )
+    schedule_type: Optional[str] = Field(
+        None, description = "Schedule type the sampler ran with (resolved); null = the config's"
+    )
     created_at: float = Field(..., description = "Creation time (epoch seconds)")
     # Library state, not recipe: stored beside the PNG, so older files simply read as unset.
     pinned: bool = Field(False, description = "Pinned to the front of the gallery")
@@ -5107,6 +5151,12 @@ class DiffusionResolvedControl(BaseModel):
         description = 'The picked checkpoint that did NOT run, as "gguf:<file>", when a GGUF pick whose memory plan '
         "offloads loaded the hosted pre-quantized checkpoint (``artifact``) instead. Null otherwise.",
     )
+    steps: Optional[List[Dict[str, Any]]] = Field(
+        None,
+        description = "speed_mode only: the auto-optimizer's per-step audit for this load, in order, each "
+        '{"step", "status": "engaged" | "declined" | "failed", "reason"} (why a step did not engage, or the '
+        "error it failed with). Null on every other control.",
+    )
 
 
 class DiffusionDownloadPlanEntry(BaseModel):
@@ -5121,11 +5171,6 @@ class DiffusionDownloadPlanEntry(BaseModel):
     )
     bytes: int = Field(
         0, description = "Declared size of the files still missing from cache, 0 when unknown"
-    )
-    file_bytes: Dict[str, int] = Field(
-        default_factory = dict,
-        description = "Declared size of each file counted in ``bytes``. Empty from a planner that "
-        "does not break it down; the download panel then shows one bar.",
     )
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
@@ -5245,7 +5290,10 @@ class DiffusionStatusResponse(BaseModel):
         "max_output_side, max_output_pixels, reference_resolutions and localized_edit_modes. "
         "Null when nothing is loaded.",
     )
-    engine: Optional[str] = Field(None, description = "Active diffusion engine: diffusers | sd_cpp")
+    engine: Optional[str] = Field(
+        None,
+        description = "Active diffusion engine: diffusers | sd_cpp | mlx (opt-in, Apple Silicon)",
+    )
     native_mode: Optional[str] = Field(
         None,
         description = "Native sd.cpp execution mode: server (resident sd-server) | oneshot "
@@ -5254,6 +5302,11 @@ class DiffusionStatusResponse(BaseModel):
     fallback_reason: Optional[str] = Field(
         None,
         description = "Why diffusers was chosen over the native sd.cpp engine (null when none)",
+    )
+    mlx_fallback_reason: Optional[str] = Field(
+        None,
+        description = "Why UNSLOTH_DIFFUSION_MLX=1 did not get the MLX engine on the last load (null when "
+        "MLX was not requested or is in use)",
     )
     supports_lora: bool = Field(
         False,
@@ -5274,6 +5327,12 @@ class DiffusionStatusResponse(BaseModel):
         description = "Whether the loaded model applies a negative prompt on this engine "
         "(drives the Negative prompt field). False for FLUX and Ideogram 4 on diffusers, and "
         "for FLUX.1 / Kontext / FLUX.2-dev on the native engine.",
+    )
+    samplers: list[Dict[str, Any]] = Field(
+        default_factory = list,
+        description = "Samplers the loaded model can run, each {id, label, schedule_types}; the "
+        "first is 'default' (the shipped scheduler). Empty when there is no choice: flow-matching "
+        "models, the native and MLX engines, or nothing loaded.",
     )
     # declare provenance explicitly because Pydantic extra="ignore" would otherwise discard it.
     resolved: Optional[Dict[str, DiffusionResolvedControl]] = Field(
@@ -6141,21 +6200,23 @@ class VideoGenerateRequest(BaseModel):
     seed: Optional[int] = Field(
         None, ge = 0, le = 2**53 - 1, description = "Seed for reproducibility (random if omitted)"
     )
-    # Keyframe conditioning (MiniMax-H3). Bounded like the image backend's init_image so one
-    # request cannot buffer a multi-GB payload; ~32 MiB fits a full 4096px source.
+    # Bounded so one request cannot buffer a multi-GB payload; ~32 MiB fits a 4096px source.
     first_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
-        description = "Base64/data-URL image the clip starts from (image-to-video). It sets the "
-        "geometry and is stretched onto the canvas. Omit for text-to-video. Rejected by a "
-        "family that takes no keyframes.",
+        description = "Base64/data-URL image the clip starts from (image-to-video). With width "
+        "and height omitted it picks the canvas: MiniMax-H3 matches its aspect and stretches it "
+        "on; Wan2.2-TI2V-5B and LTX-2 take the resolution preset nearest its aspect and "
+        "centre-crop it on. Omit for text-to-video. Rejected by a family that takes no first "
+        "frame (status supports_first_frame).",
     )
     last_frame: Optional[str] = Field(
         None,
         max_length = 32 * 1024 * 1024,
-        description = "Base64/data-URL image the clip ends on. Valid on its own (generate up "
-        "TO a frame) or with first_frame (first-and-last-frame video), in which case it "
-        "follows the first and is centre cover-cropped onto the canvas.",
+        description = "Base64/data-URL image the clip ends on (MiniMax-H3 only, status "
+        "supports_last_frame). Valid on its own (generate up TO a frame) or with first_frame "
+        "(first-and-last-frame video), in which case it follows the first and is centre "
+        "cover-cropped onto the canvas.",
     )
 
     # Separate lists preserve the model's image, video, then audio packing order.
@@ -6407,6 +6468,12 @@ class VideoGenerationDefaults(BaseModel):
     canvas_max_pixels: Optional[int] = Field(
         None, description = "Area budget of a source-derived canvas, or null (see canvas_short_edge)"
     )
+    canvas_from_presets: bool = Field(
+        False,
+        description = "True when a first frame without width/height takes the resolution preset "
+        "nearest its aspect ratio (a declared image-to-video pipeline), instead of the "
+        "canvas_short_edge rule",
+    )
     flow_shift: Optional[float] = Field(
         None,
         description = "Released video-schedule sigma shift, or null when the family does not "
@@ -6505,6 +6572,17 @@ class VideoStatusResponse(BaseModel):
         False,
         description = "Whether the LOADED checkpoint takes first/last-frame conditioning images "
         "(gates the image-to-video controls)",
+    )
+    supports_first_frame: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes a first_frame (image-to-video): "
+        "MiniMax-H3 keyframes, or a family's declared image-to-video pipeline (Wan2.2-TI2V-5B, "
+        "LTX-2 / LTX-2.3) built over the loaded components",
+    )
+    supports_last_frame: bool = Field(
+        False,
+        description = "Whether the LOADED checkpoint takes a last_frame. Only MiniMax-H3's "
+        "keyframe partition does; the image-to-video pipelines condition on a first frame alone",
     )
     supports_references: bool = Field(
         False,

@@ -35,6 +35,7 @@ import {
   MCP_API_KEY_ENV,
   MCP_SHELL_AGENT_IDS,
   buildMcpSnippet,
+  hasMcpSnippet,
 } from "./mcp-agent-snippet";
 import { SettingsRow } from "./settings-row";
 import {
@@ -43,6 +44,7 @@ import {
 } from "./tunnel-preference";
 
 const ENV_FORCE = "UNSLOTH_STUDIO_ENABLE_MCP";
+const MCP_AGENTS = SUPPORTED_AGENTS.filter((agent) => hasMcpSnippet(agent.id));
 const OS_OPTIONS = [
   { os: "unix", labelKey: "settings.apiKeys.osUnix" },
   { os: "windows", labelKey: "settings.apiKeys.osWindows" },
@@ -71,9 +73,9 @@ export function McpAccessSection({
   const setStoredOs = useSettingsPanelPrefsStore((s) => s.setMcpOs);
 
   const agent =
-    storedAgent && SUPPORTED_AGENTS.some((a) => a.id === storedAgent)
+    storedAgent && MCP_AGENTS.some((a) => a.id === storedAgent)
       ? storedAgent
-      : SUPPORTED_AGENTS[0].id;
+      : MCP_AGENTS[0].id;
   // an explicit pick wins, since the agent may run on another machine.
   const os: ExampleOs =
     storedOs ?? (deviceType === "windows" ? "windows" : "unix");
@@ -197,7 +199,7 @@ export function McpAccessSection({
                     </SelectValue>
                   </SelectTrigger>
                   <SelectContent align="end">
-                    {SUPPORTED_AGENTS.map((option) => (
+                    {MCP_AGENTS.map((option) => (
                       <SelectItem key={option.id} value={option.id}>
                         <span className="flex min-w-0 items-center gap-2">
                           <AgentIcon {...option} />
