@@ -32,8 +32,10 @@ _ALGS = ("entropy", "maskgit_plus", "topk_margin")
 def dream_fast_supported(
     input_ids, attention_mask, mask_id, temperature, top_p, top_k, alg, alg_temp
 ):
+    # An empty prompt is left to the reference: its position 0 reads its own logits, not a shifted row.
     return (
-        not temperature
+        input_ids.shape[1] > 0
+        and not temperature
         and top_p is None
         and top_k is None
         and alg in _ALGS

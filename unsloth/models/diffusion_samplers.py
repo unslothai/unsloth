@@ -440,6 +440,7 @@ def _dream_sample(
     on_frame, check_stop = unused.get("on_frame"), unused.get("check_stop")
     progress = unused.get("progress")
     prompt_length = input_ids.shape[1]
+    fast_ran = False
     if dream_fast_supported(
         input_ids, attention_mask, mask_id, temperature, top_p, None, alg, alg_temp
     ):
@@ -457,10 +458,15 @@ def _dream_sample(
         # None: the model proposed its own mask token, which changes the reference's schedule.
         if out is not None:
             return out[:, prompt_length:]
+        fast_ran = True
     frames = _Frames(on_frame, check_stop, progress = progress)
 
     def hook(step, x, logits):
-        if step is not None:
+        if step is not None and fast_ran and step + 1 < steps:
+            # The fast pass already streamed steps 0..steps - 1: only the final canvas, so steps never go back.
+            if check_stop is not None:
+                check_stop()
+        elif step is not None:
             frames.step(
                 x, prompt_length, x.shape[1], 0, step + 1, steps, mask_id, step + 1 == steps
             )

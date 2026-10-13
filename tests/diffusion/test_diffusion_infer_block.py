@@ -446,3 +446,51 @@ def test_dream_fast_path_only_for_greedy_defaults():
     assert not dream_fast_supported(
         torch.tensor([[MASK_ID, 6]]), None, MASK_ID, 0.0, None, None, "entropy", 0.0
     )
+
+
+def test_dream_fast_path_rejects_an_empty_prompt():
+    empty = torch.zeros((1, 0), dtype = torch.long)
+    assert not dream_fast_supported(empty, None, MASK_ID, 0.0, None, None, "entropy", 0.0)
+
+
+def test_dream_fallback_frames_never_step_back():
+    # The fast pass proposes the mask token and defers to diffusion_generate after streaming its own frames.
+    from unsloth.models.diffusion_infer import make_progress
+    from unsloth.models.diffusion_samplers import _dream_sample
+
+    model = _ToyDream().eval()
+    with torch.no_grad():
+        model.lm_head.bias[MASK_ID] = 1e4
+
+    def diffusion_generate(
+        input_ids, *, max_new_tokens, steps, generation_tokens_hook_func, **kwargs
+    ):
+        x = generation_tokens_hook_func(
+            None, F.pad(input_ids, (0, max_new_tokens), value = MASK_ID), None
+        )
+        for i in range(steps):
+            x[:, input_ids.shape[1] + i] = 7
+            x = generation_tokens_hook_func(i, x, None)
+        return SimpleNamespace(sequences = x)
+
+    model.diffusion_generate = diffusion_generate
+    frames = []
+    progress = make_progress(frames.append, None, 0.0, MASK_ID, 4)
+    out = _dream_sample(
+        model,
+        None,
+        torch.randint(3, MASK_ID, (1, 5)),
+        None,
+        max_new_tokens = 4,
+        steps = 4,
+        block_length = None,
+        temperature = 0.0,
+        mask_id = MASK_ID,
+        eos_ids = [],
+        progress = progress,
+        check_stop = progress.check,
+    )
+    progress.close()
+    steps = [f["step"] for f in frames]
+    assert steps == sorted(steps) and steps.count(4) == 1 and steps[-1] == 4
+    assert frames[-1]["tokens"] == out[0].tolist() == [7, 7, 7, 7]
