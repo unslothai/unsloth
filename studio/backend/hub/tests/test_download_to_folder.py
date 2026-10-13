@@ -50,7 +50,6 @@ def test_download_dir_is_laid_out_like_a_models_folder(settings_store, tmp_path)
     assert paths.hub_cache == target.resolve() / "hub"
     assert paths.xet_cache == target.resolve() / "xet"
     assert (target / "hub").is_dir()
-    # The Models folder itself is untouched.
     assert hf_cache_settings.get_hf_cache_paths().source == "default"
 
 
@@ -184,7 +183,6 @@ def test_download_to_folder_routes_worker_and_registers_folder(
         assert calls["spawn"][0]["HF_HUB_CACHE"] == str(hub)
         assert calls["scan_folders"] == [str(target.resolve())]
 
-    # Registered once, so progress, delete and the cached checks see the folder.
     assert settings_store[hf_cache_settings.DOWNLOAD_HOMES_SETTING_KEY] == [str(target.resolve())]
     assert hub in hf_cache_settings.known_hf_hub_caches()
     assert hf_cache_settings.get_hf_cache_paths().source == "default"

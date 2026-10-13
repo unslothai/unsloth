@@ -30,7 +30,6 @@ function folderName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-/** Where new model downloads go: the Models folder, or a folder that is then added to Custom Folders. */
 export function DownloadLocationPicker() {
   const isOwner = useIsAccountOwner();
   const dir = useDownloadDir();
