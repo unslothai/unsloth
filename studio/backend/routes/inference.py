@@ -10302,6 +10302,7 @@ async def _maybe_auto_download_model(
     require_vision: bool = False,
     require_speech: bool = False,
     current_subject: Optional[str] = None,
+    rejection_prefix: str = "",
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
 
@@ -10335,17 +10336,20 @@ async def _maybe_auto_download_model(
         return
     if refusal is None:
         return
+    message = refusal.message
+    if refusal.code == "invalid_value":
+        message = f"{rejection_prefix}{message}"
     path = getattr(getattr(fastapi_request, "url", None), "path", None)
     detail = (
         error_body_for_path(
             path,
-            refusal.message,
+            message,
             status = refusal.status,
             code = refusal.code,
             param = "model",
         )
         if isinstance(path, str)
-        else refusal.message
+        else message
     )
     _record_refused_request(fastapi_request, requested_model, refusal, current_subject)
     raise HTTPException(
@@ -11260,6 +11264,7 @@ async def _maybe_auto_switch_model(
                     require_vision = gguf_requires_vision or require_audio_input,
                     require_speech = require_speech,
                     current_subject = current_subject,
+                    rejection_prefix = rejection_prefix,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
