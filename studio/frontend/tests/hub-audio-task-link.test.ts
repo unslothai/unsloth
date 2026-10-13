@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { hubAudioTaskSearch } from "../src/lib/hub-audio-task.ts";
+import { hubAudioTaskSearch, matchesHubAudioTask } from "../src/lib/hub-audio-task.ts";
 import { readSrc } from "./helpers/kit.ts";
 
 const routeSource = readSrc("app/routes/hub.tsx");
@@ -37,4 +37,19 @@ test("an audio page's Search Hub link narrows the Audio filter to its tasks", ()
     /task:\s*capabilityFilter === "audio" \? \(linkedAudioTask \?\? undefined\) : undefined,/,
   );
   assert.match(discoverSource, /channel,\s*filters,\s*task,\s*\}\);/);
+});
+
+test("a typed Hub search still keeps only the linked audio tasks", () => {
+  const asr = ["automatic-speech-recognition"] as const;
+  assert.equal(matchesHubAudioTask("automatic-speech-recognition", asr), true);
+  assert.equal(matchesHubAudioTask("text-to-speech", asr), false);
+  assert.equal(matchesHubAudioTask("text-to-audio", asr), false);
+  // An untagged repo stays, as the task listing keeps it.
+  assert.equal(matchesHubAudioTask(undefined, asr), true);
+  assert.equal(matchesHubAudioTask("text-to-speech", null), true);
+  assert.equal(matchesHubAudioTask("text-to-speech", []), true);
+  assert.match(
+    hubPageSource,
+    /deferredCapabilityFilter !== "audio" \|\|\s*matchesHubAudioTask\(row\.result\.pipelineTag, linkedAudioTask\)/,
+  );
 });

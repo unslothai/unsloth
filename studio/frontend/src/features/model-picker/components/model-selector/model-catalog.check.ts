@@ -535,14 +535,22 @@ assert.deepEqual(
   catalogToModelOptions(VIDEO_CATALOG, "unknown").map((o) => o.id),
   catalogToModelOptions(VIDEO_CATALOG).map((o) => o.id),
 );
-// Every GGUF row ends in the suffix, whoever published it.
+// Every GGUF row ends in the suffix, whoever published it. The llama.cpp Qwen3-ASR repos share
+// their name with a bundled folder, so only they carry a runtime tag.
+const LLAMA_CPP_TWINS = new Set([
+  "unslothai/Qwen3-ASR-0.6B-GGUF",
+  "unslothai/Qwen3-ASR-1.7B-GGUF",
+]);
 for (const catalog of [IMAGE_CATALOG, VIDEO_CATALOG, AUDIO_CATALOG]) {
   for (const group of catalog) {
     for (const artifact of group.artifacts) {
       if (artifact.format !== "gguf") continue;
       const row = curatedRowLabelFor(artifact.repoId, catalog);
       assert.ok(row?.name.endsWith("-GGUF"), `${artifact.repoId} row reads "${row?.name}"`);
-      assert.deepEqual(row?.tags, []);
+      assert.deepEqual(
+        row?.tags,
+        LLAMA_CPP_TWINS.has(artifact.repoId) ? ["llama.cpp"] : [],
+      );
     }
   }
 }

@@ -3,6 +3,7 @@
 
 import type { PipelineType } from "@huggingface/hub";
 import { useAppShellReadySignal } from "@/components/app-readiness";
+import { matchesHubAudioTask } from "@/lib/hub-audio-task";
 import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -1061,6 +1062,8 @@ export function ModelsPage() {
               effectiveDiscoverFormat,
             )) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
+        (deferredCapabilityFilter !== "audio" ||
+          matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
@@ -1077,6 +1080,7 @@ export function ModelsPage() {
     checkpointQuantFormats,
     diffusionQuantFormats,
     deferredCapabilityFilter,
+    linkedAudioTask,
     activeChannel,
     fitOnDeviceOnly,
   ]);
