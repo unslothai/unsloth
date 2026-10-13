@@ -69,6 +69,10 @@ def test_the_legacy_bin_beside_safetensors_is_not_counted_twice(cluster, tmp_pat
 @_POSIX_ONLY
 def test_only_the_current_hf_snapshot_is_sized(cluster, tmp_path, monkeypatch) -> None:
     """An updated repo keeps its superseded blobs; summing the tree counted them as weights."""
+    monkeypatch.delenv("HF_HUB_CACHE", raising = False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising = False)
+    monkeypatch.delenv("HF_HOME", raising = False)
+    monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
     monkeypatch.setenv("HOME", str(tmp_path))
     repo = tmp_path / ".cache" / "huggingface" / "hub" / "models--org--m"
     (repo / "refs").mkdir(parents = True)

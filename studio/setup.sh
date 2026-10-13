@@ -1268,6 +1268,11 @@ _backfill_local_rpc_server() {
     substep "the reused build has no $_target; building it in place..."
     # NCPU is assigned in the source-build section, which the reuse path never enters.
     _jobs="$(_llama_build_jobs)"
+    # A build configured before RPC support has no such target until it is reconfigured with it;
+    # cmake keeps every other cached option.
+    if ! grep -q '^GGML_RPC:BOOL=ON' "$_dir/build/CMakeCache.txt"; then
+        run_quiet_no_exit "enable GGML_RPC (existing install)" cmake -S "$_dir" -B "$_dir/build" -DGGML_RPC=ON -DGGML_RPC_RDMA=OFF || true
+    fi
     if run_quiet_no_exit "build $_target (existing install)" cmake --build "$_dir/build" --config Release --target "$_target" -j"$_jobs"; then
         if _has_local_rpc_server "$_dir"; then
             step "rpc-server" "built ($_target)"

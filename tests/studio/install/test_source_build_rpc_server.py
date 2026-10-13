@@ -499,6 +499,7 @@ def _upgrade_harness(tmp_path: Path, *, tree: Path, cmake_writes: str | None) ->
     else:
         cmake.write_text(
             "#!/bin/sh\n"
+            f'echo "$@" >> "{tmp_path}/cmake.log"\n'
             f'mkdir -p "{tree}/build/bin"\n'
             f'printf x > "{tree}/build/bin/{cmake_writes}"\n'
             f'chmod +x "{tree}/build/bin/{cmake_writes}"\n'
@@ -529,6 +530,7 @@ def _old_install(
     *,
     configured: bool = True,
     rpc_target: bool = True,
+    rpc_on: bool = True,
 ) -> Path:
     """An install from before the RPC server was built: llama-server and nothing else new."""
     tree = tmp_path / "llama.cpp"
@@ -537,7 +539,8 @@ def _old_install(
     server.write_text("binary", encoding = "utf-8")
     server.chmod(0o755)
     if configured:
-        (tree / "build" / "CMakeCache.txt").write_text("GGML_RPC:BOOL=ON\n", encoding = "utf-8")
+        cached = "GGML_RPC:BOOL=ON\n" if rpc_on else "GGML_CUDA:BOOL=ON\n"
+        (tree / "build" / "CMakeCache.txt").write_text(cached, encoding = "utf-8")
     if rpc_target:
         (tree / "tools" / "rpc").mkdir(parents = True)
         (tree / "tools" / "rpc" / "CMakeLists.txt").write_text(
@@ -555,6 +558,24 @@ def test_reusing_an_existing_install_backfills_the_rpc_server(tmp_path) -> None:
     out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
     assert "PRESENT=yes" in out, out
     assert "STEP rpc-server built (ggml-rpc-server)" in out, out
+
+
+@_POSIX_ONLY
+def test_a_build_configured_before_rpc_is_reconfigured_with_it_first(tmp_path) -> None:
+    """Without GGML_RPC in its cache the generated build system has no RPC target to build."""
+    tree = _old_install(tmp_path, rpc_on = False)
+    out = _upgrade_harness(tmp_path, tree = tree, cmake_writes = "ggml-rpc-server")
+    assert "PRESENT=yes" in out, out
+    calls = (tmp_path / "cmake.log").read_text(encoding = "utf-8").splitlines()
+    assert "-DGGML_RPC=ON" in calls[0] and "-DGGML_RPC_RDMA=OFF" in calls[0], calls
+    assert "--build" in calls[1], calls
+
+    # Already RPC-configured: straight to the build, no reconfigure.
+    (tmp_path / "cmake.log").unlink()
+    tree2 = _old_install(tmp_path / "second")
+    _upgrade_harness(tmp_path, tree = tree2, cmake_writes = "ggml-rpc-server")
+    calls = (tmp_path / "cmake.log").read_text(encoding = "utf-8").splitlines()
+    assert len(calls) == 1 and "--build" in calls[0], calls
 
 
 @_POSIX_ONLY

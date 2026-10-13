@@ -2272,11 +2272,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # Padded positions are not text.
         labels = ids.masked_fill(enc.attention_mask == 0, -100)
         reps = (need + len(ids) - 1) // len(ids)
-        ids_all = ids.repeat(reps, 1)[:need].to(device)
-        labels_all = labels.repeat(reps, 1)[:need].to(device)
+        ids_all = ids.repeat(reps, 1)[:need]
+        labels_all = labels.repeat(reps, 1)[:need]
     else:
-        ids_all = torch.randint(0, tok.vocab_size, (need, args.seq), device = device)
+        ids_all = torch.randint(0, tok.vocab_size, (need, args.seq))
         labels_all = ids_all
+    # Kept on the CPU and moved one step at a time: batch x steps x seq on every GPU grows with
+    # --steps, which `spark estimate` has no term for.
 
     posid = torch.arange(args.seq, device = device).unsqueeze(0).expand(mb_rows, -1)
     schedule = SCHEDULES[args.schedule] if not use_torch_pp else None
@@ -2288,8 +2290,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if use_torch_pp:
             # Upstream chunks the whole batch; that chunking must agree with `target`'s, and one
             # implementation owning both is how they stay agreed.
-            whole = ids_all[step * args.batch : (step + 1) * args.batch]
-            whole_labels = labels_all[step * args.batch : (step + 1) * args.batch]
+            whole = ids_all[step * args.batch : (step + 1) * args.batch].to(device)
+            whole_labels = labels_all[step * args.batch : (step + 1) * args.batch].to(device)
             losses = [] if is_loss_rank else None
             # Only the rank holding stage 0 may supply positional inputs; every other stage's input
             # is the wire.
@@ -2300,7 +2302,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             loss = (sum(losses) / len(losses)) if losses else None
         else:
             batches = [
-                ids_all[step * args.batch + m * mb_rows :][:mb_rows]
+                ids_all[step * args.batch + m * mb_rows :][:mb_rows].to(device)
                 for m in range(args.microbatches)
             ]
             if step == 0:
