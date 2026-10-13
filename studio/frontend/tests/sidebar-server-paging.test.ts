@@ -536,12 +536,15 @@ test("a server page is asked for only after a scroll, one page per scroll", () =
   );
   // only a scroll down arms: the focus nudge of a click on a row, or a scroll up, loads nothing
   assert.match(src, /const down = top > lastTop;\n\s*lastTop = top;\n\s*if \(!down\) return;/);
-  assert.match(src, /event\.type === "wheel" && \(event as WheelEvent\)\.deltaY <= 0\) return;/);
+  assert.match(src, /event\.type === "wheel" && \(event as WheelEvent\)\.deltaY <= 0\) \{\n\s*return;/);
+  // a touch arms only when the finger moves up (the list scrolls down), not on a swipe up or sideways
+  assert.match(src, /const down = touchY !== null && y !== undefined && y < touchY;\n\s*if \(y !== undefined\) touchY = y;\n\s*if \(!down\) return;/);
+  assert.match(src, /touchY = \(event as TouchEvent\)\.touches\[0\]\?\.clientY \?\? null;\n\s*return;/);
   // nor can the scroll a wheel notch makes just after its page is drawn
   assert.match(src, /fetchingRef\.current = false;\n\s*drawnAtRef\.current = performance\.now\(\);/);
   assert.match(
     src,
-    /const ARMING_EVENTS = \["scroll", "wheel", "touchmove"\] as const;/,
+    /const ARMING_EVENTS = \["scroll", "wheel", "touchstart", "touchmove"\] as const;/,
   );
 });
 
@@ -640,7 +643,9 @@ test("the last 20 opened chats and every running one load their rows, so row loo
 
 test("follow-ups that main got from the full list still happen with paged lists", () => {
   const src = readSrc("components/app-sidebar.tsx");
-  // a chord at the last loaded row of any paged list reads its next page
+  // a chord at the last loaded row of any paged list reads its next page; a click there does not
+  assert.match(src, /chordTargetRef\.current = item\?\.id \?\? null;\n\s*openChatItemById\(item\);/);
+  assert.equal(src.match(/if \(!activeThreadId \|\| chordTargetRef\.current !== activeThreadId\) return;/g)?.length, 2);
   assert.match(src, /if \(list\.rows\[list\.rows\.length - 1\]\?\.id === activeThreadId\) void list\.loadMore\(\);/);
   // "No chats yet" re-asks about archived chats on every history change
   assert.match(src, /window\.addEventListener\(CHAT_HISTORY_UPDATED_EVENT, probe\);/);
@@ -660,15 +665,19 @@ test("follow-ups that main got from the full list still happen with paged lists"
 test("\"No chats yet\" asks for any chat, archived or in an unloaded folder, before it shows", () => {
   const src = readSrc("components/app-sidebar.tsx");
   assert.match(src, /\[sidebarRowQuery\(\{\}\), sidebarRowQuery\(\{ archived: true \}\)\]/);
-  assert.match(src, /!hasUnlistedChats && \(/);
+  // and shows nothing until a probe has answered, so it never flashes while one is in flight
+  assert.match(src, /useState<boolean \| null>\(null\);/);
+  assert.match(src, /hasUnlistedChats === false && \(/);
   assert.match(src, /\.then\(\(\) => setSelectAllPending\(true\)\)\n\s*\.catch\(\(\) => undefined\);/);
 });
 
 test("a hidden or hand-ordered section still loads its newest chat, which orders Move to", () => {
   const src = readSrc("components/app-sidebar.tsx");
-  assert.match(src, /if \(hiddenSectionSet\.has\(section\.id\) \|\| section\.sort === "manual"\) \{\n\s*slots\[`latest:\$\{section\.id\}`\] = \{\n\s*initialLimit: 1,/);
+  assert.match(src, /\(hiddenSectionSet\.has\(section\.id\) \|\|\n\s*section\.sort === "manual" \|\|\n\s*ids\.length < members\.length\)/);
+  // pinned members count too, as main's full list counted them, though only unpinned ones are drawn
+  assert.match(src, /slots\[`latest:\$\{section\.id\}`\] = \{\n\s*initialLimit: 1,\n\s*query: sidebarRowQuery\(\{ includeIds: members \}\),\n\s*lookupOnly: true,/);
   const latest = src.indexOf("slots[`latest:${section.id}`]");
-  assert.ok(latest > 0 && latest < src.indexOf("if (hiddenSectionSet.has(section.id)) continue;"));
+  assert.ok(latest > 0 && latest < src.indexOf("if (ids.length === 0 || hiddenSectionSet.has(section.id)) continue;"));
   // it is never paged past that row
   assert.match(src, /name === "recents" \|\| name\.startsWith\("latest:"\) \|\| !list\.hasMore/);
 });
@@ -697,4 +706,10 @@ test("only folder rows on screen read their chats", () => {
 test("a list that shrank while a page was read frees its paging latch", () => {
   const src = readSrc("components/progressive-rows.tsx");
   assert.match(src, /if \(itemCountRef\.current <= fetchFromRef\.current\) fetchingRef\.current = false;/);
+});
+
+test("a running Compare pane keeps its opened pair row, which is opened by pair id", () => {
+  const src = readSrc("components/app-sidebar.tsx");
+  assert.match(src, /if \(item\.threadIds\?\.some\(\(id\) => running\.has\(id\)\)\) rows\.add\(item\.id\);/);
+  assert.match(src, /const running = new Set\(runningRowKey\.split\("\\n"\)\);\n\s*setOpenedChatIds\(\(opened\) => keepOpenedChats\(touchOpenedChat\(opened, slotActiveId\), running\)\);/);
 });

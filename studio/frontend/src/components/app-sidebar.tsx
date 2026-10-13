@@ -1520,11 +1520,6 @@ export function AppSidebar() {
       undefined)
     : undefined;
   const [openedChatIds, setOpenedChatIds] = useState<readonly string[]>([]);
-  useEffect(() => {
-    if (!slotActiveId || isAssistantLocalThreadId(slotActiveId)) return;
-    const running = new Set(runningThreadKey.split("\n"));
-    setOpenedChatIds((opened) => keepOpenedChats(touchOpenedChat(opened, slotActiveId), running));
-  }, [slotActiveId, runningThreadKey]);
   const chatRowSlots = useMemo(() => {
     const excludeIds = [...pinnedIds, ...sectionFiledChatIds];
     // sorted, so reopening a chat already in the set asks the server nothing
@@ -1566,19 +1561,23 @@ export function AppSidebar() {
         : null,
     };
     for (const section of customSections) {
-      const ids = sectionFiledChatIds.filter(
-        (id) => sectionByChatId[id] === section.id && !pinnedIdSet.has(id),
-      );
-      if (ids.length === 0) continue;
-      // the newest chat alone, so a hidden or hand-ordered section keeps its place in Move to
-      if (hiddenSectionSet.has(section.id) || section.sort === "manual") {
+      const members = sectionFiledChatIds.filter((id) => sectionByChatId[id] === section.id);
+      const ids = members.filter((id) => !pinnedIdSet.has(id));
+      // the newest member alone, pinned ones included as main counted them, so a section keeps its
+      // place in Move to when that chat is not among its drawn rows (hidden, hand-ordered, pinned)
+      if (
+        members.length > 0 &&
+        (hiddenSectionSet.has(section.id) ||
+          section.sort === "manual" ||
+          ids.length < members.length)
+      ) {
         slots[`latest:${section.id}`] = {
           initialLimit: 1,
-          query: sidebarRowQuery({ includeIds: ids }),
+          query: sidebarRowQuery({ includeIds: members }),
           lookupOnly: true,
         };
       }
-      if (hiddenSectionSet.has(section.id)) continue;
+      if (ids.length === 0 || hiddenSectionSet.has(section.id)) continue;
       slots[`section:${section.id}`] = {
         query: sidebarRowQuery({
           includeIds: ids,
@@ -1624,6 +1623,22 @@ export function AppSidebar() {
     chatRowSlots,
     !isStudioRoute,
   );
+  // a Compare row is opened by its pair id while its panes run by thread id, so a running pane
+  // keeps its row as well
+  const runningRowKey = useMemo(() => {
+    if (!runningThreadKey) return "";
+    const running = new Set(runningThreadKey.split("\n"));
+    const rows = new Set(running);
+    for (const item of allChatItems) {
+      if (item.threadIds?.some((id) => running.has(id))) rows.add(item.id);
+    }
+    return [...rows].sort().join("\n");
+  }, [runningThreadKey, allChatItems]);
+  useEffect(() => {
+    if (!slotActiveId || isAssistantLocalThreadId(slotActiveId)) return;
+    const running = new Set(runningRowKey.split("\n"));
+    setOpenedChatIds((opened) => keepOpenedChats(touchOpenedChat(opened, slotActiveId), running));
+  }, [slotActiveId, runningRowKey]);
   const recentsPages = chatRowLists.recents;
   // a failed first read is not an empty history: "No chats yet" waits for a read that worked
   const chatItemsLoaded = Boolean(recentsPages?.loaded && !recentsPages.error);
@@ -1632,7 +1647,8 @@ export function AppSidebar() {
     [chatRowLists],
   );
   // "No chats yet" also needs no archived chat and none in an unloaded folder
-  const [hasUnlistedChats, setHasUnlistedChats] = useState(false);
+  // null until a probe answers: main decided from one full read, so it never showed it early
+  const [hasUnlistedChats, setHasUnlistedChats] = useState<boolean | null>(null);
   const sidebarLooksEmpty = chatItemsLoaded && allChatItems.length === 0;
   useEffect(() => {
     if (!sidebarLooksEmpty) return;
@@ -2371,14 +2387,18 @@ export function AppSidebar() {
     attentionItemIds,
     activeThreadId,
   ]);
+  // the row a chord last stepped to: only a chord landing on a list's last loaded row reads the next
+  // page, so a click there leaves the list as it was, as on main
+  const chordTargetRef = useRef<string | null>(null);
   const lastRecentId = visibleRecentItems[visibleRecentItems.length - 1]?.id;
   const loadMoreRecents = recentsPages?.hasMore ? recentsPages.loadMore : undefined;
   useEffect(() => {
-    if (activeThreadId && activeThreadId === lastRecentId) void loadMoreRecents?.();
+    if (!activeThreadId || chordTargetRef.current !== activeThreadId) return;
+    if (activeThreadId === lastRecentId) void loadMoreRecents?.();
   }, [activeThreadId, lastRecentId, loadMoreRecents]);
   // the same for Pinned, sections and folders, so a chord can walk past their first page too
   useEffect(() => {
-    if (!activeThreadId) return;
+    if (!activeThreadId || chordTargetRef.current !== activeThreadId) return;
     for (const [name, list] of Object.entries(chatRowLists)) {
       if (name === "recents" || name.startsWith("latest:") || !list.hasMore) continue;
       if (list.rows[list.rows.length - 1]?.id === activeThreadId) void list.loadMore();
@@ -3913,8 +3933,11 @@ export function AppSidebar() {
     }
     fn(activeChatItem);
   };
-  const goToChat = (pick: (state: ChatNavigationState) => SidebarItem | null) =>
-    openChatItemById(pick(useChatNavigationStore.getState()));
+  const goToChat = (pick: (state: ChatNavigationState) => SidebarItem | null) => {
+    const item = pick(useChatNavigationStore.getState());
+    chordTargetRef.current = item?.id ?? null;
+    openChatItemById(item);
+  };
 
   // With rows selected these act on the selection, matching the context menu; otherwise on the open
   // chat. Acting on a selection clears it, so without this latch a second press would land on the
@@ -6284,7 +6307,7 @@ export function AppSidebar() {
                   </SidebarMenu>
                   {/* existing project or archived threads can leave Recents empty. */}
                   {sidebarLooksEmpty &&
-                    !hasUnlistedChats && (
+                    hasUnlistedChats === false && (
                       <p className="px-3 py-2 text-xs text-muted-foreground">
                         {t("shell.navigation.noChatsYet")}
                       </p>

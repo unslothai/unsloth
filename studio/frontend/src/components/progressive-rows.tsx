@@ -18,7 +18,7 @@ const FETCH_SETTLE_MS = 250;
 const GESTURE_TAIL_MS = 200;
 
 // one server page per user scroll, so a tall window or the preload margin never drains pages
-const ARMING_EVENTS = ["scroll", "wheel", "touchmove"] as const;
+const ARMING_EVENTS = ["scroll", "wheel", "touchstart", "touchmove"] as const;
 
 /** preserves mounted rows when the list grows because `render` remains stable. */
 const Row = memo(function Row<T>({
@@ -102,14 +102,27 @@ export function ProgressiveRows<T extends { id: string }>({
     );
     observer.observe(sentinel);
     let lastTop = root?.scrollTop ?? 0;
+    let touchY: number | null = null;
     const onArm = (event: Event) => {
+      if (event.type === "touchstart") {
+        touchY = (event as TouchEvent).touches[0]?.clientY ?? null;
+        return;
+      }
       // only a scroll down asks for more: a click's focus nudge or a scroll up does not
       if (event.type === "scroll") {
         const top = root?.scrollTop ?? 0;
         const down = top > lastTop;
         lastTop = top;
         if (!down) return;
-      } else if (event.type === "wheel" && (event as WheelEvent).deltaY <= 0) return;
+      } else if (event.type === "wheel" && (event as WheelEvent).deltaY <= 0) {
+        return;
+      } else if (event.type === "touchmove") {
+        // a finger moving up scrolls the list down; a swipe up the list or sideways does not
+        const y = (event as TouchEvent).touches[0]?.clientY;
+        const down = touchY !== null && y !== undefined && y < touchY;
+        if (y !== undefined) touchY = y;
+        if (!down) return;
+      }
       // a scroll during a fetch, or the wheel's own scroll just after it, arms nothing
       if (fetchingRef.current || performance.now() - drawnAtRef.current < GESTURE_TAIL_MS) return;
       armedRef.current = true;
