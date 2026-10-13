@@ -742,11 +742,11 @@ def rocm_version() -> tuple[int, int] | None:
 def rocm_loads_quantization(quant) -> bool:
     """Whether vLLM's ROCm build loads a checkpoint with this ``quantization_config``. Measured on
     gfx1151 with vLLM 0.30.0: AWQ and integer compressed-tensors (W8A8, W4A16) load; GPTQ, FP8 and
-    NVFP4 checkpoints fail at engine start. AutoRound runs through the same GPTQ kernels."""
+    NVFP4 checkpoints fail at engine start."""
     if not isinstance(quant, dict) or not quant:
         return True
     method = str(quant.get("quant_method") or "").strip().lower()
-    if method in ("gptq", "auto-round", "fp8", "modelopt", "modelopt_fp4"):
+    if method in ("gptq", "fp8", "modelopt", "modelopt_fp4"):
         return False
     if method != "compressed-tensors":
         return True

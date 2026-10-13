@@ -100,6 +100,12 @@ AUTOROUND = {
 }
 
 
+def test_autoround_is_not_refused_for_an_explicit_vllm_load_on_amd():
+    # Only the offer skips ROCm (unmeasured there); a user who picks vLLM still gets to try.
+    from core.inference.engine_install import rocm_loads_quantization
+    assert rocm_loads_quantization(AUTOROUND["quantization_config"]) is True
+
+
 def test_autoround_is_offered_vllm_only():
     # #7997: vLLM maps auto-round onto its inc method; SGLang has not been run on it.
     assert offer(AUTOROUND) == {"quantization": "auto-round", "engines": ["vllm"]}

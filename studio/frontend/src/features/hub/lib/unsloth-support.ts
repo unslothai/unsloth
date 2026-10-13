@@ -137,7 +137,7 @@ const VLLM_QUANT_METHODS: ReadonlySet<string> = new Set([
   "gptq",
   "auto-round",
 ]);
-// vLLM's ROCm build refuses these (rocm_loads_quantization): AutoRound runs through its GPTQ kernels.
+// Not offered on ROCm vLLM, matching /validate: AutoRound is unmeasured there.
 const VLLM_ROCM_REFUSED_QUANT_METHODS: ReadonlySet<string> = new Set(["auto-round"]);
 const VLLM_FORMAT_KEYS: ReadonlySet<string> = new Set(["awq", "gptq"]);
 // Chat only: vLLM refuses audio (_reject_unsupported_managed_kind); untagged repos count as chat.
