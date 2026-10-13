@@ -29,13 +29,13 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
-_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
+_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
 _QUERY_AUTHORIZATION = re.compile(
     rf"""(?ix)(?<![A-Za-z0-9])authorization\\?["'”’]?[ \t]*[:=][ \t]*\\?["'“‘]?[\w!#$%&'*+.^`|~-]+[ \t]+
     (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
 )
 _AUTH_PARAM_PAIR = re.compile(
-    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*("(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
+    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,]+)"""
 )
 # Digest parameters that describe the challenge rather than prove identity.
 _PUBLIC_AUTH_PARAMS = frozenset(
@@ -178,7 +178,7 @@ def _sanitize_public_query(query: str) -> str:
             ]
         )
         for value in values:
-            value = re.sub(r"\\(.)", r"\1", value.strip("\"'“”‘’"))
+            value = re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))
             exact.add(value)
             credentials.update(piece for piece in [value, *value.split()] if len(piece) >= 8)
     plain = [
