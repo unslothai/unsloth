@@ -53,3 +53,12 @@ test("a typed Hub search still keeps only the linked audio tasks", () => {
     /deferredCapabilityFilter !== "audio" \|\|\s*matchesHubAudioTask\(row\.result\.pipelineTag, linkedAudioTask\)/,
   );
 });
+
+test("Separate's Search Hub link narrows to audio-to-audio, not the speak picker's tasks", () => {
+  // The speak tasks (text-to-speech, text-to-audio) filtered out every separation model.
+  const audioPage = readSrc("features/audio/audio-page.tsx");
+  const selector = readSrc("features/model-picker/components/model-selector.tsx");
+  assert.match(audioPage, /hubTask=\{pageWorkflow === "separate" \? "audio-to-audio" : undefined\}/);
+  assert.match(selector, /const linkedTask = hubTask \?\? task;[\s\S]{0,200}?audioTask:\s*hubCapability === "audio" && linkedTask \? \[linkedTask\]\.flat\(\)/);
+  assert.deepEqual(hubAudioTaskSearch("audio-to-audio", "audio"), ["audio-to-audio"]);
+});

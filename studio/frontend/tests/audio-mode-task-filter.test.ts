@@ -60,7 +60,7 @@ test("Search Hub from an audio picker carries the page's pipeline tasks", () => 
   );
   assert.match(
     selector,
-    /search: \{\s*tab: "discover",\s*capability: hubCapability,\s*audioTask: hubCapability === "audio" && task \? \[task\]\.flat\(\) : undefined,\s*\}/,
+    /search: \{\s*tab: "discover",\s*capability: hubCapability,\s*audioTask:\s*hubCapability === "audio" && linkedTask \? \[linkedTask\]\.flat\(\) : undefined,\s*\}/,
   );
   // The picker task is a tag or a tag list; the hub param is always a list.
   const asParam = (task: string | readonly string[]) => [task].flat();

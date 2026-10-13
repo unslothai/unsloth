@@ -149,6 +149,8 @@ interface ModelSelectorProps {
   rowFilter?: ModelPickerRowFilter;
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
   hubCapability?: CapabilityKey;
+  /** Tasks the Search Hub link narrows the Audio filter to, when the page's runs differ from `task`. */
+  hubTask?: HfTaskFilter;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
@@ -760,6 +762,7 @@ export function ModelSelector({
   opaqueKind,
   rowFilter,
   hubCapability,
+  hubTask,
   placeholder,
   loaded,
   loadedCount,
@@ -904,12 +907,14 @@ export function ModelSelector({
 
   function handleBrowseHub() {
     setOpen(false);
+    const linkedTask = hubTask ?? task;
     void navigate({
       to: "/hub",
       search: {
         tab: "discover",
         capability: hubCapability,
-        audioTask: hubCapability === "audio" && task ? [task].flat() : undefined,
+        audioTask:
+          hubCapability === "audio" && linkedTask ? [linkedTask].flat() : undefined,
       },
     });
   }

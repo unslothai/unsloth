@@ -1678,6 +1678,8 @@ export function AudioPage({
               className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
               triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
               task={HUB_TASKS_BY_MODE[mode]}
+              // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
+              hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
               catalog={AUDIO_CATALOG}
               // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
               // audio repo loads here.
