@@ -974,10 +974,13 @@ def test_provision_copies_the_bundle_to_the_same_path(monkeypatch, tmp_path) -> 
         stderr = ""
 
     monkeypatch.setattr(sc.subprocess, "run", lambda cmd, **k: ran.append(cmd) or _Ok())
+    # A home that does not contain tmp_path: on Windows runners the temp dir is under the profile.
+    monkeypatch.setattr(sc.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+    bundle = tmp_path / "elsewhere" / "llama.cpp"
     res = sc.provision_peer("192.168.200.13", dry_run = True)
-    assert ("llama.cpp prebuilt", str(tmp_path / "elsewhere" / "llama.cpp")) in res["copied"]
-    bundle_cmd = next(c for c in ran if c[-2].startswith(str(tmp_path / "elsewhere" / "llama.cpp")))
-    assert bundle_cmd[-1].endswith(":" + str(tmp_path / "elsewhere" / "llama.cpp") + "/")
+    assert ("llama.cpp prebuilt", bundle.as_posix()) in res["copied"]
+    bundle_cmd = next(c for c in ran if c[-2].startswith(str(bundle)))
+    assert bundle_cmd[-1].endswith(":" + bundle.as_posix() + "/")
     # This asserted `mkdir -p` was present, which pinned a defect rather than a contract:
     # --rsync-path runs on the PEER before any transfer, so --dry-run never suppressed it and the
     # dry run created the very directories it was meant to only report.
