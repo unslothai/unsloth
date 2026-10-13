@@ -2171,7 +2171,10 @@ def _resolve_model(
             status = _model_status(base, key, loaded_match["id"])
         except Exception:
             status = {}
-        if not _load_settings_differ(status, load, overrides):
+        # The load route is the only retry of a pending audio probe, so that state must not skip it.
+        if not status.get("audio_probe_pending") and not _load_settings_differ(
+            status, load, overrides
+        ):
             match = loaded_match
     if requested and match is None:
         load_requested = True

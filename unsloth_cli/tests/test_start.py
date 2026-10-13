@@ -5023,7 +5023,8 @@ def test_resolve_model_kept_model_quant_and_context_warns_of_the_reload(monkeypa
     ]
 
 
-def test_resolve_model_kept_model_with_a_pending_retry_still_loads(monkeypatch):
+@pytest.mark.parametrize("pending", ["spec_probe_retry_pending", "audio_probe_pending"])
+def test_resolve_model_kept_model_with_a_pending_retry_still_loads(monkeypatch, pending):
     models = [
         {"id": "unsloth/Qwen3-4B-GGUF", "loaded": True},
         {"id": "unsloth/Qwen3-1.7B-GGUF", "loaded": True},
@@ -5031,7 +5032,7 @@ def test_resolve_model_kept_model_with_a_pending_retry_still_loads(monkeypatch):
     payloads = []
 
     def status(url):
-        return {**_kept_model_status(url), "spec_probe_retry_pending": True}
+        return {**_kept_model_status(url), pending: True}
 
     def load(base, key, model, load, payload):
         payloads.append(payload)
