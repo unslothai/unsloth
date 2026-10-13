@@ -50,10 +50,8 @@ FLASH_IMPL_STATE = {"active": None, "reason": None, "verdicts": {}, "logged": se
 _HOPPER_AUTO_MIN_HIDDEN = 2048
 _logger = logging.getLogger(__name__)
 
-# B200, torch 2.14, FA4 4.0.0b34: FA4 costs ~0.1 ms more host time per forward call than torch's bundled flash,
-# more than its kernel saves on short documents: packed LoRA SFT on alpaca rows (~170 tokens per document) trains
-# 8 to 11% slower. Longer documents keep FA4's 2 to 3x faster kernels; the Unsloth path only sends rows averaging
-# <= 1024 tokens per document to varlen (attention_dispatch._VARLEN_CUDNN_MAX_MEAN_LEN) anyway.
+# B200/FA4: ~0.1 ms extra host time per call makes short-document packed SFT 8-11% slower than bundled flash.
+# 1024 matches attention_dispatch._VARLEN_CUDNN_MAX_MEAN_LEN.
 _BLACKWELL_AUTO_MIN_MEAN_DOC_LEN = 1024
 
 
@@ -404,9 +402,7 @@ def _probe_error(impl, cases, activate, restore):
 
 def maybe_activate_flash_attention_impl(model = None, mean_document_length = None):
     """Returns the active impl or None. Never call while a backward is pending.
-
-    mean_document_length: mean tokens per packed document in the training data (or a callable returning it, only
-    called under auto on sm100), None when unknown."""
+    mean_document_length: float, lazy callable (sm100 auto only) or None if unknown."""
     requested = _requested()
     registry = _registry()
     if requested is None or registry is None:
@@ -501,12 +497,10 @@ def deactivate_flash_attention_impl():
 
 
 def _sampled_rows(dataset, indices, key):
-    """Stored values; a dataset with a custom transform is unknown: its rows can differ from what is stored,
-    and running the transform early would advance its random state."""
+    # Custom transform = unknown: rows may differ from storage and running it early advances its RNG.
     format = getattr(dataset, "format", None) or {}
     if format.get("type") == "custom":
         return None
-    # Only what the format shows the collator (set_format(columns = ...)), read unformatted.
     columns = set(dataset.column_names)
     if format.get("columns") is not None and not format.get("output_all_columns", False):
         columns &= set(format["columns"])
@@ -517,8 +511,7 @@ def _sampled_rows(dataset, indices, key):
 
 
 def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
-    """Mean tokens per document over rows spread across the whole dataset (TRL's BFD packing puts the longest
-    documents first): the packed lengths column, else that row's ``input_ids`` as one document, like the collators."""
+    # Rows spread across the dataset: TRL BFD puts the longest documents first.
     try:
         total = len(dataset)
         if total <= 0:
@@ -538,7 +531,6 @@ def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
                 per_document = [len(ids)]
             lengths.extend(int(x) for x in per_document)
         if not lengths:
-            # enable_sample_packing: no lengths at all means one document per input_ids row.
             lengths = [len(row["input_ids"]) for row in sample if row.get("input_ids") is not None]
     except Exception:
         return None
