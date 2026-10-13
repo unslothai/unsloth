@@ -529,7 +529,8 @@ def _remember_device_listing(binary: Optional[str], text: Optional[str]) -> None
     if not binary:
         return
     if text is None:
-        _LAST_DEVICE_LISTING.pop(binary, None)
+        # A transiently unreadable re-probe keeps the last good listing: readers compare (size, mtime_ns), so a
+        # listing of a binary that has since changed is never served.
         return
     _LAST_DEVICE_LISTING[binary] = (_binary_stat_identity(binary), text)
 

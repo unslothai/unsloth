@@ -1416,10 +1416,13 @@ def _h3_offloaded_render_flags(
     *,
     render_resident: bool,
     memory_mode: Optional[str],
+    reuse_live_server: bool = True,
 ) -> list[str]:
     """The flags an H3 native render runs with once Auto chose resident or offloaded. An offloaded Auto render is
     re-fitted on live RAM, swap and GTT readings (file reads only), so pressure since the load is caught and memory
-    freed since lifts a refusal; a live offloaded sd-server already holds its weights and keeps its own flags."""
+    freed since lifts a refusal. ``reuse_live_server``: a live offloaded sd-server the render will reuse already
+    holds its weights and keeps its own flags; pass False before launching any new process (the one-shot sd-cli),
+    which releases that server and fits afresh."""
     from .sd_cpp_args import device_backend_flags
     from .video_minimax_h3 import (
         H3_NATIVE_RENDER_RUNNING_HINT,
@@ -1443,12 +1446,13 @@ def _h3_offloaded_render_flags(
         )
     slot = getattr(runtime, "server_slot", None)
     live = slot.alive_signature() if slot is not None else None
-    if live is not None and "--offload-to-cpu" in live[2]:
+    if reuse_live_server and live is not None and "--offload-to-cpu" in live[2]:
         # A reading now would count the server's own placed weights against it.
         return list(live[2])
     released = "none"
     if live is not None:
-        # A resident server: slot.get() replaces it on the signature change anyway, so free it before the reading.
+        # A resident server (slot.get() replaces it on the signature change anyway), or any server before a new
+        # one-shot process: free it before the reading.
         released = _release_h3_server_slot(slot, "an offloaded render needs its memory")
     fit = h3_native_live_fit(inputs, "auto")
     if fit.refusal:
@@ -11138,6 +11142,15 @@ class VideoBackend:
                             env = dict(runtime.env),
                         )
                         if generated is None:
+                            # A new process (reference video / audio, no server, or a server that could not serve):
+                            # fit it on live readings, never on flags a live server was shortcut to.
+                            render_flags = _h3_offloaded_render_flags(
+                                runtime,
+                                render_flags,
+                                render_resident = render_resident,
+                                memory_mode = state.memory_mode,
+                                reuse_live_server = False,
+                            )
                             generated = runtime.engine.generate_video(
                                 runtime.files,
                                 video_params,

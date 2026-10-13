@@ -4596,6 +4596,42 @@ def test_an_offloaded_render_behind_a_busy_resident_server_says_a_render_is_runn
     assert slot.released
 
 
+def test_a_new_process_never_reuses_a_live_servers_unchecked_flags(monkeypatch):
+    """Reference video / audio (or a server that could not serve) runs a fresh sd-cli: the live offloaded server is
+    released and the launch is fitted on live readings."""
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal
+
+    running = ("--offload-to-cpu", "--diffusion-fa")
+    state = {"alive": True}
+    slot = types.SimpleNamespace(
+        alive_signature = lambda: ("bin", (), running, ()) if state["alive"] else None,
+        release = lambda reason: state.update(alive = False) or True,
+        is_alive = lambda: state["alive"],
+    )
+    _live_gtt(monkeypatch, 0)
+    assert _h3_offloaded_render_flags(
+        _render_runtime(slot = slot), list(running), render_resident = False, memory_mode = "auto"
+    ) == list(running)
+    with pytest.raises(H3NativeMemoryRefusal):
+        _h3_offloaded_render_flags(
+            _render_runtime(slot = slot),
+            list(running),
+            render_resident = False,
+            memory_mode = "auto",
+            reuse_live_server = False,
+        )
+    assert state["alive"] is False
+
+
+def test_the_one_shot_sd_cli_launch_is_fitted_afresh():
+    from core.inference import video as video_mod
+
+    source = inspect.getsource(video_mod.VideoBackend._generate_h3_native)
+    fallback = source[source.index("if generated is None:") :]
+    assert fallback.index("reuse_live_server = False") < fallback.index("runtime.engine.generate_video(")
+
+
 def test_a_resident_render_is_never_re_fitted(monkeypatch):
     from core.inference.video import _h3_offloaded_render_flags
     from core.inference import video_minimax_h3

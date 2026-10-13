@@ -492,21 +492,36 @@ def _fit_unknown_use(flags, mode, *, gtt):
     )
 
 
-def test_unknown_gtt_use_trusts_only_the_smaller_set_in_auto():
-    """A 64 GiB pool whose use cannot be read: the 33 GiB full set would fit the total, but only the encoder-on-CPU
-    set is trusted."""
-    fit = _fit_unknown_use(AUTO, "auto", gtt = 64 * GIB)
-    assert fit.flags == AUTO + ("--clip-on-cpu",) and "could not be read" in fit.note
-
-
-def test_unknown_gtt_use_refuses_an_explicit_mode_that_keeps_the_encoder_on_the_gpu():
-    fit = _fit_unknown_use(AUTO, "balanced", gtt = 64 * GIB)
-    assert "does not report" in fit.refusal and "Low VRAM" in fit.refusal
+@pytest.mark.parametrize("mode", ["auto", "balanced", "fast"])
+def test_unknown_gtt_use_fails_closed_unless_the_user_chose_low_vram(mode):
+    """A 24 GiB pool whose use cannot be read may have 12 GiB taken elsewhere: neither the 33 GiB set nor the 16 GiB
+    one is placed on it automatically. Low VRAM is the user's explicit choice and still runs."""
+    fit = _fit_unknown_use(AUTO, mode, gtt = 24 * GIB)
+    assert fit.flags == AUTO
+    assert "could not read how much" in fit.refusal and "Low VRAM" in fit.refusal
 
 
 def test_unknown_gtt_use_leaves_low_vram_alone_and_refuses_past_the_total():
     assert _fit_unknown_use(LOW_VRAM, "low_vram", gtt = 64 * GIB).flags == LOW_VRAM
     assert "ttm.pages_limit" in _fit_unknown_use(LOW_VRAM, "low_vram", gtt = 12 * GIB).refusal
+
+
+def test_a_transiently_unreadable_listing_keeps_the_last_good_one(tmp_path, monkeypatch):
+    import os
+
+    binary = tmp_path / "sd-cli"
+    binary.write_bytes(b"x")
+    monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
+    sd_cpp_backend._remember_device_listing(str(binary), "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n")
+    sd_cpp_backend._remember_device_listing(str(binary), None)
+    assert sd_cpp_backend.sd_cpp_listed_device(str(binary), probe = False) == (
+        "vulkan",
+        "AMD Radeon RX 7800 XT (RADV NAVI32)",
+    )
+    # A replaced binary is never answered from the old listing.
+    binary.write_bytes(b"replaced build")
+    os.utime(binary, ns = (1, 1))
+    assert sd_cpp_backend.sd_cpp_listed_device(str(binary), probe = False) == (None, None)
 
 
 def test_native_host_ram_does_not_add_back_what_studio_holds(monkeypatch):

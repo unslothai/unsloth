@@ -1530,8 +1530,9 @@ def h3_native_memory_fit(
     def gtt_ok(te_on_cpu: bool) -> bool:
         if budget is None:
             return True
-        # Unreadable GTT use: the reading is the whole pool, so only the smaller (encoder on the CPU) set is trusted.
-        return pinned(te_on_cpu) <= budget and (te_on_cpu or not pinned_used_unknown)
+        # Unreadable GTT use: the reading is the whole pool, an upper bound. Only a set the user chose to keep small
+        # (Low VRAM, encoder already on the CPU) is admitted against it; nothing is placed on it automatically.
+        return pinned(te_on_cpu) <= budget and (te_given or not pinned_used_unknown)
 
     def ok(te_on_cpu: bool) -> bool:
         return host_problem(te_on_cpu) is None and gtt_ok(te_on_cpu)
@@ -1540,19 +1541,25 @@ def h3_native_memory_fit(
         return H3NativeFit(flags)
     ram = _gib(int(host_ram_bytes)) if host_ram_bytes is not None else "unknown"
     limit = _gib(int(pinned_free_bytes)) if vulkan_gtt else None
-    if not te_given and ok(True):
-        if not gtt_ok(False) and pinned_used_unknown and pinned(False) <= budget:
-            note = (
-                f"text encoder on the CPU: this card's GTT use could not be read, so only the smaller GPU-mapped "
-                f"set is trusted ({_gib(pinned(True))} of a {limit} pool)"
-            )
+    if (
+        pinned_used_unknown
+        and budget is not None
+        and not te_given
+        and host_problem(True) is None
+        and pinned(True) <= budget
+    ):
+        # Fail closed in every mode that keeps the encoder on the GPU, Auto included: how much of the pool is free
+        # cannot be known, so the choice to run against it is the user's (Low VRAM).
+        return H3NativeFit(
+            flags,
             refusal = (
-                f"MiniMax-H3 GGUF cannot run in this memory mode on the Vulkan build: this card does not report "
-                f"how much of its GPU-accessible system memory (GTT) is in use, so the {_gib(pinned(False))} this "
-                f"mode maps cannot be checked. Set Memory mode to Auto or Low VRAM, which runs the text encoder on "
-                f"the CPU ({_gib(pinned(True))})."
-            )
-        elif not gtt_ok(False):
+                f"MiniMax-H3 GGUF could not read how much of this card's GPU-accessible system memory (GTT) is in "
+                f"use, so it cannot check that the {_gib(pinned(False))} it maps here fits the {limit} pool. Set "
+                f"Memory mode to Low VRAM, which runs the text encoder on the CPU ({_gib(pinned(True))})."
+            ),
+        )
+    if not te_given and ok(True):
+        if not gtt_ok(False):
             note = (
                 f"text encoder on the CPU: the Vulkan build keeps GPU-run weights in GPU-mapped system memory "
                 f"(GTT), {_gib(pinned(False))} here against {limit} free"
