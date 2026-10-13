@@ -41610,7 +41610,7 @@ async def anthropic_count_tokens(
     _count_preserve = _reasoning_args["preserve_thinking"]
     _resolve_preserve = getattr(llama_backend, "_replay_preserve_thinking", None)
     if _resolve_preserve is not None and not _count_client_tools:
-        # As generation resolves it; off the loop since the first use probes the template.
+        # Off the loop: first use probes the template.
         _count_preserve = await asyncio.to_thread(
             _resolve_preserve,
             _count_preserve,

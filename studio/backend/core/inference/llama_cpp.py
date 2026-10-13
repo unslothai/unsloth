@@ -41558,9 +41558,7 @@ class LlamaCppBackend:
                         _before_final_fit,
                         branch_messages = _extend_live_branch(_before_final_fit),
                         thread_id = thread_id,
-                        # Inline, not tool: this final-answer request is sent with
-                        # tool_choice "none", so a forged tool role answers a call the
-                        # model could not have made and breaks strict templates.
+                        # Inline: under tool_choice "none" a forged tool role breaks strict templates.
                         style = "inline",
                         # Checkpoint mode recalls once, on the turn that reset; rolling has no
                         # such key and keeps recalling on every turn that evicted anything.

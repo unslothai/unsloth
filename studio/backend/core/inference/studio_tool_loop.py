@@ -1417,7 +1417,7 @@ async def stream_with_studio_tools(
     resumes_partial = run.continue_final_message
     # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
-    # preserve the request branch for tools that search conversation history, as the archive stored it.
+    # preserve the request branch for tools that search conversation history.
     request_branch = list(restored)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
