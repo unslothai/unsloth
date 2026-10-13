@@ -385,6 +385,31 @@ def test_ancestor_end_tag_that_does_not_pop_a_skipped_element_keeps_it_skipped(h
     assert "After" in out
 
 
+@pytest.mark.parametrize("main_content", [False, True])
+def test_matching_skipped_root_cannot_close_across_select_scope(main_content):
+    html = "<datalist><select><option>Hidden</datalist>Menu text</select></datalist><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
+@pytest.mark.parametrize("main_content", [False, True])
+def test_dialog_skip_does_not_recover_through_implicitly_closed_paragraph(main_content):
+    html = "<p>intro<dialog>Hidden</p>Menu text</dialog><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "intro" in out and "After" in out
+
+
+@pytest.mark.parametrize("table_tag", ["caption", "tbody", "td", "tfoot", "th", "thead", "tr"])
+@pytest.mark.parametrize("main_content", [False, True])
+def test_table_only_tag_outside_table_cannot_recover_skipped_content(table_tag, main_content):
+    html = f"<{table_tag}><nav>Hidden</{table_tag}>Menu text</nav><p>After</p>"
+    out = html_to_markdown(html, main_content = main_content)
+    assert "Hidden" not in out and "Menu text" not in out
+    assert "After" in out
+
+
 @pytest.mark.parametrize(
     "html",
     [

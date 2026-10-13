@@ -129,6 +129,7 @@ _P_CLOSING_TAGS = frozenset(
         "aside",
         "blockquote",
         "details",
+        "dialog",
         "div",
         "dl",
         "fieldset",
@@ -264,6 +265,7 @@ _LIST_ITEM_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"ol", "ul"}
 _BUTTON_SCOPE_BARRIERS = _SCOPE_BARRIERS | {"button"}
 _TABLE_SCOPE_BARRIERS = frozenset({"html", "table", "template"})
 _TABLE_END_TAGS = frozenset({"caption", "table", "tbody", "td", "tfoot", "th", "thead", "tr"})
+_TABLE_CONTEXT_END_TAGS = _TABLE_END_TAGS - {"table"}
 _INDEXED_OPEN_TAGS = _SKIP_RECOVERY_END_TAGS | _SCOPE_BARRIERS
 # repeated span cells use half the 16k fetch limit to leave room for text after the table
 _MAX_SPAN_CHARS = 8_000
@@ -1392,6 +1394,8 @@ class _MarkdownRenderer(HTMLParser):
         title_button = (
             tag == "button" and bool(self.title_buttons) and self.getpos() in self.title_buttons
         )
+        if tag in _TABLE_CONTEXT_END_TAGS and not self._in_table:
+            return
 
         if self._skip_tags:
             if tag not in _VOID_TAGS:
@@ -1559,7 +1563,7 @@ class _MarkdownRenderer(HTMLParser):
             # template is a scope boundary, so end tags outside it are ignored
             if at and (template < 0 or at[-1] >= template):
                 i = at[-1]
-                if tag in _SKIP_RECOVERY_END_TAGS and not self._skip_target_in_scope(tag, i):
+                if not self._skip_target_in_scope(tag, i):
                     return
                 for position, name in enumerate(self._skip_tags[i:], start = i):
                     self._skip_at[name].pop()
