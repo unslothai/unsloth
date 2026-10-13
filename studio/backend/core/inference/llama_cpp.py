@@ -469,7 +469,6 @@ from core.inference.tool_call_parser import (
     MAX_ACT_REPROMPTS as _MAX_REPROMPTS,
     NUDGE_TOOL_CALLS_STATUS as _NUDGE_TOOL_CALLS_STATUS,
     REPROMPT_MAX_CHARS as _REPROMPT_MAX_CHARS,
-    admission_room_refused_message as _admission_room_refused_message,
     is_reprompt_repeat as _is_reprompt_repeat,
     is_reprompt_restatement as _is_reprompt_restatement,
     is_short_intent_without_action as _is_short_intent_without_action,
@@ -38971,12 +38970,11 @@ class LlamaCppBackend:
                 k: v for k, v in (timings or {}).items() if not k.startswith("predicted")
             }
 
-        def _admission_refused_ending(shown: str):
-            """Preserve partial output and end with `length` so Studio offers Continue.
-            Show the refusal explanation only when there is no output."""
+        def _admission_refused_ending():
+            """Preserve partial output and end with `length` so Studio offers Continue. The
+            explanation travels in the give-up event, never as assistant text: a resume replays
+            the visible text as the partial, so a notice there would be continued as the answer."""
             yield {"type": "status", "text": ""}
-            if not (shown or "").strip():
-                yield {"type": "content", "text": _admission_room_refused_message()}
             yield _preempt_gave_up_event(self._effective_context_length, max_tokens)
             _meta = _build_metadata_event(
                 _last_attempt.get("usage"), _last_attempt.get("timings"), "length"
@@ -39550,7 +39548,7 @@ class LlamaCppBackend:
                         "partial answer instead of sending it",
                         iteration,
                     )
-                    yield from _admission_refused_ending(_last_emitted)
+                    yield from _admission_refused_ending()
                     return
                 except LlamaAdmissionCancelled:
                     return  # a Stop during the wait ends the turn as a Stop always does
@@ -43075,7 +43073,7 @@ class LlamaCppBackend:
                         "Final answer: no cache room for this attempt; keeping the "
                         "partial answer instead of sending it"
                     )
-                    yield from _admission_refused_ending(_last_emitted)
+                    yield from _admission_refused_ending()
                     return
                 except LlamaAdmissionCancelled:
                     return

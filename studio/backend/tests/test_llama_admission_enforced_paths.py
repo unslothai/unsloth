@@ -485,7 +485,10 @@ class TestARefusedReCostDoesNotAuthoriseTheRequest:
 
         assert payloads == [], "a refused re-cost still sent the larger prompt"
         assert _finish_reasons(events) == ["length"]
-        assert _shown(events).strip()
+        assert not _shown(events).strip(), (
+            "the explanation went out as assistant text, so Continue resumes the notice: "
+            f"{_shown(events)!r}"
+        )
         notices = [e for e in events if e.get("type") == "context_truncated"]
         assert [n.get("reason") for n in notices] == [PREEMPT_GAVE_UP_REASON]
         assert notices[0]["fits"] is True and notices[0]["dropped_messages"] == 0
