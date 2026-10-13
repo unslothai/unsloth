@@ -323,7 +323,11 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
     new_repo, new_tag = _installed_identity()
     reload_hint = " Reload your model to use it." if unloaded else ""
     # Repo and tag together: switching UNSLOTH_AUDIO_CPP_REPO can replace a runtime with another repo's same tag.
-    if (new_repo, new_tag) == before:
+    # A runtime that is already the offered release (a setup run got there first) is not a kept old tree.
+    if (new_repo, new_tag) == before and (new_repo, new_tag) != (
+        phase.get("repo"),
+        phase.get("to_tag"),
+    ):
         # Exit 0 also means the release lookup could not answer and the intact tree was kept.
         message = (
             f"audio.cpp could not be updated right now, so the existing {new_tag} "

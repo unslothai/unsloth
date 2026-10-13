@@ -505,6 +505,14 @@ def test_a_same_tag_from_another_repo_is_reported_as_updated(managed, run_env, m
     assert result["message"] == f"Updated audio.cpp to {_LATEST}."
 
 
+def test_a_runtime_already_at_the_offered_release_is_not_reported_as_kept(managed, run_env):
+    # A setup run installed the offered release between the plan and the in-app install.
+    _write_record(managed.tree, release_tag = _LATEST)
+    run_env.installer(new_tag = _LATEST)
+    result = aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert result["message"] == f"Updated audio.cpp to {_LATEST}."
+
+
 def test_a_kept_tree_still_asks_for_a_reload_after_an_unload(run_env, monkeypatch):
     monkeypatch.setattr(aupd, "_unload_audio_cpp_models", lambda: True)
     run_env.installer(new_tag = "v0.9.0-unsloth.1")
