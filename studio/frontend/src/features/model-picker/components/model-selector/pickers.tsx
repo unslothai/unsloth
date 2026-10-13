@@ -1910,13 +1910,15 @@ function GgufVariantExpander({
 }) {
   const pinnedKeys = usePinnedModelsStore((s) => s.pinned);
   const togglePinnedQuant = usePinnedModelsStore((s) => s.togglePinned);
-  const onUpdateVariant = variantActions?.onUpdate;
+  const [variantsAreGguf, setVariantsAreGguf] = useState(true);
+  // Update and delete act on GGUF files; an MLX precision folder has neither.
+  const onUpdateVariant = variantsAreGguf ? variantActions?.onUpdate : undefined;
   const updateVariantTitle =
     variantActions?.updateTitle ?? "Update cached model?";
   const renderUpdateVariantDescription =
     variantActions?.renderUpdateDescription;
   const updateDisabled = variantActions?.updateDisabled ?? false;
-  const onDeleteVariant = variantActions?.onDelete;
+  const onDeleteVariant = variantsAreGguf ? variantActions?.onDelete : undefined;
   const deleteVariantTitle =
     variantActions?.deleteTitle ?? "Delete cached model?";
   const renderDeleteVariantDescription =
@@ -1935,7 +1937,6 @@ function GgufVariantExpander({
   // Whether the LISTING resolved this identifier off disk. Not derivable from loadId/cachePath,
   // which a downloaded hub model also carries.
   const [resolvedLocally, setResolvedLocally] = useState(false);
-  const [variantsAreGguf, setVariantsAreGguf] = useState(true);
   const localSource = loadId || cachePath || null;
   const showAllQuantizations = useChatRuntimeStore(
     (s) => s.showAllQuantizations,

@@ -66,6 +66,7 @@ from hub.utils.gguf_plan import (
     build_gguf_variant_plans,
     is_main_gguf_variant_path,
     plan_from_expected_files,
+    precision_folder_plans,
 )
 from utils.paths.path_utils import is_appledouble_metadata
 
@@ -217,7 +218,7 @@ def _variant_requirement_may_be_forgotten() -> bool:
 
 
 def _build_gguf_variant_requirements(siblings: list) -> dict[str, _GgufVariantRequirement]:
-    return build_gguf_variant_plans(siblings)
+    return build_gguf_variant_plans(siblings) or precision_folder_plans(siblings)
 
 
 def gguf_variant_requirements(

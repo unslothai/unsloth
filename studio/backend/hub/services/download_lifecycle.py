@@ -146,17 +146,13 @@ def largest_download_file_bytes(
     )
     if not siblings:
         return None
-    from hub.utils.gguf_plan import (
-        build_gguf_variant_plans,
-        expected_file_from_sibling,
-        plan_for_variant,
-    )
+    from hub.utils.gguf_plan import expected_file_from_sibling, resolve_variant_plan
 
     wanted = {f for f in (files or []) if f}
     if wanted:
         chosen = [s for s in siblings if getattr(s, "rfilename", None) in wanted]
     elif variant:
-        plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
+        plan = resolve_variant_plan(siblings, variant)
         if plan is None:
             # An unresolvable variant is the worker's error to report, not a transport verdict.
             return None

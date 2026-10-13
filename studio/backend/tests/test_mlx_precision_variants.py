@@ -340,3 +340,86 @@ def test_a_downloaded_precision_folder_loads_offline(monkeypatch, tmp_path):
     from hub.utils.mlx_variants import download_precision_folder
 
     assert download_precision_folder(_REPO, "6-bit", None) == str(folder)
+
+
+def test_the_download_manager_plans_a_precision_folder(monkeypatch):
+    # The chat picker and the Hub stage an uncached pick through the download manager, which only
+    # knew GGUF variants and exited with "No GGUF shards matching variant '6-bit'".
+    from hub.workers import hf_download
+
+    monkeypatch.setattr(
+        hf_download,
+        "_model_info_with_retry",
+        lambda repo_id, token: SimpleNamespace(siblings = _siblings()),
+    )
+    plan = hf_download._gguf_variant_target_plan(_REPO, "6-bit", None)
+    assert plan is not None
+    assert all(name.startswith("6-bit/") for name in plan.target_filenames)
+    assert plan.download_size_bytes == 23 * GB + 103_000
+    assert hf_download._gguf_variant_target_plan(_REPO, "mtp", None) is None
+
+
+def test_a_gguf_variant_keeps_its_own_plan():
+    from hub.utils.gguf_plan import resolve_variant_plan
+
+    siblings = _siblings({"m-Q4_K_M.gguf": 5 * GB, "m-Q8_0.gguf": 9 * GB, **_folder("4-bit", [GB])})
+    plan = resolve_variant_plan(siblings, "Q4_K_M")
+    assert plan.target_filenames == ("m-Q4_K_M.gguf",)
+
+
+def test_a_failed_folder_probe_never_falls_back_to_the_root(monkeypatch):
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    from hub.utils import mlx_variants
+
+    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
+
+    def _raise(error):
+        def _download(*args, **kwargs):
+            raise error
+
+        return _download
+
+    # A Hub that answered "no such file": the repo has no such folder.
+    from huggingface_hub.errors import EntryNotFoundError
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _raise(EntryNotFoundError("404")))
+    assert mlx_variants.precision_folder_config_dir(_REPO, "6-bit", None) is None
+    # Offline or unreachable: loading the root instead would serve another precision.
+    for error in (LocalEntryNotFoundError("offline"), ConnectionError("reset")):
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _raise(error))
+        with pytest.raises(type(error)):
+            mlx_variants.precision_folder_config_dir(_REPO, "6-bit", None)
+
+
+def test_a_rejected_token_still_downloads_a_public_folder(monkeypatch, tmp_path):
+    from hub.utils import mlx_variants
+
+    tokens = []
+
+    def _snapshot_download(
+        repo_id,
+        allow_patterns = None,
+        token = None,
+        cache_dir = None,
+    ):
+        tokens.append(token)
+        if token == "expired":
+            raise PermissionError("401 Client Error: Unauthorized")
+        (tmp_path / "6-bit").mkdir(exist_ok = True)
+        (tmp_path / "6-bit" / "config.json").write_text("{}")
+        return str(tmp_path)
+
+    def _retry(read, hf_token):
+        try:
+            return read(hf_token)
+        except PermissionError:
+            return read(False)
+
+    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
+    monkeypatch.setattr("hub.utils.hf_tokens.call_with_anonymous_retry", _retry)
+    assert mlx_variants.download_precision_folder(_REPO, "6-bit", "expired") == str(
+        tmp_path / "6-bit"
+    )
+    assert tokens == ["expired", False]

@@ -47,6 +47,8 @@ def precision_folder_config_dir(
     from hub.utils.hf_tokens import call_with_anonymous_retry
     from utils.hf_cache_settings import active_hf_hub_cache
 
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
     try:
         config_path = call_with_anonymous_retry(
             lambda token: hf_hub_download(
@@ -57,7 +59,11 @@ def precision_folder_config_dir(
             ),
             hf_token,
         )
-    except Exception:
+    except EntryNotFoundError as exc:
+        # Only a Hub that answered "no such file" means no folder. Any other failure must not
+        # quietly load the root, which is a different precision.
+        if isinstance(exc, LocalEntryNotFoundError):
+            raise
         return None
     return Path(config_path).parent
 
@@ -69,13 +75,17 @@ def download_precision_folder(repo_id: str, folder: str, hf_token: Optional[str]
         return str(cached)
     from huggingface_hub import snapshot_download
 
+    from hub.utils.hf_tokens import call_with_anonymous_retry
     from utils.hf_cache_settings import active_hf_hub_cache
 
-    snapshot = snapshot_download(
-        repo_id,
-        allow_patterns = [f"{folder}/*"],
-        token = hf_token or None,
-        cache_dir = active_hf_hub_cache(),
+    snapshot = call_with_anonymous_retry(
+        lambda token: snapshot_download(
+            repo_id,
+            allow_patterns = [f"{folder}/*"],
+            token = token,
+            cache_dir = active_hf_hub_cache(),
+        ),
+        hf_token,
     )
     path = os.path.join(snapshot, folder)
     if not os.path.isfile(os.path.join(path, "config.json")):
