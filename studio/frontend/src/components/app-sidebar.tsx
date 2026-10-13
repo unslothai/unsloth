@@ -1651,9 +1651,12 @@ export function AppSidebar() {
   const [hasUnlistedChats, setHasUnlistedChats] = useState<boolean | null>(null);
   const sidebarLooksEmpty = chatItemsLoaded && allChatItems.length === 0;
   useEffect(() => {
-    if (!sidebarLooksEmpty) return;
-    // an answer from an earlier empty spell says nothing about this one (a chat made, then archived)
-    setHasUnlistedChats(null);
+    // cleared while the sidebar has rows, so an empty spell starts unknown from its first paint: an
+    // answer from an earlier spell says nothing about this one (a chat made, then archived)
+    if (!sidebarLooksEmpty) {
+      setHasUnlistedChats(null);
+      return;
+    }
     let cancelled = false;
     let latest = 0;
     // re-asked on every history change: archiving or deleting can flip it while the list stays empty

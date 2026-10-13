@@ -871,9 +871,10 @@ test("Pinned and custom sections mount every row they have, so navigation sees o
   assert.match(src, /items=\{rows\}\n\s*pageSize=\{SIDEBAR_PAGE_SIZE\}\n\s*mountAll\n/);
 });
 
-test("entering the empty state forgets the last empty spell's answer before probing", () => {
+test("an empty spell starts with no answer from an earlier one, from its first paint", () => {
   const src = readSrc("components/app-sidebar.tsx");
-  assert.match(src, /if \(!sidebarLooksEmpty\) return;\n(?:\s*\/\/.*\n)?\s*setHasUnlistedChats\(null\);/);
+  // cleared while rows show, so the first paint of a new empty spell already reads unknown
+  assert.match(src, /if \(!sidebarLooksEmpty\) \{\n\s*setHasUnlistedChats\(null\);\n\s*return;\n\s*\}/);
 });
 
 test("a whole-list read goes on past a page emptied by chats deleted here", async () => {
