@@ -45,6 +45,7 @@ from typing import Any, Iterator, Optional
 from . import diffusion_compile_config as compile_config
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
 from . import diffusion_gguf_compile as gguf_compile
+from .diffusion_autoopt import targets as _targets
 
 SPEED_OFF = "off"
 SPEED_EAGER = "eager"
@@ -936,7 +937,7 @@ def _video_vae_half_decode(pipe: Any, target: Any, family: Any, logger: Any) -> 
 # U-Net denoisers ship no ``_repeated_blocks``, so the regional compile cannot reach them; these classes get a
 # WHOLE-module STATIC compile. SDXL (B200, 30 steps / 1024px): 26.9 vs 45.9 ms/step, 1.61x end-to-end at LPIPS 0.034.
 # Static means a recompile per (height, width, batch).
-_UNET_WHOLE_COMPILE: frozenset[str] = frozenset({"UNet2DConditionModel"})
+_UNET_WHOLE_COMPILE: frozenset[str] = _targets.UNET_WHOLE_COMPILE
 
 
 def _denoiser_unet(pipe: Any) -> Any:
@@ -968,12 +969,7 @@ def _denoiser_dits(pipe: Any) -> list:
     families carry (Ideogram's ``unconditional_transformer``, an MoE ``transformer_2``). Speed /
     attention optims must reach ALL of them (mirroring the offload path), else the second DiT runs
     eager / native while status over-reports the optim as engaged."""
-    dits: list = []
-    for attr in ("transformer", "transformer_2", "unconditional_transformer"):
-        m = getattr(pipe, attr, None)
-        if m is not None and m not in dits:
-            dits.append(m)
-    return dits
+    return _targets.denoiser_dits(pipe)
 
 
 def int8_gemm_live(pipe: Any, optims: Any) -> list:
@@ -1155,12 +1151,14 @@ def _compile_repeated_blocks(
             dit_kwargs["dynamic"] = False
         # Read by auto_dynamic_active: the generalising recompile on a new text length must reach the bundle.
         transformer._unsloth_auto_dynamic = dit_kwargs["dynamic"] is None
-        if type(transformer).__name__ == "QwenImage21Transformer2DModel":
-            try:
-                from .diffusion_qwenimage21_rope import install as install_real_rope
-                install_real_rope(logger)
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "qwen-image-2.1 real rope", exc)
+        # Registered per-denoiser patches (diffusion_autoopt.patches), class gated, before the int8 swaps.
+        _install_compile_patches(
+            "pre_int8",
+            transformer,
+            logger,
+            offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
         # Before the compile: the regional compile traces whatever forward the blocks carry at the first call.
         try:
             from .diffusion_int8_fused import install as install_int8_fused
@@ -1184,31 +1182,15 @@ def _compile_repeated_blocks(
                 )
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "int8 fused-dequant gemm", exc)
-        if type(transformer).__name__ == "QwenImageTransformer2DModel":
-            try:
-                from .diffusion_qwenimage_rope import install as install_qwen_real_rope
-                install_qwen_real_rope(transformer, logger)
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "qwen-image real rope", exc)
-        if type(transformer).__name__ == "ZImageTransformer2DModel":
-            try:
-                from .diffusion_zimage_fused import install as install_zimage_fused
-                install_zimage_fused(transformer, logger, offload_active = offload_active)
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "z-image fused attention", exc)
-        if type(transformer).__name__ == "QwenImage21Transformer2DModel":
-            # after the int8 GEMM swap, whose leftovers it reads
-            try:
-                from .diffusion_qwenimage21_fused import install as install_q21_fused
-                install_q21_fused(
-                    transformer,
-                    logger,
-                    offload_active = offload_active
-                    if denoiser_offloaded is None
-                    else bool(denoiser_offloaded),
-                )
-            except Exception as exc:  # noqa: BLE001 - optimisation only
-                _warn(logger, "qwen-image-2.1 convrot sharing", exc)
+        # Registered per-denoiser patches after the int8 GEMM swap (Qwen RoPE, Z-Image fused attention, Q2.1 ConvRot
+        # sharing, which reads the swap's leftovers).
+        _install_compile_patches(
+            "pre_compile",
+            transformer,
+            logger,
+            offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
         try:
             transformer.compile_repeated_blocks(**dit_kwargs)
             engaged = True
@@ -1251,6 +1233,27 @@ def _compile_repeated_blocks(
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "cache-hook inner compile", exc)
     return engaged
+
+
+def _install_compile_patches(
+    stage: str,
+    transformer: Any,
+    logger: Any,
+    *,
+    offload_active: bool,
+    denoiser_offloaded: Optional[bool],
+) -> None:
+    try:
+        from .diffusion_autoopt.apply import install_compile_patches
+        install_compile_patches(
+            stage,
+            transformer,
+            logger,
+            offload_active = offload_active,
+            denoiser_offloaded = denoiser_offloaded,
+        )
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        _warn(logger, f"{stage} patches", exc)
 
 
 def pin_reduction_configs(kwargs: dict[str, Any], logger: Any = None) -> bool:
@@ -1435,9 +1438,10 @@ def _guarded_dits(pipe: Any) -> list:
     """Every DiT a compile guard can sit on: the standard denoisers plus a modular workflow's named partition
     (MiniMax-H3's ``transformer_ref`` compiles through a view, so the bare pipe's ``_denoiser_dits`` misses it)."""
     dits = _denoiser_dits(pipe)
-    extra = getattr(pipe, "transformer_ref", None)
-    if extra is not None and extra not in dits:
-        dits.append(extra)
+    for attr in _targets.PARTITION_ATTRS:
+        extra = getattr(pipe, attr, None)
+        if extra is not None and extra not in dits:
+            dits.append(extra)
     return dits
 
 

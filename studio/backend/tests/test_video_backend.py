@@ -9990,7 +9990,7 @@ def test_h3_modular_load_arms_a_deferred_graph_after_placement():
         and getattr(node.func, "id", None) == "arm_graphs_after_placement"
     ]
     assert calls and isinstance(calls[0].args[0], ast.Name) and calls[0].args[0].id == "speed_view"
-    speed = src.index("applied = apply_speed_optims(")
+    speed = src.index("applied = autoopt.run_speed_layer(")
     arm = src.index("arm_graphs_after_placement(")
     status = src.index('"cuda_graph": (')
     assert (

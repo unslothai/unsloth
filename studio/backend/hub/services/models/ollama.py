@@ -705,3 +705,71 @@ def acquire_ollama_model_ref(ref: str) -> OllamaModelLease:
     except BaseException:
         lock.release()
         raise
+
+
+def _manifest_digests(manifest: object) -> set[str]:
+    if not isinstance(manifest, dict):
+        return set()
+    entries = [manifest.get("config"), *(manifest.get("layers") or [])]
+    return {
+        entry["digest"]
+        for entry in entries
+        if isinstance(entry, dict) and isinstance(entry.get("digest"), str)
+    }
+
+
+def ollama_model_ref_link_dirs(ref: str) -> list[Path]:
+    """Every directory a load of *ref* may have put its ``.gguf`` links in."""
+    tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
+    rel = _manifest_rel_path(tag_file, ollama_dir / "manifests")
+    if rel is None:
+        return []
+    return [root / _manifest_stem_hash(rel) for root in _ollama_links_roots(ollama_dir)]
+
+
+class OllamaModelBusy(RuntimeError):
+    """A load holds the tag's materialization lease."""
+
+
+def delete_ollama_model_ref(ref: str) -> None:
+    """``ollama rm`` for *ref*: the tag's manifest, the blobs no other tag references, and the links
+    a load made. Layers shared with another tag (one base under several tags) stay."""
+    import shutil
+
+    tag_file, ollama_dir = _validated_ollama_manifest_location(ref)
+    lock = _materialization_lock(tag_file, ollama_dir)
+    if not lock.acquire(blocking = False):
+        raise OllamaModelBusy("A model load is using this Ollama model")
+    try:
+        manifests_root = ollama_dir / "manifests"
+        link_dirs = ollama_model_ref_link_dirs(ref)
+        try:
+            manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+            raise ValueError(f"Could not read Ollama manifest: {e}") from e
+        owned = _manifest_digests(manifest)
+        for other in manifests_root.rglob("*"):
+            if not _safe_is_file(other) or os.path.realpath(other) == str(tag_file):
+                continue
+            try:
+                owned -= _manifest_digests(json.loads(other.read_text(encoding = "utf-8-sig")))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                # An unreadable manifest might reference any blob, so keep them all.
+                owned = set()
+                break
+        tag_file.unlink()
+        parent = tag_file.parent
+        while parent != manifests_root and path_is_same_or_child(parent, manifests_root):
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+        for digest in owned:
+            blob = _ollama_blob_path(ollama_dir / "blobs", digest)
+            if blob is not None:
+                blob.unlink(missing_ok = True)
+        for link_dir in link_dirs:
+            shutil.rmtree(link_dir, ignore_errors = True)
+    finally:
+        lock.release()
