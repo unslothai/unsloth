@@ -930,3 +930,126 @@ def fit_rolling_context(
         "context_length": context_length,
         "fits": True,
     }
+
+
+# The note `withSandboxAttachmentPaths` (frontend sandbox-attachments.ts) puts above an attachment's inlined text when
+# the python tool also holds a copy. Only these attachments can be cut: the rest of the file stays reachable.
+_SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
+    r"\[(?P<name>[^\n\]]*): its text is below, so answer from it\. For calculations, the python tool has the "
+    r'file at path = (?P<path>"(?:[^"\\\n]|\\.)*")(?:;[^\n]*)?\]\n'
+)
+# Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
+_ATTACHMENT_FIT_MARGIN = 0.125
+
+
+def _cut_attachment_bodies(text: str, keep_chars: int) -> str:
+    notes = list(_SANDBOX_ATTACHMENT_NOTE_RE.finditer(text))
+    if not notes:
+        return text
+    out = [text[: notes[0].start()]]
+    for index, note in enumerate(notes):
+        end = notes[index + 1].start() if index + 1 < len(notes) else len(text)
+        body = text[note.end() : end]
+        out.append(note.group(0))
+        if len(body) <= keep_chars:
+            out.append(body)
+            continue
+        kept = body[:keep_chars]
+        # Whole lines only, so the excerpt never ends mid-word for the model to complete.
+        if "\n" in kept:
+            kept = kept[: kept.rindex("\n") + 1]
+        else:
+            kept = ""
+        shown, total = kept.count("\n"), body.count("\n") + (0 if body.endswith("\n") else 1)
+        out.append(
+            f"{kept}[{note.group('name')} is too long for the context window: only its first {shown} of "
+            f"{total} lines are above. The whole file is at path = {note.group('path')} in the python tool's "
+            "working directory, so read the part you need with python instead of answering from this excerpt.]\n"
+        )
+    return "".join(out)
+
+
+def _with_cut_attachments(message: dict, keep_chars: int) -> dict:
+    content = message.get("content")
+    if isinstance(content, str):
+        return {**message, "content": _cut_attachment_bodies(content, keep_chars)}
+    if isinstance(content, list):
+        parts = [
+            {**part, "text": _cut_attachment_bodies(part["text"], keep_chars)}
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+            else part
+            for part in content
+        ]
+        return {**message, "content": parts}
+    return message
+
+
+def _attachment_body_chars(message: dict) -> int:
+    content = message.get("content")
+    if isinstance(content, str):
+        texts = [content]
+    elif isinstance(content, list):
+        texts = [
+            part["text"]
+            for part in content
+            if isinstance(part, dict) and isinstance(part.get("text"), str)
+        ]
+    else:
+        return 0
+    longest = 0
+    for text in texts:
+        notes = list(_SANDBOX_ATTACHMENT_NOTE_RE.finditer(text))
+        for index, note in enumerate(notes):
+            end = notes[index + 1].start() if index + 1 < len(notes) else len(text)
+            longest = max(longest, end - note.end())
+    return longest
+
+
+def fit_oversized_attachments(
+    messages: list[dict],
+    *,
+    context_length: int,
+    max_tokens: Optional[int],
+    count_tokens: Callable[[list[dict]], int],
+) -> list[dict]:
+    """Cut the newest user turn's sandbox-backed attachments when that turn cannot fit even alone.
+
+    Compaction always keeps the newest turn whole, so an attached file larger than the window was
+    refused outright. The python tool already holds the file, so the turn keeps the start of it and
+    points at the rest. Anything that fits, or has no copy to point at, is returned unchanged.
+    """
+    if not context_length or context_length <= 1:
+        return messages
+    latest = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if messages[index].get("role") == "user"
+        ),
+        None,
+    )
+    if latest is None:
+        return messages
+    longest = _attachment_body_chars(messages[latest])
+    if not longest:
+        return messages
+    target = int(prompt_budget(context_length, max_tokens) * (1 - _ATTACHMENT_FIT_MARGIN))
+    base = [message for message in messages[:latest] if message.get("role") == "system"]
+
+    def fits(keep_chars: int) -> bool:
+        return count_tokens([*base, _with_cut_attachments(messages[latest], keep_chars)]) <= target
+
+    if fits(longest) or not fits(0):
+        return messages
+    low, high = 0, longest
+    while high - low > 64:
+        middle = (low + high) // 2
+        if fits(middle):
+            low = middle
+        else:
+            high = middle
+    cut = list(messages)
+    cut[latest] = _with_cut_attachments(messages[latest], low)
+    return cut

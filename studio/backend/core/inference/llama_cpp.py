@@ -74,6 +74,7 @@ from core.inference.context_window import (
     fit_rolling_context,
     messages_without_unpriced_media,
     retrieval_budget,
+    fit_oversized_attachments,
     tool_result_budget,
     turn_is_servable,
 )
@@ -297,6 +298,16 @@ def _fit_context(messages, **kwargs):
     # /compact: only a checkpoint reset can honour it, since only its turns are archived.
     force_reset = bool(kwargs.pop("force_reset", False))
     sticky_manual = bool(kwargs.pop("sticky_manual", False))
+    if kwargs.get("count_tokens") is not None:
+        try:
+            messages = fit_oversized_attachments(
+                messages,
+                context_length = kwargs.get("context_length") or 0,
+                max_tokens = kwargs.get("max_tokens"),
+                count_tokens = kwargs["count_tokens"],
+            )
+        except Exception:  # noqa: BLE001 -- the fit below still refuses what cannot fit
+            logger.debug("attachment fit failed", exc_info = True)
     try:
         from core.inference import checkpoint
 
