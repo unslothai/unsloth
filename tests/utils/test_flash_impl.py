@@ -445,7 +445,7 @@ def test_mean_document_length_reads_packed_and_padding_free_rows():
     assert fi._mean_document_length(rows, rows = 1) == 100
     # BFD packing puts the longest documents first, so rows are sampled across the dataset, not from the head.
     longest_first = datasets.Dataset.from_dict({"input_ids": [[1] * n for n in (400, 300, 200, 100)]})
-    assert fi._mean_document_length(longest_first, rows = 2) == 300
+    assert fi._mean_document_length(longest_first, rows = 2) == 250
     # The sample reaches the tail when the size is not a multiple of rows: 128 x 1200 then 72 x 100.
     tail = datasets.Dataset.from_dict({"input_ids": [[1] * 1200] * 128 + [[1] * 100] * 72})
     assert fi._mean_document_length(tail) < 1024
@@ -453,6 +453,15 @@ def test_mean_document_length_reads_packed_and_padding_free_rows():
     mixed = datasets.Dataset.from_dict({"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], None]})
     assert fi._mean_document_length(mixed) == pytest.approx(14 / 3)
     # The key enable_sample_packing was given, not the packed row.
+    # The last row is always sampled: 128 one-document rows, then one row of many short documents.
+    last = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 1024] * 128 + [[1] * 1024], "seq_lengths": [[1024]] * 128 + [[8] * 128]}
+    )
+    assert fi._mean_document_length(last) < 1024
+    # Columns hidden by the format are not read: the collator sees one document per row.
+    hidden = datasets.Dataset.from_dict({"input_ids": [[1] * 8192], "seq_lengths": [[64] * 128]})
+    hidden.set_format("torch", columns = ["input_ids"])
+    assert fi._mean_document_length(hidden) == 8192
     empty = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300], "seq_lengths": [[], []]})
     assert fi._mean_document_length(empty) == 200
     custom = datasets.Dataset.from_dict({"input_ids": [[1] * 2000], "doc_lens": [[100] * 20]})

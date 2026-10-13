@@ -503,9 +503,13 @@ def deactivate_flash_attention_impl():
 def _sampled_rows(dataset, indices, key):
     """Stored values; a dataset with a custom transform is unknown: its rows can differ from what is stored,
     and running the transform early would advance its random state."""
-    if (getattr(dataset, "format", None) or {}).get("type") == "custom":
+    format = getattr(dataset, "format", None) or {}
+    if format.get("type") == "custom":
         return None
+    # Only what the format shows the collator (set_format(columns = ...)), read unformatted.
     columns = set(dataset.column_names)
+    if format.get("columns") is not None and not format.get("output_all_columns", False):
+        columns &= set(format["columns"])
     wanted = [c for c in dict.fromkeys((key, "input_ids")) if c in columns]
     if not wanted:
         return None
@@ -520,7 +524,8 @@ def _mean_document_length(dataset, rows = 128, key = "seq_lengths"):
         if total <= 0:
             return None
         n = min(rows, total)
-        sample = _sampled_rows(dataset, sorted({i * total // n for i in range(n)}), key)
+        indices = sorted({i * (total - 1) // (n - 1) for i in range(n)}) if n > 1 else [0]
+        sample = _sampled_rows(dataset, indices, key)
         if sample is None:
             return None
         lengths = []
