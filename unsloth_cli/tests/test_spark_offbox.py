@@ -15,6 +15,10 @@ from pathlib import Path
 
 import pytest
 
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason = "DGX Spark tooling and setup.sh assume a POSIX host"
+)
+
 REPO = Path(__file__).resolve().parents[2]
 HEAVY = {
     "torch",
@@ -56,6 +60,7 @@ def test_no_heavy_imports_at_module_scope(rel: str) -> None:
     assert not offenders, f"{rel} imports {offenders} at module scope"
 
 
+@_POSIX_ONLY
 def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch) -> None:
     """The peer is reached as the account that ran `provision`; a hardcoded account would ssh to the
     wrong user on every pair but one."""
@@ -1063,6 +1068,7 @@ def _mk_bundle(
     return root
 
 
+@_POSIX_ONLY
 def test_bundle_identity_reads_version_and_hashes_the_rpc_library(tmp_path) -> None:
     import hashlib
 
@@ -1267,6 +1273,7 @@ def test_rpc_preflight_reports_a_confirmed_mismatch_and_says_the_fix(monkeypatch
     assert pre["ok"] is None and not pre["problems"] and "UNVERIFIED" in pre["notes"][0]
 
 
+@_POSIX_ONLY
 def test_rpc_server_binary_found_in_the_bundle(monkeypatch, tmp_path) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -1280,6 +1287,7 @@ def test_rpc_server_binary_found_in_the_bundle(monkeypatch, tmp_path) -> None:
     assert sc.rpc_server_binary() == str(other / "build" / "bin" / "ggml-rpc-server")
 
 
+@_POSIX_ONLY
 def test_rpc_server_binary_accepts_the_legacy_name(monkeypatch, tmp_path) -> None:
     sc = _load("studio/spark_cluster.py")
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -1557,6 +1565,7 @@ class _Fake:
         return [c for c, k in self.calls if c[0] == "rsync" and "-e" in c]
 
 
+@_POSIX_ONLY
 def test_fast_path_moves_bytes_then_finalises_over_ssh_and_stops_the_daemon(
     monkeypatch, tmp_path
 ) -> None:
@@ -1594,6 +1603,7 @@ def test_fast_path_moves_bytes_then_finalises_over_ssh_and_stops_the_daemon(
     assert res["fast"]["retries"] == 0
 
 
+@_POSIX_ONLY
 def test_fast_path_retries_a_stalled_worker_on_a_fresh_connection(monkeypatch, tmp_path) -> None:
     sc, src = _fast_module(monkeypatch, tmp_path)
     fake = _Fake(worker_rc = [30, 0, 0])
@@ -1611,6 +1621,7 @@ def test_fast_path_retries_a_stalled_worker_on_a_fresh_connection(monkeypatch, t
     assert len(fake.workers()) == 2 * sc.FAST_WORKER_ATTEMPTS and res["copied"]
 
 
+@_POSIX_ONLY
 def test_fast_path_worker_failure_falls_back_to_ssh_and_still_stops_the_daemon(
     monkeypatch, tmp_path
 ) -> None:
@@ -1638,6 +1649,7 @@ def test_fast_daemon_is_stopped_when_the_copy_raises(monkeypatch, tmp_path) -> N
     assert res["failed"] == [("scratch", "ssh died")] and len(fake.stops()) == 1
 
 
+@_POSIX_ONLY
 def test_fast_daemon_start_failure_means_plain_ssh_and_a_cleanup(monkeypatch, tmp_path) -> None:
     """It falls back to ssh, and it cleans up after itself."""
     sc, src = _fast_module(monkeypatch, tmp_path)
@@ -1668,6 +1680,7 @@ def test_fast_daemon_that_survives_is_reported_as_a_failure(monkeypatch, tmp_pat
     assert ("rsync daemon on the peer", "daemon pid 4242 survived SIGKILL") in res["failed"]
 
 
+@_POSIX_ONLY
 def test_no_fast_and_env_and_dry_run_never_touch_the_daemon(monkeypatch, tmp_path) -> None:
     sc, src = _fast_module(monkeypatch, tmp_path)
     for kwargs, env in (({"no_fast": True}, None), ({}, "0"), ({"dry_run": True}, None)):
@@ -1873,6 +1886,7 @@ def test_a_run_too_large_for_one_spark_loads_only_its_shard(monkeypatch) -> None
     assert seen == ["--shard-load", ""]
 
 
+@_POSIX_ONLY
 def test_a_printed_peer_command_names_where_to_copy_a_local_dataset(
     monkeypatch, tmp_path, capsys
 ) -> None:

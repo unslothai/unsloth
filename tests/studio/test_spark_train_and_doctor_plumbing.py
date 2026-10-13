@@ -10,7 +10,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import sys
+
 import pytest
+
+_POSIX_ONLY = pytest.mark.skipif(
+    sys.platform == "win32", reason = "DGX Spark tooling and setup.sh assume a POSIX host"
+)
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -95,6 +101,7 @@ def test_the_seed_is_set_before_the_model_is_built() -> None:
     assert min(seeds) < build < peft, (seeds, build, peft)
 
 
+@_POSIX_ONLY
 def test_a_bin_checkpoint_is_rejected_by_name(tmp_path) -> None:
     pipeline = _load("spark_pipeline_for_plumbing", "studio/spark_pipeline.py")
     (tmp_path / "pytorch_model.bin").write_bytes(b"x")
@@ -153,6 +160,7 @@ def test_the_peer_probe_resolves_the_login_like_every_other_ssh(doctor, monkeypa
     assert "alice@192.168.200.13" in seen["argv"]
 
 
+@_POSIX_ONLY
 def test_a_custom_studio_home_with_a_space_stays_one_shell_word(
     cluster, monkeypatch, tmp_path
 ) -> None:
@@ -169,6 +177,7 @@ def test_a_custom_studio_home_with_a_space_stays_one_shell_word(
     assert words.stdout.strip() == "1", words.stdout
 
 
+@_POSIX_ONLY
 def test_the_default_still_expands_home_on_the_peer(cluster, monkeypatch) -> None:
     """No regression: the default is deliberately `$HOME/...`, resolved on the PEER."""
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
@@ -233,6 +242,7 @@ def test_a_successful_run_leaves_the_peer_to_finish(cluster, monkeypatch) -> Non
     assert stopped == []
 
 
+@_POSIX_ONLY
 def test_rank_1_is_pointed_at_the_inputs_that_were_staged(cluster, monkeypatch, tmp_path) -> None:
     """Both ranks got the same --data and --model, and rank 1 runs from its own $HOME with only the
     venv, the bundle and the kernel caches copied to it."""
@@ -260,6 +270,7 @@ def test_rank_1_is_pointed_at_the_inputs_that_were_staged(cluster, monkeypatch, 
     ]
 
 
+@_POSIX_ONLY
 def test_a_repo_id_is_staged_from_the_local_hf_cache(cluster, monkeypatch, tmp_path) -> None:
     """Cached only on the initiating Spark, the peer would refetch it at internet speed over a link
     that moves 444 MB/s, or fail."""
@@ -298,6 +309,7 @@ def test_a_model_that_is_neither_a_path_nor_cached_is_left_alone(
     assert "--model org/m" in rewritten
 
 
+@_POSIX_ONLY
 def test_a_failed_stage_is_reported_and_not_silently_skipped(
     cluster, monkeypatch, tmp_path
 ) -> None:
@@ -310,6 +322,7 @@ def test_a_failed_stage_is_reported_and_not_silently_skipped(
     assert staged == [] and failed and "permission denied" in failed[0]
 
 
+@_POSIX_ONLY
 def test_the_peer_stages_are_collected_after_a_successful_run(
     cluster, monkeypatch, tmp_path
 ) -> None:
