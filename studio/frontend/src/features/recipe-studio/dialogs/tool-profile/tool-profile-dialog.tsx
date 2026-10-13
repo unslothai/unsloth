@@ -179,7 +179,9 @@ function McpServerCard({
           </div>
 
           <Tabs
-            value={provider.provider_type}
+            value={
+              provider.provider_type === "stdio" ? "stdio" : "streamable_http"
+            }
             onValueChange={(value) =>
               onUpdateProviderAt(index, {
                 // biome-ignore lint/style/useNamingConvention: ui schema
