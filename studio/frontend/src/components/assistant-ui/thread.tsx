@@ -2848,7 +2848,7 @@ const Composer: FC<{
       useChatRuntimeStore.getState().setDeepResearchEnabled(false);
     }
   }, [deepResearchEnabled, hasResearchMessage, researchThreadId, researchUsed]);
-  // More than 4 pills: collapse to icons only. Search, Code, and permissions
+  // More than 4 pills: collapse to icons only. Search, Tools, and permissions
   // always show; Images, RAG, MCP and Deep Research are conditional.
   // Narrow viewports collapse too: the labelled row is wider than a phone composer.
   const isMobile = useIsMobile();
@@ -6485,10 +6485,10 @@ const CodeToolsToggle: FC = () => {
       disabled={disabled}
       onClick={() => setCodeToolsEnabled(!codeToolsEnabled)}
       className="composer-pill-btn"
-      data-pill-label="Code"
+      data-pill-label="Tools"
       data-active={codeToolsEnabled && !disabled ? "true" : "false"}
       aria-label={
-        codeToolsEnabled ? "Disable code execution" : "Enable code execution"
+        codeToolsEnabled ? "Disable tools" : "Enable tools"
       }
     >
       <PillGlyph>
@@ -6498,7 +6498,7 @@ const CodeToolsToggle: FC = () => {
           strokeWidth={2}
         />
       </PillGlyph>
-      <span>Code</span>
+      <span>Tools</span>
     </button>
   );
 };
@@ -7135,7 +7135,7 @@ const ComposerToolsMenu: FC<{
             strokeWidth={2}
             className="scale-[1.12]"
           />
-          Code
+          Tools
           {codeToolsEnabled && !codeDisabled ? (
             <HugeiconsIcon
               icon={Tick02Icon}
