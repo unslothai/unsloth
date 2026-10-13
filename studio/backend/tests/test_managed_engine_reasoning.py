@@ -30,6 +30,15 @@ _QWEN3 = (
         (_QWEN3, "sglang", None),
         ("<|channel|>analysis<|message|>", "vllm", "openai_gptoss"),
         ("<｜Assistant｜><think></think>", "vllm", "deepseek_r1"),
+        # V3.1 gates on `thinking` and answers untagged when it is off.
+        (
+            "<｜Assistant｜>{% if thinking %}<think>{% else %}</think>{% endif %}",
+            "vllm",
+            "deepseek_v3",
+        ),
+        ("<｜Assistant｜>{{ reasoning_effort }}<think></think>", "vllm", None),
+        # QwQ / Qwen3 Thinking-2507 open <think> in the prompt, which deepseek_r1 expects.
+        ("<|im_start|>assistant\n<think>\n{# </think> #}", "vllm", "deepseek_r1"),
         ("<|im_start|>assistant", "vllm", None),
         (None, "vllm", None),
     ],
@@ -73,8 +82,12 @@ def test_reasoning_fields():
         "chat_template_kwargs": {"enable_thinking": False}
     }
     engine.reasoning_parser = "qwen3"
-    assert engine.reasoning_fields() == {"chat_template_kwargs": {"enable_thinking": False}}
-    assert engine.reasoning_fields(True) == {"chat_template_kwargs": {"enable_thinking": True}}
+    assert engine.reasoning_fields() == {
+        "chat_template_kwargs": {"enable_thinking": False, "thinking": False}
+    }
+    assert engine.reasoning_fields(True) == {
+        "chat_template_kwargs": {"enable_thinking": True, "thinking": True}
+    }
     assert engine.reasoning_fields(None, "xhigh", False) == {
         "chat_template_kwargs": {"preserve_thinking": False},
         "reasoning_effort": "xhigh",
@@ -133,7 +146,7 @@ def test_streamed_reasoning_becomes_think_markup(thinking_peer):
         )
     )
     assert out == "<think>two plus two</think>4"
-    assert requests[0]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert requests[0]["chat_template_kwargs"] == {"enable_thinking": True, "thinking": True}
     assert requests[0]["reasoning_effort"] == "low"
 
 
@@ -226,3 +239,107 @@ def test_tool_stream_reasoning_reaches_studio_as_reasoning_content():
     }
     plain = 'data: {"choices":[{"delta":{"content":"hi"}}]}'
     assert _with_reasoning_content(plain) == plain
+
+
+class _Engine:
+    engine = "vllm"
+    context = 2048
+    reasoning_parser = "qwen3"
+    replay_reasoning = ManagedEngine.replay_reasoning
+
+
+def _tool_payload(**fields):
+    from models.inference import ChatCompletionRequest
+    return ChatCompletionRequest(
+        model = "m",
+        messages = [{"role": "user", "content": "hi"}],
+        max_tokens = 256,
+        **fields,
+    )
+
+
+def test_tool_loop_keeps_and_replays_reasoning_when_preserving():
+    import asyncio
+
+    from routes.managed_engine_chat import ManagedToolTransport
+
+    sent = []
+
+    class _Response:
+        status_code = 200
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"ok"}}]}'
+
+        async def aclose(self):
+            return None
+
+    class _Stream:
+        async def __aenter__(self):
+            return _Response()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Client:
+        def stream(
+            self,
+            method,
+            url,
+            headers = None,
+            json = None,
+        ):
+            sent.append(json)
+            return _Stream()
+
+    engine = _Engine()
+    engine.base_url, engine.headers = "http://engine", {}
+    turn = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a", "reasoning_content": "because"},
+    ]
+
+    async def run(transport):
+        return [
+            line
+            async for line in transport.stream(
+                messages = turn, tools = None, tool_choice = None, cancel_event = asyncio.Event()
+            )
+        ]
+
+    keep = ManagedToolTransport(_Client(), engine, {"model": "m"}, preserve_thinking = True)
+    assert keep.preserves_reasoning is True
+    asyncio.run(run(keep))
+    assert sent[-1]["messages"][1]["reasoning"] == "because"
+    drop = ManagedToolTransport(_Client(), engine, {"model": "m"}, preserve_thinking = False)
+    assert drop.preserves_reasoning is False
+    asyncio.run(run(drop))
+    assert "reasoning" not in sent[-1]["messages"][1]
+
+
+def test_tool_loop_turns_are_fitted_to_the_engine_window():
+    import asyncio
+
+    from routes.managed_engine_chat import _message_fitter
+
+    turn = "word " * 400
+    messages = [{"role": "system", "content": "Be brief."}]
+    for index in range(10):
+        messages += [
+            {"role": "user", "content": f"q{index} {turn}"},
+            {"role": "assistant", "content": f"a{index} {turn}"},
+        ]
+    messages.append({"role": "user", "content": "latest"})
+    fit = _message_fitter(
+        _tool_payload(context_overflow = "truncate_oldest"), _Engine(), "m", tools = None
+    )
+    fitted, _, line = asyncio.run(fit(messages))
+    assert fitted[-1]["content"] == "latest" and len(fitted) < len(messages)
+    assert line and "context_truncated" in line
+    assert _message_fitter(_tool_payload(), _Engine(), "m", tools = None) is None
+    sglang = _Engine()
+    sglang.engine = "sglang"
+    assert (
+        _message_fitter(_tool_payload(context_overflow = "truncate_oldest"), sglang, "m", None)
+        is None
+    )

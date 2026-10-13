@@ -1848,10 +1848,13 @@ class ExternalProviderClient:
             # that kwarg alone: vLLM through 0.16 types the top-level reasoning_effort as low | medium | high and 400s
             # on "none".
             effort = (reasoning_effort or "").strip().lower()
-            if effort in _LOCAL_SERVER_EFFORT_ALIASES and not (
-                self.provider_type == "vllm" and await self.served_vllm_takes_full_effort()
-            ):
-                effort = _LOCAL_SERVER_EFFORT_ALIASES[effort]
+            if effort in _LOCAL_SERVER_EFFORT_ALIASES:
+                if self.provider_type != "vllm":
+                    effort = _LOCAL_SERVER_EFFORT_ALIASES[effort]
+                elif not await self.served_vllm_takes_full_effort():
+                    # The ladder is the template's own (Qwen3.8 rejects "high"), so a level an older vLLM cannot
+                    # carry falls back to the template default rather than a neighbour it may refuse.
+                    effort = ""
             thinking = False if effort == "none" else enable_thinking
             if thinking is not None:
                 tpl_kw = body.get("chat_template_kwargs")

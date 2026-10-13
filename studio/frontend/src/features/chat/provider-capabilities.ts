@@ -1260,7 +1260,7 @@ const CATALOG_REASONING_WIRE: Record<string, ReasoningWire> = {
   qwen: { levels: [], off: "unified" },
   huggingface: { levels: null, off: "unified" },
   ollama: { levels: null, off: "unified" },
-  // The backend narrows to low / medium / high only for a vLLM older than 0.21, which 400s on the rest.
+  // A vLLM older than 0.21 400s on the wider levels; the backend then leaves them to the template default.
   vllm: { levels: null, off: "unified" },
   llama_cpp: LOCAL_SERVER_WIRE,
 };

@@ -22,18 +22,39 @@ class ManagedToolTransport:
     heals_text_tool_calls = True
     sanitizes_provider_frames = False
 
-    def __init__(self, client, engine, body):
+    def __init__(
+        self,
+        client,
+        engine,
+        body,
+        *,
+        preserve_thinking = None,
+        message_fitter = None,
+    ):
         self.client, self.engine, self.body = client, engine, body
+        self._preserve_thinking = preserve_thinking
+        self._message_fitter = message_fitter
+        # The tool loop keeps a turn's reasoning_content on the assistant message only when asked.
+        self.preserves_reasoning = bool(engine.reasoning_parser and preserve_thinking)
 
     async def stream(self, *, messages, tools, tool_choice, cancel_event):
         from routes import inference as api
 
+        truncation_line = max_tokens = None
+        if self._message_fitter is not None:
+            messages, max_tokens, truncation_line = await self._message_fitter(messages)
         body = {
             **self.body,
-            "messages": engine_messages(messages),
+            "messages": self.engine.replay_reasoning(
+                engine_messages(messages), self._preserve_thinking
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        if truncation_line:
+            yield truncation_line
         if tools:
             body["tools"] = tools
             body["tool_choice"] = tool_choice if tool_choice is not None else "auto"
@@ -79,6 +100,41 @@ def _with_reasoning_content(line: str) -> str:
                 delta["reasoning_content"] = reasoning
             changed = True
     return "data: " + json.dumps(event) if changed else line
+
+
+def _message_fitter(payload, engine, public, tools):
+    """Auto-compact to the vLLM engine's window; the exact count refuses tools, so this estimates."""
+    from routes import inference as api
+
+    if (
+        getattr(engine, "engine", None) != "vllm"
+        or payload.context_overflow != "truncate_oldest"
+        or api._rolling_context_policy(payload) is None
+        or not engine.context
+    ):
+        return None
+    fit_payload = payload.model_copy(
+        update = {
+            "context_window": engine.context,
+            "compaction_threshold": min(
+                api._EXTERNAL_COMPACTION_THRESHOLD_MAX,
+                int(engine.context * (1 - api._EXTERNAL_COMPACTION_HEADROOM)),
+            ),
+        }
+    )
+
+    async def fit(messages):
+        fitted, truncation, max_tokens = await asyncio.to_thread(
+            api._fit_external_context, messages, fit_payload, tools = tools
+        )
+        line = None
+        if truncation and truncation.get("dropped_messages"):
+            line = api._context_truncated_sse_chunk(
+                "chatcmpl-" + uuid.uuid4().hex[:12], public, truncation
+            ).rstrip("\n")
+        return fitted, max_tokens, line
+
+    return fit
 
 
 def _with_model(line: str, public: str) -> str:
@@ -226,7 +282,13 @@ async def managed_tool_chat(
                 cancel_event = cancel, request = request, client = client
             )
         )
-        transport = ManagedToolTransport(client, engine, body)
+        transport = ManagedToolTransport(
+            client,
+            engine,
+            body,
+            preserve_thinking = payload.preserve_thinking,
+            message_fitter = _message_fitter(payload, engine, public, tools or payload.tools),
+        )
         stripper = api.ServerToolCallStripper()
         stream = None
         failed = False
@@ -264,10 +326,18 @@ async def managed_tool_chat(
                     cancel_event = cancel,
                 )
             elif not payload.stream:
+                request_body = {**body, "stream": False}
+                if transport._message_fitter is not None:
+                    fitted, max_tokens, _ = await transport._message_fitter(messages)
+                    request_body["messages"] = engine.replay_reasoning(
+                        engine_messages(fitted), payload.preserve_thinking
+                    )
+                    if max_tokens:
+                        request_body["max_tokens"] = max_tokens
                 response = await client.post(
                     engine.base_url + "/v1/chat/completions",
                     headers = engine.headers,
-                    json = {**body, "stream": False},
+                    json = request_body,
                 )
                 if response.status_code != 200:
                     raise api._openai_passthrough_error(response.status_code, response.text)

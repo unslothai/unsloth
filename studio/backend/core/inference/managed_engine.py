@@ -901,6 +901,9 @@ class ManagedEngine:
             kwargs["enable_thinking"] = bool(enable_thinking)
         elif reasoning_effort is None:
             kwargs["enable_thinking"] = False
+        if "enable_thinking" in kwargs:
+            # DeepSeek V3.1+ templates read `thinking`; vLLM drops whichever one a template never names.
+            kwargs["thinking"] = kwargs["enable_thinking"]
         if preserve_thinking is not None:
             kwargs["preserve_thinking"] = bool(preserve_thinking)
         fields = {"chat_template_kwargs": kwargs}

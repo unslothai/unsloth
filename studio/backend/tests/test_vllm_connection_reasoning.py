@@ -80,10 +80,12 @@ def test_a_current_vllm_receives_the_level_verbatim(effort, version):
 
 
 @pytest.mark.parametrize("version", ["0.20.2", "0.21.0rc1", "0.11.0", "not-a-version", None])
-def test_an_older_or_silent_vllm_keeps_the_low_medium_high_subset(version):
-    for effort, expected in (("minimal", "low"), ("xhigh", "high"), ("max", "high")):
+def test_an_older_or_silent_vllm_leaves_a_wider_level_to_the_template_default(version):
+    # Rewriting xhigh to high would 400 on Qwen3.8, whose template accepts low | medium | xhigh.
+    for effort in ("minimal", "xhigh", "max"):
         [body], _ = _send(version, reasoning_effort = effort, enable_thinking = True)
-        assert body["reasoning_effort"] == expected
+        assert "reasoning_effort" not in body
+        assert body["chat_template_kwargs"]["enable_thinking"] is True
 
 
 def test_the_common_levels_never_read_the_version():

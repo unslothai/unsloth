@@ -33451,10 +33451,10 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
-    # Only MLX and the managed engines can count their own prompt, so only they are fitted first.
+    # Only MLX and managed vLLM count their own prompt exactly, so only they are fitted first.
     _sf_fit_overflow = (
         _rolling_context_policy(payload)
-        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") in ("vllm", "sglang")
+        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") == "vllm"
         else None
     )
     if _sf_model_info.get("engine") in ("vllm", "sglang"):

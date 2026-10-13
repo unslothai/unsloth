@@ -51,7 +51,10 @@ test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
     { context_overflow: "error" },
   );
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  assert.match(adapter, /runtime\.loadedEngine !== "auto"/);
+  // SGLang has no exact count to fit against, so only the vLLM engine asks.
+  assert.match(adapter, /runtime\.loadedEngine === "vllm"/);
+  // A queued turn keeps the engine it was queued against, like loadedIsGguf / loadedIsMlx.
+  assert.match(readSrc("features/chat/utils/queued-chat-run-settings.ts"), /"loadedEngine",/);
   assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
 });
 

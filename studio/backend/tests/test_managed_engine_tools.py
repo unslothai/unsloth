@@ -71,6 +71,8 @@ def native(monkeypatch):
         context = 4096,
         base_url = "http://native.test",
         headers = {"Authorization": "Bearer private"},
+        engine = "vllm",
+        reasoning_parser = None,
         reasoning_fields = real.reasoning_fields,
         replay_reasoning = real.replay_reasoning,
     )

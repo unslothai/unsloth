@@ -42,16 +42,21 @@ def reasoning_parser_for_template(template, engine):
         return "openai_gptoss"
     if "<think>" not in template or "</think>" not in template:
         return None
-    formats = (
-        (("<arg_key>",), "glm45"),
-        (("<minimax:tool_call>",), "minimax_m2"),
-        (("<|tool_calls_section_begin|>",), "kimi_k2"),
-        (("<｜Assistant｜>",), "deepseek_r1"),
-        (("<|im_start|>",), "qwen3"),
-    )
-    for markers, parser in formats:
-        if all(marker in template for marker in markers):
+    for marker, parser in (
+        ("<arg_key>", "glm45"),
+        ("<minimax:tool_call>", "minimax_m2"),
+        ("<|tool_calls_section_begin|>", "kimi_k2"),
+    ):
+        if marker in template:
             return parser
+    # Per vLLM's reasoning_outputs.md: V3.1 / V3.2 gate on a `thinking` variable and answer untagged when
+    # it is off (deepseek_v3); R1, QwQ and Qwen3 Thinking-2507 open <think> in the prompt (deepseek_r1).
+    if "<｜Assistant｜>" in template:
+        if "reasoning_effort" in template:
+            return None
+        return "deepseek_v3" if "thinking" in template.replace("think>", "") else "deepseek_r1"
+    if "<|im_start|>" in template:
+        return "qwen3" if "enable_thinking" in template else "deepseek_r1"
     return None
 
 

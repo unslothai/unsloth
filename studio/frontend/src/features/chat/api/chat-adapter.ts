@@ -5656,7 +5656,7 @@ export function createOpenAIStreamAdapter(
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
       const isManagedEngineForCompaction =
-        !isExternalModelId(params.checkpoint) && runtime.loadedEngine !== "auto";
+        !isExternalModelId(params.checkpoint) && runtime.loadedEngine === "vllm";
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
