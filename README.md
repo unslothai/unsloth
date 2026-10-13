@@ -421,9 +421,6 @@ Setup also installs [audio.cpp](https://github.com/0xShug0/audio.cpp) (prebuilt 
 - `UNSLOTH_SKIP_AUDIO_CPP_INSTALL=1` skips it.
 - `UNSLOTH_AUDIO_CPP_ACCELERATOR=cpu` (or `cuda`, `vulkan`, `metal`) picks the bundle instead of auto-detecting.
 - `AUDIOCPP_SERVER_PATH=/path/to/audiocpp_server` uses your own build.
-- Setup installs the newest [unslothai/audio.cpp](https://github.com/unslothai/audio.cpp/releases) release and checks every archive against that release's sha256 index. Unsloth Studio offers newer releases in its in-app update.
-- `UNSLOTH_AUDIO_CPP_TAG=<tag>` pins one release (for example in a Docker build).
-- `UNSLOTH_AUDIO_CPP_REPO=<owner/repo>` installs from another repo; a release there without a sha256 index is checked against GitHub's asset digest instead.
 
 #### Uninstall
 
