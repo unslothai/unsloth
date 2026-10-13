@@ -288,6 +288,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: Basic YTpi response {"received":"YTpi"}'
     )
     assert "YTpi" not in _sanitize_public_query("Authorization: Basic YTpi returned received=YTpi")
+    trailing = "Authorization: Basic abcdefghijklmnop. server echoed abcdefghijklmnop"
+    assert "abcdefghijklmnop" not in _sanitize_public_query(trailing)
     structured = (
         'Authorization: Custom token="correct horse battery staple" '
         'got {"received":"correct horse battery staple"}'

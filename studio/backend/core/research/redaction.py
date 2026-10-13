@@ -179,8 +179,11 @@ def _sanitize_public_query(query: str) -> str:
         )
         for value in values:
             value = re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))
-            exact.add(value)
-            credentials.update(piece for piece in [value, *value.split()] if len(piece) >= 8)
+            for variant in {value, value.rstrip(".!?")}:
+                exact.add(variant)
+                credentials.update(
+                    piece for piece in [variant, *variant.split()] if len(piece) >= 8
+                )
     exact.discard("")
     plain = [token for token in plain if not any(piece in token for piece in credentials)]
     tokens = plain
