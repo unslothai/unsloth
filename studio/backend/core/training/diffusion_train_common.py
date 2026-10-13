@@ -71,7 +71,16 @@ _LR_SCHEDULERS: frozenset[str] = frozenset(
 # DiT families whose fp32 RoPE/embedder overflow fp16, so they train in bf16 only. Keep in sync with the DiT trainer's
 # own specs.
 _FORCE_BF16_FAMILIES: frozenset[str] = frozenset(
-    {"qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2", "minimax-h3"}
+    {
+        "qwen-image",
+        "z-image",
+        "krea-2",
+        "flux.2-klein",
+        "flux.2-dev",
+        "ltx-2",
+        "wan2.2-ti2v-5b",
+        "minimax-h3",
+    }
 )
 
 # ``VideoFamily.trainable``; every name in it MUST resolve through get_trainer, and a video base outside it is refused
@@ -87,7 +96,8 @@ TRAINABLE_VIDEO_FAMILIES: frozenset[str] = frozenset(f.name for f in _VIDEO_REGI
 AUTO_FLOW_SHIFT_FAMILIES: frozenset[str] = frozenset({"qwen-image", "ltx-2", "minimax-h3"})
 
 # Video latents are allocated on the family's spatial compression grid, so a training resolution off that grid
-# silently changes the latent geometry. LTX-2's VAE compresses 32x spatially, matching its resolution_multiple.
+# silently changes the latent geometry. LTX-2's VAE compresses 32x spatially, matching its resolution_multiple; Wan2.2-TI2V-5B's
+# compresses 16x and its transformer patchifies 2x2, the same 32 grid.
 _VIDEO_RESOLUTION_MULTIPLE = 32
 
 _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
@@ -465,7 +475,7 @@ def get_trainer(family: str) -> Callable[..., str]:
     if key == "sdxl":
         from core.training.diffusion_lora_trainer import run_diffusion_lora_training
         return run_diffusion_lora_training
-    if key in ("flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"):
+    if key in _DIT_TRAIN_FAMILIES:
         from core.training.diffusion_dit_trainer import run_dit_lora_training
         return run_dit_lora_training
     # MiniMax-H3 denoises video and audio jointly over one packed sequence on two coupled schedules, which is outside
@@ -523,6 +533,15 @@ FAMILY_TRAIN_DEFAULTS: dict[str, dict[str, Any]] = {
         "lr_scheduler": "constant_with_warmup",
         "lr_warmup_steps": 20,
     },
+    # DiffSynth-Studio's Wan LoRA recipe: rank 32, lr 1e-4. 704 is TI2V-5B's native short edge (it renders 1280x704 /
+    # 704x1280 only) and sits on the 32 grid (16x VAE x 2x patch): a still is 44x44 latents, 484 tokens.
+    "wan2.2-ti2v-5b": {
+        "lora_rank": 32,
+        "learning_rate": 1e-4,
+        "resolution": 704,
+        "lr_scheduler": "constant_with_warmup",
+        "lr_warmup_steps": 20,
+    },
     # resolution is the canvas SHORT EDGE and 768 is what the released checkpoint generates on; rank 16 not 32 because
     # the adapter also serves the audio rows through one shared stack.
     "minimax-h3": {
@@ -571,6 +590,14 @@ _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
         "gated": False,
         "note": "Video: trains a style LoRA on still images.",
     },
+    # The run peak is the conditioning phase (UMT5-XXL 11.4 GB bf16 + the fp32 VAE 2.8 GB), freed before the nf4
+    # transformer (~3 GB) loads.
+    "wan2.2-ti2v-5b": {
+        "params": "5B",
+        "qlora_vram_gb": 16,
+        "gated": False,
+        "note": "Video: trains a style LoRA on still images.",
+    },
     # Measured on a B200: the loop peaks near 44 GB, but a 20-step run peaked at 77.76 GB with the 63 GiB Qwen3-VL
     # conditioner resident, so 72 sizes users onto a card that OOMs later.
     "minimax-h3": {
@@ -607,7 +634,16 @@ def _family_vram_note(name: str) -> str:
 # The flow-matching DiT families (run by diffusion_dit_trainer): they expose base_precision / compile and need bf16 on
 # CUDA. SDXL is absent (own mixed_precision path).
 _DIT_TRAIN_FAMILIES = frozenset(
-    {"flux.1", "qwen-image", "z-image", "krea-2", "flux.2-klein", "flux.2-dev", "ltx-2"}
+    {
+        "flux.1",
+        "qwen-image",
+        "z-image",
+        "krea-2",
+        "flux.2-klein",
+        "flux.2-dev",
+        "ltx-2",
+        "wan2.2-ti2v-5b",
+    }
 )
 # Kept separate so the DiT-specific levers (compile, the shared sigma table) do not follow.
 _FLOW_TRAIN_FAMILIES = _DIT_TRAIN_FAMILIES | {"minimax-h3"}
@@ -2016,6 +2052,8 @@ _TRAIN_EXTRA_TRUSTED_REPOS = frozenset(
         "lightricks/ltx-2",
         # MiniMax-H3's official base, for the same reason: safetensors-only, no remote code.
         "minimaxai/minimax-h3",
+        # Wan2.2-TI2V-5B's official diffusers base, same reason: safetensors-only, no remote code.
+        "wan-ai/wan2.2-ti2v-5b-diffusers",
     }
 )
 

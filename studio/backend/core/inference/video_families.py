@@ -663,6 +663,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
     VideoFamily(
         name = "wan2.2-ti2v-5b",
+        trainable = True,
+        label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",

@@ -1,0 +1,441 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Unit tests for the Wan2.2-TI2V-5B (video) family of the flow-matching DiT LoRA trainer.
+
+CPU-only. The first half needs no diffusers import (fakes stand in for the VAE, the text encoder
+and the transformer). The second half builds a TINY random ``WanTransformer3DModel`` (2 blocks,
+2 heads) in memory, so the forward contract, the PEFT target selection, and the saved LoRA keys
+are checked against the real diffusers classes without a download. What a Wan family gets wrong
+by default, and so what these pin: training on the unshifted sigmas because Wan ships a UniPC
+scheduler, a 1-D timestep where TI2V-5B's pipeline conditions per token, the VAE latent
+normalisation direction, the UMT5 zero padding, and the family never reaching the Train tab."""
+
+from __future__ import annotations
+
+import json
+import math
+import types
+
+import pytest
+import torch
+
+from core.training import diffusion_dit_trainer as dit
+from core.training.diffusion_dit_trainer import (
+    _SPECS,
+    _WAN_MAX_SEQUENCE_LENGTH,
+    _WAN_TARGETS,
+    _select_lora_targets,
+    _training_sigma_table,
+)
+from core.training.diffusion_train_common import (
+    DEFAULT_LORA_FILENAME,
+    DEFAULT_LORA_TARGETS,
+    DiffusionLoraConfig,
+    TRAINABLE_VIDEO_FAMILIES,
+    _DIT_TRAIN_FAMILIES,
+    _FORCE_BF16_FAMILIES,
+    _assert_trusted_base_model,
+    _family_vram_note,
+    _publish_to_lora_catalog,
+    get_trainer,
+    resolve_trainable_family,
+    train_defaults,
+)
+
+FAMILY = "wan2.2-ti2v-5b"
+BASE = "Wan-AI/Wan2.2-TI2V-5B-Diffusers"
+
+# Wan-AI/Wan2.2-TI2V-5B-Diffusers vae/config.json: 48 channels (latents_mean / latents_std are 48 long).
+Z_DIM = 48
+# Wan-AI/Wan2.2-TI2V-5B-Diffusers scheduler/scheduler_config.json, the keys the trainer reads.
+UNIPC_CONFIG = {
+    "_class_name": "UniPCMultistepScheduler",
+    "_diffusers_version": "0.35.0.dev0",
+    "flow_shift": 5.0,
+    "num_train_timesteps": 1000,
+    "prediction_type": "flow_prediction",
+    "use_flow_sigmas": True,
+    "solver_order": 2,
+}
+
+
+def _wan_classes():
+    """The diffusers Wan classes, or a skip on an environment whose diffusers cannot import them."""
+    try:
+        from diffusers import WanPipeline, WanTransformer3DModel
+    except Exception as exc:  # noqa: BLE001 -- diffusers too old, or a broken optional dep
+        pytest.skip(f"diffusers Wan classes unavailable: {exc}")
+    return WanPipeline, WanTransformer3DModel
+
+
+def _tiny_transformer():
+    """A random 2-block WanTransformer3DModel with TI2V-5B's layout: patch (1, 2, 2), 48 latent channels,
+    rms_norm_across_heads qk norm, no image cross-attention projections."""
+    _, WanTransformer3DModel = _wan_classes()
+    torch.manual_seed(0)
+    return WanTransformer3DModel(
+        patch_size = (1, 2, 2),
+        num_attention_heads = 2,
+        attention_head_dim = 12,
+        in_channels = Z_DIM,
+        out_channels = Z_DIM,
+        text_dim = 32,
+        freq_dim = 256,
+        ffn_dim = 32,
+        num_layers = 2,
+        cross_attn_norm = True,
+        qk_norm = "rms_norm_across_heads",
+        rope_max_seq_len = 32,
+    ).eval()
+
+
+# ── the spec + gating ────────────────────────────────────────────────────────
+def test_wan_spec_is_registered_and_bf16_only():
+    spec = _SPECS[FAMILY]
+    assert spec.family == FAMILY
+    assert spec.force_bf16 is True
+    assert FAMILY in _FORCE_BF16_FAMILIES
+    # 5B params, bf16 resident ~10 GB: "auto" sizes the dense modes off this.
+    assert 8.0 < spec.dense_bf16_gb < 12.0
+    assert spec.lora_targets == _WAN_TARGETS
+    # Wan ships UniPC, so the spec must build its own FlowMatchEuler table.
+    assert spec.training_scheduler is dit._wan_training_scheduler
+    # Video previews are not wired (SAMPLE_FAMILIES is image-only), like LTX-2.
+    assert spec.decode_latents is None and spec.latent_shape is None
+
+
+def test_wan_is_a_trainable_video_family_with_a_trainer():
+    assert FAMILY in TRAINABLE_VIDEO_FAMILIES
+    assert FAMILY in _DIT_TRAIN_FAMILIES
+    assert get_trainer(FAMILY) is dit.run_dit_lora_training
+    for name in TRAINABLE_VIDEO_FAMILIES:
+        assert callable(get_trainer(name)), name
+
+
+@pytest.mark.parametrize(
+    "base", [BASE, "wan-ai/wan2.2-ti2v-5b-diffusers", "/data/models/Wan2.2-TI2V-5B-Diffusers"]
+)
+def test_wan_bases_route_to_the_dit_trainer(base):
+    assert resolve_trainable_family(base) == FAMILY
+
+
+def test_explicit_model_family_override_routes_a_local_checkout():
+    assert resolve_trainable_family("/tmp/some-local-checkout", FAMILY) == FAMILY
+
+
+def test_the_a14b_moe_is_still_refused_and_names_the_5b():
+    # Step 2: two experts need two adapters, which this spec does not train.
+    with pytest.raises(ValueError) as exc:
+        resolve_trainable_family("Wan-AI/Wan2.2-T2V-A14B-Diffusers")
+    assert "wan2.2-t2v-a14b" in str(exc.value)
+    assert FAMILY in str(exc.value)
+
+
+def test_wan_official_base_passes_the_trusted_base_gate():
+    _assert_trusted_base_model(BASE)
+    with pytest.raises(ValueError, match = "untrusted"):
+        _assert_trusted_base_model("random-user/wan2.2-ti2v-5b-finetune")
+
+
+def test_wan_defaults_sit_on_the_32_grid():
+    d = train_defaults(FAMILY)
+    assert d["resolution"] % 32 == 0  # 16x VAE x 2x patch
+    assert d["lora_rank"] >= 16 and 0 < d["learning_rate"] <= 2e-4
+    # constant_with_warmup, so lr_warmup_steps is honoured.
+    assert d["lr_scheduler"] == "constant_with_warmup" and d["lr_warmup_steps"] > 0
+
+
+def test_wan_has_a_vram_row():
+    note = _family_vram_note(FAMILY)
+    assert "5B" in note and "QLoRA" in note
+
+
+def _cfg(tmp_path, **kw):
+    data = tmp_path / "data"
+    data.mkdir(exist_ok = True)
+    return DiffusionLoraConfig(
+        base_model = BASE, data_dir = str(data), output_dir = str(tmp_path / "run"), **kw
+    )
+
+
+@pytest.mark.parametrize("resolution, ok", [(704, True), (512, True), (520, False), (696, False)])
+def test_wan_resolution_must_sit_on_the_vae_grid(tmp_path, resolution, ok):
+    if ok:
+        assert _cfg(tmp_path, resolution = resolution).normalized().resolved_family == FAMILY
+    else:
+        with pytest.raises(ValueError, match = "multiple of 32"):
+            _cfg(tmp_path, resolution = resolution).normalized()
+
+
+def test_wan_rejects_fp16_before_loading(tmp_path):
+    with pytest.raises(ValueError, match = "bf16"):
+        _cfg(tmp_path, resolution = 704, mixed_precision = "fp16").normalized()
+
+
+def test_wan_default_flow_shift_stays_the_models_own_schedule(tmp_path):
+    # None means "the model's own schedule"; for Wan that is the spec's shift-5 table, NOT "auto"
+    # (auto returns scheduler.sigmas for a static-shift scheduler, which is the same table).
+    cfg = _cfg(tmp_path, resolution = 704).normalized()
+    assert cfg.flow_shift is None
+
+
+def test_a_video_run_publishes_no_adapter_into_the_image_lora_catalog(tmp_path, monkeypatch):
+    catalog = tmp_path / "loras" / "diffusion"
+    catalog.mkdir(parents = True)
+    monkeypatch.setattr("core.inference.diffusion_lora.loras_dir", lambda: catalog)
+    adapter = tmp_path / "run" / DEFAULT_LORA_FILENAME
+    adapter.parent.mkdir(parents = True, exist_ok = True)
+    adapter.write_bytes(b"adapter-bytes")
+    cfg = _cfg(tmp_path, resolution = 704).normalized()
+    assert _publish_to_lora_catalog(str(adapter), cfg) is None
+    assert list(catalog.iterdir()) == []
+
+
+def test_family_train_infos_offers_wan(dit_train_host):
+    from core.training.diffusion_train_common import family_train_infos
+
+    infos = {i["name"]: i for i in family_train_infos()}
+    assert FAMILY in infos, "a trainable video family must be offered by /diffusion/info"
+    info = infos[FAMILY]
+    assert info["default_base"] == BASE
+    assert info["base_repos"] == [BASE]
+    assert info["label"] == "Wan2.2 TI2V 5B"
+    assert info["defaults"]["resolution"] % 32 == 0
+    assert info["deploy_base"] is None
+    assert "nf4" in info["precision_modes"]
+    assert info["supports_compile"] is True
+    assert "ltx-2" in infos and "sdxl" in infos
+
+
+# ── LoRA targets ─────────────────────────────────────────────────────────────
+def test_generic_default_targets_resolve_to_the_wan_set():
+    assert _select_lora_targets(DEFAULT_LORA_TARGETS, _WAN_TARGETS) == _WAN_TARGETS
+    explicit = ("to_q", "to_v")
+    assert _select_lora_targets(explicit, _WAN_TARGETS) == explicit
+
+
+# ── the scheduler: Wan ships UniPC ───────────────────────────────────────────
+@pytest.fixture
+def unipc_base(tmp_path):
+    root = tmp_path / "wan_base"
+    (root / "scheduler").mkdir(parents = True)
+    (root / "scheduler" / "scheduler_config.json").write_text(json.dumps(UNIPC_CONFIG))
+    return types.SimpleNamespace(base_model = str(root), hf_token = None)
+
+
+def test_training_scheduler_bakes_in_the_inference_flow_shift(unipc_base):
+    pytest.importorskip("diffusers")
+    sched = dit._wan_training_scheduler(unipc_base)
+    n = 1000
+    u = torch.linspace(1, n, n).flip(0) / n
+    expected = 5.0 * u / (1.0 + 4.0 * u)
+    assert sched.config.shift == 5.0
+    assert torch.allclose(sched.sigmas[:n].float(), expected, atol = 1e-6)
+    # Wan conditions on sigma * 1000, the scheduler's own timesteps.
+    assert torch.allclose(sched.timesteps.float(), expected * n, atol = 1e-3)
+    # None (the default) trains on exactly this table; a number re-shifts from the unshifted u.
+    assert _training_sigma_table(sched, None) is sched.sigmas
+    assert torch.allclose(_training_sigma_table(sched, 1.0).float(), u, atol = 1e-6)
+
+
+def test_the_generic_scheduler_load_would_drop_the_shift(unipc_base):
+    """The trap the spec hook exists for: FlowMatchEuler.from_pretrained on Wan's UniPC config ignores flow_shift and
+    yields the identity (shift 1) table, so a run trains mostly at low noise."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    generic = FlowMatchEulerDiscreteScheduler.from_pretrained(
+        unipc_base.base_model, subfolder = "scheduler"
+    )
+    ours = dit._wan_training_scheduler(unipc_base)
+    assert generic.config.shift == 1.0
+    mid = 500
+    assert ours.sigmas[mid] > generic.sigmas[mid] + 0.2
+
+
+# ── text conditioning ────────────────────────────────────────────────────────
+class _FakeWanPipe:
+    """encode_prompt returns what WanPipeline._get_t5_prompt_embeds does: real rows then zeros to max_sequence_length."""
+
+    def __init__(self):
+        self.text_encoder = None
+        self.calls = []
+
+    def encode_prompt(self, prompt, do_classifier_free_guidance, num_videos_per_prompt, max_sequence_length, device):
+        self.calls.append((prompt, max_sequence_length, do_classifier_free_guidance))
+        n = len(prompt.split()) + 1
+        g = torch.Generator().manual_seed(n)
+        emb = torch.zeros(1, max_sequence_length, 8)
+        emb[:, :n] = torch.randn(1, n, 8, generator = g) + 0.1
+        return emb.to(torch.bfloat16), None
+
+
+def test_encode_prompts_caches_trimmed_embeds_and_collate_restores_the_pipeline_tensor():
+    pipe = _FakeWanPipe()
+    caps = ["a cat", "a much longer caption about a yarn dog"]
+    cached = dit._wan_encode_prompts(pipe, caps, "cpu")
+    assert [c[1] for c in pipe.calls] == [_WAN_MAX_SEQUENCE_LENGTH] * 2
+    assert all(c[2] is False for c in pipe.calls)
+    assert [e[0].shape[1] for e in cached] == [3, 9]  # trailing zero rows dropped
+    (batch,) = dit._wan_collate(cached, "cpu", torch.bfloat16)
+    assert batch.shape == (2, _WAN_MAX_SEQUENCE_LENGTH, 8)
+    for i, cap in enumerate(caps):
+        full, _ = _FakeWanPipe().encode_prompt(cap, False, 1, _WAN_MAX_SEQUENCE_LENGTH, "cpu")
+        assert torch.equal(batch[i : i + 1], full), "collate must rebuild the exact zero-padded tensor"
+
+
+def test_trim_keeps_one_row_for_an_all_zero_embed():
+    out = dit._wan_trim_padding(torch.zeros(1, 16, 4))
+    assert out.shape == (1, 1, 4)
+
+
+# ── latents ──────────────────────────────────────────────────────────────────
+class _FakeDist:
+    def __init__(self, mean, std):
+        self.mean, self.std = mean, std
+
+    def sample(self):
+        return self.mean
+
+
+class _FakeWanVae(torch.nn.Module):
+    """AutoencoderKLWan's surface: 16x spatial, 1 latent frame per still, latents_mean / latents_std on its config."""
+
+    def __init__(self):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.zeros(1))
+        self.config = types.SimpleNamespace(
+            z_dim = Z_DIM,
+            latents_mean = [0.1 * i for i in range(Z_DIM)],
+            latents_std = [1.0 + 0.05 * i for i in range(Z_DIM)],
+        )
+        self.seen = None
+
+    def encode(self, px):
+        self.seen = px
+        b, _c, f, h, w = px.shape
+        mean = torch.full((b, Z_DIM, f, h // 16, w // 16), 2.0)
+        std = torch.full_like(mean, 0.5)
+        return types.SimpleNamespace(latent_dist = _FakeDist(mean, std))
+
+
+def test_encode_latents_adds_a_frame_axis_and_normalises_like_the_pipeline():
+    vae = _FakeWanVae()
+    px = torch.zeros(2, 3, 64, 96)
+    lat = dit._wan_encode_latents(vae, px)
+    assert vae.seen.shape == (2, 3, 1, 64, 96)
+    assert lat.shape == (2, Z_DIM, 1, 4, 6)
+    # WanPipeline decodes with latents / (1 / std) + mean; that must invert the training normalisation.
+    mean = torch.tensor(vae.config.latents_mean).view(1, Z_DIM, 1, 1, 1)
+    inv_std = 1.0 / torch.tensor(vae.config.latents_std).view(1, Z_DIM, 1, 1, 1)
+    assert torch.allclose(lat / inv_std + mean, torch.full_like(lat, 2.0), atol = 1e-5)
+
+
+def test_encode_latent_stats_returns_the_posterior_affine_pair():
+    vae = _FakeWanVae()
+    a, b = dit._wan_encode_latent_stats(vae, torch.zeros(1, 3, 32, 32))
+    std = torch.tensor(vae.config.latents_std).view(1, Z_DIM, 1, 1, 1)
+    assert torch.allclose(b, 0.5 / std.expand_as(b))
+    assert torch.allclose(a, dit._wan_encode_latents(vae, torch.zeros(1, 3, 32, 32)))
+
+
+# ── the real diffusers transformer, tiny + random ────────────────────────────
+def test_forward_matches_the_pipelines_expand_timesteps_call():
+    """The spec's forward must equal the call WanPipeline makes for TI2V-5B (expand_timesteps): a [B, seq] per-token
+    timestep built as (mask[:, ::2, ::2] * t).flatten() with an all-ones mask for text-to-video. The trainer passes
+    the cheaper [B] form; this pins that the two agree."""
+    transformer = _tiny_transformer()
+    noisy = torch.randn(2, Z_DIM, 1, 8, 12)
+    t = torch.tensor([937.5, 120.0])
+    emb = torch.randn(2, 16, 32)
+    with torch.no_grad():
+        ours = dit._wan_forward(transformer, noisy, t, None, (emb,), None, "cpu", torch.float32)
+        mask = torch.ones(1, 1, 8, 12)
+        per_sample = []
+        for i in range(2):
+            ts = (mask[0][:, ::2, ::2] * t[i]).flatten().unsqueeze(0)
+            per_sample.append(
+                transformer(
+                    hidden_states = noisy[i : i + 1],
+                    timestep = ts,
+                    encoder_hidden_states = emb[i : i + 1],
+                    return_dict = False,
+                )[0]
+            )
+    assert ours.shape == noisy.shape  # aligned with target = noise - latents
+    assert torch.allclose(ours, torch.cat(per_sample), atol = 1e-6)
+
+
+def _adapted_tiny():
+    from peft import LoraConfig
+
+    transformer = _tiny_transformer()
+    transformer.add_adapter(
+        LoraConfig(r = 4, lora_alpha = 4, init_lora_weights = "gaussian", target_modules = list(_WAN_TARGETS))
+    )
+    return transformer
+
+
+def test_targets_adapt_every_block_linear_and_nothing_else():
+    transformer = _adapted_tiny()
+    adapted = {n for n, m in transformer.named_modules() if hasattr(m, "lora_A")}
+    block_linears = {
+        f"blocks.{i}.{n}"
+        for i in range(2)
+        for n in (
+            "attn1.to_q",
+            "attn1.to_k",
+            "attn1.to_v",
+            "attn1.to_out.0",
+            "attn2.to_q",
+            "attn2.to_k",
+            "attn2.to_v",
+            "attn2.to_out.0",
+            "ffn.net.0.proj",
+            "ffn.net.2",
+        )
+    }
+    assert adapted == block_linears
+    # The condition embedder and output head stay frozen.
+    assert not any(n.startswith(("condition_embedder", "proj_out", "patch_embedding")) for n in adapted)
+
+
+def test_saved_lora_has_diffusers_keys_and_loads_through_wanpipeline(tmp_path):
+    from peft.utils import get_peft_model_state_dict
+    from safetensors.torch import load_file
+
+    WanPipeline, _ = _wan_classes()
+    trained = _adapted_tiny()
+    with torch.no_grad():
+        for n, p in trained.named_parameters():
+            if "lora_B" in n:
+                p.normal_(0.0, 0.5)
+    dit._wan_save(None, str(tmp_path), get_peft_model_state_dict(trained))
+    path = tmp_path / DEFAULT_LORA_FILENAME
+    keys = set(load_file(str(path)))
+    assert keys and all(k.startswith("transformer.blocks.") for k in keys)
+    assert "transformer.blocks.0.attn1.to_q.lora_A.weight" in keys
+    assert "transformer.blocks.1.ffn.net.2.lora_B.weight" in keys
+
+    # A fresh base through the real loader the inference path uses: the adapter attaches to every module and
+    # changes the output, and disabling it restores the base exactly.
+    fresh = _tiny_transformer()
+    pipe = WanPipeline(
+        tokenizer = None, text_encoder = None, vae = None, scheduler = None, transformer = fresh, expand_timesteps = True
+    )
+    noisy = torch.randn(1, Z_DIM, 1, 8, 8)
+    emb = torch.randn(1, 16, 32)
+    t = torch.tensor([500.0])
+    with torch.no_grad():
+        base = dit._wan_forward(fresh, noisy, t, None, (emb,), None, "cpu", torch.float32)
+        pipe.load_lora_weights(str(tmp_path), weight_name = DEFAULT_LORA_FILENAME, adapter_name = "style")
+        loaded = {n for n, m in fresh.named_modules() if hasattr(m, "lora_A") and "style" in m.lora_A}
+        assert len(loaded) == 20
+        with_lora = dit._wan_forward(fresh, noisy, t, None, (emb,), None, "cpu", torch.float32)
+        trained_out = dit._wan_forward(trained, noisy, t, None, (emb,), None, "cpu", torch.float32)
+        pipe.disable_lora()
+        off = dit._wan_forward(fresh, noisy, t, None, (emb,), None, "cpu", torch.float32)
+    assert not torch.allclose(with_lora, base)
+    assert torch.allclose(with_lora, trained_out, atol = 1e-5), "the loaded adapter must reproduce the trained one"
+    assert torch.equal(off, base)
+    assert math.isfinite(float(with_lora.abs().max()))

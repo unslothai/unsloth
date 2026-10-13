@@ -3,8 +3,8 @@
 
 """Flow-matching LoRA training for the rectified-flow DiT families.
 
-Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Z-Image, Krea 2. Video: LTX-2 (from a
-still-image dataset; see the ``_LTX2_TARGETS`` block for what a video family adds).
+Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Z-Image, Krea 2. Video: LTX-2 and Wan2.2-TI2V-5B (from a
+still-image dataset; see the ``_LTX2_TARGETS`` and ``_WAN_TARGETS`` blocks for what a video family adds).
 
 These are rectified-flow transformers, not the SDXL U-Net, so they share only the plumbing in
 ``diffusion_train_common`` (config, dataset discovery, events, stop, publishing). The training math
@@ -183,6 +183,9 @@ class _FamilySpec:
     latent_shape: Optional[Callable[..., tuple]] = None
     decode_latents: Optional[Callable[..., Any]] = None
     sample_forward_kwargs: Optional[dict] = None
+    # cfg -> the FlowMatchEuler scheduler the loop draws sigmas from. None = load it from the base's scheduler/ subfolder,
+    # which is only right when that subfolder IS a FlowMatchEuler config (Wan ships UniPC).
+    training_scheduler: Optional[Callable[..., Any]] = None
 
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
@@ -1644,6 +1647,180 @@ def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# Wan2.2-TI2V-5B (video). Trained from STILL IMAGES like LTX-2: Wan's causal VAE maps a 1-frame clip to one latent frame
+# (temporal compression 4, frame counts 4k+1), so a still is a valid T2V sample. It is a single-stream video DiT with no
+# audio, so every block's self-attention, text cross-attention and FFN are adapter sites: the q/k/v/o + ffn.0/ffn.2 set
+# DiffSynth-Studio and musubi-tuner train on Wan. A bare "to_q" is safe here (no other stream carries one), and
+# attn2.add_k_proj / add_v_proj exist only on the CLIP-conditioned I2V-14B checkpoints, not on TI2V-5B.
+_WAN_TARGETS = (
+    "to_q",
+    "to_k",
+    "to_v",
+    "to_out.0",
+    "ffn.net.0.proj",
+    "ffn.net.2",
+)
+# WanPipeline.__call__'s default: UMT5 embeddings are cut at the prompt's real length and zero-padded back to this.
+_WAN_MAX_SEQUENCE_LENGTH = 512
+
+
+def _wan_pipeline_cls():
+    from diffusers import WanPipeline
+
+    return WanPipeline
+
+
+def _wan_load_conditioners(cfg, device, weight_dtype):
+    """UMT5 + tokenizer + VAE, no transformer. The VAE loads in fp32 straight from its fp32 checkpoint: the shared
+    loader casts the whole pipeline to bf16 first and then up to fp32, which would round every VAE weight through bf16
+    on the way (Studio's Wan inference keeps it fp32 for the same reason, ``vae_force_fp32``)."""
+    import torch
+    from diffusers import AutoencoderKLWan
+
+    vae = AutoencoderKLWan.from_pretrained(
+        cfg.base_model, subfolder = "vae", torch_dtype = torch.float32, token = cfg.hf_token
+    )
+    pipe = _wan_pipeline_cls().from_pretrained(
+        cfg.base_model,
+        transformer = None,
+        vae = vae,
+        torch_dtype = torch.bfloat16,
+        token = cfg.hf_token,
+    )
+    pipe.vae.to(device, dtype = torch.float32)
+    return pipe, pipe.vae
+
+
+def _wan_load_transformer(cfg, device, weight_dtype, base_precision):
+    from diffusers import WanTransformer3DModel
+    return _load_dit_transformer(WanTransformer3DModel, cfg, device, base_precision)
+
+
+def _wan_trim_padding(embeds):
+    """Drop the trailing all-zero rows WanPipeline pads to max_sequence_length. Lossless: ``_wan_collate`` pads with
+    zeros again, so the transformer sees the exact tensor the pipeline builds, while the cache holds ~20 tokens per
+    caption instead of 512 (4 MB each in bf16)."""
+    nonzero = embeds[0].abs().amax(dim = -1) > 0
+    idx = nonzero.nonzero()
+    keep = int(idx.max()) + 1 if idx.numel() else 1
+    return embeds[:, :keep].contiguous()
+
+
+def _wan_encode_prompts(pipe, captions, device):
+    import torch
+
+    _encoders_to_device(pipe, device)
+    out = []
+    with torch.no_grad():
+        for cap in captions:
+            pe, _neg = pipe.encode_prompt(
+                prompt = cap,
+                do_classifier_free_guidance = False,
+                num_videos_per_prompt = 1,
+                max_sequence_length = _WAN_MAX_SEQUENCE_LENGTH,
+                device = device,
+            )
+            out.append((_wan_trim_padding(pe).cpu(),))
+    return out
+
+
+def _wan_latent_affine(vae, ref):
+    """The per-channel (mean, std) WanPipeline normalises with: decode computes ``latents / (1 / std) + mean``, so the
+    training latent is ``(z - mean) / std``."""
+    import torch
+
+    z = int(vae.config.z_dim)
+    mean = torch.tensor(vae.config.latents_mean, device = ref.device, dtype = ref.dtype).view(
+        1, z, 1, 1, 1
+    )
+    std = torch.tensor(vae.config.latents_std, device = ref.device, dtype = ref.dtype).view(
+        1, z, 1, 1, 1
+    )
+    return mean, std
+
+
+def _wan_pixels(vae, pixel_values):
+    # A still is a 1-frame clip: [B,3,H,W] -> [B,3,1,H,W]. TI2V-5B's VAE compresses 16x spatially (z_dim 48), so a
+    # 704px still becomes [B,48,1,44,44].
+    return pixel_values.to(dtype = next(vae.parameters()).dtype).unsqueeze(2)
+
+
+def _wan_encode_latents(vae, pixel_values):
+    import torch
+
+    with torch.no_grad():
+        lat = vae.encode(_wan_pixels(vae, pixel_values)).latent_dist.sample()
+    mean, std = _wan_latent_affine(vae, lat)
+    return (lat - mean) / std
+
+
+def _wan_encode_latent_stats(vae, pixel_values):
+    import torch
+
+    with torch.no_grad():
+        dist = vae.encode(_wan_pixels(vae, pixel_values)).latent_dist
+    mean, std = _wan_latent_affine(vae, dist.mean)
+    return (dist.mean - mean) / std, dist.std / std
+
+
+def _wan_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    import torch
+    import torch.nn.functional as F
+
+    # Re-pad every trimmed embed to the pipeline's fixed length with zeros, exactly as _get_t5_prompt_embeds does.
+    length = max(_WAN_MAX_SEQUENCE_LENGTH, *(e[0].shape[1] for e in entries))
+    padded = [F.pad(e[0], (0, 0, 0, length - e[0].shape[1])) for e in entries]
+    return (torch.cat(padded).to(device = device, dtype = weight_dtype),)
+
+
+def _wan_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    (prompt_embeds,) = embeds_batch
+    # Wan conditions on the scheduler timestep itself (sigma * 1000), like the pipeline passes it. TI2V-5B's pipeline
+    # sets expand_timesteps and passes a per-TOKEN [B, F*H/2*W/2] timestep, so an image-to-video request can pin its
+    # first-frame latent at t = 0. A text-to-video sample (what a still trains as) has every token at t, and the
+    # transformer then computes the same modulation per token as the [B] form broadcasts (scale_shift_table + temb,
+    # pinned by test_forward_matches_the_pipelines_expand_timesteps_call), so pass [B] and skip the [B, L, 6, D]
+    # per-token projections.
+    return transformer(
+        hidden_states = noisy,
+        timestep = timesteps.to(device = noisy.device).reshape(-1),
+        encoder_hidden_states = prompt_embeds,
+        return_dict = False,
+    )[0]
+
+
+def _wan_save(pipe_cls, out_dir, transformer_lora_layers):
+    # ``transformer.``-prefixed diffusers keys, the format WanPipeline.load_lora_weights reads.
+    _wan_pipeline_cls().save_lora_weights(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+    )
+
+
+def _wan_training_scheduler(cfg):
+    """Wan ships a UniPC scheduler (``use_flow_sigmas``, ``flow_shift`` 5.0 on TI2V-5B), not FlowMatchEuler. Loading
+    FlowMatchEuler from that config silently drops ``flow_shift`` and trains on unshifted sigmas, a distribution the
+    model never denoises at inference. Build the FlowMatchEuler table with the same static shift baked in: UniPC's
+    flow sigmas are ``shift * u / (1 + (shift - 1) * u)``, exactly FlowMatchEuler's static shift, so the default
+    flow_shift (None, the model's own schedule) is the inference distribution and a numeric flow_shift still re-shifts
+    from the unshifted u."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    conf = FlowMatchEulerDiscreteScheduler.load_config(
+        cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+    )
+    return FlowMatchEulerDiscreteScheduler(
+        num_train_timesteps = int(conf.get("num_train_timesteps", 1000)),
+        shift = float(conf.get("flow_shift") or 1.0),
+    )
+
+
 def _vae8_latent_shape(vae, height, width):
     return (1, vae.config.latent_channels, height // 8, width // 8), (height // 16) * (width // 16)
 
@@ -1796,6 +1973,24 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _ltx2_collate,
         forward = _ltx2_forward,
         save = _ltx2_save,
+    ),
+    "wan2.2-ti2v-5b": _FamilySpec(
+        family = "wan2.2-ti2v-5b",
+        lora_targets = _WAN_TARGETS,
+        # Wan trains and runs in bf16 (its RoPE is float64/fp32 internally); fp16 is unvalidated.
+        force_bf16 = True,
+        # 5B params; the transformer ships fp32 on disk (20 GB), so bf16 resident is ~10 GB. UMT5-XXL (11.4 GB bf16)
+        # is loaded, encoded and freed BEFORE this lands on the device.
+        dense_bf16_gb = 10.0,
+        load_conditioners = _wan_load_conditioners,
+        load_transformer = _wan_load_transformer,
+        encode_prompts = _wan_encode_prompts,
+        encode_latents = _wan_encode_latents,
+        encode_latent_stats = _wan_encode_latent_stats,
+        collate = _wan_collate,
+        forward = _wan_forward,
+        save = _wan_save,
+        training_scheduler = _wan_training_scheduler,
     ),
 }
 
@@ -2225,7 +2420,7 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2) and
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2 / Wan2.2-TI2V-5B) and
     export it. Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments,
     LR position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle, and
     the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
@@ -2553,9 +2748,12 @@ def _train_dit(
     optimizer = _make_optimizer(
         lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
     )
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
-    )
+    if spec.training_scheduler is not None:
+        scheduler = spec.training_scheduler(fetch_cfg)
+    else:
+        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+        )
     # getattr defaults keep an un-normalized config on the historical behaviour.
     flow_shift = getattr(cfg, "flow_shift", None)
     if flow_shift is None and spec.family in AUTO_FLOW_SHIFT_FAMILIES:
