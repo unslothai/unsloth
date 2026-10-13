@@ -175,11 +175,6 @@ class TestLocalDatabaseFileIsNotAHost:
             'import sqlite3 as sql\nsql.connect("sales.db")',
             'import duckdb as ddb\nddb.connect("a.duckdb")',
             'import sqlite3\nsqlite3 . connect("sales.db")',
-            (
-                "import sqlite3\ndef normalize(sqlite3):\n    return sqlite3\n"
-                'sqlite3.connect("sales.db")'
-            ),
-            ("import sqlite3 as db\ndef normalize(db):\n    return db\n" 'db.connect("sales.db")'),
             'def load():\n    import sqlite3\n    return sqlite3.connect("sales.db")',
             (
                 "import sqlite3\ndef inspect():\n    global sqlite3\n"
@@ -187,23 +182,14 @@ class TestLocalDatabaseFileIsNotAHost:
             ),
             ("class Store:\n    import sqlite3\n" '    connection = sqlite3.connect("sales.db")'),
             (
-                "import sqlite3 as db\ndef load():\n    db = object()\n"
-                "    def open_database():\n        global db\n"
-                '        return db.connect("sales.db")\n    return open_database()\nload()'
-            ),
-            (
                 "def load():\n    import sqlite3 as db\n"
                 '    return [db.connect("sales.db") for _ in [1]]\nload()'
             ),
-            'import sqlite3 as db\n[db for db in ()]\ndb.connect("sales.db")',
-            'import sqlite3 as db\n{db for db in ()}\ndb.connect("sales.db")',
-            'import sqlite3 as db\n{db: None for db in ()}\ndb.connect("sales.db")',
-            'import sqlite3 as db\ntuple(db for db in ())\ndb.connect("sales.db")',
             'import sqlite3\ndb = sqlite3\ndb.connect("sales.db")',
             'import sqlite3\ndb = sqlite3\nother = db\nother.connect("sales.db")',
             'import sqlite3\nsqlite3.connect("C://Users/me/sales.db")',
             (
-                'def load():\n    import sqlite3\n    db = sqlite3\n'
+                "def load():\n    import sqlite3\n    db = sqlite3\n"
                 '    return db.connect("sales.db")\nload()'
             ),
         ],
@@ -282,11 +268,11 @@ class TestLocalDatabaseFileIsNotAHost:
                 '[db.connect("evil.example") for db in [ftplib.FTP()]]'
             ),
             (
-                'import sqlite3\nimport ftplib\ndb = sqlite3\n'
+                "import sqlite3\nimport ftplib\ndb = sqlite3\n"
                 'db = ftplib.FTP()\ndb.connect("evil.example")'
             ),
             (
-                'import sqlite3\nimport ftplib\nsqlite3 = ftplib.FTP()\n'
+                "import sqlite3\nimport ftplib\nsqlite3 = ftplib.FTP()\n"
                 'db = sqlite3\ndb.connect("evil.example")'
             ),
             (
@@ -297,6 +283,37 @@ class TestLocalDatabaseFileIsNotAHost:
         ],
     )
     def test_remote_connect_still_blocked(self, code):
+        _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            (
+                "import sqlite3\ndef normalize(sqlite3):\n    return sqlite3\n"
+                'sqlite3.connect("evil.example")'
+            ),
+            (
+                "import sqlite3 as db\ndef normalize(db):\n    return db\n"
+                'db.connect("evil.example")'
+            ),
+            (
+                "import sqlite3 as db\ndef load():\n    db = object()\n"
+                "    def open_database():\n        global db\n"
+                '        return db.connect("evil.example")\n    return open_database()\nload()'
+            ),
+            'import sqlite3 as db\n[db for db in ()]\ndb.connect("evil.example")',
+            'import sqlite3 as db\n{db for db in ()}\ndb.connect("evil.example")',
+            'import sqlite3 as db\n{db: None for db in ()}\ndb.connect("evil.example")',
+            'import sqlite3 as db\ntuple(db for db in ())\ndb.connect("evil.example")',
+            (
+                "import ftplib\ndef load():\n    import sqlite3 as db\n    net = ftplib.FTP()\n"
+                "    class C:\n        db = None\n        def m(self):\n            nonlocal db\n"
+                '            db = net\n    C().m()\n    return db.connect("evil.example")\nload()'
+            ),
+            'import sqlite3\nfrom helpers import *\nsqlite3.connect("evil.example")',
+        ],
+    )
+    def test_a_name_bound_any_other_way_keeps_the_host_check(self, code):
         _blocked(code, expect_phrase = "Blocked: host not in sandbox allowlist")
 
     @pytest.mark.parametrize(
