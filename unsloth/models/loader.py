@@ -123,6 +123,7 @@ from ._utils import (
     _requested_float32,
     _mark_requested_float32,
     _mark_forced_float32,
+    _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
     _mark_full_finetuning,
     _get_text_only_config,
@@ -3119,6 +3120,7 @@ class FastModel(FastBaseModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        model = _drop_float16_overflowing_attention_dropout(model, dtype)
         # Loaded adapters skip get_peft_model.
         _ignore_block_swap_params_for_ddp(model)
         model = _mark_forced_float32(model, do_forced_float32)

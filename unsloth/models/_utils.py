@@ -18,6 +18,7 @@ __all__ = [
     "_requested_float32",
     "_mark_requested_float32",
     "_mark_forced_float32",
+    "_drop_float16_overflowing_attention_dropout",
     "_mark_full_finetuning",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
@@ -4620,6 +4621,28 @@ def _mark_forced_float32(model, forced):
         model._unsloth_forced_float32 = bool(forced)
     except Exception:
         pass
+    return model
+
+
+def _drop_float16_overflowing_attention_dropout(model, dtype):
+    """Granite 3.0-3.2 dense ship attention_dropout = 0.1 (3.3+ ship 0). Dropping the attention sink in training pushes the last layer's SwiGLU past float16's 65504 (85k measured in bfloat16), so float16 training NaNs (#3002)."""
+    if dtype != torch.float16:
+        return model
+    changed = False
+    for module in model.modules():
+        dropout = getattr(module, "attention_dropout", None)
+        if (
+            type(module).__name__ == "GraniteAttention"
+            and isinstance(dropout, (int, float))
+            and dropout > 0
+        ):
+            module.attention_dropout = 0.0
+            changed = True
+    if changed:
+        print(
+            "Unsloth: Granite's attention dropout overflows float16 during training and makes the loss NaN, "
+            "so it is turned off for this float16 load. Use bfloat16 to keep it."
+        )
     return model
 
 
