@@ -221,8 +221,8 @@
 }
 
 :root {
-	/* Every popup surface: a tight shadow, even on all four sides. */
-	--popup-shadow: 0 0 12px 0 rgb(0 0 0 / 0.2);
+	/* Every popup surface: a faint lift off the dimmed page. */
+	--popup-shadow: 0 12px 32px -12px rgb(0 0 0 / 0.16), 0 2px 6px -2px rgb(0 0 0 / 0.06);
 	/* Animation timing */
 	--duration-micro: 100ms;
 	--duration-fast: 150ms;
@@ -444,8 +444,8 @@
 }
 
 .dark {
-	/* Wider than light: the dimmed dark page is near black, so a tight shadow reads as an outline. */
-	--popup-shadow: 0 0 32px 0 rgb(0 0 0 / 0.7);
+	/* A faint shadow needs more alpha to read on a dark page. */
+	--popup-shadow: 0 16px 40px -12px rgb(0 0 0 / 0.7);
 	/* Dark surfaces shared by ALL palettes: #181818 page, elevated #272727
 	   sidebar/cards, #3a3a3a hover, #dfdfdf ink. Palette dark blocks override
 	   only accent tokens so dark mode stays consistent across themes. */
