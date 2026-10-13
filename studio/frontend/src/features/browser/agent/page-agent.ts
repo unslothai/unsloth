@@ -63,6 +63,8 @@ export type AgentAnswer = {
   pending?: boolean;
   /** `describe` at a point: the element there, for a click or drag's `expect`. */
   hit?: string;
+  /** `describe` at a point: all it reported, for `sig`, checked again in the call that acts. */
+  sig?: string;
   /** `status`: this document, for `evaluate` to refuse any other. */
   doc?: string;
 };
@@ -596,13 +598,17 @@ export function installPageAgent(): PageAgent {
       ...(!submits && submitter ? { submitter: clean(nameOf(submitter), 200) } : {}),
     };
     // A point's element, so the action after the panel's question hits what was asked about.
-    return point ? { ok: true, info, hit: refOf(found) } : { ok: true, info };
+    return point ? { ok: true, info, hit: refOf(found), sig: JSON.stringify(info) } : { ok: true, info };
   };
 
   /** The element at the point, if it is still the one `expect` (a describe's `hit`) named. */
-  const stillAt = (at: Point, expect: unknown): Element => {
+  const stillAt = (at: Point, expect: unknown, sig?: unknown): Element => {
     const el = elementAt(at);
     if (typeof expect === "string" && expect && refOf(el) !== expect) {
+      throw new AgentError("the page changed under that point; take a screenshot to see it again.");
+    }
+    // And what it is: an href or form can change on the same node between the check and the act.
+    if (typeof sig === "string" && sig && describe("", undefined, at).sig !== sig) {
       throw new AgentError("the page changed under that point; take a screenshot to see it again.");
     }
     return el;
@@ -700,8 +706,8 @@ export function installPageAgent(): PageAgent {
   };
 
   /** No overlay check: a point gets whatever is drawn on top there, as a real click would. */
-  const clickAt = (at: Point, directLinks: boolean, expect: unknown): Record<string, unknown> => {
-    const el = stillAt(at, expect);
+  const clickAt = (at: Point, directLinks: boolean, expect: unknown, sig: unknown): Record<string, unknown> => {
+    const el = stillAt(at, expect, sig);
     // As a real click: a disabled control takes none, and a dispatched one would still reach its listeners.
     if (el.closest(":disabled")) return { ok: false, error: `${refOf(el)} is disabled or read-only.` };
     const navigate = linkOut(el, directLinks);
@@ -739,9 +745,9 @@ export function installPageAgent(): PageAgent {
       new DragEvent(type, { bubbles: true, cancelable: true, composed: true, clientX: at.x, clientY: at.y, dataTransfer: data, view: window }),
     );
 
-  const pointer = (phase: unknown, at: Point, expect: unknown): Record<string, unknown> => {
+  const pointer = (phase: unknown, at: Point, expect: unknown, sig: unknown): Record<string, unknown> => {
     // The press and the release are held to the elements the user was asked about; moves are not.
-    const el = phase === "down" || phase === "up" ? stillAt(at, expect) : elementAt(at);
+    const el = phase === "down" || phase === "up" ? stillAt(at, expect, sig) : elementAt(at);
     if (phase === "down") {
       pressAt(el, at);
       drag = { html: null };
@@ -1132,14 +1138,14 @@ export function installPageAgent(): PageAgent {
         case "click": {
           const at = pointIn(command);
           return inOwnTab(() =>
-            at ? clickAt(at, command.directLinks === true, command.expect) : click(ref, command.directLinks === true),
+            at ? clickAt(at, command.directLinks === true, command.expect, command.sig) : click(ref, command.directLinks === true),
           );
         }
         case "locate":
           return locate(ref, command.scroll === true);
         case "pointer": {
           const at = pointIn(command);
-          return at ? inOwnTab(() => pointer(command.phase, at, command.expect)) : { ok: false, error: "unknown command" };
+          return at ? inOwnTab(() => pointer(command.phase, at, command.expect, command.sig)) : { ok: false, error: "unknown command" };
         }
         case "evaluate":
           return compileAndEvaluate(String(command.id ?? ""), command.doc, String(command.script ?? ""));

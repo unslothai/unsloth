@@ -86,7 +86,7 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
     toRef: str(raw.to_ref, 16),
     toX: num(raw.to_x),
     toY: num(raw.to_y),
-    script: str(raw.script, 8000),
+    script: str(raw.script, 16_000),
     fullPage: raw.full_page === true,
     query: str(raw.query, 256),
     limit: typeof raw.limit === "number" && Number.isInteger(raw.limit) ? raw.limit : undefined,
@@ -282,6 +282,7 @@ function checkedAnswer(value: unknown): AgentAnswer | null {
     height: num(raw.height),
     pending: raw.pending === true,
     hit: str(raw.hit, 16),
+    sig: str(raw.sig, 20_000),
     doc: str(raw.doc, 16),
     scrollX: num(raw.scrollX),
     scrollY: num(raw.scrollY),
@@ -625,7 +626,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     const clicked = await pageCall(ready, {
       op: "click",
       ref,
-      ...(point ? { ...point, expect: described.hit ?? "" } : {}),
+      ...(point ? { ...point, expect: described.hit ?? "", sig: described.sig ?? "" } : {}),
       directLinks: !useNativeBrowser.getState().enabled,
     });
     if (!clicked.ok) return { ok: false, error: clicked.error };
@@ -743,6 +744,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     return { ok: false, error: "the start and end don't fit on screen together; drag by x and y, or in shorter steps." };
   }
   const hits: string[] = [];
+  const sigs: string[] = [];
   const infos: string[] = [];
   let asked = false;
   for (const point of [from, end]) {
@@ -753,12 +755,13 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
     hits.push(described.hit ?? "");
+    sigs.push(described.sig ?? "");
     infos.push(JSON.stringify(described.info));
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
   // While the user decided, either end could have been relabelled or rewired around the same spot.
   if (asked && !(await unchanged(tab, from, hits[0], infos[0]))) return { ok: false, error: CHANGED_UNDER_POINT };
-  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0] });
+  const down = await pageCall(tab, { op: "pointer", phase: "down", ...from, expect: hits[0], sig: sigs[0] });
   if (!down.ok) return { ok: false, error: down.error };
   // Paced like a hand: pages often take one move per frame, or wait for a distance before a drag starts.
   const steps = Math.min(25, Math.max(5, Math.round(Math.hypot(end.x - from.x, end.y - from.y) / DRAG_STEP_PX)));
@@ -790,7 +793,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
     if (!(await unchanged(tab, end, target.hit ?? "", JSON.stringify(target.info)))) return cancel(CHANGED_UNDER_POINT);
   }
   // In the same call as the drop: nothing can swap the target between the check and the release.
-  const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "" });
+  const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" });
   if (!up.ok) return cancel(up.error ?? CHANGED_UNDER_POINT);
   return afterward(tab, before, action, context, up.note);
 }
