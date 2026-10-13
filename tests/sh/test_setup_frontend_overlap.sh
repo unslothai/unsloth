@@ -36,6 +36,8 @@ set -euo pipefail
 step() { echo "step $*"; }
 substep() { echo "substep $*"; }
 _is_verbose() { [ "${UNSLOTH_VERBOSE:-0}" = "1" ]; }
+_install_oxc_runtime() { echo "oxc-installed"; [ -z "${OXC_FAIL:-}" ] || exit "$OXC_FAIL"; }
+_OXC_DIR="$SCRIPT_DIR/backend/oxc"
 '
 
 FE="$WORK/outer/studio/frontend"
@@ -68,6 +70,17 @@ assert_eq "parent step runs while the build is still going" "parent-step" \
     "$(printf '%s\n' "$out" | grep -E '^(parent-step|built-line)$' | head -1)"
 assert_contains "parent continues after a good build" "$out" "after-join"
 assert_contains "exit 0" "$out" "rc=0"
+
+echo "== the OXC runtime installs inside the job, after the build =="
+assert_eq "build line then OXC line" "built-line oxc-installed" \
+    "$(printf '%s\n' "$out" | grep -E '^(built-line|oxc-installed)$' | tr '\n' ' ' | sed 's/ $//')"
+out=$(OXC_FAIL=6 run_case '
+_build_frontend() { echo "built-line"; }
+_frontend_bg_start
+_frontend_bg_join
+echo "not-reached"')
+assert_contains "an OXC failure in the job fails setup with its code" "$out" "rc=6"
+assert_not_contains "setup stops" "$out" "not-reached"
 
 echo "== a failed build fails setup with its exit code =="
 out=$(run_case '

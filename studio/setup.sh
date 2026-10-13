@@ -223,7 +223,9 @@ _frontend_bg_start() {
         ) </dev/null >/dev/null 2>&1 &
         trap 'exit 143' TERM
         _build_frontend
+        _install_oxc_runtime
         _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
+        _remove_agent_instruction_files "$_OXC_DIR/node_modules"
     ) </dev/null >"$_FRONTEND_BG_LOG" 2>&1 &
     _FRONTEND_BG_PID=$!
     [ "$_monitor" = on ] || set +m
@@ -2278,6 +2280,38 @@ _packaged_frontend_available() {
         [ -f "$SCRIPT_DIR/frontend/dist/index.html" ]
 }
 
+# ── oxc-validator runtime ──
+_install_oxc_runtime() {
+# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
+# Node, so do not run npm install against an unsuitable/absent system Node.
+if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
+    cd "$_OXC_DIR"
+    _OXC_INSTALL_LOG=$(mktemp)
+    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
+    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
+    # below is reachable; it also captures the exact exit code.
+    _oxc_install_rc=0
+    _NPM_INSTALL=install
+    [ -f package-lock.json ] && _NPM_INSTALL=ci
+    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
+    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
+        _oxc_install_rc=0
+    fi
+    _CAPTURE_LOG=""
+    if [ "$_oxc_install_rc" -ne 0 ]; then
+        _suggest_npm_registry "$_OXC_INSTALL_LOG"
+        rm -f "$_OXC_INSTALL_LOG"
+        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
+    fi
+    rm -f "$_OXC_INSTALL_LOG"
+    cd "$SCRIPT_DIR"
+elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
+    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
+    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
+    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
+fi
+}
+
 if [ "$_LLAMA_ONLY" != "1" ]; then
 # ── Detect whether frontend needs building ──
 # Tauri owns its frontend bundle. Standard PyPI installs use the release-built
@@ -2614,41 +2648,13 @@ fi  # end _FRONTEND_SKIP guard (Node available: system or isolated)
 
 fi  # end frontend build check
 
-# ── oxc-validator runtime ──
-# Skip when the user opted out of Node (NODE_SOURCE=skip): there is no suitable
-# Node, so do not run npm install against an unsuitable/absent system Node.
-if [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ] && command -v npm &>/dev/null; then
-    cd "$_OXC_DIR"
-    _OXC_INSTALL_LOG=$(mktemp)
-    _CAPTURE_LOG="$_OXC_INSTALL_LOG"
-    # `|| _oxc_install_rc=$?` keeps this off `set -e`'s exit path so the hint branch
-    # below is reachable; it also captures the exact exit code.
-    _oxc_install_rc=0
-    _NPM_INSTALL=install
-    [ -f package-lock.json ] && _NPM_INSTALL=ci
-    run_quiet_no_exit "npm $_NPM_INSTALL (oxc validator runtime)" npm "$_NPM_INSTALL" --no-fund --no-audit --loglevel=error "${_NPM_REGISTRY_ARGS[@]+"${_NPM_REGISTRY_ARGS[@]}"}" || _oxc_install_rc=$?
-    if [ "$_oxc_install_rc" -ne 0 ] && _npm_mirror_retry "npm $_NPM_INSTALL (oxc validator runtime)"; then
-        _oxc_install_rc=0
-    fi
-    _CAPTURE_LOG=""
-    if [ "$_oxc_install_rc" -ne 0 ]; then
-        _suggest_npm_registry "$_OXC_INSTALL_LOG"
-        rm -f "$_OXC_INSTALL_LOG"
-        setup_fail "$_oxc_install_rc" "OXC validator dependency installation failed (exit code $_oxc_install_rc)"
-    fi
-    rm -f "$_OXC_INSTALL_LOG"
-    cd "$SCRIPT_DIR"
-elif [ -d "$_OXC_DIR" ] && [ "${NODE_SOURCE:-}" != skip ]; then
-    # No npm on PATH: skip rather than abort; the backend Node resolver degrades
-    # the validator gracefully. Mirrors setup.ps1's elseif on this block.
-    substep "OXC validator runtime skipped (no npm found); code validation degrades until Node is available" "$C_WARN"
-fi
-
-# A background build still owns frontend/node_modules (npm ci recreates it) and cleans it itself.
+# A background build runs this itself once it is built: it shares the npm mirror the build may
+# have switched to, and nothing else writes either node_modules meanwhile.
 if [ -z "$_FRONTEND_BG_PID" ]; then
+    _install_oxc_runtime
     _remove_agent_instruction_files "$SCRIPT_DIR/frontend/node_modules"
+    _remove_agent_instruction_files "$_OXC_DIR/node_modules"
 fi
-_remove_agent_instruction_files "$_OXC_DIR/node_modules"
 
 # ── Python venv + deps ──
 
