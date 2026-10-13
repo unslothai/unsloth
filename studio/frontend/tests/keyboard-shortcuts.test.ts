@@ -1155,39 +1155,21 @@ test("the model picker chord opens without the tour's pin", async () => {
   assert.equal((CHAT_PAGE.match(/openModelSelector/g) ?? []).length, 3);
 });
 
-// The inline rename pill is rendered by the row, so it needs the row to be on
-// screen. A chord has no row under the cursor, and the open chat may be behind
-// a collapsed section, past a folder's limit, or on a route with no chat list.
-test("the rename chord does not land in a surface only a row can show", async () => {
-  // The chord asks for the dialog; the context menu, which has a row under the
-  // cursor by definition, keeps the pill.
+// Every way to rename a sidebar chat opens the Rename chat dialog: the chord, the row's menu,
+// its right-click menu and a double-click. There is no in-row editor to need the row on screen.
+test("every sidebar chat rename opens the dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item, false\)\);/,
+    /useShortcut\("renameChat", \(\) => \{[\s\S]*?withActiveChat\(\(item\) => openRenameChat\(item\)\);/,
   );
-  // The menu names the list its row is in, so a chat on screen twice renames in the row the
-  // user opened, not in both at once.
+  assert.match(APP_SIDEBAR, /onSelect=\{\(\) => openRenameChat\(item\)\}/);
   assert.match(
     APP_SIDEBAR,
-    /onSelect=\{\(\) => openRenameChat\(item, true, list\?\.scope\)\}/,
+    /onDoubleClick=\{\(event\) => \{[\s\S]*?openRenameChat\(item\);/,
   );
-  assert.match(
-    APP_SIDEBAR,
-    /function openRenameChat\(item: SidebarItem, inline = true, rowScope\?: string\)/,
-  );
-
-  // The pill is gated on it, so a dialog rename cannot also arm a row that is
-  // off screen and surprise the user when it comes back.
-  assert.match(
-    APP_SIDEBAR,
-    /const isRenamingThis =\n\s*renamingTarget\?\.kind === "chat" &&\n\s*renamingTarget\.inline &&/,
-  );
-  // And the dialog takes chats now, which is what its chat strings were always
-  // written for.
-  assert.match(
-    APP_SIDEBAR,
-    /\(renamingTarget\.kind !== "chat" \|\| !renamingTarget\.inline\)/,
-  );
+  assert.match(APP_SIDEBAR, /function openRenameChat\(item: SidebarItem\) \{/);
+  assert.match(APP_SIDEBAR, /open=\{renamingTarget !== null\}/);
+  assert.doesNotMatch(APP_SIDEBAR, /isRenamingThis|handleInlineRename|renamingTarget\.inline/);
   assert.ok(APP_SIDEBAR.includes('t("shell.dialog.renameChat.title")'));
 });
 
