@@ -83,7 +83,8 @@ def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
 def unsupported_ltx_message(version: str, subject: str) -> str:
     return (
         f"{subject} is LTX-{version}, which Studio does not support yet. Studio runs LTX-2.0 / LTX-2.3 "
-        "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers)."
+        "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers or "
+        "unsloth/LTX-2.5-GGUF)."
     )
 
 
@@ -288,6 +289,10 @@ class VideoFamily:
     filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
+    # Subdirectory of gguf_repo a bare repo id means; None keeps the root.
+    gguf_default_subdir: Optional[str] = None
+    # Picker label for root files when they differ from gguf_default_subdir ("UD-Q4_K_XL · dev").
+    gguf_root_label: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
     # DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
@@ -596,6 +601,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
         prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
+        # Dev DiT at the root, distilled under distilled/; the pack above supplies VAEs and connectors.
+        gguf_repo = "unsloth/LTX-2.5-GGUF",
+        # Family defaults (8 + 3 steps, CFG 1) are the distilled DiT's.
+        gguf_default_subdir = "distilled",
+        gguf_root_label = "dev",
         supports_keyframes = True,
         accepts_last_frame = False,
         # Same DiT layout as LTX-2.3, so the same measured knobs.
@@ -807,7 +817,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
             preview_factors = "hv15",
             auto_static_skip = (
-                ("hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v", (("max", 2), ("steps", 50))),
+                (
+                    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
+                    (("max", 2), ("steps", 50)),
+                ),
             ),
         ),
         comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7
@@ -990,6 +1003,28 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if candidate.name == "hunyuanvideo-1.5-720p":
                 return candidate
     return fam
+
+
+def gguf_default_subdir_for_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ``gguf_default_subdir`` of the family whose curated ``gguf_repo`` is *repo_id*, or None."""
+    needle = (repo_id or "").strip().casefold()
+    if not needle:
+        return None
+    for fam in _FAMILIES:
+        if fam.gguf_repo and fam.gguf_default_subdir and fam.gguf_repo.casefold() == needle:
+            return fam.gguf_default_subdir
+    return None
+
+
+def gguf_root_label_for_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ``gguf_root_label`` of the family whose curated ``gguf_repo`` is *repo_id*, or None."""
+    needle = (repo_id or "").strip().casefold()
+    if not needle:
+        return None
+    for fam in _FAMILIES:
+        if fam.gguf_repo and fam.gguf_root_label and fam.gguf_repo.casefold() == needle:
+            return fam.gguf_root_label
+    return None
 
 
 def supported_video_family_names() -> tuple[str, ...]:

@@ -428,9 +428,9 @@ def has_functional_torchao() -> bool:
 
 def train_precision_modes() -> tuple[list[str], str]:
     """(supported base_precision modes, recommended pick) for the current machine: nf4 always works;
-    bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/fp8/mxfp8 additionally need a
+    bf16/auto need a bf16-capable CUDA GPU (Ampere+); int8/mxfp8 additionally need a
     FUNCTIONAL torchao (their explicit paths import it with no fallback, and the Windows-ROCm
-    stub only looks installed). fp8 also needs sm89+; mxfp8 needs the Blackwell tensor cores
+    stub only looks installed). fp8 needs sm89+ (torch's own _scaled_mm); mxfp8 needs the Blackwell tensor cores
     (sm100+) its cuBLAS kernels target. The dense modes all train in bf16 compute, which the DiT
     trainer requires, so a non-bf16 CUDA GPU (T4/V100/RTX 20xx) is offered only nf4 -- otherwise
     /info would advertise a start that evicts resident models and then fails the trainer's bf16
@@ -442,11 +442,12 @@ def train_precision_modes() -> tuple[list[str], str]:
         if flow_bf16_trainable():
             modes.append("bf16")
             # ROCm capability values are gfx versions, not the NVIDIA SM levels checked below.
-            torchao_ok = has_functional_torchao() and not torch_is_rocm()
+            rocm = torch_is_rocm()
+            torchao_ok = has_functional_torchao() and not rocm
             if torchao_ok:
                 modes.append("int8")
             major, minor = torch.cuda.get_device_capability()
-            if torchao_ok and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
+            if not rocm and (major, minor) >= (8, 9) and hasattr(torch, "float8_e4m3fn"):
                 modes.append("fp8")
             if torchao_ok and (major, minor) >= (10, 0):
                 modes.append("mxfp8")
@@ -542,9 +543,7 @@ def train_defaults(family: str) -> dict[str, Any]:
 
 # Display labels (the registries' ``label``) + a short VRAM/access note per trainable family, surfaced by the Train UI
 # so users pick a base with realistic expectations.
-_FAMILY_LABELS = {
-    fam.name: fam.label for fam in (*_IMAGE_REGISTRY, *_VIDEO_REGISTRY) if fam.label
-}
+_FAMILY_LABELS = {fam.name: fam.label for fam in (*_IMAGE_REGISTRY, *_VIDEO_REGISTRY) if fam.label}
 # params is the transformer size (SDXL is not quoted that way); note is the rest.
 _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     "sdxl": {"params": "", "qlora_vram_gb": 12, "gated": False, "note": "The lightest option."},
@@ -715,7 +714,7 @@ def xpu_native_bf16_probe() -> Optional[bool]:
     if not callable(fn):
         return None
     try:
-        return bool(fn(including_emulation = False))
+        return bool(fn(including_emulation = False)) or _xpu_is_known_bf16_part(torch)
     except TypeError:
         # A torch predating the including_emulation parameter: its answer is the only one there is.
         try:
@@ -724,6 +723,25 @@ def xpu_native_bf16_probe() -> Optional[bool]:
             return None
     except Exception:  # noqa: BLE001 -- unprobeable
         return None
+
+
+def _xpu_is_known_bf16_part(torch) -> bool:
+    """Whether the current XPU is an Arc / Data Center part, read from its PCI id. Never raises.
+
+    The SYCL runtime answers ``has_bfloat16_conversions`` through libocloc (the intel-ocloc
+    package, which the torch-xpu wheels do not ship), so without it the strict probe is False on
+    every device, BMG and PVC included; with it, True on every device. The PCI id does not depend
+    on the install."""
+    try:
+        props = torch.xpu.get_device_properties()
+        device_id = getattr(props, "device_id", None)
+        if isinstance(device_id, int) and device_id > 0:
+            from utils.hardware.hardware import _is_intel_xpu_pci_id
+            return _is_intel_xpu_pci_id(device_id)
+        # A torch without device_id: the marketing name is the only signal left.
+        return bool(re.search(r"\bArc\b|Data Center GPU", str(getattr(props, "name", "") or "")))
+    except Exception:  # noqa: BLE001 -- unprobeable keeps the strict answer
+        return False
 
 
 def native_bf16_supported_xpu() -> bool:
@@ -807,14 +825,147 @@ def bitsandbytes_optimizer_supported() -> bool:
 
     Keyed on get_device(), NOT torch.xpu.is_available(): a hybrid host with an Intel iGPU beside
     an NVIDIA card reports both and detection prefers CUDA. Answering the presence question there
-    would drop 8-bit on a CUDA run, and worse, change optimizer_key() so restore_resume_state
-    refuses every existing AdamW8bit checkpoint with a ResumeError.
+    would make make_lora_optimizer skip AdamW8bit, so restore_resume_state refuses every existing
+    AdamW8bit checkpoint with a ResumeError.
     """
     try:
         from utils.hardware import DeviceType, get_device
         return get_device() != DeviceType.XPU
     except Exception:  # noqa: BLE001 -- a probe failure must not block a start
         return True
+
+
+def _is_bnb_8bit_optimizer_key(name: Optional[str]) -> bool:
+    return isinstance(name, str) and name.startswith("bitsandbytes.") and "8bit" in name
+
+
+def recorded_optimizer_class(cfg: Any, identity: Any) -> Optional[str]:
+    """Optimizer class of the bundle being resumed, else None; never raises (restore_resume_state reports errors)."""
+    if not getattr(cfg, "resume_from_checkpoint", None):
+        return None
+    try:
+        from core.training.diffusion_checkpoint import preflight_resume, read_checkpoint
+        path, _step = preflight_resume(
+            cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+        )
+        value = (read_checkpoint(path) or {}).get("optimizer_class")
+    except Exception:  # noqa: BLE001
+        return None
+    return value if isinstance(value, str) else None
+
+
+def resume_steps_left(cfg: Any, identity: Any) -> int:
+    """Optimizer steps this process will run: the target minus the resumed bundle's step; the target when unknown."""
+    if not getattr(cfg, "resume_from_checkpoint", None):
+        return cfg.train_steps
+    try:
+        from core.training.diffusion_checkpoint import preflight_resume
+        _path, step = preflight_resume(
+            cfg.resume_from_checkpoint, identity = identity, target_steps = cfg.train_steps
+        )
+    except Exception:  # noqa: BLE001 -- restore_resume_state reports the real problem
+        return cfg.train_steps
+    return max(0, cfg.train_steps - int(step))
+
+
+class TrainingPeakMemory:
+    """Training-only peak: ``pause`` banks it before a preview round, ``resume`` resets after, so VAE decode is excluded."""
+
+    def __init__(self, device: str):
+        self.device = device
+        self.banked = 0.0
+        reset_training_peak_memory(device)
+
+    def pause(self) -> None:
+        self.banked = max(self.banked, training_peak_memory_gb(self.device))
+
+    def resume(self) -> None:
+        reset_training_peak_memory(self.device)
+
+    def gb(self) -> float:
+        return max(self.banked, training_peak_memory_gb(self.device))
+
+
+def _accelerator_memory_module(device: str) -> Any:
+    import torch
+
+    module = getattr(torch, device, None) if device in ("cuda", "xpu") else None
+    if module is None or not hasattr(module, "max_memory_allocated"):
+        return None
+    return module
+
+
+def reset_training_peak_memory(device: str) -> None:
+    """Start the reported peak at the loop: the load / encode peak is higher and not the training cost."""
+    module = _accelerator_memory_module(device)
+    if module is not None:
+        try:
+            module.reset_peak_memory_stats()
+        except Exception:  # noqa: BLE001 -- reporting only
+            pass
+
+
+def training_peak_memory_gb(device: str) -> float:
+    """Peak allocated GB since reset_training_peak_memory on CUDA / XPU; 0.0 where unmeasured (reported as None)."""
+    module = _accelerator_memory_module(device)
+    if module is None:
+        return 0.0
+    try:
+        return round(module.max_memory_allocated() / 1e9, 2)
+    except Exception:  # noqa: BLE001 -- reporting only
+        return 0.0
+
+
+GC_MODE_ENV = "UNSLOTH_DIFFUSION_GC_MODE"
+GC_EVERY_N_ENV = "UNSLOTH_DIFFUSION_GC_EVERY_N"
+
+
+def enable_diffusion_gradient_checkpointing(model: Any, mode: Optional[str] = None) -> str:
+    """ "plain" checkpoints every block, "partial" every Nth; selective / CPU-offloaded were slower or diverged under regional compile."""
+    mode = (mode or os.environ.get(GC_MODE_ENV, "") or "plain").strip().lower()
+    every_n = 1
+    if mode == "partial":
+        try:
+            every_n = max(2, int(os.environ.get(GC_EVERY_N_ENV, "") or 2))
+        except ValueError:
+            every_n = 2
+    try:
+        from unsloth_zoo.block_checkpointing import enable_block_gradient_checkpointing
+    except ImportError:
+        import functools
+
+        import torch.utils.checkpoint as _ckpt
+
+        model.enable_gradient_checkpointing(
+            gradient_checkpointing_func = functools.partial(_ckpt.checkpoint, use_reentrant = False)
+        )
+        return "plain"
+    enable_block_gradient_checkpointing(model, every_n_blocks = every_n)
+    return "partial" if every_n > 1 else "plain"
+
+
+def make_lora_optimizer(
+    params: list,
+    lr: float,
+    resume_optimizer_class: Optional[str] = None,
+) -> Any:
+    """torch AdamW (AdamW8bit step() syncs per parameter); AdamW8bit only to resume its own bundle, never on XPU (dies at step())."""
+    import torch
+
+    if os.environ.get("UNSLOTH_DIFFUSION_FP32_OPTIM", "") in ("1", "true"):
+        return torch.optim.AdamW(params, lr = lr)
+    if _is_bnb_8bit_optimizer_key(resume_optimizer_class) and bitsandbytes_optimizer_supported():
+        try:
+            import bitsandbytes as bnb
+            return bnb.optim.AdamW8bit(params, lr = lr)
+        except Exception:  # noqa: BLE001 -- restore_resume_state then names the mismatch
+            pass
+    if torch.cuda.is_available():
+        try:
+            return torch.optim.AdamW(params, lr = lr, fused = True)
+        except Exception:  # noqa: BLE001 -- fused unsupported on this build/device
+            pass
+    return torch.optim.AdamW(params, lr = lr)
 
 
 def training_precision_preflight_error(resolved_family: str, base_precision: str) -> Optional[str]:
@@ -824,8 +975,8 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
     rejected before teardown: the bf16-GPU requirement; no accelerator at all (which covers nf4
     too); the dense precisions needing CUDA; the torchao precisions against a ROCm build, which
     clears the stub test and hands the sm100 floor an AMD gfx version; explicit int8 needing a
-    FUNCTIONAL torchao; explicit fp8/mxfp8 against the Windows-ROCm stub; explicit mxfp8 needing
-    Blackwell. Add a gate there, add it here. Never raises."""
+    FUNCTIONAL torchao; explicit fp8/mxfp8 against the Windows-ROCm stub; explicit fp8 needing
+    sm89+ and mxfp8 Blackwell. Add a gate there, add it here. Never raises."""
     reason = bf16_unsupported_reason(resolved_family)
     if reason:
         return reason
@@ -868,6 +1019,18 @@ def training_precision_preflight_error(resolved_family: str, base_precision: str
             )
         # mxfp8 needs Blackwell (sm100+): its MX GEMM raises at the first training step, AFTER a full dense load.
         # Re-check here so a stale client fails fast before eviction.
+        # fp8 needs sm89+: below it the first float8 _scaled_mm raises inside the loop, after eviction.
+        if mode == "fp8":
+            try:
+                import torch
+                fp8_ok = torch.cuda.get_device_capability() >= (8, 9)
+            except Exception:  # noqa: BLE001 -- probe failure -> treat as unsupported, fail fast
+                fp8_ok = False
+            if not fp8_ok:
+                return (
+                    "base_precision='fp8' needs an Ada, Hopper or Blackwell (sm89+) GPU; this GPU is "
+                    "older. Use base_precision='bf16', 'int8', 'nf4', or 'auto'."
+                )
         if mode == "mxfp8":
             try:
                 import torch
@@ -912,8 +1075,7 @@ def family_train_infos() -> list[dict[str, Any]]:
             if is_dit
             else None
         )
-        # H3 refuses compile_transformer="on" (its packed sequence changes length with every caption, so each step
-        # would re-trace), so advertising the control would offer a selection that always 400s.
+        # H3 compiles under the auto rule; the panel control stays DiT / SDXL only.
         supports_compile = bool(not dit_block) and name in _DIT_TRAIN_FAMILIES
         if not is_dit or dit_block:
             fam_modes: list[str] = []
@@ -1586,14 +1748,6 @@ def h3_train_unsupported_reason(cfg: Any) -> Optional[str]:
             "row layout is set by the clip's own geometry and its caption's length. Use "
             "gradient_accumulation_steps to raise the effective batch."
         )
-    # torch.compile is never invoked here (the packed layout changes shape with every caption length), so an explicit
-    # "on" would be accepted and then ignored.
-    if str(getattr(cfg, "compile_transformer", "auto") or "auto").strip().lower() == "on":
-        return (
-            "MiniMax-H3 does not compile: its packed sequence changes length with every clip's "
-            "caption, so torch.compile would re-trace each step. Use compile_transformer "
-            "'off' or 'auto'."
-        )
     # No conditioning cache exists on this path, so accepting the directory would promise a saving that never happens.
     if str(getattr(cfg, "cond_cache_dir", "") or "").strip():
         return (
@@ -2066,6 +2220,9 @@ def _reapply_lr_schedule(optimizer: Any, lr_scheduler: Any) -> None:
         pass
 
 
+_OPTIMIZER_KERNEL_KEYS = ("fused", "foreach")
+
+
 def restore_resume_state(
     cfg: DiffusionLoraConfig,
     *,
@@ -2101,9 +2258,7 @@ def restore_resume_state(
     load_trainable_state_dict(model, ckpt.tensors("adapter"))
     optimizer_state = ckpt.torch_state("optimizer")
     if optimizer_state is not None:
-        # The trainers pick their optimizer from the HOST (bnb present, fused kernel available,
-        # UNSLOTH_DIFFUSION_FP32_OPTIM), so foreign moments arrive legitimately (state1/state2 versus
-        # exp_avg/exp_avg_sq): shapes match, load_state_dict accepts them, and the first step dies on a bare KeyError.
+        # Foreign moments (AdamW8bit vs torch AdamW) load cleanly, then the first step dies on a bare KeyError.
         saved_optimizer = ckpt.optimizer_class
         live_optimizer = optimizer_key(optimizer)
         if not saved_optimizer:
@@ -2130,9 +2285,22 @@ def restore_resume_state(
                 "than this build produces, so its moments cannot be matched to this run's "
                 "tensors. Start a new run, or resume on the version that wrote it."
             )
-        # load_state_dict replaces the param groups too, so the checkpoint's learning rate wins over a changed cfg,
-        # the same semantics as HF Trainer's resume.
+        # Checkpoint lr wins (HF Trainer semantics); the fused/foreach kernel choice stays this host's.
+        kernels = [
+            {k: g[k] for k in _OPTIMIZER_KERNEL_KEYS if k in g} for g in optimizer.param_groups
+        ]
+        saved_groups = (
+            optimizer_state.get("param_groups") if isinstance(optimizer_state, dict) else None
+        )
+        if isinstance(saved_groups, list) and len(saved_groups) == len(kernels):
+            # torch places "step" by the SAVED fused flag: non-fused bundles keep it on CPU, which fused rejects.
+            optimizer_state = {
+                **optimizer_state,
+                "param_groups": [{**g, **kept} for g, kept in zip(saved_groups, kernels)],
+            }
         optimizer.load_state_dict(optimizer_state)
+        for group, kept in zip(optimizer.param_groups, kernels):
+            group.update(kept)
     elif optimizer is not None:
         # Every bundle this writer produces has an optimizer, so continuing without one restarts Adam's moments from
         # zero at step N while reporting a clean resume.

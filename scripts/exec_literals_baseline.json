@@ -10,6 +10,20 @@
   ],
   "entries": [
     {
+      "file": "studio/backend/core/inference/diffusion_autoopt/patches.py",
+      "sink": "compile",
+      "digest": "5ae0e330a5c3c7ad",
+      "count": 1,
+      "reason": "splice_function: compiles an AST parsed from the library function's own inspect.getsource, edited only by exact-once literal needle replacements, checked to be one function whose globals all resolve"
+    },
+    {
+      "file": "studio/backend/core/inference/diffusion_autoopt/patches.py",
+      "sink": "exec",
+      "digest": "1c33653a1d0bca74",
+      "count": 1,
+      "reason": "splice_function: executes the code object compiled on the line above into a copy of the original function's globals; never sees user or model input"
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_capture_safe.py",
       "sink": "compile",
       "digest": "1f39880672dc563b",

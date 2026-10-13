@@ -92,6 +92,7 @@ import {
   mcpUiReplayImages,
 } from "../mcp-apps/mcp-ui";
 import { isMcpToolName } from "../utils/mcp-tool-name";
+import { userMessageIdRequestField } from "../utils/rewind";
 import {
   type McpImage,
   planMcpImageBound,
@@ -185,6 +186,11 @@ import {
   startsNewCodexToolRound,
   type CodexReasoningLedger,
 } from "../codex-reasoning";
+import {
+  toolModelNoteTarget,
+  toolModelSuffixExtraContent,
+  withToolModelSuffix,
+} from "../tool-model-suffix";
 import {
   type GeminiContinuationReplay,
   type GeminiContinuationReplayTurn,
@@ -290,6 +296,7 @@ import {
 } from "../presets/preset-policy";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { takeThreadCompactionRequest } from "../stores/compact-request-store";
 import {
   shouldPreserveFullOutput,
   toolOutputKey,
@@ -333,6 +340,9 @@ import {
   getImageInputUnavailableReason,
 } from "../utils/image-input-support";
 import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  compactionAnchorToolCallId,
   historyCannotHelp,
   latestTurnIsTheProblem,
   latestTurnOwnTokens,
@@ -1001,6 +1011,7 @@ type SerializedToolResult = {
   content: string;
   tool_call_id: string;
   name?: string;
+  extra_content?: { studio_model_suffix: string };
 };
 
 type ToolPartReplayMetadata = {
@@ -1233,6 +1244,8 @@ function serializeToolResultPart(
     content,
     tool_call_id: tc.toolCallId,
     ...(tc.toolName ? { name: tc.toolName } : {}),
+    // Model-only feedback the backend re-appends on replay.
+    ...toolModelSuffixExtraContent(getToolReplayProvenance(tc)),
   };
 }
 
@@ -5661,9 +5674,20 @@ export function createOpenAIStreamAdapter(
       // the local model still resident.
       const isMlxForCompaction =
         !isExternalModelId(params.checkpoint) && runtime.loadedIsMlx === true;
+      // Taken once, so a retried request still carries it and the next turn does not.
+      const compactNow =
+        takeThreadCompactionRequest(resolvedThreadId) &&
+        (isGgufForCompaction || isMlxForCompaction);
       const generationUserMessage = [...survivingMessages]
         .reverse()
         .find((message) => message.role === "user");
+      // Names the turn whose file changes /rewind can undo; a continuation reuses its turn's prompt.
+      // A temporary chat keeps no file history.
+      const userMessageIdField = userMessageIdRequestField(
+        resolvedThreadId && isThreadIncognito(resolvedThreadId)
+          ? undefined
+          : generationUserMessage?.id,
+      );
 
       // Durability gate keys on THIS turn's attachments only. The scans above walk post-prune history so an old
       // refused turn cannot mis-attribute media onto the next one - correct for building the request payload, but it
@@ -5913,6 +5937,7 @@ export function createOpenAIStreamAdapter(
       };
       let codexRoundToolCallIds: string[] = [];
       let contextTruncation: OpenAIChatChunk["context_truncated"];
+      let compactionMarkers: CompactionMarker[] | undefined;
       let providerCompaction: ProviderCompactionContentPart | undefined =
         continuationCompaction ?? undefined;
       let providerCompactionAfterToolCalls: number | undefined =
@@ -5944,6 +5969,7 @@ export function createOpenAIStreamAdapter(
         openaiCodexReasoning: codexReasoningLedger,
         openaiResponsesReasoning: openAIResponsesReasoningLedger,
         contextTruncation,
+        compactionMarkers,
         providerCompaction,
         providerCompactionAfterToolCalls,
         providerCompactionProviderType,
@@ -6807,7 +6833,7 @@ export function createOpenAIStreamAdapter(
               ...(externalCapabilities?.presencePenalty
                 ? { presence_penalty: params.presencePenalty }
                 : {}),
-              // studioLocalCodeTools, not codeToolsEnabled: a Code pill that resolved to the provider's
+              // studioLocalCodeTools, not codeToolsEnabled: a Tools pill that resolved to the provider's
               // sandbox is a hosted request and belongs below, where this body would 400 on permission_mode.
               ...(supportsStudioToolsForThisTurn &&
               (toolsEnabled ||
@@ -6865,6 +6891,7 @@ export function createOpenAIStreamAdapter(
                     ...(sandboxSessionId
                       ? { session_id: sandboxSessionId }
                       : {}),
+                    ...userMessageIdField,
                     ...(sandboxAttachments.length > 0
                       ? { sandbox_attachments: sandboxAttachments }
                       : {}),
@@ -6992,6 +7019,7 @@ export function createOpenAIStreamAdapter(
               isGguf: isGgufForCompaction,
               isMlx: isMlxForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
+              compactNow,
             }),
             temperature: params.temperature,
             top_p: params.topP,
@@ -7023,6 +7051,7 @@ export function createOpenAIStreamAdapter(
               ? { sandbox_attachments: sandboxAttachments }
               : {}),
             ...(resolvedThreadId ? { thread_id: resolvedThreadId } : {}),
+            ...userMessageIdField,
             ...(useAdapter === undefined ? {} : { use_adapter: useAdapter }),
             ...localReasoningFields,
             ...(supportsPreserveThinking
@@ -7327,6 +7356,14 @@ export function createOpenAIStreamAdapter(
                 if (isPreemptGaveUp(chunk.context_truncated)) {
                   preemptGaveUp = true;
                 }
+                compactionMarkers = appendCompactionMarker(
+                  compactionMarkers,
+                  chunk.context_truncated,
+                  compactionAnchorToolCallId(
+                    toolCallParts,
+                    chunk.context_truncated,
+                  ),
+                );
                 const activeThreadId = useChatRuntimeStore.getState().activeThreadId;
                 // What must stay silent is a fit that returned the ORIGINAL messages: "older turns were
                 // removed" would be untrue and burns the once-per-thread flag. Not `fits`, which is also
@@ -7564,6 +7601,37 @@ export function createOpenAIStreamAdapter(
                       }).catch(() => undefined);
                     },
                   );
+                  continue;
+                }
+                if (toolEvent.type === "tool_model_note") {
+                  const at = toolModelNoteTarget(
+                    toolCallParts as Parameters<typeof toolModelNoteTarget>[0],
+                    (toolEvent.tool_call_id as string) || "",
+                  );
+                  const suffix =
+                    typeof toolEvent.suffix === "string" ? toolEvent.suffix : "";
+                  if (at !== -1 && suffix) {
+                    const existing = toolCallParts[at] as PositionedToolCallPart;
+                    toolCallParts[at] = {
+                      ...existing,
+                      provenance: withToolModelSuffix(
+                        existing.provenance as Record<string, unknown> | undefined,
+                        suffix,
+                      ),
+                    } as PositionedToolCallPart;
+                    // A stop before the next chunk saves only what was yielded.
+                    yield {
+                      content: liveAssistantContent(),
+                      metadata: {
+                        timing: buildTiming(
+                          streamStartTime,
+                          totalChunks,
+                          firstTokenTime,
+                        ),
+                        custom: liveCustom(),
+                      },
+                    };
+                  }
                   continue;
                 }
                 if (toolEvent.type === "tool_output") {
@@ -8863,6 +8931,19 @@ export function createOpenAIStreamAdapter(
           }
         }
 
+        if (
+          compactNow &&
+          !compactionMarkers?.some(
+            (marker) =>
+              marker.truncation.manual === true &&
+              marker.truncation.checkpoint_started === true,
+          )
+        ) {
+          toast.info("This chat was not compacted", {
+            description:
+              "Compaction needs the conversation archive and the default checkpoint policy.",
+          });
+        }
         const finalTiming = buildTiming(
           streamStartTime,
           totalChunks,
@@ -8901,6 +8982,7 @@ export function createOpenAIStreamAdapter(
               openaiCodexReasoning: codexReasoningLedger,
               openaiResponsesReasoning: openAIResponsesReasoningLedger,
               contextTruncation,
+              compactionMarkers,
               providerCompaction,
               providerCompactionAfterToolCalls,
               providerCompactionProviderType,
@@ -9080,6 +9162,7 @@ export function createOpenAIStreamAdapter(
               custom: {
                 ...reasoningDurationTracker.metadata(),
                 contextTruncation,
+                compactionMarkers,
                 providerCompaction,
                 providerCompactionAfterToolCalls,
                 providerCompactionProviderType,

@@ -84,8 +84,10 @@ BeforeAll {
     if ($script:RerunBlock -notmatch 'step "setup" "([^"]+)"') { throw "drift: the rerun block lost its handoff step." }
     $script:Handoff = $Matches[1]
 
+    # Complete-FrontendBuildBackground returns at once here: no background build was started.
     $functions = foreach ($name in @('Write-StudioLine', 'Remove-WoaMergedOverrides', 'Exit-SetupFailure',
-                                     'Test-SetupScriptReplaced', 'Restore-SetupStartEnvironment')) {
+                                     'Test-SetupScriptReplaced', 'Restore-SetupStartEnvironment',
+                                     'Complete-FrontendBuildBackground')) {
         $src = Get-FunctionSource -Path $script:SetupPs1 -Name $name
         if (-not $src) { throw "drift: $name is gone from setup.ps1." }
         $src

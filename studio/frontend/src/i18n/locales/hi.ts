@@ -59,6 +59,9 @@ export const hi = {
       alwaysAsk: "हमेशा पूछें",
       alwaysAllow: "हमेशा अनुमति दें",
       never: "कभी नहीं",
+      scripts: "स्क्रिप्ट चलाएँ",
+      scriptsDescription: "चुनें कि मॉडल पेजों पर स्क्रिप्ट चला सकते हैं या नहीं। हर स्क्रिप्ट चलने से पहले आपको दिखाई जाती है",
+      askEveryTime: "हर बार पूछें",
       permissionsTitle: "एजेंट अनुमतियाँ",
       permissionsDescription: "डिफ़ॉल्ट चुनें और खास साइटों के लिए अपवाद जोड़ें। पासवर्ड और भुगतान फ़ील्ड कभी नहीं भरे जाते, चाहे यहाँ कुछ भी हो।",
       site: "साइट या पैटर्न",
@@ -67,6 +70,7 @@ export const hi = {
       browsing: "ब्राउज़िंग",
       actions: "कार्रवाइयाँ",
       downloads: "डाउनलोड",
+      unlabelled: "बिना लेबल वाले क्लिक",
       askNewSites: "नई साइटों के लिए पूछें",
       requiresApproval: "मंज़ूरी ज़रूरी",
       blocked: "ब्लॉक",
@@ -88,6 +92,8 @@ export const hi = {
         submit: "क्या Unsloth को {host} पर यह फ़ॉर्म भेजने दें?",
         click: "क्या Unsloth को {host} पर “{name}” पर क्लिक करने दें?",
         history: "क्या Unsloth को आपका ब्राउज़िंग इतिहास पढ़ने दें?",
+        script: "क्या Unsloth को {host} पर यह स्क्रिप्ट चलाने दें?",
+        pointer: "क्या Unsloth को {host} के बिना लेबल वाले हिस्सों, जैसे कैनवस, पर क्लिक करने दें?",
       },
     },
     title: "ब्राउज़र",
@@ -547,10 +553,60 @@ export const hi = {
     queueingOnHint: "नए संदेश अपनी बारी का इंतज़ार करते हैं।",
     queueingHintShared: "कतार बनी रहती है।",
   },
+  rewind: {
+    menuItem: "रिवाइंड करें…",
+    title: "रिवाइंड करें",
+    pickDescription: "वह संदेश चुनें जिस पर वापस जाना है।",
+    pickEmpty: "अभी वापस जाने के लिए कोई संदेश नहीं है।",
+    attachmentOnly: "केवल अटैचमेंट",
+    chooseDescription: "संदेश संपादन के लिए खुलता है ताकि आप उसे फिर से भेज सकें। मौजूदा जवाब ब्रांच तीरों से उपलब्ध रहते हैं।",
+    modeBoth: "बातचीत और फ़ाइलें",
+    modeConversation: "केवल बातचीत",
+    modeFiles: "केवल फ़ाइलें",
+    checking: "फ़ाइल बदलाव जाँचे जा रहे हैं…",
+    checkFailed: "फ़ाइल बदलाव जाँचे नहीं जा सके: {error}",
+    noFileChanges: "इस संदेश के बाद कोई फ़ाइल बदलाव नहीं",
+    summary: "पुनर्स्थापित करने वाली फ़ाइलें: {restore}। हटाने वाली: {remove}। फिर से बनाने वाली: {recreate}।",
+    conflicts: "बाद में बदली गई, छोड़ दी जाएँगी",
+    untracked: "पुनर्स्थापित नहीं की जा सकतीं",
+    scopeNote: "चल रहे प्रोग्राम, इंस्टॉल किए गए पैकेज और इस चैट के फ़ोल्डर के बाहर की कोई भी चीज़ नहीं बदलती।",
+    back: "वापस",
+    cancel: "रद्द करें",
+    confirm: "रिवाइंड करें",
+    waitForResponse: "मौजूदा जवाब पूरा होने तक प्रतीक्षा करें",
+    restoredOne: "1 फ़ाइल पुनर्स्थापित की गई",
+    restoredMany: "{count} फ़ाइलें पुनर्स्थापित की गईं",
+    nothingRestored: "किसी फ़ाइल को पुनर्स्थापित करने की ज़रूरत नहीं थी",
+    skippedCount: "{count} छोड़ी गईं",
+    restoreFailed: "फ़ाइलें पुनर्स्थापित नहीं की जा सकीं",
+    undo: "पूर्ववत करें",
+    undone: "फ़ाइल पुनर्स्थापना पूर्ववत की गई",
+    undoFailed: "फ़ाइल पुनर्स्थापना पूर्ववत नहीं की जा सकी",
+  },
   // The chat header's "…" menu.
   chatMenu: {
     more: "चैट विकल्प",
     copy: "कॉपी करें",
+  },
+  welcome: {
+    goodToSeeYou: "आपको देखकर अच्छा लगा",
+    goodToSeeYouName: "{name}, आपको देखकर अच्छा लगा",
+    readyWhenYouAre: "जब आप तैयार हों",
+    onYourMind: "आज आपके मन में क्या है?",
+    howCanIHelp: "मैं आपकी क्या मदद करूँ?",
+    goodMorning: "सुप्रभात",
+    goodMorningName: "सुप्रभात, {name}",
+    goodEvening: "शुभ संध्या",
+    goodEveningName: "शुभ संध्या, {name}",
+    tonight: "आज रात का क्या प्लान है?",
+    nightOwl: "रात जागने का मूड?",
+    lateNightIdeas: "देर रात के आइडिया?",
+    upLate: "देर रात कोई आइडिया आया?",
+    nightShift: "रात की शिफ़्ट शुरू होती है",
+    nightShiftName: "{name}, रात की शिफ़्ट शुरू होती है",
+    temporaryChat: "अस्थायी चैट",
+    temporaryChatDescription:
+      "यह चैट आपके इतिहास में नहीं दिखेगी और सेव नहीं होती। आपके जाने पर यह गायब हो जाती है।",
   },
   picker: {
     onDevice: "डिवाइस पर",
@@ -1952,6 +2008,8 @@ export const hi = {
         },
         cellTooltip: "{date} · {tokens}, {messages}",
         weekTooltip: "{date} वाला हफ़्ता · {tokens}",
+        chartToggle: "चार्ट",
+        chartToggleHint: "साप्ताहिक और संचयी को लेबल वाले अक्षों के साथ चार्ट के रूप में दिखाएँ",
         less: "कम",
         more: "ज़्यादा",
         insightsTitle: "गतिविधि विश्लेषण",
@@ -2369,8 +2427,11 @@ export const hi = {
       title: "एजेंट",
       description:
         "unsloth start की मदद से Claude Code और Codex जैसे कोडिंग एजेंट को लोकल मॉडल से जोड़ें।",
+      agentKeywords: "vs code vscode copilot pi mistral vibe deepseek harness hermes openclaw opencode claude codex",
+      vscodeNote:
+        "VS Code अपवाद है: यह कमांड परोसे जा रहे मॉडल को VS Code की Copilot Chat मॉडल सूची (chatLanguageModels.json) में जोड़ती है।",
       intro:
-        "Claude Code, Codex, DeepSeek Harness, Hermes, Mistral Vibe, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
+        "Claude Code, Codex, DeepSeek Harness, Hermes, OpenClaw, OpenCode और दूसरे एजेंट को Unsloth द्वारा लोकली सर्व किए गए मॉडल से जोड़ता है, पूरी तरह ऑफ़लाइन। यह एक OpenAI-संगत सर्वर चलाता है और आपके एजेंट की कॉन्फ़िगरेशन फ़ाइलों को कभी नहीं छूता।",
       readDocs: "दस्तावेज़ पढ़ें",
       copy: "कॉपी करें",
       copied: "कॉपी किया गया",
@@ -2451,7 +2512,7 @@ export const hi = {
         persist:
           "Unsloth द्वारा प्रबंधित एजेंट स्टोरेज को रनों के बीच बनाए रखता है।",
         asSubagent:
-          "मूल एजेंट को उसके मौजूदा मॉडल पर रखता है और Unsloth को लोकल सबएजेंट के रूप में दर्ज करता है (Claude Code, Codex और OpenCode)।",
+          "मूल एजेंट को उसके मौजूदा मॉडल पर रखता है और Unsloth को लोकल सबएजेंट के रूप में दर्ज करता है (Claude Code, Codex, OpenCode और Pi)।",
         apiKey:
           "आपकी Unsloth API key लेता है (या UNSLOTH_API_KEY सेट करें)।",
         reasoning:
@@ -2543,6 +2604,13 @@ export const hi = {
         "ऊपर स्क्रॉल करने के बाद नवीनतम संदेश पर वापस जाने के लिए बटन दिखाएँ।",
       scrollToBottomButtonKeywords:
         "स्क्रॉल नीचे नवीनतम तीर बटन छिपाएँ scroll bottom button",
+      replyNotification: "जवाब पूरा होने पर सूचना दें",
+      replyNotificationDescription:
+        "जब Unsloth छोटा किया हुआ हो या बैकग्राउंड में हो, तब जवाब पूरा होने पर सिस्टम सूचना दिखाएँ।",
+      replyNotificationBlocked:
+        "सूचनाएँ ब्लॉक हैं। ब्राउज़र या सिस्टम सेटिंग्स में Unsloth के लिए इन्हें अनुमति दें, फिर दोबारा कोशिश करें।",
+      replyNotificationKeywords:
+        "सूचना अलर्ट पूरा तैयार जवाब बैकग्राउंड notify notification alert done finished reply background",
       showResponseModel: "जवाब देने वाला मॉडल दिखाएँ",
       showResponseModelDescription:
         "असिस्टेंट के जवाबों में मॉडल का मेटाडेटा दिखाएँ।",
@@ -2563,14 +2631,14 @@ export const hi = {
       autoCompactKeywords:
         "कॉम्पैक्शन कॉम्पैक्ट कॉन्टेक्स्ट विंडो ट्रंकेट स्लाइडिंग चेकपॉइंट हेडरूम आर्काइव पुनर्प्राप्ति खोज compaction rolling checkpoint headroom archive retrieval rag",
       toolResultLimit: "टूल आउटपुट की लंबाई",
-      toolResultLimitDescription: "Python या Terminal के एक परिणाम के कितने अक्षर मॉडल पढ़ता है। डिफ़ॉल्ट {count} है।",
-      toolResultLimitHint: "लंबा आउटपुट एक फ़ाइल में सहेजा जाता है जिसे मॉडल हिस्सों में पढ़ सकता है। ऊँची सीमा Unsloth में चल रहे मॉडल पर लागू होती है, और छोटी कॉन्टेक्स्ट विंडो को अब भी कम मिलता है। API मॉडल डिफ़ॉल्ट पर रहते हैं, जब तक आप इसे कम न करें।",
+      toolResultLimitDescription: "Python, Terminal या MCP टूल के एक परिणाम के कितने अक्षर मॉडल पढ़ता है। डिफ़ॉल्ट {count} है।",
+      toolResultLimitHint: "Python और Terminal का लंबा आउटपुट एक फ़ाइल में सहेजा जाता है जिसे मॉडल हिस्सों में पढ़ सकता है। ऊँची सीमा Unsloth में चल रहे मॉडल पर लागू होती है, और छोटी कॉन्टेक्स्ट विंडो को अब भी कम मिलता है। API मॉडल डिफ़ॉल्ट पर रहते हैं, जब तक आप इसे कम न करें।",
       toolResultLimitDefault: "{count} (डिफ़ॉल्ट)",
       toolResultLimitLocked: "UNSLOTH_TOOL_RESULT_MAX_CHARS द्वारा सेट",
       toolResultLimitLoadError: "टूल आउटपुट की लंबाई लोड नहीं हो सकी।",
       toolResultLimitSaveError: "टूल आउटपुट की लंबाई सहेजी नहीं जा सकी।",
       toolResultLimitKeywords:
-        "आउटपुट परिणाम काटना सीमा अक्षर लंबाई tool output result truncate truncated truncation limit cap characters chars length terminal python",
+        "आउटपुट परिणाम काटना सीमा अक्षर लंबाई tool output result truncate truncated truncation limit cap characters chars length terminal python mcp",
       visibility: {
         collapsed: "संक्षिप्त",
         auto: "चलने के दौरान विस्तृत करें",

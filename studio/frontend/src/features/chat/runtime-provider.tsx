@@ -56,7 +56,7 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
-import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
+import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -189,8 +189,17 @@ import {
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
-import { mergeContextTruncation } from "./utils/context-truncation";
+import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  compactionAnchorToolCallId,
+  mergeContextTruncation,
+} from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
+import {
+  cancelReplyFinishedNotification,
+  notifyReplyFinished,
+} from "./utils/reply-finished-notification";
 import {
   extractDeltaText,
   parseAssistantContent,
@@ -969,7 +978,7 @@ class ServerDocumentAttachmentAdapter implements AttachmentAdapter {
     }
     // Rechecked: without the python tool no original is kept, leaving the model only the placeholder.
     if (text === null && !pythonToolOpensAttachments()) {
-      const error = `${attachment.name} has no text to read. Turn on Code so the python tool can open it.`;
+      const error = `${attachment.name} has no text to read. Turn on Tools so the python tool can open it.`;
       toast.error(error);
       throw new Error(error);
     }
@@ -1219,7 +1228,7 @@ class ToolOnlyAttachmentAdapter implements AttachmentAdapter {
     file: File;
   }): AsyncGenerator<PendingAttachment, void> {
     const refusal = !pythonToolRunsInStudio()
-      ? `Turn on Code with a model that runs the python tool to attach ${file.name}.`
+      ? `Turn on Tools with a model that runs the python tool to attach ${file.name}.`
       : useChatRuntimeStore.getState().incognito
         ? `Temporary chats save no files, so the python tool cannot open ${file.name}.`
         : file.size > MAX_TOOL_ONLY_ATTACHMENT_BYTES
@@ -1777,11 +1786,22 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
+                const toolCalls = carried
+                  .map((entry) => entry.part as { type?: unknown } | null)
+                  .filter((part) => part?.type === "tool-call") as Array<{
+                  toolCallId?: unknown;
+                  toolName?: unknown;
+                }>;
                 currentMetadata = {
                   ...currentMetadata,
                   contextTruncation: mergeContextTruncation(
                     currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
                     chunk.context_truncated,
+                  ),
+                  compactionMarkers: appendCompactionMarker(
+                    currentMetadata.compactionMarkers as CompactionMarker[] | undefined,
+                    chunk.context_truncated,
+                    compactionAnchorToolCallId(toolCalls, chunk.context_truncated),
                   ),
                 };
               }
@@ -2398,6 +2418,7 @@ function createPersistedRunAdapter(
   return {
     ...adapter,
     async *run(options) {
+      cancelReplyFinishedNotification();
       const trackedRunStartThreadIds = runStartThreadIdsForMessages(
         options.messages,
       );
@@ -2459,9 +2480,12 @@ function createPersistedRunAdapter(
       }
       if (typeof result === "object" && Symbol.asyncIterator in result) {
         yield* result;
-        return;
+      } else {
+        yield await result;
       }
-      yield await result;
+      if (!options.abortSignal?.aborted) {
+        notifyReplyFinished();
+      }
     },
   };
 }
@@ -3834,7 +3858,7 @@ function CompactionCountRegistrar({
 }): ReactElement | null {
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const count = useAuiState(
-    ({ thread }) => compactionNoticeMessageIds(thread.messages).size,
+    ({ thread }) => compactionDividerCount(thread.messages),
   );
 
   useEffect(() => {
@@ -4203,6 +4227,10 @@ function ThreadBackendAutosave({
 // True when the chat tab is visible. While false, ChatPage stays mounted (runtime and autosave
 // alive, so the stream survives) but its views unmount, so no portaled surface bleeds through.
 export const ChatActiveContext = createContext(true);
+
+// False while a Run handoff (Hub, Library, shared link) owns the chat model picker, so the composer
+// cannot take focus from it.
+export const ChatComposerFocusableContext = createContext(true);
 
 export function useChatActive(): boolean {
   return useContext(ChatActiveContext);

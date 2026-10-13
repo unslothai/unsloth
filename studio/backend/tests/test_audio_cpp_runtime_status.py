@@ -19,10 +19,15 @@ def _patch(
     binary,
     record = None,
     espeak = False,
+    vendors = None,
 ):
     monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: binary)
     monkeypatch.setattr(audio_cpp_server, "read_install_record", lambda _binary: record or {})
     monkeypatch.setattr(audio_cpp_server, "binary_has_espeak", lambda _binary: espeak)
+    # The launch backend must not depend on this host's GPUs or a CPU-only build's --version probe.
+    monkeypatch.delenv("UNSLOTH_AUDIO_CPP_BACKEND", raising = False)
+    monkeypatch.setattr(audio_cpp_server, "_gpu_vendors", lambda: vendors)
+    monkeypatch.setattr(audio_cpp_server, "compiled_backends", lambda _binary: frozenset({"cpu"}))
 
 
 def test_runtime_available_with_espeak(monkeypatch):
@@ -36,6 +41,7 @@ def test_runtime_available_with_espeak(monkeypatch):
         "available": True,
         "espeak": True,
         "backend": "cuda",
+        "launch_backend": "cuda",
         "release_tag": "v0.4.0",
         "expected_tag": None,
         "outdated": False,
@@ -49,6 +55,7 @@ def test_runtime_available_without_espeak(monkeypatch):
         "available": True,
         "espeak": False,
         "backend": None,
+        "launch_backend": "cpu",
         "release_tag": None,
         "expected_tag": None,
         "outdated": False,
@@ -65,6 +72,30 @@ def test_runtime_missing(monkeypatch):
         "expected_tag": None,
         "outdated": False,
     }
+
+
+def test_cuda_build_with_no_visible_gpu_launches_on_cpu(monkeypatch):
+    # CUDA_VISIBLE_DEVICES="" hides every GPU: the build still says cuda, the launch goes to the CPU.
+    _patch(
+        monkeypatch,
+        binary = "/opt/audio.cpp/audiocpp_server",
+        record = {"backend": "cuda", "release_tag": "v0.4.0"},
+        vendors = set(),
+    )
+    status = inference._audio_cpp_runtime_status()
+    assert status["backend"] == "cuda"
+    assert status["launch_backend"] == "cpu"
+
+
+def test_launch_backend_error_keeps_the_runtime_available(monkeypatch):
+    _patch(monkeypatch, binary = "/opt/audio.cpp/audiocpp_server", record = {"backend": "cuda"})
+
+    def boom(_binary, _force_cpu):
+        raise RuntimeError("symlink loop")
+
+    monkeypatch.setattr(audio_cpp_server, "select_backend", boom)
+    status = inference._audio_cpp_runtime_status()
+    assert status["available"] is True and status["launch_backend"] is None
 
 
 def test_runtime_probe_error_reports_unavailable(monkeypatch):
@@ -251,7 +282,25 @@ def test_stt_status_payload_includes_runtime_block(monkeypatch):
         "available": True,
         "espeak": False,
         "backend": "vulkan",
+        "launch_backend": "vulkan",
         "release_tag": "v0.4.0",
         "expected_tag": None,
         "outdated": False,
     }
+
+
+def test_stt_status_reads_the_runtime_off_the_event_loop(monkeypatch):
+    import threading
+
+    # A custom build's backend probe runs its --version, which must not stall other requests.
+    seen = []
+
+    def runtime_status():
+        seen.append(threading.current_thread() is threading.main_thread())
+        return {"available": False}
+
+    monkeypatch.setattr(inference, "_audio_cpp_runtime_status", runtime_status)
+    monkeypatch.setattr(inference.account_access, "managed_account", lambda: False)
+    response = asyncio.run(inference.stt_status(model = None, current_subject = "owner"))
+    assert json.loads(response.body)["audio_cpp_runtime"] == {"available": False}
+    assert seen == [False]

@@ -84,6 +84,7 @@ from core.inference.tool_loop_controller import (
     canonical_arguments_text,
     mcp_display_parts,
     provisional_tool_provenance,
+    restore_replayed_tool_results,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -1478,7 +1479,9 @@ async def stream_with_studio_tools(
     results being appended would lose or re-run the tools that already ran, so the signal
     is held off for that stretch and honoured at the next round's stream.
     """
-    conversation = [dict(message) for message in run.messages]
+    # Off the loop: restoring may parse an envelope.
+    restored = await asyncio.to_thread(restore_replayed_tool_results, run.messages)
+    conversation = [dict(message) for message in restored]
     if mcp_image is not None:
         targets = await asyncio.to_thread(mcp_image_targets, sorted(_tool_names(policy.tools)))
         conversation = note_attached_image(conversation, targets)
@@ -1487,7 +1490,7 @@ async def stream_with_studio_tools(
     # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
     # preserve the request branch for tools that search conversation history.
-    request_branch = list(run.messages)
+    request_branch = list(restored)
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
