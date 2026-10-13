@@ -3986,8 +3986,7 @@ class FastLlamaModel:
             )
             stored_targets = peft_config["target_modules"]
             if isinstance(requested_targets, str) and requested_targets.lower() == "all-linear":
-                # PEFT stores "all-linear" expanded and, past 20 modules, compacted to suffixes: compare the
-                # modules it resolves to with the modules the adapter wraps instead.
+                # PEFT stores "all-linear" expanded and, past 20 modules, compacted: compare resolved vs wrapped.
                 resolved = _resolve_all_linear(
                     model, requested_targets, kwargs.get("exclude_modules")
                 )
@@ -4182,8 +4181,7 @@ class FastLlamaModel:
                 f"This uses more VRAM than LoRA. Please list them in `modules_to_save` directly."
             )
         if isinstance(target_modules, str):
-            # PEFT takes a str as one regex fullmatched against module paths, or "all-linear"; iterating it
-            # would shred it into single characters that suffix-match `layers.1` and friends.
+            # A str is one PEFT regex or "all-linear"; iterating it yields characters that suffix-match `layers.1`.
             final_modules = target_modules
         else:
             for module in target_modules:

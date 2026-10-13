@@ -57,7 +57,6 @@ def _lora_modules(lora_config):
 
 
 def test_regex_string_targets_exactly_the_matched_modules(monkeypatch):
-    # Spectrum-style selection: different projections in different layers.
     wanted = ["model.layers.0.self_attn.q_proj", "model.layers.1.mlp.down_proj"]
     regex = r"(?:.*\.)?(?:" + "|".join(re.escape(name) for name in wanted) + r")"
     config = _lora_config_for(regex, monkeypatch)
@@ -141,7 +140,6 @@ def test_repeat_call_with_different_str_is_refused(stored, requested):
 
 
 def test_all_linear_matches_an_adapter_on_every_linear():
-    # The adapter wraps exactly what "all-linear" resolves to, however its targets were spelled.
     model = _prewrapped(
         ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"], 4
     )
