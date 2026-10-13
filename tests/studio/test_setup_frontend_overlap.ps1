@@ -25,7 +25,7 @@ $src = @()
 foreach ($fn in @("New-UnslothTemporaryFile", "Exit-SetupFailure", "Test-FrontendBuildInBackground",
                   "Start-FrontendBuildBackground", "Restore-FrontendBuildGitignores",
                   "Remove-FrontendBuildFiles", "Stop-FrontendBuildBackground",
-                  "Complete-FrontendBuildOutput", "Complete-FrontendBuildBackground")) {
+                  "Complete-FrontendBuildOutput", "Complete-FrontendBuildBackground", "Wait-FrontendBuildOwner")) {
     $body = Get-FunctionSource -Path $setupPath -Name $fn
     Check "setup.ps1 defines $fn" ($null -ne $body)
     $src += $body
@@ -43,6 +43,8 @@ function Redact-InstallOutput($t) { $t }
 function Get-UsableMemoryMb { if ($env:FAKE_MB -eq "throw") { throw "no probe" }; [long]$env:FAKE_MB }
 '@
 Set-Content -LiteralPath $helpers -Value ($prelude + "`n" + ($src -join "`n")) -Encoding utf8
+$trapLine = @(Get-Content -LiteralPath $setupPath | Where-Object { $_ -like 'trap { if ($script:FrontendBuildProc)*' })
+Check "setup.ps1 has the frontend build trap" ($trapLine.Count -eq 1)
 $pwshExe = (Get-Process -Id $PID).Path
 $mark = Join-Path $fe ".unsloth-build.local"
 
@@ -121,6 +123,43 @@ Check "the build's child process is gone" ($gc -ne 0 -and -not $alive)
 if ($alive) { Stop-Process -Id $gc -Force -ErrorAction SilentlyContinue }
 Check "hidden .gitignore restored" (Test-Path -LiteralPath (Join-Path $work "outer/.gitignore"))
 Check "build mark kept, so the next run rebuilds" (Test-Path -LiteralPath $mark)
+
+Write-Host "== a terminating error anywhere stops the build too =="
+Reset-Tree
+Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue
+$r = Invoke-Case @"
+$($trapLine[0])
+`$null = Start-FrontendBuildBackground -WorkingDirectory '$fe' -HiddenGitignores $hidden -FilePath `$Build -ArgumentList @('-NoProfile', '-Command', '`$p = $sleeper; Set-Content -LiteralPath ''$pidFile'' -Value `$p.Id; Start-Sleep 300')
+Start-Sleep 3
+if (`$true) { throw "unexpected" }
+Write-Output "not-reached"
+"@
+Check "setup still fails" ($r.Code -ne 0 -and $r.Out -notmatch "not-reached")
+$gc = if (Test-Path -LiteralPath $pidFile) { [int](Get-Content -LiteralPath $pidFile) } else { 0 }
+$alive = $false
+if ($gc) { $alive = $null -ne (Get-Process -Id $gc -ErrorAction SilentlyContinue | Where-Object { -not $_.HasExited }) }
+Check "the build's child process is gone" ($gc -ne 0 -and -not $alive)
+if ($alive) { Stop-Process -Id $gc -Force -ErrorAction SilentlyContinue }
+Check "hidden .gitignore restored" (Test-Path -LiteralPath (Join-Path $work "outer/.gitignore"))
+
+Write-Host "== a rerun waits for a build its killed setup left running =="
+$r = Invoke-Case @"
+`$null = Start-FrontendBuildBackground -WorkingDirectory '$fe' -FilePath `$Build -ArgumentList @('-NoProfile', '-Command', 'Start-Sleep 4')
+Write-Output "owner=`$(`$script:FrontendBuildProc.Id)"
+"@
+$ownerId = ([regex]::Match($r.Out, "owner=(\d+)")).Groups[1].Value
+Check "the marker names the build process" ((Get-Content -LiteralPath $mark -Raw).Trim() -like "$ownerId *")
+$sw = [Diagnostics.Stopwatch]::StartNew()
+$r = Invoke-Case "Wait-FrontendBuildOwner"
+Check "waited for the orphaned build" ($sw.Elapsed.TotalSeconds -ge 2)
+Check "says why it waits" ($r.Out -match "waiting for an earlier frontend build")
+$sw.Restart()
+$null = Invoke-Case "Wait-FrontendBuildOwner"
+Check "a finished build is not waited for" ($sw.Elapsed.TotalSeconds -lt 2)
+Set-Content -LiteralPath $mark -Value "$PID 123"
+$sw.Restart()
+$null = Invoke-Case "Wait-FrontendBuildOwner"
+Check "a reused process id is not waited for" ($sw.Elapsed.TotalSeconds -lt 2)
 
 Write-Host "== gate =="
 function Gate([hashtable]$Env, [string]$Extra = "") {

@@ -221,7 +221,7 @@ function Test-FrontendBuildInBackground {
     if ((@("1", "true") -contains $env:UNSLOTH_TAURI_MODE) -or (@("1", "true") -contains $env:UNSLOTH_TAURI_UPDATE)) { return $false }
     try {
         if ([Environment]::ProcessorCount -lt 4) { return $false }
-        return ([long](Get-UsableMemoryMb) -ge 12288)
+        return ([long](Get-UsableMemoryMb -AvailableOnly) -ge 12288)
     } catch { return $false }
 }
 
@@ -247,8 +247,29 @@ function Start-FrontendBuildBackground {
     $script:FrontendBuildProc = $proc
     $script:FrontendBuildFiles = $files
     $script:FrontendBuildHidden = @($HiddenGitignores)
+    try { [System.IO.File]::WriteAllText($FrontendBuildMark, "$($proc.Id) $($proc.StartTime.ToFileTimeUtc())") } catch { }
     return $true
 }
+
+# A setup killed mid-build leaves its background build running: wait for it, so two builds
+# never share node_modules and dist. The marker names it by id and start time.
+function Wait-FrontendBuildOwner {
+    try { $owner = @(([System.IO.File]::ReadAllText($FrontendBuildMark)).Trim() -split ' ') } catch { return }
+    if ($owner.Count -ne 2) { return }
+    $said = $false
+    while ($true) {
+        try {
+            $p = Get-Process -Id ([int]$owner[0]) -ErrorAction Stop
+            # Within 1 s: .NET on Linux derives StartTime from boot time and drifts by microseconds.
+            if ([Math]::Abs($p.StartTime.ToFileTimeUtc() - [long]$owner[1]) -gt 10000000) { return }
+        } catch { return }
+        if (-not $said) { substep "waiting for an earlier frontend build in this checkout (pid $($owner[0]))..."; $said = $true }
+        Start-Sleep -Seconds 1
+    }
+}
+
+# Frontend build in the background: stop it on any terminating error, then fail as before.
+trap { if ($script:FrontendBuildProc) { Stop-FrontendBuildBackground }; break }
 
 function Restore-FrontendBuildGitignores {
     foreach ($gi in $script:FrontendBuildHidden) {
@@ -1580,10 +1601,13 @@ function Get-LlamaJobsFor {
 # rather than treated as unreadable, since falling back to installed RAM under
 # real pressure would hand the machine its full core count at the worst moment.
 function Get-UsableMemoryMb {
+    # -AvailableOnly: -1 rather than installed RAM when free memory cannot be read.
+    param([switch]$AvailableOnly)
     try {
         $avail = (Get-CimInstance Win32_PerfRawData_PerfOS_Memory -ErrorAction Stop).AvailableMBytes
         if ($null -ne $avail) { return [long]$avail }
     } catch { }
+    if ($AvailableOnly) { return -1 }
     try {
         $bytes = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).TotalPhysicalMemory
         if ($bytes -gt 0) { return [long]($bytes / 1MB) }
@@ -6028,6 +6052,7 @@ if ($NeedNodeForSetup) {
 if ($NeedFrontendBuild -and -not $IsPipInstall) {
     Write-StudioLine ""
     substep "building frontend..."
+    Wait-FrontendBuildOwner
     # Cleared only once the build succeeds, so one that dies at any point is redone next run.
     try { [System.IO.File]::WriteAllText($FrontendBuildMark, "$PID") } catch { }
 
@@ -8562,7 +8587,7 @@ if ($WinArm64TorchIndexUrl -or $_woaPinnedIndex) {
     Save-WoaTorchIndexMarker -IndexUrl $_woaMarkerIndex
 }
 # A terminating error after this point reaches neither Exit-SetupFailure nor the last statement, so the merged override file, which can carry the caller's credentials, would stay on disk. The trap removes it.
-trap { Remove-WoaMergedOverrides; if ($script:FrontendBuildProc) { Stop-FrontendBuildBackground }; break }
+trap { Remove-WoaMergedOverrides; break }
 Restore-WoaResolverEnvironment
 
 # install_python_stack.py drops the manifest before its own dependency pass, but
@@ -9528,7 +9553,6 @@ if ($stackExit -ne 0) {
     Write-StudioLine "   Re-run the installer or check the error above for details." -ForegroundColor Red
     Exit-SetupFailure "Python dependency installation failed (exit code $stackExit)"
 }
-Complete-FrontendBuildBackground -IfDone
 
 # ── Finish with the setup script this update installed ──
 # Phases a release adds below would be skipped by the update installing it. A module scope keeps this
@@ -9565,6 +9589,7 @@ if (Test-SetupScriptReplaced) {
     # Restore ErrorActionPreference (was lowered for pip/python section)
     $ErrorActionPreference = $prevEAP
 }
+Complete-FrontendBuildBackground -IfDone
 
 # Windows MXC Preview is an optional, pinned prebuilt like the other native
 # runtimes. Keep this outside the Python dependency fast path: a missing or
