@@ -329,7 +329,7 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
   );
   assert.match(
     chatPage,
-    /setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
+    /setHandoffOwnsPicker\(true\);\s*setSettingsOpen\(false\);\s*setModelSelectorLocked\(false\);\s*setModelSelectorOpen\(true\);\s*clearModelConfigHandoff\(requestId\)/,
   );
   assert.match(
     chatPage,
@@ -340,8 +340,28 @@ test("the Run handoff opens configuration immediately and remains nonce-scoped",
     path.join(FRONTEND_ROOT, "src/components/assistant-ui/thread.tsx"),
     "utf8",
   );
-  assert.match(chatPage, /<ChatComposerAutoFocusContext\.Provider/);
-  assert.match(thread, /autoFocus=\{!disabled && composerAutoFocus\}/);
+  assert.match(
+    chatPage,
+    /<ChatComposerFocusableContext\.Provider\s*value=\{modelConfigRequest === null && !handoffOwnsPicker\}/,
+  );
+  // Released when the picker closes, or the composer would never autofocus again.
+  assert.match(
+    chatPage,
+    /if \(handoffOwnsPicker && !modelSelectorOpen\)\s*\{?\s*setHandoffOwnsPicker\(false\)/,
+  );
+  assert.match(
+    thread,
+    /const composerFocusable = useContext\(\s*ChatComposerFocusableContext,?\s*\);/,
+  );
+  assert.match(
+    thread,
+    // A layout effect, so the override is in place before the input's own autofocus effect.
+    /useLayoutEffect\(\(\) => \{\s*const input = inputRef\.current;\s*if \(composerFocusable \|\| !input\)\s*\{?\s*return;\s*\}?\s*input\.focus = \(\) => \{\};\s*return \(\) => \{\s*Reflect\.deleteProperty\(input, "focus"\);\s*\};\s*\}, \[composerFocusable, isDictating\]\);/,
+  );
+  // Neither gated autoFocus, which focuses the composer when the picker closes, nor inert, which
+  // blocks a press on it and reads as Chat being covered.
+  assert.match(thread, /autoFocus=\{!disabled\}/);
+  assert.doesNotMatch(thread, /inert=\{!composerFocusable\}/);
 });
 
 test("the shared model row menu no longer offers Hub model settings", () => {

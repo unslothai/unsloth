@@ -67,7 +67,7 @@ export {
   saveModelDisclaimerPreference,
 } from "./sync-model-disclaimer-preference";
 export {
-  ChatComposerAutoFocusContext,
+  ChatComposerFocusableContext,
   pythonToolRunsInStudio,
   useChatActive,
   useInComparePane,

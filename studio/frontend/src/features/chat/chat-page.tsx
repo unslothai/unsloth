@@ -233,7 +233,7 @@ import {
 } from "@/features/settings";
 import {
   ChatActiveContext,
-  ChatComposerAutoFocusContext,
+  ChatComposerFocusableContext,
   ChatRuntimeProvider,
   useChatActive,
 } from "./runtime-provider";
@@ -2766,8 +2766,8 @@ export function ChatPage({
       projectId: search.project,
     }),
   );
-  // The run settings a handoff opened keep focus until the picker closes. A composer that mounts or
-  // focuses itself meanwhile, as on a first Chat visit, would take focus and dismiss them.
+  // A composer that mounts while a handoff's run settings are open, as on a first Chat visit, would
+  // take focus and dismiss them.
   const [handoffOwnsPicker, setHandoffOwnsPicker] = useState(false);
   const handleModelConfigRequestAdopted = useCallback(
     (requestId: string) => {
@@ -2779,8 +2779,7 @@ export function ChatPage({
     },
     [setSettingsOpen],
   );
-  // During render, not in an effect: a first mount runs the picker's adoption before this
-  // component's own effects, which would clear the flag the adoption just set.
+  // During render, so the composer is focusable again in the commit that closes the picker.
   if (handoffOwnsPicker && !modelSelectorOpen) setHandoffOwnsPicker(false);
   const viewBeforeCompareRef = useRef<ChatSearch | null>(null);
   // Latest non-compare view, so exiting compare can restore it even when compare was opened from a
@@ -4634,7 +4633,7 @@ export function ChatPage({
     // runtime alive) and to the compare chrome.
     <ChatActiveContext.Provider value={active}>
     {/* Before adoption sets handoffOwnsPicker, the pending request is what holds the picker open. */}
-    <ChatComposerAutoFocusContext.Provider
+    <ChatComposerFocusableContext.Provider
       value={modelConfigRequest === null && !handoffOwnsPicker}
     >
     <div className="flex min-h-0 min-w-0 flex-1 basis-0 overflow-hidden bg-background">
@@ -5038,7 +5037,7 @@ export function ChatPage({
         externalProviderType={activeExternalProviderType}
       />
     </div>
-    </ChatComposerAutoFocusContext.Provider>
+    </ChatComposerFocusableContext.Provider>
     </ChatActiveContext.Provider>
   );
 }

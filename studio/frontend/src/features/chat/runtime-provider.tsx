@@ -4003,8 +4003,9 @@ function ThreadBackendAutosave({
 // alive, so the stream survives) but its views unmount, so no portaled surface bleeds through.
 export const ChatActiveContext = createContext(true);
 
-// False while a Run handoff (Hub, Library, shared link) owns the chat model picker.
-export const ChatComposerAutoFocusContext = createContext(true);
+// False while a Run handoff (Hub, Library, shared link) owns the chat model picker, so the composer
+// cannot take focus from it.
+export const ChatComposerFocusableContext = createContext(true);
 
 export function useChatActive(): boolean {
   return useContext(ChatActiveContext);

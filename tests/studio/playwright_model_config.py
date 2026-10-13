@@ -1497,8 +1497,7 @@ with sync_playwright() as p:
 
     # ─────────────────────────────────────────────────────
     # 6. Hub Run keeps its run settings on a page loaded at /hub (HARD).
-    #    Run is the first thing to mount Chat there, and the new composer's autofocus used
-    #    to take focus from the run settings the handoff had just opened, dismissing them.
+    #    Run mounts Chat there, and the new composer's autofocus used to dismiss them.
     # ─────────────────────────────────────────────────────
     step("Hub Run opens run settings on a page loaded at /hub")
     try:
@@ -1529,6 +1528,15 @@ with sync_playwright() as p:
         shoot("11-hub-run-settings")
         if all(seen):
             info("OK Hub Run kept run settings open on a page loaded at /hub")
+            # The composer ignores focus() while the settings are open, and must stop once they close.
+            page.keyboard.press("Escape")
+            settings.first.wait_for(state = "hidden", timeout = 10_000)
+            composer = page.locator('textarea[aria-label="Message input"]').first
+            composer.evaluate("el => el.focus()")
+            if composer.evaluate("el => el === document.activeElement"):
+                info("OK composer takes focus again after the run settings close")
+            else:
+                fail("composer could not be focused after the Hub Run settings closed")
         else:
             fail(
                 f"Hub Run lost its run settings on a page loaded at /hub (visible per second: {seen})"

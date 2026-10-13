@@ -113,7 +113,7 @@ import {
   notifyStudioDictationUnavailable,
   YoutubeTranscriptPrompt,
   stripSearchImageTokens,
-  ChatComposerAutoFocusContext,
+  ChatComposerFocusableContext,
   useChatActive,
   useChatAudioUpload,
   useInComparePane,
@@ -3757,7 +3757,18 @@ const Composer: FC<{
   const composerIdentity = threadListItemId ?? "";
   composerIdentityRef.current = composerIdentity;
   const chatActive = useChatActive();
-  const composerAutoFocus = useContext(ChatComposerAutoFocusContext);
+  const composerFocusable = useContext(ChatComposerFocusableContext);
+  // While a Run handoff owns the model picker the input ignores focus(), so its autofocus cannot
+  // dismiss the picker. Gating autoFocus would focus it when the gate lifts; inert would also block
+  // a press and read as Chat being covered.
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (composerFocusable || !input) return;
+    input.focus = () => {};
+    return () => {
+      Reflect.deleteProperty(input, "focus");
+    };
+  }, [composerFocusable, isDictating]);
   const readAudioUploadDraft = useCallback(
     () => aui.composer().getState().text,
     [aui],
@@ -5610,7 +5621,7 @@ const Composer: FC<{
                 minRows={1}
                 maxRows={12}
                 onHeightChange={handleEditorHeightChange}
-                autoFocus={!disabled && composerAutoFocus}
+                autoFocus={!disabled}
                 disabled={disabled}
                 aria-label={overlay ? "Image edit instructions" : "Message input"}
                 // dir="auto": browser picks LTR/RTL from the first strong char;
