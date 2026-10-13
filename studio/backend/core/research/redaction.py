@@ -29,11 +29,12 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
-_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s,"()<>\[\]{}”’]+)"""
+_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=(?:[ \t]*(?:"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’)|[^\s,"=()<>\[\]{}”’][^\s,"()<>\[\]{}”’]*)"""
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?ix)(?<![A-Za-z0-9])authorization[ \t]*[:=][ \t]*[\w!#$%&'*+.^`|~-]+[ \t]+
-    (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|[\w.~+/-]+=*)"""
+    rf"""(?ix)(?<![A-Za-z0-9])authorization["']?[ \t]*[:=][ \t]*["']?[\w!#$%&'*+.^`|~-]+[ \t]+
+    (?:{_AUTH_PARAM}(?:[ \t]*,[ \t]*{_AUTH_PARAM})*|(?P<token68>[\w.~+/-]+=*))"""
 )
+_TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
 _QUERY_CREDENTIAL = re.compile(
     r"""(?ix)(?<![A-Za-z0-9])(?:api[\s_-]?key|access[\s_-]?(?:key|token)
     |auth[\s_-]?token|bearer[\s_-]?token|client[\s_-]?secret|private[\s_-]?key
@@ -156,6 +157,14 @@ def _sanitize_public_query(query: str) -> str:
     # survive without it: it can remove more than the plain passes, never less.
     plain = _redact_public_query(query, authorization = False)
     with_authorization = _redact_public_query(query, authorization = True)
+    # An echoed copy of an identified credential (an error repeating it) goes too.
+    credentials = {
+        match["token68"]
+        for match in _QUERY_AUTHORIZATION.finditer(query)
+        if match["token68"] and len(match["token68"]) >= 8
+    }
+    if credentials:
+        plain = [token for token in plain if token.strip(_TOKEN_PUNCTUATION) not in credentials]
     tokens = plain
     if with_authorization != plain:
         # 600 tokens cover the 500-character output; the matcher is quadratic past that.

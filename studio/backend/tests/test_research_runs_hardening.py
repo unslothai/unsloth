@@ -271,6 +271,11 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     assert "X1234567" not in _sanitize_public_query("Authorization: Custom. Passport X1234567 why")
     assert "X1234567" not in _sanitize_public_query("Authorization: Basic passport X1234567 why")
     assert "1111" not in _sanitize_public_query("Authorization: Basic 4111 1111 1111 1111 why")
+    for text in (
+        'headers={"Authorization": "Basic dXNlcjpwYXNzd29yZA=="} why',
+        "Authorization: Basic dXNlcjpwYXNzd29yZA== why does dXNlcjpwYXNzd29yZA== fail",
+    ):
+        assert "dXNlcjpwYXNzd29yZA" not in _sanitize_public_query(text), text
     question = _sanitize_public_query('Authorization: Digest realm="private\nexplain oauth refresh')
     assert "explain oauth refresh" in question
 
