@@ -290,6 +290,24 @@ def _path_class_names(tree: ast.AST) -> set[str]:
             for alias in node.names:
                 if alias.name in _PATH_CLASSES:
                     names.add(alias.asname or alias.name)
+    # `P = Path` / `P = pathlib.Path`, followed to a fixed point so `Q = P` counts too.
+    assigns = [
+        (target.id, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    ]
+    grew = True
+    while grew:
+        grew = False
+        for target, value in assigns:
+            is_path = (isinstance(value, ast.Name) and value.id in names) or (
+                isinstance(value, ast.Attribute) and value.attr in _PATH_CLASSES
+            )
+            if is_path and target not in names:
+                names.add(target)
+                grew = True
     return names
 
 
@@ -305,6 +323,10 @@ def _path_text_names_encoding(node: ast.Call, name: str, path_classes: set[str])
         isinstance(receiver, ast.Attribute) and receiver.attr in _PATH_CLASSES
     )
     position = (0 if name == "read_text" else 1) + (1 if unbound else 0)
+    # A starred argument at or before the slot makes the runtime position unknowable statically,
+    # so only a keyword encoding counts there: conservative, and nothing in the tree spells it so.
+    if any(isinstance(arg, ast.Starred) for arg in node.args[: position + 1]):
+        return False
     if len(node.args) <= position:
         return False
     return not _is_locale_default(node.args[position])
@@ -775,6 +797,13 @@ def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None
         "unbound_alias.py": "from pathlib import Path as P\nP.read_text(p)\n",
         "unbound_alias_pos.py": 'from pathlib import Path as P\nP.read_text(p, "utf-8")\n',
         "unbound_posix.py": 'PosixPath.write_text(p, "x")\n',
+        # Aliases made by assignment.
+        "unbound_assigned.py": "P = Path\nQ = P\nQ.read_text(p)\n",
+        "unbound_assigned_attr.py": "P = pathlib.Path\nP.read_text(p)\n",
+        # A starred argument hides the runtime position: only a keyword encoding counts.
+        "starred_empty.py": "p.read_text(*())\n",
+        "unbound_starred.py": "Path.read_text(p, *())\n",
+        "starred_kw.py": 'p.read_text(*args, encoding = "utf-8")\n',
     }
     flagged = set()
     for name, source in cases.items():
@@ -793,6 +822,10 @@ def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None
         "unbound_write.py",
         "unbound_alias.py",
         "unbound_posix.py",
+        "unbound_assigned.py",
+        "unbound_assigned_attr.py",
+        "starred_empty.py",
+        "unbound_starred.py",
     }, flagged
 
 
