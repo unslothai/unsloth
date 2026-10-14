@@ -105,6 +105,11 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       readPendingAttachmentTargetClaim: () => null,
       useChatRuntimeStore,
     },
+    "@/features/chat/stores/chat-preferences-store": {
+      useChatPreferencesStore: (
+        select: (s: { filesPanelCollapsed: boolean; setFilesPanelCollapsed: () => void }) => unknown,
+      ) => select({ filesPanelCollapsed: false, setFilesPanelCollapsed: () => {} }),
+    },
     "@/features/chat/hooks/use-rag-tool-disabled": gate,
     "@/features/chat": chatStub,
     "@/components/file-viewer": fileViewerStub,

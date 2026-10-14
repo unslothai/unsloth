@@ -6241,6 +6241,13 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel-strip::-webkit-scrollbar {
 	display: none;
 }
+/* Collapsed: a header over one row of pills; with no files, the header alone. */
+.unsloth-files-panel[data-collapsed="true"] {
+	@apply gap-2.5 pt-3 pb-3;
+}
+.unsloth-files-panel-strip:empty {
+	display: none;
+}
 .unsloth-files-panel-action {
 	@apply inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-ui-13 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
 	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);

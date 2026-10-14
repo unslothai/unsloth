@@ -133,6 +133,8 @@ function harness(
             },
           ];
         },
+        createContext: (value: unknown) => ({ Provider: () => null, value }),
+        useContext: (context: { value: unknown }) => context.value,
         useCallback: (fn: unknown) => fn,
         useMemo: (fn: () => unknown) => fn(),
         useEffect(effect: () => void, deps: unknown[]) {
@@ -171,6 +173,11 @@ function harness(
       "@/features/chat/stores/chat-runtime-store": {
         useChatRuntimeStore: store,
         readPendingAttachmentTargetClaim: () => null,
+      },
+      "@/features/chat/stores/chat-preferences-store": {
+        useChatPreferencesStore: (
+          select: (s: { filesPanelCollapsed: boolean; setFilesPanelCollapsed: () => void }) => unknown,
+        ) => select({ filesPanelCollapsed: false, setFilesPanelCollapsed: () => {} }),
       },
       "@/features/chat/hooks/use-rag-tool-disabled": {
         useRagToolDisabled: () => false,

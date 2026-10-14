@@ -2,8 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
+  createContext,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -40,7 +42,11 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tick02Icon } from "@/lib/tick-icon";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  ChevronDownStandardIcon,
+  ChevronUpStandardIcon,
+} from "@/lib/chevron-icons";
+import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
 import {
@@ -266,6 +272,12 @@ function ProjectBadge() {
   );
 }
 
+/** Set by a collapsed panel: its cards render as pills. */
+const CompactCardsContext = createContext(false);
+
+const PILL =
+  "inline-flex h-8 max-w-[calc(14rem*var(--ui-space-scale,1))] items-center gap-1.5 rounded-full px-3 text-ui-13 transition-colors";
+
 function LinkedFolderCard({
   name,
   docs,
@@ -273,14 +285,32 @@ function LinkedFolderCard({
   name: string | undefined;
   docs: TrackedDocument[];
 }) {
+  const compact = useContext(CompactCardsContext);
   const indexing = docs.filter(isProcessing).length;
   const label = name ?? "Linked folder";
   const count = `${docs.length} ${docs.length === 1 ? "file" : "files"}`;
+  const title = `${label}: ${count}, kept in sync and shared with every chat in this project. Manage it in the project's Sources tab.`;
+  if (compact) {
+    return (
+      <div title={title} className={cn("shrink-0 cursor-default", PILL, CARD_EDGE)}>
+        {indexing > 0 ? (
+          <Spinner className="size-3.5 shrink-0" />
+        ) : (
+          <HugeiconsIcon icon={Folder02Icon} strokeWidth={1.75} className="size-4 shrink-0" />
+        )}
+        <span className="truncate">{label}</span>
+        <span className="shrink-0 text-muted-foreground tabular-nums">
+          {indexing > 0 ? `${indexing}/${docs.length}` : docs.length}
+        </span>
+        <span className="sr-only">linked folder, shared with the project</span>
+      </div>
+    );
+  }
   return (
     <div className={cn("relative", CARD_SLOT)}>
       <ProjectBadge />
       <div
-        title={`${label}: ${count}, kept in sync and shared with every chat in this project. Manage it in the project's Sources tab.`}
+        title={title}
         className={cn("flex overflow-hidden rounded-[15px]", CARD_SIZE, CARD_EDGE)}
       >
         <FileCardBody
@@ -420,6 +450,7 @@ function DocumentCard({
   onRetry?: () => void;
 }) {
   const openPreview = useDocumentPreviewStore((s) => s.openPreview);
+  const compact = useContext(CompactCardsContext);
   const kind = attachmentFileKind(doc.filename, undefined);
   const processing = isProcessing(doc);
   const failed = doc.status === "failed";
@@ -446,7 +477,7 @@ function DocumentCard({
   );
   const ready = doc.status === "completed" && !pending;
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
-  const thumbnail = useDocumentThumbnail(doc, ready, slot);
+  const thumbnail = useDocumentThumbnail(doc, ready && !compact, slot);
   // PDFs open the source preview, which can jump to a page. Without a chunk it has no text for
   // anything else, so other files open in the attachment viewer, read on click.
   const isPdf = kind === "pdf";
@@ -481,29 +512,102 @@ function DocumentCard({
         }
       />
     ) : undefined;
+  const removable = onRemove && !processing;
+  const buttonProps = {
+    type: "button",
+    disabled: !canOpen,
+    onClick: isPdf
+      ? () => openPreview({ documentId: doc.id, filename: doc.filename })
+      : undefined,
+    title:
+      doc.error ??
+      (shared
+        ? `${doc.filename}: shared with every chat in this project`
+        : doc.filename),
+    "aria-label": [
+      canOpen ? `Preview ${doc.filename}` : doc.filename,
+      processing ? `${stageLabel}${percent != null ? ` ${percent}%` : ""}` : null,
+      failed ? "couldn't index" : null,
+      shared ? "shared with the project" : null,
+    ]
+      .filter(Boolean)
+      .join(", "),
+  } as const;
+  const removeButton = removable ? (
+    <button
+      type="button"
+      onClick={onRemove}
+      aria-label={`Remove ${doc.filename}`}
+      className={cn(
+        "absolute flex size-5 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100",
+        compact ? "top-1/2 right-1.5 -translate-y-1/2" : "top-1.5 right-1.5",
+      )}
+    >
+      <XIcon className="size-3 stroke-[2.5px]" />
+    </button>
+  ) : null;
+  const wrapDialog = (trigger: ReactNode) =>
+    viewable && ready ? (
+      <LocalFileDialog name={doc.filename.split("/").pop() ?? doc.filename} load={loadSource}>
+        {trigger}
+      </LocalFileDialog>
+    ) : (
+      trigger
+    );
+  if (compact) {
+    return (
+      <div ref={setSlot} className="flex shrink-0 items-center gap-1">
+        <div className="group/attachment-card relative">
+          {wrapDialog(
+            <button
+              {...buttonProps}
+              className={cn(
+                PILL,
+                "text-left disabled:cursor-default",
+                CARD_EDGE,
+                canOpen && CARD_SURFACE,
+                canOpen && "cursor-pointer",
+                failed && "border-destructive/40 text-destructive",
+                removable && "pr-8",
+              )}
+            >
+              {processing ? (
+                <Spinner className="size-3.5 shrink-0" />
+              ) : (
+                <AttachmentKindIcon kind={kind} className="size-4 shrink-0" />
+              )}
+              <span className="truncate">{doc.filename}</span>
+              {processing && percent != null ? (
+                <span className="shrink-0 text-muted-foreground tabular-nums">{percent}%</span>
+              ) : null}
+              {shared ? (
+                <HugeiconsIcon
+                  icon={Folder02Icon}
+                  strokeWidth={2}
+                  className="size-3 shrink-0 text-muted-foreground"
+                  aria-hidden={true}
+                />
+              ) : null}
+            </button>,
+          )}
+          {removeButton}
+        </div>
+        {failed && onRetry ? (
+          <button
+            type="button"
+            onClick={onRetry}
+            aria-label={`Retry ${doc.filename}`}
+            className="unsloth-files-panel-action h-8 px-3 text-ui-12"
+          >
+            Retry
+          </button>
+        ) : null}
+      </div>
+    );
+  }
   const card = (
       <button
-        type="button"
-        disabled={!canOpen}
-        onClick={
-          isPdf
-            ? () => openPreview({ documentId: doc.id, filename: doc.filename })
-            : undefined
-        }
-        title={
-          doc.error ??
-          (shared
-            ? `${doc.filename}: shared with every chat in this project`
-            : doc.filename)
-        }
-        aria-label={[
-          canOpen ? `Preview ${doc.filename}` : doc.filename,
-          processing ? `${stageLabel}${percent != null ? ` ${percent}%` : ""}` : null,
-          failed ? "couldn't index" : null,
-          shared ? "shared with the project" : null,
-        ]
-          .filter(Boolean)
-          .join(", ")}
+        {...buttonProps}
         className={cn(
           "flex overflow-hidden rounded-[15px] text-left transition-colors disabled:cursor-default",
           CARD_SIZE,
@@ -529,13 +633,7 @@ function DocumentCard({
         CARD_SLOT,
       )}
     >
-      {viewable && ready ? (
-        <LocalFileDialog name={doc.filename.split("/").pop() ?? doc.filename} load={loadSource}>
-          {card}
-        </LocalFileDialog>
-      ) : (
-        card
-      )}
+      {wrapDialog(card)}
       {shared ? <ProjectBadge /> : null}
       {failed && onRetry ? (
         <button
@@ -547,16 +645,7 @@ function DocumentCard({
           Retry
         </button>
       ) : null}
-      {onRemove && !processing ? (
-        <button
-          type="button"
-          onClick={onRemove}
-          aria-label={`Remove ${doc.filename}`}
-          className="absolute top-1.5 right-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-background opacity-0 shadow-sm transition-opacity focus-visible:opacity-100 group-hover/attachment-card:opacity-100 group-focus-within/attachment-card:opacity-100 [@media(pointer:coarse)]:opacity-100"
-        >
-          <XIcon className="size-3 stroke-[2.5px]" />
-        </button>
-      ) : null}
+      {removeButton}
     </div>
   );
 }
@@ -568,6 +657,11 @@ function AddFilesCard({
   disabled: boolean;
   onClick: () => void;
 }) {
+  // Collapsed, the header's Add files is the only one.
+  const compact = useContext(CompactCardsContext);
+  if (compact) {
+    return null;
+  }
   return (
     <div className={CARD_SLOT}>
       <button
@@ -617,6 +711,8 @@ function ChatFilesPanel({
   dropDisabledReason?: string;
   children?: ReactNode;
 }) {
+  const collapsed = useChatPreferencesStore((s) => s.filesPanelCollapsed);
+  const setCollapsed = useChatPreferencesStore((s) => s.setFilesPanelCollapsed);
   const stripRef = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState({ back: false, forward: false });
   const measure = useCallback(() => {
@@ -634,9 +730,9 @@ function ChatFilesPanel({
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
-    // Adding a card does not resize the strip.
+    // Adding a card does not resize the strip, and nor does swapping cards for pills.
     const mutations = new MutationObserver(measure);
-    mutations.observe(el, { childList: true });
+    mutations.observe(el, { childList: true, subtree: true });
     return () => {
       observer.disconnect();
       mutations.disconnect();
@@ -669,6 +765,7 @@ function ChatFilesPanel({
       ref={acceptsDrop ? nativeDropTarget : undefined}
       aria-label={title}
       className="unsloth-files-panel"
+      data-collapsed={children && collapsed ? "true" : undefined}
       data-dragging={acceptsDrop && dragging ? "true" : undefined}
       {...(acceptsDrop ? dropProps : {})}
     >
@@ -730,6 +827,22 @@ function ChatFilesPanel({
               </button>
             </>
           ) : null}
+          {children ? (
+            <button
+              type="button"
+              className="unsloth-files-panel-icon-btn"
+              onClick={() => setCollapsed(!collapsed)}
+              aria-expanded={!collapsed}
+              aria-label={collapsed ? "Expand files" : "Collapse files"}
+              title={collapsed ? "Expand files" : "Collapse files"}
+            >
+              <HugeiconsIcon
+                icon={collapsed ? ChevronDownStandardIcon : ChevronUpStandardIcon}
+                strokeWidth={1.75}
+                className="size-4"
+              />
+            </button>
+          ) : null}
           {onClose ? (
             <button
               type="button"
@@ -749,7 +862,9 @@ function ChatFilesPanel({
           onScroll={measure}
           className="unsloth-files-panel-strip"
         >
-          {children}
+          <CompactCardsContext.Provider value={collapsed}>
+            {children}
+          </CompactCardsContext.Provider>
         </div>
       ) : null}
     </section>
