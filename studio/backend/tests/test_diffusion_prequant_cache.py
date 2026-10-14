@@ -637,3 +637,30 @@ def test_lookup_takes_the_eviction_lock_for_its_check_and_touch(env, tmp_path, s
     monkeypatch.setattr(C, "_entry", lambda key: held.append(C._LOCK_DEPTH[0]) or real_entry(key))
     assert C.lookup(_fam(base), scheme, base_repo = str(base)) == path
     assert held == [1]
+
+
+def test_the_cache_lock_is_a_real_lock_on_windows(env, monkeypatch):
+    """No fcntl (Windows): the lookup / eviction sections must still hold a cross-process lock, via msvcrt."""
+    calls = []
+    fake = types.SimpleNamespace(
+        LK_LOCK = 1,
+        LK_UNLCK = 0,
+        locking = lambda fd, mode, nbytes: calls.append((mode, nbytes)),
+    )
+    monkeypatch.setitem(sys.modules, "fcntl", None)  # import fcntl -> ImportError
+    monkeypatch.setitem(sys.modules, "msvcrt", fake)
+    with C._cache_lock(env):
+        assert calls == [(fake.LK_LOCK, 1)]
+    assert calls == [(fake.LK_LOCK, 1), (fake.LK_UNLCK, 1)]
+
+
+def test_a_windows_lock_that_stays_contended_still_runs_the_section(env, monkeypatch):
+    def locking(fd, mode, nbytes):
+        raise OSError("deadlock avoided")
+
+    monkeypatch.setitem(sys.modules, "fcntl", None)
+    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(LK_LOCK = 1, LK_UNLCK = 0, locking = locking))
+    ran = []
+    with C._cache_lock(env):
+        ran.append(True)
+    assert ran == [True]

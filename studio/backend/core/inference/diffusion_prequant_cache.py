@@ -437,20 +437,59 @@ _LOCK_NAME = ".lock"
 _LOCK_DEPTH = [0]
 
 
+# msvcrt.LK_LOCK retries for about 10 s, then raises; the sections it guards take milliseconds.
+_WINDOWS_LOCK_ATTEMPTS = 6
+
+
+def _lock_file(fh: Any) -> Optional[str]:
+    """Exclusive lock on ``fh``: POSIX flock, else Windows msvcrt.locking on its first byte. Returns the kind taken
+    (``"flock"`` / ``"msvcrt"``), or None when neither is available."""
+    try:
+        import fcntl
+    except ImportError:
+        fcntl = None
+    if fcntl is not None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        return "flock"
+    try:
+        import msvcrt
+    except ImportError:
+        return None
+    for attempt in range(_WINDOWS_LOCK_ATTEMPTS):
+        try:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            return "msvcrt"
+        except OSError:
+            if attempt == _WINDOWS_LOCK_ATTEMPTS - 1:
+                raise
+    return None
+
+
+def _unlock_file(fh: Any, kind: Optional[str]) -> None:
+    if kind == "msvcrt":
+        import msvcrt
+
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+    # flock is dropped by closing the descriptor
+
+
 @contextmanager
 def _cache_lock(root: Optional[Path] = None):
     """Cross-process lock over the cache root, held for short check-and-act sections (lookup's check + touch,
-    eviction's re-check + rename). POSIX flock; where that is unavailable the sections still run, unlocked."""
+    eviction's re-check + rename). POSIX flock, or msvcrt.locking on Windows; where neither can be taken the
+    sections still run, unlocked."""
     fh = None
+    kind = None
     try:
         root = root if root is not None else cache_root()
         root.mkdir(parents = True, exist_ok = True)
         fh = open(root / _LOCK_NAME, "a+b")
         try:
-            import fcntl
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        except (ImportError, OSError):
-            pass
+            kind = _lock_file(fh)
+        except OSError:
+            kind = None
     except OSError:
         fh = None
     _LOCK_DEPTH[0] += 1
@@ -460,7 +499,11 @@ def _cache_lock(root: Optional[Path] = None):
         _LOCK_DEPTH[0] -= 1
         if fh is not None:
             try:
-                fh.close()  # closing the descriptor drops the flock
+                _unlock_file(fh, kind)
+            except OSError:
+                pass
+            try:
+                fh.close()
             except OSError:
                 pass
 
