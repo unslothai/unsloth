@@ -3954,6 +3954,8 @@ class ResponsesUsage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
+    # {"cached_tokens": n}: prompt tokens the server reused from its cache, when it said.
+    input_tokens_details: Optional[dict[str, int]] = None
 
 
 class ResponsesResponse(BaseModel):
