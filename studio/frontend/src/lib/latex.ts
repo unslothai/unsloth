@@ -546,7 +546,11 @@ function hasInlineMathCloser(
       continue;
     }
     const body = content.slice(offset + 1, i);
-    if (BARE_NUMBER_RE.test(body) && !startsLikeVariable(content, i + 1)) {
+    if (
+      BARE_NUMBER_RE.test(body) &&
+      content[i + 1] !== "{" &&
+      !startsLikeVariable(content, i + 1)
+    ) {
       return true;
     }
     if (offset >= 2) {

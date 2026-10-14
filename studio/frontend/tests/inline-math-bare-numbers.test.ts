@@ -72,10 +72,12 @@ test("currency next to numbers stays text", () => {
   }
 });
 
-test("a shell variable right after a positional one stays text", () => {
+test("a shell parameter right after a positional one stays text", () => {
   for (const [source, literal] of [
     ['Run echo "$1$HOME" to print both.', "$1$HOME"],
     ["Use $1$ext in the replacement.", "$1$ext"],
+    ['Run echo "$1${2}" to print both.', "$1${2}"],
+    ['Run echo "$1${?}" to print both.', "$1${?}"],
   ]) {
     const html = render(source);
     assert.deepEqual(renderedMath(html), [], source);
