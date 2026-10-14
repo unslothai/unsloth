@@ -346,6 +346,8 @@ test("spaced inline math at a line start is not a shell prompt", () => {
     ["The equation is:\n$ x = 3 $\nDone.", ["x = 3"]],
     ["$ x = 3 $!", ["x = 3"]],
     ["$ x = 3 $?", ["x = 3"]],
+    ["$ x = 3 $[source](https://example.com)", ["x = 3"]],
+    ["$ x = 3 $*", ["x = 3"]],
   ] as Array<[string, string[]]>) {
     assert.deepEqual(renderedMath(render(source)), expected, source);
   }
