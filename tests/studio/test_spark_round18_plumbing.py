@@ -88,7 +88,7 @@ def test_the_peer_launch_survives_a_staged_path_with_a_space(cluster, monkeypatc
 
 
 def test_rank_zero_of_the_nccl_probe_resolves_torchrun(cluster) -> None:
-    src = (REPO / "studio" / "spark_cluster.py").read_text()
+    src = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
     probe = src.split("def nccl_bandwidth", 1)[1].split("\ndef ", 1)[0]
     assert "local_common = _common(managed_torchrun())" in probe
     assert "--node_rank=0" in probe and "{local_common}" in probe
@@ -162,7 +162,7 @@ def test_the_embedding_is_dropped_by_the_architectures_own_name(pipeline) -> Non
     name, _ = pipeline._first_named(owner, pipeline._EMBED_NAMES)
     assert name == "embed_in"
 
-    src = (REPO / "studio" / "spark_pipeline.py").read_text()
+    src = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
     body = src.split("def build_stage_model", 1)[1].split("\ndef ", 1)[0]
     assert "_first_named(owner, _EMBED_NAMES)" in body
     assert 'hasattr(owner, "embed_tokens")' not in body

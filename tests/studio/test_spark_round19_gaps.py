@@ -57,7 +57,7 @@ def test_the_public_plan_passes_the_gguf_kv_through(monkeypatch) -> None:
     cmd._plan_deployment(_SC, 105.0, 2, concurrency = 16, kv_gib_per_user = 1.0)
     assert seen["kv_gib_per_user"] == 1.0
 
-    source = (REPO / "unsloth_cli" / "commands" / "spark.py").read_text()
+    source = (REPO / "unsloth_cli" / "commands" / "spark.py").read_text(encoding = "utf-8")
     body = source.split('@spark_app.command("plan")')[1].split("@spark_app.command")[0]
     assert "serving_kv_gib_per_user(model, ctx)" in body
     assert 'kv_gib_per_user = kv.get("gib") or 0.0' in body
@@ -114,7 +114,7 @@ def test_the_ddp_script_path_is_quoted(cluster, monkeypatch) -> None:
 
 def test_the_peer_replica_executable_is_quoted_and_still_expands_home() -> None:
     """Quoted for spaces, but a quoted `~` never expands on the peer: it must be `$HOME`."""
-    source = (REPO / "studio" / "spark_cluster.py").read_text()
+    source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
     assert "peer_server_cmd = f'\"{_peer_path(peer_bin_dir)}/llama-server\"'" in source
     spec = importlib.util.spec_from_file_location("sc_r19", REPO / "studio" / "spark_cluster.py")
     module = importlib.util.module_from_spec(spec)
@@ -127,20 +127,20 @@ def test_the_peer_replica_executable_is_quoted_and_still_expands_home() -> None:
 def test_a_shared_parameter_is_scaled_once() -> None:
     """A V layout puts the first and last stage on one rank, so a tied embedding is the same Parameter
     in two stage modules: it was divided once per module, 1/M**2 against 1/M."""
-    source = (REPO / "studio" / "spark_pipeline.py").read_text()
+    source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
     body = source.split("def scale_grads_after_step", 1)[1].split("\n    where =", 1)[0]
     assert "seen = set()" in body and "id(p) not in seen" in body
 
 
 def test_the_refusal_no_longer_points_at_the_legacy_backend() -> None:
-    source = (REPO / "studio" / "spark_pipeline.py").read_text()
+    source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
     refusal = source.split("carries {sorted(skipped)}", 1)[1].split(")", 1)[0]
     assert "single node" in refusal
     assert "NOT " in refusal and "legacy" in refusal
 
 
 def test_blank_jsonl_lines_are_skipped() -> None:
-    source = (REPO / "studio" / "spark_pipeline.py").read_text()
+    source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
     assert "json.loads(line)" in source and "if line.strip()" in source
 
 
@@ -168,12 +168,12 @@ def test_the_peer_stage_must_report_zero_before_collection(cluster, monkeypatch)
     assert gone["ok"] is False and "no exit status" in gone["why"]
 
     # And the remote command really does consult the status file, not just the pid.
-    source = (REPO / "studio" / "spark_cluster.py").read_text()
+    source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
     assert "cat {rc_file}" in source or "$(cat {rc_file}" in source
 
 
 def test_a_failed_peer_probe_launch_does_not_start_rank_zero() -> None:
-    source = (REPO / "studio" / "spark_cluster.py").read_text()
+    source = (REPO / "studio" / "spark_cluster.py").read_text(encoding = "utf-8")
     probe = source.split("def nccl_bandwidth", 1)[1].split("\ndef ", 1)[0]
     assert "if started.returncode != 0:" in probe
     after = probe.split("if started.returncode != 0:", 1)[1]
@@ -182,6 +182,6 @@ def test_a_failed_peer_probe_launch_does_not_start_rank_zero() -> None:
 
 def test_the_load_balancer_bounds_each_connection_attempt(lb) -> None:
     assert lb.CONNECT_TIMEOUT > 0
-    source = (REPO / "studio" / "spark_lb.py").read_text()
+    source = (REPO / "studio" / "spark_lb.py").read_text(encoding = "utf-8")
     assert "asyncio.wait_for(" in source and "timeout = CONNECT_TIMEOUT" in source
     assert "except (OSError, asyncio.TimeoutError):" in source

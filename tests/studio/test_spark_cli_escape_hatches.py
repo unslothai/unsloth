@@ -83,7 +83,7 @@ def test_the_module_parser_carries_force(merge_mod, monkeypatch):
 
 
 def test_the_public_merge_and_provision_commands_expose_force():
-    source = (REPO / "unsloth_cli" / "commands" / "spark.py").read_text()
+    source = (REPO / "unsloth_cli" / "commands" / "spark.py").read_text(encoding = "utf-8")
     merge_src = source.split('@spark_app.command("merge")')[1].split("@spark_app.command")[0]
     assert '"--force"' in merge_src
     assert "force = force" in merge_src
@@ -119,7 +119,7 @@ def test_serve_rpc_port_survives_the_delegated_parser(cluster, monkeypatch):
 
 
 def test_the_rpc_backfill_does_not_expand_an_unassigned_ncpu():
-    source = (REPO / "studio" / "setup.sh").read_text()
+    source = (REPO / "studio" / "setup.sh").read_text(encoding = "utf-8")
     body = source.split("_backfill_local_rpc_server() {")[1].split("\n}\n")[0]
     assert "$NCPU" not in body, "NCPU is assigned in the source-build section this path skips"
     assert "_llama_build_jobs" in body
@@ -160,7 +160,7 @@ def test_lora_targets_are_read_off_the_model_not_assumed(pipeline):
 
 
 def test_the_peft_call_no_longer_hard_codes_llama_names(pipeline):
-    source = (REPO / "studio" / "spark_pipeline.py").read_text()
+    source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
     call = source.split("get_peft_model(")[1].split("\n    model.train()")[0]
     assert "lora_target_modules(model)" in call
     assert not re.search(r'"q_proj"', call)

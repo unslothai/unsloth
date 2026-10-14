@@ -742,7 +742,7 @@ def test_a_config_fault_does_not_overwrite_a_good_output(tmp_path) -> None:
     with pytest.raises(RuntimeError):
         sm.merge(str(tmp_path), str(out))
     assert (out / "adapter_model.safetensors").read_bytes() == good
-    assert _json.loads((out / "adapter_config.json").read_text())["r"] == 16
+    assert _json.loads((out / "adapter_config.json").read_text(encoding = "utf-8"))["r"] == 16
 
 
 def test_a_staged_base_model_path_is_not_a_config_mismatch(tmp_path) -> None:
@@ -757,14 +757,14 @@ def test_a_staged_base_model_path_is_not_a_config_mismatch(tmp_path) -> None:
     _mk_stage(tmp_path, 1, range(12, 24))
     for rank, base in ((0, "/home/a/ckpt"), (1, "/home/b/.unsloth/stage/ckpt")):
         p = tmp_path / f"stage{rank}" / "adapter_config.json"
-        cfg = _json.loads(p.read_text())
+        cfg = _json.loads(p.read_text(encoding = "utf-8"))
         cfg["base_model_name_or_path"] = base
         p.write_text(_json.dumps(cfg))
     res = sm.merge(str(tmp_path), str(tmp_path / "merged"))
     assert res["n_tensors"] == 25
     # A real config difference is still fatal, so the exclusion is location-only.
     p = tmp_path / "stage1" / "adapter_config.json"
-    cfg = _json.loads(p.read_text())
+    cfg = _json.loads(p.read_text(encoding = "utf-8"))
     cfg["r"] = 8
     p.write_text(_json.dumps(cfg))
     with pytest.raises(RuntimeError):
@@ -1610,8 +1610,10 @@ def test_fast_files_script_really_writes_600(tmp_path) -> None:
     assert _stat.S_IMODE(work.stat().st_mode) == 0o700
     secrets_file = work / "rsyncd.secrets"
     assert _stat.S_IMODE(secrets_file.stat().st_mode) == 0o600
-    assert secrets_file.read_text() == "u:pw$`\\x\n"  # quoted heredoc: nothing expanded
-    assert (work / "rsyncd.conf").read_text() == cfg
+    assert (
+        secrets_file.read_text(encoding = "utf-8") == "u:pw$`\\x\n"
+    )  # quoted heredoc: nothing expanded
+    assert (work / "rsyncd.conf").read_text(encoding = "utf-8") == cfg
     assert dest.is_dir()
 
 
