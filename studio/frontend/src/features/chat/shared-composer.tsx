@@ -140,13 +140,12 @@ import {
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
-import { SkillsComposerButton } from "./skills-composer-button";
+import { SkillsComposerButton, useSkillsSwitch } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
-import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
@@ -680,7 +679,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
@@ -2578,9 +2577,15 @@ export function SharedComposer({
       </DropdownMenuItem>
     ),
     skills: (
-      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+      <DropdownMenuItem
+        className={skillsOn ? "text-primary font-medium" : undefined}
+        onSelect={() => setSkillsOn(!skillsOn)}
+      >
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
+        {skillsOn ? (
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+        ) : null}
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2715,7 +2720,6 @@ export function SharedComposer({
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       data-writing-expanded={isWritingExpanded ? "true" : undefined}
     >
-      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
       <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog

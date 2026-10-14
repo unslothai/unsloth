@@ -3,7 +3,7 @@
 
 import { Scroll01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 
@@ -24,8 +24,20 @@ import {
   useSkillsCatalog,
 } from "./api/skills-api";
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
+import { skillsSwitchedOn, useSkillsSwitchStore } from "./stores/skills-switch-store";
 
-/** Composer pill for the enabled skills, shown once any is on. Toggles them in place. */
+/** Whether Skills is on in the composer, and its setter for the + menu. */
+export function useSkillsSwitch(): [boolean, (on: boolean) => void] {
+  const { skills } = useSkillsCatalog();
+  const on = useSkillsSwitchStore((s) => s.on);
+  const setOn = useSkillsSwitchStore((s) => s.setOn);
+  const enabledCount = skills.filter(
+    (skill) => skill.valid && !skill.shadowed && skill.enabled,
+  ).length;
+  return [skillsSwitchedOn(on, enabledCount), setOn];
+}
+
+/** Composer pill for skills, shown while the Skills switch is on. Toggles them in place. */
 export function SkillsComposerButton({
   side = "bottom",
 }: {
@@ -36,6 +48,7 @@ export function SkillsComposerButton({
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
 
   // Runnable skills only: shadowed or invalid ones stay in Manage skills.
   const usable = skills.filter((skill) => skill.valid && !skill.shadowed);
@@ -61,8 +74,8 @@ export function SkillsComposerButton({
 
   return (
     <>
-      {/* Stays while open, so turning off the last skill does not close it. */}
-      {enabledCount > 0 || menuOpen ? (
+      {/* Stays with every skill unticked: only its X or the + menu turns Skills off. */}
+      {skillsOn || menuOpen ? (
         <DropdownMenu
           open={menuOpen}
           onOpenChange={(open) => {
@@ -78,12 +91,32 @@ export function SkillsComposerButton({
               data-active={enabledCount > 0 ? "true" : "false"}
               aria-label={t("skills.title")}
             >
-              <span className="composer-pill-glyph">
+              {/* Outside compact mode, the hover X turns Skills off without opening the menu. */}
+              <span
+                role="button"
+                aria-label={t("skills.turnOff")}
+                tabIndex={-1}
+                onPointerDown={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) {
+                    return;
+                  }
+                  e.stopPropagation();
+                }}
+                onClick={(e) => {
+                  if (e.currentTarget.closest('[data-pill-compact="true"]')) {
+                    return;
+                  }
+                  e.stopPropagation();
+                  setSkillsOn(false);
+                }}
+                className="composer-pill-glyph cursor-pointer"
+              >
                 <HugeiconsIcon
                   icon={Scroll01Icon}
                   className="size-[calc(15px*var(--ui-space-scale,1))]"
                   strokeWidth={2}
                 />
+                <XIcon className="composer-pill-x" />
               </span>
               <span>{t("skills.title")}</span>
               <ChevronDownIcon

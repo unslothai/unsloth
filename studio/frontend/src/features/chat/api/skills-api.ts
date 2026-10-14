@@ -4,6 +4,7 @@
 import { authFetch } from "@/features/auth";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session";
 import { useEffect, useSyncExternalStore } from "react";
+import { useSkillsSwitchStore } from "../stores/skills-switch-store";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { SKILL_MENTION_PATTERN } from "./skill-tools";
 
@@ -152,6 +153,10 @@ export async function setSkillEnabled(
   });
   channel?.postMessage("changed");
   void refreshContextUsage({ invalidate: true });
+  // Ticking a skill means using it, so it switches Skills back on.
+  if (updated.enabled) {
+    useSkillsSwitchStore.getState().setOn(true);
+  }
   return updated;
 }
 
@@ -173,6 +178,9 @@ export async function setAllSkillsEnabled(
   publish({ skills, loading: false, initialized: true, error: null });
   channel?.postMessage("changed");
   void refreshContextUsage({ invalidate: true });
+  if (enabled === true) {
+    useSkillsSwitchStore.getState().setOn(true);
+  }
   return skills;
 }
 

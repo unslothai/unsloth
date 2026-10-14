@@ -85,7 +85,6 @@ import { WebSearchToolUI } from "@/components/assistant-ui/tool-ui-web-search";
 import { ChatDictationBar } from "@/components/assistant-ui/chat-dictation-bar";
 import {
   ChatAudioUploadMount,
-  ChatSkillsDialog,
   composerSubmitIntent,
   composerFollowUpBehavior,
   composerShortcutLabels,
@@ -230,7 +229,10 @@ import {
   watchAutoContinueRun,
 } from "@/features/chat/utils/auto-continue-run-keeper";
 import { McpComposerButton } from "@/features/chat/mcp-composer-button";
-import { SkillsComposerButton } from "@/features/chat/skills-composer-button";
+import {
+  SkillsComposerButton,
+  useSkillsSwitch,
+} from "@/features/chat/skills-composer-button";
 import { pickerAcceptForTextBasenames } from "@/features/chat/text-attachment-accept";
 import {
   COMPOSER_INPUT_SELECTOR,
@@ -6869,7 +6871,7 @@ const ComposerToolsMenu: FC<{
   }, [navigate]);
 
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
@@ -7005,9 +7007,15 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuItem>
     ),
     skills: (
-      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+      <DropdownMenuItem
+        className={skillsOn ? "text-primary font-medium" : undefined}
+        onSelect={() => setSkillsOn(!skillsOn)}
+      >
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
+        {skillsOn ? (
+          <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="ml-auto" />
+        ) : null}
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -7148,7 +7156,6 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
-    <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
