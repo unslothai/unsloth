@@ -1436,6 +1436,44 @@ def _same_value(a: Any, b: Any) -> bool:
         return False
 
 
+# Per-call state Studio's root hooks write onto denoiser submodules (``_unsloth_*`` scalars, e.g. the HunyuanVideo-1.5
+# trim hook's null-mask flag). The root hooks run only on the source, around the router, so the replica's copy of that
+# state is mirrored from the source before every replica call and the prediction is verified against it.
+_STATE_PREFIX = "_unsloth_"
+_STATE_TYPES = (bool, int, float, str, type(None))
+_STATE_KEEP = frozenset({"_unsloth_replica_compiled"})
+
+
+def _hook_state(pairs: list) -> tuple:
+    out = []
+    for i, (src, _dst) in enumerate(pairs):
+        for key, value in src.__dict__.items():
+            if key.startswith(_STATE_PREFIX) and isinstance(value, _STATE_TYPES):
+                out.append((i, key, value))
+    return tuple(out)
+
+
+def _mirror_hook_state(pairs: list) -> tuple:
+    """Copy the source's ``_unsloth_*`` scalar state onto the replica's matching submodules (and drop what the source
+    no longer has); returns the mirrored state."""
+    state = _hook_state(pairs)
+    wanted: dict = {}
+    for i, key, value in state:
+        wanted.setdefault(i, {})[key] = value
+    for i, (_src, dst) in enumerate(pairs):
+        mine = wanted.get(i, {})
+        for key in [
+            k
+            for k, v in dst.__dict__.items()
+            if k.startswith(_STATE_PREFIX) and isinstance(v, _STATE_TYPES) and k not in mine and k not in _STATE_KEEP
+        ]:
+            del dst.__dict__[key]
+        for key, value in mine.items():
+            if dst.__dict__.get(key, _DROP) is not value and dst.__dict__.get(key, _DROP) != value:
+                dst.__dict__[key] = value
+    return state
+
+
 class CfgParallelRouter:
     """Installed as the denoiser's ``forward``: routes odd branches of a step to the replica.
 
@@ -1490,6 +1528,7 @@ class CfgParallelRouter:
         self.pending: Optional[dict] = None
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
+        self.pairs: list = []
 
     # -- status
     def describe(self) -> dict[str, Any]:
@@ -1516,6 +1555,7 @@ class CfgParallelRouter:
             self.worker = None
         self._drop_pending()
         self.replica = None
+        self.pairs = []
         self.prefetched.clear()
         self.carry = []
         self.next_carry = []
@@ -1637,7 +1677,9 @@ class CfgParallelRouter:
                 snapshots.append((src, used.clone() if used is src else used))
         replica = self.replica
         _structure, kinds = self.template
+        hook_state = _mirror_hook_state(self.pairs)
         self.pending = {
+            "hook_state": hook_state,
             "leaves": _leaves((p_args, p_kwargs)),
             "by_value": {path for path, kind in kinds.items() if kind[0] == "b0eq"},
             "snapshots": snapshots,
@@ -1655,6 +1697,8 @@ class CfgParallelRouter:
             pa == pp and (_bitwise_equal(va, vp) if pa in by_value else _same_value(va, vp))
             for (pa, va), (pp, vp) in zip(actual, predicted)
         )
+        # the source's root hooks have now run for THIS call: the replica must have seen the same per-call state
+        ok = ok and _hook_state(self.pairs) == pending["hook_state"]
         ok = ok and _unchanged_since_launch(pending["snapshots"])
         try:
             out = _ReplicaWorker.wait(pending["job"])
@@ -1719,6 +1763,7 @@ class CfgParallelRouter:
             self.fingerprint = weights_fingerprint(module)
             with _device_context(self.secondary):
                 self.replica = self.replica_factory()
+            self.pairs = list(zip(module.modules(), self.replica.modules()))
             self.worker = _ReplicaWorker(self.secondary)
             # the worker thread ends with the router (the module drops it on unload)
             weakref.finalize(self, self.worker.close)
@@ -1770,6 +1815,7 @@ class CfgParallelRouter:
         return walk(obj)
 
     def _run_replica(self, args: tuple, kwargs: dict) -> Any:
+        _mirror_hook_state(self.pairs)
         r_args = self._to_replica(args)
         r_kwargs = self._to_replica(kwargs)
         replica = self.replica

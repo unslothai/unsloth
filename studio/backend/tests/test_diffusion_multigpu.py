@@ -1207,3 +1207,50 @@ def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
     # rebuilt from the mutated source on the next guided step
     _cfg_loop(dit, torch.randn(2, 4), steps = 2)
     assert len(replicas) == 2
+
+
+class _FlagLinear(torch.nn.Linear):
+    def forward(self, x):
+        out = super().forward(x)
+        return -out if getattr(self, "_unsloth_flip", False) else out
+
+
+class _FlagDit(_Dit):
+    def __init__(self):
+        super().__init__()
+        self.proj = _FlagLinear(4, 4)
+
+
+def _flag_pre_hook(module, args, kwargs):
+    # like the HunyuanVideo trim hook: per-call state written onto a SUBMODULE of the source
+    # varies per call: by branch (negative embeds) and over the trajectory (late steps)
+    module.proj._unsloth_flip = bool(kwargs["encoder_hidden_states"].sum() < 0) != bool(kwargs["timestep"] < 0.5)
+
+
+def _flag_post_hook(module, args, output):
+    module.proj.__dict__.pop("_unsloth_flip", None)
+
+
+def test_root_hook_state_on_submodules_reaches_the_replica():
+    torch.manual_seed(0)
+    dit = _FlagDit()
+    dit.register_forward_pre_hook(_flag_pre_hook, with_kwargs = True)
+    dit.register_forward_hook(_flag_post_hook)
+    latents = torch.randn(2, 4)
+    cond = torch.ones(3, 4)
+    neg = -torch.ones(3, 4)  # the uncond branch flips the flag the cond branch cleared
+
+    def loop(steps):
+        x = latents.clone()
+        for i in range(steps):
+            t = torch.tensor(1.0 - i / steps)
+            a = dit(hidden_states = x, timestep = t, encoder_hidden_states = cond)[0]
+            b = dit(hidden_states = x, timestep = t, encoder_hidden_states = neg)[0]
+            x = x - 0.1 * (b + 4.0 * (a - b))
+        return x
+
+    reference = loop(5)
+    router, _replicas = _router(dit)
+    out = loop(5)
+    assert torch.equal(out, reference)
+    assert router.stats["replica_calls"] == 4
