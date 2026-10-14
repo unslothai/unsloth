@@ -372,20 +372,32 @@ def vec_table_dim(conn: sqlite3.Connection) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def ensure_vec(conn: sqlite3.Connection, dim: int) -> None:
+# Matches no embedder: a document whose vectors were dropped stays stale even under its old model.
+VECTORS_DROPPED = "vectors-dropped"
+
+
+def ensure_vec(
+    conn: sqlite3.Connection,
+    dim: int,
+    writing: str | None = None,
+) -> None:
     """Create the dense ``chunks_vec`` table once the embedding dim is known (vec0 bakes it into the column
     type). A width change (embedding model switched in Settings) drops the table: the old vectors live in a
-    foreign space and would only block inserts, while lexical search keeps serving old chunks until they are
-    re-uploaded."""
+    foreign space and would only block inserts. Lexical search keeps serving the old chunks, and every
+    document but ``writing``, completed or not (ingestion commits its vectors before completing), is
+    stamped ``VECTORS_DROPPED`` until it is re-embedded."""
     existing = vec_table_dim(conn)
     if existing is not None and existing != int(dim):
         logger.warning(
             "chunks_vec dim changed %d -> %d (embedding model switched); dropping "
-            "stale dense index. Re-upload documents to restore dense search.",
+            "stale dense index. Re-embed documents to restore dense search.",
             existing,
             int(dim),
         )
         conn.execute("DROP TABLE chunks_vec")
+        conn.execute(
+            "UPDATE documents SET embedding_model=? WHERE id IS NOT ?", (VECTORS_DROPPED, writing)
+        )
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
         f"scope TEXT partition key, "

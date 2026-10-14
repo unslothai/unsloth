@@ -66,11 +66,9 @@ def test_stale_documents_regain_dense_search_under_the_same_ids(models, tmp_path
     chunks = [_row(d)[1] for d in (first, second)]
     models["model"] = NEW
     assert reembed.stale_counts() == {"documents": 2, "archived": 1}
-    job = _run_job()
-    assert (job["status"], job["done"], job["failed"]) == ("completed", 3, 0)
+    assert ((job := _run_job())["status"], job["done"], job["failed"]) == ("completed", 3, 0)
     assert reembed.stale_counts() == {"documents": 0, "archived": 0}
-    identity = embeddings.embedding_identity(NEW)
-    assert [_row(first), _row(second)] == [(identity, chunks[0]), (identity, chunks[1])]
+    assert [_row(first), _row(second)] == [(embeddings.embedding_identity(NEW), c) for c in chunks]
     with _connect() as c:
         hits = retrieval.retrieve_dense(c, scope, "delta echo foxtrot", k = 5, model_name = NEW)
     assert hits[0].chunk_id == chunks[1][1][0]
@@ -82,10 +80,9 @@ def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_
     broken = _ingest(tmp_path, scope, "broken.txt", "poison alpha")
     healthy = _ingest(tmp_path, scope, "ok.txt", "bravo charlie")
     _ingest(tmp_path, scope, "broken2.txt", "poison bravo")
-    original = _row(broken)
+    original = (rag_db.VECTORS_DROPPED, _row(broken)[1])  # chunks kept; NEW's width drops vectors
     models.update(model = NEW, fail = lambda texts: any("poison" in t for t in texts))
-    job = _run_job()
-    assert (job["status"], job["done"], job["failed"]) == ("completed", 1, 2)  # fail, ok, fail
+    assert ((job := _run_job())["status"], job["done"], job["failed"]) == ("completed", 1, 2)
     assert (_row(broken), _row(healthy)[0]) == (original, embeddings.embedding_identity(NEW))
     models["fail"] = lambda texts: True
     job = _run_job()
@@ -115,6 +112,19 @@ def test_vectors_superseded_mid_encode_are_not_written_over_the_new_index(models
     assert ((job := _run_job())["status"], job["done"]) == ("completed", 0)
     with _connect() as c:
         assert c.execute("SELECT COUNT(*) FROM chunks_vec").fetchone()[0] == 3
+
+
+def test_documents_a_width_change_stripped_stay_stale_after_switching_back(models, tmp_path):
+    ids = [_ingest(tmp_path, store.kb_scope("K9"), f"{n}.txt", f"text {n}") for n in "ab"]
+    models.update(model = NEW, fail = lambda t: t == ["text a"] and reembed.cancel() and False)
+    assert _run_job()["status"] == "cancelled"  # b re-embedded, which dropped a's vectors
+    models["model"] = OLD
+    assert (reembed.stale_counts()["documents"], _run_job()["done"]) == (2, 2)
+    with _connect() as c:
+        store.set_document_status(c, ids[1], "pending")  # vectors written, not yet completed
+        rag_db.ensure_vec(c, 4, ids[0]) or c.commit()  # the document being written keeps its stamp
+        assert store.count_untagged_documents(c) == 0
+    assert [_row(d)[0] for d in ids] == [embeddings.embedding_identity(OLD), rag_db.VECTORS_DROPPED]
 
 
 def test_cancel_and_retirement_stop_before_the_document_in_flight_is_written(models, tmp_path):

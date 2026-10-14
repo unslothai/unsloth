@@ -482,7 +482,7 @@ def add_chunks(
     ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
     per-chunk PDF highlight rects, stored as JSON."""
     if len(vectors):
-        rag_db.ensure_vec(conn, len(vectors[0]))
+        rag_db.ensure_vec(conn, len(vectors[0]), document_id)
     vec_rowids: list[int] = []
     for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
         chunk_id = f"{document_id}:{chunk.chunk_index}"
@@ -562,7 +562,7 @@ def replace_document_vectors(
             conn.rollback()
             return False
         scope = row["scope"]
-        rag_db.ensure_vec(conn, len(vectors[0]))
+        rag_db.ensure_vec(conn, len(vectors[0]), document_id)
         # One partition scan for the document's rows ('; sorts right after ':'), then delete by rowid.
         stale_rowids = [
             r["rowid"]
@@ -1013,7 +1013,9 @@ def count_untagged_documents(conn: sqlite3.Connection) -> int:
     behind the user's back, so this exists to say how many are in that state."""
     tags = " ".join(f"AND embedding_model NOT LIKE '{t}:%'" for t in config.EMBEDDING_IDENTITY_TAGS)
     row = conn.execute(
-        f"SELECT COUNT(*) AS n FROM documents WHERE embedding_model IS NOT NULL {tags}"
+        f"SELECT COUNT(*) AS n FROM documents WHERE embedding_model IS NOT NULL {tags} "
+        "AND embedding_model != ?",
+        (rag_db.VECTORS_DROPPED,),
     ).fetchone()
     return int(row["n"]) if row else 0
 
