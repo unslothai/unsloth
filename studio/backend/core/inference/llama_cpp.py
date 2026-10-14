@@ -27555,8 +27555,26 @@ class LlamaCppBackend:
                                 )
                                 else _draft_host_pinned_candidate
                             )
+                            # _shared_memory describes the target's devices; a pinned
+                            # drafter must name proved-discrete planned ones itself.
+                            _draft_pin_now = _extra_args_effective_draft_device_pin(extra_args)
+                            _draft_pin_discrete = _draft_pin_now is None or (
+                                is_vulkan_backend
+                                and {
+                                    name.strip().lower()
+                                    for name in str(_draft_pin_now).split(",")
+                                    if name.strip()
+                                }
+                                <= {
+                                    f"vulkan{idx}"
+                                    for idx, _free in gpus
+                                    if idx not in (_shared_gpu_ids | _unclassified_gpu_ids)
+                                }
+                            )
                             _draft_host_pinned = (
-                                0 if _shared_memory else _draft_host_pinned_candidate
+                                _draft_host_pinned_candidate
+                                if (_draft_pin_discrete and not _shared_memory)
+                                else 0
                             )
                             _mtp_draft_weights = self._separate_drafter_weight_vram_bytes(
                                 _mtp_draft_for_budget,

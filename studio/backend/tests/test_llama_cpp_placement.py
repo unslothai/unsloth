@@ -5897,3 +5897,66 @@ def test_the_header_scan_refuses_what_it_cannot_parse(tmp_path):
     with pytest.raises(ValueError):
         LlamaCppBackend._gguf_scan_tensor_bytes(str(bad))
     assert LlamaCppBackend()._gguf_tensor_scan(str(bad)) is None
+
+
+def _draft_reserve_launch(
+    tmp_path,
+    *,
+    extra_args,
+    discount = True,
+):
+    """(first planned total, argv) for a 1 GiB target on discrete Vulkan0 beside an iGPU,
+    with a 6 GiB separate drafter holding 3 GiB of host-pinned embeddings."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 8_000, 16_000), (1, 30_000, 0)])
+    probe = backend._run_vulkan_probe
+
+    def rows(*_a, **_kw):
+        out = probe()
+        out[1]["is_igpu"] = True
+        return out
+
+    backend._run_vulkan_probe = rows
+    totals = []
+
+    def plan(total, gpus, *args, **kwargs):
+        totals.append(total)
+        return None, True
+
+    backend._select_gpus = plan
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "mtp_token": "draft-mtp",
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+    backend._resolve_launch_mtp_path = lambda **_kwargs: "/fake/mtp.gguf"
+    backend._get_gguf_size_bytes = lambda path: 6 * gib if "mtp" in str(path) else gib
+    backend._host_pinned_vram_discount = lambda _path, *_a, draft_model = False, **_kw: (
+        3 * gib if (draft_model and discount) else 0
+    )
+    result = _launch(
+        backend,
+        gguf,
+        mtp_draft_path = "/fake/mtp.gguf",
+        speculative_type = "mtp",
+        gpu_ids = [0],
+        extra_args = extra_args,
+    )
+    return totals[0], result["cmd"]
+
+
+def test_a_drafter_pinned_to_an_igpu_keeps_its_host_pinned_charge(tmp_path):
+    # The target is on a discrete card, but the drafter's own device is shared memory.
+    pinned, _ = _draft_reserve_launch(tmp_path, extra_args = ["--spec-draft-device", "Vulkan1"])
+    full, _ = _draft_reserve_launch(
+        tmp_path, extra_args = ["--spec-draft-device", "Vulkan1"], discount = False
+    )
+    assert pinned == full
+
+
+def test_a_drafter_pinned_to_the_discrete_target_keeps_the_discount(tmp_path):
+    pinned, _ = _draft_reserve_launch(tmp_path, extra_args = ["--spec-draft-device", "Vulkan0"])
+    full, _ = _draft_reserve_launch(
+        tmp_path, extra_args = ["--spec-draft-device", "Vulkan0"], discount = False
+    )
+    unpinned, _ = _draft_reserve_launch(tmp_path, extra_args = None)
+    assert pinned == unpinned == full - 3 * 1024**3
