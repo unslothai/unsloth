@@ -1256,14 +1256,19 @@ def _passthrough_cut_scope(body: dict) -> tuple:
     return ("passthrough", body.get("model"))
 
 
-def _replay_passthrough_cut(body: dict, policy: Optional[str]) -> int:
+def _replay_passthrough_cut(
+    body: dict, policy: Optional[str], context_length: Optional[int]
+) -> int:
     """Apply the cut this conversation took last request before sending, so the oldest kept turn
-    stays put (and the prompt cache with it) instead of moving on every overflow retry."""
-    if policy != "truncate_oldest":
+    stays put (and the prompt cache with it) instead of moving on every overflow retry. Only while
+    the uncut request would still overflow: after a rollback or a larger window it is sent whole."""
+    if policy != "truncate_oldest" or not context_length:
+        return 0
+    messages = body.get("messages") or []
+    if _estimate_messages_tokens(messages) <= _OVERFLOW_PROMPT_TARGET_FRACTION * context_length:
         return 0
     from core.inference import prefix_boundary
 
-    messages = body.get("messages") or []
     remembered = prefix_boundary.recall(messages, _passthrough_cut_scope(body))
     if not remembered:
         return 0
@@ -45396,7 +45401,10 @@ async def _openai_passthrough_stream_admitted(
         _truncate_policy = _overflow_truncation_policy(payload)
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
         _uncut_messages = list(body.get("messages") or [])
-        _truncated_messages = _replay_passthrough_cut(body, _truncate_policy)
+        # Hashing the history can mean megabytes of image data, so off the event loop.
+        _truncated_messages = await asyncio.to_thread(
+            _replay_passthrough_cut, body, _truncate_policy, llama_backend.context_length
+        )
         _context_was_truncated = _truncated_messages > 0
         # One respawn per request: a second unreachable upstream after a successful
         # relaunch is a real failure, not a stale port.
@@ -46316,7 +46324,10 @@ async def _openai_passthrough_non_streaming_upstream(
     _truncate_policy = _overflow_truncation_policy(payload)
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
     _uncut_messages = list(body.get("messages") or [])
-    _truncated_messages = _replay_passthrough_cut(body, _truncate_policy)
+    # Hashing the history can mean megabytes of image data, so off the event loop.
+    _truncated_messages = await asyncio.to_thread(
+        _replay_passthrough_cut, body, _truncate_policy, llama_backend.context_length
+    )
     _context_was_truncated = _truncated_messages > 0
     # One respawn per request, as on the streaming twin.
     _respawn_retried = False

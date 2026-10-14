@@ -46,9 +46,9 @@ def _key(messages: list[dict], scope) -> Optional[str]:
 
 
 def _anchor(turns: list[dict], dropped: int) -> str:
-    # The turn the cut starts after. A conversation that only shares the opening differs here, so it never
-    # borrows another's cut.
-    return _digest(turns[dropped - 1])
+    # Everything the cut removed: a conversation that only shares the opening (another user's, or this one edited)
+    # differs somewhere in it, so it never borrows another's cut.
+    return _digest(turns[:dropped])
 
 
 def recall(messages: list[dict], scope = None) -> int:

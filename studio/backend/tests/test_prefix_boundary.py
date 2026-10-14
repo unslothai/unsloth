@@ -111,7 +111,7 @@ def test_the_passthrough_replays_the_cut_before_sending():
     routes._remember_passthrough_cut(messages, body, "truncate_oldest", 30)
 
     later = {"model": "m", "messages": _transcript(41)}
-    dropped = routes._replay_passthrough_cut(later, "truncate_oldest")
+    dropped = routes._replay_passthrough_cut(later, "truncate_oldest", 4096)
 
     assert dropped >= 30
     assert later["messages"][0]["role"] == "system"
@@ -125,8 +125,32 @@ def test_the_passthrough_leaves_other_policies_alone():
 
     assert (
         routes._replay_passthrough_cut(
-            {"model": "m", "messages": _transcript(41)}, "truncate_middle"
+            {"model": "m", "messages": _transcript(41)}, "truncate_middle", 4096
         )
         == 0
     )
-    assert routes._replay_passthrough_cut({"model": "m", "messages": _transcript(41)}, None) == 0
+    assert (
+        routes._replay_passthrough_cut({"model": "m", "messages": _transcript(41)}, None, 4096) == 0
+    )
+
+
+def test_the_passthrough_sends_a_conversation_that_now_fits_whole():
+    messages = _transcript(40)
+    routes._remember_passthrough_cut(
+        messages, {"model": "m", "messages": messages}, "truncate_oldest", 30
+    )
+    # A larger window loaded since: the remembered cut is not needed.
+    later = {"model": "m", "messages": _transcript(41)}
+
+    assert routes._replay_passthrough_cut(later, "truncate_oldest", 131072) == 0
+    assert len(later["messages"]) == len(_transcript(41))
+
+
+def test_a_conversation_differing_anywhere_in_the_dropped_part_does_not_borrow_the_cut():
+    messages = _transcript(40)
+    prefix_boundary.remember(messages, 20)
+    other = _transcript(40)
+    # Same opening and the same turn right before the cut; one turn in between differs.
+    other[10] = {**other[10], "content": "another user's turn"}
+
+    assert prefix_boundary.recall(other) == 0
