@@ -1865,7 +1865,23 @@ export const es = {
           "Modelo de Hugging Face o ruta local usada para indexar y buscar tus documentos. El valor predeterminado es {defaultModel}.",
         searchPlaceholder: "Buscar cualquier modelo en HF",
         reindexWarning:
-          "Solo afecta a los documentos recién indexados. Vuelve a subir los existentes tras cambiar el modelo.",
+          "Solo afecta a los documentos recién indexados. Vuelve a incrustar los existentes tras cambiar el modelo.",
+        reembed: {
+          label: "Volver a incrustar documentos",
+          staleOne:
+            "1 documento se indexó con otro modelo de embeddings, así que la búsqueda semántica lo omite.",
+          staleMany:
+            "{count} documentos se indexaron con otro modelo de embeddings, así que la búsqueda semántica los omite.",
+          staleArchived:
+            "El historial de chat anterior se indexó con otro modelo de embeddings, así que la búsqueda semántica lo omite.",
+          running: "Volviendo a incrustar: {done} de {total}",
+          action: "Volver a incrustar",
+          stop: "Detener",
+          startFailed: "No se pudo iniciar la nueva incrustación",
+          stopped: "Nueva incrustación detenida",
+          finished: "Documentos incrustados de nuevo",
+          finishedWithFailures: "No se pudieron volver a incrustar {count}",
+        },
         emptyError:
           "Introduce un id de modelo de Hugging Face o una ruta local.",
         loadError:
