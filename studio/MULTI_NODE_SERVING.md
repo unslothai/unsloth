@@ -59,6 +59,9 @@ A node with `"managed": true` (or every node, with `UNSLOTH_CLUSTER_MANAGED=1`) 
    the model.
 4. A load no set of devices can hold is refused with the numbers, instead of failing mid-load.
 
+A load that sets its own placement (`--device`, `--split-mode`, `--tensor-split`, `-ot`, `--rpc`,
+a GPU selection, manual memory mode or the tensor-parallel toggle) is served here as asked.
+
 A worker that does not answer, or a managed one that cannot be started, is left out and named
 in the status; the load is planned over the rest.
 

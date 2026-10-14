@@ -671,6 +671,10 @@ class ClusterServing:
         if placed:
             self.topology, self.reason = "single", f"the caller set {placed}; placement is theirs"
             return request
+        if getattr(request, "tensor_parallel", False):
+            # The toggle emits --split-mode tensor, which the block's layer split would override.
+            self.topology, self.reason = "single", "tensor_parallel owns placement"
+            return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
         forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         if forced == "single":
@@ -806,10 +810,21 @@ class ClusterServing:
         from core.inference.llama_server_args import extra_args_disable_mmproj
 
         named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
+        disable_vision = bool(getattr(request, "disable_vision", False))
         self._has_projector = not extra_args_disable_mmproj(extras) and (
             any(str(a).split("=", 1)[0] in named for a in extras)
             or any(os.environ.get(k) for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"))
         )
+        dropped: List[str] = []
+        if self._has_projector and disable_vision:
+            # The vision switch drops a named image projector (and an unread URL); an audio-only
+            # one stays, as the backend does.
+            files = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
+            env_file = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+            if env_file:
+                files.append(os.path.abspath(env_file))
+            dropped = [p for p in dict.fromkeys(files) if ss._projector_accepts_image(p)]
+            self._has_projector = any(p not in dropped and os.path.isfile(p) for p in files)
         if extra_args_disable_mmproj(extras):
             pass
         elif not any(str(a).split("=", 1)[0] in named for a in extras) and not any(
@@ -839,6 +854,8 @@ class ClusterServing:
                 except OSError:
                     file_size = 0
             sidecars += int(file_size)
+        for path in dropped:
+            sidecars -= int(ss.gguf_size_bytes(path) or 0)
         if size is None:
             size = await asyncio.to_thread(
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)

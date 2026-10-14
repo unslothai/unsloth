@@ -1225,3 +1225,55 @@ def test_a_local_fit_records_the_sidecar_on_the_first_gpu_within_its_budget():
     held = plan.resident()
     for d in plan.devices:
         assert held[d.key] <= cs.usable_bytes(d) + 1
+
+
+def test_an_engine_load_detaches_a_two_spark_topology_once_it_commits(monkeypatch):
+    _cluster_env(monkeypatch)
+    detached = []
+    legacy = ss.state()
+    legacy.peer_process = object()
+
+    async def fake_detach():
+        detached.append(1)
+        legacy.peer_process = None
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+    run(ss.before_load(_request(engine = "vllm"), 4))
+    run(ss.load_failed())
+    assert detached == [], "a failed engine load leaves the split serving"
+    run(ss.before_load(_request(engine = "vllm"), 4))
+    assert detached == []
+    run(ss.after_load(SimpleNamespace(is_loaded = False), 4))
+    assert detached == [1]
+    legacy.peer_process = object()
+    run(ss.before_load(_request(engine = "vllm", alongside = True), 4))
+    run(ss.after_load(SimpleNamespace(is_loaded = False), 4))
+    assert detached == [1], "an alongside engine load keeps the primary's split"
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_an_image_projector_the_vision_switch_drops_is_not_charged(monkeypatch, tmp_path, env):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"x")
+    sizes = {str(mmproj): 15 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
+    image = {str(mmproj): True}
+    monkeypatch.setattr(ss, "_projector_accepts_image", lambda path: image[str(path)])
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(mmproj))
+    extra = [] if env else ["--mmproj", str(mmproj)]
+    request = _request(llama_extra_args = extra, disable_vision = True)
+    out = run(ss.before_load(request, 4))
+    assert out is request and ss.status()["topology"] == "single"  # 85 GiB fits here
+    image[str(mmproj)] = False  # an audio-only projector stays loaded, so it counts
+    out = run(ss.before_load(_request(llama_extra_args = extra, disable_vision = True), 4))
+    assert ss.status()["topology"] == "layer_split" and "--mmproj-device" in out.llama_extra_args
+
+
+def test_the_tensor_parallel_toggle_is_caller_placement(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    request = _request(tensor_parallel = True)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "tensor_parallel" in ss.status()["reason"]

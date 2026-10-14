@@ -3381,8 +3381,9 @@ def state() -> SparkServing:
 
 
 def reset_for_tests() -> None:
-    global _STATE, _CLUSTER, _CLUSTER_LOOKED_UP
+    global _STATE, _CLUSTER, _CLUSTER_LOOKED_UP, _DETACH_LEGACY_ON_COMMIT
     _STATE = None
+    _DETACH_LEGACY_ON_COMMIT = False
     _CLUSTER = None
     _CLUSTER_LOOKED_UP = False
     _HELP_TEXT.clear()
@@ -3399,6 +3400,10 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
     if _STATE is None:
         return
     _STATE.tag_conversation(payload, thread_id)
+
+
+# A two-Spark split an explicit-engine load replaces, detached once that load commits.
+_DETACH_LEGACY_ON_COMMIT = False
 
 
 def _cluster_active() -> bool:
@@ -3429,11 +3434,11 @@ async def before_load(
 ) -> Any:
     from core.inference import cluster_serving
 
-    replacing = not (
-        getattr(request, "alongside", False)
-        or getattr(request, "force_alongside", False)
-        or str(getattr(request, "engine", "auto") or "auto") != "auto"
+    global _DETACH_LEGACY_ON_COMMIT
+    alongside = bool(
+        getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
     )
+    replacing = not alongside and str(getattr(request, "engine", "auto") or "auto") == "auto"
     if _cluster_active():
         out = await cluster_serving.state().before_load(
             request,
@@ -3441,11 +3446,11 @@ async def before_load(
             inherited_extra_args = inherited_extra_args,
             cancel_event = cancel_event,
         )
-        if (
-            replacing
-            and _STATE is not None
-            and (_STATE.peer_process is not None or _STATE.router is not None)
-        ):
+        legacy = _STATE is not None and (
+            _STATE.peer_process is not None or _STATE.router is not None
+        )
+        _DETACH_LEGACY_ON_COMMIT = legacy and not alongside and not replacing
+        if replacing and legacy:
             # A two-Spark split or replica set from before the cluster was configured; only once
             # the cluster has a plan, so a refused one leaves it serving.
             try:
@@ -3502,8 +3507,12 @@ async def after_load(
     """True when the load was cancelled during the replica startup and must be undone."""
     from core.inference import cluster_serving
 
+    global _DETACH_LEGACY_ON_COMMIT
     if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
         await cluster_serving._STATE.after_load(llama_backend)
+        if _DETACH_LEGACY_ON_COMMIT and _STATE is not None:
+            await _STATE.detach()
+        _DETACH_LEGACY_ON_COMMIT = False
         return False
     if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
         await cluster_serving._STATE.shutdown()
@@ -3524,6 +3533,8 @@ async def after_load(
 async def load_failed() -> None:
     from core.inference import cluster_serving
 
+    global _DETACH_LEGACY_ON_COMMIT
+    _DETACH_LEGACY_ON_COMMIT = False
     if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
         await cluster_serving._STATE.load_failed()
         return
