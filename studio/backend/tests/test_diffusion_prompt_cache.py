@@ -470,3 +470,25 @@ def test_numpy_like_object_with_tobytes_still_bypasses():
     assert prompt_cache.install(pipe)
     pipe.encode_prompt("a cat", image = FakeImage())
     assert pipe._unsloth_prompt_cache.describe()["bypassed"] == 1
+
+
+def test_failed_lookup_encoder_error_is_not_chained(monkeypatch):
+    class Boom(_EncodePipe):
+        def encode_prompt(
+            self,
+            prompt,
+            image = None,
+            device = None,
+        ):
+            raise RuntimeError("encoder failed")
+
+    pipe = Boom()
+    assert prompt_cache.install(pipe)
+
+    def broken_get(*_args, **_kwargs):
+        raise OSError("lookup failed")
+
+    monkeypatch.setattr(pipe._unsloth_prompt_cache, "get", broken_get)
+    with pytest.raises(RuntimeError) as info:
+        pipe.encode_prompt("a cat")
+    assert info.value.__context__ is None
