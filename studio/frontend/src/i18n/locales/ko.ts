@@ -256,7 +256,7 @@ export const ko = {
     annotationScreenshotsAlways: "항상 포함",
     annotationScreenshotsNever: "포함하지 않음",
     clearDataSetting: "인터넷 사용 기록 삭제",
-    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 쿠키나 사이트 데이터를 저장하지 않습니다.",
+    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 Studio를 다시 불러올 때까지만 쿠키와 사이트 데이터를 저장합니다.",
     manage: "관리",
     fullView: {
       enter: "전체 보기",

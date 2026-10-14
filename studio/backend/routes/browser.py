@@ -180,6 +180,73 @@ _FRAME_CSP = (
     "treat-as-public-address"
 )
 
+# Opaque origins throw on storage and cookies: these keep a site's data in the panel (page-storage.ts) for the session.
+_PAGE_STORAGE_JS = r"""
+        // Past the panel's quota (page-storage.ts) a value stays in this page only.
+        const sync = (area, key, value) => post({
+          type: "storage", area, key,
+          value: key !== null && value !== null && key.length + value.length <= 131072 ? value : null,
+        });
+        const pageStore = (area) => {
+          const data = new Map(cfg.storage?.[area] || []);
+          return {
+            data,
+            set: (key, value) => {
+              data.set(key, value);
+              sync(area, key, value);
+            },
+            remove: (key) => {
+              if (data.delete(key)) sync(area, key, null);
+            },
+            clear: () => {
+              if (!data.size) return;
+              data.clear();
+              sync(area, null, null);
+            },
+          };
+        };
+        for (const [name, area] of [["localStorage", "local"], ["sessionStorage", "session"]]) {
+          try { void window[name]; } catch {
+            const store = pageStore(area);
+            const storage = {
+              get length() { return store.data.size; },
+              key: (i) => Array.from(store.data.keys())[i] ?? null,
+              getItem: (k) => store.data.get(String(k)) ?? null,
+              setItem: (k, v) => store.set(String(k), String(v)),
+              removeItem: (k) => store.remove(String(k)),
+              clear: store.clear,
+            };
+            try { Object.defineProperty(window, name, { value: storage, configurable: true }); } catch {}
+          }
+        }
+        const cookies = pageStore("cookie");
+        const setCookie = (raw) => {
+          const [pair, ...attributes] = String(raw).split(";");
+          const at = pair.indexOf("=");
+          const name = at < 0 ? "" : pair.slice(0, at).trim();
+          const value = (at < 0 ? pair : pair.slice(at + 1)).trim();
+          if ((!name && !value) || name.length + value.length > 4096) return;
+          let maxAge = null, expires = null;
+          for (const attribute of attributes) {
+            const eq = attribute.indexOf("=");
+            const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
+            const setting = eq < 0 ? "" : attribute.slice(eq + 1).trim();
+            if (key === "max-age" && /^-?\d+$/.test(setting)) maxAge = Number(setting);
+            else if (key === "expires") expires = Date.parse(setting);
+          }
+          const expired = maxAge !== null ? maxAge <= 0 : expires !== null && expires <= Date.now();
+          if (expired) cookies.remove(name);
+          else cookies.set(name, value);
+        };
+        try {
+          Object.defineProperty(document, "cookie", {
+            get: () => Array.from(cookies.data, ([name, value]) => name ? name + "=" + value : value).join("; "),
+            set: setCookie,
+            configurable: true,
+          });
+        } catch {}
+"""
+
 # Page shell: injects <base> and a script turning navigations into panel messages. The page is a
 # srcdoc child; the shell then sets frame-src 'none' on itself so the child can't be navigated
 # (it keeps its own policy copy, so embeds still load), independent of the embedder's policy.
@@ -253,27 +320,7 @@ _FRAME_HTML = r"""<!doctype html>
           if (!cfg.url && new URL(url).origin === shellOrigin) return;
           post({ type: "navigate", url, newTab: Boolean(newTab), background: Boolean(background) });
         };
-        const fallbackStorage = () => {
-          const data = new Map();
-          return {
-            get length() { return data.size; },
-            key: (i) => Array.from(data.keys())[i] ?? null,
-            getItem: (k) => data.has(String(k)) ? data.get(String(k)) : null,
-            setItem: (k, v) => void data.set(String(k), String(v)),
-            removeItem: (k) => void data.delete(String(k)),
-            clear: () => data.clear(),
-          };
-        };
-        // Opaque origins throw on storage and cookies; stub them so pages don't crash.
-        for (const name of ["localStorage", "sessionStorage"]) {
-          try { void window[name]; } catch {
-            try { Object.defineProperty(window, name, { value: fallbackStorage(), configurable: true }); } catch {}
-          }
-        }
-        try {
-          let jar = "";
-          Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
-        } catch {}
+        /* PAGE_STORAGE_JS */
         /* BROWSER_NETWORK_JS */
         const shellPathname = location.pathname;
         // Throttle to 200 ms: some sites replaceState per scroll.
@@ -742,7 +789,7 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
@@ -767,6 +814,7 @@ _FRAME_HTML = r"""<!doctype html>
 </html>"""
 
 _FRAME_HTML = _FRAME_HTML.replace("/* BROWSER_NETWORK_JS */", BROWSER_NETWORK_JS.strip(), 1)
+_FRAME_HTML = _FRAME_HTML.replace("/* PAGE_STORAGE_JS */", _PAGE_STORAGE_JS.strip(), 1)
 
 # Annotate, the body of a function of `post` that the page shell's `install` runs on the panel's
 # request: while it is on, pointer input is the panel's, and the page only reports the block under

@@ -256,7 +256,7 @@ export const ar = {
     annotationScreenshotsAlways: "التضمين دائمًا",
     annotationScreenshotsNever: "عدم التضمين أبدًا",
     clearDataSetting: "مسح بيانات التصفح",
-    clearDataSettingDescription: "مسح سجل التصفح وسجل التنزيلات والصفحات المخزنة مؤقتًا. لا تحتفظ الصفحات بأي ملفات تعريف ارتباط أو بيانات مواقع.",
+    clearDataSettingDescription: "مسح سجل التصفح وسجل التنزيلات والصفحات المخزنة مؤقتًا. تحتفظ الصفحات بملفات تعريف الارتباط وبيانات المواقع فقط حتى إعادة تحميل Studio.",
     manage: "إدارة",
     fullView: {
       enter: "عرض كامل",

@@ -256,7 +256,7 @@ export const de = {
     annotationScreenshotsAlways: "Immer beifügen",
     annotationScreenshotsNever: "Nie beifügen",
     clearDataSetting: "Browserdaten löschen",
-    clearDataSettingDescription: "Löscht Browserverlauf, Download-Verlauf und zwischengespeicherte Seiten. Seiten speichern keine Cookies oder Website-Daten.",
+    clearDataSettingDescription: "Löscht Browserverlauf, Download-Verlauf und zwischengespeicherte Seiten. Seiten speichern Cookies und Website-Daten nur, bis Studio neu geladen wird.",
     manage: "Verwalten",
     fullView: {
       enter: "Vollansicht",

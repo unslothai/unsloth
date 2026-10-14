@@ -253,7 +253,7 @@ export const en = {
     annotationScreenshotsAlways: "Always include",
     annotationScreenshotsNever: "Never include",
     clearDataSetting: "Clear browsing data",
-    clearDataSettingDescription: "Clear browsing history, download history and cached pages. Pages keep no cookies or site data.",
+    clearDataSettingDescription: "Clear browsing history, download history and cached pages. Pages keep cookies and site data only until Studio is reloaded.",
     manage: "Manage",
     fullView: {
       enter: "Enter full view",

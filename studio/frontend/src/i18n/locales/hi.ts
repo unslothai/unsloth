@@ -256,7 +256,7 @@ export const hi = {
     annotationScreenshotsAlways: "हमेशा शामिल करें",
     annotationScreenshotsNever: "कभी शामिल न करें",
     clearDataSetting: "ब्राउज़िंग डेटा साफ़ करें",
-    clearDataSettingDescription: "ब्राउज़िंग हिस्ट्री, डाउनलोड हिस्ट्री और कैश किए गए पेज साफ़ करें। पेज कोई कुकी या साइट डेटा नहीं रखते।",
+    clearDataSettingDescription: "ब्राउज़िंग हिस्ट्री, डाउनलोड हिस्ट्री और कैश किए गए पेज साफ़ करें। पेज कुकी और साइट डेटा सिर्फ़ तब तक रखते हैं जब तक Studio फिर से लोड न हो।",
     manage: "मैनेज करें",
     fullView: {
       enter: "पूर्ण दृश्य",

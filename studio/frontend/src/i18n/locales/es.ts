@@ -256,7 +256,7 @@ export const es = {
     annotationScreenshotsAlways: "Incluir siempre",
     annotationScreenshotsNever: "No incluir nunca",
     clearDataSetting: "Borrar datos de navegación",
-    clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas y las páginas en caché. Las páginas no guardan cookies ni datos de sitios.",
+    clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas y las páginas en caché. Las páginas guardan cookies y datos de sitios solo hasta que se recarga Studio.",
     manage: "Administrar",
     fullView: {
       enter: "Vista completa",

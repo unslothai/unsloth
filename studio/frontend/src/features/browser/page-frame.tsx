@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
 import { pageRequests } from "./page-requests";
+import { pageOrigin, readPageStorage, writePageStorage } from "./page-storage";
 
 export type { FrameMessage };
 
@@ -139,6 +140,8 @@ export function PageFrame({
     urlRef.current = url;
   });
   const [loadId] = useState(() => String(++loadCounter));
+  // Fixed per frame, from the address the panel loaded: never from what the page says.
+  const [origin] = useState(() => pageOrigin(url));
   const postedRef = useRef(false);
 
   useEffect(() => {
@@ -180,6 +183,10 @@ export function PageFrame({
         agentRequests.get(message.id)?.({ installed: message.installed, result: message.result });
         return;
       }
+      if (message.type === "storage") {
+        if (origin) writePageStorage(origin, tabIdRef.current, message.area, message.key, message.value);
+        return;
+      }
       if (isUserAction(message)) {
         if (!userActive(frame, message)) return;
         // Shortcuts too: a script can queue many before the first one moves focus off the page.
@@ -203,7 +210,7 @@ export function PageFrame({
       window.removeEventListener("message", listener);
       requests.stop();
     };
-  }, []);
+  }, [origin]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -252,6 +259,7 @@ export function PageFrame({
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,
+            storage: origin ? readPageStorage(origin, tabId) : null,
           },
           "*",
         );

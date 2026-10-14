@@ -256,7 +256,7 @@ export const ru = {
     annotationScreenshotsAlways: "Всегда добавлять",
     annotationScreenshotsNever: "Никогда не добавлять",
     clearDataSetting: "Очистить данные браузера",
-    clearDataSettingDescription: "Очищает историю просмотров, историю загрузок и кешированные страницы. Страницы не сохраняют файлы cookie и данные сайтов.",
+    clearDataSettingDescription: "Очищает историю просмотров, историю загрузок и кешированные страницы. Страницы хранят файлы cookie и данные сайтов только до перезагрузки Studio.",
     manage: "Управлять",
     fullView: {
       enter: "Полный экран",

@@ -256,7 +256,7 @@ export const zhCN = {
     annotationScreenshotsAlways: "始终附带",
     annotationScreenshotsNever: "从不附带",
     clearDataSetting: "清除浏览数据",
-    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面不会保留任何 Cookie 或网站数据。",
+    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面仅在重新加载 Studio 之前保留 Cookie 和网站数据。",
     manage: "管理",
     fullView: {
       enter: "全屏视图",

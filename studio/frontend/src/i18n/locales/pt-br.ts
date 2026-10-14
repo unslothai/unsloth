@@ -256,7 +256,7 @@ export const ptBR = {
     annotationScreenshotsAlways: "Sempre incluir",
     annotationScreenshotsNever: "Nunca incluir",
     clearDataSetting: "Limpar dados de navegação",
-    clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads e as páginas em cache. As páginas não guardam cookies nem dados de sites.",
+    clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads e as páginas em cache. As páginas guardam cookies e dados de sites só até o Studio ser recarregado.",
     manage: "Gerenciar",
     fullView: {
       enter: "Visualização completa",
