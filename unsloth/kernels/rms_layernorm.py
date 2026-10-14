@@ -100,8 +100,7 @@ def _rms_backward_row(
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
     if TRAIN_W:
-        # dL/dW for this row, (1 + W) for Gemma included. Added before the row sum so the fp32 dY row
-        # is not held across it: fewer registers, so every persistent program stays resident.
+        # dW before the row sum so the fp32 dY row is not held across it (fewer registers, all programs resident).
         if GEMMA:
             dW_acc += dY_row * normed
         else:
@@ -637,7 +636,6 @@ def _max_sm_threads(device):
 
 
 def _dw_split(units, max_programs):
-    # Empty input: one program, no rows, a zero partial.
     per_program = max(1, triton.cdiv(units, max(1, min(units, max_programs))))
     return max(1, triton.cdiv(units, per_program)), per_program
 
@@ -648,9 +646,8 @@ def _dw_launch(units, device):
 
 @functools.lru_cache(maxsize = None)
 def _dw_row_config(device, n_cols):
-    # Cached: at small shapes the backward is host bound, so the launch choice must cost nothing.
-    # 64-warp SMs (A100 / H100 / B200), <= 16 elements per lane: cap registers at 64 so 32 warps of
-    # programs are all resident; uncapped, wide rows kept one program per SM. T4: measured no gain.
+    # Cached (backward is host bound at small shapes). 64-warp SMs, <= 16 elems/lane: cap registers at 64
+    # so all programs stay resident; uncapped, wide rows kept one program per SM. T4: no measured gain.
     BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     per_sm, launch = _DW_PROGRAMS_PER_SM, {}
     if (
@@ -878,7 +875,7 @@ if _TRACEABLE:
                 _traced_kernel,
                 train_w = train_w,
             )
-        # Ops return tensors only: empty dW = frozen.
+        # Empty dW = frozen (ops return tensors only).
         return dX, dW if train_w else W.new_empty(0)
 
     def _rms_setup_context(ctx, inputs, output):
