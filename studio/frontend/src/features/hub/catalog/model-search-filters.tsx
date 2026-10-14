@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -90,15 +92,15 @@ export function ModelSearchFiltersControl({
       <PopoverContent
         align="end"
         sideOffset={8}
-        className="w-80 max-w-[calc(100vw-2rem)]"
+        collisionPadding={12}
+        onCloseAutoFocus={(event) => event.preventDefault()}
+        // The surface and radii of the Hub's other menus (HubOptionMenu).
+        className="hub-menu-instant menu-soft-surface w-[calc(288px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] rounded-[18px] p-1.5 ring-0"
       >
         <div
           role="radiogroup"
           aria-label="Show"
-          className={cn(
-            "grid grid-cols-2 gap-1 rounded-full bg-muted p-1",
-            showModelFilters && "mb-4",
-          )}
+          className="grid grid-cols-2 gap-1 rounded-full bg-muted p-1"
         >
           {(
             [
@@ -113,7 +115,7 @@ export function ModelSearchFiltersControl({
               aria-checked={resourceType === kind}
               onClick={() => onResourceTypeChange(kind)}
               className={cn(
-                "inline-flex h-8 cursor-pointer items-center justify-center gap-1.5 rounded-full text-sm transition-colors",
+                "inline-flex h-7 cursor-pointer items-center justify-center gap-1.5 rounded-full text-ui-12p5 transition-colors",
                 resourceType === kind
                   ? "bg-background text-foreground shadow-sm dark:bg-card"
                   : "text-muted-foreground hover:text-foreground",
@@ -122,7 +124,7 @@ export function ModelSearchFiltersControl({
               <HugeiconsIcon
                 icon={icon}
                 strokeWidth={1.75}
-                className="size-4"
+                className="size-3.5"
               />
               {label}
             </button>
@@ -130,7 +132,7 @@ export function ModelSearchFiltersControl({
         </div>
         {showModelFilters && (
           <form
-            className="flex flex-col gap-4"
+            className="flex flex-col gap-3 pt-3"
             onSubmit={(event) => {
               event.preventDefault();
               if (invalid) {
@@ -142,74 +144,82 @@ export function ModelSearchFiltersControl({
           >
             {(
               [
-                ["Parameters (billions)", "minParams", "maxParams", 1e9],
-                ["Context length (tokens)", "minContext", "maxContext", 1],
+                ["Parameters", "billions", "minParams", "maxParams", 1e9],
+                ["Context length", "tokens", "minContext", "maxContext", 1],
               ] as const
-            ).map(([label, min, max, scale]) => (
-              <fieldset key={min} className="space-y-2">
-                <legend className="text-sm font-medium">{label}</legend>
-                <div className="grid grid-cols-2 gap-2">
+            ).map(([label, unit, min, max, scale]) => (
+              <fieldset key={min} className="flex flex-col gap-1.5">
+                <legend className="mb-1.5 flex w-full items-baseline justify-between px-0.5 text-ui-12p5 font-medium text-foreground">
+                  {label}
+                  <span className="text-ui-11 font-normal text-muted-foreground">
+                    {unit}
+                  </span>
+                </legend>
+                <div className="grid grid-cols-2 gap-1.5">
                   {([min, max] as const).map((key, index) => (
-                    <label
+                    <Input
                       key={key}
-                      htmlFor={`${id}-${key}`}
-                      className="space-y-1 text-xs text-muted-foreground"
-                    >
-                      <span>{index === 0 ? "Minimum" : "Maximum"}</span>
-                      <Input
-                        id={`${id}-${key}`}
-                        aria-label={`${index === 0 ? "Minimum" : "Maximum"} ${label.toLowerCase()}`}
-                        type="number"
-                        min={0}
-                        step={scale === 1 ? 1 : "any"}
-                        placeholder="Any"
-                        value={
-                          draft[key] === undefined ? "" : draft[key] / scale
-                        }
-                        onChange={(event) =>
-                          setDraft({
-                            ...draft,
-                            [key]:
-                              event.target.value === ""
-                                ? undefined
-                                : Math.round(
-                                    event.target.valueAsNumber * scale,
-                                  ),
-                          })
-                        }
-                      />
-                    </label>
+                      id={`${id}-${key}`}
+                      aria-label={`${index === 0 ? "Minimum" : "Maximum"} ${label.toLowerCase()}`}
+                      type="number"
+                      min={0}
+                      step={scale === 1 ? 1 : "any"}
+                      placeholder={index === 0 ? "Min" : "Max"}
+                      className="h-8 pl-3 text-ui-12p5 md:text-ui-12p5"
+                      value={draft[key] === undefined ? "" : draft[key] / scale}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          [key]:
+                            event.target.value === ""
+                              ? undefined
+                              : Math.round(event.target.valueAsNumber * scale),
+                        })
+                      }
+                    />
                   ))}
                 </div>
               </fieldset>
             ))}
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
+            {/* The row style of the sort menu's "Only show models that fit". */}
+            <button
+              type="button"
+              role="checkbox"
+              aria-checked={draft.organizationsOnly ?? false}
+              onClick={(event) => {
+                // Inside a form, Radix's Checkbox syncs a hidden input with a dispatched click that
+                // bubbles here; toggling on it again looped until React gave up (error #185).
+                if (!event.isTrusted) return;
+                setDraft({
+                  ...draft,
+                  organizationsOnly: !(draft.organizationsOnly ?? false),
+                });
+              }}
+              className="-mx-1.5 flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-1.5 py-1.5 text-left text-ui-12p5 text-muted-foreground transition-colors hover:text-foreground"
+            >
+              <Checkbox
                 checked={draft.organizationsOnly ?? false}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    organizationsOnly: event.target.checked,
-                  })
-                }
+                tabIndex={-1}
+                aria-hidden={true}
+                className="pointer-events-none size-3.5 rounded-full dark:border-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-edge-gain,1)),transparent)] dark:data-checked:border-primary [&_svg]:!size-2.5"
               />
               Organizations only (hide personal accounts)
-            </label>
-            <p className="text-xs text-muted-foreground">
+            </button>
+            <p className="px-0.5 text-ui-11 leading-snug text-muted-foreground">
               Ranges include both limits. Models without the requested metadata
               are excluded. Context is the published limit, not your device's
               capacity.
             </p>
             {invalid && (
-              <p role="alert" className="text-xs text-destructive">
+              <p role="alert" className="px-0.5 text-ui-11 text-destructive">
                 Minimum must not exceed maximum.
               </p>
             )}
-            <div className="flex justify-end gap-2">
-              <button
+            <div className="-mx-1.5 flex justify-end gap-1.5 border-t border-border/60 px-1.5 pb-0.5 pt-2.5">
+              <Button
                 type="button"
-                className="rounded-full px-3 py-2 text-sm"
+                variant="ghost"
+                size="sm"
                 onClick={() => {
                   setDraft({});
                   onChange({});
@@ -217,14 +227,10 @@ export function ModelSearchFiltersControl({
                 }}
               >
                 Clear
-              </button>
-              <button
-                type="submit"
-                disabled={invalid}
-                className="rounded-full bg-primary px-3 py-2 text-sm text-primary-foreground disabled:opacity-50"
-              >
+              </Button>
+              <Button type="submit" size="sm" disabled={invalid}>
                 Apply filters
-              </button>
+              </Button>
             </div>
           </form>
         )}
