@@ -1108,6 +1108,8 @@ function MediaRailFlyout<Id extends string>({
   const { dismiss } = hover;
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const open = hover.open || keyboardOpen;
+  // Read on close, after the state above has already been cleared.
+  const returnFocus = useRef(false);
   const setOpen = useCallback(
     (next: boolean) => {
       dismiss();
@@ -1133,6 +1135,7 @@ function MediaRailFlyout<Id extends string>({
         onKeyDown={(event) => {
           if (event.key !== "ArrowRight") return;
           event.preventDefault();
+          returnFocus.current = true;
           setKeyboardOpen(true);
         }}
       >
@@ -1154,15 +1157,19 @@ function MediaRailFlyout<Id extends string>({
         className="sidebar-more-menu w-44 p-1"
         {...hover.content}
         {...focusProps}
+        // A press elsewhere keeps its own focus; one on the icon keeps the menu open.
         onPointerDownOutside={(event) => {
           if (insideRow(event.target)) event.preventDefault();
+          else returnFocus.current = false;
         }}
         onFocusOutside={(event) => {
           if (insideRow(event.target)) event.preventDefault();
+          else returnFocus.current = false;
         }}
         onCloseAutoFocus={(event) => {
           event.preventDefault();
-          if (!keyboardOpen) return;
+          if (!returnFocus.current) return;
+          returnFocus.current = false;
           rowRef.current
             ?.querySelector<HTMLElement>('[data-sidebar="menu-button"]')
             ?.focus({ preventScroll: true });

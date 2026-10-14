@@ -55,6 +55,10 @@ test("the rail flyout lists every workflow and greys out what the model cannot d
   // A press on the icon itself stays a page open, not a menu toggle.
   assert.match(menu, /className="pointer-events-none absolute inset-0"/);
   assert.match(menu, /if \(insideRow\(event\.target\)\) event\.preventDefault\(\);/);
+  // Escape hands focus back to the icon only after a keyboard open, never after a press elsewhere.
+  assert.match(menu, /returnFocus\.current = true;\s+setKeyboardOpen\(true\);/);
+  assert.match(menu, /else returnFocus\.current = false;/);
+  assert.match(menu, /if \(!returnFocus\.current\) return;/);
 });
 
 test("a row with a flyout drops its label tooltip, every other row keeps it", () => {
