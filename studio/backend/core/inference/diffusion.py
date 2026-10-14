@@ -104,6 +104,7 @@ from .diffusion_device import (
 )
 from .diffusion_multigpu import (
     install_cfg_parallel,
+    invalidate_cfg_replica,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
     with_load_selection,
@@ -10261,6 +10262,7 @@ class DiffusionBackend:
         try:
             self._engage_deferred_profile(state)
         except BaseException:
+            invalidate_cfg_replica(state.pipe, "the deferred speed profile failed part way", logger)
             if installed:
                 uninstall_static_step_skip(state.pipe)
                 object.__setattr__(state, "transformer_cache", None)
@@ -10268,6 +10270,8 @@ class DiffusionBackend:
                     tc.clear()
                     tc.update(tc_before)
             raise
+        # the profile patched / compiled the source denoiser: a replica built during the eager images is stale
+        invalidate_cfg_replica(state.pipe, "the deferred speed profile changed the denoiser", logger)
 
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this

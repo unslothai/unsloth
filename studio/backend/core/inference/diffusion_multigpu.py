@@ -1868,6 +1868,23 @@ def install_cfg_parallel(
     return reason
 
 
+def invalidate_cfg_replica(pipe: Any, reason: str, logger: Any = None) -> bool:
+    """Drop the CFG-parallel replica of ``pipe`` after its denoiser was mutated in ways the per-step staleness check
+    does not see (attention backend, eager patches, compile); the next guided step rebuilds it from the source. True
+    when a replica was dropped."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return False
+    if router is None or router.replica is None:
+        return False
+    if logger is not None:
+        logger.info("diffusion.multigpu: CFG-parallel replica dropped (%s); rebuilt on the next guided step", reason)
+    router.stats["replica_rebuilds"] += 1
+    router.drop_replica()
+    return True
+
+
 def uninstall_cfg_parallel(pipe: Any) -> None:
     try:
         router = _CFG_ROUTERS.pop(pipe, None) if pipe is not None else None

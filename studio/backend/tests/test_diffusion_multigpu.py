@@ -1179,3 +1179,31 @@ def test_in_place_edit_after_launch_rejects_the_prediction():
         out = loop(5)
     assert torch.equal(out, reference)
     assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+
+
+def test_deferred_speed_profile_invalidates_the_replica(monkeypatch):
+    # The 3rd generation compiles / patches the source denoiser; a replica built during the eager images must go.
+    import types as _types
+
+    from core.inference.diffusion import DiffusionBackend
+
+    torch.manual_seed(0)
+    dit = _Dit()
+    router, replicas = _router(dit)
+
+    class Pipe:
+        transformer = dit
+
+    pipe = Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    assert router.replica is not None
+    state = _types.SimpleNamespace(
+        pipe = pipe, speed_deferred = True, deferred_static_plan = None, resolved = {}, transformer_cache = None
+    )
+    fake_self = _types.SimpleNamespace(_engage_deferred_profile = lambda state: None)
+    DiffusionBackend._engage_deferred_speed(fake_self, state)
+    assert router.replica is None and router.disabled_reason is None
+    # rebuilt from the mutated source on the next guided step
+    _cfg_loop(dit, torch.randn(2, 4), steps = 2)
+    assert len(replicas) == 2
