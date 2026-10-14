@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Prompt cache hits reach the clients that read them: Claude Code (Anthropic) and Codex (Responses)."""
+"""Prompt cache hits reach the clients that read them, on the Messages and Responses APIs."""
 
 from __future__ import annotations
 
