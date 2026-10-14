@@ -42,6 +42,7 @@ _COMPILED_LIKE_OPTIONS = dict(_BASE_OPTIONS)
 # dynamic=True fails in inductor value-range analysis on torch 2.13; automatic dynamic marks
 # only the sequence dim after the first recompile.
 _DYNAMIC = None
+_maybe_mark_dynamic = torch._dynamo.maybe_mark_dynamic
 
 # Packed batches: the stock forward hands these to the conv and the fla kernel.
 _PACKED_KWARGS = ("cu_seq_lens_q", "cu_seqlens", "seq_idx")
@@ -96,6 +97,19 @@ def _linear(x, p):
     return out.to(torch_result_dtype)
 
 
+def _causal_depthwise_conv(x, weight, padding: int):
+    """F.conv1d(x, weight, groups = C, padding = K - 1)[..., :T] as K shifted multiply-adds with fp32
+    accumulation. Inductor's convolution_backward lowering guards on the exact sequence length,
+    so the conv op recompiled the training graph for every new length; this stays dynamic."""
+    seq_len = x.shape[-1]
+    xp = F.pad(x, (padding, 0)).float()
+    w = weight[:, 0, :].float()
+    out = xp[:, :, 0:seq_len] * w[:, 0, None]
+    for j in range(1, padding + 1):
+        out = out + xp[:, :, j : j + seq_len] * w[:, j, None]
+    return out.to(x.dtype)
+
+
 def _rotate_half(x):
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
@@ -134,7 +148,7 @@ def _gdn_pre_impl(
     b = _linear(x, p_b)
     a = _linear(x, p_a)
 
-    mixed_qkv = F.conv1d(mixed_qkv, conv_weight, None, 1, conv_padding, 1, conv_dim)[:, :, :seq_len]
+    mixed_qkv = _causal_depthwise_conv(mixed_qkv, conv_weight, conv_padding)
     mixed_qkv = F.silu(mixed_qkv).transpose(1, 2)
     query, key, value = torch.split(mixed_qkv, [key_dim, key_dim, value_dim], dim = -1)
     query = query.reshape(batch_size, seq_len, -1, head_k_dim)
@@ -661,6 +675,9 @@ def _fused_decoder_layer_forward(
     *mixer_params, p_g, p_u, p_d = params
     norm1, norm2 = self.input_layernorm, self.post_attention_layernorm
     residual = hidden_states
+    # Sequence length varies per batch: without this the GDN mask kept its length static and
+    # every new length recompiled the region.
+    _maybe_mark_dynamic(hidden_states, 1)
 
     if is_gdn:
         gdn = mixer
@@ -671,6 +688,8 @@ def _fused_decoder_layer_forward(
         if mask is not None and not self._unsloth_masks_any_batch:
             if not (mask.shape[1] > 1 and mask.shape[0] > 1):
                 mask = None
+        if mask is not None:
+            _maybe_mark_dynamic(mask, 1)
         gn = self._unsloth_gated_norm
         pre_args = (
             hidden_states,
@@ -720,6 +739,8 @@ def _fused_decoder_layer_forward(
             core_attn_out.reshape(-1, gdn.head_v_dim), z.reshape(-1, gdn.head_v_dim)
         )
         hidden, x = _gdn_mid(core_attn_out, residual, p_out, norm2.weight, norm2.eps)
+        for t in (x, hidden):
+            _maybe_mark_dynamic(t, 1)
         return _mlp_block(x, hidden, p_g, p_u, p_d)
 
     attn = mixer
@@ -752,7 +773,11 @@ def _fused_decoder_layer_forward(
         position_ids = position_ids,
         **kwargs,
     )
+    for t in (attn_output, gate):
+        _maybe_mark_dynamic(t, 1)
     hidden, x = _attn_mid(attn_output, gate, residual, p_o, norm2.weight, norm2.eps)
+    for t in (x, hidden):
+        _maybe_mark_dynamic(t, 1)
     return _mlp_block(x, hidden, p_g, p_u, p_d)
 
 
