@@ -4018,6 +4018,7 @@ export const en = {
     discard: "Discard",
     mentions: "Skills",
     manage: "Manage skills",
+    turnOff: "Turn off skills",
     bulkActions: "Skill actions",
     enableAll: "Enable all",
     disableAll: "Disable all",
