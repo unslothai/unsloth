@@ -15,9 +15,11 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{
-    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Rect, Runtime, State, Url, Webview,
+    AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, Runtime, State, Url, Webview,
     WebviewBuilder, WebviewUrl,
 };
+#[cfg(not(target_os = "linux"))]
+use tauri::Rect;
 use tokio::sync::watch;
 
 const LABEL_PREFIX: &str = "unsloth-browser-";
@@ -1078,10 +1080,21 @@ pub(crate) fn download_finished<R: Runtime>(
 fn close_view<R: Runtime>(page: &Webview<R>) -> tauri::Result<()> {
     #[cfg(target_os = "macos")]
     crate::browser_context_downloads::forget(page);
+    #[cfg(target_os = "linux")]
+    crate::browser_linux::detach(page)?;
     page.close()
 }
 
-fn create_view<R: Runtime>(
+#[cfg(target_os = "linux")]
+pub fn close_all<R: Runtime>(app: &AppHandle<R>) {
+    for page in browser_views(app) {
+        if let Err(error) = close_view(&page) {
+            log::warn!("Could not close browser page before exit: {error}");
+        }
+    }
+}
+
+async fn create_view<R: Runtime>(
     caller: &Webview<R>,
     tab_id: &str,
     url: Url,
@@ -1099,9 +1112,9 @@ fn create_view<R: Runtime>(
     let window_tab = tab.clone();
     let download_tab = tab.clone();
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let (initial, deferred) = (Url::parse("about:blank").unwrap(), Some(url));
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     let (initial, deferred): (Url, Option<Url>) = (url, None);
 
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(initial))
@@ -1215,6 +1228,11 @@ fn create_view<R: Runtime>(
     let webview = window
         .add_child(builder, position, size)
         .map_err(|error| error.to_string())?;
+    #[cfg(target_os = "linux")]
+    if let Err(error) = crate::browser_linux::attach(&webview, position, size).await {
+        let _ = webview.close();
+        return Err(error);
+    }
     #[cfg(target_os = "macos")]
     crate::browser_layer::place(&webview);
     #[cfg(target_os = "macos")]
@@ -1353,16 +1371,14 @@ fn browser_views<R: Runtime>(app: &AppHandle<R>) -> Vec<Webview<R>> {
         .collect()
 }
 
-/// Whether pages open in native webviews: macOS 14+ (per-webview proxy) and Windows. On Linux
-/// Tauri packs child webviews into the window's GtkBox, which ignores their bounds, so the panel
-/// uses its proxied frame there.
+/// Native pages need per-webview proxy support: macOS 14+, Windows, and Linux.
 #[tauri::command]
 pub fn browser_view_supported() -> bool {
     #[cfg(target_os = "macos")]
     return macos_at_least(14);
-    #[cfg(target_os = "windows")]
+    #[cfg(any(target_os = "windows", target_os = "linux"))]
     return true;
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     false
 }
 
@@ -1421,6 +1437,9 @@ pub async fn browser_view_show<R: Runtime>(
                 if parked {
                     position.x = -size.width - PARK_GAP;
                 }
+                #[cfg(target_os = "linux")]
+                crate::browser_linux::set_bounds(&view, position, size).await?;
+                #[cfg(not(target_os = "linux"))]
                 view.set_bounds(Rect {
                     position: position.into(),
                     size: size.into(),
@@ -1433,7 +1452,9 @@ pub async fn browser_view_show<R: Runtime>(
                 let url = parse_page_url(url.as_deref().ok_or("no address to open")?)?;
                 #[cfg(target_os = "macos")]
                 crate::browser_layer::install(&webview);
-                create_view(&webview, tab_id, url, bounds)?
+                #[cfg(target_os = "linux")]
+                crate::browser_linux::install(&webview).await?;
+                create_view(&webview, tab_id, url, bounds).await?
             }
         }),
         _ => None,
@@ -1482,6 +1503,17 @@ pub fn browser_view_action<R: Runtime>(
 ) -> Result<(), String> {
     require_main(&webview)?;
     let page = view(webview.app_handle(), &tab_id)?;
+    #[cfg(target_os = "linux")]
+    if matches!(action.as_str(), "back" | "forward" | "stop") {
+        return page.with_webview(move |platform| {
+            use webkit2gtk::WebViewExt;
+            match action.as_str() {
+                "back" => platform.inner().go_back(),
+                "forward" => platform.inner().go_forward(),
+                _ => platform.inner().stop_loading(),
+            }
+        }).map_err(|error| error.to_string());
+    }
     let result = match action.as_str() {
         "back" => page.eval("history.back()"),
         "forward" => page.eval("history.forward()"),
@@ -1834,7 +1866,15 @@ fn apply_mute<R: Runtime>(page: &Webview<R>, muted: bool) -> Result<(), String> 
     .map_err(|error| error.to_string())
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn apply_mute<R: Runtime>(page: &Webview<R>, muted: bool) -> Result<(), String> {
+    page.with_webview(move |platform| {
+        use webkit2gtk::WebViewExt;
+        platform.inner().set_is_muted(muted);
+    }).map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn apply_mute<R: Runtime>(_page: &Webview<R>, _muted: bool) -> Result<(), String> {
     Ok(())
 }
@@ -1900,6 +1940,8 @@ pub async fn browser_view_clear_data<R: Runtime>(
                 .focused(false),
                 &app,
             )?;
+            #[cfg(target_os = "linux")]
+            crate::browser_linux::install(&webview).await?;
             let page = webview
                 .window()
                 .add_child(
@@ -1909,6 +1951,13 @@ pub async fn browser_view_clear_data<R: Runtime>(
                 )
                 .map_err(|error| error.to_string())?;
             let _ = page.hide();
+            #[cfg(target_os = "linux")]
+            if let Err(error) = crate::browser_linux::attach(
+                &page, LogicalPosition::new(0.0, 0.0), LogicalSize::new(1.0, 1.0),
+            ).await {
+                let _ = page.close();
+                return Err(error);
+            }
             page
         }
     };
@@ -1924,7 +1973,7 @@ const CLEAR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Clear a page's profile, resolving once the engine reports it done: wry's own call starts the
 /// clear and returns before it finishes.
 async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
-    #[cfg(any(target_os = "macos", windows))]
+    #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
     {
         let (done, finished) = tokio::sync::oneshot::channel::<Result<(), String>>();
         let done = Mutex::new(Some(done));
@@ -1940,7 +1989,7 @@ async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
             _ => Err("Clearing browsing data didn't finish".into()),
         }
     }
-    #[cfg(not(any(target_os = "macos", windows)))]
+    #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
     {
         page.clear_all_browsing_data()
             .map_err(|error| error.to_string())?;
@@ -1949,7 +1998,7 @@ async fn clear_profile<R: Runtime>(page: &Webview<R>) -> Result<(), String> {
     }
 }
 
-#[cfg(any(target_os = "macos", windows))]
+#[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 type ClearFinish = std::sync::Arc<dyn Fn(Result<(), String>) + Send + Sync>;
 
 #[cfg(target_os = "macos")]
@@ -1967,6 +2016,20 @@ fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish
         let handler = block2::RcBlock::new(move || finish(Ok(())));
         store.removeDataOfTypes_modifiedSince_completionHandler(&types, &date, &handler);
     }
+}
+
+#[cfg(target_os = "linux")]
+fn platform_clear(platform: tauri::webview::PlatformWebview, finish: ClearFinish) {
+    use webkit2gtk::{WebViewExt, WebsiteDataManagerExtManual, WebsiteDataTypes};
+    let Some(manager) = platform.inner().website_data_manager() else {
+        return finish(Err("Browser profile is unavailable".into()));
+    };
+    manager.clear(
+        WebsiteDataTypes::all(),
+        glib::TimeSpan::from_seconds(0),
+        None::<&gtk::gio::Cancellable>,
+        move |result| finish(result.map_err(|error| error.to_string())),
+    );
 }
 
 #[cfg(windows)]

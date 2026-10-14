@@ -203,19 +203,16 @@ fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip
     }
 }
 
-/// WebKitGTK only shows the panel's frames (no native views on Linux): crop the app's snapshot.
+/// Capture the native page, or crop the app's snapshot for non-native panel content.
 #[cfg(target_os = "linux")]
 fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip>, done: Done) {
     use webkit2gtk::{SnapshotOptions, SnapshotRegion, WebViewExt};
 
-    let Some(clip) = clip else {
-        return done(Err("No native pages on Linux".into()));
-    };
     let view = platform.inner();
     let scale = {
         use gtk::prelude::WidgetExt;
         let width = f64::from(view.allocated_width());
-        if width > 0.0 { width / clip.viewport_width } else { 1.0 }
+        clip.filter(|_| width > 0.0).map_or(1.0, |clip| width / clip.viewport_width)
     };
     view.snapshot(
         SnapshotRegion::Visible,
@@ -225,7 +222,14 @@ fn platform_capture(platform: tauri::webview::PlatformWebview, clip: Option<Clip
             done(
                 result
                     .map_err(|error| error.to_string())
-                    .and_then(|surface| crop_png(&surface, clip, scale)),
+                    .and_then(|surface| match clip {
+                        Some(clip) => crop_png(&surface, clip, scale),
+                        None => {
+                            let mut png = Vec::new();
+                            surface.write_to_png(&mut png).map_err(|error| error.to_string())?;
+                            Ok(png)
+                        }
+                    }),
             )
         },
     );
@@ -314,7 +318,20 @@ fn platform_print(platform: tauri::webview::PlatformWebview) -> Result<(), Strin
     }
 }
 
-#[cfg(not(any(target_os = "macos", windows)))]
+#[cfg(target_os = "linux")]
+fn platform_print(platform: tauri::webview::PlatformWebview) -> Result<(), String> {
+    use gtk::prelude::*;
+    use webkit2gtk::{PrintOperation, PrintOperationExt};
+    let view = platform.inner();
+    let parent = view.toplevel().and_then(|widget| widget.downcast::<gtk::Window>().ok());
+    // The GTK dialog blocks until dismissed; acknowledge before entering its nested loop.
+    glib::idle_add_local_once(move || {
+        PrintOperation::new(&view).run_dialog(parent.as_ref());
+    });
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 fn platform_print(_platform: tauri::webview::PlatformWebview) -> Result<(), String> {
     Err("No native pages here".into())
 }
