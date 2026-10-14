@@ -696,6 +696,7 @@ _SIDECAR_FLAGS = frozenset(
         "-mm",
         "--model-draft",
         "-md",
+        "--spec-draft-model",
         "--lora",
         "--lora-scaled",
         "--control-vector",

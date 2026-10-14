@@ -7,7 +7,9 @@ of the layers.
 
 Paired DGX Sparks need none of this: they are found over the QSFP cable and served as before.
 The cluster path below only turns on when you configure it, and then it replaces the two-Spark
-path for every load.
+path for every load. If you switch a paired Spark over to a cluster, list its peer as `managed` (or
+start its `ggml-rpc-server` yourself on another port): the two-Spark worker on the peer stops
+when the first cluster load replaces the two-Spark model.
 
 ## 1. Start a worker on each machine
 

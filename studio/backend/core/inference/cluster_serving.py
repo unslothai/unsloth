@@ -118,6 +118,17 @@ def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> int:
         return 0
 
 
+def _normalized(args: Sequence[str]) -> List[str]:
+    """Long option names with underscores spelled with hyphens, values untouched."""
+    out = []
+    for token in (str(a) for a in args):
+        if token.startswith("--"):
+            name, sep, value = token.partition("=")
+            token = name.replace("_", "-") + sep + value
+        out.append(token)
+    return out
+
+
 def _flag_args(args: Sequence[str], flags: frozenset) -> List[str]:
     tokens = [str(a) for a in args]
     out: List[str] = []
@@ -632,20 +643,22 @@ class ClusterServing:
             return request
         explicit = getattr(request, "llama_extra_args", None)
         effective = list(explicit if explicit is not None else (inherited_extra_args or []))
+        # llama.cpp reads --ctx_size as --ctx-size; every check below reads the normalised form.
+        flags = _normalized(effective)
         if getattr(request, "gpu_ids", None):
             self.topology, self.reason = "single", "an explicit GPU selection replaces placement"
             return request
         if str(getattr(request, "gpu_memory_mode", "auto") or "auto") == "manual":
             self.topology, self.reason = "single", "gpu_memory_mode=manual owns placement"
             return request
-        if ss.argv_or_env_rpc(effective):
+        if ss.argv_or_env_rpc(flags):
             self.topology, self.reason = "single", "the caller supplied --rpc; placement is theirs"
             return request
-        placed = _caller_placement(effective)
+        placed = _caller_placement(flags)
         if placed:
             self.topology, self.reason = "single", f"the caller set {placed}; placement is theirs"
             return request
-        model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, effective, ss)
+        model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
         forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         if forced == "single":
             self.topology, self.reason = "single", f"forced by {ENV_TOPOLOGY}=single"
@@ -727,9 +740,9 @@ class ClusterServing:
         used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
         self.block = split_extra_args(used, plan)
         local = plan.sidecar_device
-        caller_pinned = any(
-            str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in effective
-        ) or bool(os.environ.get("MTMD_BACKEND_DEVICE"))
+        caller_pinned = any(str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in flags) or bool(
+            os.environ.get("MTMD_BACKEND_DEVICE")
+        )
         if local is not None and not caller_pinned:
             if ss.llama_server_supports("--mmproj-device", binary):
                 # The projector otherwise follows the first --device, a worker; it was charged here.
@@ -741,7 +754,7 @@ class ClusterServing:
                 return request
         if (
             local is not None
-            and not any(str(a).split("=", 1)[0] in _DRAFT_DEVICE_FLAGS for a in effective)
+            and not any(str(a).split("=", 1)[0] in _DRAFT_DEVICE_FLAGS for a in flags)
             and not os.environ.get("LLAMA_ARG_DEVICE_DRAFT")
             and ss.llama_server_supports("--device-draft", binary)
         ):
@@ -754,7 +767,7 @@ class ClusterServing:
         if (
             mode in ("", "auto", "default")
             and getattr(request, "spec_draft_n_max", None) is None
-            and not ss.extra_args_own_speculation(effective)
+            and not ss.extra_args_own_speculation(flags)
         ):
             # An automatically picked drafter is chosen after this plan and is not in its budget.
             updates["speculative_type"] = "off"
@@ -866,7 +879,10 @@ class ClusterServing:
         self.in_flight = False
         if self._passthrough:
             self._passthrough = False
-            if not self._alongside and not self.serving():
+            backend_loaded = self._backend is not None and getattr(
+                self._backend, "is_loaded", False
+            )
+            if not self._alongside and not backend_loaded:
                 self.forget_served()  # the engine load unloaded our split before failing
             return
         self._cancel_event = None

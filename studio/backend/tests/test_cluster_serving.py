@@ -1148,3 +1148,35 @@ def test_tensor_overrides_are_caller_placement(monkeypatch, extra):
     seen = _cluster_env(monkeypatch)
     request = _request(llama_extra_args = extra)
     assert run(ss.before_load(request, 4)) is request and seen == []
+
+
+def test_a_failed_engine_load_forgets_the_split_even_with_managed_workers(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    cs.state().workers["10.0.0.2:50052"] = SimpleNamespace(alive = True, snapshot = lambda: {})
+    run(ss.before_load(_request(engine = "vllm"), 4))
+    backend.is_loaded = False
+    run(ss.load_failed())
+    assert ss.status()["topology"] == "single" and ss.status()["split_args"] is None
+
+
+def test_the_spec_draft_model_alias_is_sized(tmp_path):
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x" * 1000)
+    sized, unknown = ss.sidecar_bytes(["--spec-draft-model", str(drafter)])
+    assert sized == 1000 and not unknown
+
+
+def test_underscore_spellings_are_read_like_llama_cpp_reads_them(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    request = _request(llama_extra_args = ["--tensor_split", "1,0"])
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, ctx, *a, **k: ctx * 2 * 2**20)
+    run(ss.before_load(_request(llama_extra_args = ["--ctx_size", "16384"]), 4))
+    assert ss.status()["topology"] == "layer_split"
