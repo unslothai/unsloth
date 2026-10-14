@@ -159,6 +159,40 @@ def test_lora_targets_are_read_off_the_model_not_assumed(pipeline):
     assert not set(targets) & set(pipeline.LORA_TARGETS_LLAMA)
 
 
+def test_hybrid_attention_and_gpt2_projections_get_adapters(pipeline):
+    """Regression: a Qwen3.5-style hybrid kept only the Llama names its MLP shares, so the gated-delta
+    attention had no adapters; GPT-2's Conv1D projections were not found at all."""
+    pytest.importorskip("torch")
+    pytest.importorskip("transformers")
+    import torch.nn as nn
+    from transformers.pytorch_utils import Conv1D
+
+    hybrid = _model_with(
+        ["gate_proj", "up_proj", "down_proj", "in_proj_qkv", "in_proj_z", "out_proj", "in_proj_a"]
+    )
+    assert pipeline.lora_target_modules(hybrid) == [
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+        "in_proj_qkv",
+        "in_proj_z",
+        "out_proj",
+    ]
+
+    class Gpt2Block(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = nn.Module()
+            self.attn.c_attn, self.attn.c_proj = Conv1D(6, 2), Conv1D(2, 2)
+            self.mlp = nn.Module()
+            self.mlp.c_fc, self.mlp.c_proj = Conv1D(8, 2), Conv1D(2, 8)
+
+    gpt2 = nn.Module()
+    gpt2.transformer = nn.Module()
+    gpt2.transformer.h = nn.ModuleList([Gpt2Block(), Gpt2Block()])
+    assert pipeline.lora_target_modules(gpt2) == ["c_attn", "c_fc", "c_proj"]
+
+
 def test_the_peft_call_no_longer_hard_codes_llama_names(pipeline):
     source = (REPO / "studio" / "spark_pipeline.py").read_text(encoding = "utf-8")
     call = source.split("get_peft_model(")[1].split("\n    model.train()")[0]
