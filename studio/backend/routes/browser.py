@@ -195,11 +195,12 @@ _PAGE_STORAGE_JS = r"""
               data.set(key, value);
               sync(area, key, value);
             },
+            // Always sent: another tab may have written the key since this page loaded.
             remove: (key) => {
-              if (data.delete(key)) sync(area, key, null);
+              data.delete(key);
+              sync(area, key, null);
             },
             clear: () => {
-              if (!data.size) return;
               data.clear();
               sync(area, null, null);
             },
@@ -208,14 +209,32 @@ _PAGE_STORAGE_JS = r"""
         for (const [name, area] of [["localStorage", "local"], ["sessionStorage", "session"]]) {
           try { void window[name]; } catch {
             const store = pageStore(area);
-            const storage = {
+            const methods = {
               get length() { return store.data.size; },
               key: (i) => Array.from(store.data.keys())[i] ?? null,
               getItem: (k) => store.data.get(String(k)) ?? null,
               setItem: (k, v) => store.set(String(k), String(v)),
               removeItem: (k) => store.remove(String(k)),
               clear: store.clear,
+              [Symbol.toStringTag]: "Storage",
             };
+            // Keys are properties too, as on Storage: sites read and write localStorage.theme.
+            const named = (key) => typeof key === "string" && !(key in methods) && store.data.has(key);
+            const storage = new Proxy(Object.create(methods), {
+              get: (_, key) => (named(key) ? store.data.get(key) : Reflect.get(methods, key)),
+              set: (_, key, value) => {
+                if (typeof key === "string") store.set(key, String(value));
+                return true;
+              },
+              has: (_, key) => named(key) || key in methods,
+              deleteProperty: (_, key) => {
+                if (named(key)) store.remove(key);
+                return true;
+              },
+              ownKeys: () => Array.from(store.data.keys()),
+              getOwnPropertyDescriptor: (_, key) =>
+                named(key) ? { value: store.data.get(key), writable: true, enumerable: true, configurable: true } : undefined,
+            });
             try { Object.defineProperty(window, name, { value: storage, configurable: true }); } catch {}
           }
         }

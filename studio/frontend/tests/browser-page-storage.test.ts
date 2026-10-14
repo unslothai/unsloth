@@ -115,3 +115,34 @@ test("malformed storage messages are dropped", () => {
   assert.deepEqual(from({ area: "cookie", key: null, value: "ignored" }), { type: "storage", area: "cookie", key: null, value: null });
   assert.deepEqual(from({ area: "local", key: "a", value: null }), { type: "storage", area: "local", key: "a", value: null });
 });
+
+test("keys read and write as properties too, as on a real Storage", () => {
+  clearPageStorage();
+  const first = openPage("https://example.com/");
+  (first.window.localStorage as unknown as Record<string, string>).currentTheme = "dark";
+  const next = openPage("https://example.com/docs");
+  const storage = next.window.localStorage as unknown as Record<string, unknown>;
+  assert.equal(storage.currentTheme, "dark");
+  assert.equal("currentTheme" in storage, true);
+  assert.deepEqual(Object.keys(storage), ["currentTheme"]);
+  assert.equal(typeof storage.getItem, "function");
+  assert.equal(storage.missing, undefined);
+  Reflect.deleteProperty(storage, "currentTheme");
+  assert.equal(openPage("https://example.com/").window.localStorage.getItem("currentTheme"), null);
+});
+
+test("a removal reaches the store for a key another tab wrote after this page loaded", () => {
+  clearPageStorage();
+  const older = openPage("https://example.com/", "tab-1");
+  const newer = openPage("https://example.com/", "tab-2");
+  newer.window.localStorage.setItem("token", "t");
+  newer.document.cookie = "sid=1";
+  older.window.localStorage.removeItem("token");
+  older.document.cookie = "sid=; max-age=0";
+  const next = openPage("https://example.com/next", "tab-1");
+  assert.equal(next.window.localStorage.getItem("token"), null);
+  assert.equal(next.document.cookie, "");
+  newer.window.localStorage.setItem("banner", "closed");
+  older.window.localStorage.clear();
+  assert.equal(openPage("https://example.com/", "tab-1").window.localStorage.length, 0);
+});
