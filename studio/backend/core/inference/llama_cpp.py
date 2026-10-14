@@ -27907,6 +27907,14 @@ class LlamaCppBackend:
                             gpu_indices = gpu_indices,
                         ):
                             return False
+                        # A pass-through MoE cache (argv beats env) takes VRAM these terms do
+                        # not price, and with it the fitter keeps routed experts in host RAM.
+                        # "0" turns an inherited one off.
+                        _cache_mib = _extra_args_device(_child_extras, {"--moe-cache-mib"})
+                        if _cache_mib is None:
+                            _cache_mib = _child_env.get("LLAMA_ARG_MOE_CACHE_MIB")
+                        if _cache_mib is not None and str(_cache_mib).strip() not in ("", "0"):
+                            return False
                         # The terms below are priced at Unsloth's --parallel; a larger
                         # pass-through one is appended after it and wins (argv beats env).
                         _np_override = _extra_args_n_parallel(_child_extras, {})

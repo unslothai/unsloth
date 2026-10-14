@@ -4158,6 +4158,42 @@ def test_a_larger_pass_through_parallel_is_not_certified_resident(
 
 
 @pytest.mark.parametrize(
+    "extra_args, env, expect_ub",
+    [
+        (["--moe-cache-mib", "4096"], {}, ["2048"]),
+        (["--moe-cache-mib", "auto"], {}, ["2048"]),
+        (["--moe-cache-mib=auto"], {}, ["2048"]),
+        ([], {"LLAMA_ARG_MOE_CACHE_MIB": "auto"}, ["2048"]),
+        ([], {"LLAMA_ARG_MOE_CACHE_MIB": "4096"}, ["2048"]),
+        (["--moe-cache-mib", "0"], {"LLAMA_ARG_MOE_CACHE_MIB": "auto"}, []),
+        (["--moe-cache-mib", "0"], {}, []),
+    ],
+    ids = [
+        "argv_mib",
+        "argv_auto",
+        "argv_inline_auto",
+        "env_auto",
+        "env_mib",
+        "argv_zero_beats_env",
+        "argv_zero",
+    ],
+)
+def test_a_pass_through_moe_cache_is_not_certified_resident(
+    tmp_path, _discrete_linux_host, monkeypatch, extra_args, env, expect_ub
+):
+    """A pass-through MoE cache takes VRAM the residency terms do not price and keeps the
+    routed experts in host RAM, so the spill micro-batch still applies; "0" turns it off."""
+    monkeypatch.delenv("LLAMA_ARG_MOE_CACHE_MIB", raising = False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    backend, gguf = _fit_on_moe(tmp_path, 88_000)
+    cmd = _launch(backend, gguf, n_ctx = 8192, n_parallel = 1, extra_args = extra_args)["cmd"]
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert _ubatch_values(cmd) == expect_ub, cmd
+
+
+@pytest.mark.parametrize(
     "extra_args, expect_ub",
     [
         (["--fit-ctx", "1024"], []),
