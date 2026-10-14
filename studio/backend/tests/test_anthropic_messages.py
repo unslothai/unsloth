@@ -843,7 +843,36 @@ class TestAnthropicModels:
         before, after = converted(base), converted(later)
         assert after[: len(before)] == before
         assert after[0] == {"role": "system", "content": "Base."}
+        assert after[-1]["role"] == "tool"
         assert "800 tokens left" in after[-1]["content"]
+
+    def test_a_reminder_after_a_tool_result_keeps_the_turn_and_its_thinking(self):
+        # As a text block the reminder would make the tool turn a new user query, and the current turn's
+        # thinking (kept since it follows the last real query) would be dropped.
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            messages = [
+                {"role": "user", "content": "Read it."},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "I should read it.", "signature": "s"},
+                        {"type": "tool_use", "id": "r1", "name": "Read", "input": {}},
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "r1", "content": "data"}],
+                },
+                {"role": "system", "content": "<total_tokens>900 tokens left</total_tokens>"},
+            ],
+        ).model_dump()
+        result = anthropic_messages_to_openai(req["messages"], req.get("system"))
+        assert [m["role"] for m in result] == ["user", "assistant", "tool"]
+        assert result[1].get("reasoning_content") == "I should read it."
+        assert result[2]["content"] == (
+            "data\n<system-reminder>\n<total_tokens>900 tokens left</total_tokens>\n</system-reminder>"
+        )
 
     def test_system_role_message_with_null_content_ignored(self):
         req = AnthropicMessagesRequest(

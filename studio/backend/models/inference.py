@@ -4108,6 +4108,10 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
     return system
 
 
+def _block_type(block: Any) -> Any:
+    return block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+
+
 def _with_user_note(message: dict, note: str, *, first: bool) -> dict:
     """A copy of a user turn with a text block added, keeping its own blocks as sent."""
     content = message.get("content")
@@ -4116,6 +4120,18 @@ def _with_user_note(message: dict, note: str, *, first: bool) -> dict:
     else:
         blocks = list(content or [])
     block = {"type": "text", "text": note}
+    if blocks and all(_block_type(b) == "tool_result" for b in blocks):
+        # A text block would make this turn a new user query: the converter and the templates
+        # then drop the reasoning before it. Inside the adjacent result it stays a tool turn.
+        index = 0 if first else len(blocks) - 1
+        result = blocks[index] if isinstance(blocks[index], dict) else blocks[index].model_dump()
+        inner = result.get("content")
+        if isinstance(inner, str):
+            inner = [{"type": "text", "text": inner}] if inner else []
+        else:
+            inner = list(inner or [])
+        blocks[index] = {**result, "content": [block, *inner] if first else [*inner, block]}
+        return {**message, "content": blocks}
     return {**message, "content": [block, *blocks] if first else [*blocks, block]}
 
 
