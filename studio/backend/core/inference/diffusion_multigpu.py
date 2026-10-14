@@ -529,6 +529,7 @@ def refine_plan_for_multigpu(
         reasons = tuple(plan.reasons) + (reason,),
         secondary_ordinal = secondary,
         secondary_components = tuple(moved),
+        fallback_plan = plan,
     )
 
 

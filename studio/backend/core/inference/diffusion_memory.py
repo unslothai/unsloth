@@ -19,7 +19,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 
@@ -614,6 +614,9 @@ class MemoryPlan:
     # VAE, ...) are placed on cuda:<secondary_ordinal> and the denoiser stays resident on the primary card.
     secondary_ordinal: Optional[int] = None
     secondary_components: Optional[tuple[str, ...]] = None
+    # The single-card plan a split replaced, applied on the primary if the split placement fails (a torchao denoiser
+    # cannot take the whole-module offload a blind fallback would choose).
+    fallback_plan: Optional["MemoryPlan"] = field(default = None, compare = False, repr = False)
 
     @property
     def engages_offload(self) -> bool:
@@ -1960,6 +1963,18 @@ def plan_diffusion_memory(
         text_encoder_dense_mib = text_encoder_dense_mib,
         calibrated_activation = calibrated_activation,
     )
+    single_card = MemoryPlan(
+        requested_mode = mode,
+        offload_policy = policy,
+        vae_tiling = tile,
+        vae_slicing = any_offload,
+        device_memory = device_memory,
+        estimates = dict(estimates),
+        reasons = tuple(reasons),
+        # only ever meaningful under group offload; every other tier already places the encoders
+        stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
+        stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
+    )
     if split is not None:
         estimates["multigpu_primary_required_mib"] = split.primary_required_mib
         estimates["multigpu_secondary_required_mib"] = split.secondary_required_mib
@@ -1973,19 +1988,9 @@ def plan_diffusion_memory(
             reasons = tuple(reasons) + (split.reason,),
             secondary_ordinal = split.secondary_ordinal,
             secondary_components = split.components,
+            fallback_plan = single_card,
         )
-    return MemoryPlan(
-        requested_mode = mode,
-        offload_policy = policy,
-        vae_tiling = tile,
-        vae_slicing = any_offload,
-        device_memory = device_memory,
-        estimates = estimates,
-        reasons = tuple(reasons),
-        # only ever meaningful under group offload; every other tier already places the encoders
-        stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
-        stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
-    )
+    return single_card
 
 
 def _multigpu_companion_split(
@@ -3255,8 +3260,13 @@ def apply_memory_plan(
     elif getattr(plan, "secondary_ordinal", None) is not None:
         from .diffusion_multigpu import apply_split_plan
         if not apply_split_plan(pipe, plan, placement = placement, logger = logger):
-            # The single-card plan offloaded (that is why the split was chosen), so whole-module offload on the primary
-            # is the safe fallback.
+            fallback = getattr(plan, "fallback_plan", None)
+            if fallback is not None and getattr(fallback, "secondary_ordinal", None) is None:
+                # the policy one card would have used (group offload keeps a torchao denoiser loadable)
+                return apply_memory_plan(
+                    pipe, fallback, device = device, placement_device = placement_device, logger = logger
+                )
+            # no recorded single-card plan: whole-module offload on the primary always fits
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:

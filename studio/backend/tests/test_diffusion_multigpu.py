@@ -1036,3 +1036,35 @@ def test_bitwise_equal_distinguishes_signed_zero():
     )  # 0-dim, as an inline timestep / 1000
     assert not mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([-0.0]))
     assert not mg._bitwise_equal(torch.tensor([1.0]), torch.tensor([1.0], dtype = torch.float64))
+
+
+def test_failed_split_applies_the_single_card_plan(monkeypatch):
+    calls = []
+
+    class Pipe:
+        components: dict = {}
+
+        def enable_model_cpu_offload(self, device = None):
+            calls.append(("model", device))
+
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        plan = _plan()
+    assert plan.secondary_ordinal == 1
+    assert plan.fallback_plan is not None and plan.fallback_plan.offload_policy == dm.OFFLOAD_GROUP
+    monkeypatch.setattr(mg, "apply_split_plan", lambda pipe, plan, placement, logger = None: False)
+    monkeypatch.setattr(dm, "_apply_group_offload", lambda pipe, placement, logger, **kw: calls.append(("group", placement)) or True)
+    policy, _tiling = dm.apply_memory_plan(Pipe(), plan, device = "cuda", placement_device = "cuda:0")
+    # the group policy one card would have used, not a blind whole-module offload
+    assert policy == dm.OFFLOAD_GROUP and calls == [("group", "cuda:0")]
+
+
+def test_post_load_split_keeps_the_original_plan_as_fallback(monkeypatch):
+    plan = _plan()
+    sizes = {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        refined = mg.refine_plan_for_multigpu(object(), plan)
+    assert refined.fallback_plan is plan
