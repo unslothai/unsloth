@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Optional, Sequence
 
 from core.inference.audio_cpp_option_table import (
-    ACE_STEP_BASE_FILE,
+    ACE_STEP_BASE_NAME,
     ENUM_PRESETS,
     STUDIO_OPTION_LISTS,
     OptionRule,
@@ -2150,7 +2150,9 @@ class AudioCppModel:
             }
         changes = _ace_step_variant(self, variant) if self.family == "ace_step" else {}
         model = replace(self, variant = variant, model_options = model_options, **changes)
-        options, hidden = apply_option_rules(model.family, _rule_text(model), model.spec_options)
+        options, hidden = apply_option_rules(
+            model.family, _rule_text(model), model.spec_options, Path(variant.primary).name
+        )
         return replace(model, options = options, option_hidden = hidden)
 
 
@@ -2160,10 +2162,13 @@ def _rule_text(model: "AudioCppModel") -> str:
 
 
 def apply_option_rules(
-    family: str, text: str, options: Sequence[dict]
+    family: str,
+    text: str,
+    options: Sequence[dict],
+    served: str = "",
 ) -> tuple[tuple[dict, ...], dict[str, frozenset[str]]]:
     """``options`` with the family's matching rules applied, and the names each workflow hides."""
-    rules = rules_for(family, text)
+    rules = rules_for(family, text, served)
     out = [dict(o) for o in options]
     hidden: dict[str, frozenset[str]] = {}
     for rule in rules:
@@ -2268,7 +2273,7 @@ def request_options(
 def _ace_step_variant(model: "AudioCppModel", variant: AudioCppVariant) -> dict[str, Any]:
     """Base takes the "complete" task and turbo does not (ACE-Step-1.5 acestep/constants.py
     TASK_TYPES_TURBO vs TASK_TYPES_BASE)."""
-    base = bool(re.search(ACE_STEP_BASE_FILE, variant.primary.lower()))
+    base = bool(re.search(ACE_STEP_BASE_NAME, Path(variant.primary).name, re.IGNORECASE))
     music = model.music
     if music is not None:
         modes = []

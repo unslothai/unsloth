@@ -261,7 +261,9 @@ ACE_STEP = f"{acm.AUDIO_CPP_REPO}/ACE-Step1.5-GGUF"
         ("ace-step-1.5-base-q8_0.gguf", True),
         ("acestep-v15-xl-sft-q8_0.gguf", True),
         ("ace-step-1.5-turbo-q8_0.gguf", False),
-        ("base/model-q8_0.gguf", True),
+        # The runtime reads the file name only, so a base/ folder alone is turbo.
+        ("base/model-q8_0.gguf", False),
+        ("ace step base v1.gguf", True),
     ],
 )
 def test_ace_step_variant_follows_the_file_name_like_the_runtime(catalog_hub, tmp_path, name, base):

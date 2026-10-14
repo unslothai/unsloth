@@ -48,6 +48,8 @@ class OptionRule:
     # Searched (case-insensitively) in the model's repo id, folder, variant key and file names; None
     # applies to the whole family. Every matching rule applies, in order.
     match: Optional[str] = None
+    # Searched (case-insensitively) in the served GGUF's file name alone; None matches any.
+    served: Optional[str] = None
     # Options the family reads but its list lacks, in the spec's request-option shape.
     extra: tuple[dict, ...] = ()
     # Recommended value per option name; None sends nothing and leaves the runtime to decide.
@@ -64,9 +66,9 @@ class OptionRule:
     sources: Mapping[str, str] = field(default_factory = lambda: _EMPTY)
 
 
-# An ACE-Step base/SFT checkpoint: audio.cpp loads one whose GGUF name contains "base" or "sft"
-# (src/models/ace_step/loader.cpp selection_from_request); the published repo keeps base under base/.
-ACE_STEP_BASE_FILE = r"(^|[\s/])base/|(base|sft)[^/\s]*\.gguf"
+# audio.cpp loads an ACE-Step GGUF as base/SFT when its file name contains "base" or "sft", else as
+# turbo (src/models/ace_step/loader.cpp selection_from_request; turbo is the default).
+ACE_STEP_BASE_NAME = r"base|sft"
 
 
 def _opt(name: str, type_: str, description: str, **kw: Any) -> dict:
@@ -295,7 +297,7 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
             ),
             # Turbo (anything but base): the runtime caps steps at 8 and skips guidance.
             OptionRule(
-                match = rf"^(?!.*(?:{ACE_STEP_BASE_FILE}))",
+                served = rf"^(?!.*(?:{ACE_STEP_BASE_NAME}))",
                 defaults = {"num_inference_steps": 8, "shift": 3.0},
                 bounds = {"num_inference_steps": (1, 8)},
                 hidden = {"*": frozenset({"guidance_scale"})},
@@ -306,7 +308,7 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
             ),
             # Base takes 1-200 steps, 32-64 recommended, with guidance on.
             OptionRule(
-                match = ACE_STEP_BASE_FILE,
+                served = ACE_STEP_BASE_NAME,
                 defaults = {"num_inference_steps": 32, "guidance_scale": 7.0, "shift": 1.0},
                 bounds = {"num_inference_steps": (1, 200)},
                 sources = {
@@ -803,10 +805,15 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
 )
 
 
-def rules_for(family: str, text: str) -> tuple[OptionRule, ...]:
-    """The rules of ``family`` that apply to a model described by ``text``."""
+def rules_for(
+    family: str,
+    text: str,
+    served: str = "",
+) -> tuple[OptionRule, ...]:
+    """The rules of ``family`` that apply to a model described by ``text``, serving file ``served``."""
     return tuple(
         rule
         for rule in OPTION_RULES.get(family, ())
-        if rule.match is None or re.search(rule.match, text, re.IGNORECASE)
+        if (rule.match is None or re.search(rule.match, text, re.IGNORECASE))
+        and (rule.served is None or re.search(rule.served, served, re.IGNORECASE))
     )

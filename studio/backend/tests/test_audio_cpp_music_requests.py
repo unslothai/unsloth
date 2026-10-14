@@ -300,7 +300,9 @@ def test_status_reports_the_music_studio_rules():
     ]
     steps = {o["name"]: o for o in base.options}["num_inference_steps"]
     assert (steps["max"], steps["default"]) == (200, 32)
-    turbo = base.with_variant(AudioCppVariant("turbo/Q8_0", (), "ACE-Step1.5-GGUF/turbo/t.gguf"))
+    turbo = base.with_variant(
+        AudioCppVariant("turbo/Q8_0", (), "ACE-Step1.5-GGUF/turbo/ace-step-1.5-turbo-q8_0.gguf")
+    )
     assert "continue" not in turbo.music.mode("edit").actions
     assert {o["name"]: o for o in turbo.options}["num_inference_steps"]["max"] == 8
     stable = cm.music_rules(_model("stable_audio", "Stable-Audio-3-Medium-GGUF", strict = False))
@@ -578,7 +580,7 @@ ACE_BASE_DEFAULTS = {
 
 def _ace_base():
     return _model("ace_step", strict = False).with_variant(
-        AudioCppVariant("base/Q8_0", (), "ACE-Step1.5-GGUF/base/b.gguf")
+        AudioCppVariant("base/Q8_0", (), "ACE-Step1.5-GGUF/base/ace-step-1.5-base-q8_0.gguf")
     )
 
 
