@@ -2678,3 +2678,29 @@ def test_rocm_kill_switch_also_stops_the_gguf_dequant_compile(monkeypatch):
     assert ds_mod._gguf_dequant_compilable(True, True, True, cuda) is True
     monkeypatch.setenv(rc.ENV, "auto")
     assert ds_mod._gguf_dequant_compilable(True, True, True, _rocm_bf16()) is True
+
+
+def test_loader_probes_rocm_only_for_an_engaged_pipeline_quant():
+    # speed=off with quant off must not pay the allocating probe: the loader's probe=True call sits inside the
+    # engaged-quant branch.
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dmod
+
+    tree = ast.parse(inspect.getsource(dmod))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and getattr(n.func, "id", None) == "_pipeline_quant_uncompilable_reason"
+        and any(k.arg == "probe" and getattr(k.value, "value", None) is True for k in n.keywords)
+    ]
+    assert len(calls) == 1
+    node, guards = calls[0], []
+    while node in parents:
+        child, node = node, parents[node]
+        if isinstance(node, ast.If) and child in node.body:
+            guards.append(ast.unparse(node.test))
+    assert any("normalize_transformer_quant(transformer_quant) is not None" in g for g in guards)
