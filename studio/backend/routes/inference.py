@@ -17814,6 +17814,14 @@ async def _run_tracked_load_model_impl(
                 _spark_slots,
                 inherited_extra_args = _spark_inherited_extra_args(request),
                 cancel_event = attempt.cancel_event,
+                confirm_teardown = (
+                    None
+                    if on_reload_confirmed is None
+                    else lambda: (
+                        account_access.require_idle_other_accounts(),
+                        on_reload_confirmed(cancel = False),
+                    )
+                ),
             )
         except spark_serving.SparkLoadDoesNotFit as exc:
             logger.warning("inference.spark_load_does_not_fit: %s", exc)

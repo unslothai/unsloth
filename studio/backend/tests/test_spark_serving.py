@@ -2037,6 +2037,45 @@ def test_a_peer_that_stopped_answering_is_restarted_not_reused(cluster, monkeypa
     run(ss.shutdown())
 
 
+def test_a_refused_forced_reload_leaves_the_served_split_running(cluster, monkeypatch, tmp_path):
+    """Regression: a force_reload refused with 409 for active chats restarted the peer first, so the
+    refusal still took the served model's remote layers down and load_failed then unloaded it."""
+    from fastapi import HTTPException
+
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    model = tmp_path / "big.gguf"
+    model.write_bytes(b"x")
+    _calls, started = _patch_remote(monkeypatch)
+    cluster.topology = "layer_split"
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    first = ss.state().peer_process
+    before = ss.status()
+
+    def _refuse():
+        raise HTTPException(status_code = 409, detail = "active generations")
+
+    with pytest.raises(HTTPException) as raised:
+        run(
+            ss.before_load(_FakeRequest(str(model), force_reload = True), 4, confirm_teardown = _refuse)
+        )
+    assert raised.value.status_code == 409
+    assert len(started) == 1 and ss.state().peer_process is first and first.alive
+    assert ss.state()._retired_split is None and not ss.state().load_in_progress
+    assert ss.status()["topology"] == before["topology"] == "layer_split"
+    assert ss.state()._confirm_teardown is None
+
+    confirmed = []
+    run(
+        ss.before_load(
+            _FakeRequest(str(model), force_reload = True),
+            4,
+            confirm_teardown = lambda: confirmed.append(True),
+        )
+    )
+    assert confirmed == [True] and len(started) == 2
+    run(ss.shutdown())
+
+
 def _port_answers(first: bool, *, then: bool):
     state = {"n": 0}
 
@@ -4462,6 +4501,34 @@ def test_a_load_the_account_may_not_make_is_refused_before_the_split_is_touched(
         run(ri._run_tracked_load_model_impl(request, None, "someone"))
     assert raised.value.status_code == 403
     assert touched == []
+
+
+def test_the_route_hands_its_reload_gate_to_the_split_teardown(monkeypatch):
+    """The 409 gate for active chats runs inside _load_model_impl, after before_load: the split
+    teardown has to be able to run the refusal half of it first."""
+    import routes.inference as ri
+    from fastapi import HTTPException
+
+    gate_calls = []
+
+    def _gate(*, cancel):
+        gate_calls.append(cancel)
+        raise HTTPException(status_code = 409, detail = "active generations")
+
+    async def _before(request, slots, **k):
+        k["confirm_teardown"]()
+        return request
+
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+    monkeypatch.setattr(ss, "before_load", _before)
+    monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(ri.account_access, "require_idle_other_accounts", lambda: None)
+    request = SimpleNamespace(
+        model_path = "org/model-GGUF", engine = "auto", n_parallel = 4, load_request_id = None
+    )
+    with pytest.raises(HTTPException) as raised:
+        run(ri._run_tracked_load_model_impl(request, None, "someone", on_reload_confirmed = _gate))
+    assert raised.value.status_code == 409 and gate_calls == [False]
 
 
 def test_an_uncached_repo_keeps_pipeline_groups_off_until_vision_is():

@@ -2205,6 +2205,10 @@ class SparkLoadDoesNotFit(Exception):
     """No topology on this pair can hold the requested load."""
 
 
+class _TeardownRefused(Exception):
+    """The route refused to let this load tear down the split serving the current model."""
+
+
 class SparkServing:
     def __init__(self):
         self.topology: str = "single"
@@ -2226,6 +2230,8 @@ class SparkServing:
         self._retired_split: Optional[tuple] = None
         # The current load is a model kept alongside, which this state does not describe.
         self._passthrough: bool = False
+        # The route's refusal checks for replacing the served model, run before the split goes.
+        self._confirm_teardown: Any = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
         self._cancel_event: Any = None
@@ -2427,7 +2433,7 @@ class SparkServing:
             if mtp["request"]:
                 logger.info("spark serving: mtp %s (%s)", self.mtp, self.mtp_reason)
             return self._request_with(out, mtp["request"])
-        except SparkLoadDoesNotFit:
+        except (SparkLoadDoesNotFit, _TeardownRefused):
             # Not a pre-load step that failed.
             raise
         except Exception as exc:
@@ -2558,6 +2564,15 @@ class SparkServing:
         if busy:
             return _fall_back(f"layer split needs the peer GPU but {busy}")
         if running is not None:
+            if running.alive and self._confirm_teardown is not None:
+                # The model being served computes through this rpc-server: a load the route will
+                # refuse (409 on active chats) must be refused before it goes, not after.
+                try:
+                    self._confirm_teardown()
+                except BaseException as exc:
+                    self.load_in_progress = False
+                    self._restore_pre_load_state()
+                    raise _TeardownRefused() from exc
             self._note_retired_split(running)
             await self.detach()
 
@@ -3318,6 +3333,7 @@ async def before_load(
     *,
     inherited_extra_args: Optional[List[str]] = None,
     cancel_event: Any = None,
+    confirm_teardown: Any = None,
 ) -> Any:
     if not enabled():
         return request
@@ -3333,7 +3349,13 @@ async def before_load(
     if st._passthrough:
         return request
     st._cancel_event = cancel_event
-    return await st.before_load(request, n_parallel, inherited_extra_args = inherited_extra_args)
+    st._confirm_teardown = confirm_teardown
+    try:
+        return await st.before_load(request, n_parallel, inherited_extra_args = inherited_extra_args)
+    except _TeardownRefused as exc:
+        raise exc.__cause__
+    finally:
+        st._confirm_teardown = None
 
 
 async def after_load(
