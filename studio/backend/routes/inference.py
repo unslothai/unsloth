@@ -34480,9 +34480,11 @@ async def produce_openai_chat_completions(
         and _sf_supports_tools
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
-    if _sf_client_tools:
-        gen_kwargs["response_format"] = _response_format_beside_tools(payload, payload.tools)
-        _sf_single_block = _sf_single_block and gen_kwargs["response_format"] is not None
+    _sf_response_format = _response_format_beside_tools(
+        payload, payload.tools if _sf_client_tools else None
+    )
+    gen_kwargs["response_format"] = _sf_response_format
+    _sf_single_block = _sf_single_block and _sf_response_format is not None
     # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
     # markup never reached the prompt. Gating the healer on the caller's list instead would
     # promote a dropped tool with a clean NAME out of text-form output, handing the client a
@@ -34534,7 +34536,7 @@ async def produce_openai_chat_completions(
             payload.auto_heal_tool_calls,
             _sf_healing_tools,
             payload.tool_choice,
-            response_format = gen_kwargs["response_format"],
+            response_format = _sf_response_format,
         )
         if _sf_client_tools
         else None
@@ -35163,7 +35165,7 @@ async def produce_openai_chat_completions(
                         _finish = "tool_calls"
                     elif nudge_enabled(
                         payload.nudge_tool_calls,
-                        response_format = gen_kwargs["response_format"],
+                        response_format = _sf_response_format,
                     ):
                         _data = {
                             "choices": [
