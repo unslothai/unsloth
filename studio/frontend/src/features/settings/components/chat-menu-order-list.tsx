@@ -13,7 +13,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
-import type { ReactNode } from "react";
+import { type ReactNode, type RefObject, useRef, useState } from "react";
 
 type ItemMeta = { label: string; icon: ReactNode };
 
@@ -33,11 +33,15 @@ function MovableRow({
   meta,
   index,
   order,
+  bounds,
+  onDrop,
 }: {
   id: PlusMenuItemId;
   meta: ItemMeta;
   index: number;
   order: PlusMenuItemId[];
+  bounds: RefObject<HTMLUListElement | null>;
+  onDrop: () => void;
 }) {
   const t = useT();
   const controls = useDragControls();
@@ -51,6 +55,10 @@ function MovableRow({
       dragListener={false}
       dragControls={controls}
       layout="position"
+      // The row stays inside the list instead of following the pointer over the rest of the tab.
+      dragConstraints={bounds}
+      dragElastic={0}
+      onDragEnd={onDrop}
       whileDrag={{
         backgroundColor: "var(--popover)",
         boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
@@ -106,6 +114,22 @@ export function ChatMenuOrderList({
   const t = useT();
   const order = usePlusMenuPrefsStore((s) => s.order);
   const setOrder = usePlusMenuPrefsStore((s) => s.setOrder);
+  const listRef = useRef<HTMLUListElement>(null);
+  // Swaps stay local while dragging; the store (persisted, read by both + menus) takes the drop.
+  const [draft, setDraftState] = useState<PlusMenuItemId[] | null>(null);
+  // Read on drop: the last swap and the release can land before a re-render.
+  const draftRef = useRef<PlusMenuItemId[] | null>(null);
+  const setDraft = (ids: PlusMenuItemId[] | null) => {
+    draftRef.current = ids;
+    setDraftState(ids);
+  };
+  const shown = draft ?? order;
+  const drop = () => {
+    if (draftRef.current) {
+      setOrder(draftRef.current);
+    }
+    setDraft(null);
+  };
   return (
     <div
       data-testid="chat-menu-order"
@@ -119,18 +143,21 @@ export function ChatMenuOrderList({
       <FixedRow icon={CodeIcon} label={t("settings.chat.menu.tools")} />
       <div className="mx-2 my-1 border-t border-border/70" />
       <Reorder.Group
+        ref={listRef}
         axis="y"
-        values={order}
-        onReorder={(ids: PlusMenuItemId[]) => setOrder(ids)}
+        values={shown}
+        onReorder={(ids: PlusMenuItemId[]) => setDraft(ids)}
         className="flex flex-col"
       >
-        {order.map((id, index) => (
+        {shown.map((id, index) => (
           <MovableRow
             key={id}
             id={id}
             meta={items[id]}
             index={index}
-            order={order}
+            order={shown}
+            bounds={listRef}
+            onDrop={drop}
           />
         ))}
       </Reorder.Group>
