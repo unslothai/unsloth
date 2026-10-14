@@ -33,10 +33,10 @@ BROWSER_NETWORK_JS = r"""
         // To the browser the sandbox's origin is opaque, so even the page's own site is another origin,
         // and an API of it that sends no CORS headers can't be read. Requests to the page's origin go
         // through the panel to Studio's backend (POST /api/browser/request), which makes them as the
-        // same-origin requests they are. Requests to other sites stay the browser's, and so do all of
-        // them when the page's site answers any origin (cfg.anyOrigin): there the browser already
-        // reads them, streamed and unbuffered.
-        const pageOrigin = (() => { try { return cfg.url && !cfg.anyOrigin ? new URL(cfg.url).origin : null; } catch { return null; } })();
+        // same-origin requests they are. Requests to other sites stay the browser's. When the page's
+        // site answers any origin (cfg.anyOrigin), its writes and XHRs stay the browser's too, streamed
+        // and unbuffered; a fetch GET still falls back to the panel for an API that doesn't.
+        const pageOrigin = (() => { try { return cfg.url ? new URL(cfg.url).origin : null; } catch { return null; } })();
         const ownSite = (url) => { try { return pageOrigin !== null && new URL(url).origin === pageOrigin; } catch { return false; } };
         const replies = new Map();
         let lastRequest = 0;
@@ -118,6 +118,7 @@ BROWSER_NETWORK_JS = r"""
           if (!ownSite(url)) return nativeFetch(input, init).finally(done);
           let request;
           try { request = new Request(input instanceof Request ? input : url, init); } catch (error) { done(); return Promise.reject(error); }
+          if (cfg.anyOrigin && !bodiless(request.method)) return nativeFetch(request).finally(done);
           return fromBrowser(request).then((response) => response ?? relayFetch(request)).finally(done);
         };
 
@@ -156,7 +157,7 @@ BROWSER_NETWORK_JS = r"""
             super.open(...args);
             const url = args.length > 1 ? resolve(String(args[1])) : null;
             const async = args.length < 3 || Boolean(args[2]);
-            if (async && ownSite(url)) relayed.set(this, { method: String(args[0]).toUpperCase(), url, headers: [] });
+            if (async && ownSite(url) && !cfg.anyOrigin) relayed.set(this, { method: String(args[0]).toUpperCase(), url, headers: [] });
           }
           setRequestHeader(name, value) {
             super.setRequestHeader(name, value);

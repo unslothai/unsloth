@@ -258,6 +258,20 @@ test("a page whose site answers any origin keeps its own requests, which the bro
   await own;
 });
 
+test("a page whose site answers any origin still relays a GET its API doesn't answer", async () => {
+  const t = setup(NativeXHR, "https://site.test/", true, (url) => !url.endsWith("/same"));
+  const read = t.window.fetch("/same");
+  await tick();
+  assert.equal(t.refused.length, 1);
+  assert.equal(t.posted.length, 1);
+  t.reply(t.posted[0].id, ok('{"a":1}'));
+  assert.deepEqual(await (await read).json(), { a: 1 });
+  // A write stays the browser's: its failure is the page's, with no panel request.
+  await assert.rejects(t.window.fetch("/same", { method: "POST", body: "x" }), TypeError);
+  assert.equal(t.posted.length, 1);
+  assert.equal(t.refused.length, 2);
+});
+
 test("an own-site GET the browser can read stays the browser's, streamed as it was", async () => {
   const t = setup(NativeXHR, "https://site.test/", false, (url) => url.endsWith("/api/models"));
   const read = t.window.fetch("/api/models");
