@@ -416,7 +416,6 @@ def _local_prequant_path_allowed(path: str) -> bool:
     # Studio's own local pre-quant cache (safetensors it wrote itself), and only that exact root.
     try:
         from .diffusion_prequant_cache import path_in_cache
-
         if path_in_cache(path):
             return True
     except Exception:  # noqa: BLE001 - an unanswerable check falls back to the operator allowlist
@@ -1067,7 +1066,6 @@ def resolve_prequant_source(
     # (diffusion_prequant_cache). Local reads only; the task names the denoiser component (an MoE's transformer_2).
     try:
         from .diffusion_prequant_cache import lookup
-
         cached = lookup(
             fam,
             scheme,

@@ -2020,7 +2020,6 @@ def _video_auto_denoiser_scheme(
             # of the same weights (diffusion_prequant_cache). Never under auto, so a cache entry cannot change what an
             # auto load picks.
             from .diffusion_prequant_cache import CACHEABLE_SCHEMES
-
             wanted = normalize_transformer_quant(requested)
             if (
                 wanted in CACHEABLE_SCHEMES
@@ -7713,9 +7712,7 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
-                _save_runtime_quant_to_cache(
-                    fam, views, base = base, source = _base_local_dir or base
-                )
+                _save_runtime_quant_to_cache(fam, views, base = base, source = _base_local_dir or base)
             elif transformer_quant_pinned is not None:
                 transformer_quant_decline = (
                     f"'{transformer_quant_pinned}' did not engage on family '{fam.name}' with this "

@@ -148,13 +148,11 @@ def _toolchain() -> dict:
     out: dict[str, Any] = {}
     try:
         import torch
-
         out["torch"] = _minor(torch.__version__)
     except Exception:  # noqa: BLE001
         out["torch"] = None
     try:
         import importlib.metadata as md
-
         out["torchao"] = _minor(md.version("torchao"))
     except Exception:  # noqa: BLE001
         out["torchao"] = None
@@ -210,7 +208,9 @@ def source_fingerprint(shards: Iterable[Any]) -> Optional[str]:
             header = read_header_bytes(real)
             if header is None:
                 return None
-            cached = hashlib.sha256(header + b"\0" + _content_identity(real, st).encode("utf-8")).hexdigest()
+            cached = hashlib.sha256(
+                header + b"\0" + _content_identity(real, st).encode("utf-8")
+            ).hexdigest()
             with _lock:
                 _HEADER_MEMO[memo] = cached
         entries.append((os.path.basename(str(shard)), cached))
@@ -224,7 +224,6 @@ def source_fingerprint(shards: Iterable[Any]) -> Optional[str]:
 def _hub_cache_dir() -> Optional[str]:
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
-
         return active_hf_hub_cache()
     except Exception:  # noqa: BLE001
         return None
@@ -237,7 +236,6 @@ def _local_file(repo_or_dir: str, filename: str, cache_dir: Optional[str]) -> Op
         return path if os.path.isfile(path) else None
     try:
         from huggingface_hub import try_to_load_from_cache
-
         hit = try_to_load_from_cache(repo_or_dir, filename, cache_dir = cache_dir)
     except Exception:  # noqa: BLE001 - not a repo id, or no cache
         return None
@@ -245,7 +243,10 @@ def _local_file(repo_or_dir: str, filename: str, cache_dir: Optional[str]) -> Op
 
 
 def source_shards(
-    base: Optional[str], component: str = "transformer", *, cache_dir: Optional[str] = None
+    base: Optional[str],
+    component: str = "transformer",
+    *,
+    cache_dir: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Local paths of the dense safetensors shards of ``base``'s ``component``, or None when not all are local."""
     if not base:
@@ -254,7 +255,6 @@ def source_shards(
     candidates = [str(base)]
     try:
         from .diffusion_families import canonical_base, mirror_repo
-
         for alt in (mirror_repo(base), canonical_base(base)):
             if alt and alt not in candidates:
                 candidates.append(alt)
@@ -321,7 +321,9 @@ def key_parts(
 
 
 def cache_key(parts: dict) -> str:
-    return hashlib.sha256(json.dumps(parts, sort_keys = True, default = str).encode("utf-8")).hexdigest()[:32]
+    return hashlib.sha256(
+        json.dumps(parts, sort_keys = True, default = str).encode("utf-8")
+    ).hexdigest()[:32]
 
 
 # Only the torchao schemes whose runtime and hosted builds are the same artifact. nvfp4 runs a per-family policy and
@@ -329,7 +331,9 @@ def cache_key(parts: dict) -> str:
 CACHEABLE_SCHEMES = ("int8", "fp8")
 
 
-def _key_for(fam: Any, scheme: str, base: Optional[str], component: str) -> Optional[tuple[str, dict]]:
+def _key_for(
+    fam: Any, scheme: str, base: Optional[str], component: str
+) -> Optional[tuple[str, dict]]:
     if scheme not in CACHEABLE_SCHEMES:
         return None
     shards = source_shards(base, component)
@@ -410,7 +414,11 @@ def _tensor_bytes(tensor: Any) -> int:
     return int(tensor.numel()) * int(tensor.element_size())
 
 
-def write_streaming_safetensors(path: Any, tensors: dict, metadata: Optional[dict] = None) -> int:
+def write_streaming_safetensors(
+    path: Any,
+    tensors: dict,
+    metadata: Optional[dict] = None,
+) -> int:
     """Write ``tensors`` (any device) to ``path`` as safetensors, holding one tensor at a time on the host.
 
     Same byte layout ``safetensors.torch.save_file`` produces: entries ordered by dtype size (largest first) then
@@ -428,7 +436,11 @@ def write_streaming_safetensors(path: Any, tensors: dict, metadata: Optional[dic
         if tag is None:
             raise ValueError(f"{name}: dtype {tensor.dtype} has no safetensors tag")
         size = _tensor_bytes(tensor)
-        header[name] = {"dtype": tag, "shape": list(tensor.shape), "data_offsets": [offset, offset + size]}
+        header[name] = {
+            "dtype": tag,
+            "shape": list(tensor.shape),
+            "data_offsets": [offset, offset + size],
+        }
         offset += size
     blob = json.dumps(header, separators = (",", ":")).encode("utf-8")
     blob += b" " * ((8 - len(blob) % 8) % 8)
@@ -480,7 +492,9 @@ def _flatten(state_dict: dict) -> tuple[dict, dict]:
     if unsupported_state_dict_keys(state_dict):
         raise ValueError("root-level quantized tensors cannot be written as safetensors")
     roots = _root_level_keys(state_dict)
-    quantizable = {k: v for k, v in state_dict.items() if k not in set(roots)} if roots else state_dict
+    quantizable = (
+        {k: v for k, v in state_dict.items() if k not in set(roots)} if roots else state_dict
+    )
     flatten, _ = helpers
     flat, torchao_metadata = flatten(quantizable)
     header = dict(torchao_metadata or {})
@@ -546,9 +560,11 @@ def save_runtime_quant(
             if name in info and info[name] != parts[name]:
                 _log(logger, "info", f"skipped (runtime {name} {info[name]!r} != {parts[name]!r})")
                 return None
-        if "exclude_name_tokens" in info and sorted(
-            t for t in info["exclude_name_tokens"] if t != "lora_"
-        ) != parts["exclude_name_tokens"]:
+        if (
+            "exclude_name_tokens" in info
+            and sorted(t for t in info["exclude_name_tokens"] if t != "lora_")
+            != parts["exclude_name_tokens"]
+        ):
             _log(logger, "info", "skipped (runtime exclusion list differs)")
             return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
@@ -565,7 +581,9 @@ def save_runtime_quant(
         try:
             flat, header = _flatten(state_dict)
         except Exception as exc:  # noqa: BLE001 - legacy int8 subclass on torchao < 0.18, root subclass, ...
-            _log(logger, "info", f"skipped (not flattenable: {type(exc).__name__}: {str(exc)[:160]})")
+            _log(
+                logger, "info", f"skipped (not flattenable: {type(exc).__name__}: {str(exc)[:160]})"
+            )
             return None
         nbytes = sum(_tensor_bytes(t) for t in flat.values())
         root = cache_root()
@@ -606,7 +624,6 @@ def save_runtime_quant(
         }
         if scheme == "fp8":
             from .diffusion_transformer_quant import FP8_GRANULARITY
-
             metadata["fp8_granularity"] = FP8_GRANULARITY
         metadata.update(_rotation(transformer, info))
         header[UNSLOTH_FORMAT_KEY] = prequant_format_for(metadata)
@@ -628,7 +645,9 @@ def save_runtime_quant(
                 except OSError:
                     pass
         manifest = {"key": key, "bytes": size, "created": time.time(), "parts": parts}
-        _atomic_bytes(kdir / MANIFEST_NAME, json.dumps(manifest, indent = 1, default = str).encode("utf-8"))
+        _atomic_bytes(
+            kdir / MANIFEST_NAME, json.dumps(manifest, indent = 1, default = str).encode("utf-8")
+        )
         _touch(kdir)
         _log(
             logger,
@@ -699,7 +718,9 @@ def evict(
                 break
             if path.name == keep or used > cutoff:
                 continue
-            tomb = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}")
+            tomb = path.with_name(
+                f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}"
+            )
             try:
                 os.rename(path, tomb)
             except OSError:

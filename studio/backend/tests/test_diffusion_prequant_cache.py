@@ -107,7 +107,11 @@ def _fam(base: Path) -> types.SimpleNamespace:
     return types.SimpleNamespace(name = FAMILY, transformer_class = "Tiny", base_repo = str(base))
 
 
-def _write_base(tmp_path: Path, seed: int = 0, name: str = "base") -> tuple[Path, Tiny]:
+def _write_base(
+    tmp_path: Path,
+    seed: int = 0,
+    name: str = "base",
+) -> tuple[Path, Tiny]:
     from safetensors.torch import save_file
 
     torch.manual_seed(seed)
@@ -126,7 +130,6 @@ def _quantize(model: Tiny, scheme: str) -> Tiny:
     divisible = divisible_for_scheme(scheme)
     if _SCHEME is not None and _SCHEME[1]:
         from torchao.quantization import quantize_
-
         quantize_(
             model,
             _make_quant_config(scheme),
@@ -237,7 +240,9 @@ def test_key_changes_with_source_scheme_and_policy(env, tmp_path, scheme, monkey
     from safetensors.torch import save_file
 
     torch.manual_seed(123)
-    save_file({k: v.contiguous() for k, v in Tiny().to(torch.bfloat16).state_dict().items()}, str(shard))
+    save_file(
+        {k: v.contiguous() for k, v in Tiny().to(torch.bfloat16).state_dict().items()}, str(shard)
+    )
     os.utime(shard, ns = (time.time_ns() + 10_000_000, time.time_ns() + 10_000_000))
     assert C.read_header_bytes(shard) == header_before
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
@@ -268,7 +273,11 @@ def test_interrupted_write_leaves_no_entry(env, tmp_path, scheme, monkeypatch):
     _quantize(model, scheme)
     fam = _fam(base)
 
-    def boom(path, tensors, metadata = None):
+    def boom(
+        path,
+        tensors,
+        metadata = None,
+    ):
         with open(path, "wb") as fh:
             fh.write(b"partial")
         raise OSError("killed mid-write")
@@ -363,7 +372,9 @@ def test_lru_eviction_spares_recent_and_kept_keys(env):
     # Oldest goes first; the 30 s old key is inside the grace window and stays even over budget.
     assert removed == [dirs[0].name, dirs[1].name]
     assert dirs[2].exists()
-    assert C.evict(root = env, max_bytes = 0) == []  # max_bytes=0 -> nothing over budget except grace-held
+    assert (
+        C.evict(root = env, max_bytes = 0) == []
+    )  # max_bytes=0 -> nothing over budget except grace-held
 
 
 def test_budget_env(monkeypatch):
@@ -376,8 +387,13 @@ def test_budget_env(monkeypatch):
 
 
 # ------------------------------------------------------------------------------------------------ trust
-def test_cache_root_is_trusted_without_the_allowlist_and_symlinks_cannot_escape(env, tmp_path, scheme):
-    from core.inference.diffusion_prequant import _local_prequant_path_allowed, local_prequant_path_ready
+def test_cache_root_is_trusted_without_the_allowlist_and_symlinks_cannot_escape(
+    env, tmp_path, scheme
+):
+    from core.inference.diffusion_prequant import (
+        _local_prequant_path_allowed,
+        local_prequant_path_ready,
+    )
 
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)
@@ -413,7 +429,9 @@ def test_resolver_falls_back_to_the_cache_only_without_a_hosted_repo(env, tmp_pa
     usable = usable_prequant_source(fam, scheme, base_repo = str(base))
     assert usable is not None and usable.location == path
     # An explicit override still wins.
-    override = resolve_prequant_source(fam, scheme, path_override = "/x/y.safetensors", base_repo = str(base))
+    override = resolve_prequant_source(
+        fam, scheme, path_override = "/x/y.safetensors", base_repo = str(base)
+    )
     assert override.location == "/x/y.safetensors"
 
 
@@ -430,7 +448,11 @@ def test_quantize_transformer_stamps_what_the_cache_needs(env, tmp_path, scheme,
     target = types.SimpleNamespace(dtype = torch.bfloat16, device = "cpu")
     assert Q.quantize_transformer(pipe, target, mode = scheme, family = FAMILY) == scheme
     info = model._unsloth_runtime_quant_info
-    assert info["scheme"] == scheme and info["min_features"] == 512 and "lora_" in info["exclude_name_tokens"]
+    assert (
+        info["scheme"] == scheme
+        and info["min_features"] == 512
+        and "lora_" in info["exclude_name_tokens"]
+    )
     path = C.save_runtime_quant(model, _fam(base), base_repo = str(base))
     assert path and C.lookup(_fam(base), scheme, base_repo = str(base)) == path
 

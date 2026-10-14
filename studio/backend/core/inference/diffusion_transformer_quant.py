@@ -1927,9 +1927,11 @@ def _first_weight_dtype(module: Any) -> Any:
     """The dtype the dense model was loaded in: a parameter left high precision by the quant filter (norms, embeds)."""
     try:
         import torch
-
         for param in module.parameters():
-            if type(param.data) in (torch.Tensor, torch.nn.Parameter) and param.dtype.is_floating_point:
+            if (
+                type(param.data) in (torch.Tensor, torch.nn.Parameter)
+                and param.dtype.is_floating_point
+            ):
                 return param.dtype
     except Exception:  # noqa: BLE001
         pass

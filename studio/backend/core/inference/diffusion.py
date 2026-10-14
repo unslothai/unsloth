@@ -8857,7 +8857,6 @@ class DiffusionBackend:
             # Keep this build for the next load of the same weights (diffusion_prequant_cache): it then resolves as a
             # local pre-quant source above and the dense bf16 transformer is never read again. Best-effort.
             from .diffusion_prequant_cache import save_runtime_quant
-
             save_runtime_quant(
                 getattr(pipe, "transformer", None),
                 fam,
