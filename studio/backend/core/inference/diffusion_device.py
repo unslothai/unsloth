@@ -337,8 +337,9 @@ def resolve_selected_cuda_ordinal(
     order (``4,5`` -> torch 0,1; ``1,0`` reverses them), hence going through the hardware layer
     that owns the mask.
 
-    Neither engine shards a checkpoint, so several cards still resolve to one: most free VRAM
-    wins, as ``auto_select_gpu_ids`` already does for training, ties to the lowest ordinal. Taking
+    Neither engine shards a checkpoint, so several cards resolve to one PRIMARY card (the
+    multi-GPU layer, diffusion_multigpu, may place companions or a denoiser replica on the
+    others, see :func:`resolve_selected_cuda_ordinals`): most free VRAM wins, as ``auto_select_gpu_ids`` already does for training, ties to the lowest ordinal. Taking
     the FIRST id instead would land on ordinal 0 whenever everything is selected, i.e. the small
     card on the mixed boxes this exists for. Resolved ONCE per load and carried, never re-derived:
     free VRAM moves the moment the checkpoint lands.
