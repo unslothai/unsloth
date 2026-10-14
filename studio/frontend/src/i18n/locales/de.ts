@@ -1870,7 +1870,23 @@ export const de = {
           "Hugging-Face-Modell oder lokaler Pfad zum Indexieren und Durchsuchen Ihrer Dokumente. Standard ist {defaultModel}.",
         searchPlaceholder: "Beliebiges Modell auf HF suchen",
         reindexWarning:
-          "Betrifft nur neu indexierte Dokumente. Laden Sie bestehende nach einer Modelländerung erneut hoch.",
+          "Betrifft nur neu indexierte Dokumente. Betten Sie bestehende nach einer Modelländerung neu ein.",
+        reembed: {
+          label: "Dokumente neu einbetten",
+          staleOne:
+            "1 Dokument wurde mit einem anderen Embedding-Modell indexiert, daher überspringt die semantische Suche es.",
+          staleMany:
+            "{count} Dokumente wurden mit einem anderen Embedding-Modell indexiert, daher überspringt die semantische Suche sie.",
+          staleArchived:
+            "Früherer Chatverlauf wurde mit einem anderen Embedding-Modell indexiert, daher überspringt die semantische Suche ihn.",
+          running: "Neu einbetten: {done} von {total}",
+          action: "Neu einbetten",
+          stop: "Stoppen",
+          startFailed: "Neu-Einbettung konnte nicht gestartet werden",
+          stopped: "Neu-Einbettung angehalten",
+          finished: "Dokumente neu eingebettet",
+          finishedWithFailures: "{count} konnten nicht neu eingebettet werden",
+        },
         emptyError:
           "Geben Sie eine Hugging-Face-Modell-ID oder einen lokalen Pfad ein.",
         loadError:
@@ -3152,6 +3168,7 @@ export const de = {
       desktopAppVersion: "Version der Desktop-App",
       desktopAppVersionUnavailable: "Nicht verfügbar",
       llamaCppVersion: "llama.cpp-Version",
+      audioCppVersion: "audio.cpp-Version",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

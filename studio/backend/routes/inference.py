@@ -1257,10 +1257,11 @@ def _passthrough_cut_scope(llama_backend, body: dict) -> tuple:
     tools = sorted(
         str(((tool or {}).get("function") or {}).get("name")) for tool in body.get("tools") or []
     )
+    # getattr, as the rest of this module reads the backend: not every backend object carries both.
     return (
         "passthrough",
-        llama_backend.model_identifier,
-        llama_backend.context_length,
+        getattr(llama_backend, "model_identifier", None),
+        getattr(llama_backend, "context_length", None),
         tuple(tools),
     )
 
@@ -45490,7 +45491,7 @@ async def _openai_passthrough_stream_admitted(
             _replay_passthrough_cut,
             body,
             _truncate_policy,
-            llama_backend.context_length,
+            getattr(llama_backend, "context_length", None),
             _cut_scope,
         )
         _context_was_truncated = _truncated_messages > 0
@@ -46417,7 +46418,11 @@ async def _openai_passthrough_non_streaming_upstream(
     # Off the event loop: the history can hold megabytes of images.
     _cut_scope = _passthrough_cut_scope(llama_backend, body)
     _truncated_messages = await asyncio.to_thread(
-        _replay_passthrough_cut, body, _truncate_policy, llama_backend.context_length, _cut_scope
+        _replay_passthrough_cut,
+        body,
+        _truncate_policy,
+        getattr(llama_backend, "context_length", None),
+        _cut_scope,
     )
     _context_was_truncated = _truncated_messages > 0
     # One respawn per request, as on the streaming twin.
@@ -47246,6 +47251,7 @@ async def load_diffusion_model_gated(
         )
         if pending_name == ENGINE_SD_CPP and vulkan_on_cpu_torch:
             needs_gpu = True
+
         # A GPU torch whose GPU builds have all failed here runs the managed CPU bundle: no claim.
         def _runs_cpu_rung() -> bool:
             try:
