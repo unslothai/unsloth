@@ -1190,8 +1190,6 @@ def stage_module_cls():
             block_params = _forward_params(self.layers[0]) if len(self.layers) else set()
             self.pass_position_ids = "position_ids" in block_params
             self.pass_cache_position = "cache_position" in block_params
-            # How a block wants its rope tables is read off its own signature, because it is not one
-            # shape.
             self.position_params = _forward_params(self.layers[0]) if len(self.layers) else set()
             self.position_params = sorted(
                 p for p in self.position_params if p.startswith("position_embeddings")
@@ -1226,8 +1224,6 @@ def stage_module_cls():
             )
             embed_name, embed = _first_named(owner, _EMBED_NAMES)
             norm_name, norm = _first_named(owner, _FINAL_NORM_NAMES)
-            # Every stage checks the whole stack, not just the part it runs: a dropped module is
-            # wrong for the model however the layers happen to be divided up.
             skipped = _unrun_parameters(
                 owner, (embed_name, norm_name, container_name, "rotary_emb")
             )
@@ -1244,8 +1240,6 @@ def stage_module_cls():
                     f"rather than supporting these models."
                 )
             self.embed_tokens = embed if is_first else None
-            # GPT-NeoX (`emb_dropout`) and GPT-J (`drop`) apply dropout between the embedding and the
-            # first layer.
             dropout = _first_attr(owner, ("emb_dropout", "drop"))
             self.embed_dropout = (
                 dropout if is_first and isinstance(dropout, torch.nn.Dropout) else None
@@ -1467,8 +1461,6 @@ def build_torch_schedule(
     step_params = inspect.signature(schedule.step).parameters
     step_kw = {}
     if "return_outputs" in step_params:
-        # Merged logits are `batch x seq x vocab` in fp32, tens of GiB on the loss rank for a tensor
-        # nobody reads.
         step_kw["return_outputs"] = False
     else:
         # torch <= 2.9 always merges them in step(); the result is discarded, so skip the copy.
@@ -1516,8 +1508,6 @@ def build_torch_schedule(
     return schedule, mods, step_kw, scale_grads_after_step
 
 
-# Re-enables the refused (deadlocking) schedules so a stack can be taken without editing this file
-# mid-measurement.
 _ALLOW_REFUSED = os.environ.get("SPARK_PP_DIAGNOSE", "0") == "1"
 
 
@@ -1733,8 +1723,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         problem = dataset_problem(args.data)
         if problem:
             raise SystemExit(problem)
-    # Fail before the tokenizer and model load, so the reason appears in a second instead of a
-    # silent process.
     if not use_torch_pp:
         if args.schedule not in SCHEDULES:
             raise SystemExit(
@@ -1783,8 +1771,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     tok = AutoTokenizer.from_pretrained(args.model)
     if tok.pad_token is None:
-        # Base decoder-only checkpoints ship without one, and padding then raises before the first
-        # step.
         tok.pad_token = tok.eos_token
     # Right padding keeps every real token preceded only by real tokens, so a causal model needs no
     # padding mask for the representations; only the labels have to exclude pads.
@@ -1809,8 +1795,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raise SystemExit(str(exc))
         my_plan = plan_for_rank(plan, rank)
 
-    # Checked before the model is built, so a run that cannot be correct stops in seconds rather
-    # than after a 70B load.
     tied_problem = tied_split_problem(
         bool(getattr(base_config, "tie_word_embeddings", False)),
         bool(args.full_finetune),
@@ -1824,8 +1808,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if legacy_problem:
             raise SystemExit(legacy_problem)
     if args.data and getattr(tok, "chat_template", None) is None:
-        # `apply_chat_template` raises on a base tokenizer, and it did so only after both ranks had
-        # loaded and materialised the model.
         raise SystemExit(
             f"--data formats each row with the tokenizer's chat template, and {args.model} "
             f"has none (it is a base checkpoint). Point --model at an instruction-tuned "
@@ -1874,8 +1856,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # be inert; the stage module wraps each layer itself.
         log("gradient checkpointing enabled per decoder layer (use_reentrant=False)")
     elif args.grad_checkpoint:
-        # The legacy stage also calls decoder layers directly, so it wraps each one itself for the
-        # same reason.
         base_model = getattr(model, "base_model", model)
         inner_model = getattr(base_model, "model", base_model)
         if hasattr(inner_model, "gradient_checkpointing_enable"):
@@ -1979,8 +1959,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         is_loss_rank = stage.is_last
     opt = torch.optim.AdamW(trainable, lr = args.lr)
 
-    # Again, so the synthetic data does not depend on how many draws the model construction above
-    # happened to take.
     torch.manual_seed(TRAIN_SEED)
     need = args.batch * args.steps
     if args.data:
@@ -2013,8 +1991,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     else:
         ids_all = torch.randint(0, tok.vocab_size, (need, args.seq))
         labels_all = ids_all
-    # Kept on the CPU and moved one step at a time: batch x steps x seq on every GPU grows with
-    # --steps, which `spark estimate` has no term for.
 
     posid = torch.arange(args.seq, device = device).unsqueeze(0).expand(mb_rows, -1)
     schedule = SCHEDULES[args.schedule] if not use_torch_pp else None
@@ -2029,8 +2005,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             whole = ids_all[step * args.batch : (step + 1) * args.batch].to(device)
             whole_labels = labels_all[step * args.batch : (step + 1) * args.batch].to(device)
             losses = [] if is_loss_rank else None
-            # Only the rank holding stage 0 may supply positional inputs; every other stage's input
-            # is the wire.
             step_args = (whole,) if rank == plan["first_rank"] else ()
             set_pp_batch_tokens(whole_labels, args.microbatches)
             pp_schedule.step(*step_args, target = whole_labels, losses = losses, **pp_step_kw)
