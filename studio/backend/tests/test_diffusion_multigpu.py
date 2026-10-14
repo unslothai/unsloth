@@ -9,6 +9,7 @@ checks the routing, the prefetch / constant caches and every fallback without a 
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import threading
 from collections import OrderedDict
@@ -1272,3 +1273,43 @@ def test_runtime_controlnet_streams_beside_a_split_pipeline(monkeypatch):
     mg._PLACEMENTS[pipe] = {"moved": ["text_encoder", "vae"]}
     assert _controlnet_streams(state) is True
     assert _controlnet_streams(_types.SimpleNamespace(pipe = Pipe(), offload_policy = "group")) is True
+
+
+def test_generate_guard_checks_the_vae_card(monkeypatch):
+    # The guard reads the primary's free memory; with the VAE on the secondary, the decode must be checked there.
+    import types as _types
+
+    from core.inference import diffusion as D
+
+    seen = []
+
+    @contextlib.contextmanager
+    def scope(ordinal):
+        seen.append(("scope", ordinal))
+        yield
+
+    def shortfall(**kw):
+        seen.append(("guard", kw["device_memory"], kw.get("vae_tile_side")))
+        return _types.SimpleNamespace(action = D.ACTIVATION_TILE, overridden = False)
+
+    monkeypatch.setattr(D, "diffusion_device_scope", scope)
+    monkeypatch.setattr(D, "reclaimable_snapshot_device_memory", lambda target: "card1-free")
+    monkeypatch.setattr(D, "raise_on_image_activation_shortfall", shortfall)
+    monkeypatch.setattr(D, "engage_vae_tiling", lambda pipe, logger = None: ("restore", True))
+
+    class Vae(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = torch.nn.Parameter(torch.zeros(1))
+
+    pipe = _types.SimpleNamespace(vae = Vae())
+    target = _types.SimpleNamespace(ordinal = 0)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
+    restore, tiled = D._guard_vae_card(pipe, target, {"device_memory": "card0-free", "vae_tile_side": 512}, None, None)
+    assert ("scope", 1) in seen and ("guard", "card1-free", 512) in seen
+    assert (restore, tiled) == ("restore", True)
+    # the VAE on the primary (or no split): nothing extra
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    seen.clear()
+    assert D._guard_vae_card(pipe, target, {"device_memory": "card0-free"}, None, None) == (None, False)
+    assert seen == []

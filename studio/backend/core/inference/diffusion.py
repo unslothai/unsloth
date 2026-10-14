@@ -1920,6 +1920,35 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def _guard_vae_card(
+    pipe: Any, guard_target: Any, guard_kwargs: dict, restore_vae: Any, logger: Any
+) -> tuple[Any, bool]:
+    """Re-run the generate-time activation guard on the VAE's card when a multi-GPU split put it on another card than
+    the denoiser: the decode allocates there, and the primary's free memory says nothing about it. Engages VAE tiling
+    when only a tiled decode fits that card (unless already tiled) and raises the guard's refusal when nothing fits.
+    Returns ``(restore_vae, tiled)`` for a tiling it engaged, else ``(None, False)``. Conservative: the whole request's
+    estimate is checked against the VAE's card."""
+    from .diffusion_multigpu import _module_device
+
+    vae = getattr(pipe, "vae", None)
+    primary = getattr(guard_target, "ordinal", None)
+    try:
+        device = _module_device(vae) if vae is not None else None
+    except Exception:  # noqa: BLE001 - an unreadable VAE keeps the primary's verdict
+        device = None
+    if device is None or getattr(device, "type", None) != "cuda" or device.index in (None, primary):
+        return None, False
+    with diffusion_device_scope(device.index):
+        vae_kwargs = {**guard_kwargs, "device_memory": reclaimable_snapshot_device_memory(guard_target)}
+    verdict = raise_on_image_activation_shortfall(**vae_kwargs)
+    if verdict.action != ACTIVATION_TILE or restore_vae is not None:
+        return None, False
+    restore, tiled = engage_vae_tiling(pipe, logger = logger)
+    if not tiled and not verdict.overridden:
+        raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_tile_side": None})
+    return restore, tiled
+
+
 def _controlnet_streams(state: Any) -> bool:
     """Whether a ControlNet added at generate time streams from host memory instead of loading whole beside the base
     model: under any offload policy, a calibrated placement (budgets only the base model), and a multi-GPU split
@@ -10954,7 +10983,13 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
-                    if verdict.action == ACTIVATION_TILE:
+                    # a multi-GPU split may decode on another card: check (and tile for) that card too
+                    vae_restore, vae_card_tiled = _guard_vae_card(
+                        pipe, guard_target, guard_kwargs, restore_vae, logger
+                    )
+                    if vae_card_tiled:
+                        restore_vae = vae_restore
+                    if verdict.action == ACTIVATION_TILE and not vae_card_tiled:
                         restore_vae, vae_tiled = engage_vae_tiling(pipe, logger = logger)
                         if not vae_tiled and not verdict.overridden:
                             # Passed only because it would be tiled; tiling failed, so refuse on the untiled figure.
