@@ -8277,6 +8277,7 @@ def _local_ssl_context() -> ssl.SSLContext:
 
 # Freeing a large model's GPU memory on a busy driver took over 5 s after SIGKILL; this only bounds a stuck process.
 _SIGKILL_REAP_TIMEOUT_S = 30
+_QUIT_SIGNAL_EXIT_GRACE_S = 2
 
 
 class LlamaCppBackend:
@@ -35334,6 +35335,16 @@ class LlamaCppBackend:
         return pgid if pgid == pid else None
 
     @staticmethod
+    def _got_our_quit_signal(pid) -> bool:
+        if not _is_signalable_pid(pid) or not hasattr(os, "getpgid"):
+            return False
+        from utils.process_lifetime import is_process_shutting_down
+        try:
+            return is_process_shutting_down() and os.getpgid(pid) == os.getpgrp()
+        except OSError:
+            return False
+
+    @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
         if not _is_signalable_pid(pgid):
@@ -35624,6 +35635,10 @@ class LlamaCppBackend:
             self._torn_down_process = self._process
         try:
             if terminable:
+                if self._got_our_quit_signal(_pid):
+                    # The quit signal already reached it; a second one aborts llama-server on Metal.
+                    with contextlib.suppress(subprocess.TimeoutExpired):
+                        self._process.wait(timeout = _QUIT_SIGNAL_EXIT_GRACE_S)
                 self._process.terminate()
                 self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:
