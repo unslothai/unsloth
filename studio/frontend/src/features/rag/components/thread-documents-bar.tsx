@@ -3,6 +3,7 @@
 
 import {
   createContext,
+  type ReactElement,
   type ReactNode,
   useCallback,
   useContext,
@@ -33,8 +34,6 @@ import {
   AttachmentCardPreview,
   attachmentPreview,
 } from "@/components/assistant-ui/attachment-card-preview";
-import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
-import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -101,7 +100,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { STAGE_LABELS } from "./document-status-chip";
-import { useDocumentPreviewStore } from "./preview-store";
 import {
   type KnowledgeBaseFocus,
   KnowledgeBaseDialog,
@@ -111,7 +109,8 @@ import {
   SUPPORTED_SOURCES_HINT,
   isSupportedSourceName,
 } from "./source-drop-policy";
-import { asViewerFile, fetchSourceFile, isViewableSource } from "./source-file";
+import { RagDocumentTrigger } from "./rag-document-trigger";
+import { fetchSourceFile } from "./source-file";
 import { EXPIRY_GRACE_MS } from "./staged-source";
 import {
   type RagUploadItem,
@@ -454,7 +453,6 @@ function DocumentCard({
   onRemove?: () => void;
   onRetry?: () => void;
 }) {
-  const openPreview = useDocumentPreviewStore((s) => s.openPreview);
   const compact = useContext(CompactCardsContext);
   const kind = attachmentFileKind(doc.filename, undefined);
   const processing = isProcessing(doc);
@@ -483,22 +481,8 @@ function DocumentCard({
   const ready = doc.status === "completed" && !pending;
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const thumbnail = useDocumentThumbnail(doc, ready && !compact, slot);
-  // PDFs open the source preview, which can jump to a page. Without a chunk it has no text for
-  // anything else, so other files open in the attachment viewer, read on click.
-  const isPdf = kind === "pdf";
-  const viewable = !isPdf && isViewableSource(doc.filename);
-  const thumbnailFile = thumbnail?.kind === "file" ? thumbnail.file : null;
-  const loadSource = useCallback(async (): Promise<Blob> => {
-    // The thumbnail's copy when there is one; past its cap, up to the viewer's own limit, the
-    // same one the Library holds to. Past that the viewer says it can't preview.
-    const file =
-      thumbnailFile ?? (await fetchSourceFile(doc, MAX_DOCUMENT_PREVIEW_BYTES));
-    if (!file) throw new Error(`Couldn't preview ${doc.filename}`);
-    return asViewerFile(file);
-    // The id names the stored file; the rest of the row changes with progress frames.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc.id, thumbnailFile]);
-  const canOpen = ready && (isPdf || viewable);
+  // Every indexed file opens: RagDocumentTrigger picks the browser, the viewer or a new tab.
+  const canOpen = ready;
   const preview =
     thumbnail?.kind === "image" ? (
       <img
@@ -521,9 +505,6 @@ function DocumentCard({
   const buttonProps = {
     type: "button",
     disabled: !canOpen,
-    onClick: isPdf
-      ? () => openPreview({ documentId: doc.id, filename: doc.filename })
-      : undefined,
     title:
       doc.error ??
       (shared
@@ -552,11 +533,11 @@ function DocumentCard({
       <XIcon className="stroke-[2.5px]" style={{ width: 12, height: 12 }} />
     </button>
   ) : null;
-  const wrapDialog = (trigger: ReactNode) =>
-    viewable && ready ? (
-      <LocalFileDialog name={doc.filename.split("/").pop() ?? doc.filename} load={loadSource}>
+  const wrapDialog = (trigger: ReactElement) =>
+    ready ? (
+      <RagDocumentTrigger documentId={doc.id} filename={doc.filename}>
         {trigger}
-      </LocalFileDialog>
+      </RagDocumentTrigger>
     ) : (
       trigger
     );
