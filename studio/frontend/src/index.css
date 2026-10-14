@@ -6252,7 +6252,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	@apply gap-2.5 pt-3 pb-3;
 }
 /* Styled as an Unsloth dropdown surface, so it reads over the files it floats on. Hover lays a
-   wash over the solid fill rather than replacing it. Shown only while a file is hovered. */
+   wash over the solid fill rather than replacing it. Shown while the files strip is hovered. */
 .unsloth-files-panel-show-all {
 	@apply pointer-events-none absolute top-1/2 right-0 z-10 inline-flex h-8 -translate-y-1/2 items-center rounded-full px-3.5 text-ui-13 text-popover-foreground opacity-0 transition-opacity;
 	background-color: var(--popover);
@@ -6263,7 +6263,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 }
 /* Over the cards it straddles their bottom edge instead of covering a preview. */
 .unsloth-files-panel:not([data-collapsed]) .unsloth-files-panel-show-all {
-	top: 100%;
+	top: calc(100% - 0.75rem);
 }
 .unsloth-files-panel-show-all:hover {
 	background-image: linear-gradient(
@@ -6271,7 +6271,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)))
 	);
 }
-.unsloth-files-panel-row:has(.unsloth-files-item:hover) > .unsloth-files-panel-show-all,
+.unsloth-files-panel-row:has(> .unsloth-files-panel-strip:hover) > .unsloth-files-panel-show-all,
 .unsloth-files-panel-show-all:is(:hover, :focus-visible) {
 	@apply pointer-events-auto opacity-100;
 }
@@ -6285,7 +6285,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	@apply max-h-[40dvh] flex-wrap overflow-x-hidden overflow-y-auto;
 }
 .unsloth-files-panel-strip[data-show-all="true"] .unsloth-files-pill {
-	@apply max-w-[calc(20rem*var(--ui-space-scale,1))];
+	@apply max-w-[calc(16rem*var(--ui-space-scale,1))];
 }
 
 .unsloth-files-panel-action {
