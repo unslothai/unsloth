@@ -86,10 +86,7 @@ def test_extra_index_alone_adds_to_the_pypi_primary(monkeypatch):
     # An extra index adds to the primary; it never replaces it, so with no
     # primary set PyPI stays first and the extra is consulted in addition.
     monkeypatch.setenv("PIP_EXTRA_INDEX_URL", EXTRA)
-    assert update_status.configured_package_index_urls() == [
-        "https://pypi.org/simple",
-        EXTRA,
-    ]
+    assert update_status.configured_package_index_urls() == ["https://pypi.org/simple", EXTRA]
 
 
 class _Response(io.BytesIO):
