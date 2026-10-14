@@ -255,7 +255,9 @@ def test_rank_1_is_pointed_at_the_inputs_that_were_staged(cluster, monkeypatch, 
     monkeypatch.setattr(
         cluster,
         "_rsync_to_peer",
-        lambda local, remote, ip, user, dereference = False: copied.append((local, remote))
+        lambda local, remote, ip, user, dereference = False, delete = False: copied.append(
+            (local, remote)
+        )
         and None
         or None,
     )
@@ -286,7 +288,8 @@ def test_a_repo_id_is_staged_from_the_local_hf_cache(cluster, monkeypatch, tmp_p
     monkeypatch.setattr(
         cluster,
         "_rsync_to_peer",
-        lambda local, remote, ip, user, dereference = False: copied.append(remote) and None,
+        lambda local, remote, ip, user, dereference = False, delete = False: copied.append(remote)
+        and None,
     )
     rewritten, staged, failed = cluster.stage_run_inputs(
         "torchrun x --model org/m", "192.0.2.7", "u", "/home/bob"
