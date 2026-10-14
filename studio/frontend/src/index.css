@@ -6232,9 +6232,18 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .aui-composer-root:has(.unsloth-files-panel[data-dragging="true"]) .aui-composer-drop-overlay {
 	opacity: 0 !important;
 }
+.unsloth-files-panel-row {
+	@apply flex items-center gap-2;
+}
+.unsloth-files-panel-row[data-show-all="true"] {
+	@apply items-end;
+}
+.unsloth-files-panel-row:has(.unsloth-files-panel-strip:empty) {
+	display: none;
+}
 /* Inset at rest; cards scroll under the panel edges. */
 .unsloth-files-panel-strip {
-	@apply -mx-4 flex flex-row flex-nowrap gap-2 overflow-x-auto overscroll-x-contain px-4;
+	@apply -mx-4 flex min-w-0 flex-1 flex-row flex-nowrap gap-2 overflow-x-auto overscroll-x-contain px-4;
 	scroll-padding-inline: 1rem;
 	scrollbar-width: none;
 }
@@ -6245,8 +6254,12 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel[data-collapsed="true"] {
 	@apply gap-2.5 pt-3 pb-3;
 }
-.unsloth-files-panel-strip:empty {
-	display: none;
+/* Beside a Show all, the strip ends at the button instead of the panel edge. */
+.unsloth-files-panel-row:has(> .unsloth-files-panel-action) > .unsloth-files-panel-strip {
+	@apply mr-0 pr-0;
+}
+.unsloth-files-panel-strip[data-show-all="true"] {
+	@apply max-h-[40dvh] flex-wrap overflow-x-hidden overflow-y-auto;
 }
 .unsloth-files-panel-action {
 	@apply inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-ui-13 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;

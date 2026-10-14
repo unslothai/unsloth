@@ -542,7 +542,8 @@ function DocumentCard({
         compact ? "top-1/2 right-1.5 -translate-y-1/2" : "top-1.5 right-1.5",
       )}
     >
-      <XIcon className="size-3 stroke-[2.5px]" />
+      {/* Inline 12px: the font-scaled svg size rules give 11.25px, an odd inset that sits off centre. */}
+      <XIcon className="stroke-[2.5px]" style={{ width: 12, height: 12 }} />
     </button>
   ) : null;
   const wrapDialog = (trigger: ReactNode) =>
@@ -720,6 +721,7 @@ function ChatFilesPanel({
 }) {
   const collapsed = useChatPreferencesStore((s) => s.filesPanelCollapsed);
   const setCollapsed = useChatPreferencesStore((s) => s.setFilesPanelCollapsed);
+  const [showAll, setShowAll] = useState(false);
   const stripRef = useRef<HTMLDivElement>(null);
   const [scroll, setScroll] = useState({ back: false, forward: false });
   const measure = useCallback(() => {
@@ -838,7 +840,10 @@ function ChatFilesPanel({
             <button
               type="button"
               className="unsloth-files-panel-icon-btn"
-              onClick={() => setCollapsed(!collapsed)}
+              onClick={() => {
+                setCollapsed(!collapsed);
+                setShowAll(false);
+              }}
               aria-expanded={!collapsed}
               aria-label={collapsed ? "Expand files" : "Collapse files"}
               title={collapsed ? "Expand files" : "Collapse files"}
@@ -864,14 +869,35 @@ function ChatFilesPanel({
         </div>
       </div>
       {children ? (
-        <div
-          ref={stripRef}
-          onScroll={measure}
-          className="unsloth-files-panel-strip"
-        >
-          <CompactCardsContext.Provider value={collapsed}>
-            {children}
-          </CompactCardsContext.Provider>
+        <div className="unsloth-files-panel-row" data-show-all={showAll ? "true" : undefined}>
+          <div
+            ref={stripRef}
+            onScroll={measure}
+            className="unsloth-files-panel-strip"
+            data-show-all={showAll ? "true" : undefined}
+          >
+            <CompactCardsContext.Provider value={collapsed}>
+              {children}
+            </CompactCardsContext.Provider>
+          </div>
+          {overflowing || showAll ? (
+            // Show all wraps the pills, so from the cards it collapses first.
+            <button
+              type="button"
+              className="unsloth-files-panel-action"
+              aria-expanded={showAll}
+              onClick={() => {
+                if (showAll) {
+                  setShowAll(false);
+                  return;
+                }
+                setCollapsed(true);
+                setShowAll(true);
+              }}
+            >
+              {showAll ? "Show less" : "Show all"}
+            </button>
+          ) : null}
         </div>
       ) : null}
     </section>
