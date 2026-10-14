@@ -144,20 +144,27 @@ def _update_size_bytes(
             bundle = renamed
     if bundle is None:
         accelerator = record.get("accelerator")
+        accelerator = accelerator if isinstance(accelerator, str) else "cpu"
+        # The installer's own constraints, so another repo's CUDA line maps onto the bundle it will pick.
         bundle = installer.resolve_release_asset(
             names,
             system = platform.system(),
             machine = platform.machine(),
-            accelerator = accelerator if isinstance(accelerator, str) else "cpu",
+            accelerator = accelerator,
+            driver_cuda = installer.nvidia_driver_cuda_version() if accelerator == "cuda" else None,
+            prefer_cuda_major = installer.torch_cuda_major(),
         )
     if bundle is None or bundle not in assets:
         return None
     size = assets[bundle]
-    if record.get("cudart_asset"):
-        cudart = installer.cudart_asset_for(names, bundle)
-        if cudart is None or cudart not in assets:
-            return None
-        size += assets[cudart]
+    cudart = installer.cudart_asset_for(names, bundle)
+    if cudart is not None:
+        # The installer's own call: the runtime zip is skipped only when torch ships that CUDA major now.
+        line = installer._CUDA_LINE.search(bundle)
+        if not (line and installer.torch_provides_cuda_runtime(int(line.group(1)))):
+            if cudart not in assets:
+                return None
+            size += assets[cudart]
     return size
 
 
@@ -313,11 +320,31 @@ def _installed_identity() -> tuple[Optional[str], Optional[str]]:
 
 def _install(phase: dict, set_progress, unloaded: bool) -> dict:
     before = _installed_identity()
+    reload_hint = " Reload your model to use it." if unloaded else ""
+    # The offered tag is passed as a pin, which the installer never second-guesses. A setup run that installed a
+    # newer release since the plan was made must not be downgraded by it; a user's UNSLOTH_AUDIO_CPP_TAG still is.
+    to_tag = phase.get("to_tag")
+    if (
+        before[0] == phase.get("repo")
+        and before[1]
+        and to_tag
+        and _target()[1] is None
+        and _freshness.is_behind(to_tag, before[1])
+    ):
+        logger.info("audio.cpp update: already newer", installed = before[1], offered = to_tag)
+        return {
+            "to_tag": before[1],
+            "reload_required": unloaded,
+            "message": f"audio.cpp is already at {before[1]}.{reload_hint}",
+        }
     cmd = [sys.executable, str(phase["script"]), "--install-dir", str(phase["install_dir"])]
     if phase.get("accelerator"):
         cmd.extend(["--accelerator", phase["accelerator"]])
     if phase.get("pin_release_tag"):
         cmd.extend(["--published-release-tag", phase["pin_release_tag"]])
+        if _target()[1] is None:
+            # The installer re-checks under its lock, which the guard above cannot hold.
+            cmd.append("--keep-newer")
     logger.info("audio.cpp update: installing", cmd = " ".join(cmd))
     env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
     try:
@@ -335,7 +362,6 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
     _refresh_release_cache(phase.get("repo"))
 
     new_repo, new_tag = _installed_identity()
-    reload_hint = " Reload your model to use it." if unloaded else ""
     # Repo and tag together: switching UNSLOTH_AUDIO_CPP_REPO can replace a runtime with another repo's same tag.
     # A runtime that is already the offered release (a setup run got there first) is not a kept old tree.
     if (new_repo, new_tag) == before and (new_repo, new_tag) != (

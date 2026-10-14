@@ -40,10 +40,21 @@ test("the update card resyncs through that function", () => {
   );
 });
 
-test("a settled update job re-reads dictation even without a reload", () => {
+test("every path that sees a finished update job re-reads dictation once", () => {
   const hook = readText("../src/hooks/use-llama-update-check.ts");
+  const once = hook.slice(hook.indexOf("const notifySettledOnce"));
   assert.match(
-    hook,
-    /if \(presentation\.running\) return;\s*clearPollTimer\(\);\s*(\/\/[^\n]*\n\s*)?notifyModelLifecycle\(\{ runtime: "stt", loading: false/,
+    once,
+    /job\.finished_at !== settledNotifiedForRef\.current[\s\S]*?notifyModelLifecycle\(\{ runtime: "stt", loading: false/,
+  );
+  const poll = hook.slice(
+    hook.indexOf("const startJobPoll"),
+    hook.indexOf("const surfaceIfAvailable"),
+  );
+  assert.match(poll, /clearPollTimer\(\);\s*notifySettledOnce\(s\.job\);/);
+  const surface = hook.slice(hook.indexOf("const surfaceIfAvailable"));
+  assert.match(
+    surface,
+    /notifyReloadIfNeeded\(next\.job\);\s*notifySettledOnce\(next\.job\);/,
   );
 });

@@ -1839,8 +1839,20 @@ export const ko = {
         embeddingModelDescription:
           "문서 인덱싱 및 검색에 사용할 Hugging Face 모델이나 로컬 경로를 지정합니다. 기본값은 {defaultModel}입니다.",
         searchPlaceholder: "HF의 모든 모델 검색",
-        reindexWarning:
-          "새로 인덱싱되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
+        reindexWarning: "새로 인덱싱되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 임베딩하세요.",
+        reembed: {
+          label: "문서 다시 임베딩",
+          staleOne: "문서 1개가 다른 임베딩 모델로 인덱싱되어 시맨틱 검색에서 제외됩니다.",
+          staleMany: "문서 {count}개가 다른 임베딩 모델로 인덱싱되어 시맨틱 검색에서 제외됩니다.",
+          staleArchived: "이전 채팅 기록이 다른 임베딩 모델로 인덱싱되어 시맨틱 검색에서 제외됩니다.",
+          running: "다시 임베딩 중: {done}/{total}",
+          action: "다시 임베딩",
+          stop: "중지",
+          startFailed: "다시 임베딩을 시작할 수 없습니다",
+          stopped: "다시 임베딩이 중지되었습니다",
+          finished: "문서를 다시 임베딩했습니다",
+          finishedWithFailures: "{count}개를 다시 임베딩하지 못했습니다",
+        },
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
         loadError: "임베딩 모델 설정을 불러오지 못했습니다.",
         saveError: "임베딩 모델을 저장하지 못했습니다.",

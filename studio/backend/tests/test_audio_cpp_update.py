@@ -154,9 +154,54 @@ def test_the_size_adds_the_cuda_runtime_zip(managed, monkeypatch):
         accelerator_request = "cuda",
     )
     assert aupd.chained_phase_plan()["status"]["update_size_bytes"] == 700_000_000
+    # A release without the runtime zip: the installer downloads the bundle alone.
     del managed.state.assets[f"audio-{_LATEST}-cudart-windows-x64-cuda12.8.zip"]
     plan = aupd.chained_phase_plan()
-    assert plan["status"]["update_size_bytes"] is None and plan["update_available"] is True
+    assert plan["status"]["update_size_bytes"] == 400_000_000 and plan["update_available"] is True
+
+
+@pytest.mark.parametrize("torch_has_runtime", [False, True])
+def test_the_cuda_runtime_zip_follows_the_current_torch(managed, monkeypatch, torch_has_runtime):
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(
+        aupd._installer(), "torch_provides_cuda_runtime", lambda major: torch_has_runtime
+    )
+    # The record says nothing about the runtime zip: what the installer does now decides the size.
+    _write_record(
+        managed.tree,
+        asset = "audio-v0.9.0-unsloth.1-bin-windows-x64-cuda12.8.zip",
+        accelerator = "cuda",
+        accelerator_request = "cuda",
+    )
+    size = aupd.chained_phase_plan()["status"]["update_size_bytes"]
+    assert size == (400_000_000 if torch_has_runtime else 700_000_000)
+
+
+def test_another_repos_cuda_bundle_is_sized_like_the_installer_picks(managed, monkeypatch):
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: "AMD64")
+    seen = {}
+    installer = aupd._installer()
+    real = installer.resolve_release_asset
+    monkeypatch.setattr(installer, "nvidia_driver_cuda_version", lambda: (12, 8))
+    monkeypatch.setattr(installer, "torch_cuda_major", lambda: 12)
+
+    def resolve(names, **kwargs):
+        seen.update(kwargs)
+        return real(names, **kwargs)
+
+    monkeypatch.setattr(installer, "resolve_release_asset", resolve)
+    _write_record(
+        managed.tree,
+        published_repo = "0xShug0/audio.cpp",
+        release_tag = "v0.9.0",
+        asset = "audio-v0.9.0-bin-windows-x64-cuda12.4.zip",
+        accelerator = "cuda",
+        accelerator_request = "cuda",
+    )
+    aupd.chained_phase_plan()
+    assert seen["driver_cuda"] == (12, 8) and seen["prefer_cuda_major"] == 12
 
 
 def test_unknown_assets_size_nothing_but_still_offer(managed):
@@ -397,6 +442,7 @@ def test_the_installer_gets_the_managed_dir_and_recorded_accelerator(run_env, ma
         "cpu",
         "--published-release-tag",
         _LATEST,
+        "--keep-newer",
     ]
     assert run_env.calls["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
@@ -436,6 +482,25 @@ def test_the_install_drops_the_on_disk_release_cache(run_env, managed, monkeypat
     aupd.run_chained_phase(run_env.phase, lambda fraction: None)
     assert not cache.exists()
     assert audio_cpp_freshness.cached_latest_release(_REPO) is None
+
+
+def test_a_newer_runtime_installed_since_the_plan_is_not_downgraded(run_env, managed):
+    _write_record(managed.tree, release_tag = "v0.9.2-unsloth.1")
+    result = aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert "install" not in run_env.events
+    assert result["to_tag"] == "v0.9.2-unsloth.1"
+    assert result["message"] == "audio.cpp is already at v0.9.2-unsloth.1."
+
+
+def test_a_user_pin_still_installs_an_older_release(run_env, managed, monkeypatch):
+    monkeypatch.setattr(aupd, "_target", lambda: (_REPO, "v0.9.0-unsloth.1"))
+    _write_record(managed.tree, release_tag = "v0.9.2-unsloth.1")
+    run_env.installer(new_tag = "v0.9.0-unsloth.1")
+    phase = dict(run_env.phase, to_tag = "v0.9.0-unsloth.1", pin_release_tag = "v0.9.0-unsloth.1")
+    result = aupd.run_chained_phase(phase, lambda fraction: None)
+    assert "install" in run_env.events
+    assert result["to_tag"] == "v0.9.0-unsloth.1"
+    assert "--keep-newer" not in run_env.calls["cmd"]
 
 
 def test_an_unloaded_model_asks_for_a_reload(run_env, monkeypatch):

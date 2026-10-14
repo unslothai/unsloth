@@ -987,10 +987,12 @@ def install(
     token: Optional[str] = None,
     force: bool = False,
     release_tag: Optional[str] = None,
+    keep_newer: bool = False,
 ) -> Path:
     """Install (or keep) the bundle for ``accelerator``; ``"auto"`` detects the host here, so the
     CPU fallback for an uncovered GPU applies. ``release_tag`` installs exactly that release (the
-    in-app update passes the one it offered). Serialised on prebuilt_core's install lock."""
+    in-app update passes the one it offered); with ``keep_newer`` an intact install of a newer
+    release of this repo is kept instead. Serialised on prebuilt_core's install lock."""
     if accelerator not in ACCELERATORS:
         raise RuntimeError(
             f"unknown accelerator {accelerator!r}; expected one of {', '.join(ACCELERATORS)}"
@@ -1007,12 +1009,20 @@ def install(
             )
     with core.install_lock(core.install_lock_path(target)):
         try:
-            return _install_locked(target, accelerator, token, force, release_tag = release_tag)
+            return _install_locked(
+                target, accelerator, token, force, release_tag = release_tag, keep_newer = keep_newer
+            )
         except NoVulkanDevice as exc:
             # Forced so the record keeps detected "vulkan": later runs keep this CPU build without a lookup.
             print(f"audio.cpp: {exc}; installing the CPU build", flush = True)
             return _install_locked(
-                target, accelerator, token, True, vulkan_unusable = True, release_tag = release_tag
+                target,
+                accelerator,
+                token,
+                True,
+                vulkan_unusable = True,
+                release_tag = release_tag,
+                keep_newer = keep_newer,
             )
 
 
@@ -1023,12 +1033,28 @@ def _install_locked(
     force: bool,
     vulkan_unusable: bool = False,
     release_tag: Optional[str] = None,
+    keep_newer: bool = False,
 ) -> Path:
     _sweep_retired_trees(target)
     detected = detect_accelerator() if requested == "auto" else None
     existing = read_install_record(target)
     release_tag = (release_tag or "").strip() or None
     pin = release_tag or _pinned_tag()
+    if (
+        keep_newer
+        and release_tag
+        and not force
+        and existing.get("published_repo") == _repo()
+        and existing.get("release_tag") != release_tag
+        and _record_is_current(existing.get("release_tag"), release_tag)
+        and _record_fits_request(existing, requested, detected)
+    ):
+        # Checked under the install lock: a setup run that got here first with a newer release wins over a
+        # stale offer the in-app update pinned.
+        server = _intact_install(target, existing)
+        if server is not None:
+            print(f"audio.cpp: already matches {existing.get('asset')}", flush = True)
+            return server
     if not force:
         # Pinned: no network. Newest: one HEAD, reused as the tag a full install then looks up.
         latest = pin or _latest_tag_via_download_host(_repo())
@@ -1206,6 +1232,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         default = None,
         help = "install exactly this release of the repo (default: UNSLOTH_AUDIO_CPP_TAG, else the newest)",
     )
+    p.add_argument(
+        "--keep-newer",
+        action = "store_true",
+        help = "with --published-release-tag: keep an intact install of a newer release of the repo",
+    )
     args = p.parse_args(argv)
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     release_tag = (args.published_release_tag or "").strip() or None
@@ -1222,6 +1253,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             accelerator = args.accelerator,
             force = args.force,
             release_tag = release_tag,
+            keep_newer = args.keep_newer,
         )
     except GitHubRateLimited as exc:
         print(f"error: {exc}", file = sys.stderr)
