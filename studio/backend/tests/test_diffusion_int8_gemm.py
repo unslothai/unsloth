@@ -19,13 +19,20 @@ def _clean(monkeypatch):
     monkeypatch.delenv(g8.INT8_GEMM_ENV, raising = False)
     monkeypatch.delenv(cq.INT8_ROTQUANT_ENV, raising = False)
     monkeypatch.delenv(g8.INT8_GEMM_TILES_ENV, raising = False)
+    # The latency gate times real kernels; tests opt in (test_latency_gate_*), everything else keeps the static table.
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "0")
+    monkeypatch.delenv(g8.INT8_GEMM_TUNE_DIR_ENV, raising = False)
     g8._DEVICE_CFG.clear()
     g8._DEVICE_TILES.clear()
+    g8._DEVICE_PLAN.clear()
+    g8._PROBED.clear()
     cq._ROTQ_DEVICE.clear()
     cq._ROTQ_DEVICE_K.clear()
     yield
     g8._DEVICE_CFG.clear()
     g8._DEVICE_TILES.clear()
+    g8._DEVICE_PLAN.clear()
+    g8._PROBED.clear()
     cq._ROTQ_DEVICE.clear()
     cq._ROTQ_DEVICE_K.clear()
 
@@ -981,3 +988,160 @@ def test_every_shipped_rotq_k_tile_is_bit_exact(forced):
                 q, s = cq._rotq_launch(x, 256, kind, tile)
                 rq, rs = cq.rotquant_reference(x, 256, kind)
                 assert torch.equal(q, rq) and torch.equal(s, rs), (tile, m, k, kind)
+
+
+def test_m_buckets_and_plan_lookup():
+    assert g8.m_bucket(17) == 0 and g8.m_bucket(2047) == 0
+    assert g8.m_bucket(2048) == 1 and g8.m_bucket(1 << 20) == 1
+    tile = (64, 128, 128, 8, 4, 4)
+    g8._DEVICE_PLAN[0] = {(1024, 512, 0): g8._CUBLAS, (1024, 512, 1): tile}
+    assert not g8.fused_for(0, 512, 1024, 512)
+    assert g8.fused_for(0, 4096, 1024, 512) and g8.planned(0, 4096, 1024, 512) == tile
+    assert g8.fused_for(0, 512, 2048, 512) and g8.planned(0, 512, 2048, 512) is None  # untimed: static table
+    assert g8.fused_for(1, 512, 1024, 512)  # no plan on this device
+
+
+def test_latency_gate_op_body_honours_the_plan(monkeypatch):
+    default, alt = (128, 128, 64, 8, 4, 4), (64, 128, 128, 8, 4, 4)
+    g8._DEVICE_CFG[None] = default  # CPU tensors report device index None
+    used = []
+    monkeypatch.setattr(g8, "_launch", lambda a, w, xs, ws, bias, cfg: used.append(cfg) or "fused")
+    monkeypatch.setattr(g8, "reference", lambda *a: "stock")
+    a = torch.zeros(4096, 1024, dtype = torch.int8)
+    w = torch.zeros(2048, 1024, dtype = torch.int8)
+    xs, ws = torch.ones(4096), torch.ones(2048)
+    g8._DEVICE_PLAN[None] = {(2048, 1024, 1): alt}
+    assert g8._run(a, w, xs, ws, None) == "fused" and used == [alt]
+    g8._DEVICE_PLAN[None] = {(2048, 1024, 1): g8._CUBLAS}
+    assert g8._run(a, w, xs, ws, None) == "stock" and used == [alt]
+
+
+def test_latency_gate_alt_tile_launch_failure_falls_back_to_the_default(monkeypatch):
+    default, alt = (128, 128, 64, 8, 4, 4), (64, 128, 128, 8, 4, 4)
+    g8._DEVICE_CFG[None] = default
+    g8._DEVICE_PLAN[None] = {(2048, 1024, 1): alt}
+    used = []
+
+    def launch(a, w, xs, ws, bias, cfg):
+        used.append(cfg)
+        if cfg == alt:
+            raise RuntimeError("out of shared memory")
+        return "fused"
+
+    monkeypatch.setattr(g8, "_launch", launch)
+    a = torch.zeros(4096, 1024, dtype = torch.int8)
+    w = torch.zeros(2048, 1024, dtype = torch.int8)
+    assert g8._run(a, w, torch.ones(4096), torch.ones(2048), None) == "fused"
+    assert used == [alt, default] and g8._DEVICE_PLAN[None] == {} and g8._DEVICE_CFG[None] == default
+
+
+def _fake_tune_env(monkeypatch, tmp_path, ms):
+    """Device 0 probed on with the fallback tile; ``_measure`` returns ``ms(tiles)`` and counts calls."""
+    calls = []
+    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path))
+    monkeypatch.setattr(g8, "toolchain_key", lambda index: "test-toolchain")
+    monkeypatch.setattr(g8, "_probe", lambda index, cfg: True)
+    monkeypatch.setattr(
+        g8, "_measure", lambda index, n, k, m, tiles: calls.append((n, k, m, tiles)) or ms(tiles)
+    )
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (8, 0))
+    g8._DEVICE_CFG[0] = g8._ARCH_CONFIG[(8, 0)]
+    return calls
+
+
+def test_latency_gate_picks_cublas_where_the_tile_regressed_and_persists(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    # Triton 3.8 on A100, klein double-block FFN in (ms): shipped tile 59 TOPS, best alt 288, cuBLAS 420 + one pass.
+    ms = lambda tiles: {g8._CUBLAS: 1.45, default: 7.8, **{t: 1.6 for t in tiles if t != default}}
+    calls = _fake_tune_env(monkeypatch, tmp_path, ms)
+    plan = g8.tune(0, {(18432, 3072)})
+    assert plan == {(18432, 3072, 0): g8._CUBLAS, (18432, 3072, 1): g8._CUBLAS}
+    assert len(calls) == 2 and set(calls[0][3]) >= {default, *g8._ALT_TILES[(8, 0)]}
+    files = list(tmp_path.glob("tune_*.json"))
+    assert len(files) == 1
+    # A later load reads the file: nothing is timed again.
+    g8._DEVICE_PLAN.clear()
+    assert g8.tune(0, {(18432, 3072)}) == plan and len(calls) == 2
+
+
+def test_latency_gate_prefers_the_fused_kernel_unless_cublas_clearly_wins(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    alt = g8._ALT_TILES[(8, 0)][0]
+    # Triton 3.7: shipped tile 430 TOPS, cuBLAS + one pass a little slower; an alt tile within noise does not churn.
+    ms = lambda tiles: {g8._CUBLAS: 1.40, default: 1.10, **{t: 1.09 for t in tiles if t != default}}
+    _fake_tune_env(monkeypatch, tmp_path, ms)
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}
+    # cuBLAS inside the margin keeps the fused kernel too.
+    g8._DEVICE_PLAN.clear()
+    for f in tmp_path.glob("tune_*.json"):
+        f.unlink()
+    ms2 = lambda tiles: {g8._CUBLAS: 1.05, default: 1.10, **{t: 1.5 for t in tiles if t != default}}
+    monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles: ms2(tiles))
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}
+    # A clearly faster alternative tile wins, and must pass the bit-exact probe.
+    g8._DEVICE_PLAN.clear()
+    for f in tmp_path.glob("tune_*.json"):
+        f.unlink()
+    ms3 = lambda tiles: {g8._CUBLAS: 1.45, default: 7.8, **{t: (1.0 if t == alt else 1.6) for t in tiles if t != default}}
+    monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles: ms3(tiles))
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {alt}
+    g8._DEVICE_PLAN.clear()
+    g8._PROBED.clear()
+    monkeypatch.setattr(g8, "_probe", lambda index, cfg: cfg != alt)
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}  # stored alt, not exact here: the default
+
+
+def test_latency_gate_retimes_on_a_new_toolchain_and_ignores_corrupt_files(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    calls = _fake_tune_env(monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}})
+    g8.tune(0, {(4096, 4096)})
+    assert len(calls) == 2
+    g8._DEVICE_PLAN.clear()
+    monkeypatch.setattr(g8, "toolchain_key", lambda index: "test-toolchain-triton-next")
+    g8.tune(0, {(4096, 4096)})
+    assert len(calls) == 4
+    for f in tmp_path.glob("tune_*.json"):
+        f.write_text("{not json")
+    g8._DEVICE_PLAN.clear()
+    assert set(g8.tune(0, {(4096, 4096)}).values()) == {default} and len(calls) == 6
+
+
+def test_latency_gate_kill_switch_skips_timing(monkeypatch):
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "0")
+    assert not g8.autotune_enabled()
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    assert g8.autotune_enabled()
+
+
+@needs_cuda
+@pytest.mark.parametrize("pick", ["cublas", "fused"])
+def test_latency_gate_linear_is_bit_identical_eager_and_compiled(forced, monkeypatch, tmp_path, pick):
+    """Real timing on this GPU, then the plan forced to each arm: the swapped Linear must equal torchao's eager and
+    compiled output either way, and the cuBLAS arm must not run the fused op."""
+    from torch._dynamo.utils import counters
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path))
+    stock = _int8_linear(1024, 768, True, 2)
+    fused = _int8_linear(1024, 768, True, 2)
+    holder = torch.nn.Sequential(fused)
+    assert g8.install(holder) == 1
+    index = torch.cuda.current_device()
+    timed = dict(g8._DEVICE_PLAN[index])
+    assert set(timed) == {(768, 1024, 0), (768, 1024, 1)}
+    assert list(tmp_path.glob("tune_*.json"))
+    want = g8._CUBLAS if pick == "cublas" else forced
+    g8._DEVICE_PLAN[index] = {slot: want for slot in timed}
+    x = torch.randn(300, 1024, device = "cuda", dtype = torch.bfloat16)
+    with torch.inference_mode():
+        before = g8.call_count()
+        assert torch.equal(fused(x), stock(x))
+        assert g8.call_count() == before + (pick == "fused")
+        counters.clear()
+        torch._dynamo.reset()
+        with torch._inductor.config.patch(emulate_precision_casts = True):
+            out = torch.compile(fused, fullgraph = True)(x)
+            assert not counters["graph_break"]
+            assert torch.equal(out, torch.compile(stock, fullgraph = True)(x))
+    g8.uninstall(holder)
+
