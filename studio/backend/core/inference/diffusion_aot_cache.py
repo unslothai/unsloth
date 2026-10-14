@@ -112,7 +112,6 @@ def pin_triton_libdevice(logger: Any = None) -> Any:
         # Imported, not read off torch.utils: the submodule is not an attribute until something imports it.
         try:
             import importlib
-
             utils_triton = importlib.import_module("torch.utils._triton")
         except Exception:  # noqa: BLE001 - no such module on this build
             return None
@@ -132,9 +131,13 @@ def pin_triton_libdevice(logger: Any = None) -> Any:
             resolve()
         after = knobs.nvidia.libdevice_path
         if logger is not None and after != before:
-            logger.info("diffusion.aot_cache: Triton libdevice pinned before the first compile (%s)", after)
+            logger.info(
+                "diffusion.aot_cache: Triton libdevice pinned before the first compile (%s)", after
+            )
         return after
     except Exception as exc:  # noqa: BLE001 - optimisation only
         if logger is not None:
-            logger.debug("diffusion.aot_cache: libdevice not pinned (%s: %s)", type(exc).__name__, exc)
+            logger.debug(
+                "diffusion.aot_cache: libdevice not pinned (%s: %s)", type(exc).__name__, exc
+            )
         return None
