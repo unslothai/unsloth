@@ -54,6 +54,11 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
     "/api/providers/registry": (10.0, "declared"),
     "/api/settings/personalization": (10.0, "declared"),
     "/api/system": (10.0, "declared"),
+    # The globally mounted download manager re-reads it every 30s in the background (useEngines(enabled, true)).
+    # Faster bursts of the same path: 3s while Settings > Inference engines is open, 1s during an install, and the
+    # Hub's 5s vLLM availability retry while the GPU probe still answers "Checking...". A path sits in one scenario
+    # only, and every 2xx read is dropped by _QUIET_SUCCESS_PATHS, so the faster cadences cost no lines either.
+    "/api/engines": (30.0, "declared"),
 }
 
 # Polls that only exist while an operation is in flight: a download running, a generation
@@ -61,9 +66,6 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
 # all of them at once is not idle, and averaging them into the idle envelope would hide a
 # regression in either direction.
 BUSY_POLLS: dict[str, tuple[float, str]] = {
-    # The Hub's vLLM availability read retries every 5s, at most 24 times, only while the engine's GPU probe still
-    # answers "Checking...": a probe in flight, not a steady idle poll.
-    "/api/engines": (5.0, "declared"),
     "/api/models/download-progress": (1.0, "declared"),
     "/api/models/gguf-download-progress": (1.0, "declared"),
     "/api/datasets/download-progress": (1.0, "declared"),
