@@ -121,6 +121,7 @@ from unsloth.models._attn_mask_compat import (
     AttentionMaskConverter,
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
+from unsloth.models._gemma2_attention_mask import Gemma2AttentionMaskConverter
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..kernels.utils import _has_active_lora_bias, has_mxfp4_base
@@ -1296,7 +1297,7 @@ def LlamaModel_fast_forward(
             if attention_mask.dim() == 2:
                 # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
                 key_value_length = past_key_values_length + seq_length
-                dynamic_SWA_mask = AttentionMaskConverter(
+                dynamic_SWA_mask = Gemma2AttentionMaskConverter(
                     is_causal = True, sliding_window = self.config.sliding_window
                 ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
                 dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
@@ -1317,7 +1318,7 @@ def LlamaModel_fast_forward(
                 n = self.max_seq_length
                 # masked_fill makes things slower.
                 self.SWA_mask = (
-                    AttentionMaskConverter(
+                    Gemma2AttentionMaskConverter(
                         is_causal = True,
                         sliding_window = self.config.sliding_window,
                     )
