@@ -373,7 +373,27 @@ def _fit_context(messages, **kwargs):
                 return fitted, truncation
     except Exception:  # noqa: BLE001 -- a policy failure must never break a chat
         logger.warning("Checkpoint fit failed; falling back to the rolling window", exc_info = True)
-    return fit_rolling_context(messages, **kwargs)
+    return _fit_rolling_remembered(messages, kwargs)
+
+
+def _fit_rolling_remembered(messages, kwargs):
+    """`fit_rolling_context`, remembering the cut in memory when the caller has no thread to save it on.
+
+    A one-off request cuts as before; a returning one replays its cut and takes the usual headroom bite.
+    """
+    if kwargs.get("keeps_boundary") or int(kwargs.get("sticky_dropped") or 0) > 0:
+        return fit_rolling_context(messages, **kwargs)
+    from core.inference import prefix_boundary
+
+    scope = ("rolling", kwargs.get("context_length"))
+    remembered = prefix_boundary.recall(messages, scope)
+    fitted, truncation = fit_rolling_context(
+        messages,
+        **{**kwargs, "keeps_boundary": remembered > 0, "sticky_dropped": remembered},
+    )
+    if truncation and truncation.get("fits") and int(truncation.get("dropped_messages") or 0) > 0:
+        prefix_boundary.remember(messages, fitted, int(truncation["dropped_messages"]), scope)
+    return fitted, truncation
 
 
 def _fit_with_instruction_pins(
