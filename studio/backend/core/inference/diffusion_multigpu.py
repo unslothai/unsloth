@@ -40,6 +40,11 @@ from typing import Any, Callable, Iterator, Optional, Sequence
 
 MULTIGPU_ENV = "UNSLOTH_DIFFUSION_MULTIGPU"
 CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL"
+# Both guidance branches through ONE forward of an offloaded / streamed denoiser (each streamed block uploaded once).
+CFG_BATCH_ENV = "UNSLOTH_DIFFUSION_CFG_BATCH"
+# Overrides every measured card-to-card copy rate (GiB/s) the strategy pricing reads: reproduces a slow link on a fast
+# host. Unset: the probe's measurement.
+LINK_ENV = "UNSLOTH_DIFFUSION_LINK_GIB_S"
 
 # Denoiser attributes: they stay on the primary card under the companion split (the same contract as the speed and
 # offload layers, diffusion_autoopt/targets.py).
@@ -85,6 +90,16 @@ def cfg_parallel_mode() -> str:
     if multigpu_mode() == "off":
         return "off"
     raw = (os.environ.get(CFG_PARALLEL_ENV) or "").strip().lower()
+    if raw in ("0", "off", "false", "no", "disable", "disabled"):
+        return "off"
+    if raw == "force":
+        return "force"
+    return "auto"
+
+
+def cfg_batch_mode() -> str:
+    """``off`` / ``auto`` (default: only an offloaded denoiser) / ``force`` (a resident one too, as ComfyUI does)."""
+    raw = (os.environ.get(CFG_BATCH_ENV) or "").strip().lower()
     if raw in ("0", "off", "false", "no", "disable", "disabled"):
         return "off"
     if raw == "force":
@@ -311,20 +326,120 @@ def _reset_probe_cache_for_tests() -> None:
         _PAIR_PROBE.clear()
 
 
+def link_gib_s(
+    src: int, dst: int, probes: Optional[dict[int, DeviceProbe]] = None
+) -> Optional[float]:
+    """Measured copy rate from card ``src`` to card ``dst`` (GiB/s; the real path: peer, or bounced through the host
+    when the cards have no peer access), None when unmeasured. ``UNSLOTH_DIFFUSION_LINK_GIB_S`` overrides it."""
+    raw = (os.environ.get(LINK_ENV) or "").strip()
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    if probes is None or src not in probes:
+        probes = probe_devices((src, dst))
+    probe = probes.get(int(src))
+    if probe is None:
+        return None
+    for other, _access, gbps in probe.peers:
+        if other == int(dst):
+            return gbps
+    return None
+
+
+# Links within this fraction of the fastest candidate's rate count as equally fast (probe noise, one PCIe generation
+# apart from a shared switch); a slower one is chosen only when no fast card fits.
+_LINK_TIER = 0.75
+
+
+def rank_secondaries(
+    primary: int,
+    candidates: Sequence[int],
+    free_of: Callable[[int], Optional[int]],
+    probes: Optional[dict[int, DeviceProbe]] = None,
+) -> list[int]:
+    """``candidates`` best first: the fast-link tier (a round trip to the primary within ``_LINK_TIER`` of the best
+    measured one; an unmeasured link is not penalised), then the most free memory, then the lowest ordinal."""
+    cands = [int(o) for o in candidates]
+    if not cands:
+        return []
+    if probes is None:
+        probes = probe_devices((int(primary), *cands))
+
+    def round_trip(o: int) -> Optional[float]:
+        there, back = link_gib_s(primary, o, probes), link_gib_s(o, primary, probes)
+        if there is None or back is None:
+            return None
+        return min(there, back)
+
+    links = {o: round_trip(o) for o in cands}
+    known = [v for v in links.values() if v]
+    top = max(known) if known else None
+
+    def key(o: int) -> tuple[int, int, int]:
+        fast = top is None or links[o] is None or links[o] >= _LINK_TIER * top
+        free = free_of(o)
+        return (1 if fast else 0, free if free is not None else -1, -o)
+
+    return sorted(cands, key = key, reverse = True)
+
+
 def best_secondary(
     selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None
 ) -> Optional[int]:
-    """The secondary with the most free memory (ties to the lowest ordinal)."""
+    """The secondary on the fastest link to the primary (see :func:`rank_secondaries`), most free memory within it."""
     if not selection.secondaries:
         return None
     if probes is None:
-        probes = probe_devices((selection.primary, *selection.secondaries), measure = False)
+        probes = probe_devices((selection.primary, *selection.secondaries))
 
-    def key(o: int) -> tuple[int, int]:
+    def free_of(o: int) -> Optional[int]:
         p = probes.get(o)
-        return (p.free_mib if p is not None and p.free_mib is not None else -1, -o)
+        return p.free_mib if p is not None else None
 
-    return max(selection.secondaries, key = key)
+    ranked = rank_secondaries(selection.primary, selection.secondaries, free_of, probes)
+    return ranked[0] if ranked else None
+
+
+def price_cfg_parallel(
+    *,
+    branch_s: float,
+    in_bytes: int,
+    out_bytes: int,
+    link_in_gib_s: Optional[float],
+    link_out_gib_s: Optional[float],
+    replica_bytes: int = 0,
+) -> dict[str, Any]:
+    """Per-step price of one guided step on one card vs CFG-parallel, from one measured branch and the measured link.
+
+    One card runs both branches: ``2 * branch``. CFG-parallel overlaps the primary branch with the replica's, which
+    waits for its inputs to cross the link and its output to come back: ``max(branch, branch + copy)``. Chosen when
+    the copies cost at most ``_PRICE_COPY_FRACTION`` of a branch, so a link only just above break-even (where copy
+    contention and a jittery branch time eat the gain) keeps one card. An unmeasured link prices nothing."""
+    if link_in_gib_s and link_out_gib_s:
+        copy_s = in_bytes / (link_in_gib_s * (1 << 30)) + out_bytes / (link_out_gib_s * (1 << 30))
+        build_s: Optional[float] = replica_bytes / (link_in_gib_s * (1 << 30))
+    else:
+        copy_s, build_s = 0.0, None
+    single = 2.0 * branch_s
+    parallel = max(branch_s, branch_s + copy_s)
+    chosen = "cfg_parallel" if copy_s <= _PRICE_COPY_FRACTION * branch_s else "single"
+    return {
+        "strategy": chosen,
+        "branch_s": round(branch_s, 4),
+        "copy_s": round(copy_s, 4),
+        "single_step_s": round(single, 4),
+        "cfg_parallel_step_s": round(parallel, 4),
+        "replica_build_s_est": None if build_s is None else round(build_s, 3),
+        "link_in_gib_s": link_in_gib_s,
+        "link_out_gib_s": link_out_gib_s,
+    }
+
+
+_PRICE_COPY_FRACTION = 0.8
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -405,7 +520,12 @@ def plan_companion_split(
         fits = [o for o, limit in limits.items() if secondary_required <= limit]
         if not fits:
             continue
-        best = max(fits, key = lambda o: (limits[o], -o))
+        # several cards fit: the fast-link tier first (the moved components' inputs / outputs cross it per request)
+        best = (
+            rank_secondaries(selection.primary, fits, limits.get)[0]
+            if len(fits) > 1
+            else fits[0]
+        )
         return CompanionSplit(
             secondary_ordinal = best,
             primary_required_mib = primary_required,
@@ -556,6 +676,17 @@ def refine_plan_for_multigpu(
         secondary_components = tuple(moved),
         fallback_plan = plan,
     )
+
+
+def plan_denoise_headroom_mib(plan: Any) -> Optional[int]:
+    """The plan's activation room above the weights (measured, calibrated or estimated), None when unknown."""
+    estimates = getattr(plan, "estimates", None) or {}
+    value = (
+        estimates.get("measured_runtime_headroom_mib")
+        or estimates.get("calibrated_headroom_mib")
+        or estimates.get("runtime_headroom_mib")
+    )
+    return int(value) if value else None
 
 
 def secondary_device_memory(ordinal: int) -> Any:
@@ -928,11 +1059,14 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         info = _PLACEMENTS.get(pipe)
         cfg = _CFG_ROUTERS.get(pipe)
         declined = _CFG_DECLINES.get(pipe)
+        batch = _CFG_BATCH.get(pipe)
     except TypeError:  # not weak-referenceable: nothing can have been recorded for it
         return None
-    if info is None and cfg is None and declined is None:
+    if info is None and cfg is None and declined is None and batch is None:
         return None
     out: dict[str, Any] = dict(info or {})
+    if batch is not None:
+        out["cfg_batch"] = batch.describe()
     if cfg is not None:
         out["cfg_parallel"] = cfg.describe()
     elif declined is not None:
@@ -1615,10 +1749,13 @@ class CfgParallelRouter:
         self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
         self.pairs: list = []
+        self.pricing: Optional[dict[str, Any]] = None
 
     # -- status
     def describe(self) -> dict[str, Any]:
         return {
+            "strategy": "cfg_parallel" if self.disabled_reason is None else "single",
+            "pricing": self.pricing,
             "secondary": str(self.secondary),
             "replica_built": self.replica is not None,
             "replica_compiled_submodules": getattr(self.replica, "_unsloth_replica_compiled", None),
@@ -1685,6 +1822,20 @@ class CfgParallelRouter:
             self.singles = 0
             if self.replica is None:
                 self.cfg_seen = True
+                if self.pricing is None and self._should_price():
+                    # Price before paying for the replica: this branch runs on the primary anyway, timed.
+                    out, branch_s = self._timed_primary(args, kwargs)
+                    self.pricing = self._price(args, kwargs, out, branch_s)
+                    if self.pricing["strategy"] != "cfg_parallel":
+                        self.disable(
+                            "priced out: the link copies cost "
+                            f"{self.pricing['copy_s']:.4f}s per step against a {self.pricing['branch_s']:.4f}s branch"
+                        )
+                        return out
+                    self._build_replica()
+                    if self.branch == 1:
+                        self._record_template(args, kwargs, latent)
+                    return out
                 self._build_replica()
                 if self.branch == 1:
                     self._record_template(args, kwargs, latent)
@@ -1704,6 +1855,46 @@ class CfgParallelRouter:
             self.cfg_seen = True
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
+
+    # -- pricing (once per router, on the first guided step)
+    def _should_price(self) -> bool:
+        return (
+            cfg_parallel_mode() != "force"
+            and self.primary.type == "cuda"
+            and self.secondary.type == "cuda"
+        )
+
+    def _timed_primary(self, args: tuple, kwargs: dict) -> tuple[Any, float]:
+        torch = _torch()
+        torch.cuda.synchronize(self.primary)
+        t0 = time.perf_counter()
+        out = self.orig_forward(*args, **kwargs)
+        torch.cuda.synchronize(self.primary)
+        self.stats["primary_calls"] += 1
+        return out, time.perf_counter() - t0
+
+    def _price(self, args: tuple, kwargs: dict, out: Any, branch_s: float) -> dict[str, Any]:
+        # Every tensor of the odd call crosses to the replica each step (the latent changes; the carried tensors are
+        # copied again so they never wait behind the primary branch); its output comes back.
+        in_bytes = sum(t.numel() * t.element_size() for t in _iter_tensors((args, kwargs)))
+        out_bytes = sum(t.numel() * t.element_size() for t in _iter_tensors(_as_walkable(out)))
+        module = self.module_ref()
+        replica_bytes = (
+            sum(t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers()))
+            if module is not None
+            else 0
+        )
+        pricing = price_cfg_parallel(
+            branch_s = branch_s,
+            in_bytes = in_bytes,
+            out_bytes = out_bytes,
+            link_in_gib_s = link_gib_s(self.primary.index, self.secondary.index),
+            link_out_gib_s = link_gib_s(self.secondary.index, self.primary.index),
+            replica_bytes = replica_bytes,
+        )
+        if self.logger is not None:
+            self.logger.info("diffusion.multigpu: CFG strategy priced %s", pricing)
+        return pricing
 
     # -- prediction of the next odd branch
     def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
@@ -1957,10 +2148,29 @@ def install_cfg_parallel(
     *,
     offload_policy: str,
     logger: Any = None,
+    headroom_mib: Optional[int] = None,
 ) -> Optional[str]:
-    """Arm CFG-parallel on ``pipe.transformer`` when a secondary card can hold a replica. The replica is built on the
-    first step that shows two branches, so a guidance-distilled model never pays for it. Returns the decline reason or
-    None when armed."""
+    """Arm the guidance strategy of this load. CFG-parallel on ``pipe.transformer`` when a secondary card can hold a
+    replica (built on the first step that shows two branches, so a guidance-distilled model never pays for it; priced
+    against the measured link on that step). Otherwise, for an offloaded / streamed denoiser on any number of cards,
+    CFG-batch (both branches through one forward, each streamed block uploaded once). Returns the CFG-parallel decline
+    reason or None when it was armed. ``headroom_mib`` = the plan's denoise headroom (the batched call's extra need)."""
+    reason = _install_cfg_parallel_only(pipe, offload_policy = offload_policy, logger = logger)
+    if reason is not None and multigpu_mode() != "off":
+        batch_reason = install_cfg_batch(
+            pipe, offload_policy = offload_policy, headroom_mib = headroom_mib, logger = logger
+        )
+        if batch_reason is not None and logger is not None:
+            logger.info("diffusion.multigpu: CFG-batch not armed (%s)", batch_reason)
+    return reason
+
+
+def _install_cfg_parallel_only(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    logger: Any = None,
+) -> Optional[str]:
     selection = current_selection()
     reason = cfg_parallel_decline(pipe, offload_policy = offload_policy, selection = selection)
     if reason is None:
@@ -1981,7 +2191,10 @@ def install_cfg_parallel(
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
             ) // (1 << 20)
-            best = max(candidates, key = lambda o: probes[o].free_mib or -1)
+            # the fast-link tier first (the latent and the output cross it every step), then free memory
+            best = rank_secondaries(
+                primary.index, candidates, lambda o: probes[o].free_mib, probes
+            )[0]
             free = probes[best].free_mib
             if free is not None and need_mib + 1024 > free:
                 reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
@@ -2038,3 +2251,392 @@ def uninstall_cfg_parallel(pipe: Any) -> None:
     if module is not None and module.__dict__.get("forward") is router:
         del module.__dict__["forward"]
         module.__dict__.pop("_unsloth_cfg_router", None)
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# CFG-batch: both guidance branches through one forward of an offloaded / streamed denoiser.
+# --------------------------------------------------------------------------------------------------------------------
+
+
+def _as_walkable(out: Any) -> Any:
+    """A denoiser output as plain containers for :func:`_iter_tensors` (a diffusers ``BaseOutput`` is a dict)."""
+    if isinstance(out, (tuple, list, dict)) or not dataclasses.is_dataclass(out):
+        return out
+    return {f.name: getattr(out, f.name, None) for f in dataclasses.fields(out)}
+
+
+class _NotBatchable(Exception):
+    pass
+
+
+def _batch_leaves(first: list, second: list, batch: int) -> dict:
+    """Leaf values of one call carrying both branches: a per-sample tensor (leading dim == the latent's batch) is
+    concatenated along dim 0; a tensor both branches share unchanged (RoPE tables, a scalar timestep) and an equal
+    plain value pass through once. Anything else (prompt embeddings of different lengths, a per-branch list) cannot
+    ride one call: :class:`_NotBatchable`."""
+    torch = _torch()
+    if len(first) != len(second):
+        raise _NotBatchable("the branches pass different arguments")
+    values: dict = {}
+    for (path_a, a), (path_b, b) in zip(first, second):
+        if path_a != path_b:
+            raise _NotBatchable("the branches pass different arguments")
+        if isinstance(a, torch.Tensor) or isinstance(b, torch.Tensor):
+            if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)):
+                raise _NotBatchable(f"{path_a}: tensor in one branch only")
+            if a.shape != b.shape or a.dtype != b.dtype or a.device != b.device:
+                raise _NotBatchable(f"{path_a}: {tuple(a.shape)} vs {tuple(b.shape)}")
+            if a.dim() >= 1 and a.shape[0] == batch:
+                values[path_a] = torch.cat((a, b), dim = 0)
+            elif a is b or _bitwise_equal(a, b):
+                values[path_a] = a
+            else:
+                raise _NotBatchable(f"{path_a}: differs per branch without a batch dim")
+        elif _same_value(a, b):
+            values[path_a] = a
+        else:
+            raise _NotBatchable(f"{path_a}: differs per branch")
+    return values
+
+
+def _split_output(out: Any, batch: int, depth: int = 0) -> tuple[Any, Any]:
+    """(first branch, second branch) of a batched denoiser output: every tensor with leading dim ``2 * batch`` split
+    along dim 0, containers rebuilt with their type. Any other tensor cannot be attributed: :class:`_NotBatchable`."""
+    torch = _torch()
+    if isinstance(out, torch.Tensor):
+        if out.dim() >= 1 and out.shape[0] == 2 * batch:
+            return out[:batch], out[batch:]
+        raise _NotBatchable(f"output of shape {tuple(out.shape)} has no doubled batch")
+    if out is None or isinstance(out, _PLAIN_TYPES):
+        return out, out
+    if depth > 4:
+        raise _NotBatchable("output nests too deep")
+    if dataclasses.is_dataclass(out) and not isinstance(out, type):
+        pairs = {f.name: _split_output(getattr(out, f.name), batch, depth + 1) for f in dataclasses.fields(out)}
+        return (
+            dataclasses.replace(out, **{k: v[0] for k, v in pairs.items()}),
+            dataclasses.replace(out, **{k: v[1] for k, v in pairs.items()}),
+        )
+    if isinstance(out, tuple) and not hasattr(out, "_fields"):
+        pairs = [_split_output(v, batch, depth + 1) for v in out]
+        return tuple(p[0] for p in pairs), tuple(p[1] for p in pairs)
+    if isinstance(out, list):
+        pairs = [_split_output(v, batch, depth + 1) for v in out]
+        return [p[0] for p in pairs], [p[1] for p in pairs]
+    if isinstance(out, dict):
+        pairs = {k: _split_output(v, batch, depth + 1) for k, v in out.items()}
+        return type(out)((k, v[0]) for k, v in pairs.items()), type(out)((k, v[1]) for k, v in pairs.items())
+    raise _NotBatchable(f"output type {type(out).__name__}")
+
+
+def _registry_hooks_other(module: Any) -> Optional[str]:
+    """A diffusers hook registry that is not offload machinery (a step cache) anywhere in ``module``, else None."""
+    for name, sub in module.named_modules():
+        if _registry_kind(sub) == "other":
+            return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
+    return None
+
+
+class CfgBatchRouter:
+    """Installed as an offloaded denoiser's ``forward``: runs both guidance branches of a step through ONE forward.
+
+    An offloaded / streamed denoiser uploads every block from host memory on each call, so true CFG's two calls per
+    step pay the upload twice. Branches are recognised exactly as :class:`CfgParallelRouter` does (the same latent
+    tensor object in consecutive calls) and the odd branch is predicted the same way from the previous step's. At the
+    first branch of a step the predicted odd branch is concatenated onto it along the batch dimension and one forward
+    runs (each block streamed once); the first half of the output is returned, the second kept. The real odd call must
+    then pass the same structure, the same plain values and bitwise the same tensors as the prediction (snapshots are
+    compared, so an in-place edit in between is seen) and the source's per-call hook state must be unchanged; else the
+    kept half is dropped and the branch runs as a plain call. Not bit-identical to two calls (batch-2 GEMM / attention
+    kernels may differ), so it is limited to offloaded denoisers by default where it removes a whole upload per step;
+    ``UNSLOTH_DIFFUSION_CFG_BATCH=force`` batches a resident one too (ComfyUI batches cond + uncond by default).
+
+    Steps that cannot batch (different prompt lengths, an output without a doubled batch, an outer forward layer or
+    a step cache installed later) run as before. Out of memory on the batched call disables batching for the load and
+    the branch is recomputed alone."""
+
+    def __init__(
+        self,
+        module: Any,
+        *,
+        headroom_mib: Optional[int] = None,
+        reason: str = "offloaded denoiser",
+        logger: Any = None,
+    ):
+        self.module_ref = weakref.ref(module)
+        self.orig_forward = module.forward
+        self.headroom_mib = headroom_mib
+        self.reason = reason
+        self.logger = logger
+        self.disabled_reason: Optional[str] = None
+        self.prev_latent: Any = None
+        self.branch = 0
+        self.b0_leaves: dict = {}
+        self.template: Optional[tuple[Any, dict]] = None
+        self.kept: Optional[dict] = None
+        self.last_skip: Optional[str] = None
+        self.stats = {
+            "batched_steps": 0,
+            "batched_hits": 0,
+            "batched_misses": 0,
+            "unbatched_steps": 0,
+            "plain_calls": 0,
+        }
+
+    def describe(self) -> dict[str, Any]:
+        return {
+            "strategy": "cfg_batch" if self.disabled_reason is None else "single",
+            "engaged_for": self.reason,
+            "disabled_reason": self.disabled_reason,
+            "last_unbatched_reason": self.last_skip,
+            **self.stats,
+        }
+
+    def disable(self, reason: str) -> None:
+        if self.disabled_reason is None:
+            self.disabled_reason = reason
+            if self.logger is not None:
+                self.logger.warning("diffusion.multigpu: CFG-batch disabled (%s)", reason)
+        self.kept = None
+        self.template = None
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        latent = _latent_arg(args, kwargs)
+        if latent is not None and self.prev_latent is not None and latent is self.prev_latent:
+            self.branch += 1
+        else:
+            self.branch = 0
+            self.prev_latent = latent
+            if self.kept is not None:  # the previous step never asked for its odd branch
+                self.kept = None
+                self.stats["batched_misses"] += 1
+            self.b0_leaves = dict(_leaves((args, kwargs)))
+        if self.disabled_reason is not None or latent is None:
+            return self._plain(args, kwargs)
+        if self.branch == 0:
+            if self.template is not None:
+                out = self._batched(args, kwargs, latent)
+                if out is not None:
+                    return out
+            return self._plain(args, kwargs)
+        if self.branch == 1:
+            if self.kept is not None:
+                out = self._take(args, kwargs)
+                if out is not None:
+                    self._record_template(args, kwargs, latent)
+                    return out
+            self._record_template(args, kwargs, latent)
+        return self._plain(args, kwargs)
+
+    def _plain(self, args: tuple, kwargs: dict) -> Any:
+        self.stats["plain_calls"] += 1
+        return self.orig_forward(*args, **kwargs)
+
+    def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
+        torch = _torch()
+        b0_by_id = {id(v): p for p, v in self.b0_leaves.items() if isinstance(v, torch.Tensor)}
+        kinds: dict = {}
+        for path, leaf in _leaves((args, kwargs)):
+            if isinstance(leaf, torch.Tensor):
+                if leaf is latent:
+                    kinds[path] = ("latent",)
+                elif id(leaf) in b0_by_id and self.b0_leaves.get(b0_by_id[id(leaf)]) is leaf:
+                    kinds[path] = ("b0", b0_by_id[id(leaf)])
+                elif (
+                    isinstance(self.b0_leaves.get(path), torch.Tensor)
+                    and leaf.numel() <= _SMALL_TENSOR_NUMEL
+                    and _bitwise_equal(leaf, self.b0_leaves[path])
+                ):
+                    kinds[path] = ("b0", path)  # recomputed per call with the first branch's value
+                else:
+                    kinds[path] = ("const", leaf)
+            else:
+                kinds[path] = ("value", leaf)
+        self.template = ((args, kwargs), kinds)
+
+    def _skip(self, reason: str) -> None:
+        self.last_skip = reason
+        self.stats["unbatched_steps"] += 1
+
+    def _batched(self, args: tuple, kwargs: dict, latent: Any) -> Any:
+        torch = _torch()
+        module = self.module_ref()
+        if module is None:
+            return None
+        # Only while this router is the outermost forward and no step cache hooks the denoiser: a layer added later
+        # (static step skip, FBCache) keys its per-branch state on separate calls.
+        if module.__dict__.get("forward") is not self:
+            self._skip("an outer forward layer was installed after this router")
+            return None
+        hooked = _registry_hooks_other(module)
+        if hooked is not None:
+            self._skip(f"step cache present ({hooked})")
+            return None
+        structure, kinds = self.template
+        values: dict = {}
+        for path, kind in kinds.items():
+            if kind[0] == "latent":
+                values[path] = latent
+            elif kind[0] == "b0":
+                if kind[1] not in self.b0_leaves:
+                    self._skip("the first branch changed structure")
+                    return None
+                values[path] = self.b0_leaves[kind[1]]
+            elif kind[0] == "const":
+                values[path] = kind[1]
+            else:
+                values[path] = kind[1]
+        try:
+            predicted = _rebuild(structure, values)
+        except KeyError:
+            self._skip("the first branch changed structure")
+            return None
+        first = _leaves((args, kwargs))
+        second = _leaves(predicted)
+        batch = int(latent.shape[0]) if latent.dim() >= 1 else 0
+        if batch < 1:
+            self._skip("latent without a batch dim")
+            return None
+        try:
+            merged = _batch_leaves(first, second, batch)
+        except _NotBatchable as exc:
+            self._skip(str(exc))
+            return None
+        if not self._memory_ok(latent.device):
+            self._skip("not enough free memory for a second branch's activations")
+            return None
+        b_args, b_kwargs = _rebuild((args, kwargs), merged)
+        # The odd branch is verified against what it consumed, by value: snapshots of its tensors.
+        snapshots = [
+            (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
+        ]
+        state = _hook_state([(m, m) for m in module.modules()])
+        try:
+            out = self.orig_forward(*b_args, **b_kwargs)
+        except torch.OutOfMemoryError:
+            del b_args, b_kwargs, merged
+            with contextlib.suppress(Exception):
+                torch.cuda.empty_cache()
+            self.disable("out of memory on the batched call; one branch per call from here")
+            return None
+        try:
+            mine, other = _split_output(out, batch)
+        except _NotBatchable as exc:
+            # computed with both branches: the first half cannot be told apart, so this load stops batching
+            self.disable(f"output cannot be split per branch ({exc})")
+            return None
+        self.kept = {"out": other, "snapshots": snapshots, "state": state}
+        self.stats["batched_steps"] += 1
+        return mine
+
+    def _memory_ok(self, device: Any) -> bool:
+        if self.headroom_mib is None or getattr(device, "type", None) != "cuda":
+            return True
+        torch = _torch()
+        try:
+            free, _total = _free_total_mib(device.index if device.index is not None else torch.cuda.current_device())
+            reserved_idle = (
+                torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+            ) // (1 << 20)
+        except Exception:  # noqa: BLE001 - unreadable: let the OOM backstop decide
+            return True
+        if free is None:
+            return True
+        return free + int(reserved_idle) >= int(self.headroom_mib)
+
+    def _take(self, args: tuple, kwargs: dict) -> Any:
+        kept, self.kept = self.kept, None
+        actual = _leaves((args, kwargs))
+        snaps = kept["snapshots"]
+        ok = len(actual) == len(snaps) and all(
+            pa == ps
+            and (
+                _bitwise_equal(va, vs)
+                if isinstance(vs, _torch().Tensor)
+                else _same_value(va, vs)
+            )
+            for (pa, va), (ps, vs) in zip(actual, snaps)
+        )
+        module = self.module_ref()
+        if ok and module is not None:
+            ok = _hook_state([(m, m) for m in module.modules()]) == kept["state"]
+        if not ok:
+            self.stats["batched_misses"] += 1
+            return None
+        self.stats["batched_hits"] += 1
+        return kept["out"]
+
+
+_CFG_BATCH: "weakref.WeakKeyDictionary[Any, CfgBatchRouter]" = weakref.WeakKeyDictionary()
+
+
+def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:
+    """Why both guidance branches cannot share one forward on this load, or None."""
+    mode = cfg_batch_mode()
+    if mode == "off":
+        return f"{CFG_BATCH_ENV}=0"
+    torch = _torch()
+    denoiser = getattr(pipe, "transformer", None)
+    if not isinstance(denoiser, torch.nn.Module):
+        return "no DiT denoiser (a U-Net batches its guidance branches)"
+    if getattr(pipe, "transformer_2", None) is not None:
+        return "two-expert denoiser"
+    if getattr(denoiser, "_compiled_call_impl", None) is not None:
+        return "denoiser is compiled whole"
+    if isinstance(denoiser.__dict__.get("forward"), (CfgParallelRouter, CfgBatchRouter)):
+        return "a CFG router is already installed"
+    hooked = _registry_hooks_other(denoiser)
+    if hooked is not None:
+        return f"step cache present ({hooked})"
+    if mode == "force":
+        return None
+    streamed = offload_policy in ("group", "streaming", "sequential") and (
+        any(_registry_kind(sub) == "offload" for sub in denoiser.modules())
+        or any(getattr(sub, "_hf_hook", None) is not None for sub in denoiser.modules())
+        or any(
+            _is_offload_object(sub.__dict__.get("forward")) for sub in denoiser.modules() if "forward" in sub.__dict__
+        )
+    )
+    if not streamed:
+        return "denoiser is resident (two calls are exact and the weights are not re-uploaded)"
+    return None
+
+
+def install_cfg_batch(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    headroom_mib: Optional[int] = None,
+    logger: Any = None,
+) -> Optional[str]:
+    """Arm :class:`CfgBatchRouter` on ``pipe.transformer``; returns the decline reason or None when armed."""
+    reason = cfg_batch_decline(pipe, offload_policy = offload_policy)
+    if reason is not None:
+        return reason
+    denoiser = pipe.transformer
+    router = CfgBatchRouter(
+        denoiser,
+        headroom_mib = headroom_mib,
+        reason = "forced" if cfg_batch_mode() == "force" else f"offloaded denoiser ({offload_policy})",
+        logger = logger,
+    )
+    try:
+        _CFG_BATCH[pipe] = router
+    except TypeError:
+        return "pipeline cannot be tracked (not weak-referenceable)"
+    denoiser.forward = router
+    if logger is not None:
+        logger.info("diffusion.multigpu: CFG-batch armed (%s)", router.reason)
+    return None
+
+
+def uninstall_cfg_batch(pipe: Any) -> None:
+    try:
+        router = _CFG_BATCH.pop(pipe, None) if pipe is not None else None
+    except TypeError:
+        return
+    if router is None:
+        return
+    module = router.module_ref()
+    if module is not None and module.__dict__.get("forward") is router:
+        del module.__dict__["forward"]

@@ -104,6 +104,7 @@ from .diffusion_device import (
 )
 from .diffusion_multigpu import (
     install_cfg_parallel,
+    plan_denoise_headroom_mib,
     invalidate_cfg_replica,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
@@ -8492,7 +8493,12 @@ class DiffusionBackend:
                         bg_compile.arm(bg_module, logger = logger) if bg_module is not None else None
                     )
                     # After every forward wrapper of the speed / graph layers, so the replica sees the final module.
-                    install_cfg_parallel(pipe, offload_policy = effective_policy, logger = logger)
+                    install_cfg_parallel(
+                        pipe,
+                        offload_policy = effective_policy,
+                        logger = logger,
+                        headroom_mib = plan_denoise_headroom_mib(plan),
+                    )
                     te_releaser = te_release.maybe_install(pipe, plan, logger = logger)
                     state = _LoadState(
                         pipe = pipe,

@@ -1511,3 +1511,200 @@ def test_ltx25_sidecar_encoder_keeps_the_single_card_plan(monkeypatch):
     monkeypatch.setattr(vid, "refine_plan_for_multigpu", lambda pipe, plan, logger = None: refined.append(1) or split)
     assert vid._video_refine_for_multigpu(ltx25, object(), single) is single
     assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [1]
+
+
+# ---------------------------------------------------------------------------------------------------- CFG-batch / pricing
+
+
+class _BatchDit(torch.nn.Module):
+    """Per-sample math (no reduction across the batch), as a DiT's is."""
+
+    def __init__(self):
+        super().__init__()
+        self.proj = torch.nn.Linear(4, 4)
+        self.calls = 0
+        self.rows = []
+
+    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        self.calls += 1
+        self.rows.append(hidden_states.shape[0])
+        return (self.proj(hidden_states) * timestep + encoder_hidden_states.tanh(),)
+
+
+def _batch_loop(dit, latents, steps, cond, uncond, scale = 4.0, edit = None):
+    for i in range(steps):
+        t = torch.tensor(1.0 - i / steps)
+        c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond)[0]
+        if edit is not None:
+            edit(i, uncond)
+        u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond)[0]
+        latents = latents - 0.1 * (u + scale * (c - u))
+    return latents
+
+
+def _embeds(rows = 2, length = 4):
+    g = torch.Generator().manual_seed(1)
+    return torch.randn(rows, length, generator = g), torch.randn(rows, length, generator = g)
+
+
+def test_cfg_batch_runs_one_forward_per_step_and_matches():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 5, cond, uncond)
+    dit.calls, dit.rows = 0, []
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 5, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    # step 0 learns the odd branch (two calls), steps 1-4 run one batched call each
+    assert dit.calls == 2 + 4 and dit.rows[2:] == [4, 4, 4, 4]
+    assert router.stats["batched_steps"] == 4 and router.stats["batched_hits"] == 4
+    assert router.describe()["strategy"] == "cfg_batch"
+
+
+def test_cfg_batch_rejects_an_odd_branch_edited_in_place():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+
+    def edit(i, u):
+        if i == 2:
+            u.add_(1.0)  # same object, new values: the kept half is stale
+
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond.clone(), edit = edit)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond.clone(), edit = edit)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["batched_misses"] == 1
+
+
+def test_cfg_batch_skips_branches_of_different_shapes():
+    torch.manual_seed(0)
+
+    class LenDit(_BatchDit):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+            self.calls += 1
+            return (self.proj(hidden_states) * timestep + encoder_hidden_states.mean(1, keepdim = True),)
+
+    dit = LenDit()
+    latents = torch.randn(2, 4)
+    cond, _ = _embeds(length = 4)
+    _, uncond = _embeds(length = 6)
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    assert torch.equal(out, reference)
+    assert router.stats["batched_steps"] == 0 and router.stats["unbatched_steps"] == 3
+    assert " vs " in router.describe()["last_unbatched_reason"]
+
+
+def test_cfg_batch_guidance_distilled_never_batches():
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    latents = torch.randn(2, 4)
+    cond, _ = _embeds()
+    for i in range(4):
+        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+    assert router.stats["batched_steps"] == 0 and dit.calls == 4
+
+
+def test_cfg_batch_out_of_memory_falls_back(monkeypatch):
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    inner = router.orig_forward
+
+    def oom_on_batch(*a, **k):
+        if k["hidden_states"].shape[0] == 4:
+            raise torch.OutOfMemoryError("fake")
+        return inner(*a, **k)
+
+    router.orig_forward = oom_on_batch
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert "out of memory" in router.describe()["disabled_reason"]
+
+
+def test_cfg_batch_decline_rules(monkeypatch):
+    class Pipe:
+        def __init__(self):
+            self.transformer = _BatchDit()
+
+    assert "resident" in mg.cfg_batch_decline(Pipe(), offload_policy = "none")
+    assert "resident" in mg.cfg_batch_decline(Pipe(), offload_policy = "group")  # no offload hooks on it
+    monkeypatch.setenv(mg.CFG_BATCH_ENV, "force")
+    assert mg.cfg_batch_decline(Pipe(), offload_policy = "none") is None
+    monkeypatch.setenv(mg.CFG_BATCH_ENV, "0")
+    assert mg.CFG_BATCH_ENV in mg.cfg_batch_decline(Pipe(), offload_policy = "group")
+    monkeypatch.delenv(mg.CFG_BATCH_ENV)
+
+    class Unet:
+        transformer = None
+
+    assert "U-Net" in mg.cfg_batch_decline(Unet(), offload_policy = "group")
+
+
+def test_price_cfg_parallel_declines_a_slow_link():
+    fast = mg.price_cfg_parallel(
+        branch_s = 0.5, in_bytes = 64 << 20, out_bytes = 32 << 20, link_in_gib_s = 20.0, link_out_gib_s = 20.0
+    )
+    assert fast["strategy"] == "cfg_parallel" and fast["cfg_parallel_step_s"] < fast["single_step_s"]
+    slow = mg.price_cfg_parallel(
+        branch_s = 0.05, in_bytes = 64 << 20, out_bytes = 32 << 20, link_in_gib_s = 1.0, link_out_gib_s = 1.0
+    )
+    assert slow["strategy"] == "single"
+    unknown = mg.price_cfg_parallel(
+        branch_s = 0.05, in_bytes = 64 << 20, out_bytes = 32 << 20, link_in_gib_s = None, link_out_gib_s = None
+    )
+    assert unknown["strategy"] == "cfg_parallel"
+
+
+def _probe(o, free, links):
+    return mg.DeviceProbe(
+        ordinal = o, name = "card", total_mib = 16000, free_mib = free,
+        peers = tuple((b, True, g) for b, g in links.items()),
+    )
+
+
+def test_rank_secondaries_prefers_the_fast_link_then_free_memory(monkeypatch):
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    probes = {
+        0: _probe(0, 1000, {1: 20.0, 2: 2.0, 3: 18.0}),
+        1: _probe(1, 9000, {0: 20.0}),
+        2: _probe(2, 15000, {0: 2.0}),  # most free, slow link
+        3: _probe(3, 12000, {0: 19.0}),
+    }
+    sel = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2, 3))
+    assert mg.best_secondary(sel, probes) == 3
+    assert mg.rank_secondaries(0, [1, 2, 3], lambda o: probes[o].free_mib, probes) == [3, 1, 2]
+    # unmeasured links: free memory alone, as before
+    blind = {o: _probe(o, p.free_mib, {}) for o, p in probes.items()}
+    assert mg.best_secondary(sel, blind) == 2
+
+
+def test_cfg_parallel_router_priced_out_keeps_one_card(monkeypatch):
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    reference = _cfg_loop(dit, latents.clone(), steps = 4)
+    router, replicas = _router(dit)
+    monkeypatch.setattr(router, "_should_price", lambda: True)
+    monkeypatch.setattr(
+        router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), 1e-4)
+    )
+    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 1e-9)  # a few bytes take seconds
+    router.primary = router.secondary = torch.device("cpu")
+    out = _cfg_loop(dit, latents.clone(), steps = 4)
+    assert torch.equal(out, reference)
+    assert replicas == [] and "priced out" in router.describe()["disabled_reason"]
+    assert router.describe()["pricing"]["strategy"] == "single"
