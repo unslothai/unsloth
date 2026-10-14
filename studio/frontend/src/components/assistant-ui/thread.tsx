@@ -4026,7 +4026,10 @@ const Composer: FC<{
     void Promise.all(
       stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
     ).finally(() => {
-      restoredPasteScopeRef.current = draftScope;
+      // A switch while these were added re-runs the restore for the new scope instead.
+      if (draftScopeRef.current === draftScope) {
+        restoredPasteScopeRef.current = draftScope;
+      }
     });
   }, [draftScope, pasteDraftKey, composerAttachmentSignature, aui]);
   // Keyed on the paste identities, never their bodies, so typing beside a

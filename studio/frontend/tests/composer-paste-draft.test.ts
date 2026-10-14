@@ -38,6 +38,15 @@ const {
 test.beforeEach(() => {
   store.clear();
   failWrites = false;
+  publishDraft("", Symbol("reset"));
+});
+
+test("unsaved text typed this session beats an old per-chat draft", () => {
+  publishDraft("typed just now", Symbol("chat"));
+  store.set("chat-draft:t1", "older");
+  assert.equal(adoptLegacyDraft("t1"), false);
+  assert.equal(latestDraft(), "typed just now");
+  assert.equal(store.get("chat-draft:t1"), "older", "kept for a later, empty-handed open");
 });
 
 test("a per-chat draft from before the upgrade becomes the shared draft when its chat opens", () => {

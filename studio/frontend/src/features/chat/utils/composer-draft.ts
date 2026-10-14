@@ -74,6 +74,8 @@ export function writeComposerDraft(key: string, text: string): void {
 // A draft saved per chat before the shared slot existed becomes the shared draft when that chat
 // opens and nothing newer is waiting, so an upgrade never loses unsent text. True if it did.
 export function adoptLegacyDraft(threadId: string | null): boolean {
+  // Text typed this session and not yet saved is newer than any old slot.
+  if (latest) return false;
   const id = threadId ?? "__new__";
   try {
     const storage = window.localStorage;

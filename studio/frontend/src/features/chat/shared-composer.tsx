@@ -657,7 +657,18 @@ export function SharedComposer({
   // Text that came from the chat composer or another tab, so it isn't published back.
   const remoteDraftRef = useRef<string | null>(null);
   const unsavedDraftRef = useRef<string | null>(null);
+  const incognitoBeforeRef = useRef(incognito);
   useEffect(() => {
+    // Leaving a temporary chat (Compare can mount just before that resets) brings the saved draft
+    // back rather than publishing the temporary composer's text over it.
+    if (incognitoBeforeRef.current !== incognito) {
+      incognitoBeforeRef.current = incognito;
+      if (!incognito) {
+        remoteDraftRef.current = latestDraft();
+        setText(remoteDraftRef.current);
+      }
+      return;
+    }
     if (incognito || text === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
     publishDraft(text, draftSource);
