@@ -56,13 +56,26 @@ _ADAPTER_FLAGS = frozenset(
     {"--lora", "--lora-scaled", "--control-vector", "--control-vector-scaled"}
 )
 _PLACEMENT_FLAGS = frozenset(
-    {"--device", "-dev", "--split-mode", "-sm", "--tensor-split", "-ts", "--main-gpu", "-mg"}
+    {
+        "--device",
+        "-dev",
+        "--split-mode",
+        "-sm",
+        "--tensor-split",
+        "-ts",
+        "--main-gpu",
+        "-mg",
+        "--gpu-layers",
+        "--n-gpu-layers",
+        "-ngl",
+    }
 )
 _PLACEMENT_ENV = (
     "LLAMA_ARG_DEVICE",
     "LLAMA_ARG_SPLIT_MODE",
     "LLAMA_ARG_TENSOR_SPLIT",
     "LLAMA_ARG_MAIN_GPU",
+    "LLAMA_ARG_N_GPU_LAYERS",
 )
 
 
@@ -512,7 +525,7 @@ class ClusterServing:
             )
             try:
                 await process.start()
-            except OSError as exc:  # ssh missing, process limit: this node only
+            except (OSError, ValueError) as exc:  # ssh missing, process limit, Windows: this node
                 failed[node.endpoint] = f"could not start ssh to {node.host}: {exc}"
                 continue
             if not await ss.wait_for_own_port(

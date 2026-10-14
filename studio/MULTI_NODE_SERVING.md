@@ -41,7 +41,8 @@ or `<studio home>/cluster.json` (default `~/.unsloth/studio/cluster.json`):
 ```
 
 A node with `"managed": true` (or every node, with `UNSLOTH_CLUSTER_MANAGED=1`) has its
-`ggml-rpc-server` started by Studio over non-interactive ssh, as the two-Spark path does.
+`ggml-rpc-server` started by Studio over non-interactive ssh, as the two-Spark path does
+(from a Linux or macOS coordinator; on Windows, start the workers yourself).
 `UNSLOTH_SPARK_SERVING=0` turns both paths off.
 
 ## What happens on a load

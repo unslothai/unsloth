@@ -1038,3 +1038,35 @@ def test_a_failed_engine_load_that_unloaded_the_split_forgets_it(monkeypatch):
     backend.is_loaded = False
     run(ss.load_failed())
     assert ss.status()["topology"] == "single" and ss.status()["split_args"] is None
+
+
+@pytest.mark.parametrize("extra", [["-ngl", "0"], ["--n-gpu-layers=20"], ["--gpu-layers", "99"]])
+def test_a_caller_gpu_layer_count_is_left_alone(monkeypatch, extra):
+    seen = _cluster_env(monkeypatch)
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+
+
+def test_a_spawn_the_platform_refuses_fails_only_that_node(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    monkeypatch.setenv(cs.ENV_NODES, "10.0.0.2,me@10.0.0.3,10.0.0.4")
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: "/b/ggml-rpc-server")
+
+    async def fake_ssh(target, remote, **kw):
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    async def fake_start(self):
+        if self.peer == "me@10.0.0.3":
+            raise ValueError("preexec_fn is not supported on Windows platforms")
+        self.proc = SimpleNamespace(returncode = None)
+
+    async def owns(process, host, port, timeout, **kw):
+        return True
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(ss, "wait_for_own_port", owns)
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert "10.0.0.3" in ss.status()["last_error"]
