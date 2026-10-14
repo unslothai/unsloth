@@ -163,6 +163,7 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
         name = type(exc).__name__
         try:
             from .diffusion_batched import is_oom_error
+
             # Classified before flattening: a compiler error wrapping an OOM, or a bare "HIP out of memory".
             if is_oom_error(exc) and name != "OutOfMemoryError":
                 name = f"OutOfMemoryError ({name})"

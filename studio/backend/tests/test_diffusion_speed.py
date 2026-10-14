@@ -2747,7 +2747,6 @@ def test_loader_probes_rocm_only_for_an_engaged_pipeline_quant():
     assert any("normalize_transformer_quant(transformer_quant) is not None" in g for g in guards)
 
 
-
 def _diffusion_calls(name):
     import ast
     import inspect
@@ -2756,7 +2755,9 @@ def _diffusion_calls(name):
 
     tree = ast.parse(inspect.getsource(dmod))
     parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
-    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name]
+    calls = [
+        n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name
+    ]
     return calls, parents
 
 
@@ -2769,10 +2770,13 @@ def test_deferred_speed_profile_arms_without_running_the_rocm_probe():
         node = c
         while node in parents and not isinstance(node, ast.Assign):
             node = parents[node]
-        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "speed_deferred" for t in node.targets):
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", None) == "speed_deferred" for t in node.targets
+        ):
             deferred.append(c)
     assert deferred and all(
-        any(k.arg == "probe" and getattr(k.value, "value", None) is False for k in c.keywords) for c in deferred
+        any(k.arg == "probe" and getattr(k.value, "value", None) is False for k in c.keywords)
+        for c in deferred
     )
 
 
@@ -2781,13 +2785,19 @@ def test_native_quant_never_runs_the_rocm_probe():
 
     calls, parents = _diffusion_calls("_pipeline_quant_uncompilable_reason")
     probing = [
-        c for c in calls if any(k.arg == "probe" and getattr(k.value, "value", None) is True for k in c.keywords)
+        c
+        for c in calls
+        if any(k.arg == "probe" and getattr(k.value, "value", None) is True for k in c.keywords)
     ]
     assert len(probing) == 1
     node, guarded = probing[0], False
     while node in parents:
         child, node = node, parents[node]
-        if isinstance(node, ast.IfExp) and child is node.orelse and ast.unparse(node.test) == "native_scheme is not None":
+        if (
+            isinstance(node, ast.IfExp)
+            and child is node.orelse
+            and ast.unparse(node.test) == "native_scheme is not None"
+        ):
             guarded = True
     assert guarded
 
@@ -2804,11 +2814,15 @@ def test_rocm_kill_switch_declines_the_planned_dequant_step(monkeypatch):
         device = "cuda", backend = "rocm", dtype = torch.bfloat16, supports_default_torch_compile = True
     )
     monkeypatch.setenv(rc.ENV, "0")
-    p = plan_mod.build_plan(pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True)
+    p = plan_mod.build_plan(
+        pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True
+    )
     assert p.step("compiled_dequant").attempt is False
     assert p.reason("compiled_dequant") == f"{rc.ENV}=0"
     monkeypatch.setenv(rc.ENV, "1")
-    p = plan_mod.build_plan(pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True)
+    p = plan_mod.build_plan(
+        pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True
+    )
     assert p.step("compiled_dequant").attempt is True
 
 
@@ -2821,12 +2835,20 @@ def test_gguf_default_compile_cache_gate_does_not_run_the_rocm_probe():
         node = c
         while node in parents and not isinstance(node, ast.If):
             node = parents[node]
-        if isinstance(node, ast.If) and "compile_cache.begin(" in ast.unparse(node.body[0]) and "effective_speed" in ast.unparse(node.test):
+        if (
+            isinstance(node, ast.If)
+            and "compile_cache.begin(" in ast.unparse(node.body[0])
+            and "effective_speed" in ast.unparse(node.test)
+        ):
             gated.append(c)
     assert gated
     for c in gated:
         probe = [k for k in c.keywords if k.arg == "probe"]
-        assert probe and ast.unparse(probe[0].value) == "not (gguf_transformer and effective_speed == SPEED_DEFAULT)"
+        assert (
+            probe
+            and ast.unparse(probe[0].value)
+            == "not (gguf_transformer and effective_speed == SPEED_DEFAULT)"
+        )
 
 
 @pytest.mark.parametrize(
