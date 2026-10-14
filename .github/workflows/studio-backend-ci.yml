@@ -186,6 +186,13 @@ jobs:
 
       - name: Install bubblewrap, so the sandbox tests run instead of skipping
         # Bound apt retries; 25 minutes covers both calls' 1450s worst case.
+        #
+        # Background: apt (system packages) and the pip install below (this job's
+        # Python) touch nothing in common, so the ~10 s of apt overlaps the ~80 s of
+        # pip. Collected right before the first pytest step, which is the first thing
+        # that needs bwrap.
+        id: bubblewrap
+        background: true
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
@@ -241,6 +248,9 @@ jobs:
           # every pre-quant load returns None. CPU-only is fine: it declines its cpp
           # extensions under torch < 2.11 and the pure-Python constructors still import.
           pip install torchao
+
+      - name: Collect the bubblewrap install
+        wait: bubblewrap
 
       - name: Backend tests
         if: matrix.scope == 'full'

@@ -297,13 +297,6 @@ jobs:
           key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
           enableCrossOsArchive: true
 
-      - name: Install Unsloth (--local, --no-torch)
-        uses: ./.github/actions/install-unsloth-local
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-
       - name: Pin the Playwright version so the browser cache has a key
         id: pw
         run: |
@@ -353,6 +346,11 @@ jobs:
 
       - name: Install Playwright browsers
         id: pw-install
+        # A background step: it runs alongside Install Unsloth below, which uses its own
+        # venv. If both reach apt, this side goes through retry-with-apt-lock.sh and waits
+        # for the dpkg lock. Its outcome, which the cache saves read, is settled by the
+        # `wait: pw-install` step after the install.
+        background: true
         # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
         # the cached directory, so a restored cache without it gives browsers that cannot
         # start. Only the download is skipped, which is the part that costs.
@@ -461,6 +459,16 @@ jobs:
             # per-test timeout in whichever suite happens to run first.
             probe ${{ matrix.engines }}
           fi
+
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Wait for the Playwright browsers
+        wait: pw-install
 
       # Save on main only, like every model cache in this repo. read-write
       # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
