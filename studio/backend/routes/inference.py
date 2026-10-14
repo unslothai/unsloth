@@ -47375,11 +47375,145 @@ def _generate_failure_detail(message: str) -> str:
     return _GENERATE_FAILURE_FALLBACK
 
 
+async def _external_image_generation(
+    body: DiffusionGenerateRequest, request: Request
+) -> DiffusionGenerateResponse:
+    from PIL import Image
+
+    from core.inference import image_gallery
+
+    provider_id = body.provider_id.strip()
+    external_model = (body.model or "").strip()
+    if not external_model:
+        raise HTTPException(
+            status_code = 400,
+            detail = "model is required when using an external image connection.",
+        )
+    if (
+        body.init_image
+        or body.reference_images
+        or body.loras
+        or body.controlnet
+        or body.prompts
+        or body.seeds
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "An external image connection only supports text to image.",
+        )
+
+    config = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    if config is None:
+        raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    _refuse_decision_connection(config["provider_type"], config.get("api_type"))
+    if not config["is_enabled"]:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Provider '{config['display_name']}' is disabled.",
+        )
+    base_url = config["base_url"] or get_base_url(config["provider_type"])
+    if not base_url:
+        raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    async with provider_config_guard(provider_id):
+        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        routing_fields = ("provider_type", "base_url", "is_enabled")
+        if current is None or any(
+            current.get(field) != config.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        api_key = await asyncio.to_thread(
+            resolve_provider_api_key_or_400,
+            provider_id,
+            None,
+            allow_saved_key = not _request_has_api_key(request),
+        )
+
+    client = ExternalProviderClient(
+        provider_type = config["provider_type"],
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 600.0,
+    )
+    try:
+        encoded = await client.create_images(
+            prompt = body.prompt,
+            model = external_model,
+            n = body.batch_size,
+            size = f"{body.width}x{body.height}",
+        )
+        images = []
+        for item in encoded:
+            image = Image.open(io.BytesIO(base64.b64decode(item)))
+            image.load()
+            images.append(image)
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code = 502,
+            detail = (
+                f"Image endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+            ),
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise log_and_http_error(
+            exc,
+            502,
+            "Could not reach the image endpoint.",
+            event = "external_images.transport_error",
+            log = logger,
+        ) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code = 502, detail = "The image endpoint did not return a usable image."
+        ) from exc
+
+    created_at = time.time()
+
+    def _persist() -> list[dict]:
+        return [
+            image_gallery.save(
+                image,
+                {
+                    "prompt": body.prompt,
+                    "width": image.width,
+                    "height": image.height,
+                    "steps": body.steps,
+                    "guidance": body.guidance,
+                    "seed": body.seed or 0,
+                    "batch_index": index,
+                    "batch_size": body.batch_size,
+                    "model": external_model,
+                    "created_at": created_at,
+                },
+            )
+            for index, image in enumerate(images)
+        ]
+
+    try:
+        records = await asyncio.to_thread(_persist)
+    except Exception as exc:
+        logger.error("diffusion.persist_failed: %s", exc)
+        raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+    return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
+
+
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 @account_access.gpu_busy_route
 async def generate_diffusion_image(
-    request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
+    request: DiffusionGenerateRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
+    if request.provider_id:
+        return await _external_image_generation(request, http_request)
+
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import (

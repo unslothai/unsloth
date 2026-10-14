@@ -2946,3 +2946,94 @@ def test_a_managed_account_cannot_send_allow_oversized(client, monkeypatch):
     )
     assert resp.status_code == 200
     assert seen == [False]
+
+
+def _external_image_connection(monkeypatch, handler):
+    import httpx
+
+    import core.inference.external_provider as external_provider
+
+    monkeypatch.setattr(
+        external_provider,
+        "_http_client",
+        httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+    monkeypatch.setattr(
+        inference_routes.providers_db,
+        "get_provider",
+        lambda pid: (
+            {
+                "provider_type": "custom",
+                "display_name": "Gufo",
+                "base_url": "http://127.0.0.1:8000/v1",
+                "is_enabled": True,
+            }
+            if pid == "conn-1"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
+        inference_routes, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test"
+    )
+
+
+def test_external_connection_generates_without_a_local_model_and_saves_to_gallery(
+    client, monkeypatch
+):
+    import base64
+    import io
+    import json
+
+    import httpx
+    from PIL import Image
+
+    sent = []
+
+    def handler(req):
+        sent.append((str(req.url), req.headers.get("authorization"), json.loads(req.content)))
+        buf = io.BytesIO()
+        Image.new("RGB", (512, 256), (200, 30, 30)).save(buf, format = "PNG")
+        png = base64.b64encode(buf.getvalue()).decode()
+        return httpx.Response(200, json = {"created": 0, "data": [{"b64_json": png}] * 2})
+
+    _external_image_connection(monkeypatch, handler)
+    resp = _post_generate(
+        client,
+        prompt = "a sloth",
+        width = 512,
+        height = 256,
+        batch_size = 2,
+        provider_id = "conn-1",
+        model = "qwen-image",
+    )
+    assert resp.status_code == 200, resp.text
+    images = resp.json()["images"]
+    assert [(i["prompt"], i["model"], i["width"], i["height"]) for i in images] == [
+        ("a sloth", "qwen-image", 512, 256)
+    ] * 2
+    assert len(client.get("/api/inference/images/gallery").json()["images"]) == 2
+    assert sent == [
+        (
+            "http://127.0.0.1:8000/v1/images/generations",
+            "Bearer sk-test",
+            {
+                "model": "qwen-image",
+                "prompt": "a sloth",
+                "n": 2,
+                "size": "512x256",
+                "response_format": "b64_json",
+            },
+        )
+    ]
+
+
+def test_external_connection_error_is_a_502_with_the_upstream_reason(client, monkeypatch):
+    import httpx
+
+    _external_image_connection(
+        monkeypatch, lambda req: httpx.Response(404, text = "model 'nope' not found")
+    )
+    resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "nope")
+    assert resp.status_code == 502
+    assert "model 'nope' not found" in resp.text
+    assert client.get("/api/inference/images/gallery").json()["images"] == []

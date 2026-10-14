@@ -4892,6 +4892,14 @@ class DiffusionGenerateRequest(BaseModel):
         description = "Noise schedule for the sampler. Omitted or 'automatic' uses the sampler's "
         "usual schedule (Karras for DPM++ 2M, Exponential for DPM++ 2M SDE, else the model's).",
     )
+    provider_id: Optional[str] = Field(
+        None,
+        description = "[x-unsloth] Saved connection ID. When set, the prompt goes to that "
+        "connection's /images/generations as `model` and the results are saved to the gallery.",
+    )
+    model: Optional[str] = Field(
+        None, description = "Model name on the connection named by `provider_id`."
+    )
 
     @field_validator("loras")
     @classmethod

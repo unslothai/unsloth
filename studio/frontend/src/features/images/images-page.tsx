@@ -96,6 +96,7 @@ import {
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
+  ExternalModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
@@ -145,7 +146,13 @@ import {
   recipeWorkflowLabel,
   type WorkflowId,
 } from "./workflows";
-import { ParamSlider } from "@/features/chat";
+import {
+  ParamSlider,
+  isDecisionConnection,
+  parseExternalModelId,
+  useExternalProvidersStore,
+} from "@/features/chat";
+import { buildExternalModelId } from "@/features/chat/external-providers";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import {
   type ImageGenerationPresetParams,
@@ -720,6 +727,7 @@ function loadToastArgs(
 }
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
+const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama", "openai"]);
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -1459,6 +1467,33 @@ export function ImagesPage({
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
+  const connections = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore((s) => s.connectionsEnabled);
+  const externalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      connectionsEnabled
+        ? connections
+            .filter((c) => IMAGE_CONNECTION_TYPES.has(c.providerType) && !isDecisionConnection(c))
+            .flatMap((c) =>
+              c.models.map((model) => ({
+                id: buildExternalModelId(c.id, model),
+                name: model,
+                providerId: c.id,
+                providerName: c.name,
+                providerType: c.providerType,
+              })),
+            )
+        : [],
+    [connections, connectionsEnabled],
+  );
+  const [externalModelId, setExternalModelId] = useState<string | null>(null);
+  const external = useMemo(
+    () =>
+      externalModels.some((m) => m.id === externalModelId)
+        ? parseExternalModelId(externalModelId)
+        : null,
+    [externalModels, externalModelId],
+  );
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   // One prompt per workflow, starting from the last one generated with.
@@ -1896,7 +1931,7 @@ export function ImagesPage({
 
   // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
   // Not on first load or unload (a restore can precede the load), so track it in a ref.
-  const loraCapable = Boolean(status?.loaded && status?.supports_lora);
+  const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   // Whether the load in flight baked the LoRA selection into the build (see handleLoad).
   const bakedLorasOnLoad = useRef(false);
@@ -1960,9 +1995,9 @@ export function ImagesPage({
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
-  const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
-  const negativeCapable = status?.supports_negative_prompt !== false;
-  const samplerOptions = (status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
+  const controlnetCapable = Boolean(!external && status?.loaded && status?.supports_controlnet);
+  const negativeCapable = !external && status?.supports_negative_prompt !== false;
+  const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
   const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
   const samplerChoice = normalizeSamplerChoice(
@@ -3696,6 +3731,11 @@ export function ImagesPage({
       // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
       // stays interactive during a generation: refusing it there was a silent dead click.
       if (busy !== null && !downloadOnlyPick) return;
+      if (meta.source === "external") {
+        setExternalModelId(id);
+        return;
+      }
+      if (!downloadOnlyPick) setExternalModelId(null);
       if (!downloadOnlyPick) beginPick();
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
       // branch, since staging never sets `busy`.
@@ -4515,6 +4555,7 @@ export function ImagesPage({
                     strength: controlStrength,
                   }
                 : undefined,
+            ...(external && { provider_id: external.providerId, model: external.modelId }),
           });
         } catch (err) {
           // The POST response was lost while the backend kept generating (the secure-mode tunnel caps
@@ -4581,7 +4622,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -4616,6 +4657,10 @@ export function ImagesPage({
 
   const handleGenerateWithRecall = useCallback(async () => {
     if (busy !== null || !imagePresets.hydrated) return;
+    if (external) {
+      await handleGenerate();
+      return;
+    }
     if (status?.loaded) {
       const kind = status.model_kind;
       if (
@@ -4672,6 +4717,7 @@ export function ImagesPage({
   }, [
     busy,
     currentLoadAdvanced,
+    external,
     handleGenerate,
     handleLoad,
     imagePresets.hydrated,
@@ -4721,6 +4767,10 @@ export function ImagesPage({
   // Publish what the loaded model can do, so the sidebar submenu dims the rest. null while
   // nothing is loaded, which leaves every workflow open to set up first.
   useEffect(() => {
+    if (external) {
+      setSupported(["create"]);
+      return;
+    }
     if (!status?.loaded) {
       setSupported(null);
       return;
@@ -4731,7 +4781,7 @@ export function ImagesPage({
         wf.includes(t.requires === null ? "txt2img" : t.requires),
       ).map((t) => t.id),
     );
-  }, [status?.loaded, status?.workflows, setSupported]);
+  }, [external, status?.loaded, status?.workflows, setSupported]);
 
   // Keep the active workflow valid for the loaded model: snap to the first supported one when capabilities change.
   useEffect(() => {
@@ -4977,7 +5027,8 @@ export function ImagesPage({
               <ModelSelector
                 triggerDataTour="images-model"
                 models={imageModels}
-                value={selectorModelId}
+                externalModels={externalModels}
+                value={(external && externalModelId) || selectorModelId}
                 loadedModelIdOverride={selectorModelId}
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
@@ -5691,26 +5742,30 @@ export function ImagesPage({
             {!unifiedEditActive && sizeControls}
 
             {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
-            <div className="pt-2">
-              <SliderField
-                label="Steps"
-                hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
-                value={steps}
-                min={1}
-                max={50}
-                step={1}
-                onChange={setSteps}
-              />
-            </div>
-            <SliderField
-              label="Guidance"
-              hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
-              value={guidance}
-              min={0}
-              max={15}
-              step={0.5}
-              onChange={setGuidance}
-            />
+            {!external && (
+              <>
+                <div className="pt-2">
+                  <SliderField
+                    label="Steps"
+                    hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
+                    value={steps}
+                    min={1}
+                    max={50}
+                    step={1}
+                    onChange={setSteps}
+                  />
+                </div>
+                <SliderField
+                  label="Guidance"
+                  hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
+                  value={guidance}
+                  min={0}
+                  max={15}
+                  step={0.5}
+                  onChange={setGuidance}
+                />
+              </>
+            )}
             <SliderField
               label="Batch size"
               hint="How many images to make at once. Faster than running them one by one, but uses more VRAM. They share a seed but each one is different."
@@ -5773,21 +5828,25 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            <Field
-              label="Seed"
-              hint="Leave empty for a fresh random seed each run."
-              className="pt-2"
-            >
-              <Input
-                placeholder="Random if empty"
-                value={seed}
-                onChange={(e) => setSeed(e.target.value)}
-              />
-            </Field>
+            {!external && (
+              <>
+                <Field
+                  label="Seed"
+                  hint="Leave empty for a fresh random seed each run."
+                  className="pt-2"
+                >
+                  <Input
+                    placeholder="Random if empty"
+                    value={seed}
+                    onChange={(e) => setSeed(e.target.value)}
+                  />
+                </Field>
 
-            <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
-              {advancedControls}
-            </AdvancedDisclosure>
+                <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                  {advancedControls}
+                </AdvancedDisclosure>
+              </>
+            )}
 
           </div>
           {/* The scroll mask provides the fade; leave the footer unpainted to avoid dark-mode banding. */}
@@ -5808,11 +5867,11 @@ export function ImagesPage({
                 <Button
                   className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
-                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
+                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
                   Generate
                 </Button>
-                {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                {!external && status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
@@ -6007,7 +6066,7 @@ export function ImagesPage({
                 {/* Same icon as the Images nav item. */}
                 <HugeiconsIcon icon={Image03Icon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
-                  {status?.loaded
+                  {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
                     : "Select a diffusion model to load"}
                 </p>
