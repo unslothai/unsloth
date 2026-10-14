@@ -155,8 +155,6 @@ def native_speed_flags(
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        if _runs_on_apple_metal(backend_args or ()):
-            return ["--diffusion-fa"]
         if not conv_direct_wanted(backend_args or (), accelerator):
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
@@ -168,13 +166,16 @@ _CONV_DIRECT_SLOW_BACKENDS = ("vulkan", "rocm", "hip")
 
 
 def conv_direct_wanted(backend_args: Sequence[str] = (), accelerator: Optional[str] = None) -> bool:
-    """``--backend diffusion=`` pin beats ``accelerator``; ``UNSLOTH_SD_CPP_CONV_DIRECT`` = 1/0 forces it."""
+    """``UNSLOTH_SD_CPP_CONV_DIRECT`` = 1/0 forces it (Metal too); else off on Metal, and a ``--backend diffusion=``
+    pin beats ``accelerator``."""
     import os
 
     forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
     if forced in ("1", "on", "true", "yes"):
         return True
     if forced in ("0", "off", "false", "no"):
+        return False
+    if _runs_on_apple_metal(backend_args):
         return False
     args = list(backend_args)
     target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])

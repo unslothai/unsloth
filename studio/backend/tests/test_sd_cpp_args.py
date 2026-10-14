@@ -1072,3 +1072,12 @@ def test_device_backend_flags_are_appended_not_folded_into_the_policy():
     before = list(policy)
     device_backend_flags("CUDA1", policy)
     assert policy == before
+
+
+def test_conv_direct_force_on_reaches_apple_metal(monkeypatch):
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
+    assert native_speed_flags("default") == ["--diffusion-fa"]
+    monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "1")  # an explicit force beats the Metal default
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
