@@ -286,7 +286,9 @@ def test_interrupted_write_leaves_no_entry(env, tmp_path, scheme, monkeypatch):
     assert C.save_runtime_quant(model, fam, base_repo = str(base)) is None
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
     # The root's lock file is the cache's own (eviction lease), not a partial entry.
-    leftovers = [p for p in env.rglob("*") if p.is_file() and p.name not in (C.LAST_USED_NAME, C._LOCK_NAME)]
+    leftovers = [
+        p for p in env.rglob("*") if p.is_file() and p.name not in (C.LAST_USED_NAME, C._LOCK_NAME)
+    ]
     assert leftovers == []
 
 
@@ -590,7 +592,9 @@ def _old_entry(root: Path, name: str, nbytes: int, age: float) -> Path:
     return d
 
 
-def test_a_full_volume_rotates_stale_entries_out_before_skipping_the_save(env, tmp_path, scheme, monkeypatch):
+def test_a_full_volume_rotates_stale_entries_out_before_skipping_the_save(
+    env, tmp_path, scheme, monkeypatch
+):
     """Old entries filling the volume must be evicted to make room, not make every new save fail for good."""
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)

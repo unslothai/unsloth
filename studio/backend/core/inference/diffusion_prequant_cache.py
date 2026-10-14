@@ -448,7 +448,6 @@ def _cache_lock(root: Optional[Path] = None):
         fh = open(root / _LOCK_NAME, "a+b")
         try:
             import fcntl
-
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         except (ImportError, OSError):
             pass
