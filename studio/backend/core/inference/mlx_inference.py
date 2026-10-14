@@ -4775,13 +4775,21 @@ class MLXInferenceBackend:
             else:
                 load_kwargs["tensor_group"] = distributed_group
 
+        precision_folder = (
+            None if getattr(config, "is_gguf", False) else getattr(config, "gguf_variant", None)
+        )
+        load_source = model_name
+        if precision_folder:
+            from hub.utils.mlx_variants import download_precision_folder
+            load_source = download_precision_folder(model_name, precision_folder, hf_token)
+
         # Freed before the replacement weights are allocated, for headroom.
         self._model_fusion.close()
         self._clear_prompt_cache()
         model = None
         try:
             model, tokenizer_or_processor = FastMLXModel.from_pretrained(
-                model_name,
+                load_source,
                 **load_kwargs,
             )
         except Exception as exc:
@@ -4824,7 +4832,7 @@ class MLXInferenceBackend:
             use_vlm = False
             load_kwargs["text_only"] = True
             model, tokenizer_or_processor = FastMLXModel.from_pretrained(
-                model_name,
+                load_source,
                 **load_kwargs,
             )
 
@@ -4995,6 +5003,8 @@ class MLXInferenceBackend:
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
             "hf_token": hf_token,
+            "gguf_variant": precision_folder,
+            "precision_folder": precision_folder,
             # Per-model trust_remote_code reused by the native-template reload (matches transformers).
             "trust_remote_code": trust_remote_code,
             "model": self._model,
