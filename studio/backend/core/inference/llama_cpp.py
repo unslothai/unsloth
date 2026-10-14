@@ -13757,7 +13757,7 @@ class LlamaCppBackend:
 
         No GPU is enumerated on Metal, so the context would default to native and
         over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
-        fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
+        fraction of the Metal working set, else total RAM; 0 off Apple Silicon or
         when unresolvable, so callers skip the cap.
 
         Both of those inputs describe the MACHINE, not the moment. MLX's
@@ -13782,13 +13782,9 @@ class LlamaCppBackend:
 
         if not is_apple_silicon():
             return 0
-        rec_bytes = 0
-        try:
-            import mlx.core as mx
-            if mx.metal.is_available():
-                rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
-        except Exception:
-            rec_bytes = 0
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+
+        rec_bytes = _metal_recommended_working_set_bytes()
         vm = None
         try:
             import psutil
@@ -13981,15 +13977,9 @@ class LlamaCppBackend:
             return 0
         # 0 means the kernel default, Metal's recommended working set.
         if cap_bytes <= 0:
-            try:
-                import mlx.core as mx
-                from utils.hardware.hardware import _mlx_device_info
-                if mx.metal.is_available():
-                    cap_bytes = int(
-                        _mlx_device_info(mx).get("max_recommended_working_set_size") or 0
-                    )
-            except Exception:
-                cap_bytes = 0
+            from utils.hardware.hardware import _metal_recommended_working_set_bytes
+
+            cap_bytes = _metal_recommended_working_set_bytes()
         if cap_bytes <= 0:
             return 0
         from utils.hardware.hardware import _read_apple_gpu_stats
@@ -14012,14 +14002,10 @@ class LlamaCppBackend:
         headroom = LlamaCppBackend._apple_metal_wired_ceiling_bytes()
         if headroom <= 0:
             return 0.0
-        try:
-            import mlx.core as mx
-            from utils.hardware.hardware import _mlx_device_info
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
 
-            if not mx.metal.is_available():
-                return 0.0
-            seen = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
-        except Exception:
+        seen = _metal_recommended_working_set_bytes()
+        if seen <= 0:
             return 0.0
         return max(0.0, (seen - headroom) / (1024 * 1024))
 
