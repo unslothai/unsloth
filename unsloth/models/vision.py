@@ -5009,16 +5009,13 @@ class FastBaseModel:
                                 ):
                                     continue
                                 module.weight[module.padding_idx] = 0
-        # Qwen3.5: fewer, larger compiled regions per decoder layer (_qwen3_5_layer.py); falls back
-        # per layer. UNSLOTH_QWEN3_5_FUSED_LAYERS=0 or UNSLOTH_COMPILE_DISABLE keeps the stock forward.
-        if os.environ.get("UNSLOTH_QWEN3_5_FUSED_LAYERS", "1") != "0" and os.environ.get(
-            "UNSLOTH_COMPILE_DISABLE", "0"
-        ) not in ("1", "partial"):
-            try:
-                from ._qwen3_5_layer import patch_qwen3_5_decoder_layers
-                patch_qwen3_5_decoder_layers(model)
-            except Exception as e:
-                logger.warning(f"Unsloth: Qwen3.5 fused layer forward not installed: {e}")
+        # One compiled region per decoder layer (_block_compile.py); falls back per layer.
+        # UNSLOTH_BLOCK_COMPILE=0 or UNSLOTH_COMPILE_DISABLE keeps the stock forward.
+        try:
+            from ._block_compile import patch_block_compile
+            patch_block_compile(model)
+        except Exception as e:
+            logger.warning(f"Unsloth: per-block compile not installed: {e}")
         return model
 
     @staticmethod
