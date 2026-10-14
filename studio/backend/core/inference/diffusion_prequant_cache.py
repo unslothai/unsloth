@@ -307,6 +307,21 @@ def _source_shards_in(base: str, component: str, cache_dir: Optional[str]) -> Op
     return None
 
 
+def base_identity(base: Optional[str]) -> str:
+    """The base model as ``_validate_checkpoint`` compares it (``_same_base_model``: canonical id, final segment,
+    case-folded). Keyed, so two bases that share their weights byte for byte but would fail that check for each
+    other's artifact never share an entry."""
+    raw = str(base or "").strip()
+    if not raw:
+        return ""
+    try:
+        from .diffusion_families import canonical_base
+        raw = str(canonical_base(raw) or raw)
+    except Exception:  # noqa: BLE001
+        pass
+    return raw.replace("\\", "/").rstrip("/").split("/")[-1].lower()
+
+
 def key_parts(
     *,
     family: Optional[str],
@@ -314,6 +329,7 @@ def key_parts(
     scheme: str,
     component: str,
     source_fp: str,
+    base: Optional[str] = None,
 ) -> dict:
     """Everything besides the source weights that changes the quantized bytes this cache would hold."""
     from .diffusion_transformer_quant import (
@@ -335,6 +351,7 @@ def key_parts(
         "scheme": scheme,
         "component": component,
         "source": source_fp,
+        "base": base_identity(base),
         "min_features": DEFAULT_MIN_LINEAR_FEATURES,
         "exclude_name_tokens": sorted(exclude_tokens_for_scheme(scheme, family)),
         "require_bf16": scheme in _REQUIRE_BF16_SCHEMES,
@@ -359,8 +376,14 @@ CACHEABLE_SCHEMES = ("int8", "fp8")
 
 
 def _key_for(
-    fam: Any, scheme: str, base: Optional[str], component: str
+    fam: Any,
+    scheme: str,
+    base: Optional[str],
+    component: str,
+    base_id: Optional[str] = None,
 ) -> Optional[tuple[str, dict]]:
+    """``base`` is where the dense shards are found; ``base_id`` the base model the artifact is recorded and validated
+    against (default ``base``)."""
     if scheme not in CACHEABLE_SCHEMES:
         return None
     shards = source_shards(base, component)
@@ -375,6 +398,7 @@ def _key_for(
         scheme = scheme,
         component = component,
         source_fp = fp,
+        base = base_id if base_id is not None else base,
     )
     return cache_key(parts), parts
 
@@ -658,7 +682,8 @@ def save_runtime_quant(
         if info.get("dtype") not in (None, "None", str(torch.bfloat16), "bfloat16"):
             _log(logger, "info", f"skipped (model dtype {info.get('dtype')} is not bfloat16)")
             return None
-        keyed = _key_for(fam, scheme, source_base or base_repo, component)
+        recorded_base = str(base_repo or getattr(fam, "base_repo", "") or "")
+        keyed = _key_for(fam, scheme, source_base or base_repo, component, base_id = recorded_base)
         if keyed is None:
             _log(logger, "info", "skipped (dense source shards not found locally)")
             return None
@@ -732,7 +757,7 @@ def save_runtime_quant(
         from .prequant_safetensors import UNSLOTH_FORMAT_KEY, UNSLOTH_METADATA_KEY
 
         metadata = {
-            "base_model_id": str(base_repo or getattr(fam, "base_repo", "") or ""),
+            "base_model_id": recorded_base,
             "family": parts["family"],
             "scheme": scheme,
             "min_features": parts["min_features"],

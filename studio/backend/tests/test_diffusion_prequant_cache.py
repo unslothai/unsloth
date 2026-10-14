@@ -676,3 +676,23 @@ def test_an_artifact_over_the_budget_never_evicts_the_existing_cache(env, tmp_pa
     monkeypatch.setattr(C.shutil, "disk_usage", lambda _p: usage)
     assert C.save_runtime_quant(model, _fam(base), base_repo = str(base)) is None
     assert stale.exists()
+
+
+def test_bases_sharing_their_weights_but_not_their_identity_never_share_an_entry(env, tmp_path, scheme):
+    """Two renamed copies of one checkpoint (same bytes, size and mtime) fingerprint alike, but the loader validates
+    the artifact's recorded base_model_id against the requested base: each needs its own entry."""
+    import shutil
+
+    base_a, model = _write_base(tmp_path, name = "model-a")
+    base_b = tmp_path / "model-b"
+    shutil.copytree(base_a, base_b)  # copy2: same size and mtime
+    shard = "transformer/diffusion_pytorch_model.safetensors"
+    assert C.source_fingerprint([base_a / shard]) == C.source_fingerprint([base_b / shard])
+    _quantize(model, scheme)
+    assert C.save_runtime_quant(model, _fam(base_a), base_repo = str(base_a))
+    assert C.lookup(_fam(base_b), scheme, base_repo = str(base_b)) is None
+    path_b = C.save_runtime_quant(model, _fam(base_b), base_repo = str(base_b))
+    assert path_b is not None
+    header = json.loads(C.read_header_bytes(path_b)[8:])
+    assert json.loads(header["__metadata__"][PS.UNSLOTH_METADATA_KEY])["base_model_id"] == str(base_b)
+    assert C.lookup(_fam(base_a), scheme, base_repo = str(base_a)) != path_b
