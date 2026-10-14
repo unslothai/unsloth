@@ -46,6 +46,7 @@ DEVICE_RESERVE_FRACTION = 0.08
 LAYER_ROUNDING_MARGIN = 0.05
 LIST_DEVICES_TIMEOUT_S = 60.0
 WORKER_START_TIMEOUT_S = 60.0
+REACH_TIMEOUT_S = 3.0
 
 _DEVICE_LINE = re.compile(r"^\s+(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]*$")
@@ -229,8 +230,12 @@ def list_devices(binary: str, endpoints: Sequence[str]) -> Tuple[List[Device], s
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], f"{type(exc).__name__}: {exc}"
     devices = parse_device_list(proc.stdout, endpoints)
-    error = "" if devices else ((proc.stderr or "").strip().splitlines() or ["no devices"])[-1]
-    return devices, error[:300]
+    if devices:
+        return devices, ""
+    # An unreachable worker aborts the probe with a backtrace; the reason is the line naming it.
+    lines = [l.strip() for l in (proc.stderr or "").splitlines() if l.strip()]
+    reason = next((l for l in lines if "Failed to connect" in l or "error" in l.lower()), None)
+    return [], (reason or (lines[-1] if lines else "no devices")).split(": ", 1)[-1][:300]
 
 
 def usable_bytes(device: Device) -> float:
@@ -449,9 +454,17 @@ class ClusterServing:
         if not binary:
             self.topology, self.reason = "single", "no local llama-server to plan with"
             return request
-        endpoints = [n.endpoint for n in self.nodes]
-        devices, error = await asyncio.to_thread(list_devices, binary, endpoints)
-        missing = [e for e in endpoints if not any(d.endpoint == e for d in devices)]
+        # One unreachable worker aborts llama.cpp's whole probe, so plan with the ones that answer.
+        reachable = await asyncio.gather(
+            *(ss.wait_for_port(n.host, n.rpc_port, REACH_TIMEOUT_S) for n in self.nodes)
+        )
+        down = [n.endpoint for n, ok in zip(self.nodes, reachable) if not ok]
+        endpoints = [n.endpoint for n, ok in zip(self.nodes, reachable) if ok]
+        devices, error = (
+            await asyncio.to_thread(list_devices, binary, endpoints) if endpoints else ([], "")
+        )
+        missing = down + [e for e in endpoints if not any(d.endpoint == e for d in devices)]
+        self.last_error = ""
         if missing:
             self.last_error = f"no device from {', '.join(missing)}" + (
                 f": {error}" if error else ""
@@ -467,7 +480,9 @@ class ClusterServing:
         if plan.topology != "layer_split":
             self.block = []
             return request
-        used = [e for e in endpoints if any(d.endpoint == e for d in plan.devices)]
+        # RPC<k> counts devices over the probed --rpc list, so every endpoint that exposed one stays
+        # in it even at zero weight; one that exposed none takes no number and is left out.
+        used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
         self.block = split_extra_args(used, plan)
         _remember_block(self.block)
         logger.info("cluster serving: layer split %s", " ".join(self.block))

@@ -18,6 +18,9 @@ from core.inference import spark_serving as ss
 GIB = 2**30
 MIB = 2**20
 
+# Hosts the fake reachability probe reports down.
+DOWN: set = set()
+
 LISTING = """Available devices:
   RPC0: 10.0.0.2:50052 (122502 MiB, 118000 MiB free)
   RPC1: 10.0.0.3:50052 (65536 MiB, 60000 MiB free)
@@ -204,6 +207,12 @@ def _cluster_env(
         return cs.parse_device_list(listing, endpoints), ""
 
     monkeypatch.setattr(cs, "list_devices", fake_list)
+
+    async def reachable(host, port, timeout, **kw):
+        return host not in DOWN
+
+    DOWN.clear()
+    monkeypatch.setattr(ss, "wait_for_port", reachable)
     return seen
 
 
@@ -293,6 +302,32 @@ def test_a_failed_load_puts_the_previous_topology_back(monkeypatch):
     assert ss.status()["topology"] == "single"
     run(ss.load_failed())
     assert ss.status()["topology"] == "layer_split"
+
+
+def test_an_unreachable_worker_is_left_out_and_named(monkeypatch):
+    seen = _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    DOWN.add("10.0.0.3")
+    out = run(ss.before_load(_request(), 4))
+    assert seen[-1][1] == ["10.0.0.2:50052", "10.0.0.4:50052"]
+    assert "10.0.0.3:50052" in ss.status()["last_error"]
+    assert out.llama_extra_args[1] == "10.0.0.2:50052,10.0.0.4:50052"
+
+
+def test_an_unreachable_worker_names_the_connect_failure():
+    stderr = (
+        "/src/ggml-rpc.cpp:743: Failed to connect to 10.0.0.3:50052\n\n"
+        "/b/libllama-common.so.0(+0x1873)[0x72f9483c79e3]\n"
+    )
+    proc = SimpleNamespace(stdout = "", stderr = stderr)
+    import subprocess as sp
+
+    orig = sp.run
+    try:
+        cs.subprocess.run = lambda *a, **k: proc
+        devices, error = cs.list_devices("/b/llama-server", ["10.0.0.3:50052"])
+    finally:
+        cs.subprocess.run = orig
+    assert devices == [] and error == "Failed to connect to 10.0.0.3:50052"
 
 
 def test_an_endpoint_with_no_device_is_reported(monkeypatch):
