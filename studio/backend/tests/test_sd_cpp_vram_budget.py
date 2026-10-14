@@ -74,7 +74,10 @@ def test_only_the_auto_placeholder_is_replaced():
     # An explicit value (the user's, or an earlier launch's) is never widened or rewritten.
     explicit = ["--max-vram", "4"]
     assert args_mod.with_max_vram_budget(explicit, 20.0) == explicit
-    assert args_mod.with_max_vram_budget(["--max-vram", "cuda0=4"], 20.0) == ["--max-vram", "cuda0=4"]
+    assert args_mod.with_max_vram_budget(["--max-vram", "cuda0=4"], 20.0) == [
+        "--max-vram",
+        "cuda0=4",
+    ]
     assert args_mod.with_max_vram_budget(["--offload-to-cpu"], 6.0) == ["--offload-to-cpu"]
     assert args_mod.with_max_vram_budget(_COMMITTED, None) == list(_COMMITTED)
     assert args_mod.with_max_vram_budget(_COMMITTED, {}) == list(_COMMITTED)
@@ -90,7 +93,10 @@ def test_explicit_budget_round_trips_and_scales():
     }
     assert args_mod.explicit_max_vram_gib(["--max-vram", "garbage"]) is None
     assert args_mod.scaled_vram_budget(8.0, 0.75) == 6.0
-    assert args_mod.scaled_vram_budget({"cuda0": 8.0, "cuda1": 4.0}, 0.75) == {"cuda0": 6.0, "cuda1": 3.0}
+    assert args_mod.scaled_vram_budget({"cuda0": 8.0, "cuda1": 4.0}, 0.75) == {
+        "cuda0": 6.0,
+        "cuda1": 3.0,
+    }
     # Below the floor a smaller budget is not a working one.
     assert args_mod.scaled_vram_budget(1.2, 0.75) is None
     assert args_mod.scaled_vram_budget({"cuda0": 8.0, "cuda1": 1.2}, 0.75) is None
@@ -98,9 +104,13 @@ def test_explicit_budget_round_trips_and_scales():
 
 def test_device_oom_text():
     assert args_mod.is_device_oom_text(_AUDIT_OOM)
-    assert args_mod.is_device_oom_text("ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory")
+    assert args_mod.is_device_oom_text(
+        "ggml_vulkan: vk::Device::allocateMemory: ErrorOutOfDeviceMemory"
+    )
     assert args_mod.is_device_oom_text("hipMalloc failed: out of memory")
-    assert not args_mod.is_device_oom_text("sd-cli exited 1. Last output:\n[E] unknown argument --foo")
+    assert not args_mod.is_device_oom_text(
+        "sd-cli exited 1. Last output:\n[E] unknown argument --foo"
+    )
     assert not args_mod.is_device_oom_text(None)
 
 
@@ -163,7 +173,9 @@ def test_retry_cap():
     launched = ["--offload-to-cpu", "--max-vram", "8.00"]
     assert video_mod._h3_retry_vram_cap(launched, _AUDIT_OOM) == 6.0
     assert video_mod._h3_retry_vram_cap(launched, "sd-cli exited 1: bad flag") is None
-    assert video_mod._h3_retry_vram_cap(list(_COMMITTED), _AUDIT_OOM) is None  # sd.cpp's own reading: no retry
+    assert (
+        video_mod._h3_retry_vram_cap(list(_COMMITTED), _AUDIT_OOM) is None
+    )  # sd.cpp's own reading: no retry
     assert video_mod._h3_retry_vram_cap(None, _AUDIT_OOM) is None
 
 
@@ -177,7 +189,14 @@ def test_slot_launches_with_the_budget_but_reuses_on_the_placeholder(monkeypatch
         def __init__(self, binary):
             self.alive = False
 
-        def start(self, files, *, offload = None, env = None, extra_args = None):
+        def start(
+            self,
+            files,
+            *,
+            offload = None,
+            env = None,
+            extra_args = None,
+        ):
             started.append(list(offload))
             self.alive = True
 
@@ -200,7 +219,9 @@ def test_slot_launches_with_the_budget_but_reuses_on_the_placeholder(monkeypatch
     first = slot.get(_COMMITTED, launch_transform = transform)
     # Same committed flags, a different launch-time budget: the live server is reused, not respawned.
     assert slot.get(_COMMITTED, launch_transform = transform) is first
-    assert started == [["--offload-to-cpu", "--diffusion-fa", "--max-vram", "8.00", "--stream-layers"]]
+    assert started == [
+        ["--offload-to-cpu", "--diffusion-fa", "--max-vram", "8.00", "--stream-layers"]
+    ]
     assert slot.launched_flags[3] == "8.00"
     assert slot.alive_signature()[2] == _COMMITTED
     slot.stop()
@@ -217,7 +238,13 @@ class _Server:
     def is_alive(self):
         return self.alive
 
-    def vid_gen(self, payload, *, on_step = None, cancel_event = None):
+    def vid_gen(
+        self,
+        payload,
+        *,
+        on_step = None,
+        cancel_event = None,
+    ):
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
@@ -232,7 +259,15 @@ class _Slot:
         self.launches = []
         self.stops = []
 
-    def get(self, flags = None, env = None, *, cancel_event = None, pre_spawn = None, launch_transform = None):
+    def get(
+        self,
+        flags = None,
+        env = None,
+        *,
+        cancel_event = None,
+        pre_spawn = None,
+        launch_transform = None,
+    ):
         if pre_spawn is not None:
             flags = list(pre_spawn())
         self.launched_flags = tuple(launch_transform(tuple(flags)))
@@ -324,7 +359,9 @@ def test_one_shot_retries_once_smaller_on_device_oom():
             raise RuntimeError("sd-cli exited 1. Last output:\n" + _AUDIT_OOM)
         return "/out.avi"
 
-    assert video_mod._h3_one_shot_with_vram_retry(rt, run, _COMMITTED, threading.Event()) == "/out.avi"
+    assert (
+        video_mod._h3_one_shot_with_vram_retry(rt, run, _COMMITTED, threading.Event()) == "/out.avi"
+    )
     assert seen == ["10.00", "7.50"]
 
     def bad(flags):
@@ -339,7 +376,6 @@ def test_one_shot_retries_once_smaller_on_device_oom():
 
 def _load(monkeypatch, tmp_path, **kw):
     from test_video_backend import _SAGE_HELP, _load_h3_native_offload
-
     return _load_h3_native_offload(monkeypatch, tmp_path, help_text = _SAGE_HELP, **kw)
 
 
@@ -348,13 +384,18 @@ def test_load_commits_the_placeholder_and_a_probe(monkeypatch, tmp_path):
 
     reads = []
     monkeypatch.setattr(
-        video_mod, "_h3_card_free_bytes", lambda device, ordinal: reads.append((device, ordinal)) or int(9 * GiB)
+        video_mod,
+        "_h3_card_free_bytes",
+        lambda device, ordinal: reads.append((device, ordinal)) or int(9 * GiB),
     )
     state, offload = _load_h3_native_offload(monkeypatch, tmp_path, help_text = _GRAPH_CUT_HELP)
     assert offload[offload.index("--max-vram") + 1] == "-1"
     probe = state.pipe.vram_free_probe
     assert probe is not None
-    assert video_mod._h3_budgeted_launch_flags(state.pipe, offload)[offload.index("--max-vram") + 1] == "7.00"
+    assert (
+        video_mod._h3_budgeted_launch_flags(state.pipe, offload)[offload.index("--max-vram") + 1]
+        == "7.00"
+    )
     assert reads and reads[-1][0] == "cuda"
 
 
@@ -363,7 +404,11 @@ def test_load_commits_the_placeholder_and_a_probe(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(
     "torch_cc, reason",
-    [((10, 0), "sd.cpp BF16 cuBLAS matmuls"), ((8, 9), "sd.cpp BF16 cuBLAS matmuls"), ((7, 5), "sd.cpp exact kernels")],
+    [
+        ((10, 0), "sd.cpp BF16 cuBLAS matmuls"),
+        ((8, 9), "sd.cpp BF16 cuBLAS matmuls"),
+        ((7, 5), "sd.cpp exact kernels"),
+    ],
 )
 def test_unreadable_listing_falls_back_to_torch_cc(monkeypatch, tmp_path, torch_cc, reason):
     """--list-devices unreadable (timed out / non-zero exit): nothing is cached, the verdict keeps the GPU, and the
@@ -374,12 +419,16 @@ def test_unreadable_listing_falls_back_to_torch_cc(monkeypatch, tmp_path, torch_
     monkeypatch.setattr(sd_cpp_backend, "_remember_device_listing", lambda *_a: None)
     asked = []
     monkeypatch.setattr(
-        sd_cpp_backend, "torch_cuda_compute_capability", lambda ordinal: asked.append(ordinal) or torch_cc
+        sd_cpp_backend,
+        "torch_cuda_compute_capability",
+        lambda ordinal: asked.append(ordinal) or torch_cc,
     )
     state, _offload = _load(monkeypatch, tmp_path, devices = "", installed_accelerator = "cuda")
     assert asked, "torch was not consulted"
     assert state.resolved["speed_mode"]["reason"] == reason
-    assert (dict(state.pipe.env).get("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH") is not None) == (torch_cc >= (8, 0))
+    assert (dict(state.pipe.env).get("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH") is not None) == (
+        torch_cc >= (8, 0)
+    )
 
 
 def test_base_behaviour_without_fallback_is_exact_kernels(monkeypatch, tmp_path):
@@ -399,15 +448,23 @@ def test_torch_is_not_consulted_when_the_listing_was_read(monkeypatch, tmp_path)
     monkeypatch.delenv("GGML_CUDA_QUANT_CUBLAS_MIN_BATCH", raising = False)
     monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
     monkeypatch.setattr(
-        sd_cpp_backend, "torch_cuda_compute_capability", lambda ordinal: pytest.fail("torch consulted")
+        sd_cpp_backend,
+        "torch_cuda_compute_capability",
+        lambda ordinal: pytest.fail("torch consulted"),
     )
-    state, _ = _load(monkeypatch, tmp_path, devices = _cuda_devices("7.5"), installed_accelerator = "cuda")
+    state, _ = _load(
+        monkeypatch, tmp_path, devices = _cuda_devices("7.5"), installed_accelerator = "cuda"
+    )
     assert state.resolved["speed_mode"]["reason"] == "sd.cpp exact kernels"
 
 
 def test_cc_fallback_rules(monkeypatch):
     monkeypatch.setattr(sd_cpp_backend, "_LAST_DEVICE_LISTING", {})
-    monkeypatch.setattr(sd_cpp_backend, "torch_cuda_compute_capability", lambda ordinal: (9, 0) if ordinal in (None, 1) else None)
+    monkeypatch.setattr(
+        sd_cpp_backend,
+        "torch_cuda_compute_capability",
+        lambda ordinal: (9, 0) if ordinal in (None, 1) else None,
+    )
     kw = dict(binary = "/x/sd-cli", native_device = "cuda", listed_accelerator = True)
     fb = video_mod._h3_cuda_cc_fallback
     assert fb((8, 6), accelerator_names = ("cuda",), device_name = "CUDA0", **kw) == (8, 6)
@@ -418,8 +475,14 @@ def test_cc_fallback_rules(monkeypatch):
     assert fb(None, accelerator_names = ("rocm",), device_name = "ROCm0", **kw) is None
     assert fb(None, accelerator_names = ("cuda",), device_name = "Vulkan0", **kw) is None
     assert (
-        fb(None, binary = "/x/sd-cli", native_device = "cpu", listed_accelerator = True,
-           accelerator_names = ("cuda",), device_name = None)
+        fb(
+            None,
+            binary = "/x/sd-cli",
+            native_device = "cpu",
+            listed_accelerator = True,
+            accelerator_names = ("cuda",),
+            device_name = None,
+        )
         is None
     )
 
