@@ -94,8 +94,12 @@ export const BUDGET = {
   // and #13703 / #13700 the last 61 B. Raised by that growth so main's margin stays where it was.
   // The chat menu's Compact conversation item adds 1.6 KB raw / 0.3 KB transfer to the eager chat chunk
   // (6,741,807 -> 6,743,381 B raw, 2,021,316 -> 2,021,655 B transfer against 2a03c22812), raised by that.
-  transferBytes: 2_027_652,
-  rawBytes: 6_746_927,
+  // Numbers wrapped tightly in dollars render as math (#13649): the shell-context checks that keep
+  // `$1$?`-style shell text literal add 6.8 KB raw / 2.7 KB transfer to the eager chat chunk (6,592.4 ->
+  // 6,599.2 KB raw, 1,981.0 -> 1,983.7 KB transfer against 38ca9963fd, one machine and build, chunk
+  // count unchanged), raised by that.
+  transferBytes: 2_030_417,
+  rawBytes: 6_753_890,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
