@@ -67,7 +67,11 @@ def mps_int8pack_selected(dtype: Any) -> bool:
     return bool(_INT8PACK_PROBED.get(dtype, False))
 
 
-def _median_call_s(fn: Callable[[], Any], sync: Callable[[], None], reps: int = 5) -> float:
+def _median_call_s(
+    fn: Callable[[], Any],
+    sync: Callable[[], None],
+    reps: int = 5,
+) -> float:
     import time
 
     times = []
@@ -103,7 +107,13 @@ def _bench_int8pack_vs_dense(layer: Any, dtype: Any, device: Any) -> tuple:
     return k_s[1], d_s[1]
 
 
-def probe_mps_int8pack(module: Any, dtype: Any, *, device: Any = "mps", logger: Any = None) -> bool:
+def probe_mps_int8pack(
+    module: Any,
+    dtype: Any,
+    *,
+    device: Any = "mps",
+    logger: Any = None,
+) -> bool:
     """Time the Metal kernel against a dense ``dtype`` GEMM on ``module``'s largest kernel-eligible layer, once per
     process and dtype, and record whether forwards take it. The env override skips the probe."""
     import torch
@@ -114,7 +124,8 @@ def probe_mps_int8pack(module: Any, dtype: Any, *, device: Any = "mps", logger: 
         return _INT8PACK_PROBED[dtype]
     cls = native_linear_class()
     layers = [
-        m for m in module.modules()
+        m
+        for m in module.modules()
         if isinstance(m, cls) and m._int8pack_layer_ok(dtype, probe = True)
     ]
     if not layers:
@@ -376,7 +387,11 @@ def native_linear_class():
                 self._int8pack_scales[key] = hit
             return hit[1]
 
-        def _int8pack_layer_ok(self, dtype: Any, probe: bool = False) -> bool:
+        def _int8pack_layer_ok(
+            self,
+            dtype: Any,
+            probe: bool = False,
+        ) -> bool:
             """``probe``: the layer's shape and codes suit the kernel, whatever the probe decided."""
             return (
                 self.scheme == NATIVE_INT8
