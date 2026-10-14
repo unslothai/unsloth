@@ -46,6 +46,7 @@ import tempfile
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -411,10 +412,13 @@ def lookup(
         if keyed is None:
             return None
         key, _parts = keyed
-        artifact = _entry(key)
-        if artifact is None:
-            return None
-        _touch(artifact.parent)
+        # Check + touch under the lock eviction holds while it re-checks an entry: once this returns, the entry was
+        # used within the eviction grace window, so no process removes it before the loader opens it.
+        with _cache_lock():
+            artifact = _entry(key)
+            if artifact is None:
+                return None
+            _touch(artifact.parent)
         return str(artifact)
     except Exception as exc:  # noqa: BLE001
         _log(logger, "warning", f"skipped (lookup failed: {type(exc).__name__}: {exc})")
@@ -424,6 +428,42 @@ def lookup(
 def note_hit(path: Any, logger: Any = None) -> None:
     """Called once the loader really used ``path``."""
     _log(logger, "info", f"hit ({Path(str(path)).parent.name})")
+
+
+_LOCK_NAME = ".lock"
+
+
+# Nesting depth of _cache_lock in this thread's process (introspection for tests only).
+_LOCK_DEPTH = [0]
+
+
+@contextmanager
+def _cache_lock(root: Optional[Path] = None):
+    """Cross-process lock over the cache root, held for short check-and-act sections (lookup's check + touch,
+    eviction's re-check + rename). POSIX flock; where that is unavailable the sections still run, unlocked."""
+    fh = None
+    try:
+        root = root if root is not None else cache_root()
+        root.mkdir(parents = True, exist_ok = True)
+        fh = open(root / _LOCK_NAME, "a+b")
+        try:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
+    except OSError:
+        fh = None
+    _LOCK_DEPTH[0] += 1
+    try:
+        yield
+    finally:
+        _LOCK_DEPTH[0] -= 1
+        if fh is not None:
+            try:
+                fh.close()  # closing the descriptor drops the flock
+            except OSError:
+                pass
 
 
 def _touch(kdir: Path) -> None:
@@ -768,10 +808,15 @@ def evict(
             tomb = path.with_name(
                 f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}"
             )
-            try:
-                os.rename(path, tomb)
-            except OSError:
-                continue
+            # The scan's timestamp may be stale: another process can have resolved this entry since. Re-check under
+            # the lock lookup takes for its check + touch, so a resolved entry is never renamed away under a loader.
+            with _cache_lock(root):
+                if _last_used(path) > cutoff:
+                    continue
+                try:
+                    os.rename(path, tomb)
+                except OSError:
+                    continue
             shutil.rmtree(tomb, ignore_errors = True)
             total -= size
             removed.append(path.name)

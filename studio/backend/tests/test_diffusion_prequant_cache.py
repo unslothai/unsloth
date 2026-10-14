@@ -285,7 +285,8 @@ def test_interrupted_write_leaves_no_entry(env, tmp_path, scheme, monkeypatch):
     monkeypatch.setattr(C, "write_streaming_safetensors", boom)
     assert C.save_runtime_quant(model, fam, base_repo = str(base)) is None
     assert C.lookup(fam, scheme, base_repo = str(base)) is None
-    leftovers = [p for p in env.rglob("*") if p.is_file() and p.name != C.LAST_USED_NAME]
+    # The root's lock file is the cache's own (eviction lease), not a partial entry.
+    leftovers = [p for p in env.rglob("*") if p.is_file() and p.name not in (C.LAST_USED_NAME, C._LOCK_NAME)]
     assert leftovers == []
 
 
@@ -605,3 +606,30 @@ def test_a_full_volume_rotates_stale_entries_out_before_skipping_the_save(env, t
     path = C.save_runtime_quant(model, _fam(base), base_repo = str(base))
     assert path is not None and not stale.exists()
 
+
+def test_eviction_rechecks_an_entry_another_process_just_resolved(env, monkeypatch):
+    """The scan's last-used time is stale once another process resolves the entry: it must survive."""
+    env.mkdir(parents = True)
+    entry = _old_entry(env, "b" * 32, 1000, age = 7200)
+    real_dir_bytes = C._dir_bytes
+
+    def dir_bytes(path):
+        # Another process resolves (and so touches) the entry right after this process scanned it.
+        if path == entry:
+            C._touch(entry)
+        return real_dir_bytes(path)
+
+    monkeypatch.setattr(C, "_dir_bytes", dir_bytes)
+    assert C.evict(root = env, max_bytes = 0) == []
+    assert entry.exists()
+
+
+def test_lookup_takes_the_eviction_lock_for_its_check_and_touch(env, tmp_path, scheme, monkeypatch):
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    path = C.save_runtime_quant(model, _fam(base), base_repo = str(base))
+    held = []
+    real_entry = C._entry
+    monkeypatch.setattr(C, "_entry", lambda key: held.append(C._LOCK_DEPTH[0]) or real_entry(key))
+    assert C.lookup(_fam(base), scheme, base_repo = str(base)) == path
+    assert held == [1]
