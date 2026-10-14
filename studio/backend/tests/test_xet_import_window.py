@@ -70,7 +70,12 @@ class _RecordingFinder:
         self.warm = warm
         self.seen = seen
 
-    def find_spec(self, name, path = None, target = None):
+    def find_spec(
+        self,
+        name,
+        path = None,
+        target = None,
+    ):
         if name != _SHARED:
             return None
         return importlib.util.spec_from_loader(name, self)
@@ -179,7 +184,9 @@ def test_a_failed_first_attempt_keeps_the_window_for_its_retry(warm, shim, monke
     attempts: list = []
 
     def _import(name, package = None):
-        attempts.append((warm._media_import_lock.locked(), warm._media_import_owner == threading.get_ident()))
+        attempts.append(
+            (warm._media_import_lock.locked(), warm._media_import_owner == threading.get_ident())
+        )
         if len(attempts) == 1:
             raise RuntimeError("init raised")
         return fake
@@ -348,7 +355,8 @@ def test_the_dynamo_gate_runs_before_the_window_and_the_window_wraps_the_load_lo
             (
                 node.lineno
                 for node in ast.walk(fn)
-                if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_gate_torch_stack"
+                if isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "_gate_torch_stack"
             ),
             default = None,
         )
@@ -363,6 +371,7 @@ def test_the_dynamo_gate_runs_before_the_window_and_the_window_wraps_the_load_lo
         ]
         assert locks, fn.name
         for lock in locks:
-            assert any(
-                window.lineno < lock.lineno <= window.end_lineno for window in windows
-            ), (fn.name, lock.lineno)
+            assert any(window.lineno < lock.lineno <= window.end_lineno for window in windows), (
+                fn.name,
+                lock.lineno,
+            )
