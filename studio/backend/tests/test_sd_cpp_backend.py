@@ -1612,15 +1612,17 @@ def test_cpu_torch_placement_follows_a_deferred_vulkan_install(monkeypatch, land
     assert ("--offload-to-cpu" in b._state.offload_flags) is lands
 
 
-def test_an_unowned_vulkan_build_on_cpu_torch_still_places_on_vulkan(monkeypatch):
-    # SD_SERVER_PATH builds carry no install record; the resolution names the build instead.
+@pytest.mark.parametrize("listed,expected", [("vulkan", "vulkan"), (None, "cpu")])
+def test_an_unowned_build_on_cpu_torch_places_by_its_device_listing(monkeypatch, listed, expected):
+    # SD_SERVER_PATH builds carry no install record; their --list-devices says what they render on.
     monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: None)
+    monkeypatch.setattr(bk, "sd_cpp_listed_device", lambda binary, *a, **k: (listed, None))
     monkeypatch.setattr(
         SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "vulkan")
     )
     b = SdCppDiffusionBackend()
     _run_server_load(monkeypatch, b, [], device = "cpu")
-    assert b._state.device == "vulkan"
+    assert b._state.device == expected
 
 
 @pytest.mark.parametrize("device,expected", [("cuda", "cpu"), ("xpu", "cpu"), ("mps", "mps")])

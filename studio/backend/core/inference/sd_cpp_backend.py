@@ -3186,9 +3186,9 @@ class SdCppDiffusionBackend:
                 run_accelerator: Optional[str], binary: Optional[str]
             ) -> tuple[str, tuple[str, ...]]:
                 # Read off the build this load runs, never the requested one. SD_SERVER_PATH /
-                # SD_CLI_PATH builds carry no install record, so those take the resolution.
+                # SD_CLI_PATH builds carry no install record, so their own device listing says.
                 if run_accelerator is None and binary:
-                    run_accelerator = self._resolved_accelerator(self._loading_card)
+                    run_accelerator = sd_cpp_listed_device(binary)[0]
                 klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
                 # A CPU torch running the Vulkan build renders on a card torch never measured, so
                 # auto offloads.
