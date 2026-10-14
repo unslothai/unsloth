@@ -5656,7 +5656,7 @@ const Composer: FC<{
     <>
       {!isDictating ? (
         <>
-          <ComposerAttachments />
+          <ComposerAttachments oneRowInChat={true} />
           <PendingAudioChip />
         </>
       ) : null}
