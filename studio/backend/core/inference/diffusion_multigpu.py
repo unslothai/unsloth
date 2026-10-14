@@ -958,6 +958,31 @@ def build_replica(module: Any, device: Any) -> Any:
     return replica
 
 
+_ADAPTER_ATTRS = ("scaling", "active_adapters", "merged_adapters", "disable_adapters", "_disable_adapters")
+
+
+def weights_fingerprint(module: Any) -> int:
+    """Changes whenever the denoiser's weights or adapter state do: a parameter replaced, edited in place (fused
+    LoRA bumps the version counter), added or removed (PEFT injection), or an adapter's scale / activation changed."""
+    parts: list = []
+    for name, param in module.named_parameters():
+        try:
+            version = param._version
+        except Exception:  # noqa: BLE001 - inference tensors carry no version
+            version = -1
+        try:
+            pointer = param.data_ptr()
+        except Exception:  # noqa: BLE001 - wrapper subclasses (torchao) have no storage of their own
+            pointer = id(param)
+        parts.append((name, pointer, version))
+    for name, sub in module.named_modules():
+        for attr in _ADAPTER_ATTRS:
+            value = sub.__dict__.get(attr)
+            if value is not None and not callable(value):
+                parts.append((name, attr, repr(value)))
+    return hash(tuple(parts))
+
+
 _LATENT_KEYS = ("hidden_states", "sample", "x", "latents", "img", "latent")
 
 
@@ -1081,8 +1106,14 @@ class CfgParallelRouter:
         # step's primary branch is queued, so they are always fresh and never wait behind it.
         self.carry: list[Any] = []
         self.next_carry: list[Any] = []
-        self.stats = {"replica_calls": 0, "primary_calls": 0, "steps_parallel": 0, "replica_build_s": None}
-        self._lock = threading.Lock()
+        self.stats = {
+            "replica_calls": 0,
+            "primary_calls": 0,
+            "steps_parallel": 0,
+            "replica_build_s": None,
+            "replica_rebuilds": 0,
+        }
+        self.fingerprint: Optional[int] = None
 
     # -- status
     def describe(self) -> dict[str, Any]:
@@ -1125,6 +1156,8 @@ class CfgParallelRouter:
             self.prev_latent = latent
             self.prefetched.clear()
             self.carry, self.next_carry = self.next_carry, []
+            if self.replica is not None and self.disabled_reason is None:
+                self._drop_if_stale()
             if self.cfg_seen and self.replica is not None and self.disabled_reason is None:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
@@ -1147,6 +1180,21 @@ class CfgParallelRouter:
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
 
+    def _drop_if_stale(self) -> None:
+        module = self.module_ref()
+        if module is None:
+            return
+        try:
+            current = weights_fingerprint(module)
+        except Exception as exc:  # noqa: BLE001 - unverifiable weights: never risk a stale replica
+            self.disable(f"cannot fingerprint the denoiser: {exc}")
+            return
+        if current != self.fingerprint:
+            if self.logger is not None:
+                self.logger.info("diffusion.multigpu: denoiser weights changed; rebuilding the CFG-parallel replica")
+            self.stats["replica_rebuilds"] += 1
+            self.drop_replica()
+
     def _build_replica(self) -> None:
         module = self.module_ref()
         if module is None:
@@ -1162,6 +1210,7 @@ class CfgParallelRouter:
             free, _total = _free_total_mib(self.secondary.index)
             if free is not None and need_mib + 1024 > free:
                 raise RuntimeError(f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}")
+            self.fingerprint = weights_fingerprint(module)
             with _device_context(self.secondary):
                 self.replica = self.replica_factory()
             self.worker = _ReplicaWorker(self.secondary)

@@ -720,3 +720,30 @@ def test_status_reports_a_declined_cfg_parallel():
     other = Pipe()
     assert mg.install_cfg_parallel(other, offload_policy = "none") == "one card selected"
     assert mg.placement_status(other) is None  # one card: nothing to report
+
+
+def test_replica_is_rebuilt_when_the_weights_change():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    router, replicas = _router(dit)
+    _cfg_loop(dit, latents.clone(), steps = 3)
+    assert len(replicas) == 1
+    with torch.no_grad():
+        dit.proj.weight.mul_(0.5)  # an in-place fuse, as a LoRA merge does
+    reference_router = dit.__dict__.pop("forward")
+    reference = _cfg_loop(dit, latents.clone(), steps = 4)
+    dit.forward = reference_router
+    out = _cfg_loop(dit, latents.clone(), steps = 4)
+    assert torch.equal(out, reference)
+    assert router.stats["replica_rebuilds"] == 1 and len(replicas) == 2
+    assert torch.equal(replicas[1].proj.weight, dit.proj.weight)
+
+
+def test_adapter_scale_changes_the_fingerprint():
+    dit = _Dit()
+    before = mg.weights_fingerprint(dit)
+    dit.proj.scaling = {"default": 1.0}
+    with_adapter = mg.weights_fingerprint(dit)
+    dit.proj.scaling = {"default": 0.5}
+    assert len({before, with_adapter, mg.weights_fingerprint(dit)}) == 3
