@@ -574,8 +574,7 @@ def float64_device(device: Any) -> Any:
 
 
 def _rocm_compile_allowed() -> bool:
-    """ROCm may take the regional compile unless ``UNSLOTH_DIFFUSION_ROCM_COMPILE=0``; whether this install can is probed
-    when a compiling tier first asks (``diffusion_rocm_compile``), not here."""
+    """Kill switch only; the install probe runs at compile time (``diffusion_rocm_compile``)."""
     try:
         from .diffusion_rocm_compile import rocm_compile_allowed
         return rocm_compile_allowed()

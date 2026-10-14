@@ -196,7 +196,6 @@ def test_rocm_target(monkeypatch):
     t = dd.resolve_diffusion_device_target()
     assert (t.device, t.backend, t.vendor) == ("cuda", "rocm", "amd")
     assert t.dtype == BF16
-    # ROCm may compile; whether this install can is probed at compile time (diffusion_rocm_compile).
     assert t.supports_default_torch_compile is True
 
 

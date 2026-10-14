@@ -385,13 +385,12 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
 
 
 def rocm_compile_probe_passes(target: Any) -> bool:
-    """True off ROCm; on ROCm, whether one small block compiles and runs correctly here (probed once per process)."""
     if getattr(target, "backend", None) != "rocm":
         return True
     try:
         from .diffusion_rocm_compile import rocm_block_compile_works
         return rocm_block_compile_works(getattr(target, "ordinal", None))
-    except Exception:  # noqa: BLE001 - optimisation only
+    except Exception:  # noqa: BLE001
         return False
 
 

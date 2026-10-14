@@ -2585,7 +2585,6 @@ def test_compile_eligible_on_rocm_follows_the_probe(monkeypatch):
     assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is False
     monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: True)
     assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is True
-    # Off ROCm the probe is never consulted.
     monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: 1 / 0)
     cuda = types.SimpleNamespace(device = "cuda", dtype = "bfloat16", backend = "cuda", supports_default_torch_compile = True)
     assert ds_mod.compile_eligible(cuda, is_gguf = False, family = _family()) is True

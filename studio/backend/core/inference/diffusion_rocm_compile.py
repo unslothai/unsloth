@@ -1,15 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Whether the regional block compile may run on THIS ROCm install.
+"""Per-process probe: can this ROCm install regionally compile a transformer block?
 
-ROCm used to be refused outright: inductor's pooled buffers (``memory_planning``) come back from
-``inductor::_alloc_from_pool`` as views AOTAutograd rejects at the first call. Studio now compiles with
-``memory_planning`` off and never captures graphs on ROCm, which is what the regional compile needs. Whether the
-toolchain (torch, Triton, the HIP compiler) can then build and run a transformer block is a property of the install,
-so it is probed once per process: one small block (LayerNorm, Linear, SDPA, GELU MLP) compiled exactly as the
-default tier compiles (``dynamic=True``, ``fullgraph=True``, no cudagraphs), run at two sequence lengths and checked
-against eager. Any failure keeps the denoiser eager, as before.
+ROCm was refused because inductor's pooled buffers (``memory_planning``) are views AOTAutograd rejects; Studio now
+compiles with it off and no cudagraphs on ROCm. The probe compiles one small block as the default tier does and checks
+it against eager; any failure stays eager.
 
 ``UNSLOTH_DIFFUSION_ROCM_COMPILE``: ``0`` never compiles on ROCm, ``1`` skips the probe, unset / ``auto`` probes.
 """
@@ -40,12 +36,10 @@ def rocm_compile_setting() -> str:
 
 
 def rocm_compile_allowed() -> bool:
-    """The device-level answer: False only when the kill switch says so. The probe runs later, at compile time."""
     return rocm_compile_setting() != "off"
 
 
 def rocm_block_compile_works(device: Any = None) -> bool:
-    """Whether a regional block compile builds and runs correctly here (cached per device for the process)."""
     return rocm_block_compile_probe(device)[0]
 
 
@@ -125,7 +119,7 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
         if worst > 0.05:
             return False, f"compiled block disagrees with eager (rel max err {worst:.3g})"
         return True, f"rel max err {worst:.3g}, {time.perf_counter() - start:.1f}s"
-    except Exception as exc:  # noqa: BLE001 - any failure is the answer
+    except Exception as exc:  # noqa: BLE001
         return False, f"{type(exc).__name__}: {str(exc).splitlines()[0][:300] if str(exc) else ''}"
 
 
