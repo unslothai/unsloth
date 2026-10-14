@@ -1085,6 +1085,24 @@ def _portable(fn: Any, depth: int = 0) -> bool:
     return True
 
 
+# Where a hook shared by a replica may come from. Studio's own hooks keep their per-call state on the module (mirrored
+# by _mirror_hook_state); a foreign hook may keep it in a module global that both threads would then race on, and that
+# cannot be seen from the function, so it declines the replica.
+_TRUSTED_HOOK_MODULES = ("core.inference.", "studio.backend.core.inference.")
+
+
+def _hook_origin(fn: Any) -> str:
+    target = getattr(fn, "func", None) if hasattr(fn, "args") and hasattr(fn, "func") else fn
+    target = getattr(target, "__func__", target)
+    if isinstance(target, (types.FunctionType, types.BuiltinFunctionType)):
+        return str(getattr(target, "__module__", None) or "")
+    return str(getattr(type(target), "__module__", None) or "")
+
+
+def _trusted_hook(fn: Any) -> bool:
+    return _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES) and _portable(fn)
+
+
 def _hooks_present(module: Any) -> Optional[str]:
     """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: a non-offload hook
     registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
@@ -1101,7 +1119,7 @@ def _hooks_present(module: Any) -> Optional[str]:
         if name:
             for attr in ("_forward_hooks", "_forward_pre_hooks"):
                 for hook in (getattr(sub, attr, None) or {}).values():
-                    if not _is_offload_object(hook) and not _portable(hook):
+                    if not _is_offload_object(hook) and not _trusted_hook(hook):
                         return f"{name}.{attr}"
         override = sub.__dict__.get("forward")
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
@@ -1109,7 +1127,7 @@ def _hooks_present(module: Any) -> Optional[str]:
             continue
         if kind == "offload" or _is_offload_object(override):
             continue  # the registry's forward wrapper, dropped with it
-        if callable(override) and not _portable(override):
+        if callable(override) and not _trusted_hook(override):
             return f"{name or '<root>'}.forward (instance override)"
     return None
 

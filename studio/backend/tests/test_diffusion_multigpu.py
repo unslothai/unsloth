@@ -696,9 +696,9 @@ def test_portable_hooks_and_root_hooks_are_accepted():
     torch.manual_seed(0)
     dit = _Dit()
     scale = 0.5
-    dit.proj.register_forward_hook(
-        lambda m, i, o: o * scale
-    )  # captures only a float: shared safely
+    hook = lambda m, i, o: o * scale  # noqa: E731 - captures only a float: shared safely
+    hook.__module__ = mg.__name__  # one of Studio's own hooks
+    dit.proj.register_forward_hook(hook)
     calls = []
     dit.register_forward_pre_hook(
         lambda m, a: calls.append(1)
@@ -1447,3 +1447,30 @@ def test_secondary_free_memory_reads_the_trusted_probe(monkeypatch):
     # Windows ROCm over-reports raw free memory; the capped figure is what budgets the secondary
     assert mg._free_total_mib(1) == (1024, 80 * 1024)
     assert seen == [1]
+
+
+_GLOBAL_HOOK_CALLS = []
+
+
+def _global_state_hook(module, inputs, output):
+    _GLOBAL_HOOK_CALLS.append(1)  # module-global state: invisible to the closure check
+    return output * (1.0 + len(_GLOBAL_HOOK_CALLS) % 2)
+
+
+def test_foreign_submodule_hook_declines_the_replica():
+    dit = _Dit()
+    dit.proj.register_forward_hook(_global_state_hook)
+    assert _global_state_hook.__closure__ is None
+    assert mg._hooks_present(dit) == "proj._forward_hooks"
+    router, replicas = _router(dit)
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    assert replicas == [] and router.stats["replica_calls"] == 0
+    # the same function from a Studio module is shared as before
+    _global_state_hook.__module__, saved = mg.__name__, _global_state_hook.__module__
+    try:
+        assert mg._hooks_present(_Dit()) is None
+        hooked = _Dit()
+        hooked.proj.register_forward_hook(_global_state_hook)
+        assert mg._hooks_present(hooked) is None
+    finally:
+        _global_state_hook.__module__ = saved
