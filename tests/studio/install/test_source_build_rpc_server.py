@@ -250,7 +250,7 @@ class TestSetupShHelpersRun:
         tree, log, env = sh_env
         result = _run_helpers(env, _build_script(tree, "Linux"))
         assert result.returncode == 0, result.stderr
-        calls = log.read_text().splitlines()
+        calls = log.read_text(encoding = "utf-8").splitlines()
         assert calls == [f"--build {tree}/build --config Release --target ggml-rpc-server -j3"]
         assert "BUILD_OK=true" in result.stdout
 
@@ -259,7 +259,7 @@ class TestSetupShHelpersRun:
         result = _run_helpers(env, _build_script(tree, "Linux"), FAIL_RPC = "1")
         assert result.returncode == 0, result.stderr
         assert "BUILD_OK=true" in result.stdout
-        assert len(log.read_text().splitlines()) == 1
+        assert len(log.read_text(encoding = "utf-8").splitlines()) == 1
 
     def test_a_tree_without_the_tool_builds_nothing_and_stays_ok(self, sh_env):
         tree, log, env = sh_env
@@ -275,7 +275,7 @@ class TestSetupShHelpersRun:
             env, _build_script(tree, "Darwin"), OTOOL_OUT = "\t@rpath/libggml-base.0.dylib"
         )
         assert result.returncode == 0, result.stderr
-        assert len(log.read_text().splitlines()) == 1
+        assert len(log.read_text(encoding = "utf-8").splitlines()) == 1
         assert "rebuilding without GGML_RPC" not in result.stdout
         assert "BUILD_OK=true" in result.stdout
 
@@ -314,7 +314,7 @@ class TestSetupShHelpersRun:
         )
         assert result.returncode == 0, result.stderr
         assert "rebuilding without GGML_RPC" in result.stdout
-        calls = log.read_text().splitlines()
+        calls = log.read_text(encoding = "utf-8").splitlines()
         expected_args = (
             "-DGGML_METAL=ON -DGGML_RPC=ON" if metal == "true" else "-DGGML_METAL=OFF -DGGML_RPC=ON"
         )

@@ -86,6 +86,7 @@ def loader():
         _revision_for_tokenizer_repo = lambda *args: None,
         _raise_if_modeling_ignores_config = lambda *args: None,
         raise_if_fast_inference_under_fsdp2 = lambda fast_inference: None,
+        notify_device_map_cannot_span_sparks = lambda device_map: None,
     )
     # Mistral-format checkpoints (#12144) are redirected before the precision check. None of
     # these fixtures is one, so every helper that decides that answers False and the redirect
