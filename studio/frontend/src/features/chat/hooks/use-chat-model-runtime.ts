@@ -2981,7 +2981,12 @@ export function useChatModelRuntime() {
                   ? stateBeforeUnload.preserveThinking
                   : resolvePreserveThinkingOnLoad(loadResponse),
               supportsTools,
-              ...resolveToolsEnabledOnLoad(supportsTools),
+              ...(reloadingSameModel && supportsTools
+                ? {
+                    toolsEnabled: stateBeforeUnload.toolsEnabled,
+                    codeToolsEnabled: stateBeforeUnload.codeToolsEnabled,
+                  }
+                : resolveToolsEnabledOnLoad(supportsTools)),
               kvCacheDtype: loadedKv,
               loadedKvCacheDtype: loadedKv,
               ...mlxRuntimeStateFrom(loadResponse),

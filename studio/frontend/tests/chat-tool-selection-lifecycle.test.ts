@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test, { type TestContext } from "node:test";
 import type * as chatRuntime from "../src/features/chat/stores/chat-runtime-store.ts";
@@ -733,4 +734,52 @@ test("enabling Search on a chat whose stored Research is clamped off clears the 
   assert.equal(threadRows.rows.get(THREAD)?.toolsEnabled, true);
   assert.equal(threadRows.rows.get(THREAD)?.deepResearchEnabled, false);
   assert.equal(runtime.threadScopedOverride("deepResearchEnabled"), false);
+});
+
+test("Research follows the providers store when the browser mirror is empty", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  useExternalProvidersStore.setState({
+    providers: [{
+      id: "codex",
+      providerType: "openai_codex",
+      name: "Codex fixture",
+      baseUrl: "https://chatgpt.com/backend-api/codex",
+      models: ["gpt-5.4"],
+      createdAt: 0,
+      updatedAt: 0,
+    }],
+  });
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-5.4": { studio_tools: true },
+  });
+  assert.equal(storage.get("unsloth_chat_external_providers"), undefined);
+  store.getState().setCheckpoint("external::codex::gpt-5.4", null);
+  store.getState().setDeepResearchEnabled(true);
+  assert.equal(store.getState().deepResearchEnabled, true);
+  assert.equal(runtime.resolveToolsEnabledOnLoad(true).deepResearchEnabled, true);
+});
+
+test("a chat stored before the pill keys has no Search override of its own", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  store.getState().setActiveThreadId(THREAD);
+  store.getState().applyThreadScopedSettings(THREAD, { permissionMode: "ask" });
+  assert.equal(runtime.threadScopedOverride("toolsEnabled"), undefined);
+  assert.equal(runtime.resolveToolsEnabledOnLoad(true).toolsEnabled, false);
+  store.getState().setToolsEnabled(true);
+  assert.equal(runtime.threadScopedOverride("toolsEnabled"), true);
+});
+
+test("a same-model reload keeps the Search and Code pills the model was running with", () => {
+  const hook = readFileSync(
+    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  const marker = "...(reloadingSameModel && supportsTools";
+  const reload = hook.slice(hook.indexOf(marker), hook.indexOf(marker) + 400);
+  assert.match(
+    reload,
+    /\?\s*\{\s*toolsEnabled: stateBeforeUnload\.toolsEnabled,\s*codeToolsEnabled: stateBeforeUnload\.codeToolsEnabled,\s*\}\s*:\s*resolveToolsEnabledOnLoad\(supportsTools\)/,
+  );
 });

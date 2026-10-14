@@ -36,6 +36,7 @@ import {
   externalModelSupportsStudioTools,
   isExternalModelId,
   parseExternalModelId,
+  providerModelSupportsStudioTools,
 } from "../external-providers";
 import { isOllamaManifestRef } from "../utils/qwen-sampling-table";
 import {
@@ -927,7 +928,7 @@ export function threadScopedOverride<K extends ThreadScopedSettingKey>(
   key: K,
 ): ThreadScopedSettings[K] | undefined {
   if (isClampedPillKey(key)) {
-    return pillOnRecord(key) as ThreadScopedSettings[K] | undefined;
+    return pillOverride(key) as ThreadScopedSettings[K] | undefined;
   }
   // Effort is captured before a model pin can overwrite the live value.
   if (key === "reasoningEffort" && activeThreadScopedSettings?.reasoningEffort !== undefined) {
@@ -1020,7 +1021,7 @@ function isClampedPillKey(key: string): key is ClampedPillKey {
   return CLAMPED_PILL_KEYS.some((candidate) => candidate === key);
 }
 
-function pillOnRecord(key: ClampedPillKey): boolean | undefined {
+function pillOverride(key: ClampedPillKey): boolean | undefined {
   const held = heldThreadScopedParamValue(key);
   if (typeof held === "boolean" || pendingSnapshotReadsLive(key)) {
     const live = useChatRuntimeStore.getState();
@@ -1028,10 +1029,16 @@ function pillOnRecord(key: ClampedPillKey): boolean | undefined {
   }
   if (typeof held === "boolean") return held;
   const stored = activeThreadScopedSettings?.[key];
-  if (typeof stored === "boolean") return stored;
-  return threadScopedSettingsThreadId !== null
-    ? globalThreadScopedDefaults?.[key]
-    : undefined;
+  return typeof stored === "boolean" ? stored : undefined;
+}
+
+function pillOnRecord(key: ClampedPillKey): boolean | undefined {
+  return (
+    pillOverride(key) ??
+    (threadScopedSettingsThreadId !== null
+      ? globalThreadScopedDefaults?.[key]
+      : undefined)
+  );
 }
 
 function pendingSnapshotReadsLive(key: ClampedPillKey): boolean {
@@ -3390,9 +3397,14 @@ function noteModelDefaultsBeforeHydration(
 function externalCheckpointRefusesDeepResearch(
   checkpoint: string | null | undefined,
 ): boolean {
+  const parsed = parseExternalModelId(checkpoint);
+  if (!parsed) return false;
+  const provider = useExternalProvidersStore
+    .getState()
+    .providers.find((candidate) => candidate.id === parsed.providerId);
   return (
-    isExternalModelId(checkpoint) &&
-    !externalModelSupportsStudioTools(checkpoint)
+    providerModelSupportsStudioTools(provider?.providerType, parsed.modelId) !==
+    true
   );
 }
 
