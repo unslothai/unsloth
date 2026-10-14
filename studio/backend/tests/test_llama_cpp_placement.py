@@ -5066,6 +5066,34 @@ def test_a_smaller_pass_through_parallel_keeps_the_split(tmp_path, _moe_cache_ho
 
 
 @pytest.mark.parametrize(
+    "extra_args, env, raised",
+    [
+        (["--moe-cache-mib", "4096"], {}, True),
+        (["--moe-cache-mib=auto"], {}, True),
+        ([], {"LLAMA_ARG_MOE_CACHE_MIB": "4096"}, True),
+        (["--moe-cache-mib", "0"], {"LLAMA_ARG_MOE_CACHE_MIB": "4096"}, False),
+        ([], {}, False),
+    ],
+    ids = ["argv_mib", "argv_auto", "env_mib", "argv_zero_beats_env", "no_cache"],
+)
+def test_a_pass_through_moe_cache_leaves_the_share_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env, raised
+):
+    # 80 GiB with 60 GiB of experts on a card with 90,000 MiB free: Studio's reserve sends it to
+    # --fit on, where the fitter keeps every expert resident, so the priced share is 100% and the
+    # raise is dropped. A user's cache takes VRAM that price misses and keeps the experts on the host.
+    monkeypatch.delenv("LLAMA_ARG_MOE_CACHE_MIB", raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    backend, cmd = _cache_launch(
+        tmp_path, memory = [(0, 90_000, 98_000)], size_gib = 80, expert_gib = 60, extra_args = extra_args
+    )
+
+    assert cmd[cmd.index("--fit") + 1] == "on", cmd
+    assert (_ubatch_values(cmd) == ["2048"]) is raised, cmd
+
+
+@pytest.mark.parametrize(
     "extra_args, env",
     [
         (["--fit-ctx", "4096"], {}),

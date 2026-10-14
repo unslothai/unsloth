@@ -28721,6 +28721,13 @@ class LlamaCppBackend:
                         # A --fit-ctx Studio did not emit moves llama.cpp's fit.
                         if _fit_ctx_overridden(_child_extras, _child_env):
                             return None
+                        # A pass-through MoE cache (argv beats env, "0" turns it off) takes VRAM
+                        # these terms do not price and keeps the routed experts on the host.
+                        _cache_mib = _extra_args_device(_child_extras, {"--moe-cache-mib"})
+                        if _cache_mib is None:
+                            _cache_mib = _child_env.get("LLAMA_ARG_MOE_CACHE_MIB")
+                        if _cache_mib is not None and str(_cache_mib).strip() not in ("", "0"):
+                            return None
                         # A GPU projector Studio never sized; Vision off keeps only audio-only.
                         _env_mmproj = _child_env.get("LLAMA_ARG_MMPROJ")
                         # The emitted --mmproj replaces an inherited path (argv after env).
