@@ -4057,6 +4057,7 @@ export const de = {
     discard: "Verwerfen",
     mentions: "Fähigkeiten",
     manage: "Fähigkeiten verwalten",
+    turnOff: "Fähigkeiten ausschalten",
     bulkActions: "Fähigkeiten-Aktionen",
     enableAll: "Alle aktivieren",
     disableAll: "Alle deaktivieren",

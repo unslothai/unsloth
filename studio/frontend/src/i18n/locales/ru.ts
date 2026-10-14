@@ -4012,6 +4012,7 @@ export const ru = {
     discard: "Отменить",
     mentions: "Навыки",
     manage: "Управлять навыками",
+    turnOff: "Отключить навыки",
     bulkActions: "Действия с навыками",
     enableAll: "Включить все",
     disableAll: "Отключить все",

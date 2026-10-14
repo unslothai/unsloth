@@ -4058,6 +4058,7 @@ export const it = {
     discard: "Scarta",
     mentions: "Competenze",
     manage: "Gestisci competenze",
+    turnOff: "Disattiva competenze",
     bulkActions: "Azioni sulle competenze",
     enableAll: "Attiva tutte",
     disableAll: "Disattiva tutte",
