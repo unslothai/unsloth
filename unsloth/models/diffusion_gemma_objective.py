@@ -8,6 +8,7 @@ import contextlib
 
 import torch
 import torch.nn.functional as F
+from transformers.cache_utils import DynamicCache
 
 from .diffusion_loss import chunked_cross_entropy, compile_loss
 from .diffusion_profiles import DiffusionProfile, register_diffusion_profile, unwrap_diffusion_model
@@ -55,6 +56,33 @@ def _eos_token_id(model):
             "Unsloth: DiffusionGemma training needs an eos_token_id to fill the canvas."
         )
     return int(eos)
+
+
+class _DiffusionGemmaPrefixCache(DynamicCache):
+    """Keep the sampled prefix for decoding while the encoder processes the full AR sequence."""
+
+    def __init__(
+        self,
+        ddp_cache_data = None,
+        *,
+        config = None,
+        prefix_indices = None,
+    ):
+        super().__init__(ddp_cache_data = ddp_cache_data, config = config)
+        self.prefix_indices = prefix_indices
+
+    def update(self, key_states, value_states, layer_idx, *args, **kwargs):
+        # The encoder must attend to its unmodified full sequence. Only the stored
+        # decoder context changes, gathered from the full tensors returned by update
+        # rather than the already-trimmed sliding cache.
+        keys, values = super().update(key_states, value_states, layer_idx, *args, **kwargs)
+        layer = self.layers[layer_idx]
+        cache_length = layer.keys.shape[-2]
+        indices = self.prefix_indices[:, self.prefix_indices.shape[1] - cache_length :]
+        indices = indices.to(keys.device)[:, None, :, None]
+        layer.keys = keys.gather(2, indices.expand(-1, keys.shape[1], -1, keys.shape[-1]))
+        layer.values = values.gather(2, indices.expand(-1, values.shape[1], -1, values.shape[-1]))
+        return keys, values
 
 
 class DiffusionGemmaProfile(DiffusionProfile):
@@ -130,7 +158,12 @@ class DiffusionGemmaProfile(DiffusionProfile):
         random_tokens = torch.randint(vocab_size, (batch_size, block_size), device = device)
         canvas_ids = torch.where(corrupt, random_tokens, canvas_target)
 
-        cache_mask = positions < encoder_len[:, None]
+        # Right-align each prefix in the cache's seq_len slots. Sliding layers then
+        # retain the window ending at that row's sampled block, not at the end of
+        # the full clean sequence. RoPE positions stay at the original encoder_len.
+        prefix_positions = positions + encoder_len[:, None] - seq_len
+        prefix_indices = prefix_positions.clamp(min = 0)
+        cache_mask = (prefix_positions >= 0) & attention_mask.bool().gather(1, prefix_indices)
         canvas_mask = torch.ones(batch_size, block_size, dtype = torch.bool, device = device)
         model_kwargs = {
             "input_ids": input_ids,
@@ -142,9 +175,19 @@ class DiffusionGemmaProfile(DiffusionProfile):
         # Two-pass self-conditioning: a no-grad first pass supplies the logits, kept per example with prob p.
         if sc_p > 0:
             with torch.no_grad():
-                model_kwargs["self_conditioning_logits"] = model(**model_kwargs).logits
+                model_kwargs["self_conditioning_logits"] = model(
+                    **model_kwargs,
+                    past_key_values = _DiffusionGemmaPrefixCache(
+                        config = text_config, prefix_indices = prefix_indices
+                    ),
+                ).logits
             model_kwargs["self_conditioning_mask"] = torch.rand(batch_size, device = device) < sc_p
-        outputs = model(**model_kwargs)
+        outputs = model(
+            **model_kwargs,
+            past_key_values = _DiffusionGemmaPrefixCache(
+                config = text_config, prefix_indices = prefix_indices
+            ),
+        )
 
         # Flat CE over the whole canvas, corrupted and clean alike: the uniform kernel's ELBO has no 1/t weight.
         diffusion_target = canvas_target.masked_fill(truncated[:, None] & ~in_response, -100)
