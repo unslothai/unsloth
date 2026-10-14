@@ -49,9 +49,8 @@ class LoadCheckpointRequest(BaseModel):
     )
     offload_layers: Union[Literal["auto"], Annotated[int, Field(ge = 0, le = 1024)]] = Field(
         "auto",
-        description = "Decoder layers kept in host RAM and streamed to the GPU during export load "
-        "(0 = off, 'auto' = as few as fit). Defaults to 'auto' so low-VRAM export does not hit "
-        "bitsandbytes CPU-spill.",
+        description = "Decoder layers kept in host RAM and streamed to the GPU during export "
+        "(0 = off; 'auto' = only when a 4-bit load does not fit in GPU memory).",
     )
     trust_remote_code: bool = Field(
         False,

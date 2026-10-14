@@ -517,7 +517,6 @@ class ExportOrchestrator:
         checkpoint_path: str,
         max_seq_length: int = 2048,
         load_in_4bit: Optional[bool] = True,
-        offload_layers = "auto",
         trust_remote_code: bool = False,
         approved_remote_code_fingerprint: Optional[str] = None,
         hf_token: HfTokenArg = None,
@@ -525,6 +524,7 @@ class ExportOrchestrator:
         subject: Optional[str] = None,
         base_model: Optional[str] = None,
         op_id: Optional[str] = None,
+        offload_layers = "auto",
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -532,7 +532,7 @@ class ExportOrchestrator:
         ``base_model`` pins an already authorized adapter base; the worker then ignores the
         adapter config, which its owner can rewrite after the check.
         ``load_in_4bit = None`` picks 16-bit for an unquantized full fine-tune, else 4-bit.
-        ``offload_layers`` defaults to ``"auto"`` so low-VRAM hosts can load for export.
+        ``offload_layers = "auto"`` streams layers from host RAM only when the load does not fit in VRAM.
         """
         validate_job_paths({"checkpoint_path": checkpoint_path})
         if load_in_4bit is None:
