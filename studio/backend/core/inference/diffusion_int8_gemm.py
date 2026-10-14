@@ -106,13 +106,12 @@ _ALT_TILES: dict = {
     (8, 9): ((128, 128, 128, 8, 8, 3), (128, 128, 64, 8, 8, 4), (128, 128, 64, 8, 4, 4)),
     (12, 0): ((128, 128, 64, 8, 4, 3), (128, 128, 64, 8, 8, 4)),
 }
-# (upper bound exclusive, M timed)
-_M_BUCKETS = ((2048, 1024), (None, 4096))
+# (upper bound exclusive, M timed); the first bound is _SHAPE_MIN_M so tile_for's switch never falls inside a bucket
+_M_BUCKETS = ((1024, 512), (2048, 1024), (None, 4096))
 # Replacing the status quo needs a clear win: near-tie new tiles ran 1.7-3% slower end to end than cuBLAS (A100).
 _CUBLAS_MARGIN = 1.1
-_ALT_MARGIN = 0.97
 _TUNE_MAX_BYTES = 384 << 20
-_TUNE_VERSION = 1
+_TUNE_VERSION = 2
 _CUBLAS = "cublas"
 # device -> {(n, k, bucket): tile or _CUBLAS}
 _DEVICE_PLAN: dict = {}
@@ -1049,8 +1048,9 @@ def _measure(index: int, n: int, k: int, m: int, tiles: tuple) -> dict:
     dev = torch.device("cuda", index)
     m = max(_MIN_ROWS, min(m, _TUNE_MAX_BYTES // (4 * n)))
     with torch.cuda.device(dev):
-        a = torch.randint(-127, 128, (m, k), device = dev, dtype = torch.int8)
-        w = torch.randint(-127, 128, (n, k), device = dev, dtype = torch.int8)
+        g = torch.Generator(device = dev).manual_seed(0)  # private: the caller's CUDA RNG stream is untouched
+        a = torch.randint(-127, 128, (m, k), generator = g, device = dev, dtype = torch.int8)
+        w = torch.randint(-127, 128, (n, k), generator = g, device = dev, dtype = torch.int8)
         xs = torch.full((m,), 1e-3, device = dev, dtype = torch.bfloat16)
         ws = torch.full((n,), 1e-3, device = dev, dtype = torch.bfloat16)
         out: dict = {}
@@ -1079,7 +1079,7 @@ def decide(static: Any, fused_ms: dict, cublas_ms: float) -> Any:
     """The tile or ``_CUBLAS`` for one bucket from its timings (ms per arm); ``static`` is the status quo."""
     fastest = min(fused_ms, key = fused_ms.get)
     stays = static in fused_ms and cublas_ms * _CUBLAS_MARGIN >= fused_ms[static]
-    if static in fused_ms and fused_ms[fastest] >= _ALT_MARGIN * fused_ms[static]:
+    if static in fused_ms and fused_ms[fastest] * _CUBLAS_MARGIN > fused_ms[static]:
         return static if stays else _CUBLAS
     if fused_ms[fastest] * _CUBLAS_MARGIN <= cublas_ms:
         return fastest  # a new tile, clearly faster than both the static tile and cuBLAS
@@ -1095,7 +1095,9 @@ def tune(index: int, shapes: Any) -> dict:
     if default is None:
         return {}
     cap = tuple(torch.cuda.get_device_capability(index))
-    key = toolchain_key(index)
+    # UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0: default tile vs cuBLAS only, in its own file
+    alts = _ALT_TILES.get(cap, ()) if tiles_enabled() else ()
+    key = toolchain_key(index) + ("" if tiles_enabled() else "|tiles0")
     path = _tune_path(key)
     plan = _DEVICE_PLAN.setdefault(index, {})
     stored = _load_plan(path, key)
@@ -1109,7 +1111,7 @@ def tune(index: int, shapes: Any) -> dict:
             choice = stored.get(slot)
             if choice is None:
                 static = tile_for(index, rep_m, n, k)
-                tiles = tuple(dict.fromkeys((static, default, *_ALT_TILES.get(cap, ()))))
+                tiles = tuple(dict.fromkeys((static, default, *alts)))
                 ms = _measure(index, n, k, rep_m, tiles)
                 timings[f"{n},{k},{b}"] = {str(t): round(v, 4) for t, v in ms.items()}
                 fused_ms = {t: v for t, v in ms.items() if t != _CUBLAS}
