@@ -234,7 +234,6 @@ def _hub_cache_roots() -> list:
     roots = [_hub_cache_dir()]
     try:
         from huggingface_hub import constants
-
         other = constants.HF_HUB_CACHE
         if other and (roots[0] is None or os.path.realpath(other) != os.path.realpath(roots[0])):
             roots.append(other)
@@ -600,9 +599,12 @@ def save_runtime_quant(
             # diffusion_prequant.hosted_fast_accum_conflict). A build quantized under a forced different mode would be
             # labelled as the auto one, so it is not cached.
             from .diffusion_transformer_quant import _resolve_fast_accum
-
             if _resolve_fast_accum(info.get("fast_accum")) != parts["fast_accum"]:
-                _log(logger, "info", "skipped (fp8 quantized with a forced non-default accumulate mode)")
+                _log(
+                    logger,
+                    "info",
+                    "skipped (fp8 quantized with a forced non-default accumulate mode)",
+                )
                 return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")

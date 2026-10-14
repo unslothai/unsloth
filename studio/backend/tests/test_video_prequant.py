@@ -1926,7 +1926,9 @@ def test_an_explicit_cached_scheme_seeds_even_when_another_scheme_is_hosted(monk
 
     monkeypatch.setattr(vid, "video_family_prequant_schemes", lambda fam: ("nvfp4",))
     sources = {"nvfp4": object(), "int8": object()}  # int8 resolves only through the local cache
-    monkeypatch.setattr(vdp, "denoiser_prequant_sources", lambda fam, s, base, hf_token = None: sources.get(s))
+    monkeypatch.setattr(
+        vdp, "denoiser_prequant_sources", lambda fam, s, base, hf_token = None: sources.get(s)
+    )
     assert _video_auto(monkeypatch, scheme = "int8", requested = "int8") == "int8"
     # Nothing cached for the requested scheme: still no seed.
     sources.pop("int8")
