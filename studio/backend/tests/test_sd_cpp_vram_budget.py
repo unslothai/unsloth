@@ -354,7 +354,9 @@ def test_server_render_does_not_fall_back_to_sd_cli_after_the_retry_dies(tmp_pat
     assert slot.disabled_reason is None
 
 
-def test_server_render_does_not_fall_back_when_the_retry_start_runs_out_of_memory(tmp_path, monkeypatch):
+def test_server_render_does_not_fall_back_when_the_retry_start_runs_out_of_memory(
+    tmp_path, monkeypatch
+):
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
     slot = _Slot(_Server([RuntimeError(_AUDIT_OOM)]))
     get = slot.get
