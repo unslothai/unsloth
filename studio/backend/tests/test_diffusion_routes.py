@@ -3037,3 +3037,56 @@ def test_external_connection_error_is_a_502_with_the_upstream_reason(client, mon
     assert resp.status_code == 502
     assert "model 'nope' not found" in resp.text
     assert client.get("/api/inference/images/gallery").json()["images"] == []
+
+
+def test_external_connection_does_not_hold_local_chat_swaps(client, monkeypatch):
+    import base64
+    import io
+
+    import httpx
+    from PIL import Image
+
+    import core.inference.llama_keepwarm as kw
+
+    client.app.add_middleware(kw.LlamaKeepWarmMiddleware)
+    monkeypatch.setattr(kw, "_inflight", 0)
+    seen = []
+
+    def handler(req):
+        seen.append(
+            kw.other_inference_request_count(current_request_counted = False, include_pending = False)
+        )
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64)).save(buf, format = "PNG")
+        return httpx.Response(200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]})
+
+    _external_image_connection(monkeypatch, handler)
+    resp = client.post(
+        "/api/inference/images/generate",
+        json = {"prompt": "a sloth", "provider_id": "conn-1", "model": "qwen-image"},
+        headers = {"Authorization": "Bearer session"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert seen == [0]
+    assert kw._inflight == 0
+
+
+def test_external_connection_refuses_a_key_read_after_the_connection_moved(client, monkeypatch):
+    import httpx
+
+    sent = []
+    _external_image_connection(monkeypatch, lambda req: sent.append(req) or httpx.Response(500))
+    rows = iter(["http://127.0.0.1:8000/v1"] * 2 + ["http://10.0.0.9:9000/v1"])
+    monkeypatch.setattr(
+        inference_routes.providers_db,
+        "get_provider",
+        lambda pid: {
+            "provider_type": "custom",
+            "display_name": "Gufo",
+            "base_url": next(rows),
+            "is_enabled": True,
+        },
+    )
+    resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image")
+    assert resp.status_code == 409
+    assert sent == []

@@ -47381,7 +47381,9 @@ async def _external_image_generation(
     from PIL import Image
 
     from core.inference import image_gallery
+    from core.inference.llama_keepwarm import untrack_current_request
 
+    untrack_current_request(request.scope)
     provider_id = body.provider_id.strip()
     external_model = (body.model or "").strip()
     if not external_model:
@@ -47435,6 +47437,14 @@ async def _external_image_generation(
             None,
             allow_saved_key = not _request_has_api_key(request),
         )
+        latest = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        if latest is None or any(
+            latest.get(field) != current.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
 
     client = ExternalProviderClient(
         provider_type = config["provider_type"],
