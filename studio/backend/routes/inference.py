@@ -10084,6 +10084,16 @@ def _anthropic_request_has_image(payload, *, tool_results: bool = True) -> bool:
     return next(_anthropic_image_blocks(payload, tool_results = tool_results), None) is not None
 
 
+def _anthropic_top_level_image_location(payload) -> Optional[str]:
+    ordinals = getattr(payload, "_message_ordinals", None) or []
+    for i, msg in enumerate(payload.messages):
+        if isinstance(msg.content, list):
+            for j, block in enumerate(msg.content):
+                if block.type == "image":
+                    return f"messages.{ordinals[i] if i < len(ordinals) else i}.content.{j}.image"
+    return None
+
+
 def _anthropic_local_image_payloads(payload) -> list[str]:
     encoded_images = []
     for block in _anthropic_image_blocks(payload):
@@ -10364,6 +10374,7 @@ async def _maybe_auto_download_model(
     require_vision: bool = False,
     require_speech: bool = False,
     current_subject: Optional[str] = None,
+    rejection_prefix: str = "",
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
 
@@ -10397,17 +10408,20 @@ async def _maybe_auto_download_model(
         return
     if refusal is None:
         return
+    message = refusal.message
+    if refusal.code == "invalid_value":
+        message = f"{rejection_prefix}{message}"
     path = getattr(getattr(fastapi_request, "url", None), "path", None)
     detail = (
         error_body_for_path(
             path,
-            refusal.message,
+            message,
             status = refusal.status,
             code = refusal.code,
             param = "model",
         )
         if isinstance(path, str)
-        else refusal.message
+        else message
     )
     _record_refused_request(fastapi_request, requested_model, refusal, current_subject)
     raise HTTPException(
@@ -11099,6 +11113,7 @@ async def _maybe_auto_switch_model(
     require_vision: bool = False,
     require_image: bool = True,
     modality_label: str = "image or audio",
+    rejection_prefix: str = "",
     claim_resident: bool = True,
     require_audio_input: bool = False,
     require_video: bool = False,
@@ -11321,6 +11336,7 @@ async def _maybe_auto_switch_model(
                     require_vision = gguf_requires_vision or require_audio_input,
                     require_speech = require_speech,
                     current_subject = current_subject,
+                    rejection_prefix = rejection_prefix,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
@@ -11526,7 +11542,7 @@ async def _maybe_auto_switch_model(
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    f"The requested model does not support the {modality_label} input in this request.",
+                    f"{rejection_prefix}The requested model does not support the {modality_label} input in this request.",
                     status = 400,
                     code = "invalid_value",
                     param = "model",
@@ -42041,6 +42057,10 @@ async def anthropic_messages(
     # only top-level images require vision or rule out server tools.
     _anthropic_top_level_image = _anthropic_request_has_image(payload, tool_results = False)
     _anthropic_image_b64s = _anthropic_local_image_payloads(payload)
+    # Anthropic's block path lets clients drop the image instead of resending it every turn.
+    _anthropic_image_prefix = (
+        f"{_anthropic_top_level_image_location(payload)}: " if _anthropic_top_level_image else ""
+    )
 
     # Mixing Anthropic server tools with custom client tools is unsupported (the
     # server-tool loop can't relay client functions back to the caller). Reject
@@ -42137,6 +42157,7 @@ async def anthropic_messages(
         request,
         current_subject,
         require_vision = _anthropic_top_level_image,
+        rejection_prefix = _anthropic_image_prefix,
         # The image normalization below can still 400 after this switch, so defer the claim:
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
@@ -42166,6 +42187,13 @@ async def anthropic_messages(
     # the local .gguf path (and a legacy raw path in payload.model is sanitized).
     model_name = _llama_public_model_id(llama_backend, payload.model)
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    if _anthropic_top_level_image and not llama_backend.is_vision:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{_anthropic_image_prefix}"
+            "Image provided but current GGUF model does not support vision.",
+        )
 
     # ── Translate Anthropic → OpenAI ──────────────────────────
     openai_messages = anthropic_messages_to_openai(
