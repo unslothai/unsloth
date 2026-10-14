@@ -967,6 +967,8 @@ def _origin_modules(fn: Any) -> list[str]:
         seen += 1
         out.append(str(getattr(fn, "__module__", "") or ""))
         out.append(str(getattr(type(fn), "__module__", "") or ""))
+        # a functools.partial carries the wrapped forward's __module__; its .func names the real origin
+        out.append(str(getattr(getattr(fn, "func", None), "__module__", "") or ""))
         fn = (
             getattr(fn, "__wrapped__", None)
             or getattr(fn, "__func__", None)
@@ -1158,8 +1160,6 @@ def build_replica(module: Any, device: Any) -> Any:
     for sub in replica.modules():
         for key in [k for k, v in sub.__dict__.items() if v is _DROP]:
             del sub.__dict__[key]
-    if isinstance(router, CfgParallelRouter) and router.had_override:
-        _rebind_root_forward(router.orig_forward, module, replica)
         for attr in _ROOT_HOOK_DICTS:
             hooks = sub.__dict__.get(attr)
             if hooks:
@@ -1167,6 +1167,8 @@ def build_replica(module: Any, device: Any) -> Any:
                     del hooks[hook_id]
                     for other in _ROOT_HOOK_DICTS:
                         sub.__dict__.get(other, {}).pop(hook_id, None)
+    if isinstance(router, CfgParallelRouter) and router.had_override:
+        _rebind_root_forward(router.orig_forward, module, replica)
     # The source's own __call__ runs its root hooks around every branch; the copy must not run them a second time.
     for attr in _ROOT_HOOK_DICTS:
         hooks = getattr(replica, attr, None)
