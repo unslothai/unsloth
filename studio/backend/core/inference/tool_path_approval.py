@@ -628,8 +628,7 @@ def _credential_under_silent_root(candidate: str) -> bool:
     return "/auth/" in unified + "/"
 
 
-# Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths, so a
-# command this scan does not model contributes nothing rather than a guess.
+# Commands whose file operands are READ. Deliberately narrow: only names whose operands are unambiguously paths.
 # `zcat --help`: "Usage: zcat [OPTION]... [FILE]...", uncompressing each to stdout. The
 # whole family reads the file it is given exactly as `cat` does.
 # `iconv --help`: "Usage: iconv [OPTION...] [FILE...]", so a bare operand is a file it reads.
@@ -1216,13 +1215,16 @@ _REDIR_HEREDOC_RE = re.compile(r"^\d*<<<?-?$")
 _SHELL_ASSIGN_TOKEN_RE = re.compile(r"^[A-Za-z_]\w*=")
 
 
+# `cmd /c`, `robocopy a b /E` and find's `\;`: a lone rooted word is a switch, not a path.
+_BARE_SWITCH_RE = re.compile(r"^[/\\][^/\\]*$")
+
+
 def _terminal_path_operands(tokens, text = None) -> "list[tuple[str, bool]]":
     """Absolute file operands a command list touches, as ``(path, writing)``.
 
-    Only commands in the tables above contribute operands, and only tokens that look absolute are
-    returned -- a relative operand lands in the session workdir, and a flag value that is not a path
-    (``head -n 5``) cannot look absolute. Redirection targets are included whichever command owns
-    them, since ``> /abs/file`` truncates that file regardless.
+    Only tokens that look absolute are returned -- a relative operand lands in the session workdir,
+    and a flag value that is not a path (``head -n 5``) cannot look absolute. Redirection targets
+    are included whichever command owns them, since ``> /abs/file`` truncates that file regardless.
     """
     # Every operand this can report is absolute in some spelling, and each of those spellings needs
     # one of these characters: a POSIX root or tilde, a UNC or Windows separator, or the colon of a
@@ -1611,7 +1613,14 @@ def _segment_path_operands(segment) -> "list[tuple[str, bool]]":
         read_cmd = True
     dest_last = command in _PATH_DEST_LAST_COMMANDS
     if not (read_cmd or write_cmd or dest_last or flag_only):
-        return launched
+        if command in _classified_terminal_commands():
+            return launched
+        values = (arg.partition("=")[2] if arg.startswith("-") else arg for arg in args)
+        return launched + [
+            (value, False)
+            for value in values
+            if _looks_absolute(value) and not _BARE_SWITCH_RE.match(value)
+        ]
     inplace = command in ("sed", "perl") and any(
         arg in _SED_INPLACE_FLAGS or arg.startswith("--in-place") or _clusters_inplace(arg)
         for arg in args

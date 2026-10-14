@@ -3782,6 +3782,11 @@ _OUTSIDE_SANDBOX_INDIRECT_TERMINAL = (
     # `--output-dir` is where `-O` puts the download, and `-O` itself contributes no operand.
     "curl --output-dir=/media/kuser/MEDIA_SSD/private -O https://example.com/payload",
     "wget --directory-prefix=/media/kuser/MEDIA_SSD/private https://example.com/payload",
+    f"ffmpeg -y -i in.wav {_OUTSIDE_DIR}/interview.wav",
+    f"pandoc notes.md -o {_OUTSIDE_DIR}/report.docx",
+    f"pandoc notes.md --output={_OUTSIDE_DIR}/report.docx",
+    f"magick in.png {_OUTSIDE_DIR}/photo.png",
+    r"ffmpeg -y -i in.wav C:\Users\alice\Documents\interview.wav",
 )
 
 _OUTSIDE_SANDBOX_INDIRECT_PYTHON = (
@@ -4118,6 +4123,11 @@ _INDIRECT_BENIGN_TERMINAL = (
     "unzip a.zip",
     "cat ~/notes.txt",
     "mkdir ~/.config/myapp",
+    "ffmpeg -y -i in.wav out.wav",
+    "ffprobe /usr/share/sounds/alert.wav",
+    "pandoc notes.md --output=report.docx",
+    "export PATH=/home/alice/bin:$PATH",
+    "robocopy src dst /E",
 )
 
 _INDIRECT_BENIGN_PYTHON = (
