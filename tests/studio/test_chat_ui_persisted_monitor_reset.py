@@ -34,7 +34,9 @@ def test_the_stale_page_runs_no_script_before_it_is_replaced():
 
 def test_the_stale_page_is_closed_before_the_fresh_one_writes_storage():
     body = _step_body()
-    assert body.index("page.close()") < body.index("new_throttled_page(ctx)"), (
+    assert body.index("close_page_without_waiting(ctx, page)") < body.index(
+        "new_throttled_page(ctx)"
+    ), (
         "close the stale page first, or its app can rewrite the shared localStorage "
         "after the fresh page has set it"
     )
@@ -58,7 +60,9 @@ def test_every_blocking_call_announces_itself_first():
     body = _step_body()
     handoff = body.index("page = _fresh_page")
     calls = {
-        "page.close()": body.index("page.close()"),
+        "close_page_without_waiting(ctx, page)": body.index(
+            "close_page_without_waiting(ctx, page)"
+        ),
         "ctx.clear_cookies()": body.index("ctx.clear_cookies()"),
         "new_throttled_page(ctx)": body.index("new_throttled_page(ctx)"),
         "page.goto(": body.index("page.goto("),
@@ -76,3 +80,33 @@ def test_every_blocking_call_announces_itself_first():
         assert preceding and preceding[-1].startswith(
             "info("
         ), f"{call} has no breadcrumb directly before it, so a wedge there names the wrong call"
+
+
+def test_the_stale_page_is_closed_without_waiting_on_its_renderer():
+    """page.close() has no timeout and has sat out the step's whole budget on Windows.
+
+    The step closes through close_page_without_waiting (browser-side Target.closeTarget on
+    Chromium), and marks the page stale first, so a request it sends while the browser tears
+    it down is not counted as the fresh page's /api/system poll.
+    """
+    body = _step_body()
+    handoff = body.index("page = _fresh_page")
+    assert "page.close()" not in body[:handoff], "the reset waits on the stale renderer again"
+    close = body.index("close_page_without_waiting(ctx, page)")
+    assert (
+        body.index("stale_pages.add(page)") < close
+    ), "mark the page stale before it can still send"
+    helper = CODE[CODE.index("def close_page_without_waiting(") :]
+    helper = helper[: helper.index("\ndef ")]
+    assert '"Target.closeTarget"' in helper and "new_browser_cdp_session()" in helper
+    assert (
+        'PLAYWRIGHT_BROWSER == "chromium"' in helper
+    ), "CDP is Chromium only; other engines fall back"
+
+
+def test_the_system_request_count_skips_a_stale_page():
+    counter = CODE[CODE.index("def _count_system_request(") :]
+    counter = counter[: counter.index('ctx.on("request", _count_system_request)')]
+    assert (
+        "in stale_pages" in counter
+    ), "requests from a page closed without waiting would read as the monitor polling"
