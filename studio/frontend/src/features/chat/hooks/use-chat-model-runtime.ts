@@ -21,7 +21,10 @@ import {
   isBackendDownForDesktopUpdate,
   isSilencedDesktopUpdateFailure,
 } from "@/lib/desktop-update-activity";
-import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  notifyModelLifecycle,
+  subscribeModelLifecycle,
+} from "@/lib/model-lifecycle-events";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 import {
   type TransferSample,
@@ -870,6 +873,10 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
     useChatRuntimeStore.getState().clearCheckpoint();
   }
   await syncInferenceStatusToStore();
+  // The update also unloads audio.cpp models, and the Audio page holds its own status: a settled
+  // "chat" re-reads its speech slot and "stt" its dictation, else Generate stays enabled and 400s.
+  notifyModelLifecycle({ runtime: "chat", loading: false, model: null });
+  notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
 }
 
 function pickOf(info: {

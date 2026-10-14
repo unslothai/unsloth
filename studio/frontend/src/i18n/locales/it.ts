@@ -1794,7 +1794,23 @@ export const it = {
           "Modello Hugging Face o percorso locale usato per indicizzare e cercare nei tuoi documenti. Il valore predefinito è {defaultModel}.",
         searchPlaceholder: "Cerca qualsiasi modello su HF",
         reindexWarning:
-          "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
+          "Vale solo per i documenti indicizzati da ora in poi. Ricalcola gli embedding di quelli esistenti dopo aver cambiato modello.",
+        reembed: {
+          label: "Ricalcola gli embedding dei documenti",
+          staleOne:
+            "1 documento è stato indicizzato con un altro modello di embedding, quindi la ricerca semantica lo ignora.",
+          staleMany:
+            "{count} documenti sono stati indicizzati con un altro modello di embedding, quindi la ricerca semantica li ignora.",
+          staleArchived:
+            "La cronologia chat precedente è stata indicizzata con un altro modello di embedding, quindi la ricerca semantica la ignora.",
+          running: "Ricalcolo embedding: {done} di {total}",
+          action: "Ricalcola",
+          stop: "Interrompi",
+          startFailed: "Impossibile avviare il ricalcolo degli embedding",
+          stopped: "Ricalcolo degli embedding interrotto",
+          finished: "Embedding dei documenti ricalcolati",
+          finishedWithFailures: "Non è stato possibile ricalcolare {count}",
+        },
         emptyError:
           "Inserisci l'ID di un modello Hugging Face o un percorso locale.",
         loadError:
@@ -3068,6 +3084,7 @@ export const it = {
       desktopAppVersionUnavailable: "Non disponibile",
       packageVersion: "Versione del pacchetto",
       llamaCppVersion: "Versione di llama.cpp",
+      audioCppVersion: "Versione di audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

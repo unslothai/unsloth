@@ -106,6 +106,13 @@ export const BUDGET = {
   // `$1$?`-style shell text literal add 6,984 B raw / 2,836 B transfer to the eager chat chunk
   // (6,753,387 -> 6,760,371 B raw, 2,029,398 -> 2,032,234 B transfer against eba7641835, one machine
   // and build, chunk count unchanged at 95), raised by that.
+  // Re-embedding documents after an embedding model switch (the save toast's action and the Settings row)
+  // adds 3,018 B raw / 905 B transfer (6,760,371 -> 6,763,389 B raw, 2,032,234 -> 2,033,139 B transfer
+  // against 525f3ceae, one machine and build, Node 24, chunk count unchanged at 95). Lazy-loading its store
+  // from both save sites cost 0.3 KB transfer more in chunk overhead, so the budget is raised by that growth.
+  // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
+  // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
+  // against 97ed9415f7, before #13649, one machine and build), raised by that.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -115,9 +122,9 @@ export const BUDGET = {
   // 1,976.5 -> 1,977.7 KB transfer against bfab55021, one machine and build), raised by that.
   // Together they measure 7,058 B raw / 2,903 B transfer against c77695db2 (6,743,283 -> 6,750,341 B
   // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
-  // On top of main's figures after #13649: 2,032,302 + 2,903 transfer, 6,760,750 + 7,058 raw.
-  transferBytes: 2_035_205,
-  rawBytes: 6_767_808,
+  // On top of main's figures after #13621: 2,033,604 + 2,903 transfer, 6,764,921 + 7,058 raw.
+  transferBytes: 2_036_507,
+  rawBytes: 6_771_979,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
