@@ -55,7 +55,7 @@ export const es = {
       enable: "Permitir que los modelos usen el navegador",
       enableDescription: "Los modelos abren páginas en su propia pestaña del navegador, las leen y hacen clic y escriben por ti. También en el menú + del compositor.",
       history: "Historial de navegación",
-      historyDescription: "Elige si los modelos pueden leer tu historial del navegador",
+      historyDescription: "Acceso total omite la aprobación; Nunca sigue bloqueando el acceso",
       alwaysAsk: "Preguntar siempre",
       alwaysAllow: "Permitir siempre",
       never: "Nunca",
@@ -3677,6 +3677,9 @@ export const es = {
       evalSteps: "Pasos entre evaluaciones",
       evalStepsTooltip:
         "Fracción del total de pasos de entrenamiento entre evaluaciones (0-1). Pon 0 para desactivar la evaluación. P. ej. 0.01 = evaluar cada 1 % de los pasos.",
+      earlyStoppingPatience: "Paciencia de parada temprana",
+      earlyStoppingPatienceTooltip:
+        "Detiene el entrenamiento tras este número de evaluaciones seguidas sin una pérdida de evaluación menor y conserva los pesos de la mejor evaluación. Requiere evaluación (pasos entre evaluaciones mayor que 0). 0 para desactivar.",
       seed: "Semilla",
       seedTooltip: "Semilla aleatoria para reproducibilidad.",
       offloadLayers: "Descargar capas",
@@ -4056,6 +4059,7 @@ export const es = {
     discard: "Descartar",
     mentions: "Habilidades",
     manage: "Gestionar habilidades",
+    turnOff: "Desactivar habilidades",
     bulkActions: "Acciones de habilidades",
     enableAll: "Activar todas",
     disableAll: "Desactivar todas",

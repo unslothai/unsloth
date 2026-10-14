@@ -123,6 +123,9 @@ const state: any = {
 
 const useChatRuntimeStore: any = { getState: () => state };
 const useBrowserAgentStore: any = { getState: () => state.browserAgent };
+// The composer's Skills switch (#13687), unset as on a fresh install: skillsForTools() then
+// offers the skill snapshot, the same list the request reads.
+const useSkillsSwitchStore: any = { getState: () => ({ on: null }) };
 
 // Browser use off: the count must match a turn that offers no browser tools.
 function browserAgentToolsForTurn(): string[] {

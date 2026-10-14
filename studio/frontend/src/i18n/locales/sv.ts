@@ -53,7 +53,7 @@ export const sv = {
       enable: "Låt modeller använda webbläsaren",
       enableDescription: "Modeller öppnar sidor i en egen webbläsarflik, läser dem och klickar och skriver åt dig. Finns även i meny + i skrivfältet.",
       history: "Webbhistorik",
-      historyDescription: "Välj om modeller får läsa webbläsarens historik",
+      historyDescription: "Fullständig åtkomst hoppar över godkännande; Aldrig blockerar fortfarande åtkomst",
       alwaysAsk: "Fråga alltid",
       alwaysAllow: "Tillåt alltid",
       never: "Aldrig",
@@ -3851,6 +3851,9 @@ export const sv = {
       evalSteps: "Utvärderingssteg",
       evalStepsTooltip:
         "Andel av totala träningssteg mellan utvärderingar (0–1). Ange 0 för att inaktivera utvärdering. Exempel: 0,01 = utvärdera var 1 % av stegen.",
+      earlyStoppingPatience: "Tålamod för early stopping",
+      earlyStoppingPatienceTooltip:
+        "Stoppar träningen efter så här många utvärderingar i rad utan lägre utvärderingsförlust och behåller vikterna från den bästa utvärderingen. Kräver utvärdering (utvärderingssteg över 0). 0 för att stänga av.",
       seed: "Slumptalets startvärde",
       seedTooltip: "Slumptalets startvärde för reproducerbarhet.",
       offloadLayers: "Avlasta lager",
@@ -4233,6 +4236,7 @@ export const sv = {
     discard: "Ignorera",
     mentions: "Färdigheter",
     manage: "Hantera färdigheter",
+    turnOff: "Stäng av färdigheter",
     bulkActions: "Färdighetsåtgärder",
     enableAll: "Aktivera alla",
     disableAll: "Inaktivera alla",
