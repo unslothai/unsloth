@@ -573,3 +573,60 @@ def test_removing_the_config_retires_the_workers_once_a_load_commits(monkeypatch
     assert stopped == [], "nothing stops before the load commits"
     run(ss.after_load(SimpleNamespace(), 4))
     assert stopped == [1] and cs.state().workers == {}
+
+
+def test_the_projector_is_pinned_to_the_local_device_it_was_charged_to(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    out = run(ss.before_load(_request(), 4))
+    assert out.llama_extra_args[-2:] == ["--mmproj-device", "CUDA0"]
+    # The caller's own choice stands, and a build without the flag gets none.
+    out = run(ss.before_load(_request(llama_extra_args = ["-mmdev", "none"]), 4))
+    assert "--mmproj-device" not in out.llama_extra_args
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: False)
+    out = run(ss.before_load(_request(), 4))
+    assert "--mmproj-device" not in out.llama_extra_args
+
+
+def test_a_disabled_projector_is_not_charged(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    sizes = {"/models/auto-mmproj.gguf": 15 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
+    monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: "/models/auto-mmproj.gguf")
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    request = _request(llama_extra_args = ["--no-mmproj"])
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+
+
+def test_turning_serving_off_retires_the_cluster_at_commit(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    assert cs.state()._backend is backend and not cs.state().workers  # unmanaged nodes
+    monkeypatch.setenv(ss.ENV_TOGGLE, "0")
+    run(ss.before_load(_request(), 4))
+    run(ss.after_load(SimpleNamespace(is_loaded = True), 4))
+    assert cs.state()._backend is None and cs.state()._resident == {}
+
+
+def test_a_worker_the_committed_split_uses_is_kept_when_it_turns_unmanaged(monkeypatch):
+    _cluster_env(monkeypatch)
+    stopped = []
+
+    class Worker:
+        alive = True
+
+        async def stop(self, timeout = 10.0):
+            stopped.append(1)
+
+    cs.state().workers["10.0.0.3:50052"] = Worker()
+    out = run(ss.before_load(_request(), 4))
+    assert "10.0.0.3:50052" in out.llama_extra_args[1]
+    run(ss.after_load(SimpleNamespace(_process = SimpleNamespace(args = out.llama_extra_args)), 4))
+    assert stopped == [] and "10.0.0.3:50052" in cs.state().workers

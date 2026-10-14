@@ -51,6 +51,7 @@ REACH_TIMEOUT_S = 3.0
 # weights for it rather than none.
 KV_UNKNOWN_FRACTION = 0.2
 
+_MMPROJ_DEVICE_FLAGS = frozenset({"--mmproj-device", "-mmdev"})
 _DEVICE_LINE = re.compile(r"^\s+(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]*$")
 
@@ -557,6 +558,15 @@ class ClusterServing:
         # in it even at zero weight; one that exposed none takes no number and is left out.
         used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
         self.block = split_extra_args(used, plan)
+        local = next((d for d in plan.devices if not d.remote), None)
+        if (
+            local is not None
+            and not any(str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in effective)
+            and not os.environ.get("MTMD_BACKEND_DEVICE")
+            and ss.llama_server_supports("--mmproj-device", binary)
+        ):
+            # The projector otherwise follows the first --device, a worker; it was charged here.
+            self.block += ["--mmproj-device", local.name]
         _remember_block(self.block)
         logger.info("cluster serving: layer split %s", " ".join(self.block))
         return ss.SparkServing._request_with(request, {"llama_extra_args": effective + self.block})
@@ -567,8 +577,12 @@ class ClusterServing:
         local_file = ss.cached_repo_file(model_path, variant)
         size = ss.gguf_size_bytes(local_file)
         sidecars, _unknown = ss.sidecar_bytes(extras)
+        from core.inference.llama_server_args import extra_args_disable_mmproj
+
         named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
-        if not any(str(a).split("=", 1)[0] in named for a in extras) and not any(
+        if extra_args_disable_mmproj(extras):
+            pass
+        elif not any(str(a).split("=", 1)[0] in named for a in extras) and not any(
             os.environ.get(k) for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
         ):
             projector = ss.auto_projector_file(
@@ -615,7 +629,8 @@ class ClusterServing:
         self._backend = llama_backend
         self._resident = self.plan.resident() if self.plan is not None else {}
         managed = {n.endpoint for n in self.nodes if n.managed}
-        for endpoint in [e for e in self.workers if e not in managed]:
+        in_use = set(self.block[self.block.index("--rpc") + 1].split(",")) if self.block else set()
+        for endpoint in [e for e in self.workers if e not in managed and e not in in_use]:
             # Dropped from the config (or made unmanaged); the load that just committed does not
             # use it, so it can go now rather than at shutdown.
             process = self.workers.pop(endpoint)

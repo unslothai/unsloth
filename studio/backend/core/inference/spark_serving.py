@@ -3429,10 +3429,15 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
     _STATE.tag_conversation(payload, thread_id)
 
 
+def _cluster_active() -> bool:
+    from core.inference import cluster_serving
+    return (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured()
+
+
 def current_topology() -> Optional[str]:
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and cluster_serving.configured():
+    if cluster_serving._STATE is not None and _cluster_active():
         return cluster_serving._STATE.topology
     # Status polls run this constantly and it used to go through enabled(), which does rail
     # discovery: a sysfs walk and an `ip` fork, measured at 16.2 ms per call on a paired Spark,
@@ -3453,15 +3458,18 @@ async def before_load(
 ) -> Any:
     from core.inference import cluster_serving
 
-    if (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured():
+    if _cluster_active():
         return await cluster_serving.state().before_load(
             request,
             n_parallel,
             inherited_extra_args = inherited_extra_args,
             cancel_event = cancel_event,
         )
-    if cluster_serving._STATE is not None and cluster_serving._STATE.workers:
-        # The cluster config is gone; its workers go once a load that replaces the model commits.
+    if cluster_serving._STATE is not None and (
+        cluster_serving._STATE.workers or cluster_serving._STATE._backend is not None
+    ):
+        # The cluster is off now; its workers and its record of the served split go once a load
+        # that replaces the model commits.
         cluster_serving._STATE.retire_on_commit = not (
             getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
         )
@@ -3497,7 +3505,7 @@ async def after_load(
     """True when the load was cancelled during the replica startup and must be undone."""
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and cluster_serving.configured():
+    if cluster_serving._STATE is not None and _cluster_active():
         await cluster_serving._STATE.after_load(llama_backend)
         return False
     if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
@@ -3519,7 +3527,7 @@ async def after_load(
 async def load_failed() -> None:
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and cluster_serving.configured():
+    if cluster_serving._STATE is not None and _cluster_active():
         await cluster_serving._STATE.load_failed()
         return
     if _STATE is None or not enabled():
@@ -3551,7 +3559,7 @@ async def shutdown() -> None:
 def status() -> Dict[str, Any]:
     from core.inference import cluster_serving
 
-    if (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured():
+    if _cluster_active():
         return cluster_serving.state().status()
     if not enabled():
         return {"enabled": False, "topology": None, "reason": "not a paired DGX Spark"}
