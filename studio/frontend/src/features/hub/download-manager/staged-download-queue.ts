@@ -13,7 +13,16 @@ export interface StagedQueue {
 // Display state only. The owning hook still controls advancement and loading.
 export const useStagedDownloadQueues = create<{
   queues: Record<string, StagedQueue>;
-}>(() => ({ queues: {} }));
+  // Bumped when a session change drops every job, so mounted staging hooks drop their plans too.
+  resets: number;
+}>(() => ({ queues: {}, resets: 0 }));
+
+export function resetStagedQueues() {
+  useStagedDownloadQueues.setState(({ resets }) => ({
+    queues: {},
+    resets: resets + 1,
+  }));
+}
 
 export function publishStagedQueue(owner: string, queue: StagedQueue | null) {
   useStagedDownloadQueues.setState(({ queues }) => {

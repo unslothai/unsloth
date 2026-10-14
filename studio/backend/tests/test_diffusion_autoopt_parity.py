@@ -468,6 +468,11 @@ def snapshot(entry: Callable) -> dict:
     from core.inference import diffusion_transformer_quant
 
     patch.setattr(diffusion_transformer_quant, "_is_consumer_gpu", lambda *a, **k: True)
+    # The fused fp16 RoPE and Wan gates ask whether Triton imports (CPU torch from pip has none); pin them too.
+    from core.inference import diffusion_flux2_rope, video_wan_fused
+
+    patch.setattr(diffusion_flux2_rope, "_kernel", lambda: (lambda *a, **k: None))
+    patch.setattr(video_wan_fused, "_kernels", lambda: {})
     out: dict = {}
     try:
         for backend, fam in _families():
@@ -513,6 +518,9 @@ def test_fixture_covers_every_registered_family(captured):
 
 
 def test_autoopt_resolves_the_same_optimizations_as_before(captured):
+    # The fixture was captured with diffusers installed; without it nothing compiles and the diffusers patches
+    # self-disable, so every case differs. Backend CI has no diffusers.
+    pytest.importorskip("diffusers")
     got = snapshot(autoopt_entry)
     want = captured["cases"]
     assert set(got) == set(want)
@@ -522,6 +530,7 @@ def test_autoopt_resolves_the_same_optimizations_as_before(captured):
 
 def test_legacy_sequence_still_matches_fixture(captured):
     """The fixture is not stale: the old sequence over today's primitives still produces it."""
+    pytest.importorskip("diffusers")  # see test_autoopt_resolves_the_same_optimizations_as_before
     got = snapshot(legacy_entry)
     want = captured["cases"]
     diffs = [case for case in want if got.get(case) != want[case]]

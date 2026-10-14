@@ -67,8 +67,24 @@ export const BUDGET = {
   // growth so main's margin stays where it was.
   // Sidebar server paging adds 17.4 KB raw / 5.6 KB transfer to the first screen (6,544.5 -> 6,561.9
   // KB raw, 1,967.1 -> 1,972.7 KB transfer against b73110c6f, one machine and build), raised by that.
-  transferBytes: 2_021_100,
-  rawBytes: 6_728_100,
+  // /compact and the in-loop compaction divider add 3.6 KB raw / 1.4 KB transfer to the eager startup
+  // JS (6,563.4 -> 6,567.0 KB raw, 1,973.0 -> 1,974.4 KB transfer against 280c45695, one machine
+  // and build), raised by that.
+  // Five merges since then add 2.1 KB raw / 0.8 KB transfer (6,567.3 -> 6,569.4 KB raw, 1,974.5 ->
+  // 1,975.3 KB transfer from a062c04d51 to c35052e42f, one machine and build). The step that crossed
+  // is the token activity Chart view (#13558, +0.7 KB raw / +0.3 KB transfer): its persisted store
+  // pulls zustand/middleware into the startup set as a 99th chunk. Raised by that growth so main's
+  // margin stays where it was.
+  // Six merges since add 2.9 KB raw / 1.4 KB transfer (6,570.7 -> 6,573.6 KB raw, 1,975.5 -> 1,976.9 KB
+  // transfer from b8d76e1696 to 8af12324b0, one machine and build), with the chunk count unchanged and
+  // no single import doing it. The largest step is the audio model selector fix (#13517, +2.9 KB raw /
+  // +0.9 KB transfer); thinking traces (#13545), MLX precision folders (#13565) and vLLM thinking
+  // effort (#13571) add the rest. Raised by that growth so main's margin stays where it was.
+  // The KV cache, GPU memory limit and seed engine options (#13596) add 5.7 KB raw / 1.4 KB transfer
+  // (6,573.5 -> 6,579.2 KB raw, 1,976.9 -> 1,978.3 KB transfer against abfe3142c, one machine and
+  // build), inline in the eager chat and settings chunks like the other engine options; raised by that.
+  transferBytes: 2_026_500,
+  rawBytes: 6_743_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

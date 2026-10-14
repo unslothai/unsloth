@@ -449,13 +449,18 @@ def _local_gguf_entry(
         # and then OOM.
         from core.inference.openai_auto_download import preferred_quant
 
-        # Rank the ROOT checkpoints alone when there are any. A plain local load resolves through non-recursive
-        # detect_gguf_model and so always takes the repo root, while preferred_quant ranks on the key text and would
-        # hand a bare id an equally-good ``distilled/...`` row that sorts earlier -- the same id serving different
-        # weights depending on which resolver answered it. The qualified rows stay advertised; they are not what a bare
-        # id means.
-        unqualified = tuple(q for q in quants if "/" not in q)
-        best = preferred_quant(unqualified or quants)
+        # preferred_quant is order-sensitive: rank only default_gguf_scope, or a sibling checkpoint can win.
+        from hub.utils.gguf import default_gguf_scope
+
+        best = preferred_quant(
+            default_gguf_scope(
+                quants,
+                getattr(info, "id", None),
+                getattr(info, "model_id", None),
+                loader_id,
+                str(cache_repo_dir) if cache_repo_dir is not None else None,
+            )
+        )
         if best and quants[0] != best:
             quants = (best, *(q for q in quants if q != best))
         return _LocalGgufEntry(

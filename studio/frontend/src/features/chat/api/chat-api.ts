@@ -487,6 +487,10 @@ export async function validateModel(
       engine: payload.engine ?? "auto",
       engine_precision: payload.engine_precision ?? "auto",
       engine_parallelism: payload.engine_parallelism ?? "tensor",
+      engine_kv_cache_dtype: payload.engine_kv_cache_dtype ?? "auto",
+      engine_seed: payload.engine_seed ?? null,
+      engine_gpu_memory_utilization:
+        payload.engine_gpu_memory_utilization ?? null,
       // Intended load settings so validate's preflight matches the follow-up /load.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
@@ -642,6 +646,7 @@ export interface CachedGgufRepo {
   task?: string | null;
   audio_type?: string | null;
   audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
   /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
@@ -2049,7 +2054,8 @@ export async function* streamChatCompletions(
           (parsed.type === "tool_start" ||
             parsed.type === "tool_end" ||
             parsed.type === "tool_output" ||
-            parsed.type === "tool_args")
+            parsed.type === "tool_args" ||
+            parsed.type === "tool_model_note")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);

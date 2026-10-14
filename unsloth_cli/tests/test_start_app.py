@@ -58,7 +58,7 @@ def studio(tmp_path, monkeypatch):
             if token not in server["keys"] and token != "jwt":
                 raise start.urllib.error.HTTPError(url, 401, "Unauthorized", {}, None)
             return {"object": "list", "data": [MODEL]}
-        if url.endswith("/api/inference/status"):
+        if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": MODEL["id"]}
         if url.endswith("/api/auth/api-keys") and method == "GET":
             return {"api_keys": [{"key_prefix": CLI_KEY[11:19]}]}

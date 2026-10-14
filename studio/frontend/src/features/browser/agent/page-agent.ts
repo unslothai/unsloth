@@ -592,7 +592,7 @@ export function installPageAgent(): PageAgent {
         : {}),
       ...(!submits && submitter ? { submitter: clean(nameOf(submitter), 200) } : {}),
     };
-    return point ? { ok: true, info, hit: refOf(found), sig: JSON.stringify(info) } : { ok: true, info };
+    return point ? { ok: true, info, hit: refOf(found), sig: JSON.stringify(info), doc: refOf(document.documentElement) } : { ok: true, info };
   };
 
   const stillAt = (at: Point, expect: unknown, sig?: unknown): Element => {
@@ -1120,7 +1120,8 @@ export function installPageAgent(): PageAgent {
           return {
             ok: true,
             quietMs: Math.round(performance.now() - lastMutation),
-            requests: typeof pending === "function" ? Number(pending(since)) || 0 : 0,
+            // Absent where nothing counts them (native views), so a wait can't take that for "none open".
+            ...(typeof pending === "function" ? { requests: Number(pending(since)) || 0 } : {}),
             title: document.title,
             ...view(),
           };

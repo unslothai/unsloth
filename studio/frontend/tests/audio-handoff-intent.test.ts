@@ -11,6 +11,7 @@ const {
   audioPickSearch,
   audioRouteIntent,
   audioWorkflowForPick,
+  audioWorkflowUrlAction,
   validateAudioSearch,
 } = await import("../src/features/audio/route-search.ts");
 
@@ -255,4 +256,142 @@ test("a GGUF pick keeps its format through the Audio route", async () => {
   );
   // Without it the slot picks the STT engine from the repo name alone.
   assert.match(handoff, /isGguf: routeSearch\.gguf/);
+});
+
+test("?workflow= follows the committed page, and a moved URL is a request", () => {
+  const base = { hasModel: false, hasItem: false } as const;
+  // A reload (nothing synced yet) on another page's URL asks for that page.
+  assert.deepEqual(
+    audioWorkflowUrlAction({
+      ...base,
+      urlWorkflow: "transcribe",
+      lastSynced: null,
+      committed: "speak",
+    }),
+    { kind: "intent", workflow: "transcribe" },
+  );
+  // Back/forward off the synced value is a request too.
+  assert.deepEqual(
+    audioWorkflowUrlAction({
+      ...base,
+      urlWorkflow: "clone",
+      lastSynced: "music",
+      committed: "music",
+    }),
+    { kind: "intent", workflow: "clone" },
+  );
+  // A refused request leaves the inputs unchanged, so it is asked again once busy settles.
+  const refused = {
+    ...base,
+    urlWorkflow: "music",
+    lastSynced: "speak",
+    committed: "speak",
+  } as const;
+  assert.deepEqual(audioWorkflowUrlAction(refused), {
+    kind: "intent",
+    workflow: "music",
+  });
+  assert.deepEqual(audioWorkflowUrlAction(refused), {
+    kind: "intent",
+    workflow: "music",
+  });
+  // The page moved on (a tab or title-menu pick): the URL catches up.
+  assert.deepEqual(
+    audioWorkflowUrlAction({
+      ...base,
+      urlWorkflow: "speak",
+      lastSynced: "speak",
+      committed: "separate",
+    }),
+    { kind: "write", workflow: "separate" },
+  );
+  // A bare /audio gets the committed page written in.
+  assert.deepEqual(
+    audioWorkflowUrlAction({
+      ...base,
+      urlWorkflow: null,
+      lastSynced: null,
+      committed: "speak",
+    }),
+    { kind: "write", workflow: "speak" },
+  );
+  assert.deepEqual(
+    audioWorkflowUrlAction({
+      ...base,
+      urlWorkflow: null,
+      lastSynced: "clone",
+      committed: "clone",
+    }),
+    { kind: "write", workflow: "clone" },
+  );
+  // In sync: nothing to do, and no transition (Transcribe's has side effects).
+  assert.deepEqual(
+    audioWorkflowUrlAction({
+      ...base,
+      urlWorkflow: "transcribe",
+      lastSynced: "transcribe",
+      committed: "transcribe",
+    }),
+    { kind: "none" },
+  );
+});
+
+test("the model and Library handoffs own the URL until they clean it up", () => {
+  for (const flags of [
+    { hasModel: true, hasItem: false },
+    { hasModel: false, hasItem: true },
+  ]) {
+    assert.deepEqual(
+      audioWorkflowUrlAction({
+        ...flags,
+        urlWorkflow: "music",
+        lastSynced: null,
+        committed: "speak",
+      }),
+      { kind: "none" },
+    );
+    assert.deepEqual(
+      audioWorkflowUrlAction({
+        ...flags,
+        urlWorkflow: null,
+        lastSynced: "speak",
+        committed: "clone",
+      }),
+      { kind: "none" },
+    );
+  }
+});
+
+test("the URL keeps the page after a handoff instead of clearing it", () => {
+  const handoff = readSrc("features/audio/hooks/use-audio-handoff.ts");
+  // A model handoff leaves its page in the URL, so a reload reopens it.
+  assert.match(
+    handoff,
+    /const settledWorkflow = routedWorkflow \?\? committedWorkflow;\s*lastSyncedWorkflow\.current = settledWorkflow;\s*void navigateSelf\(\{\s*to: "\/audio",\s*search: \{ workflow: settledWorkflow \},\s*replace: true,\s*\}\);/,
+  );
+  assert.doesNotMatch(handoff, /search: \{\}/);
+  // Every write the handoff makes replaces the entry, so syncing never stacks history.
+  const navigations = handoff.match(/navigateSelf\(\{[\s\S]*?\}\);/g) ?? [];
+  assert.ok(navigations.length >= 4, String(navigations.length));
+  for (const call of navigations) assert.match(call, /replace: true/);
+});
+
+test("the first URL commits its page, so the loaded model's page cannot replace it", () => {
+  const base = { hasModel: false, hasItem: false, lastSynced: null } as const;
+  // A reload of ?workflow=speak, or a ?task=text-to-speech link, while the store still holds
+  // its default Speak: without a commit, a loaded music model moved the page to Music.
+  assert.deepEqual(
+    audioWorkflowUrlAction({ ...base, urlWorkflow: "speak", committed: "speak" }),
+    { kind: "intent", workflow: "speak" },
+  );
+  // A bare /audio asks for nothing, so the loaded model's page may still be adopted.
+  assert.deepEqual(
+    audioWorkflowUrlAction({ ...base, urlWorkflow: null, committed: "speak" }),
+    { kind: "write", workflow: "speak" },
+  );
+  const handoff = readSrc("features/audio/hooks/use-audio-handoff.ts");
+  assert.match(
+    handoff,
+    /const urlWorkflow = audioRouteIntent\(routeSearch\);/,
+  );
 });
