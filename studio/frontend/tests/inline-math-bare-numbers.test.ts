@@ -68,6 +68,7 @@ test("numbers written as inline maths render as maths", () => {
     ["| case | value |\n| --- | --- |\n| answer | $42$! |", ["42"]],
     ["answer = $42$!", ["42"]],
     ['- consider "Is it $3$?"', ["3"]],
+    ["The result is $42$(the answer).", ["42"]],
     ["The answer is $42$[source](https://example.com).", ["42"]],
     ["The answer is $42$[^1].\n\n[^1]: Source.", ["42"]],
     ['He said "The answer is $42$[source](https://example.com)."', ["42"]],
@@ -136,6 +137,10 @@ test("a shell parameter right after a positional one stays text", () => {
     ['Run echo "$1$#" to print both.', "$1$#"],
     ['Run echo "$1$@" to print both.', "$1$@"],
     ['Run echo "$1$*" to print both.', "$1$*"],
+    ['echo "$1$*glob*" now.', "$1$*glob*"],
+    ['echo "$1$_name_" now.', "$1$_name_"],
+    ['echo prefix"$1$?" now.', "$1$?"],
+    ["echo prefix'$1$?' now.", "$1$?"],
     ['Run echo "$1$-" to print both.', "$1$-"],
     ['Run echo "$1$!" to print both.', "$1$!"],
     ['Run echo "$1$0" to print both.', "$1$0"],
@@ -233,6 +238,7 @@ test("shell quote state carries across long and multiline words", () => {
   for (const source of [
     `echo "${"x".repeat(512)}$1$?"`,
     `echo "first line\n${"x".repeat(512)}$1$?"`,
+    '> Run echo "first line\n> $1$?"',
   ]) {
     const html = render(source);
     assert.deepEqual(renderedMath(html), [], source);

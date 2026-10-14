@@ -56,7 +56,7 @@ function startsLikeVariable(text: string, at: number): boolean {
 
 const MAX_SHELL_EXPANSION_SPAN = 4096;
 const MAX_MARKDOWN_EMPHASIS_SPAN = 256;
-const SHELL_QUOTE_CONTEXT_CANDIDATE_RE = /\$(?:["'!\-?]|\[)/;
+const SHELL_QUOTE_CONTEXT_CANDIDATE_RE = /\$(?:["'!(*\-?_]|\[)/;
 const SHELL_COMMANDS = new Set([
   "awk",
   "bash",
@@ -92,7 +92,7 @@ const MARKDOWN_TABLE_PREFIX_RE = /^[ \t]*\|/;
 const SHELL_ASSIGNMENT_PREFIX_RE = /(?:^|[;&|]\s*)[A-Za-z_]\w*=$/;
 const SHELL_OPERATOR_PREFIX_RE = /\S\s*[;&|]{1,2}$/;
 const SHELL_QUOTE_BLOCK_START_RE =
-  /(?: {0,3}(?:>[ \t]?|#{1,6}(?=[ \t])|[-+*][ \t]+|\d{1,9}[.)][ \t]+)|[ \t]*\|)/y;
+  /^(?: {0,3}(?:#{1,6}(?=[ \t])|[-+*][ \t]+|\d{1,9}[.)][ \t]+)|[ \t]*\|)/;
 
 function hasCommandArguments(words: string[], at: number): boolean {
   let commandLike = false;
@@ -114,6 +114,7 @@ function hasShellCommandPrefix(
 ): boolean {
   const previousChar = text.charCodeAt(at - 1);
   if (
+    !allowBareCommand &&
     at > 0 &&
     previousChar > 32 &&
     previousChar !== 38 &&
@@ -166,8 +167,17 @@ function hasShellCommandPrefix(
 function startsNewMarkdownBlock(text: string, at: number): boolean {
   const char = text.charCodeAt(at);
   if (at >= text.length || char === 10 || char === 13) return true;
-  SHELL_QUOTE_BLOCK_START_RE.lastIndex = at;
-  return SHELL_QUOTE_BLOCK_START_RE.test(text);
+  const nextEnd = text.indexOf("\n", at);
+  const nextLine = text.slice(at, nextEnd === -1 ? text.length : nextEnd);
+  const nextQuotes = quoteDepth(nextLine);
+  if (nextQuotes === 0) return SHELL_QUOTE_BLOCK_START_RE.test(nextLine);
+
+  const previousEnd = at - 1;
+  const previousStart = text.lastIndexOf("\n", previousEnd - 1) + 1;
+  const previousLine = text.slice(previousStart, previousEnd);
+  if (quoteDepth(previousLine) !== nextQuotes) return true;
+  const content = containerContent(nextLine, EMPTY_LIST_STATE, nextQuotes);
+  return !content.trim() || SHELL_QUOTE_BLOCK_START_RE.test(content);
 }
 
 function findShellQuoteStates(
@@ -200,10 +210,15 @@ function findShellQuoteStates(
     if (char === 92 && activeQuote !== 39) {
       index++;
     } else if (quote === 0 && (char === 34 || char === 39)) {
-      if (char === 39 && isWordChar(text.charCodeAt(index - 1))) {
+      const shellQuote = hasShellCommandPrefix(text, index, true);
+      if (
+        char === 39 &&
+        isWordChar(text.charCodeAt(index - 1)) &&
+        !shellQuote
+      ) {
         continue;
       }
-      quote = hasShellCommandPrefix(text, index, true) ? char : -char;
+      quote = shellQuote ? char : -char;
     } else if (char === activeQuote) {
       quote = 0;
     }
@@ -307,7 +322,10 @@ function startsShellExpansion(
   }
   if (char === 42) return true;
   if (char === 64 || char === 35) return true;
-  return isWordChar(char) || char === 123 || char === 40 || char === 36;
+  if (char === 40) {
+    return quoteState > 0 || hasShellCommandPrefix(text, numericOffset);
+  }
+  return isWordChar(char) || char === 123 || char === 36;
 }
 
 function numericShellParameterStart(text: string, at: number): number {
