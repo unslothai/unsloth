@@ -227,10 +227,11 @@ def _launch(
     plan = False,
 ):
     nested = code2 is not None
-    M = out.shape[0]
     # Under dynamic=True the weight sizes arrive as SymInts; specialize them (an unhashable SymInt
     # in the cached config made Dynamo skip the frame).
     N, K, blocksize, blocksize2 = int(N), int(K), int(blocksize), int(blocksize2)
+    # Rows come from X: an out with spare rows must not launch programs that read past X.
+    M = X.numel() // K
     use_words, grid, block_n, block_k, num_warps = _gemv_config(
         N, K, blocksize, _capability(X.device.index), _word_aligned(W), _FORCE_KERNEL
     )

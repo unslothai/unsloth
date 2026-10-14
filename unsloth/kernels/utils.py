@@ -1469,16 +1469,23 @@ def _gemv_rows(X, W, quant_state, out):
         plan = plans.get(M) if plans is not None else None
         if (
             plan
-            and out is not None
             and plan[0] == W.data_ptr()
             and plan[1] is quant_state.absmax
             and plan[2] is X.dtype
             and X.data_ptr() & 15 == plan[3]
-            and out.dtype is X.dtype
-            and out.data_ptr() & 15 == 0
-            and out.stride(0) == plan[4]
-            and out.stride(-1) == 1
+            and (
+                plan[4] == plan[6]
+                if out is None
+                else (
+                    out.dtype is X.dtype
+                    and out.data_ptr() & 15 == 0
+                    and out.stride(0) == plan[4]
+                    and out.stride(-1) == 1
+                )
+            )
         ):
+            if out is None:
+                out = torch_empty((M, 1, plan[6]), dtype = X.dtype, device = X.device)
             try:
                 if plan[5](X, out):
                     return out
@@ -1503,7 +1510,15 @@ def _gemv_rows(X, W, quant_state, out):
         rerun = gemv_nf4_rows_planned(X, W, *args, out)
         if rerun is not None:
             _rows_plans(quant_state)[M] = _NF4Plan(
-                [W.data_ptr(), quant_state.absmax, X.dtype, X.data_ptr() & 15, out.stride(0), rerun]
+                [
+                    W.data_ptr(),
+                    quant_state.absmax,
+                    X.dtype,
+                    X.data_ptr() & 15,
+                    out.stride(0),
+                    rerun,
+                    int(shape[0]),
+                ]
             )
         return out
     except Exception as error:

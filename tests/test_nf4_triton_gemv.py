@@ -233,6 +233,29 @@ def test_planned_rows_skip_a_strided_out(monkeypatch):
     assert _rel_err(utils.fast_linear_forward(proj, X, out = strided).float(), ref.float()) < TOL[torch.bfloat16]
 
 
+def test_one_row_into_a_taller_out_writes_only_that_row():
+    q, s = _quant(1024, 4096, torch.bfloat16, nested = True)
+    X = torch.randn(1, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    tall = torch.zeros(4, 1, 1024, dtype = torch.bfloat16, device = "cuda")
+    gemv_nf4(X, *_args(q, s), out = tall)
+    torch.cuda.synchronize()
+    assert torch.equal(tall[:1], gemv_nf4(X, *_args(q, s)))
+    assert not tall[1:].any()
+
+
+def test_planned_rows_are_reused_without_an_out(monkeypatch):
+    # fast_geglu_inference calls the gate and up projections with out = None.
+    utils = _utils_with_kernels()
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    proj = _linear4bit(1024, 4096)
+    W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
+    X = torch.randn(3, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    first = utils._gemv_rows(X, W, W_quant, None)
+    monkeypatch.setattr(utils, "_unpack_quant_state", lambda *a: pytest.fail("replanned"))
+    again = utils._gemv_rows(X, W, W_quant, None)
+    assert again.data_ptr() != first.data_ptr() and torch.equal(again, first)
+
+
 def test_larger_decode_batches_still_dequantize(monkeypatch):
     utils = _utils_with_kernels()
     proj = _linear4bit(1024, 4096)
