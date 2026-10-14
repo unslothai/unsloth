@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  DEFAULT_ENGINE_LAUNCH_FIELDS,
+  engineLaunchFieldsFrom,
+  engineLaunchFieldsFromParams,
+} from "./lib/engine-launch-fields";
 import { useChatArtifactsStore } from "./artifacts/store";
 import { mlxRuntimeStateFrom } from "./lib/mlx-runtime-state";
 import { offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
@@ -135,13 +140,12 @@ import {
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
-import { SkillsComposerButton } from "./skills-composer-button";
+import { SkillsComposerButton, useSkillsSwitch } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
-import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
@@ -675,7 +679,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
@@ -779,6 +783,7 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const [skillsSwitchOn] = useSkillsSwitch();
 
   const mentionOpenRef = useRef(false);
   const skillMentions = useTextareaSkillMentions({
@@ -786,7 +791,7 @@ export function SharedComposer({
     setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
-    enabled: supportsTools,
+    enabled: supportsTools && skillsSwitchOn,
   });
   mentionOpenRef.current = skillMentions.inputProps["aria-expanded"];
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -1755,6 +1760,7 @@ export function SharedComposer({
           engine: paneEngine,
           engine_precision: ownConfig.enginePrecision ?? "auto",
           engine_parallelism: ownConfig.engineParallelism ?? "tensor",
+          ...engineLaunchFieldsFromParams(ownConfig),
           load_in_4bit: paneEngine === "auto",
           ...(paneEngine !== "auto" && ownConfig.selectedGpuIds !== undefined
             ? {
@@ -1850,6 +1856,7 @@ export function SharedComposer({
             engine,
             engine_precision: "auto",
             engine_parallelism: "tensor",
+            ...DEFAULT_ENGINE_LAUNCH_FIELDS,
             load_in_4bit: false,
             ...(ownConfig.selectedGpuIds !== undefined
               ? {
@@ -2098,6 +2105,7 @@ export function SharedComposer({
           loadedEngine: resp.engine ?? "auto",
           loadedEnginePrecision: resp.engine_precision ?? "auto",
           loadedEngineParallelism: resp.engine_parallelism ?? "tensor",
+          loadedEngineLaunch: engineLaunchFieldsFrom(resp),
           loadedDisableVision: resp.disable_vision ?? false,
           // Adopted from the echo like the knob above: this pane loaded its own model, so the editable
           // value must follow it or Advanced Settings shows the other pane's Vision state.
@@ -2570,9 +2578,15 @@ export function SharedComposer({
       </DropdownMenuItem>
     ),
     skills: (
-      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+      <DropdownMenuItem
+        className={skillsOn ? "text-primary font-medium" : undefined}
+        onSelect={() => setSkillsOn(!skillsOn)}
+      >
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
+        {skillsOn ? (
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+        ) : null}
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2707,7 +2721,6 @@ export function SharedComposer({
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       data-writing-expanded={isWritingExpanded ? "true" : undefined}
     >
-      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
       <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog

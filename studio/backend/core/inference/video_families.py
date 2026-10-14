@@ -83,7 +83,8 @@ def unsupported_ltx_version(*names: Optional[str]) -> Optional[str]:
 def unsupported_ltx_message(version: str, subject: str) -> str:
     return (
         f"{subject} is LTX-{version}, which Studio does not support yet. Studio runs LTX-2.0 / LTX-2.3 "
-        "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers)."
+        "(Lightricks/LTX-2.3 or unsloth/LTX-2.3-GGUF) and LTX-2.5 (Lightricks/LTX-2.5-Diffusers or "
+        "unsloth/LTX-2.5-GGUF)."
     )
 
 
@@ -288,6 +289,10 @@ class VideoFamily:
     filter_reduction_configs_archs: tuple[tuple[int, int], ...] = field(default_factory = tuple)
     # Curated GGUF repo for the picker (the DiT as single-file GGUF quants).
     gguf_repo: Optional[str] = None
+    # Subdirectory of gguf_repo a bare repo id means; None keeps the root.
+    gguf_default_subdir: Optional[str] = None
+    # Picker label for root files when they differ from gguf_default_subdir ("UD-Q4_K_XL · dev").
+    gguf_root_label: Optional[str] = None
     # Hosted PRE-CAST text-encoder checkpoints as (scheme, component, repo_id); same semantics as
     # DiffusionFamily.te_prequant_repos.
     te_prequant_repos: tuple[tuple[str, str, str], ...] = field(default_factory = tuple)
@@ -563,6 +568,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
                 variant_repos = ("unsloth/LTX-2.5-FP8",),
                 default_on = True,
             ),
+            # ComfyUI's LTX-2.5 templates run the int8-convrot DiT; LPIPS 0.265 = compile floor (FP8 0.366).
+            auto_prequant_when_resident = frozenset({"int8"}),
             untiled_vae = _LTX2_VAE_UNTILED,
             # 2.5 keeps the 2.3 conv VAE encoder (byte-identical weights), so the same latent space.
             compile_static = True,
@@ -596,6 +603,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         ),
         # File sizes (decimal GB): int8 keeps the audio stream, AV cross-attention and adaLN in bf16; fp8 quantizes them.
         prequant_resident_gb_by_scheme = (("int8", 25.11), ("fp8", 19.06)),
+        # Dev DiT at the root, distilled under distilled/; the pack above supplies VAEs and connectors.
+        gguf_repo = "unsloth/LTX-2.5-GGUF",
+        # Family defaults (8 + 3 steps, CFG 1) are the distilled DiT's.
+        gguf_default_subdir = "distilled",
+        gguf_root_label = "dev",
         supports_keyframes = True,
         accepts_last_frame = False,
         # Same DiT layout as LTX-2.3, so the same measured knobs.
@@ -653,6 +665,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
     # temporal compression 4 gives valid frame counts 4k+1. Defaults 20 steps / CFG 5 (ComfyUI's template).
     VideoFamily(
         name = "wan2.2-ti2v-5b",
+        trainable = True,
+        label = "Wan2.2 TI2V 5B",
         profile = FamilyProfile(
             untiled_vae = UntiledVae(bytes_per_latent_pixel = 2.5 * 2**20, output_scale = (16, 4)),
             preview_factors = "wan22_5b",
@@ -993,6 +1007,28 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if candidate.name == "hunyuanvideo-1.5-720p":
                 return candidate
     return fam
+
+
+def gguf_default_subdir_for_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ``gguf_default_subdir`` of the family whose curated ``gguf_repo`` is *repo_id*, or None."""
+    needle = (repo_id or "").strip().casefold()
+    if not needle:
+        return None
+    for fam in _FAMILIES:
+        if fam.gguf_repo and fam.gguf_default_subdir and fam.gguf_repo.casefold() == needle:
+            return fam.gguf_default_subdir
+    return None
+
+
+def gguf_root_label_for_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ``gguf_root_label`` of the family whose curated ``gguf_repo`` is *repo_id*, or None."""
+    needle = (repo_id or "").strip().casefold()
+    if not needle:
+        return None
+    for fam in _FAMILIES:
+        if fam.gguf_repo and fam.gguf_root_label and fam.gguf_repo.casefold() == needle:
+            return fam.gguf_root_label
+    return None
 
 
 def supported_video_family_names() -> tuple[str, ...]:

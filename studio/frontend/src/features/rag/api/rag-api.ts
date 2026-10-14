@@ -15,7 +15,6 @@ import type {
   KnowledgeBase,
   LinkedFolder,
   LinkedFolderScope,
-  PreviewTarget,
   RagDocument,
   UploadedDocument,
 } from "../types/rag";
@@ -820,16 +819,6 @@ export function streamFolderSyncJobEvents(
     `/linked-folder-jobs/${encodeURIComponent(jobId)}/events`,
     signal,
     SSE_STALL_MS,
-  );
-}
-
-export function getPreviewTarget(
-  documentId: string,
-  chunkId?: string,
-): Promise<PreviewTarget> {
-  const qs = chunkId ? `?chunk_id=${encodeURIComponent(chunkId)}` : "";
-  return ragRequest(
-    `/documents/${encodeURIComponent(documentId)}/preview-target${qs}`,
   );
 }
 

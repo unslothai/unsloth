@@ -157,10 +157,10 @@ function harness(
       "@/components/assistant-ui/attachment": {},
       "@/components/assistant-ui/attachment-card-preview": {},
       "@/components/assistant-ui/attachment-document-dialog": {},
+      "./rag-document-trigger": {},
       "@/components/file-viewer": {},
       "@/components/ui/tooltip": {},
       "@/components/ui/spinner": {},
-      "./preview-store": { useDocumentPreviewStore: () => undefined },
       "@/lib/chevron-icons": {},
       "@assistant-ui/react": {
         useAui: () => ({ threadListItem: () => item }),

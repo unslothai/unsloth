@@ -12,6 +12,7 @@ import {
   curatedAudioInventoryMatches,
   curatedAudioInventoryTask,
   filesystemRowsSupportedForTask,
+  isAudioCppUmbrellaRepo,
   macMlxSttRowIsRunnable,
   macTtsHubRowIsRunnable,
   localAudioRowIsUndecodableGguf,
@@ -834,4 +835,127 @@ test("music and audio-to-audio picks route only when the Audio page runs them", 
     pick({ id: "someone/codec-GGUF", task: "audio-to-audio", isGguf: true, taskFromGgufArch: true }),
     false,
   );
+});
+
+test("the multi-model package repo, its forks and mirrors are never a runnable row", () => {
+  const umbrellas = [
+    "audio-cpp/audio.cpp-gguf",
+    "Audio-Cpp/Audio.cpp-GGUF",
+    "saxyZ/audio.cpp-gguf-fork",
+    "CaptainArni/audio.cpp-gguf",
+  ];
+  for (const id of umbrellas) {
+    assert.equal(isAudioCppUmbrellaRepo(id), true, id);
+    for (const [isStt, isTts] of [
+      [false, true],
+      [true, false],
+    ] as const) {
+      assert.equal(
+        communityAudioRowIsRunnable({ isStt, isTts, isGguf: true, id, tags: ["audio.cpp"] }),
+        false,
+        id,
+      );
+    }
+    for (const task of [
+      "text-to-speech",
+      "automatic-speech-recognition",
+      "text-to-audio",
+    ]) {
+      assert.equal(
+        audioPickIsRoutable({ id, task, isGguf: true, isCurated: false }),
+        false,
+        `${id} ${task}`,
+      );
+    }
+  }
+  for (const id of [
+    "audio-cpp/VibeVoice-7B-GGUF",
+    "audio-cpp/audio.cpp-gguf/Kokoro-82M-GGUF",
+    "someone/audiocpp-tools",
+  ]) {
+    assert.equal(isAudioCppUmbrellaRepo(id), false, id);
+  }
+  assert.equal(
+    communityAudioRowIsRunnable({
+      isStt: false,
+      isTts: true,
+      isGguf: true,
+      id: "audio-cpp/VibeVoice-7B-GGUF",
+    }),
+    true,
+  );
+  assert.equal(
+    audioPickIsRoutable({
+      id: "audio-cpp/VibeVoice-7B-GGUF",
+      task: "text-to-audio",
+      isGguf: true,
+      isCurated: false,
+    }),
+    true,
+  );
+});
+
+test("audio pickers list only task rows, so Recommended paging ends; chat stays untasked", () => {
+  assert.match(
+    pickerSource,
+    /const recommendedSearch = useHubModelSearch\("", \{[\s\S]{0,200}?task: audioTaskPicker \? task : undefined,/,
+  );
+  assert.match(
+    pickerSource,
+    /const audioTaskPicker = taskFilterHasAudio\(task\);/,
+  );
+});
+
+test("audio Recommended has no sort control and keeps the fit toggle in the format menu", () => {
+  assert.match(
+    pickerSource,
+    /const sectionSortDropdown =\s*section === "recommended" && audioTaskPicker \? null : section === "recommended" \?/,
+  );
+  // Non-audio pickers keep the sort menu with the fit footer.
+  assert.match(
+    pickerSource,
+    /ariaLabel="Sort Unsloth models"[\s\S]{0,500}?footer=\{fitOnDeviceFooter\}/,
+  );
+  assert.match(
+    pickerSource,
+    /ariaLabel="Filter by format"[\s\S]{0,300}?footer=\{\s*audioTaskPicker && section === "recommended"\s*\? fitOnDeviceFooter\s*: undefined\s*\}/,
+  );
+});
+
+test("search waits on the community search and shows its failure", () => {
+  assert.match(
+    pickerSource,
+    /const communitySearching =\s*communitySearchActive && communityQuerySearch\.isLoading;/,
+  );
+  assert.match(
+    pickerSource,
+    /const searchEmpty = recommendedEmptyState\(\{\s*isLoading: isLoading \|\| communitySearching,\s*error: searchError \?\? communitySearchError,/,
+  );
+  assert.match(
+    pickerSource,
+    /\{searchRowIds\.length === 0 &&\s*!isLoading &&\s*!communitySearching \?/,
+  );
+  assert.match(
+    pickerSource,
+    /<HubFailureHint\s*message=\{searchError \?\? communitySearchError\}\s*onRetry=\{\s*searchError\s*\? retrySearch\s*: communityQuerySearch\.retry\s*\}/,
+  );
+});
+
+test("the search placeholder names community models only when they are searched", () => {
+  assert.match(
+    pickerSource,
+    /: communityDiscoveryEnabled\s*\? "Search models"\s*: "Search Unsloth models"/,
+  );
+});
+
+test("task pickers offer MLX only on a Mac and coerce a stale filter", () => {
+  assert.match(
+    pickerSource,
+    /formatFilterValues\(\{ npu: !!npuCatalog, mlx: isMac \|\| !task \}\)/,
+  );
+  assert.match(
+    pickerSource,
+    /const formatFilter = coerceFormatFilter\(\s*chosenFormatFilter,\s*offeredFormatFilters,\s*\);/,
+  );
+  assert.match(pickerSource, /options=\{formatFilterOptions\}/);
 });
