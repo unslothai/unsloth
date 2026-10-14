@@ -7014,7 +7014,7 @@ class TestInProcessMessages:
         "fields, reason, multiple",
         [
             ({}, None, None),
-            (_IP_FORMAT, "JSON output", None),
+            (_IP_FORMAT, None, None),
             ({"enable_tools": True, "permission_mode": "off"}, None, None),
             (
                 {"messages": [{"role": "user", "content": [_IP_IMAGE, _IP_IMAGE]}], "vision": True},
@@ -7045,6 +7045,15 @@ class TestInProcessMessages:
         assert ("req" in self.seen) is vision
         if not vision:
             assert err.value.detail.startswith("messages.2.content.1.image: ")
+
+    @pytest.mark.parametrize("choice, kept", [(None, True), ({"type": "auto"}, False)])
+    def test_a_json_output_format_reaches_chat_unless_a_tool_may_run(
+        self, monkeypatch, choice, kept
+    ):
+        tool = {"name": "lookup", "input_schema": {"type": "object"}}
+        tools = {"tools": [tool], "tool_choice": choice} if choice else {}
+        self._serve(monkeypatch, 0, **_IP_FORMAT, **tools)
+        assert (self.seen["req"].response_format is not None) is kept
 
     @pytest.mark.parametrize("stream", [1, 0])
     def test_server_tools_run_in_chats_loop_and_answer_as_on_llama_server(

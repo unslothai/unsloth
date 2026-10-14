@@ -42770,6 +42770,10 @@ async def _anthropic_in_process_messages(
             status_code = 400,
             detail = anthropic_error_body(refusal, status = 400, err_type = "invalid_request_error"),
         )
+    # Validated against llama.cpp's compiler before the switch; dropped when a tool may run, as there.
+    response_format = _anthropic_response_format(payload, require_llama_compatibility = False)
+    if (server_tools or fields["tools"]) and fields["tool_choice"] != "none":
+        response_format = None
     model_name = _orchestrator_public_model_id(backend) or payload.model
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
     disable_parallel = bool(
@@ -42799,6 +42803,7 @@ async def _anthropic_in_process_messages(
         parallel_tool_calls = False if disable_parallel else None,
         cancel_id = payload.cancel_id,
         session_id = payload.session_id,
+        response_format = response_format,
     )
 
     monitor_id = None
@@ -42867,7 +42872,7 @@ async def _anthropic_in_process_messages(
                 openai_tools = chat_req.tools,
                 allowed_tools = None,
                 disable_parallel_tool_use = disable_parallel,
-                response_format = None,
+                response_format = response_format,
                 parse_think = True,
             )
     except asyncio.CancelledError:
@@ -43036,14 +43041,6 @@ async def anthropic_messages(
     _in_process_refusal = None
     if not _chat_parts[1]:
         _in_process_refusal = "At least one non-system message is required."
-    elif _response_format is not None and not (
-        (_has_client_tool or _server_tools_requested_pre)
-        and anthropic_tool_choice_to_openai(payload.tool_choice) != "none"
-    ):
-        _in_process_refusal = (
-            "A JSON output format needs the llama.cpp grammar engine, and "
-            f"'{payload.model}' is not a GGUF model."
-        )
     # Chat's image checks for a non-GGUF target; b64s stays what a GGUF target validates.
     _anthropic_image_preflight = None
     if _anthropic_has_image:
