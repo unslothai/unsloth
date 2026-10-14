@@ -2170,6 +2170,92 @@ def test_relaunch_budget_resets_after_a_peer_recovers(monkeypatch):
     assert not state.relaunch_gave_up
 
 
+def test_a_relaunched_rpc_server_recovers_without_a_router(monkeypatch):
+    """Regression: a layer split has no router, so a relaunched ggml-rpc-server was judged by router
+    health it could never have and restarted through the whole budget."""
+    import asyncio
+
+    state = ss.SparkServing()
+
+    class _Proc:
+        name, peer, returncode, remote_pid = "ggml-rpc-server", "peer", 1, 7
+        argv = ["/b/ggml-rpc-server", "-H", "peer", "-p", "50052"]
+        tail: list = []
+        started_at = 1.0
+        alive = True
+
+        async def stop(self, timeout = None):
+            pass
+
+        async def start(self):
+            pass
+
+    asked = []
+
+    async def _owns(
+        process,
+        host,
+        port,
+        timeout,
+        *,
+        cancelled = None,
+    ):
+        asked.append((host, port))
+        return True
+
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(ss.asyncio, "sleep", lambda *_a, **_k: real_sleep(0))
+    monkeypatch.setattr(ss, "wait_for_own_port", _owns)
+    state.peer_process = _Proc()
+    state.attached_backend = object()
+    state.topology = "layer_split"
+    state.relaunch_attempts = 1
+
+    asyncio.run(state._relaunch_peer())
+
+    assert asked == [("peer", 50052)]
+    assert state.relaunch_attempts == 0 and not state.relaunch_gave_up
+    assert state.relaunch_log[-1]["event"] == "recovered"
+
+
+def test_a_new_primary_on_the_same_port_resyncs_the_replica(monkeypatch, tmp_path):
+    """Regression: crash recovery that reused the port never resynced, so a rotated key left the
+    replica held out of rotation for good."""
+    monkeypatch.chdir(tmp_path)
+    key = tmp_path / "llama_api_key_0123"
+    key.write_bytes(b"old")
+    primary = ["/l/llama-server", "-m", "/m.gguf", "--port", "9000", "--api-key-file", str(key)]
+    state, events = _replica_state(
+        ss.replica_argv(primary, binary = "/peer/llama-server", host = "192.168.200.13", port = 8081)
+    )
+    state.peer_keys = {str(key): b"old"}
+    held = []
+
+    async def _address(name, host, port):
+        pass
+
+    async def _hold(name, reason):
+        held.append("hold")
+
+    state.router = SimpleNamespace(
+        set_backend_address = _address, hold = _hold, release = lambda name: held.append("release")
+    )
+
+    async def copy(peer, files):
+        return None
+
+    monkeypatch.setattr(ss, "replicate_secret_files", copy)
+    first = _primary(primary)
+    state.attached_port, state.attached_process = 9000, first._process
+    respawned = _primary(primary)
+    respawned._port, respawned._healthy = 9000, True
+    key.write_bytes(b"new")
+    run(state._repoint_primary(respawned))
+    assert state.peer_keys == {str(key): b"new"} and held[-1] == "release"
+    assert state.attached_process is respawned._process
+    assert events[-1] == ("start", list(state.peer_process.argv))
+
+
 def test_a_peer_that_never_becomes_healthy_spends_the_relaunch_budget(monkeypatch):
     # A large model spends minutes inside load_model before it can OOM, so a peer that dies there is
     # alive at the three second settle EVERY time.
@@ -2652,17 +2738,28 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
         async def die_after_the_probe(self):
             self.alive = not self._dies
 
+    listener = {"pid": 4242}
+
     async def pid_is_live(
         peer,
         remote,
         timeout = 20.0,
     ):
+        if remote.startswith("ss "):
+            line = (
+                f'LISTEN 0 512 1.2.3.4:50052 0.0.0.0:* users:(("rpc",pid={listener["pid"]},fd=3))'
+            )
+            return 0, line + "\n", ""
         return 0, "PIDLIVE\n", ""
 
     monkeypatch.setattr(ss, "ssh_run", pid_is_live)
 
     ours = _Child(dies = False)
     assert run(ss.wait_for_own_port(ours, "1.2.3.4", 50052, 5.0)) is True
+    # Alive but still starting while a stale server holds the port: not ours, whatever answers.
+    listener["pid"] = 999
+    assert run(ss.wait_for_own_port(_Child(dies = False), "1.2.3.4", 50052, 1.5)) is False
+    listener["pid"] = 4242
 
     class _Doomed:
         alive = True

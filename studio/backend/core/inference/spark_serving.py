@@ -1169,6 +1169,14 @@ def redacted_argv(argv: List[str]) -> List[str]:
     return out
 
 
+def _argv_value(argv: Sequence[str], flag: str) -> Optional[str]:
+    tokens = [str(a) for a in argv]
+    for index, token in enumerate(tokens):
+        if token == flag and index + 1 < len(tokens):
+            return tokens[index + 1].strip()
+    return None
+
+
 def rpc_server_argv(binary: str, *, bind: str, port: int, cache: bool) -> List[str]:
     """``ggml-rpc-server`` on the peer. `-c` writes every received tensor to the peer's disk, a copy
     of the remote half of the model, so it is only enabled where the user already keeps the GGUF."""
@@ -2194,7 +2202,36 @@ async def wait_for_own_port(
         return False
     # ``process.alive`` is the LOCAL ssh session, and it is not a timely answer about the remote
     # child.
-    return await peer_pid_alive(process)
+    if not await peer_pid_alive(process):
+        return False
+    # Alive is not bound: a child still starting while a stale server holds the port looks the same.
+    deadline = time.monotonic() + timeout
+    while True:
+        owner = await peer_port_owner(process, port)
+        if owner is None or owner:
+            return True  # None: the peer cannot say (no ss), so alive is the best evidence
+        if time.monotonic() >= deadline or (cancelled is not None and cancelled()):
+            return False
+        if not process.alive or not await peer_pid_alive(process):
+            return False
+        await asyncio.sleep(1.0)
+
+
+async def peer_port_owner(process: "PeerProcess", port: int) -> Optional[bool]:
+    """Whether the listener on ``port`` is ``process``'s remote pid; None when it cannot be told."""
+    pid = process.remote_pid
+    if not pid:
+        return None
+    try:
+        rc, out, _err = await ssh_run(
+            process.peer, f"ss -ltnpH 'sport = :{int(port)}' 2>/dev/null", timeout = 10.0
+        )
+    except Exception:
+        return None
+    lines = [line for line in (out or "").splitlines() if line.strip()]
+    if rc != 0 or not lines:
+        return None
+    return any(f"pid={int(pid)}," in line for line in lines)
 
 
 async def peer_pid_alive(process: "PeerProcess", *, timeout: float = 10.0) -> bool:
@@ -3171,7 +3208,10 @@ class SparkServing:
             # A respawn rotated the key before it is healthy again; the replica would answer 401.
             await self.router.hold("peer", "the primary's API key changed")
         port = getattr(backend, "_port", None)
-        if port and port != self.attached_port and getattr(backend, "_healthy", False):
+        replaced = port != self.attached_port or (
+            getattr(backend, "_process", None) is not self.attached_process
+        )
+        if port and replaced and getattr(backend, "_healthy", False):
             await self.router.set_backend_address("main", "127.0.0.1", int(port))
             # Committed only once the replica is in step, so a failed key copy is retried next pass.
             if await self._sync_replica(backend):
@@ -3259,6 +3299,20 @@ class SparkServing:
                 return False  # detached, or this relaunch has been superseded
             if not process.alive:
                 return False
+            if getattr(process, "name", "") == "ggml-rpc-server":
+                # A layer split has no router; its peer is healthy once it owns the RPC port.
+                port = _argv_value(getattr(process, "argv", None) or [], "-p")
+                if not port or not port.isdigit():
+                    return False
+                return await wait_for_own_port(
+                    process,
+                    process.peer,
+                    int(port),
+                    max(0.0, deadline - time.monotonic()),
+                    cancelled = lambda: (
+                        self.attached_backend is None or process is not self.peer_process
+                    ),
+                )
             router = self.router
             if router is None:
                 return False
