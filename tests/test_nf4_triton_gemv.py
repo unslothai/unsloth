@@ -220,6 +220,19 @@ def test_small_decode_batches_skip_the_dequantize(bsz, monkeypatch):
     assert getattr(copy.deepcopy(proj.weight.quant_state), "_unsloth_gemv_rows", None) is None
 
 
+def test_planned_rows_skip_a_strided_out(monkeypatch):
+    utils = _utils_with_kernels()
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    proj = _linear4bit(1024, 4096)
+    X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    ref = utils.fast_linear_forward(proj, X)
+    wide = torch.zeros(2, 1, 2048, dtype = torch.bfloat16, device = "cuda")
+    utils.fast_linear_forward(proj, X, out = wide[:, :, :1024])  # plans for row stride 2048
+    strided = wide[:, :, ::2]
+    assert strided.stride(0) == 2048 and strided.stride(-1) == 2
+    assert _rel_err(utils.fast_linear_forward(proj, X, out = strided).float(), ref.float()) < TOL[torch.bfloat16]
+
+
 def test_larger_decode_batches_still_dequantize(monkeypatch):
     utils = _utils_with_kernels()
     proj = _linear4bit(1024, 4096)

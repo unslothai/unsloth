@@ -1477,6 +1477,7 @@ def _gemv_rows(X, W, quant_state, out):
             and out.dtype is X.dtype
             and out.data_ptr() & 15 == 0
             and out.stride(0) == plan[4]
+            and out.stride(-1) == 1
         ):
             try:
                 if plan[5](X, out):
