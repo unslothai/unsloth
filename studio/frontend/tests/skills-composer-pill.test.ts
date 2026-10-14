@@ -56,3 +56,8 @@ test("an unset switch is pinned before a change can untick, delete or bulk-disab
   }
   assert.match(API, /if \(on !== null\) \{\s*return;\s*\}\s*setOn\(\s*snapshot\.skills\.some\(/);
 });
+
+test("skill @mentions are offered only while Skills is on, in both composers", () => {
+  assert.match(THREAD, /<SkillMentionPopover[\s\S]*?enabled=\{supportsTools && skillsSwitchOn\}/);
+  assert.match(SHARED, /useTextareaSkillMentions\(\{[\s\S]*?enabled: supportsTools && skillsSwitchOn,/);
+});

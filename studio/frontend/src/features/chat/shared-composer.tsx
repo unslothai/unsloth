@@ -783,6 +783,7 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const [skillsSwitchOn] = useSkillsSwitch();
 
   const mentionOpenRef = useRef(false);
   const skillMentions = useTextareaSkillMentions({
@@ -790,7 +791,8 @@ export function SharedComposer({
     setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
-    enabled: supportsTools,
+    // Skills off sends no read_skill, so a mention would load nothing.
+    enabled: supportsTools && skillsSwitchOn,
   });
   mentionOpenRef.current = skillMentions.inputProps["aria-expanded"];
   const supportsBuiltinWebSearch = useChatRuntimeStore(

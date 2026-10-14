@@ -194,8 +194,9 @@ export async function setAllSkillsEnabled(
   publish({ skills, loading: false, initialized: true, error: null });
   channel?.postMessage("changed");
   void refreshContextUsage({ invalidate: true });
-  if (enabled === true) {
-    useSkillsSwitchStore.getState().setOn(true);
+  // Reset to defaults (null) returns the switch to unset too, so it follows the restored ticks.
+  if (enabled !== false) {
+    useSkillsSwitchStore.getState().setOn(enabled);
   }
   return skills;
 }

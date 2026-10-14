@@ -5633,6 +5633,8 @@ const Composer: FC<{
   );
 
   const queueContextValue: PromptQueueCallbacks = { startQueue, stopQueue };
+  // Skills off sends no read_skill, so a mention would load nothing.
+  const [skillsSwitchOn] = useSkillsSwitch();
 
   const composerContent = (
     <>
@@ -5827,7 +5829,7 @@ const Composer: FC<{
     <ComposerPrimitive.Unstable_TriggerPopoverRoot>
       <SkillMentionPopover
         // mentions remain available without Code because each one offers read_skill.
-        enabled={supportsTools}
+        enabled={supportsTools && skillsSwitchOn}
         composerRef={editorRef}
         onConsumesEnterChange={setMentionConsumesEnter}
         onOpenChange={setMentionOpen}

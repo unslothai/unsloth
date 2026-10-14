@@ -8,7 +8,7 @@ import { persist } from "zustand/middleware";
 // skill tools. Unset follows whether any skill is ticked, as before the switch existed.
 interface SkillsSwitchState {
   on: boolean | null;
-  setOn: (on: boolean) => void;
+  setOn: (on: boolean | null) => void;
 }
 
 export const useSkillsSwitchStore = create<SkillsSwitchState>()(
