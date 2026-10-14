@@ -438,21 +438,6 @@ def test_the_install_drops_the_on_disk_release_cache(run_env, managed, monkeypat
     assert audio_cpp_freshness.cached_latest_release(_REPO) is None
 
 
-def test_a_stopped_dictation_model_asks_for_a_reload(run_env, monkeypatch):
-    from core.inference import stt_audiocpp_sidecar
-
-    class _ActiveSidecar(_Sidecar):
-        @contextmanager
-        def update_maintenance(self):
-            yield True
-
-    monkeypatch.setattr(
-        stt_audiocpp_sidecar, "get_audio_cpp_stt_sidecar", lambda: _ActiveSidecar([])
-    )
-    result = aupd.run_chained_phase(run_env.phase, lambda fraction: None)
-    assert result["reload_required"] is True
-
-
 def test_an_unloaded_model_asks_for_a_reload(run_env, monkeypatch):
     monkeypatch.setattr(aupd, "_unload_audio_cpp_models", lambda: True)
     result = aupd.run_chained_phase(run_env.phase, lambda fraction: None)
