@@ -28,9 +28,7 @@ class FakeLlama:
         self.die_after = die_after
         self.hold = hold
         self.health_ok = health_ok
-        # A generation is not always SSE: chat with stream false, /completion, embeddings and
-        # reranking all answer in JSON, and the router has to treat those differently when the body
-        # stops half way.
+        # Non-SSE answers (stream false, /completion, embeddings, rerank) are JSON.
         self.content_type = content_type
         self.served: List[Tuple[str, Dict[str, Any], Dict[str, str]]] = []
         self.in_flight = 0

@@ -105,8 +105,7 @@ class StubCluster:
             "reason": self.reason or f"stub says {self.topology}",
             "speedup": 1.3,
         }
-        # The real planner reports this on every answer, and says `single` even when NOTHING holds
-        # the load, so a stub that omitted it could not exercise the refusal.
+        # The real planner says `single` even when NOTHING holds the load.
         out["fits_any_topology"] = self.fits_any_topology
         return out
 
@@ -129,8 +128,6 @@ def cluster(monkeypatch, tmp_path):
     monkeypatch.delenv("UNSLOTH_STUDIO_MANAGED_LLAMA_CPP_PATH", raising = False)
     monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
     ss.reset_for_tests()
-    # Rail discovery is cached with a TTL so the polled status endpoint does not walk sysfs on the
-    # event loop every time.
     ss.reset_peer_discovery_cache()
     monkeypatch.setattr(ss, "_CLUSTER", stub)
     monkeypatch.setattr(ss, "_CLUSTER_LOOKED_UP", True)
@@ -247,8 +244,7 @@ def test_ssh_user_is_this_login_and_never_a_fixed_one(monkeypatch):
 
 
 def test_off_by_default_everywhere_but_a_paired_spark(cluster, monkeypatch):
-    # Rail discovery is cached for _PEER_DISCOVERY_TTL_S, so a peer that appears or disappears
-    # mid-test has to say so.
+    # Rail discovery is cached, so a peer that appears mid-test has to say so.
     assert ss.enabled()
     cluster.peer = None
     ss.reset_peer_discovery_cache()
@@ -538,8 +534,6 @@ def _patch_remote(
         if remote.startswith("test -f"):
             return 0, "YES\n" if model_present else "NO\n", ""
         if remote.startswith("stat "):
-            # The peer answers with the SAME size and mtime as the local file, which is what a
-            # correctly replicated node looks like.
             import re as _re
 
             paths = _re.findall(r"stat (-L )?-c '%s %Y' (\S+)", remote)
@@ -559,8 +553,7 @@ def _patch_remote(
                     lines.append("NOSTAT")
                     continue
                 if model_stale:
-                    # present at the same path, and a different file: the case an existence test
-                    # cannot tell from a correctly replicated node.
+                    # present at the same path, and a different file.
                     lines.append(f"{st.st_size + 1} {int(st.st_mtime) + 60}")
                 else:
                     lines.append(f"{st.st_size} {int(st.st_mtime)}")
@@ -1710,8 +1703,7 @@ def test_the_crossover_constants_are_the_planners_measured_numbers(cluster):
     assert not sc.groups_x_mtp_wins(8) and not sc.groups_x_mtp_wins(0)
     note = sc.groups_x_mtp_note()
     assert "PR #187" in note and "152.5" in note and "16 rows up" in note
-    # The cells have to describe the launch the PRODUCT makes: the first version left out
-    # --kv-unified, worth 1.27x on its own, so the constants described a launch never made.
+    # The cells must describe the PRODUCT launch, --kv-unified included (1.27x alone).
     assert (
         "--kv-unified" in sc.GROUPS_X_MTP_MEASUREMENT
     ), "the cells must be measured with the flags Studio actually launches"
@@ -2164,8 +2156,7 @@ def test_relaunch_budget_resets_after_a_peer_recovers(monkeypatch):
     proc = _Proc()
     state.peer_process = proc
     state.attached_backend = object()
-    # Recovery is the ROUTER seeing the peer answer, not the peer merely being alive three seconds
-    # later, so the budget only resets when there is a healthy non-primary backend.
+    # The budget resets only when the ROUTER sees a healthy non-primary backend.
     state.router = _Router(True)
     state.relaunch_attempts = len(ss.RELAUNCH_BACKOFF_S) - 1
 
@@ -2262,8 +2253,7 @@ def test_a_new_primary_on_the_same_port_resyncs_the_replica(monkeypatch, tmp_pat
 
 
 def test_a_peer_that_never_becomes_healthy_spends_the_relaunch_budget(monkeypatch):
-    # A large model spends minutes inside load_model before it can OOM, so a peer that dies there is
-    # alive at the three second settle EVERY time.
+    # A large model can die in load_model after the three second settle.
     import asyncio
 
     state = ss.SparkServing()
@@ -2306,8 +2296,7 @@ def test_a_peer_that_never_becomes_healthy_spends_the_relaunch_budget(monkeypatc
 
 
 def test_load_failed_keeps_a_topology_whose_model_is_still_loaded():
-    # The route validates before it unloads, so a rejected replacement load leaves the previous
-    # model serving.
+    # A rejected replacement load leaves the previous model serving.
     import asyncio
 
     state = ss.SparkServing()
@@ -2403,8 +2392,6 @@ def test_estimate_kv_bytes_prices_k_and_v_apart(tmp_path):
 
 
 def test_after_load_prices_the_aggregate_context_not_one_slot():
-    # Once --parallel splits the cache, _effective_context_length is the per-slot window while the
-    # aggregate is published separately.
     class _Backend:
         _kv_cache_context_total = 32768
         _effective_context_length = 4096  # 8 slots x 4096
@@ -2476,8 +2463,7 @@ def test_underscore_spellings_are_read_the_way_llama_server_reads_them():
 def test_split_reload_keeps_the_extras_the_apply_path_does_not_round_trip(
     cluster, monkeypatch, tmp_path
 ):
-    # A settings Apply reload omits llama_extra_args, and _resolve_inherited_extra_args puts the
-    # previous same-model load's extras back afterwards, but only while the field is still None.
+    # An Apply reload omits llama_extra_args; inheritance restores them only while the field is None.
     cluster.topology = "layer_split"
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     model = tmp_path / "big.gguf"
@@ -2529,16 +2515,13 @@ def test_group_rounding_never_costs_the_caller_slots(cluster, monkeypatch):
     plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX, [])
     assert plan["pipeline_groups"] == 3 and plan["slots"] == 63
 
-    # A request already over the maximum was going to be clamped either way, so the clamp there is
-    # not the groups' doing and does not count against them.
+    # A request already over the maximum was clamped anyway: not counted against the groups.
     monkeypatch.setenv(ss.ENV_PIPELINE_GROUPS, "2")
     plan = ss.pipeline_groups_plan(ss.PARALLEL_MAX * 2, [])
     assert plan["pipeline_groups"] == 2 and plan["slots"] == ss.PARALLEL_MAX
 
 
 def test_an_undecided_mtp_verdict_is_left_to_the_backend(cluster, monkeypatch):
-    # mtp_plan returns "unknown" when the GGUF is not on disk yet, which is what an uncached repo
-    # forced to a layer split always is.
     monkeypatch.setattr(ss, "llama_server_accepts_groups_with_drafter", lambda groups: True)
     groups = {"pipeline_groups": 2, "slots": 4, "requested_slots": 4, "reason": None}
     mtp = {"mtp": "unknown", "reason": "GGUF not on disk before the load", "request": {}}
@@ -2630,9 +2613,7 @@ def test_a_companion_gguf_is_never_sized_in_place_of_the_weights(monkeypatch, tm
 
 
 def test_an_uncached_oversized_repo_splits_on_its_first_load(cluster, monkeypatch, tmp_path):
-    # Nothing re-plans after the download, and the single-node launch the model would have to
-    # survive first is exactly what does not fit, so a first load had to know the size before the
-    # download started or the split could never happen at all.
+    # Nothing re-plans after the download, so a first load must know the size before it.
     monkeypatch.setenv("HF_HUB_CACHE", str(tmp_path))
     write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
     _patch_remote(monkeypatch)
@@ -2714,8 +2695,6 @@ def test_remote_sizing_never_raises_out_of_the_load(monkeypatch):
 
 
 def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
-    # A port that is already occupied answers on the first probe while the child that could not bind
-    # it exits.
     monkeypatch.setattr(ss, "PEER_OWNERSHIP_SETTLE_S", 0.01)
 
     async def always_open(
@@ -2730,9 +2709,7 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
     monkeypatch.setattr(ss, "wait_for_port", always_open)
 
     class _Child:
-        # remote_pid and peer because ownership is settled against the pid the remote wrapper
-        # printed, not against the local ssh session's state: the wrapper only re-checks its child
-        # once per PEER_REAP_POLL_S, which outlasts the settle.
+        # Ownership is settled against the remote wrapper pid, which re-checks only every PEER_REAP_POLL_S.
         peer = "1.2.3.4"
         remote_pid = 4242
 
@@ -2800,8 +2777,7 @@ def test_a_stranger_on_the_port_is_not_adopted_as_ours(monkeypatch):
 
 
 def test_a_cancelled_replica_attach_does_not_leave_the_peer_running(cluster, monkeypatch, tmp_path):
-    # Cancellation does not reach after_load's except Exception, so without cleanup here the peer
-    # llama-server keeps its memory and its port with nothing left that knows about it.
+    # Cancellation skips after_load, so the peer llama-server would otherwise leak.
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -2953,8 +2929,7 @@ def test_a_split_does_not_start_an_rpc_server_on_a_busy_peer_gpu(cluster, monkey
 
 
 def test_a_peer_gpu_probe_that_cannot_answer_changes_nothing(cluster, monkeypatch, tmp_path):
-    # peer_gpu_busy fails CLOSED, which is right for the rsync it was written for and wrong here:
-    # refusing on an unanswered probe turns a slow ssh into serving on one node.
+    # peer_gpu_busy fails CLOSED; here a slow ssh must not drop to one node.
     cluster.peer_gpu_busy = lambda peer, timeout = 25: {
         "busy": True,
         "known": False,
@@ -2986,8 +2961,7 @@ def test_our_own_peer_process_does_not_count_as_the_gpu_being_busy(cluster, monk
 def test_an_rpc_split_configured_by_environment_is_not_treated_as_unsplit(
     cluster, monkeypatch, tmp_path
 ):
-    # LLAMA_ARG_RPC is a supported way to ask for a split and common_arg reads it directly, so it
-    # never reaches argv.
+    # LLAMA_ARG_RPC is read by common_arg directly, never reaching argv.
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     monkeypatch.setenv("LLAMA_ARG_RPC", "192.168.200.13:50052")
@@ -3186,9 +3160,7 @@ def test_every_tool_loop_round_names_the_same_conversation():
 def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
     cluster, monkeypatch, tmp_path
 ):
-    # The replica is launched from the primary's complete argv, so an older peer build rejects a
-    # flag the primary was given and the advertised replica never comes up, and two builds that both
-    # start can answer the same request differently.
+    # The replica gets the primary argv, so builds must match.
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -3240,8 +3212,7 @@ def test_a_peer_running_a_different_llama_server_build_is_not_made_a_replica(
 
 
 def test_an_unreadable_build_is_not_evidence_of_a_mismatch(cluster, monkeypatch, tmp_path):
-    # A version that cannot be read on either end is not evidence, and refusing on it would drop the
-    # pair to one node whenever a probe is slow.
+    # An unreadable version is not evidence; refusing would drop to one node on a slow probe.
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -3556,8 +3527,7 @@ def test_extras_are_inherited_on_exact_requested_identity_and_never_on_a_shared_
     )
     assert ri._spark_inherited_extra_args(_Req("org/m", None, lea = [])) is None
 
-    # A forced reload of a running split must not inherit the split block we appended: before_load
-    # would read our own --rpc as a caller override and skip restarting the rpc-server.
+    # A forced reload must not inherit our own --rpc, or before_load skips the rpc-server restart.
     split = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = 2)
     assert run("org/m", "Q4", "org/m", "Q4", extras = ["--lora", "a.gguf", *split]) == [
         "--lora",
@@ -3628,10 +3598,7 @@ def test_a_replica_is_given_a_model_load_deadline_not_the_rpc_servers():
 
 
 def test_a_replica_does_not_get_back_a_setting_the_primary_scrubbed(cluster, monkeypatch, tmp_path):
-    # The primary is spawned with a CONDITIONALLY sanitized copy of the environment, and the scrubs
-    # go well past DENIED_ENV_VARS: disable_vision drops LLAMA_ARG_MMPROJ and _MMPROJ_URL, a
-    # CPU-forced replay drops LLAMA_ARG_OVERRIDE_TENSOR and the tensor split, the memory fit drops
-    # _CTX_SIZE, _THREADS, _KV_UNIFIED, _N_PARALLEL and _FLASH_ATTN.
+    # The primary env is conditionally sanitized well past DENIED_ENV_VARS.
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(tmp_path / "mmproj.gguf"))
@@ -3683,10 +3650,7 @@ def test_a_backend_that_cannot_say_still_gets_the_old_environment_behaviour(
 
 
 def test_the_hub_is_asked_with_the_requests_own_token(monkeypatch):
-    # A private or gated repo answers an anonymous query with an authorization failure, which is
-    # swallowed as "size unknown" and plans single -- and then the authenticated loader downloads
-    # the model anyway, so a repo larger than one Spark reaches the one topology that cannot hold
-    # it.
+    # A gated repo answers anonymously with an auth failure; it must not plan single.
     import sys
     import types
 
@@ -3739,8 +3703,7 @@ def test_a_cancel_during_replica_startup_stops_waiting_and_leaves_nothing_behind
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
     model.write_bytes(b"x")
-    # port_opens is True on purpose: the wait would SUCCEED if the cancel were not read, so this
-    # fails against the old code by attaching rather than by timing out.
+    # port_opens=True: the wait would succeed if the cancel were not read.
     _calls, started = _patch_remote(monkeypatch)
 
     cancel = threading.Event()
@@ -3762,10 +3725,7 @@ def test_a_cancel_during_replica_startup_stops_waiting_and_leaves_nothing_behind
 
 
 def test_rail_discovery_is_not_walked_again_on_every_status_poll(cluster, monkeypatch):
-    # enabled() reaches peer_ip_for(), which walks sysfs and forks `ip`: 16.2 ms, measured, and the
-    # status endpoint is declared async, so every poll spent it on the event loop and stalled
-    # whatever was streaming beside it. current_topology already sidesteps this; the dedicated
-    # status endpoint cannot, because answering "not enabled" is the point of it.
+    # enabled() walks sysfs and forks `ip` (16.2 ms measured) on the async status endpoint.
     calls = []
     real = cluster.peer_ip_for
 
@@ -3813,8 +3773,7 @@ def test_the_size_is_taken_from_the_variant_the_loader_would_open(monkeypatch):
 
 
 def test_a_repo_whose_picker_cannot_answer_still_gets_a_size(monkeypatch):
-    # The picker is asked, not depended on: an import failure or an unrecognised naming scheme falls
-    # back to the old answer rather than to no answer, which would plan `single`.
+    # Picker failure falls back to the old answer, not to no answer (which plans `single`).
     import sys
     import types
 
@@ -3833,8 +3792,7 @@ def test_a_repo_whose_picker_cannot_answer_still_gets_a_size(monkeypatch):
 
 
 def test_a_relative_chat_template_is_absolutised_for_the_replica(cluster, monkeypatch, tmp_path):
-    # llama.cpp resolves --chat-template-file against the server's working directory, and ssh starts
-    # the replica in the peer's LOGIN directory.
+    # --chat-template-file resolves against cwd; ssh starts the replica in the LOGIN dir.
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     monkeypatch.chdir(tmp_path)
@@ -3854,16 +3812,12 @@ def test_a_relative_chat_template_is_absolutised_for_the_replica(cluster, monkey
     peer_argv = started[0].argv
     assert str(template) in peer_argv, "the peer was handed a path relative to its own login dir"
     assert "mine.jinja" not in peer_argv
-    # And it is preflighted, so a peer that does not have it is found out before the launch rather
-    # than after the startup window.
     checks = [c for c in _calls if c.startswith("stat ")]
     assert checks and str(template) in checks[0]
 
 
 @_POSIX_ONLY
 def test_the_inline_form_of_the_template_flag_is_absolutised_too(tmp_path):
-    # `--flag=value` is the form the env-vs-argv sweep keeps finding on the wrong side of a guard,
-    # so it is pinned rather than assumed.
     argv = ["/bin/llama-server", "-m", "/m.gguf", "--chat-template-file=mine.jinja"]
     out = ss.replica_argv(argv, binary = "/bin/llama-server", host = "h", port = 1, cwd = "/base")
     assert "--chat-template-file=/base/mine.jinja" in out
@@ -3876,10 +3830,7 @@ def test_the_inline_form_of_the_template_flag_is_absolutised_too(tmp_path):
 def test_a_managed_split_is_retired_before_a_callers_own_rpc_is_adopted(
     cluster, monkeypatch, tmp_path
 ):
-    # A managed layer split has a peer ggml-rpc-server and NO router, so testing the router alone
-    # left the old rpc-server running and still tracked while the new llama-server used the caller's
-    # own placement: it holds its share of the peer GPU, so the manual topology contends with it or
-    # does not fit, and status goes on reporting the managed split.
+    # A layer split has no router: the old rpc-server must be torn down, not just the router.
     cluster.topology = "layer_split"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -3900,8 +3851,6 @@ def test_a_managed_split_is_retired_before_a_callers_own_rpc_is_adopted(
 
     monkeypatch.setattr(ss.PeerProcess, "stop", counting_stop)
 
-    # The next load brings its own --rpc at a DIFFERENT endpoint, so nothing here manages the
-    # placement any more.
     backend = _FakeBackend(12345, str(model), argv_extra = ["--rpc", "10.0.0.9:50052"])
     run(ss.after_load(backend, 16))
 
@@ -3935,9 +3884,7 @@ def test_our_own_managed_split_is_not_torn_down_by_its_own_rpc_flag(cluster, mon
 def test_a_reload_the_route_will_refuse_does_not_stop_the_running_peer(
     cluster, monkeypatch, tmp_path
 ):
-    # The route validates the pass-through args AFTER before_load, "up front so a managed-flag
-    # collision returns 400 before any model work" -- but starting or restarting a peer IS model
-    # work and happens here first.
+    # The route validates pass-through args AFTER before_load, but starting a peer is model work.
     cluster.topology = "layer_split"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -3971,8 +3918,7 @@ def test_a_reload_the_route_will_refuse_does_not_stop_the_running_peer(
 
 
 def test_a_valid_reload_still_restarts_the_peer_for_its_new_client(cluster, monkeypatch, tmp_path):
-    # The counterpart: the guard must not become a way for a forced reload to skip the restart the
-    # rpc-server's one-client-at-a-time contract needs.
+    # The guard must not let a forced reload skip the rpc-server restart.
     cluster.topology = "layer_split"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -4026,10 +3972,7 @@ def test_the_supervisor_does_not_repoint_the_router_mid_load(cluster, monkeypatc
 def test_the_peer_is_searched_for_the_rpc_name_the_local_bundle_resolved(
     cluster, monkeypatch, tmp_path
 ):
-    # rpc_server_binary() resolves the supported legacy name `rpc-server` locally, but the peer
-    # lookup discarded that basename and asked only for `ggml-rpc-server`, so a symmetrically
-    # provisioned peer holding only `rpc-server` was reported missing and every layer split that
-    # needed it fell back to one node.
+    # The peer lookup must accept the legacy `rpc-server` name too.
     cluster.topology = "layer_split"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -4050,8 +3993,7 @@ def test_the_peer_is_searched_for_the_rpc_name_the_local_bundle_resolved(
 
 
 def test_the_plan_prices_the_context_the_extras_actually_ask_for(cluster, monkeypatch, tmp_path):
-    # The pass-through block is appended after the managed flags and llama.cpp is last-wins, so a
-    # --ctx-size in the extras is what the server allocates against.
+    # Extras come after managed flags and llama.cpp is last-wins.
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -4103,8 +4045,6 @@ def test_the_cache_types_are_read_from_the_environment_and_apart(cluster, monkey
 
 
 def test_an_empty_gpu_list_is_automatic_placement_not_a_pin(cluster, monkeypatch, tmp_path):
-    # `gpu_ids: []` is the documented automatic form and every other placement site in the backend
-    # reads it by truthiness.
     cluster.topology = "layer_split"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"
@@ -4146,10 +4086,7 @@ def osp_basename(path: str) -> str:
 
 
 def test_only_generated_templates_are_shipped_to_the_peer_by_value(tmp_path, monkeypatch):
-    # The directory alone used to be the whole test, so a model living directly under /tmp -- an
-    # ordinary place to put one -- was classified as generated and handed to
-    # replicate_generated_files, which reads the file whole, base64-encodes it and puts it on an ssh
-    # command line.
+    # A model under /tmp is not a generated file to base64 over ssh.
     monkeypatch.setattr(ss.tempfile, "gettempdir", lambda: str(tmp_path))
     model = tmp_path / "model.gguf"
     model.write_bytes(b"x" * 4096)
@@ -4282,8 +4219,6 @@ def test_an_env_configured_drafter_is_the_callers_and_is_not_turned_off(monkeypa
 def test_a_load_no_topology_can_hold_is_refused_before_the_model_work(
     cluster, monkeypatch, tmp_path
 ):
-    # recommend_topology labels an over-budget load `single` because it has to answer with SOME
-    # topology, and its own reason says saying so up front is the only useful answer.
     model = tmp_path / "m.gguf"
     model.write_bytes(b"x")
     cluster.topology = "single"
@@ -4329,8 +4264,6 @@ def test_environment_only_launch_files_are_preflighted_on_the_peer(cluster, monk
 def test_an_env_only_file_the_peer_does_not_have_costs_the_replicas_at_once(
     cluster, monkeypatch, tmp_path
 ):
-    # The point of preflighting it: falling back here takes a round trip, not the full replica
-    # startup window.
     cluster.topology = "replicas"
     monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
     model = tmp_path / "m.gguf"

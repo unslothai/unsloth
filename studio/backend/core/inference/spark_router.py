@@ -54,7 +54,6 @@ _HOP_BY_HOP = frozenset(
     }
 )
 
-# The prefix is what llama-server's prompt cache reuses.
 PREFIX_KEY_CHARS = 1024
 
 _VIRTUAL_NODES = 64
@@ -637,9 +636,7 @@ class SparkRouter:
             parsed.pop(CONVERSATION_FIELD, None)
             body = json.dumps(parsed, ensure_ascii = False).encode("utf-8")
 
-        # A peer that exits after its last health probe is not discovered until a request tries to
-        # connect to it, and that connect failure happens before any response header has been
-        # written, so the request can still be placed elsewhere.
+        # A peer dead since its last probe fails at connect, before any header, so the request can still move.
         attempts = len(self.backends) if is_generation else 1
         for attempt in range(1, attempts + 1):
             try:
@@ -830,8 +827,7 @@ class SparkRouter:
                 await self._write_error(writer, 413, "request body too large")
                 return False
 
-        # A disconnect has to tear the upstream stream down, or llama-server keeps decoding for a
-        # request nobody is reading.
+        # A disconnect must tear the upstream stream down, or llama-server keeps decoding.
         disconnected = asyncio.Event()
         pipelined = asyncio.Event()
 
@@ -925,8 +921,7 @@ class SparkRouter:
                 except StopAsyncIteration:
                     break
                 except httpx.HTTPError as exc:
-                    # Upstream died after the headers went out, so the status is already sent and
-                    # cannot be taken back.
+                    # Upstream died after the headers went out; the status cannot be taken back.
                     message = (
                         f"Lost connection to llama-server on {routed.backend.name} mid-response "
                         f"({type(exc).__name__}); the request cannot be resumed."

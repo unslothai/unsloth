@@ -678,8 +678,6 @@ def update_instructions() -> List[str]:
     ]
 
 
-# llama.cpp's RPC backend places layers on a remote device, so a model too large for one Spark
-# splits across the pair.
 RPC_DEFAULT_PORT = 50052
 
 _RPC_SERVER_NAMES = ("ggml-rpc-server", "rpc-server", "ggml-rpc-server.exe", "rpc-server.exe")
@@ -1123,8 +1121,6 @@ def rpc_hello_probe(
 def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[str, Any]:
     """Bundle identity (works before anything runs) plus a live HELLO against whatever already listens
     (catches a stale server from an older bundle)."""
-    # Where the binary actually resolved, so a ~/src or PATH build is not refused for lacking the
-    # managed bundle.
     root = _rpc_server_location()[1]
     result = compare_llama_bundles(
         llama_bundle_identity(root), peer_llama_bundle_identity(peer_ip, root = root)
@@ -1158,8 +1154,6 @@ def rpc_protocol_preflight(peer_ip: str, port: int = RPC_DEFAULT_PORT) -> Dict[s
                 f"--rpc-port."
             )
         elif state == "silent":
-            # Held by something, so a new server cannot bind it -- the one outcome this preflight
-            # exists to prevent.
             keep.append(
                 f"something on {where} accepted a connection at {live['host']}:{port} and "
                 f"never answered the HELLO. The port is held, so a new ggml-rpc-server "
@@ -4007,8 +4001,6 @@ def plan_deployment(
             prefill_heavy = prefill_heavy,
         )
 
-    # `summary` answers ONLY "what fits where"; every statement about which axis to use lives in
-    # `recommendation`.
     copies = int(budget // size_gib) if size_gib > 0 else 0
     if topology == "replicas":
         out["summary"] = (
@@ -4574,8 +4566,6 @@ def _cmd_setup(
     print(f"    ping -c3 {peer_plan[0]['address']}")
     print("    unsloth spark status")
 
-    # Provisioning WRITES TO ANOTHER MACHINE, so it is never automatic: printing the plan is free,
-    # performing it needs a yes.
     peer_now = peer_ip_for()
     changes = [f"rewrite {config_path()} with the plan above"]
     if peer_now:
@@ -4619,8 +4609,6 @@ def _cmd_setup(
 
     saved = save_config(
         {
-            # Not enabled until a reachable peer was provisioned, or cluster_state() says configured;
-            # `unsloth spark provision` enables it once it is.
             "enabled": bool(peer_now) and not provision_failures,
             "planned": True,
             "n_nodes": n_nodes,
@@ -4634,8 +4622,6 @@ def _cmd_setup(
     if not saved:
         return 1
     print(f"\nSaved plan to {config_path()}")
-    # A copy that was attempted and failed leaves the peer without the environment, so the installer
-    # and `spark up` must not read this as a finished setup.
     if provision_failures:
         return 1
     # The netplan above is PRINTED, never applied: this command does not write /etc/netplan or run
@@ -4671,8 +4657,6 @@ def _cmd_serve(
     engines = max(1, engines)
     qmodel = shlex.quote(model)
 
-    # Decide the topology from the model: the rule is not guessable, and the right answer flips at
-    # the point where two copies stop fitting.
     sized = model_size_report(model)
     size = sized["gib"]
     if size is None:
@@ -4769,8 +4753,6 @@ def _cmd_serve(
         print("")
         engines = 1
 
-    # Both nodes must speak the same RPC protocol, and the build pins it; check before printing a
-    # launch that would fail at load.
     preflight = rpc_protocol_preflight(peer_ip, rpc_port)
     for note in preflight["notes"]:
         print(f"  note: {note}")
@@ -4810,8 +4792,6 @@ def _cmd_serve(
         print(f"     ssh {peer_ip} '{quoted_server} -H {peer_ip} -p {rpc_port + i} -c'")
     print("")
     print(f"  2. Start {engines} llama-server(s) on this Spark:")
-    # Resolved on its own: an rpc-server found in a source tree says nothing about where
-    # llama-server is, and the two need not share a directory.
     local_server = llama_server_binary() or f"{bin_dir}/llama-server"
     for i in range(engines):
         # One engine has no front end, so it takes the requested port itself, bound as spark_lb is.
