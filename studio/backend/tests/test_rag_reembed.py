@@ -62,8 +62,10 @@ def test_stale_documents_regain_dense_search_under_the_same_ids(models, tmp_path
     scope = store.project_scope("P1")
     first = _ingest(tmp_path, scope, "a.txt", "alpha bravo charlie")
     second = _ingest(tmp_path, scope, "b.txt", "kilo lima mike\n\ndelta echo foxtrot")
-    _ingest(tmp_path, store.conversation_archive_scope("T1"), "turn.txt", "golf hotel")
+    turn = _ingest(tmp_path, store.conversation_archive_scope("T1"), "turn.txt", "golf hotel")
     chunks = [_row(d)[1] for d in (first, second)]
+    with _connect() as c:  # as archive_turns writes it
+        store.set_document_status(c, turn, "completed", num_chunks = 0)
     models["model"] = NEW
     assert reembed.stale_counts() == {"documents": 2, "archived": 1}
     assert ((job := _run_job())["status"], job["done"], job["failed"]) == ("completed", 3, 0)
@@ -158,9 +160,10 @@ def test_chunks_past_the_limit_embed_a_prefix(models, tmp_path, monkeypatch):
     assert sent == [["one two three "], ["ten eleven twelve"], ["six seven "]]
 
 
-def test_a_document_changed_since_it_was_read_is_not_overwritten(models, tmp_path):
-    document_id = _ingest(tmp_path, store.kb_scope("K5"), "a.txt", "alpha")
-    args = (document_id, "x:other", [f"{document_id}:0"], [[0.5] * 12], "x", OLD)
-    with _connect() as c:
-        assert store.replace_document_vectors(c, *args) is False
-    assert _row(document_id)[0] == embeddings.embedding_identity(OLD)
+def test_a_document_changed_while_it_encodes_is_not_overwritten_but_redone(models, tmp_path):
+    [_ingest(tmp_path, store.kb_scope("K5"), f"{n}.txt", f"text {n}") for n in "ab"]
+    widen = lambda: rag_db.ensure_vec(c := rag_db.get_connection(), 12) or c.commit() or c.close()
+    models.update(model = NEW, widen = widen, fail = lambda t: models.pop("widen", bool)())
+    assert ((job := _run_job())["status"], job["done"]) == ("completed", 2)
+    sent = [t for m, [t] in models["encoded"] if m == NEW]
+    assert sent == ["text b", "text b", "text a"]  # widened while b encoded: b re-read

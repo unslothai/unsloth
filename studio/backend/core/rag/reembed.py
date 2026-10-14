@@ -66,9 +66,10 @@ class _Job:
 def _stale_documents(conn, identity: str) -> list[dict]:
     """Completed, searchable documents whose vectors another embedder wrote; files before
     archived conversation turns, newest first."""
+    # Chunks, not num_chunks, which archived conversation turns leave at 0.
     rows = conn.execute(
-        "SELECT id, scope, embedding_model FROM documents d "
-        "WHERE status='completed' AND num_chunks > 0 AND NOT EXISTS "
+        "SELECT id, scope, embedding_model FROM documents d WHERE status='completed' "
+        "AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id=d.id) AND NOT EXISTS "
         "(SELECT 1 FROM linked_folder_retired_scopes r WHERE r.scope=d.scope) "
         "AND (d.linked_folder_id IS NULL OR EXISTS "
         "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)) "
@@ -108,7 +109,7 @@ def _clip(text: str, count, limit: int | None) -> tuple[str, bool]:
     return text[:lo], True
 
 
-def _reembed_document(job: _Job, doc: dict, model: str) -> None:
+def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
     conn = rag_db.get_connection()
     try:
         rows = conn.execute(
@@ -156,12 +157,14 @@ def _reembed_document(job: _Job, doc: dict, model: str) -> None:
                 len(rows),
                 limit,
             )
+    return swapped
 
 
 def _run(job: _Job) -> None:
-    # Keyed by identity too: after a model switch, a document already redone under the previous
-    # model is stale again and must be redone once more.
-    attempted: set[tuple[str, str]] = set()
+    # Per model: a failed document is not retried, and a refused one only once the row it read has
+    # changed, as when another writer's width change dropped its vectors while it encoded.
+    failed: set[tuple[str, str]] = set()
+    refused: set[tuple[str, str | None, str]] = set()
     failures = 0
     try:
         while True:
@@ -174,7 +177,8 @@ def _run(job: _Job) -> None:
                 pending = [
                     d
                     for d in _stale_documents(conn, identity)
-                    if (d["id"], identity) not in attempted
+                    if (d["id"], identity) not in failed
+                    and (d["id"], d["embedding_model"], identity) not in refused
                 ]
             finally:
                 conn.close()
@@ -183,15 +187,16 @@ def _run(job: _Job) -> None:
                 job.status = "completed"
                 return
             doc = pending[0]
-            attempted.add((doc["id"], identity))
             job.current = 0.0
             try:
-                _reembed_document(job, doc, model)
+                if not _reembed_document(job, doc, model):
+                    refused.add((doc["id"], doc["embedding_model"], identity))
                 failures = 0
             except _Stopped:
                 raise
             except Exception as exc:  # noqa: BLE001 - one bad document must not end the job
                 logger.warning("re-embedding document %s failed", doc["id"], exc_info = True)
+                failed.add((doc["id"], identity))
                 job.failed += 1
                 job.remaining -= 1
                 job.error = str(exc)
