@@ -1859,7 +1859,23 @@ export const ptBR = {
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
         searchPlaceholder: "Buscar qualquer modelo no HF",
         reindexWarning:
-          "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
+          "Afeta apenas documentos recém-indexados. Reincorpore os documentos existentes após alterar o modelo.",
+        reembed: {
+          label: "Reincorporar documentos",
+          staleOne:
+            "1 documento foi indexado com outro modelo de embedding, então a busca semântica o ignora.",
+          staleMany:
+            "{count} documentos foram indexados com outro modelo de embedding, então a busca semântica os ignora.",
+          staleArchived:
+            "O histórico de chat anterior foi indexado com outro modelo de embedding, então a busca semântica o ignora.",
+          running: "Reincorporando: {done} de {total}",
+          action: "Reincorporar",
+          stop: "Parar",
+          startFailed: "Não foi possível iniciar a reincorporação",
+          stopped: "Reincorporação interrompida",
+          finished: "Documentos reincorporados",
+          finishedWithFailures: "{count} não puderam ser reincorporados",
+        },
         emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
         loadError: "Falha ao carregar a configuração do modelo de embedding.",
         saveError: "Falha ao salvar o modelo de embedding.",

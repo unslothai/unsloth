@@ -106,8 +106,12 @@ export const BUDGET = {
   // `$1$?`-style shell text literal add 6,984 B raw / 2,836 B transfer to the eager chat chunk
   // (6,753,387 -> 6,760,371 B raw, 2,029,398 -> 2,032,234 B transfer against eba7641835, one machine
   // and build, chunk count unchanged at 95), raised by that.
-  transferBytes: 2_032_302,
-  rawBytes: 6_760_750,
+  // Re-embedding documents after an embedding model switch (the save toast's action and the Settings row)
+  // adds 3,018 B raw / 905 B transfer (6,760,371 -> 6,763,389 B raw, 2,032,234 -> 2,033,139 B transfer
+  // against 525f3ceae, one machine and build, Node 24, chunk count unchanged at 95). Lazy-loading its store
+  // from both save sites cost 0.3 KB transfer more in chunk overhead, so the budget is raised by that growth.
+  transferBytes: 2_033_207,
+  rawBytes: 6_763_768,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
