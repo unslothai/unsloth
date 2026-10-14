@@ -63,7 +63,16 @@ export function writePageStorage(
   }
 }
 
+const clearListeners = new Set<() => void>();
+
+/** Called on clearPageStorage, so open pages can drop their own copies. */
+export function onPageStorageClear(listener: () => void): () => void {
+  clearListeners.add(listener);
+  return () => clearListeners.delete(listener);
+}
+
 export function clearPageStorage(): void {
   stores.clear();
   totalChars = 0;
+  for (const listener of clearListeners) listener();
 }

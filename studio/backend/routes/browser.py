@@ -187,9 +187,10 @@ _PAGE_STORAGE_JS = r"""
           type: "storage", area, key,
           value: key !== null && value !== null && key.length + value.length <= 131072 ? value : null,
         });
+        const pageStores = [];
         const pageStore = (area) => {
           const data = new Map(cfg.storage?.[area] || []);
-          return {
+          const store = {
             data,
             set: (key, value) => {
               data.set(key, value);
@@ -205,7 +206,15 @@ _PAGE_STORAGE_JS = r"""
               sync(area, null, null);
             },
           };
+          pageStores.push(store);
+          return store;
         };
+        // Clearing browsing data empties the open page's copy too, so it can't write the data back.
+        window.addEventListener("message", (event) => {
+          const data = event.data;
+          if (event.source !== parent || !data || data.type !== "unsloth:browser-command" || data.command !== "clearStorage") return;
+          for (const store of pageStores) store.data.clear();
+        });
         for (const [name, area] of [["localStorage", "local"], ["sessionStorage", "session"]]) {
           try { void window[name]; } catch {
             const store = pageStore(area);

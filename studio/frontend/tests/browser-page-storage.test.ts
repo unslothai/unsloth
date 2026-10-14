@@ -8,6 +8,7 @@ import { runInNewContext } from "node:vm";
 import { parseFrameMessage } from "../src/features/browser/frame-message.ts";
 import {
   clearPageStorage,
+  onPageStorageClear,
   pageOrigin,
   readPageStorage,
   writePageStorage,
@@ -20,7 +21,15 @@ const source = readFileSync(new URL("../../backend/routes/browser.py", import.me
 
 function openPage(url: string, tabId = "tab-1") {
   const origin = pageOrigin(url);
-  const window = {};
+  const parent = {};
+  const listeners: Array<(event: { source: unknown; data: unknown }) => void> = [];
+  const window = {
+    addEventListener: (type: string, listener: (event: { source: unknown; data: unknown }) => void) => {
+      if (type === "message") {
+        listeners.push(listener);
+      }
+    },
+  };
   for (const name of ["localStorage", "sessionStorage"]) {
     Object.defineProperty(window, name, {
       configurable: true,
@@ -35,8 +44,13 @@ function openPage(url: string, tabId = "tab-1") {
     if (parsed?.type === "storage" && origin) writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value);
   };
   const cfg = { storage: origin ? readPageStorage(origin, tabId) : null };
-  runInNewContext(source, { window, document, cfg, post });
-  return { window: window as Record<string, Storage>, document: document as { cookie: string } };
+  runInNewContext(source, { window, document, cfg, post, parent });
+  const message = (data: unknown, source: unknown = parent) => {
+    for (const listener of listeners) {
+      listener({ source, data });
+    }
+  };
+  return { window: window as unknown as Record<string, Storage>, document: document as { cookie: string }, message };
 }
 
 test("a cookie set on one page is there on the same site's next page", () => {
@@ -145,4 +159,21 @@ test("a removal reaches the store for a key another tab wrote after this page lo
   newer.window.localStorage.setItem("banner", "closed");
   older.window.localStorage.clear();
   assert.equal(openPage("https://example.com/", "tab-1").window.localStorage.length, 0);
+});
+
+test("clearing browsing data empties the pages that are open, too", () => {
+  clearPageStorage();
+  const page = openPage("https://example.com/");
+  page.window.localStorage.setItem("banner", "closed");
+  page.document.cookie = "sid=1";
+  const clear = { type: "unsloth:browser-command", command: "clearStorage" };
+  page.message(clear, {});
+  assert.equal(page.window.localStorage.getItem("banner"), "closed");
+  const stop = onPageStorageClear(() => page.message(clear));
+  clearPageStorage();
+  stop();
+  assert.equal(page.window.localStorage.getItem("banner"), null);
+  assert.equal(page.document.cookie, "");
+  page.window.localStorage.setItem("seen", "1");
+  assert.deepEqual(readPageStorage("https://example.com", "tab-1"), { local: [["seen", "1"]], session: [], cookie: [] });
 });

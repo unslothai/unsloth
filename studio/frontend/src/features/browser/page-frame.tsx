@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
 import { pageRequests } from "./page-requests";
-import { pageOrigin, readPageStorage, writePageStorage } from "./page-storage";
+import { onPageStorageClear, pageOrigin, readPageStorage, writePageStorage } from "./page-storage";
 
 export type { FrameMessage };
 
@@ -19,6 +19,7 @@ export type FrameCommand =
   | { command: "snapshot" }
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
+  | { command: "clearStorage" }
   | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
@@ -206,8 +207,10 @@ export function PageFrame({
       onMessageRef.current(message);
     };
     window.addEventListener("message", listener);
+    const stopClearing = onPageStorageClear(() => sendFrameCommand(tabIdRef.current, { command: "clearStorage" }));
     return () => {
       window.removeEventListener("message", listener);
+      stopClearing();
       requests.stop();
     };
   }, [origin]);
