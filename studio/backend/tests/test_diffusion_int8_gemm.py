@@ -1230,34 +1230,7 @@ def test_latency_gate_concurrent_saves_keep_both_slots(monkeypatch, tmp_path):
     assert load(path, "k") == {(64, 64, 0): g8._CUBLAS, (128, 64, 0): g8._CUBLAS}
 
 
-@needs_cuda
-def test_latency_gate_first_tune_rekeys_the_compile_bundle(monkeypatch, tmp_path):
-    from core.inference import diffusion_compile_cache as cc
-
-    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
-    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path / "tune"))
-    monkeypatch.setenv(cc._ENV_MODE, "on")
-    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "cc"))
-    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: (b"A", None), raising = False)
-    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", lambda data: object(), raising = False)
-    model = torch.nn.Sequential(_int8_linear(1024, 768, True, 2))
-    kw = dict(family = "f", dtype = "bf16", quant = "int8", attention_backend = None, compile_kwargs = {})
-    ctx = cc.begin(transformer = model, **kw)
-    assert ctx is not None and not ctx.hit
-    # first-time tuning after begin(), as _swap does: cuBLAS for one bucket, stored for the next load
-    index = torch.cuda.current_device()
-    key = g8.toolchain_key(index)
-    g8._DEVICE_PLAN[index] = {(768, 1024, 2): g8._CUBLAS}
-    g8._save_plan(g8._tune_path(key), key, {(768, 1024, 2): g8._CUBLAS}, {})
-    assert cc.save(ctx)
-    cc.restore(ctx)
-    g8._DEVICE_PLAN.clear()
-    ctx2 = cc.begin(transformer = model, **kw)
-    assert ctx2.hit and ctx2.key == ctx.key
-    cc.restore(ctx2)
-
-
-def _rekey_env(monkeypatch, tmp_path, mode):
+def _plan_cache_env(monkeypatch, tmp_path, mode):
     from core.inference import diffusion_compile_cache as cc
 
     monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
@@ -1279,31 +1252,34 @@ def _rekey_env(monkeypatch, tmp_path, mode):
 
 
 @needs_cuda
-def test_latency_gate_rekey_after_restore_leaves_no_live_dir(monkeypatch, tmp_path):
-    cc, begin, first_tune = _rekey_env(monkeypatch, tmp_path, "on")
+def test_latency_gate_first_tune_load_does_not_save_under_the_stale_key(monkeypatch, tmp_path):
+    cc, begin, first_tune = _plan_cache_env(monkeypatch, tmp_path, "auto")
     ctx = begin()
-    first_tune()
-    cc.restore(ctx)  # unload while the first save is still queued
-    assert cc.save(ctx)
-    assert not {str(ctx.dir)} & set(cc._live_dirs)
+    assert not ctx.hit
+    first_tune()  # cuBLAS picked after begin(): this load's graphs do not match its key
+    assert not cc.save(ctx) and not ctx.manifest_path.exists()
+    cc.restore(ctx)
+    g8._DEVICE_PLAN.clear()
+    ctx2 = begin()  # keyed on the stored plan: compiles once, saves, then hits
+    assert not ctx2.hit and ctx2.key != ctx.key and cc.save(ctx2)
+    cc.restore(ctx2)
+    ctx3 = begin()
+    assert ctx3.hit and ctx3.key == ctx2.key
+    cc.restore(ctx3)
 
 
 @needs_cuda
-def test_latency_gate_rekeys_a_bundle_hit(monkeypatch, tmp_path):
-    cc, begin, first_tune = _rekey_env(monkeypatch, tmp_path, "auto")
+def test_latency_gate_first_tune_after_a_hit_does_not_resave(monkeypatch, tmp_path):
+    cc, begin, first_tune = _plan_cache_env(monkeypatch, tmp_path, "on")  # "on" resaves after a hit
     ctx = begin()
-    assert cc.save(ctx)  # an all-fused bundle exists
+    assert cc.save(ctx)
     cc.restore(ctx)
     ctx = begin()
-    assert ctx.hit and ctx.saved
-    first_tune()  # the tune file was missing: tuning now picks cuBLAS and compiles the stock graph
-    monkeypatch.setenv(cc._ENV_SYNC, "1")
-    assert cc.save_async(ctx)
+    assert ctx.hit
+    first_tune()
+    manifest = ctx.manifest_path.read_bytes()
+    assert not cc.save(ctx) and ctx.manifest_path.read_bytes() == manifest
     cc.restore(ctx)
-    g8._DEVICE_PLAN.clear()
-    ctx2 = begin()
-    assert ctx2.hit and ctx2.key == ctx.key
-    cc.restore(ctx2)
 
 
 @needs_cuda

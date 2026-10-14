@@ -570,10 +570,8 @@ class CacheContext:
     # them, and every future start would reject the cache again with no way back.
     rejected_bundle: Optional[str] = None
     last_touch: float = 0.0
-    # () -> the int8 latency gate's cuBLAS identity now; it can first tune after begin() (see _rekey_int8_plan).
+    # () -> the int8 latency gate's cuBLAS identity now; it can first tune after begin() (see _int8_plan_stale).
     int8_plan: Any = None
-    # Set by restore() under _live_lock: a re-key after it must not register the new dir (nothing would unregister it).
-    released: bool = False
 
 
 def begin(
@@ -956,37 +954,21 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
     return removed
 
 
-def _rekey_int8_plan(ctx: CacheContext, logger: Any = None) -> None:
-    """A first-time int8 latency-gate tune runs after begin(): save under the key of the plan the graphs were traced
-    with, so the next load (which reads that plan at begin) hits. A re-keyed context is dirty, a loaded hit too: the
-    new key has no bundle yet. Before every ``saved`` check; never raises."""
-    if ctx.int8_plan is None or not _save_enabled(ctx.mode):
-        return
+def _int8_plan_stale(ctx: CacheContext) -> bool:
+    """A first-time int8 latency-gate tune after begin() changed the cuBLAS slots: the graphs no longer match this
+    key. Not saved; the next load keys on the stored plan and compiles once. Never raises."""
     try:
-        with _live_lock:
-            ident = ctx.int8_plan()
-            if ident == ctx.model_fp.get("int8_gemm_cublas"):
-                return
-            model_fp = {k: v for k, v in ctx.model_fp.items() if k != "int8_gemm_cublas"}
-            if ident:
-                model_fp["int8_gemm_cublas"] = ident
-            key = cache_key(ctx.env_fp, model_fp)
-            cdir = cache_root() / key
-            if not ctx.released:
-                _unregister_live(ctx.dir)
-                _register_live(cdir)
-            ctx.key, ctx.dir, ctx.model_fp = key, cdir, model_fp
-            ctx.bundle, ctx.manifest_path = cdir / _BUNDLE_NAME, cdir / _MANIFEST_NAME
-            ctx.rejected_bundle = None
-        mark_recompiled(ctx)
-    except Exception as exc:  # noqa: BLE001 - keep begin()'s key
-        _warn(logger, f"compile-cache: int8 plan re-key failed: {exc}")
+        return ctx.int8_plan is not None and ctx.int8_plan() != ctx.model_fp.get("int8_gemm_cublas")
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     """The save itself. Runs on the caller's thread (``save``) or the worker (``save_async``)."""
-    _rekey_int8_plan(ctx, logger)
     if not _save_enabled(ctx.mode) or ctx.saved:
+        return False
+    if _int8_plan_stale(ctx):
+        _info(logger, f"compile-cache: int8 GEMM plan changed after begin; not saving under key {ctx.key}")
         return False
     # Read BEFORE the artifacts are collected: anything registered from here on is not in `data`, and iterating the
     # live set while the request thread adds to it is a "set changed size during iteration" away from failing.
@@ -1115,7 +1097,6 @@ def save_async(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
     if ctx is None:
         return False
     note_use(ctx)
-    _rekey_int8_plan(ctx, logger)
     if not _save_enabled(ctx.mode) or ctx.saved:
         return False
     if sync_saves():
@@ -1149,9 +1130,7 @@ def restore(ctx: Optional[CacheContext], *, logger: Any = None) -> None:
     """Restore ``TORCHINDUCTOR_CACHE_DIR`` to its pre-load value. Call on unload."""
     if ctx is None:
         return
-    with _live_lock:
-        ctx.released = True
-        _unregister_live(ctx.dir)
+    _unregister_live(ctx.dir)
     if not ctx.prev_inductor_dir_set:
         return
     # Before the env var moves: save_cache_artifacts() reads the inductor cache this load pointed at, so a save
@@ -1172,7 +1151,7 @@ def restore(ctx: Optional[CacheContext], *, logger: Any = None) -> None:
 
 
 # Refcounted: a reload of the same model overlaps its predecessor's teardown.
-_live_lock = threading.RLock()
+_live_lock = threading.Lock()
 _live_dirs: dict[str, int] = {}
 
 
