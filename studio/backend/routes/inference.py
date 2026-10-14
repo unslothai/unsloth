@@ -25068,6 +25068,20 @@ def _serving_stt_model(
     return model
 
 
+def _retired_alias_engines() -> tuple[str, ...]:
+    """Every engine a retired whisper.cpp alias request may have landed on.
+
+    With PyTorch it always lands on Transformers. Without it, it lands on
+    audio.cpp or llama.cpp by what was installed at the time, which can change
+    mid-session, so a later unload or cancel has to reach each of them.
+    """
+    from core.inference import stt_sidecar
+
+    if stt_sidecar.is_available():
+        return ("transformers",)
+    return ("transformers", "audiocpp", "mtmd")
+
+
 def _prepare_runtime_fallback_checkpoint(
     requested_engine: Optional[str],
     serving_engine: str,
@@ -25577,17 +25591,26 @@ async def stt_download_cancel(
     Partial files stay cached, so the same download resumes. Cancelling when
     nothing is downloading is a no-op, so a double click cannot fail.
     """
-    from core.inference import stt_ggml_sidecar, stt_sidecar
-
-    engine = _resolve_serving_stt_engine(payload.engine if payload else None)
-    module = _stt_download_module(engine)
-    status = await asyncio.to_thread(
-        _cancel_account_stt_download,
-        module,
-        engine,
-        _serving_stt_model(payload.engine, engine, payload.model) if payload else None,
-        payload.download_id if payload else None,
-    )
+    requested = payload.engine if payload else None
+    engine = _resolve_serving_stt_engine(requested)
+    engines = [engine]
+    if _resolve_stt_engine(requested) == "gguf":
+        # A retired alias download may have started on another engine than the
+        # one it resolves to now (audio.cpp installed mid-download), so reach
+        # each, scoped to its mapped model and the download id.
+        engines += [name for name in _retired_alias_engines() if name != engine]
+    status = None
+    for name in engines:
+        result = await asyncio.to_thread(
+            _cancel_account_stt_download,
+            _stt_download_module(name),
+            name,
+            _serving_stt_model(requested, name, payload.model) if payload else None,
+            payload.download_id if payload else None,
+        )
+        # Report the engine that stopped something, else the one serving now.
+        if status is None or (result.get("cancelled") and not status.get("cancelled")):
+            status = result
     return JSONResponse(content = status)
 
 
@@ -25701,20 +25724,11 @@ async def stt_unload(
     if engine is None:
         unload_requests: list[tuple[Optional[list[str]], Optional[str]]] = [(None, model)]
     elif _resolve_stt_engine(engine) == "gguf":
-        from core.inference import stt_sidecar
-
-        # With PyTorch a retired "gguf" pick always lands on Transformers, so
-        # nothing else is freed: a default ASR loaded directly stays. Without it
-        # the pick lands on audio.cpp or llama.cpp by what was installed at load
-        # time, which can change mid-session, so free each, scoped to the model
-        # the pick was mapped to there.
-        serving_engines = (
-            ("transformers",)
-            if stt_sidecar.is_available()
-            else ("transformers", "audiocpp", "mtmd")
-        )
+        # Free each engine a retired "gguf" pick may have loaded on, scoped to the
+        # model it was mapped to there, so a default ASR loaded directly stays.
         unload_requests = [
-            ([serving], _serving_stt_model(engine, serving, model)) for serving in serving_engines
+            ([serving], _serving_stt_model(engine, serving, model))
+            for serving in _retired_alias_engines()
         ]
     else:
         unload_requests = [([_resolve_stt_engine(engine)], model)]
@@ -26130,6 +26144,17 @@ async def stt_model_capabilities(
 ):
     """What ``model`` can add to a transcript (timestamps, speakers) and where it runs. Offline."""
     from core.inference import stt_capabilities
+
+    if engine is not None and engine.strip().lower() in (
+        "gguf",
+        "ggml",
+        "whisper_cpp",
+        "whisper.cpp",
+    ):
+        # Answer for the engine and model a retired alias request would run on.
+        serving = await asyncio.to_thread(_resolve_serving_stt_engine, engine)
+        model = _serving_stt_model(engine, serving, model)
+        engine = serving
     return await asyncio.to_thread(stt_capabilities.capabilities_for, model, engine)
 
 

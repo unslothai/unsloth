@@ -183,6 +183,40 @@ def test_an_alias_unload_still_frees_llama_cpp_after_audio_cpp_is_installed(host
     assert (["mtmd"], DEFAULT_MTMD_STT_MODEL) in host.unloads
 
 
+def test_an_alias_cancel_still_stops_a_llama_cpp_download_after_audio_cpp_is_installed(host):
+    host.pin(torch = False, audiocpp = False, mtmd = True)
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "gguf"), current_subject = "tester", hf_token = None
+        )
+    )
+    assert host.downloads == [("stt_mtmd_sidecar", "mtmd", DEFAULT_MTMD_STT_MODEL)]
+    # audio.cpp installed mid-download: a fresh resolve would now pick it.
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
+    assert ("stt_mtmd_sidecar", "mtmd", DEFAULT_MTMD_STT_MODEL) in host.cancels
+
+
+def _capabilities(model, engine, monkeypatch):
+    seen = []
+
+    def capabilities_for(model, engine):
+        seen.append((model, engine))
+        return {}
+
+    monkeypatch.setattr(stt_capabilities, "capabilities_for", capabilities_for)
+    asyncio.run(ri.stt_model_capabilities(model = model, engine = engine, current_subject = "tester"))
+    return seen
+
+
+def test_alias_capabilities_describe_the_engine_that_would_serve_it(host, monkeypatch):
+    assert _capabilities("small", "gguf", monkeypatch) == [("small", "transformers")]
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    assert _capabilities("small", "whisper.cpp", monkeypatch) == [
+        (DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp")
+    ]
+
+
 def test_an_alias_transcribes_on_transformers(host):
     response = asyncio.run(ri._transcribe_audio_bytes(b"RIFFfake", "small", None, False, "gguf"))
     assert json.loads(response.body)["text"] == "hello"
