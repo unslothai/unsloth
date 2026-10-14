@@ -741,6 +741,39 @@ def test_a_forced_accumulate_mismatch_is_not_a_bad_entry(env, tmp_path, scheme, 
     assert len(rejected) == 1
 
 
+def _flip_payload_byte(path: str, tensor_suffix: str) -> None:
+    """Same-size corruption inside one tensor's payload (the header, key and byte count all still match)."""
+    raw = C.read_header_bytes(path)
+    header = json.loads(raw[8:])
+    name = next(k for k in header if k != "__metadata__" and k.endswith(tensor_suffix))
+    start = len(raw) + header[name]["data_offsets"][0]
+    with open(path, "r+b") as fh:
+        fh.seek(start)
+        byte = fh.read(1)
+        fh.seek(start)
+        fh.write(bytes([byte[0] ^ 0x5A]))
+
+
+def test_a_cached_artifact_records_a_payload_fingerprint_that_catches_same_size_corruption(env, tmp_path, scheme):
+    if not (_SCHEME and _SCHEME[1]):
+        pytest.skip("needs a really quantized build (the fingerprint covers quantized weights)")
+    from core.inference.diffusion_prequant import PrequantSource, _read_prequant_for, _verify_packed_fingerprint
+
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    path = C.save_runtime_quant(model, _fam(base), base_repo = str(base))
+    meta = json.loads(json.loads(C.read_header_bytes(path)[8:])["__metadata__"][PS.UNSLOTH_METADATA_KEY])
+    assert (meta.get("fingerprint") or {}).get("count", 0) > 0
+    ckpt = _read_prequant_for(path, "cpu", None)
+    assert _verify_packed_fingerprint(ckpt["state_dict"], ckpt.get("metadata") or {})
+
+    # torchao's flat layout: blocks.0.to_q._weight_qdata (>= 0.15) or blocks.0.to_q.weight (older).
+    names = json.loads(C.read_header_bytes(path)[8:])
+    _flip_payload_byte(path, "to_q._weight_qdata" if any(k.endswith("_weight_qdata") for k in names) else "to_q.weight")
+    ckpt = _read_prequant_for(path, "cpu", None)
+    assert not _verify_packed_fingerprint(ckpt["state_dict"], ckpt.get("metadata") or {})
+
+
 def test_a_cancelled_load_stops_the_cache_write_between_tensors(env, tmp_path, scheme):
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)

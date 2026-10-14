@@ -815,6 +815,11 @@ def save_runtime_quant(
             from .diffusion_transformer_quant import FP8_GRANULARITY
             metadata["fp8_granularity"] = FP8_GRANULARITY
         metadata.update(_rotation(transformer, info))
+        # The payload checksum the hosted builds carry (scripts/build_prequant_checkpoint.py): the manifest only checks
+        # the file size, so same-size corruption must fail _verify_packed_fingerprint and fall back to dense.
+        from .diffusion_prequant import canonical_weight_fingerprint
+        cancel_check()
+        metadata["fingerprint"] = canonical_weight_fingerprint(state_dict)
         header[UNSLOTH_FORMAT_KEY] = prequant_format_for(metadata)
         header[UNSLOTH_METADATA_KEY] = json.dumps(metadata, default = str)
 
