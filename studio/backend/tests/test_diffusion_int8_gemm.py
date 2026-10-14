@@ -1151,7 +1151,9 @@ def test_latency_gate_tiles_kill_switch_times_only_the_default(monkeypatch, tmp_
     g8._DEVICE_PLAN.clear()
     monkeypatch.setenv(g8.INT8_GEMM_TILES_ENV, "0")
     del calls[:]
-    assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}  # not the alt cached with tiles on
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {
+        default
+    }  # not the alt cached with tiles on
     assert calls and all(c[3] == (default,) for c in calls)
 
 
@@ -1165,9 +1167,13 @@ def test_latency_gate_small_m_bucket_is_timed_against_the_tile_it_runs(monkeypat
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
     g8._DEVICE_CFG[0] = default
     g8._DEVICE_TILES[0] = rules
-    assert g8.tile_for(0, g8._SHAPE_MIN_M, n, k) == shape_tile and g8.tile_for(0, 300, n, k) == default
+    assert (
+        g8.tile_for(0, g8._SHAPE_MIN_M, n, k) == shape_tile and g8.tile_for(0, 300, n, k) == default
+    )
     g8.tune(0, {(n, k)})
-    assert all(c[3][0] == g8.tile_for(0, c[2], n, k) for c in calls)  # static = what tile_for runs at that M
+    assert all(
+        c[3][0] == g8.tile_for(0, c[2], n, k) for c in calls
+    )  # static = what tile_for runs at that M
     assert g8.planned(0, 300, n, k) == default and g8.planned(0, 4096, n, k) == shape_tile
 
 

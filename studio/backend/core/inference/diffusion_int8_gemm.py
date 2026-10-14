@@ -1050,7 +1050,9 @@ def _measure(index: int, n: int, k: int, m: int, tiles: tuple) -> dict:
     dev = torch.device("cuda", index)
     m = max(_MIN_ROWS, min(m, _TUNE_MAX_BYTES // (4 * n)))
     with torch.cuda.device(dev):
-        g = torch.Generator(device = dev).manual_seed(0)  # private: the caller's CUDA RNG stream is untouched
+        g = torch.Generator(device = dev).manual_seed(
+            0
+        )  # private: the caller's CUDA RNG stream is untouched
         a = torch.randint(-127, 128, (m, k), generator = g, device = dev, dtype = torch.int8)
         w = torch.randint(-127, 128, (n, k), generator = g, device = dev, dtype = torch.int8)
         xs = torch.full((m,), 1e-3, device = dev, dtype = torch.bfloat16)
