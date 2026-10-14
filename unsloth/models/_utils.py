@@ -3824,11 +3824,8 @@ elif DEVICE_TYPE == "npu":
 
 
 def _xformers_fa3_lacks_sm90a(build_info, capability, flash3) -> bool:
-    # FA3's Hopper kernels need sm_90a (wgmma). xformers compiles its bundled FA3 for the build's
-    # TORCH_CUDA_ARCH_LIST verbatim, so a list naming only "9.0" (conda-forge) ships kernels that trap on
-    # H100 with "wgmma.fence without CUTE_ARCH_MMA_SM90A_ENABLED" and poison the CUDA context (#3963).
-    # An unset list = xformers' own "8.0 9.0a" default. A separate flash_attn_3 package ("pip_pkg") is
-    # not described by xformers' build metadata, so it is left alone.
+    # Bundled FA3 is compiled for TORCH_CUDA_ARCH_LIST verbatim; without "9.0a" (conda-forge) its wgmma
+    # kernels trap on H100 and poison the CUDA context (#3963). Unset list = xformers' "8.0 9.0a" default.
     if tuple(capability) != (9, 0):
         return False
     if getattr(flash3, "_C_flashattention3", None) is None:

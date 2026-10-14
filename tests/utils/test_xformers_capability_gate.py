@@ -86,12 +86,9 @@ class _Flash3:
         # conda-forge xformers 0.0.32.post2 (#3963) and 0.0.34: no sm_90a anywhere.
         ("5.0;6.0;7.0;7.5;8.0;8.6;8.9;9.0;10.0;12.0+PTX", (9, 0), True),
         ("8.0;8.9;10.0;12.0+PTX", (9, 0), True),
-        # PyPI wheels.
         ("7.5 8.0+PTX 9.0a", (9, 0), False),
         ("9.0a+PTX", (9, 0), False),
-        # Unset list: xformers builds FA3 for "8.0 9.0a" itself.
         (None, (9, 0), False),
-        # Only Hopper runs the FA3 kernels.
         ("8.0;8.9;10.0;12.0+PTX", (8, 0), False),
         ("8.0;8.9;10.0;12.0+PTX", (10, 0), False),
     ],
@@ -105,9 +102,8 @@ def test_fa3_lacks_sm90a_ignores_external_or_missing_fa3():
     from unsloth.models._utils import _xformers_fa3_lacks_sm90a
 
     conda = _Build("8.0;8.9;10.0;12.0+PTX")
-    # xformers >= 0.0.35 loads FA3 from a separate flash_attn_3 package, which its build metadata does not describe.
+    # xformers >= 0.0.35 loads FA3 from a separate flash_attn_3 package.
     assert _xformers_fa3_lacks_sm90a(conda, (9, 0), _Flash3(version = "pip_pkg")) is False
-    # No FA3 provider at all: xformers never dispatches FA3.
     assert _xformers_fa3_lacks_sm90a(conda, (9, 0), _Flash3(loaded = False)) is False
     assert _xformers_fa3_lacks_sm90a(conda, (9, 0), None) is False
 
