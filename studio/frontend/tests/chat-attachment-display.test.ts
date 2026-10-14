@@ -181,13 +181,33 @@ test("the composer always shows attachments as cards", () => {
   assert.equal("composerAttachments" in saved, false);
   assert.match(
     ATTACHMENT,
-    /<ComposerPrimitive\.Attachments components=\{CARD_COMPONENTS\} \/>/,
+    /<ComposerAttachmentByIdProvider key=\{id\} id=\{id\}>\s*<ComposerAttachmentCard \/>/,
   );
   assert.doesNotMatch(
     ATTACHMENT,
     /COMPACT_COMPONENTS|const AttachmentUI\b|aui-pasted-text-chip/,
   );
   assert.doesNotMatch(ATTACHMENT, /customization\.composerAttachments/);
+});
+
+// assistant-ui keys composer attachments by index, so removing the first remounted every card after
+// it (each card is keyed by its attachment id), and each remount blanked its preview and decoded the
+// image again. The list is keyed and scoped by id instead; an index scope would also throw for a
+// moved card, whose new index applies a step after the list re-renders.
+test("composer attachment cards are keyed and scoped by attachment id", async () => {
+  const list = ATTACHMENT.slice(
+    ATTACHMENT.indexOf("const ComposerAttachmentCardList: FC"),
+  );
+  assert.match(
+    list,
+    /composer\.attachments\.map\(\(attachment\) => attachment\.id\)/,
+  );
+  assert.doesNotMatch(ATTACHMENT, /<ComposerPrimitive\.Attachments\b/);
+  const scopes = await readSrcAsync(
+    "components/assistant-ui/stale-safe-scopes.tsx",
+  );
+  assert.match(scopes, /query: \{ type: "id", id \}/);
+  assert.match(scopes, /aui\.composer\(\)\.attachment\(\{ id \}\)/);
 });
 
 test("audio or video attached before a model loaded is checked when sent", () => {

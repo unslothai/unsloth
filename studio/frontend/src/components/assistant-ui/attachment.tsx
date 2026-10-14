@@ -43,6 +43,7 @@ import {
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { useAppearanceCustomStore } from "@/features/settings";
+import { ComposerAttachmentByIdProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import { cn } from "@/lib/utils";
 import { useShallow } from "zustand/shallow";
 import {
@@ -686,8 +687,6 @@ const SENT_FILE_COMPONENTS = {
   Document: SentFileItem,
   File: SentFileItem,
 };
-const CARD_COMPONENTS = { Attachment: ComposerAttachmentCard };
-
 export const UserMessageAttachments: FC = () => {
   const setting = useAppearanceCustomStore(
     (s) => s.customization.sentAttachments,
@@ -782,9 +781,24 @@ export const ComposerAttachments: FC<{
         className,
       )}
     >
-      <ComposerPrimitive.Attachments components={CARD_COMPONENTS} />
+      <ComposerAttachmentCardList />
     </div>
   );
+};
+
+// Not ComposerPrimitive.Attachments: its index keys remount every card after a removed one,
+// and each remount blanks its preview and decodes the image again.
+const ComposerAttachmentCardList: FC = () => {
+  const ids = useAuiState(
+    useShallow(({ composer }) =>
+      composer.attachments.map((attachment) => attachment.id),
+    ),
+  );
+  return ids.map((id) => (
+    <ComposerAttachmentByIdProvider key={id} id={id}>
+      <ComposerAttachmentCard />
+    </ComposerAttachmentByIdProvider>
+  ));
 };
 
 export const ComposerAddAttachment: FC = () => {
