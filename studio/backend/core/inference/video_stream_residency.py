@@ -341,6 +341,22 @@ def _failed_captures() -> int:
         return 0
 
 
+def _keyed_graphs_live(pipe: Any, key: Any) -> bool:
+    """False when ``key`` names CUDA graphs that ``live_status`` reports dropped or never engaged for this load."""
+    try:
+        optims = dict(key[4]).get("speed_optims", "")
+        if "cuda_graph" not in str(optims):
+            return True
+        from .diffusion_cuda_graph import live_status
+
+        _, live = live_status(
+            None, ("cuda_graph",), tuple(getattr(pipe, "_unsloth_cuda_graphs", ()) or ())
+        )
+        return "cuda_graph" in live
+    except Exception:  # noqa: BLE001 - unreadable: no key names this render
+        return False
+
+
 def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
     """Record the request's peak allocation above its start; call only after decode and export."""
     module = getattr(pipe, "transformer", None)
@@ -370,8 +386,12 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         peaks[work] = max(extra, peaks.get(work, 0))
         key = getattr(module, "_unsloth_video_calibration_key", None)
         # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of the keyed and persisted peaks
-        if key is not None and _failed_captures() == getattr(
-            module, "_unsloth_video_failed_captures", 0
+        # a load keyed with CUDA graphs whose graphs no longer run (a poisoned wrapper after a failed capture runs
+        # eager without counting a new failure) records an eager peak a graph-capturing load would undershoot
+        if (
+            key is not None
+            and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0)
+            and _keyed_graphs_live(pipe, key)
         ):
             graphs, generation = _live_graphs(dev), _capture_generation(dev)
             stored_key = _store_key(key)

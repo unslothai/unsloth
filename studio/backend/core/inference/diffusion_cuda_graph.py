@@ -322,11 +322,14 @@ def live_graph_count(device_index: Optional[int]) -> int:
 
 
 _CAPTURES: dict = {}
+# image and video render threads capture concurrently: an unserialized read-modify-write could lose an increment
+_CAPTURES_LOCK = threading.Lock()
 
 
 def note_capture(device_index: Optional[int]) -> None:
     """Count a recorded graph (whole-step or per-block) on ``device_index``; see ``capture_generation``."""
-    _CAPTURES[device_index] = _CAPTURES.get(device_index, 0) + 1
+    with _CAPTURES_LOCK:
+        _CAPTURES[device_index] = _CAPTURES.get(device_index, 0) + 1
 
 
 def capture_generation(device_index: Optional[int]) -> int:

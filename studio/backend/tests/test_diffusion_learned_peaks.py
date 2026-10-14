@@ -2080,3 +2080,63 @@ def test_in_process_video_peak_is_on_the_streamed_baseline(monkeypatch):
     module = run(600)  # groups kept resident: the reused peak includes the prefetch window
     assert vsr.measured_extra_mib(key, work) == 3600
     assert module._unsloth_video_peaks[work] == 3000  # the module's own diagnostic stays raw
+
+
+# --------------------------------------------------------------------------------------------------- review round 18
+
+
+def test_capture_generation_increments_are_serialized(monkeypatch):
+    import core.inference.diffusion_cuda_graph as dcg
+
+    seen: list = []
+
+    class _Counts(dict):
+        def get(self, *a):
+            lock = getattr(dcg, "_CAPTURES_LOCK", None)
+            seen.append(lock is not None and lock.locked())
+            return super().get(*a)
+
+    monkeypatch.setattr(dcg, "_CAPTURES", _Counts())
+    dcg.note_capture(0)
+    dcg.note_capture(0)
+    assert dcg.capture_generation(0) == 2
+    assert seen and all(seen[:2])  # each read-modify-write held the lock
+
+
+def test_poisoned_graph_load_records_no_video_calibration(monkeypatch):
+    import core.inference.diffusion_cuda_graph as dcg
+
+    monkeypatch.setenv(mp.LEARNED_PEAKS_ENV, "0")
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    monkeypatch.setattr(dm, "stream_window_pad_mib", lambda pipe: 0)
+    key = vsr.calibration_key(
+        "wan2.2-ti2v-5b", "Wan-AI/x", "group", "cuda:0", speed_optims = ("compiled", "cuda_graph")
+    )
+    work = 1280 * 704 * 49
+    handle = types.SimpleNamespace(poisoned = False)
+    monkeypatch.setattr(
+        dcg,
+        "never_engaged",
+        lambda handles: "capture failed" if all(h.poisoned for h in handles) else None,
+    )
+
+    class _Torch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def max_memory_allocated(dev):
+                return (3000 + 100) << 20
+
+    def run():
+        module = types.SimpleNamespace(_unsloth_video_pending = (work, 100 << 20, "cuda:0"))
+        module._unsloth_video_calibration_key = key
+        pipe = types.SimpleNamespace(transformer = module, _unsloth_cuda_graphs = (handle,))
+        with monkeypatch.context() as m:
+            m.setitem(__import__("sys").modules, "torch", _Torch)
+            vsr.record_request_peak(pipe)
+
+    handle.poisoned = True  # a failed capture poisoned the wrapper: later requests run eager
+    run()
+    assert vsr.measured_extra_mib(key, work) is None
+    handle.poisoned = False  # graphs live: the request records
+    run()
+    assert vsr.measured_extra_mib(key, work) == 3000
