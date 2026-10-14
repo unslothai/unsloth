@@ -300,6 +300,15 @@ def captures_exhausted() -> bool:
     return len(_FAILED_GRAPHS) >= MAX_FAILED_CAPTURES
 
 
+_CAPTURED = [0]
+
+
+def captured_graph_count() -> int:
+    """Graphs recorded in this process so far (whole-step and per-block). Their statics and pool stay allocated after
+    the render that recorded them, so a later render's start allocation includes them."""
+    return _CAPTURED[0]
+
+
 def failed_capture_count() -> int:
     """Captures that failed in this process (an absorbed OOM among them): a render that saw one grow peaked at the
     failed attempt, not at what it needed."""
@@ -1136,6 +1145,7 @@ class GraphedForward:
                 return self._eager(eager_args, eager_kwargs)
             entry = captured
             self.cache[key] = entry
+            _CAPTURED[0] += 1
             if self.logger is not None:
                 self.logger.debug(
                     "diffusion.cuda_graph: captured %s graph %d/%d over %d input tensor(s)",

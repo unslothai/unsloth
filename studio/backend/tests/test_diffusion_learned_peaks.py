@@ -1329,3 +1329,82 @@ def test_failed_capture_video_peak_never_reaches_the_keyed_or_persisted_peaks(st
         vsr.record_request_peak(types.SimpleNamespace(transformer = module))
     assert mp.work_peaks(vsr._store_key(key)) == {work: 3000}
     assert vsr.measured_extra_mib(key, work) == 3000
+
+
+# ---------------------------------------------------------------------------------------------------- review round 9
+
+
+def test_graphs_left_by_an_unrecorded_render_stop_image_sampling(store, monkeypatch):
+    import core.inference.diffusion_cuda_graph as cg
+
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    monkeypatch.setattr(cg, "_CAPTURED", [3])
+    assert diffusion._start_peak_probe(state) is not None  # the load's own graphs are the baseline
+    cg._CAPTURED[0] += 2  # a cache-served render recorded graphs and was not sampled
+    assert diffusion._start_peak_probe(state) is None
+
+
+def test_graphs_a_recorded_render_captured_keep_sampling_open(store, monkeypatch):
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
+    monkeypatch.setattr(cg, "_CAPTURED", [0])
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0)
+    cg._CAPTURED[0] = 4  # recorded during this sampled render
+    diffusion._record_peak_probe(
+        types.SimpleNamespace(pipe = pipe, speed_mode = "default"), _Probe(2400), width = 1024, height = 1024, batch_size = 1
+    )
+    assert pipe._unsloth_peak_graphs == 4
+
+
+def test_graphs_left_by_a_discarded_video_request_stop_video_sampling(store, monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    monkeypatch.setattr(cg, "_CAPTURED", [1])
+    module = types.SimpleNamespace(_unsloth_video_calibration_key = None)
+    pipe = types.SimpleNamespace(transformer = module)
+    vsr._open_window(module, torch.device("cuda", 0))
+    cg._CAPTURED[0] += 1  # the request recorded a graph, then was cancelled
+    vsr.discard_request(pipe)
+    vsr._open_window(module, torch.device("cuda", 0))
+    module._unsloth_video_pending = (1280 * 704 * 49, 0, "cuda:0")
+
+    class _Torch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def max_memory_allocated(dev):
+                return 3000 << 20
+
+    with monkeypatch.context() as m:
+        m.setitem(__import__("sys").modules, "torch", _Torch)
+        assert vsr.record_request_peak(pipe) is None
+
+
+def test_render_without_the_familys_cfg_is_not_probed(monkeypatch):
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    state.family = types.SimpleNamespace(uses_negative_prompt = True)
+    state.pipe._unsloth_peak_cfg = True
+    assert diffusion._start_peak_probe(state) is not None
+    state.pipe._unsloth_peak_cfg = False  # guidance off: half the denoiser batch
+    assert diffusion._start_peak_probe(state) is None
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)" in src
+
+
+def test_render_forced_eager_while_the_compile_is_pending_is_not_probed(monkeypatch):
+    import core.inference.diffusion_bg_compile as bg
+
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    assert diffusion._start_peak_probe(state) is not None
+    token = bg._FORCE_EAGER.set(True)
+    try:
+        assert diffusion._start_peak_probe(state) is None
+    finally:
+        bg._FORCE_EAGER.reset(token)

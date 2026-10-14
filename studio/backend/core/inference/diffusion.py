@@ -1975,6 +1975,13 @@ def _start_peak_probe(state: Any) -> Any:
     try:
         from .diffusion_measured_peaks import PeakProbe, enabled
 
+        graphs = cuda_graph.captured_graph_count()
+        if getattr(pipe, "_unsloth_peak_graphs", None) is None:
+            pipe._unsloth_peak_graphs = graphs  # the load's own graphs: every render starts above them
+        if graphs != pipe._unsloth_peak_graphs:
+            # an unrecorded render (cache-served, refused, failed) left graphs allocated: a later peak above that
+            # start omits memory a fresh process allocates on its first render
+            return None
         if _live_peak_identity(state) != tuple(identity):
             # this render runs a configuration the key does not name (a speed tier or step cache that toggled, a VAE
             # saver the guard engaged for it, another attention backend): its peak belongs to no key
@@ -2007,6 +2014,18 @@ def _live_peak_identity(state: Any) -> tuple:
     speed = getattr(state, "speed_mode", None)
     if "compile_fallback_eager" in tuple(getattr(state, "speed_optims", ()) or ()):
         speed = None  # the compiled tier fell back to eager: an execution path no key names
+    try:
+        from .diffusion_bg_compile import eager_forced
+
+        if eager_forced():
+            speed = None  # a background compile is still pending: this render runs eager under a compiled tier
+    except Exception:  # noqa: BLE001
+        speed = None
+    # a family that can run classifier-free guidance records only renders that do (the doubled denoiser batch)
+    family_obj = getattr(state, "family", None)
+    expects_cfg = bool(getattr(family_obj, "uses_negative_prompt", False))
+    if bool(getattr(pipe, "_unsloth_peak_cfg", expects_cfg)) != expects_cfg:
+        speed = None
     return (family, label, speed)
 
 
@@ -2124,6 +2143,8 @@ def _record_peak_probe(
             # its next load from this value alone
             return
         family, quant, speed_mode = identity
+        pipe = state.pipe
+        pipe._unsloth_peak_graphs = cuda_graph.captured_graph_count()  # this sample covers the graphs it recorded
         peak += int(getattr(probe, "window_pad", 0) or 0)
         if record(
             family = family,
@@ -11337,6 +11358,10 @@ class DiffusionBackend:
                 chunk_shapes: list[int] = []
                 graphs_before = fresh_compile_count()
                 compile_cache.note_use(state.compile_cache_ctx)
+                try:
+                    state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)
+                except Exception:  # noqa: BLE001 - an unknown guidance mode records nothing
+                    state.pipe._unsloth_peak_cfg = None
                 peak_probe = _start_peak_probe(state)
                 try:
                     previewer = _start_previewer()

@@ -594,6 +594,9 @@ class BlockGraph:
             self.stats["recaptures"] += 1
         self.cache[full] = entry
         self.stats["captures"] += 1
+        from . import diffusion_cuda_graph
+
+        diffusion_cuda_graph._CAPTURED[0] += 1
         while len(self.cache) > self.max_graphs:
             _, evicted = self.cache.popitem(last = False)
             self._forget(evicted)
