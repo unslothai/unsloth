@@ -2545,6 +2545,7 @@ def refine_plan_from_loaded_weights(
         if headroom is None:
             return plan
         from .diffusion_measured_peaks import lookup as learned_peak
+
         learned = learned_peak(family = family, quant = quant, speed_mode = speed_mode)
         overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
         floor = headroom + overhead + other
@@ -3071,7 +3072,11 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
     torch.cuda.synchronize(onload)
 
 
-def _unwind_group_offload(pipe: Any, snapshots: list, logger: Any = None) -> bool:
+def _unwind_group_offload(
+    pipe: Any,
+    snapshots: list,
+    logger: Any = None,
+) -> bool:
     """Undo a partial ``_apply_group_offload``: group hooks, the prefetchers' torch hooks and attributes, deferred
     pins. The weights stay where the hooks left them (host copies or the card); the caller's retry moves them."""
     try:
@@ -3208,7 +3213,11 @@ def measured_request_extra_mib(
     if need is not None and learned:
         w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
         h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
-        scale = max(1.0, (w * h * max(1, int(batch_size or 1))) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT))
+        scale = max(
+            1.0,
+            (w * h * max(1, int(batch_size or 1)))
+            / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT),
+        )
         step = _MEASURED_PEAK_ROUND_MIB
         need = max(need, int(-(-(float(learned) * scale * _MEASURED_PEAK_MARGIN) // step) * step))
     if need is None and isinstance(identity, tuple) and len(identity) == 3:

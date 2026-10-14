@@ -40,7 +40,12 @@ _cache: dict[str, Any] = {"path": None, "mtime": None, "data": None}
 
 
 def enabled() -> bool:
-    return (os.environ.get(LEARNED_PEAKS_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+    return (os.environ.get(LEARNED_PEAKS_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def store_path() -> Optional[Path]:
@@ -57,7 +62,11 @@ def store_path() -> Optional[Path]:
         return None
 
 
-def resolution_bucket(width: Optional[int], height: Optional[int], batch_size: int = 1) -> int:
+def resolution_bucket(
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+) -> int:
     """Pixels of the power-of-two megapixel bucket covering ``width x height x batch`` (at least 1/4 MP)."""
     pixels = max(1, int(width or 1024)) * max(1, int(height or 1024)) * max(1, int(batch_size or 1))
     if pixels <= _MIN_BUCKET_PIXELS:
@@ -94,11 +103,20 @@ def _read(path: Path, fresh: bool = False) -> dict:
         mtime = path.stat().st_mtime_ns
     except OSError:
         return _empty()
-    if not fresh and _cache["path"] == str(path) and _cache["mtime"] == mtime and _cache["data"] is not None:
+    if (
+        not fresh
+        and _cache["path"] == str(path)
+        and _cache["mtime"] == mtime
+        and _cache["data"] is not None
+    ):
         return _cache["data"]
     try:
         data = json.loads(path.read_text())
-        if not isinstance(data, dict) or data.get("version") != _VERSION or not isinstance(data.get("entries"), dict):
+        if (
+            not isinstance(data, dict)
+            or data.get("version") != _VERSION
+            or not isinstance(data.get("entries"), dict)
+        ):
             data = _empty()
     except Exception:  # noqa: BLE001 - a corrupt file is an empty store, never a failed load
         data = _empty()
@@ -115,11 +133,9 @@ def _file_lock(path: Path):
     try:
         try:
             import fcntl
-
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         except ImportError:  # Windows
             import msvcrt
-
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
         yield
@@ -167,7 +183,9 @@ def record(
     bucket_pixels = resolution_bucket(width, height, batch_size)
     bucket = str(bucket_pixels)
     pixels = max(1, int(width or 1024)) * max(1, int(height or 1024)) * max(1, int(batch_size or 1))
-    peak_mib = int(math.ceil(int(peak_mib) * bucket_pixels / float(max(pixels, bucket_pixels // 2))))
+    peak_mib = int(
+        math.ceil(int(peak_mib) * bucket_pixels / float(max(pixels, bucket_pixels // 2)))
+    )
     try:
         with _lock, _file_lock(path):
             data = _read(path, fresh = True)
@@ -215,7 +233,9 @@ def lookup(
         with _lock:
             key = model_key(family, quant, speed_mode, frames, device or current_device_name())
             entry = (_read(path).get("entries") or {}).get(key)
-        peaks = {int(k): int(v) for k, v in ((entry or {}).get("peaks") or {}).items() if int(v) > 0}
+        peaks = {
+            int(k): int(v) for k, v in ((entry or {}).get("peaks") or {}).items() if int(v) > 0
+        }
     except Exception:  # noqa: BLE001
         return None
     if not peaks:
@@ -295,7 +315,6 @@ class PeakProbe:
             return None
         try:
             import torch
-
             torch.cuda.synchronize(self.device)
             peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
         except Exception:  # noqa: BLE001
@@ -307,7 +326,6 @@ def current_device_name() -> Optional[str]:
     """Name of the current CUDA device (None without CUDA); the planner's snapshot reads this device."""
     try:
         import torch
-
         if not torch.cuda.is_available():
             return None
     except Exception:  # noqa: BLE001
@@ -318,7 +336,6 @@ def current_device_name() -> Optional[str]:
 def device_name(device: Any) -> Optional[str]:
     try:
         import torch
-
         return str(torch.cuda.get_device_name(torch.device(device)))
     except Exception:  # noqa: BLE001
         return None
