@@ -17,6 +17,17 @@ from core.inference.llama_preemption import PreemptSignal, get_preemption_contro
 import routes.inference as inference_route
 
 
+# The read cap stretched well past scheduler noise, so a loop held for it shows as a gap no
+# descheduled worker produces, and the bound below stays falsifiable under -n 4.
+_READ_CAP_S = 1.5
+_MAX_GAP_S = _READ_CAP_S / 2
+
+
+@pytest.fixture(autouse = True)
+def _long_read_cap(monkeypatch):
+    monkeypatch.setattr(inference_route, "_ARM_RESIDENCY_READ_S", _READ_CAP_S)
+
+
 @pytest.fixture(autouse = True)
 def _studio_owned(monkeypatch):
     monkeypatch.delenv(preemption.PREEMPT_ENV, raising = False)
@@ -75,7 +86,7 @@ def _slow_probe(backend, released):
     controller = get_preemption_controller(inference_route._preempt_key(backend))
 
     def probe():
-        released.wait(2.0)
+        released.wait(_READ_CAP_S * 2)
 
     controller.set_residency_probe(probe)
     return controller
@@ -110,7 +121,7 @@ def test_arming_awaits_the_slow_probe_without_stalling_the_loop():
     policy, worst_gap, elapsed = asyncio.run(run())
     assert policy is not None, "the chat must still be armed"
     assert elapsed >= inference_route._ARM_RESIDENCY_READ_S, "the read was not waited for"
-    assert worst_gap < 0.1, f"the loop stalled for {worst_gap:.3f}s while arming"
+    assert worst_gap < _MAX_GAP_S, f"the loop stalled for {worst_gap:.3f}s while arming"
 
 
 def test_counting_a_raw_holder_awaits_the_slow_probe_without_stalling_the_loop():
@@ -137,7 +148,7 @@ def test_counting_a_raw_holder_awaits_the_slow_probe_without_stalling_the_loop()
 
     holder, worst_gap, _elapsed = asyncio.run(run())
     assert holder is not None
-    assert worst_gap < 0.1, f"the loop stalled for {worst_gap:.3f}s while counting"
+    assert worst_gap < _MAX_GAP_S, f"the loop stalled for {worst_gap:.3f}s while counting"
 
 
 def test_the_synchronous_read_on_the_loop_returns_at_once():
@@ -153,6 +164,6 @@ def test_the_synchronous_read_on_the_loop_returns_at_once():
         return time.monotonic() - started
 
     try:
-        assert asyncio.run(run()) < 0.1
+        assert asyncio.run(run()) < _MAX_GAP_S
     finally:
         released.set()

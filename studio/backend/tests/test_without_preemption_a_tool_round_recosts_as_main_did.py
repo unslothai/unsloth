@@ -52,7 +52,6 @@ _TOOLS = [
 ]
 _SYSTEM = "Answer briefly. " * 60
 _GROWN = "more " * 2000
-_GROWN = "more " * 2000
 _CONVERSATION = [
     {"role": "system", "content": _SYSTEM},
     {"role": "user", "content": "find it " * 300},
@@ -95,7 +94,12 @@ def _open(backend):
     return reservation, payload
 
 
-def _recost(reservation, payload, backend, conversation = _CONVERSATION):
+def _recost(
+    reservation,
+    payload,
+    backend,
+    conversation = _CONVERSATION,
+):
     return inf._openai_llama_admission_recost(
         reservation,
         conversation,
@@ -171,7 +175,9 @@ def test_with_share_pricing_a_declined_round_is_refused(share_pricing):
         second, _ = _open(backend)
         try:
             with pytest.raises(LlamaAdmissionRecostRefused):
-                _recost(first, payload, backend, _CONVERSATION + [{"role": "user", "content": _GROWN}])
+                _recost(
+                    first, payload, backend, _CONVERSATION + [{"role": "user", "content": _GROWN}]
+                )
         finally:
             first.cancel()
             second.cancel()
