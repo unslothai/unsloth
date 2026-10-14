@@ -252,12 +252,17 @@ def check_close_preserves_position(page, engine: str, mode: str, mod: str) -> No
                 search_page.wait_for_function("() => !window.__findSmoke.counter()")
                 field.fill("unsloth")
                 search_page.wait_for_function("() => !!window.__findSmoke.counter()")
+                start = search_page.evaluate("() => window.__findSmoke.counter()")
                 for _ in range(10):
                     field.press("Enter")
-                # Ten steps from the first match: wait for the counter to land on the eleventh.
+                # Wait for all ten steps to land: the active match ten places on, wrapping.
                 settle(
                     search_page,
-                    "() => (window.__findSmoke.counter() || '').startsWith('11/')",
+                    """start => {
+                      const [a, n] = start.split('/').map(Number);
+                      return window.__findSmoke.counter() === `${((a - 1 + 10) % n) + 1}/${n}`;
+                    }""",
+                    arg = start,
                 )
                 frames(search_page)
                 before = search_page.evaluate("() => window.__findSmoke.scrollTop()")
