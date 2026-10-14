@@ -7337,8 +7337,8 @@ def _moe_cache_share_admits(
 
 # The raise costs decode about equally at any resident share, so any spill keeps it. Split
 # pp / tg, 2048 vs default micro-batch on an RTX 3090 and an RTX 6000 Ada: gemma-4-26B-A4B
-# r 0.17 +25-34% / -3..+3%, r 0.77 +12-18% / -5..-6%; gpt-oss-20b r 0.26 +116-153% /
-# -1..-4%; Qwen3-30B-A3B r 0.25 +135-155% / -3..-4%.
+# r 0.17 +25-32% / -2..-3%, r 0.77 +12-17% / -6%; gpt-oss-20b r 0.26 +116-154% / -4..-5%;
+# Qwen3-30B-A3B r 0.25 +135-155% / -3..+1%.
 def _moe_spill_raise_wanted(resident_share: Optional[float], *, switch: str = "auto") -> bool:
     """Raise the spill micro-batch? Nothing spilling at the default micro-batch = no;
     unpriceable = yes."""
