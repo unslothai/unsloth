@@ -16826,9 +16826,12 @@ def _resolve_inherited_extra_args(
         # Stripping it relaunched an Apply at the fit estimate, silently collapsing
         # the confirmed context while the stored override still said otherwise.
         from core.inference.llama_server_args import matches_explicit_ctx_override
+        from core.inference.spark_serving import strip_layer_split_extra_args
 
         stripped = strip_shadowing_flags(
-            stored_args,
+            # The Spark split block was ours, not the caller's: a reload planned single or as
+            # replicas must not relaunch against the old rpc-server.
+            strip_layer_split_extra_args(stored_args),
             strip_context = "max_seq_length" in fields_set
             and not matches_explicit_ctx_override(
                 stored_args, getattr(request, "max_seq_length", None)

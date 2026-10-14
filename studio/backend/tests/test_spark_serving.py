@@ -4799,6 +4799,43 @@ def test_the_spark_status_route_is_the_owners_only(monkeypatch):
     assert response.status_code == 200 and response.json()["enabled"] is True
 
 
+def test_a_reload_that_inherits_a_splits_extras_drops_the_managed_rpc_block(monkeypatch):
+    """Regression: a same-model reload that leaves layer_split re-inherited the stored --rpc block,
+    so the new llama-server relaunched against the old rpc-server and stayed split."""
+    import routes.inference as ri
+
+    user = ["--seed", "1", "--rpc", "10.0.0.9:50052"]
+    ours = ss.layer_split_extra_args("192.168.200.13", 50052, pipeline_groups = 2)
+    monkeypatch.setattr(
+        ri,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            extra_args = ["--seed", "1"] + ours,
+            extra_args_source = ("org/model-GGUF", "q4_k_m"),
+        ),
+    )
+    request = SimpleNamespace(
+        model_path = "org/model-GGUF",
+        gguf_variant = None,
+        llama_extra_args = None,
+        model_fields_set = set(),
+    )
+    config = SimpleNamespace(is_gguf = True, gguf_variant = "q4_k_m", identifier = "org/model-GGUF")
+    assert ri._resolve_inherited_extra_args(request, config, "org/model-GGUF", None) == [
+        "--seed",
+        "1",
+    ]
+    # A caller's own --rpc is theirs and is inherited as it was.
+    monkeypatch.setattr(
+        ri,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            extra_args = list(user), extra_args_source = ("org/model-GGUF", "q4_k_m")
+        ),
+    )
+    assert ri._resolve_inherited_extra_args(request, config, "org/model-GGUF", None) == user
+
+
 def test_an_uncached_repo_keeps_pipeline_groups_off_until_vision_is():
     """First load of an uncached repo: no file to inspect yet, and the backend may fetch a projector
     with it, which --pipeline-groups refuses."""
