@@ -153,25 +153,17 @@ def test_store_off_and_corrupt_file(store, monkeypatch):
 
 
 def test_learned_peak_raises_a_seed_but_never_lowers_it(store):
-    seed = dm.measured_image_runtime_mib(
-        "flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor"
-    )
+    seed = dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor")
     assert seed == 3072
     kw = dict(family = "flux.2-klein", quant = "torchao:Int8Tensor", speed_mode = "default")
     mp.record(**kw, width = 1024, height = 1024, peak_mib = 1000)
     assert (
-        dm.measured_image_runtime_mib(
-            "flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor"
-        )
-        == 3072
+        dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor") == 3072
     )
     mp.record(**kw, width = 1024, height = 1024, peak_mib = 4000)
     # 4000 x 1.15 = 4600 -> 4608
     assert (
-        dm.measured_image_runtime_mib(
-            "flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor"
-        )
-        == 4608
+        dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor") == 4608
     )
     # without a quant label (callers that never measured) the seed alone answers
     assert dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True) == 3072
@@ -347,6 +339,14 @@ def test_background_pinner_pins_gguf_host_copies():
 
 
 # ---------------------------------------------------------------------------------------------------- recording
+
+
+@pytest.fixture(autouse = True)
+def _attention_scaling_known(request, monkeypatch):
+    """Recording tests run without a device target; the SDPA verdict counts as known unless a test says otherwise."""
+    if "attention_scaling_unknown" not in request.node.name:
+        monkeypatch.setattr("core.inference.diffusion._attention_scaling_known", lambda target, engaged = None: True)
+
 
 
 class _Probe:
@@ -660,10 +660,7 @@ def test_load_passes_the_engaged_attention_backend_to_the_peak_identity():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert (
-        "peak_model,\n                                peak_vae,\n                                peak_te,\n                                peak_cache,"
-        in src
-    )
+    assert "peak_model,\n                                peak_vae,\n                                peak_te,\n                                peak_cache," in src
     assert 'attention = attention_engaged or "native",' in src
     assert 'plan.estimates.get("measured_learned_peak_mib"),' in src
 
@@ -743,10 +740,7 @@ def test_load_passes_the_model_to_the_peak_identity():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert (
-        "peak_model,\n                                peak_vae,\n                                peak_te,\n                                peak_cache,"
-        in src
-    )
+    assert "peak_model,\n                                peak_vae,\n                                peak_te,\n                                peak_cache," in src
     assert "model = peak_model," in src
     assert 'plan.estimates.get("measured_learned_peak_pixels"),' in src
 
@@ -874,9 +868,7 @@ def test_learned_peaks_are_keyed_by_vae_savers(klein_pipe):
     assert tiled.estimates["measured_runtime_headroom_mib"] == 3072
     # an untiled load never reuses the tiled decode's peak
     assert dm.refine_plan_from_loaded_weights(klein_pipe, plan, vae = "full", **kw) is plan
-    assert (
-        dm.vae_saver_tag(True, True) == "tiled+sliced" and dm.vae_saver_tag(False, False) == "full"
-    )
+    assert dm.vae_saver_tag(True, True) == "tiled+sliced" and dm.vae_saver_tag(False, False) == "full"
 
 
 def test_render_with_a_vae_saver_the_key_lacks_is_not_probed(monkeypatch):
@@ -890,8 +882,7 @@ def test_render_with_a_vae_saver_the_key_lacks_is_not_probed(monkeypatch):
     monkeypatch.setattr(mp, "enabled", lambda: True)
     vae = types.SimpleNamespace(use_tiling = False, use_slicing = False)
     pipe = types.SimpleNamespace(
-        _unsloth_peak_identity = ("some-new-dit", "q|model:m|vae:full|attn:native", "default"),
-        vae = vae,
+        _unsloth_peak_identity = ("some-new-dit", "q|model:m|vae:full|attn:native", "default"), vae = vae
     )
     monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
     state = types.SimpleNamespace(pipe = pipe, device = "cuda:0", speed_mode = "default")
@@ -944,16 +935,12 @@ def test_learned_peaks_are_keyed_by_text_encoder_precision(klein_pipe):
         peak_mib = 2600,
     )
     plan = _klein_flat_plan()
-    kw = dict(
-        family = "some-new-dit", speed_mode = "default", attention = "native", model = "org/dit", vae = "full"
-    )
+    kw = dict(family = "some-new-dit", speed_mode = "default", attention = "native", model = "org/dit", vae = "full")
     quantised = dm.refine_plan_from_loaded_weights(klein_pipe, plan, te = "int8", **kw)
     assert quantised.estimates["measured_runtime_headroom_mib"] == 3072
     # a dense encoder never reuses the quantised encoder's peak
     assert dm.refine_plan_from_loaded_weights(klein_pipe, plan, te = "dense", **kw) is plan
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert 'peak_te = str(te_quant or "dense")' in src and "te = peak_te," in src
 
 
@@ -965,47 +952,26 @@ def test_vae_key_names_only_the_savers_the_pipeline_can_engage():
     assert dm.planned_vae_saver_tag(untileable, plan) == "sliced"
     both = types.SimpleNamespace(
         vae = types.SimpleNamespace(
-            enable_slicing = lambda: None,
-            enable_tiling = lambda: None,
-            use_slicing = False,
-            use_tiling = False,
+            enable_slicing = lambda: None, enable_tiling = lambda: None, use_slicing = False, use_tiling = False
         )
     )
     assert dm.planned_vae_saver_tag(both, plan) == "tiled+sliced"
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     # after placement the key follows the savers that actually engaged, and the reserve follows the key
     after_apply = src.index("plan = applied_plan(pipe, plan)")
-    assert (
-        'with_label_part(identity[1], "vae", live_vae_saver_tag(pipe))'
-        in src[after_apply : after_apply + 800]
-    )
+    assert 'with_label_part(identity[1], "vae", live_vae_saver_tag(pipe))' in src[after_apply : after_apply + 800]
     assert "pipe._unsloth_peak_static = True" in src[after_apply : after_apply + 800]
 
 
 def test_deferred_profile_sizes_requests_from_the_flat_estimate(klein_pipe):
     klein_pipe._unsloth_phase_seeds = False
     klein_pipe._unsloth_peak_identity = ("some-new-dit", "torchao:Int8Tensor", "default")
-    klein_pipe._unsloth_measured_reserve = (
-        3072,
-        "some-new-dit",
-        "off",
-        None,
-        None,
-        2600,
-        1 << 20,
-        False,
-    )
+    klein_pipe._unsloth_measured_reserve = (3072, "some-new-dit", "off", None, None, 2600, 1 << 20, False)
     assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
     klein_pipe._unsloth_peak_static = True  # the deferred profile engaged after placement
-    flat = dm.estimate_image_runtime_mib(
-        width = 1024, height = 1024, batch_size = 1, family = "some-new-dit"
-    )
+    flat = dm.estimate_image_runtime_mib(width = 1024, height = 1024, batch_size = 1, family = "some-new-dit")
     assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == flat - 3072
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     deferred = src.index("def _engage_deferred_profile")
     assert "state.pipe._unsloth_peak_static = True" in src[deferred : deferred + 4000]
 
@@ -1025,9 +991,7 @@ def test_render_under_another_attention_backend_than_the_key_is_not_probed(monke
         _unsloth_peak_identity = ("x", "q|vae:full|attn:native", "default"),
         vae = types.SimpleNamespace(use_tiling = False, use_slicing = False),
     )
-    state = types.SimpleNamespace(
-        pipe = pipe, device = "cuda:0", attention_backend = None, speed_mode = "default"
-    )
+    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0", attention_backend = None, speed_mode = "default")
     assert diffusion._start_peak_probe(state) is not None
     state.attention_backend = "flash"
     assert diffusion._start_peak_probe(state) is None
@@ -1041,9 +1005,7 @@ def test_lower_residency_retry_returns_torchao_weights_without_module_to(monkeyp
             raise RuntimeError("Module.to cannot move a torchao weight on its host copy")
 
     returned = []
-    monkeypatch.setattr(
-        dm, "_return_module_tensors", lambda module, onload: returned.append(onload.type)
-    )
+    monkeypatch.setattr(dm, "_return_module_tensors", lambda module, onload: returned.append(onload.type))
     calls = []
 
     def fake_apply(pipe, device, logger, **kw):
@@ -1071,16 +1033,13 @@ def test_quadratic_attention_peaks_scale_with_pixels_squared(store):
 
 
 def test_record_passes_the_quadratic_attention_verdict():
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
-    assert "quadratic = target is not None" in src
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert "quadratic = _quadratic_attention(target, engaged, state.pipe)," in src
+    assert "if not _attention_scaling_known(target, engaged):" in src
     assert "target = guard_target," in src
 
 
-def test_peak_measured_with_no_streamed_denoiser_is_raised_to_the_streamed_baseline(
-    store, monkeypatch
-):
+def test_peak_measured_with_no_streamed_denoiser_is_raised_to_the_streamed_baseline(store, monkeypatch):
     import core.inference.diffusion as diffusion
     import core.inference.diffusion_cuda_graph as cg
 
@@ -1088,28 +1047,18 @@ def test_peak_measured_with_no_streamed_denoiser_is_raised_to_the_streamed_basel
     monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
     monkeypatch.setattr(dm, "_stream_window_mib", lambda pipe: 900)
     resident = types.SimpleNamespace(components = {"transformer": object()})
-    monkeypatch.setattr(
-        dm, "_offload_groups", lambda module: [types.SimpleNamespace(_unsloth_resident = True)]
-    )
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: [types.SimpleNamespace(_unsloth_resident = True)])
     assert dm.stream_window_pad_mib(resident) == 900
-    monkeypatch.setattr(
-        dm, "_offload_groups", lambda module: [types.SimpleNamespace(_unsloth_resident = False)]
-    )
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: [types.SimpleNamespace(_unsloth_resident = False)])
     assert dm.stream_window_pad_mib(resident) == 0
     pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"))
     probe = _Probe(2400)
     probe.window_pad = 900
     diffusion._record_peak_probe(
-        types.SimpleNamespace(pipe = pipe, speed_mode = "default"),
-        probe,
-        width = 1024,
-        height = 1024,
-        batch_size = 1,
+        types.SimpleNamespace(pipe = pipe, speed_mode = "default"), probe, width = 1024, height = 1024, batch_size = 1
     )
     assert mp.lookup(family = "some-new-dit", quant = "q", speed_mode = "default") == 3300
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert "window_pad = stream_window_pad_mib(pipe)" in src
 
 
@@ -1125,28 +1074,10 @@ def test_residency_fit_registers_its_video_measurement_window():
 
 def test_request_guard_scales_a_reserved_peak_to_the_request_bucket(klein_pipe):
     klein_pipe._unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default")
-    klein_pipe._unsloth_measured_reserve = (
-        4608,
-        "flux.2-klein",
-        "default",
-        None,
-        None,
-        4000,
-        1 << 20,
-        False,
-    )
+    klein_pipe._unsloth_measured_reserve = (4608, "flux.2-klein", "default", None, None, 4000, 1 << 20, False)
     # 1088x1024 crosses into the 2 MP bucket: 4000 x 2 x 1.15 = 9200 -> 9216, not 1.06x
     assert dm.measured_request_extra_mib(klein_pipe, width = 1088, height = 1024) == 9216 - 4608
-    klein_pipe._unsloth_measured_reserve = (
-        4608,
-        "flux.2-klein",
-        "default",
-        None,
-        None,
-        4000,
-        1 << 20,
-        True,
-    )
+    klein_pipe._unsloth_measured_reserve = (4608, "flux.2-klein", "default", None, None, 4000, 1 << 20, True)
     # a math-attention entry scales squared: 4000 x 4 x 1.15 = 18400 -> 18432
     assert dm.measured_request_extra_mib(klein_pipe, width = 1088, height = 1024) == 18432 - 4608
     assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
@@ -1170,9 +1101,7 @@ def test_peak_window_stays_open_until_the_high_water_mark_is_read(monkeypatch):
 
 
 def test_unobservable_vae_savers_use_and_record_no_learned_peak(store):
-    pipe = types.SimpleNamespace(
-        vae = types.SimpleNamespace(enable_slicing = lambda: None, use_tiling = False)
-    )
+    pipe = types.SimpleNamespace(vae = types.SimpleNamespace(enable_slicing = lambda: None, use_tiling = False))
     plan = types.SimpleNamespace(vae_tiling = False, vae_slicing = True)
     assert dm.planned_vae_saver_tag(pipe, plan) == "unknown"
     assert dm.live_vae_saver_tag(pipe) == "unknown"
@@ -1186,19 +1115,13 @@ def test_peak_model_identity_names_the_whole_build(monkeypatch):
     import core.inference.diffusion_component_sizes as sizes
 
     revisions = {("org/dit", "dit-Q4.gguf"): "abc", ("org/base", None): "def"}
-    monkeypatch.setattr(
-        sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename))
-    )
+    monkeypatch.setattr(sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename)))
     assert diffusion._peak_model_identity("org/dit", "dit-Q4.gguf", "gguf", "org/base") == (
         "org/dit/dit-Q4.gguf@abc+org/base@def"
     )
-    assert (
-        diffusion._peak_model_identity("org/dit", "dit-Q4.gguf", "gguf", "org/other") == "unknown"
-    )
+    assert diffusion._peak_model_identity("org/dit", "dit-Q4.gguf", "gguf", "org/other") == "unknown"
     assert diffusion._peak_model_identity("org/gone", None, "pipeline", None) == "unknown"
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert "peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)" in src
 
 
@@ -1207,9 +1130,7 @@ def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
     plan = _klein_flat_plan()
     klein_pipe._unsloth_phase_seeds = False  # ROCm, or quadratic SDPA only
     assert _refine(klein_pipe, plan) is plan
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert "pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None" in src
 
 
@@ -1223,20 +1144,14 @@ def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
 
     unwound = []
 
-    def fake_unwind(
-        pipe,
-        snapshots,
-        logger = None,
-    ):
+    def fake_unwind(pipe, snapshots, logger = None):
         for module, _ in snapshots:
             module.__dict__.pop("_fake_hooked", None)
         unwound.append(True)
         return True
 
     monkeypatch.setattr(hooks, "apply_group_offloading", fake_apply)
-    monkeypatch.setattr(
-        dm, "_offload_groups", lambda m: [object()] if getattr(m, "_fake_hooked", False) else []
-    )
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: [object()] if getattr(m, "_fake_hooked", False) else [])
     monkeypatch.setattr(dm, "_unwind_group_offload", fake_unwind)
     dit = torch.nn.Linear(4, 4)
     pipe = types.SimpleNamespace(transformer = dit, components = {"transformer": dit})
@@ -1319,12 +1234,7 @@ def test_bare_unknown_or_empty_format_is_unidentified(store):
     for label in ("unknown", "", None, "unknown|model:x|attn:native"):
         assert not mp.identified(label)
         assert not mp.record(
-            family = "some-new-dit",
-            quant = label,
-            speed_mode = "default",
-            width = 1024,
-            height = 1024,
-            peak_mib = 900,
+            family = "some-new-dit", quant = label, speed_mode = "default", width = 1024, height = 1024, peak_mib = 900
         )
     assert mp.identified("torchao:Int8Tensor|model:x|attn:native")
 
@@ -1335,9 +1245,7 @@ def test_render_with_a_toggled_step_cache_is_not_probed(monkeypatch):
     assert diffusion._start_peak_probe(state) is not None
     state.transformer_cache = "fbcache"  # a high-step request auto-engaged FBCache
     assert diffusion._start_peak_probe(state) is None
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert 'peak_cache = "off" if cache_may_toggle else str(cache_engaged or "off")' in src
 
 
@@ -1345,18 +1253,11 @@ def test_deferred_profile_retags_the_speed_tier(monkeypatch):
     diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
     monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
     state.speed_mode = "default"  # the deferred profile engaged the default tier
-    assert (
-        diffusion._start_peak_probe(state) is None
-    )  # an off-tier key never takes a compiled render
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    assert diffusion._start_peak_probe(state) is None  # an off-tier key never takes a compiled render
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     deferred = src.index("def _engage_deferred_profile")
     block = src[deferred : deferred + 5000]
-    assert (
-        'with_label_part(identity[1], "attn", attention_engaged or "native"),\n                    SPEED_DEFAULT,'
-        in block
-    )
+    assert 'with_label_part(identity[1], "attn", attention_engaged or "native"),\n                    SPEED_DEFAULT,' in block
 
 
 # ---------------------------------------------------------------------------------------------------- review round 8
@@ -1364,9 +1265,7 @@ def test_deferred_profile_retags_the_speed_tier(monkeypatch):
 
 def test_failed_video_request_closes_its_measurement_window():
     window = mp.open_window("cuda:0")
-    module = types.SimpleNamespace(
-        _unsloth_video_pending = (1, 0, "cuda:0"), _unsloth_video_window = ("cuda:0", window)
-    )
+    module = types.SimpleNamespace(_unsloth_video_pending = (1, 0, "cuda:0"), _unsloth_video_window = ("cuda:0", window))
     vsr.discard_request(types.SimpleNamespace(transformer = module))
     assert module._unsloth_video_pending is None and module._unsloth_video_window is None
     later = mp.open_window("cuda:0")  # an image render after the cancelled video
@@ -1379,9 +1278,7 @@ def test_whole_module_offload_records_no_streamed_baseline_peak(monkeypatch):
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(dm, "_stream_window_mib", lambda pipe: 700)
     monkeypatch.setattr(dm, "_offload_groups", lambda module: [])
-    dit = torch.nn.Linear(
-        4, 4
-    )  # on the host at render start: whole-module offload onloads it inside the render
+    dit = torch.nn.Linear(4, 4)  # on the host at render start: whole-module offload onloads it inside the render
     assert dm.stream_window_pad_mib(types.SimpleNamespace(components = {"transformer": dit})) is None
     dit._hf_hook = object()
     assert dm.stream_window_pad_mib(types.SimpleNamespace(components = {"transformer": dit})) is None
@@ -1468,18 +1365,10 @@ def test_graphs_a_recorded_render_captured_keep_sampling_open(store, monkeypatch
 
     monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
     monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
-    monkeypatch.setattr(
-        cg, "live_graph_count", lambda index: 4
-    )  # recorded during this sampled render
-    pipe = types.SimpleNamespace(
-        _unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0
-    )
+    monkeypatch.setattr(cg, "live_graph_count", lambda index: 4)  # recorded during this sampled render
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0)
     diffusion._record_peak_probe(
-        types.SimpleNamespace(pipe = pipe, speed_mode = "default"),
-        _Probe(2400),
-        width = 1024,
-        height = 1024,
-        batch_size = 1,
+        types.SimpleNamespace(pipe = pipe, speed_mode = "default"), _Probe(2400), width = 1024, height = 1024, batch_size = 1
     )
     assert pipe._unsloth_peak_graphs == 4
 
@@ -1542,9 +1431,7 @@ def test_render_without_the_familys_cfg_is_not_probed(monkeypatch):
     assert diffusion._start_peak_probe(state) is not None
     state.pipe._unsloth_peak_cfg = False  # guidance off: half the denoiser batch
     assert diffusion._start_peak_probe(state) is None
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert "state.pipe._unsloth_peak_cfg = _negative_prompt_engaged(state.family, guidance)" in src
 
 
@@ -1570,30 +1457,15 @@ def test_render_with_lora_adapters_is_not_probed(monkeypatch):
     assert diffusion._start_peak_probe(state) is not None
     state.pipe._unsloth_loras = (("style", "/loras/style.safetensors", 0.8),)
     assert diffusion._start_peak_probe(state) is None
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert '"unknown"  # adapters baked in at load' in src
 
 
 def test_learned_reserve_falls_back_to_the_flat_estimate_with_loras_or_a_failed_saver(klein_pipe):
-    klein_pipe._unsloth_phase_seeds = (
-        False  # unseeded: the reserve came from the learned peak alone
-    )
+    klein_pipe._unsloth_phase_seeds = False  # unseeded: the reserve came from the learned peak alone
     klein_pipe._unsloth_peak_identity = ("some-new-dit", "torchao:Int8Tensor", "default")
-    klein_pipe._unsloth_measured_reserve = (
-        3072,
-        "some-new-dit",
-        "default",
-        None,
-        None,
-        2600,
-        1 << 20,
-        False,
-    )
-    flat = dm.estimate_image_runtime_mib(
-        width = 1024, height = 1024, batch_size = 1, family = "some-new-dit"
-    )
+    klein_pipe._unsloth_measured_reserve = (3072, "some-new-dit", "default", None, None, 2600, 1 << 20, False)
+    flat = dm.estimate_image_runtime_mib(width = 1024, height = 1024, batch_size = 1, family = "some-new-dit")
     assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
     klein_pipe._unsloth_loras = (("style", "/loras/style.safetensors", 0.8),)
     assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == flat - 3072
@@ -1618,21 +1490,9 @@ def test_quadratic_peaks_scale_linearly_across_the_batch(store, klein_pipe):
     assert mp.lookup(**kw, width = 1024, height = 1024, batch_size = 2) == 2000  # not 4000
     assert mp.lookup(**kw, width = 1448, height = 1448) >= 4000  # pixels still square
     klein_pipe._unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default")
-    klein_pipe._unsloth_measured_reserve = (
-        4608,
-        "flux.2-klein",
-        "default",
-        None,
-        None,
-        4000,
-        1 << 20,
-        True,
-    )
+    klein_pipe._unsloth_measured_reserve = (4608, "flux.2-klein", "default", None, None, 4000, 1 << 20, True)
     # batch 2 at 1 MP: 4000 x 2 x 1.15 = 9200 -> 9216, not 4000 x 4
-    assert (
-        dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024, batch_size = 2)
-        == 9216 - 4608
-    )
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024, batch_size = 2) == 9216 - 4608
 
 
 # ---------------------------------------------------------------------------------------------------- review round 11
@@ -1669,9 +1529,7 @@ def test_video_peaks_are_persisted_on_the_streamed_baseline(store, monkeypatch):
 
     def render(pad):
         monkeypatch.setattr(dm, "stream_window_pad_mib", lambda pipe: pad)
-        module = types.SimpleNamespace(
-            _unsloth_video_pending = (work, 0, "cuda:0"), _unsloth_video_calibration_key = key
-        )
+        module = types.SimpleNamespace(_unsloth_video_pending = (work, 0, "cuda:0"), _unsloth_video_calibration_key = key)
         with monkeypatch.context() as m:
             m.setitem(__import__("sys").modules, "torch", _Torch)
             vsr.record_request_peak(types.SimpleNamespace(transformer = module))
@@ -1709,11 +1567,7 @@ def test_capture_generation_counts_per_device(monkeypatch):
     cg.note_capture(0)
     cg.note_capture(0)
     cg.note_capture(1)
-    assert (
-        cg.capture_generation(0) == 2
-        and cg.capture_generation(1) == 1
-        and cg.capture_generation(2) == 0
-    )
+    assert cg.capture_generation(0) == 2 and cg.capture_generation(1) == 1 and cg.capture_generation(2) == 0
 
 
 def test_runtime_stamp_names_installed_kernel_packages(monkeypatch):
@@ -1735,3 +1589,83 @@ def test_runtime_stamp_names_installed_kernel_packages(monkeypatch):
     monkeypatch.setattr(mp, "_runtime", [])
     monkeypatch.setattr(md, "version", lambda d: "2.3.0" if d == "sageattention" else fake(d))
     assert mp.runtime_stamp() != stamp  # a kernel upgrade drops the stored peaks
+
+
+def test_attention_scaling_unknown_render_is_not_recorded(store, monkeypatch):
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
+    monkeypatch.setattr(diffusion, "_live_peak_identity", lambda state: ("some-new-dit", "q", "default"))
+    monkeypatch.setattr(diffusion, "_conditioning_cache_hits", lambda pipe: 0)
+    answers = {"math": False, "fused": False}
+    monkeypatch.setattr(diffusion, "sdpa_math_only", lambda target: answers["math"])
+    monkeypatch.setattr(diffusion, "sdpa_subquadratic_confirmed", lambda target: answers["fused"])
+    target = types.SimpleNamespace(device = "cuda:0")
+    assert not diffusion._attention_scaling_known(target, "native")  # the probe answered nothing
+    assert not diffusion._attention_scaling_known(None, None)
+    assert diffusion._attention_scaling_known(None, "sage")  # an engaged fused backend is evidence on its own
+    kw = dict(family = "some-new-dit", quant = "q", speed_mode = "default", device = "NVIDIA L4")
+
+    def render():
+        pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"))
+        state = types.SimpleNamespace(pipe = pipe, speed_mode = "default", attention_backend = "native")
+        diffusion._record_peak_probe(state, _Probe(2400), width = 1024, height = 1024, batch_size = 1, target = target)
+        return pipe
+
+    pipe = render()
+    assert mp.lookup(**kw, width = 1024, height = 1024) is None
+    assert getattr(pipe, "_unsloth_peak_graphs", None) is None  # an unrecorded render moves no graph baseline
+    answers["fused"] = True
+    render()
+    assert mp.lookup(**kw, width = 1024, height = 1024) is not None
+
+
+def test_partially_resident_denoiser_pads_the_window_difference(monkeypatch):
+    monkeypatch.setattr(dm, "_stream_window_mib", lambda pipe: 900)
+    monkeypatch.setattr(dm, "_encoder_stream_window_mib", lambda pipe: 0)
+    pipe = types.SimpleNamespace(components = {"transformer": object()})
+    groups = [types.SimpleNamespace(_unsloth_resident = True), types.SimpleNamespace(_unsloth_resident = False)]
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: groups)
+    monkeypatch.setattr(dm, "_streamed_group_window_mib", lambda pipe: 300)
+    assert dm.stream_window_pad_mib(pipe) == 600  # a fully streamed load holds the largest group, not the streamed one
+    monkeypatch.setattr(dm, "_streamed_group_window_mib", lambda pipe: 900)
+    assert dm.stream_window_pad_mib(pipe) == 0
+    monkeypatch.setattr(dm, "_streamed_group_window_mib", lambda pipe: -1)
+    assert dm.stream_window_pad_mib(pipe) is None  # unsized: not recorded
+    groups[0]._unsloth_resident = False  # fully streamed: already the baseline
+    assert dm.stream_window_pad_mib(pipe) == 0
+
+
+def test_streamed_group_window_counts_only_streamed_groups(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_offload_prefetch as pf
+
+    monkeypatch.setattr(pf, "prefetch_depth", lambda: 1)
+    big, small = torch.nn.Linear(1024, 1024, bias = False), torch.nn.Linear(512, 512, bias = False)
+    groups = [
+        types.SimpleNamespace(_unsloth_resident = True, modules = [big], parameters = None, buffers = None),
+        types.SimpleNamespace(_unsloth_resident = False, modules = [small], parameters = None, buffers = None),
+    ]
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: groups)
+    pipe = types.SimpleNamespace(components = {"transformer": torch.nn.Module()})
+    assert dm._streamed_group_window_mib(pipe) == 2  # 1 MiB (512 x 512 fp32) x (depth 1 + 1)
+
+
+def test_a_graph_replaced_in_a_full_cache_stops_video_sampling(monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(vsr, "_live_graphs", lambda dev: 4)
+    gen = [7]
+    monkeypatch.setattr(vsr, "_capture_generation", lambda dev: gen[0])
+    monkeypatch.setattr("core.inference.diffusion_measured_peaks.open_window", lambda dev: 1)
+    monkeypatch.setattr("core.inference.diffusion_measured_peaks.close_window", lambda dev, token: True)
+    module = types.SimpleNamespace()
+    dev = torch.device("cuda", 0)
+    vsr._open_window(module, dev)
+    assert module._unsloth_video_graphs_clean  # the load's graphs are the baseline
+    vsr._open_window(module, dev)
+    assert module._unsloth_video_graphs_clean
+    gen[0] = 8  # a discarded request evicted one graph and captured its replacement: same count, new graph
+    vsr._open_window(module, dev)
+    assert not module._unsloth_video_graphs_clean

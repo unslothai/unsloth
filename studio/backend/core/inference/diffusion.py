@@ -1966,6 +1966,19 @@ def _quadratic_attention(
         return True
 
 
+def _attention_scaling_known(target: Any, engaged_backend: Optional[str] = None) -> bool:
+    """Whether ``_quadratic_attention``'s answer is evidence: a non-native backend engaged, or the SDPA probe saw math
+    alone or a sub-quadratic kernel run. An unanswered probe (or no device target) is unknown."""
+    if engaged_backend is not None and str(engaged_backend) != "native":
+        return True
+    if target is None:
+        return False
+    try:
+        return bool(sdpa_math_only(target) or sdpa_subquadratic_confirmed(target))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _start_peak_probe(state: Any) -> Any:
     """Arm the learned-peak measurement for one render (CUDA loads that carry a peak identity), else None."""
     pipe = getattr(state, "pipe", None)
@@ -2154,6 +2167,11 @@ def _record_peak_probe(
             # a cached prompt skipped the text encoder: the peak misses that phase, and an unseeded family places
             # its next load from this value alone
             return
+        engaged = getattr(state, "attention_backend", None)
+        if not _attention_scaling_known(target, engaged):
+            # the SDPA probe could not tell math from a fused kernel: a quadratic peak stored as linear would
+            # under-size every larger request
+            return
         family, quant, speed_mode = identity
         pipe = state.pipe
         # this sample covers the graphs it recorded
@@ -2170,8 +2188,7 @@ def _record_peak_probe(
             batch_size = batch_size,
             peak_mib = peak,
             device_name = device_name(probe.device),
-            quadratic = target is not None
-            and _quadratic_attention(target, getattr(state, "attention_backend", None), state.pipe),
+            quadratic = _quadratic_attention(target, engaged, state.pipe),
         ):
             logger.info(
                 "diffusion.memory: learned activation peak %d MiB recorded for %s / %s / %s at %dx%d x%d",

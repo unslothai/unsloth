@@ -2412,6 +2412,7 @@ def stream_window_pad_mib(pipe: Any) -> Optional[int]:
     encoders = _encoder_stream_window_mib(pipe)
     if encoders is None:
         return None
+    streaming = partial = False
     for name, module in (getattr(pipe, "components", {}) or {}).items():
         if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
             continue
@@ -2419,9 +2420,52 @@ def stream_window_pad_mib(pipe: Any) -> Optional[int]:
         if state is None:
             return None
         if state:
-            return encoders
+            streaming = True
+            partial = partial or any(getattr(g, "_unsloth_resident", False) for g in _offload_groups(module))
+    if streaming and not partial:
+        return encoders
     window = _stream_window_mib(pipe)
-    return None if window < 0 else window + encoders
+    if window < 0:
+        return None
+    if streaming:
+        # some groups resident: the measured window is the largest STREAMED group's, a fully streamed load holds the
+        # largest of all; pad the difference
+        streamed = _streamed_group_window_mib(pipe)
+        if streamed < 0:
+            return None
+        window = max(0, window - streamed)
+    return window + encoders
+
+
+def _streamed_group_window_mib(pipe: Any) -> int:
+    """Device MiB the prefetcher holds for the denoiser groups that stream now: ``depth + 1`` of the largest, or -1."""
+    try:
+        from .diffusion_offload_prefetch import prefetch_depth
+
+        largest = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+                continue
+            for group in _offload_groups(module):
+                if getattr(group, "_unsloth_resident", False):
+                    continue
+                seen: set[int] = set()
+                nbytes = 0
+                for member in getattr(group, "modules", None) or ():
+                    for t in (*member.parameters(), *member.buffers()):
+                        if id(t) not in seen:
+                            seen.add(id(t))
+                            nbytes += sum(_storage_nbytes(t))
+                for t in (*(getattr(group, "parameters", None) or ()), *(getattr(group, "buffers", None) or ())):
+                    if id(t) not in seen:
+                        seen.add(id(t))
+                        nbytes += sum(_storage_nbytes(t))
+                largest = max(largest, nbytes)
+        if largest <= 0:
+            return -1
+        return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+    except Exception:  # noqa: BLE001
+        return -1
 
 
 def _streaming_state(module: Any) -> Optional[bool]:
