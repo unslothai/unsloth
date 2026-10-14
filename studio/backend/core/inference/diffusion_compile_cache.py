@@ -57,6 +57,7 @@ version is deliberately NOT bumped, since bumping it is what would invalidate th
 from __future__ import annotations
 
 import dataclasses
+import enum
 import hashlib
 import json
 import math
@@ -309,9 +310,39 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN": "on",
     "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE": "on",
 }
-# Every registered patch also answers UNSLOTH_DIFFUSION_PATCH_<NAME>=0 (diffusion_autoopt.patches); turning one off
-# swaps a forward the traced graph depends on, so any that is set off keys the bundle apart.
+# Beyond the named switches above, EVERY set variable in the diffusion / video namespaces keys the bundle: those knobs
+# swap forwards, processors, kernels and hook placement (patch kill switches, MiniMax-H3's strided attention / fused
+# q-k RoPE / compile-below-hooks, ...), which neither the module tree nor the weights show. Listing them one by one
+# is what kept missing new ones. Over-keying only costs a cold compile; under-keying makes two settings overwrite
+# one bundle. Unset variables add nothing, so a default process keeps every existing key.
 _PATCH_SWITCH_PREFIX = "UNSLOTH_DIFFUSION_PATCH_"
+_KEYED_ENV_PREFIXES = ("UNSLOTH_DIFFUSION_", "UNSLOTH_H3_", "UNSLOTH_VIDEO_", "UNSLOTH_NVFP4_")
+# Runtime-only knobs in those namespaces: where caches live, budgets, logging / progress, memory admission, threads.
+# They never change a traced graph, and keying them would split bundles across machines for nothing.
+_UNKEYED_ENV_PARTS = (
+    "COMPILE_CACHE",
+    "PREQUANT_CACHE",
+    "_DIR",
+    "_PATH",
+    "_MAX_GB",
+    "_MB",
+    "MIRROR",
+    "PREVIEW",
+    "PROGRESS",
+    "LOG",
+    "_ALLOW_",
+    "HOST_RAM_CHECK",
+    "HOST_GUARD",
+    "RENDER_THREAD",
+    "PROBE_CACHE",
+    "PROMPT_CACHE",
+    "LATENT_CACHE",
+    "DIRECT_LOAD",
+    "PREFETCH",
+    "SEED_ON_HOST",
+    "SMALL_HOST",
+    "INSTALL",
+)
 _OFF_WORDS = ("0", "off", "false", "no", "none")
 _ON_WORDS = ("1", "on", "true", "yes", "force")
 _ADDRESS_RE = re.compile(r" at 0x[0-9a-fA-F]+")
@@ -336,10 +367,19 @@ def graph_switches() -> dict[str, str]:
         if value is not None:
             out[name] = value
     for name in sorted(os.environ):
-        if name.startswith(_PATCH_SWITCH_PREFIX) and name not in out:
+        if name in out or name in _GRAPH_SWITCHES or not name.startswith(_KEYED_ENV_PREFIXES):
+            continue
+        if any(part in name for part in _UNKEYED_ENV_PARTS):
+            continue
+        if name.startswith(_PATCH_SWITCH_PREFIX):
+            # Registered patches are on by default (diffusion_autoopt.patches): only an "off" changes the graph.
             value = _switch_value(name, "on")
             if value is not None:
                 out[name] = value
+            continue
+        raw = (os.environ.get(name) or "").strip().lower()
+        if raw:
+            out[name] = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else raw
     return out
 
 
@@ -375,6 +415,12 @@ def _tensor_signature(tensor: Any, depth: int = 0) -> str:
                     inner.append(f"block_size={rel}")
                     continue
                 inner.append(f"{name}={_ADDRESS_RE.sub('', repr(getattr(tensor, name, None)))}")
+    elif cls.__name__ not in ("Tensor", "Parameter") and not hasattr(tensor, "__tensor_flatten__"):
+        # A Parameter subclass that carries its layout as plain attributes (diffusers' GGUFParameter: quant_type,
+        # which picks the dequantize branch the regional graph traces). Scalars only: per-tensor shapes are not layout.
+        for name, value in sorted((getattr(tensor, "__dict__", None) or {}).items()):
+            if isinstance(value, (bool, int, str, enum.Enum)):
+                inner.append(f"{name}={value!r}")
     elif cls.__name__ not in ("Tensor", "Parameter") and hasattr(tensor, "__tensor_flatten__"):
         # Older wrappers (AffineQuantizedTensor): inner tensors only, the flatten context carries the shape.
         try:

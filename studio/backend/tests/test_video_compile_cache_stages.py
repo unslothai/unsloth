@@ -292,3 +292,66 @@ def test_no_bundle_save_from_a_render_the_background_compile_forced_eager():
     save = src.index("compile_cache.save_async(compile_ctx")
     guard = src.rindex("if compile_ctx is not None", 0, save)
     assert "not bg_eager" in src[guard:save]
+
+
+_H3_AND_PATCH_SWITCHES = (
+    "UNSLOTH_H3_STRIDED_ATTN",
+    "UNSLOTH_H3_QK_ROPE",
+    "UNSLOTH_H3_COMPILE_BELOW_HOOKS",
+    "UNSLOTH_DIFFUSION_PATCH_WAN_FUSED",
+    # A knob nobody has written yet: the namespace keys it, so the next one cannot be forgotten.
+    "UNSLOTH_DIFFUSION_SOME_FUTURE_FUSION",
+)
+
+
+@pytest.mark.parametrize("name", _H3_AND_PATCH_SWITCHES)
+def test_every_graph_knob_in_the_diffusion_namespaces_keys_bundles_apart(monkeypatch, name):
+    for env in list(os.environ):
+        if env.startswith(cc._KEYED_ENV_PREFIXES):
+            monkeypatch.delenv(env, raising = False)
+    stock = _key([_DiT()])
+    monkeypatch.setenv(name, "0")
+    assert _key([_DiT()]) != stock
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("UNSLOTH_DIFFUSION_COMPILE_CACHE_DIR", "/elsewhere"),
+        ("UNSLOTH_DIFFUSION_COMPILE_CACHE_MAX_GB", "5"),
+        ("UNSLOTH_DIFFUSION_PREQUANT_CACHE_DIR", "/elsewhere"),
+        ("UNSLOTH_DIFFUSION_PROMPT_CACHE_MB", "64"),
+        ("UNSLOTH_DIFFUSION_PREVIEW", "0"),
+        ("UNSLOTH_DIFFUSION_PROGRESS_LATCH", "0"),
+        ("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "0"),
+    ],
+)
+def test_runtime_only_knobs_leave_the_key_alone(monkeypatch, name, value):
+    for env in list(os.environ):
+        if env.startswith(cc._KEYED_ENV_PREFIXES):
+            monkeypatch.delenv(env, raising = False)
+    stock = _key([_DiT()])
+    monkeypatch.setenv(name, value)
+    assert _key([_DiT()]) == stock
+
+
+def test_gguf_quant_type_keys_the_stage(monkeypatch):
+    """Q4 / Q5 / Q8 GGUF checkpoints of one architecture trace different dequantize branches."""
+
+    class GGUFParameter(torch.nn.Parameter):
+        """diffusers' GGUFParameter layout: a uint8 Parameter carrying quant_type (and a per-tensor quant_shape)."""
+
+        def __new__(cls, data, quant_type = None):
+            self = super().__new__(cls, data, requires_grad = False)
+            self.quant_type = quant_type
+            self.quant_shape = tuple(data.shape)
+            return self
+
+    def gguf_dit(quant_type):
+        dit = _DiT()
+        for block in dit.blocks:
+            block.proj.weight = GGUFParameter(torch.zeros(8, 8, dtype = torch.uint8), quant_type = quant_type)
+        return dit
+
+    assert _key([gguf_dit(12)]) == _key([gguf_dit(12)])
+    assert _key([gguf_dit(12)]) != _key([gguf_dit(14)])
