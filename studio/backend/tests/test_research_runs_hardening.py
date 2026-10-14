@@ -315,6 +315,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: Digest USERNAME = "bob", RESPONSE = "supersecret2" why',
         "Authorization: Digest username* = UTF-8''J%C3%A4ger, response = \"supersecret2\" why",
         "Authorization: Custom supersecret2abcde= why request fails",
+        'Authorization: OAuth oauth_signature_method = "HMAC-SHA1", oauth_signature = "supersecret2" why',
         "Authorization: Basic firstsecret1=, Basic supersecret2==. server rejected it",
         'Authorization: Custom realm="api", custom response="supersecret2" why',
         "Authorization: Basic supersecret2== server echoed supersecret2 why",
