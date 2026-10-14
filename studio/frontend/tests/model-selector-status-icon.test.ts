@@ -24,6 +24,11 @@ test("the icon centres in a capital-tall box resting on that baseline", () => {
   assert.doesNotMatch(selector, /"-m-1 flex size-5 shrink-0 cursor-pointer items-center/);
 });
 
+test("the eject hover circle is a square of its own, not the line's box", () => {
+  assert.match(selector, /after:size-5 after:-translate-x-1\/2 after:-translate-y-1\/2 after:rounded-full/);
+  assert.doesNotMatch(selector, /w-5 cursor-pointer rounded-full transition-colors hover:bg-/);
+});
+
 test("the header trigger's hover wash has less side padding", () => {
   assert.match(selector, /variant === "ghost" \? "h-9 pl-3 pr-2 text-sm" : "h-9 pl-4 pr-2 text-sm"/);
   assert.match(readSrc("features/chat/chat-page.tsx"), /className="max-w-\[62vw\] !pr-2\.5 /);

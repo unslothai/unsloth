@@ -241,8 +241,9 @@ function ModelSelectorTrigger({
                 onEject();
               }}
               // Hit area larger than the icon, with a hover circle; negative margin keeps the icon in place.
+              // The circle is its own square so it stays round when a smaller label font shortens the line.
               className={cn(
-                "-mx-1 w-5 cursor-pointer rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                "relative isolate -mx-1 w-5 cursor-pointer after:absolute after:left-1/2 after:top-1/2 after:-z-10 after:size-5 after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:transition-colors after:content-[''] hover:after:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:after:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
                 CAP_LINE,
                 triggerLabelClassName,
               )}
