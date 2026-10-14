@@ -2519,14 +2519,20 @@ export const it = {
       },
       menu: {
         title: "Menu della chat",
-        description:
-          "Fissa le voci nel menu laterale «+» della chat. Le altre verranno spostate in «Altro».",
+        description: "Fissa gli elementi nel menu + della chat e trascinali per riordinarli. Gli altri finiscono in “Altro”.",
+        deepResearch: "Ricerca approfondita",
+        browserUse: "Uso del browser",
         chatWithFiles: "Chat con file (RAG)",
         mcp: "MCP",
         skills: "Competenze",
         savedPrompts: "Prompt salvati",
         compareChat: "Confronta chat",
         exportChat: "Esporta chat",
+        reset: "Ripristina predefiniti",
+        addFiles: "Aggiungi foto e file",
+        webSearch: "Ricerca web",
+        tools: "Strumenti",
+        more: "Altro",
       },
       pastedTextThreshold: "Condensa incolla lunghi",
       pastedTextThresholdDescription:

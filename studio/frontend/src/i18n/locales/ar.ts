@@ -2571,14 +2571,20 @@ export const ar = {
       },
       menu: {
         title: "قائمة المحادثة",
-        description:
-          "ثبّت العناصر في القائمة الجانبية لعلامة + في المحادثة. تنتقل العناصر الأخرى إلى «المزيد».",
+        description: "ثبّت العناصر في قائمة + للدردشة واسحبها لإعادة ترتيبها. تنتقل العناصر الأخرى إلى «المزيد».",
+        deepResearch: "بحث معمّق",
+        browserUse: "استخدام المتصفح",
         chatWithFiles: "المحادثة مع الملفات (RAG)",
         mcp: "MCP",
         skills: "المهارات",
         savedPrompts: "الموجّهات المحفوظة",
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
+        reset: "إعادة التعيين إلى الافتراضي",
+        addFiles: "إضافة صور وملفات",
+        webSearch: "بحث الويب",
+        tools: "الأدوات",
+        more: "المزيد",
       },
       pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
       pastedTextThresholdDescription:

@@ -2578,14 +2578,20 @@ export const hi = {
       },
       menu: {
         title: "चैट मेन्यू",
-        description:
-          "आइटम को चैट के + साइड मेन्यू में पिन करें। बाकी आइटम “More” में चले जाएँगे।",
+        description: "चैट के + मेन्यू में आइटम पिन करें और क्रम बदलने के लिए उन्हें खींचें। बाकी “More” में चले जाते हैं।",
+        deepResearch: "डीप रिसर्च",
+        browserUse: "ब्राउज़र उपयोग",
         chatWithFiles: "फ़ाइलों के साथ चैट (RAG)",
         mcp: "MCP",
         skills: "कौशल",
         savedPrompts: "सहेजे गए प्रॉम्प्ट",
         compareChat: "चैट की तुलना करें",
         exportChat: "चैट एक्सपोर्ट करें",
+        reset: "डिफ़ॉल्ट पर रीसेट करें",
+        addFiles: "फ़ोटो और फ़ाइलें जोड़ें",
+        webSearch: "वेब सर्च",
+        tools: "टूल्स",
+        more: "और",
       },
       pastedTextThreshold: "लंबे पेस्ट को संक्षिप्त करें",
       pastedTextThresholdDescription:

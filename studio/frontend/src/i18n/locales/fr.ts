@@ -2607,14 +2607,20 @@ export const fr = {
       },
       menu: {
         title: "Menu du chat",
-        description:
-          "Épinglez des éléments dans le menu latéral + du chat. Les autres seront placés dans « Plus ».",
+        description: "Épinglez des éléments au menu + du chat et faites-les glisser pour les réordonner. Les autres passent dans « Plus ».",
+        deepResearch: "Recherche approfondie",
+        browserUse: "Utilisation du navigateur",
         chatWithFiles: "Discuter avec des fichiers (RAG)",
         mcp: "MCP",
         skills: "Compétences",
         savedPrompts: "Invites enregistrées",
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
+        reset: "Rétablir par défaut",
+        addFiles: "Ajouter photos et fichiers",
+        webSearch: "Recherche web",
+        tools: "Outils",
+        more: "Plus",
       },
       pastedTextThreshold: "Condenser les collages longs",
       pastedTextThresholdDescription:

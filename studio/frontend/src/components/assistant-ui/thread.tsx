@@ -276,7 +276,7 @@ import {
 import { useExternalProvidersStore } from "@/features/chat/stores/external-providers-store";
 import { saveMarkdownAsProjectSource } from "@/features/rag";
 import {
-  PLUS_MENU_ORDER,
+  splitPlusMenuItems,
   CONVERSATION_MARKDOWN_LABEL,
   addQueuedChatRunSettingsThreadIds,
   adoptPreStreamRunReservation,
@@ -6924,6 +6924,7 @@ const ComposerToolsMenu: FC<{
   const menuIsDictating = useAuiState((s) => s.composer.dictation != null);
 
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+  const plusOrder = usePlusMenuPrefsStore((s) => s.order);
 
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
@@ -6996,6 +6997,28 @@ const ComposerToolsMenu: FC<{
   // (photos, web search, code) and "More" itself are always shown and live
   // outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    deepResearch: researchAvailable ? (
+      <DropdownMenuItem
+        disabled={researchDisabled && !deepResearchEnabled}
+        className={
+          deepResearchEnabled && !researchDisabled
+            ? "text-primary font-medium"
+            : undefined
+        }
+        onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
+      >
+        <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
+        Deep research
+        {deepResearchEnabled && !researchDisabled ? (
+          <HugeiconsIcon
+            icon={Tick02Icon}
+            strokeWidth={2}
+            className="ml-auto"
+          />
+        ) : null}
+      </DropdownMenuItem>
+    ) : null,
+    browserUse: <BrowserAgentMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
@@ -7173,8 +7196,8 @@ const ComposerToolsMenu: FC<{
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
+    splitPlusMenuItems(plusOrder, plusPins);
 
   return (
     <>
@@ -7268,27 +7291,6 @@ const ComposerToolsMenu: FC<{
             />
           ) : null}
         </DropdownMenuItem>
-        {researchAvailable ? (
-          <DropdownMenuItem
-            disabled={researchDisabled && !deepResearchEnabled}
-            className={
-              deepResearchEnabled && !researchDisabled
-                ? "text-primary font-medium"
-                : undefined
-            }
-            onSelect={() => setDeepResearchEnabled(!deepResearchEnabled)}
-          >
-            <HugeiconsIcon icon={Telescope02Icon} strokeWidth={2} />
-            Deep research
-            {deepResearchEnabled && !researchDisabled ? (
-              <HugeiconsIcon
-                icon={Tick02Icon}
-                strokeWidth={2}
-                className="ml-auto"
-              />
-            ) : null}
-          </DropdownMenuItem>
-        ) : null}
         {supportsBuiltinImageGeneration && (
           <DropdownMenuItem
             disabled={imageDisabled}
@@ -7312,13 +7314,8 @@ const ComposerToolsMenu: FC<{
         )}
         <DropdownMenuSeparator />
         {isDictating ? <BypassPermissionsMenuItem /> : null}
-        {/* Browser use sits right under Chat with files, or leads this section without it. */}
-        {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
         {pinnedPlusItems.map((id) => (
-          <Fragment key={id}>
-            {plusMenuNodes[id]}
-            {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
-          </Fragment>
+          <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
         ))}
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
