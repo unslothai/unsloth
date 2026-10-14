@@ -867,12 +867,14 @@ def _reembed_view(job: dict | None) -> dict | None:
 def reembed_status(subject: str = Depends(get_current_subject)) -> dict:
     """Documents indexed under another embedder than the current one, and the re-embed job."""
     _require_rag()
+    # Job first: one ending between the reads still says running, so the client polls for the counts.
+    job = _reembed_view(reembed.status())
     with _rag_unavailable_as_503():
         stale = reembed.stale_counts()
     return {
         "staleDocuments": stale["documents"],
         "staleArchived": stale["archived"],
-        "job": _reembed_view(reembed.status()),
+        "job": job,
     }
 
 
