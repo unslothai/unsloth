@@ -175,14 +175,11 @@ export function DocumentsRagSection(): ReactElement {
       );
       if (!stood) return false;
       setForceCandidate(null);
-      if (plan && (plan.cached || !plan.downloadRepo)) {
-        void toastEmbeddingModelSaved(t("settings.general.rag.saved"));
-      } else {
-        // Unresolved or still to download: Re-embed would fail until the files are on disk.
-        toast.success(t("settings.general.rag.saved"), {
-          description: t("settings.general.rag.reindexWarning"),
-        });
-      }
+      // Unresolved or still to download: Re-embed would fail until the files are on disk.
+      void toastEmbeddingModelSaved(
+        t("settings.general.rag.saved"),
+        Boolean(plan && (plan.cached || !plan.downloadRepo)),
+      );
       return true;
     } catch (error) {
       // A hard security block cannot be forced; keep "Save anyway" hidden.
@@ -504,7 +501,7 @@ export function DocumentsRagSection(): ReactElement {
           </div>
         </div>
       </SettingsRow>
-      <ReembedDocumentsRow needsDownload={canDownload} />
+      <ReembedDocumentsRow />
       <SettingsRow
         label={t("settings.general.rag.device")}
         description={

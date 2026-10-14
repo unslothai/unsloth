@@ -179,8 +179,12 @@ export function staleDescription(status: ReembedStatus): string | null {
     : null;
 }
 
-/** Success toast for a saved embedding model, offering Re-embed when existing documents are now stale. */
-export async function toastEmbeddingModelSaved(title: string): Promise<void> {
+/** Success toast for a saved embedding model, offering Re-embed when existing documents are now stale
+ * and the model can index them. Reads the stale counts either way, for the Settings row. */
+export async function toastEmbeddingModelSaved(
+  title: string,
+  ready = true,
+): Promise<void> {
   const status = await useReembedStore.getState().load();
   if (status === null) {
     toast.success(title, {
@@ -189,7 +193,7 @@ export async function toastEmbeddingModelSaved(title: string): Promise<void> {
     return;
   }
   const description = staleDescription(status);
-  if (description === null || status.job?.status === "running") {
+  if (!ready || description === null || status.job?.status === "running") {
     // A running job follows the current model, so it already covers the switch.
     toast.success(title, description ? { description } : undefined);
     return;

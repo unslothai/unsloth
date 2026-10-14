@@ -78,14 +78,16 @@ test("a save that leaves documents stale offers Re-embed, which starts the job",
   assert.deepEqual(posted, ["/api/rag/reembed"]);
 });
 
-test("no action when nothing is stale or a running job already follows the model", async () => {
-  for (const status of [
-    { ...idle, job: null },
-    { ...stale, job: job("running") },
-  ]) {
+test("no action when nothing is stale, a job already follows the model, or it is not on disk", async () => {
+  for (const [status, ready] of [
+    [{ ...idle, job: null }, true],
+    [{ ...stale, job: job("running") }, true],
+    [{ ...stale, job: null }, false],
+  ] as const) {
     serve(status);
-    await toastEmbeddingModelSaved("Saved");
+    await toastEmbeddingModelSaved("Saved", ready);
     assert.equal(calls[0].options?.action, undefined);
+    assert.deepEqual(useReembedStore.getState().status, status); // read either way, for the row
   }
 });
 
