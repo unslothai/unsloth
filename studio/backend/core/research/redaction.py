@@ -40,7 +40,7 @@ _QUERY_AUTHORIZATION = re.compile(
     (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
     (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
     (?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token
-    |[\w-]*(?:key|token|secret|password|credential))[ \t]+
+    |[\w-]*(?:key|token|secret|password|credential|signature))[ \t]+
     (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
     |(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}})[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
         r"[ \t]", _HSPACE
@@ -80,7 +80,7 @@ _REGISTERED_SCHEME_NAMES = frozenset(
 )
 _COALESCED_MEMBER = re.compile(
     r"\s*,\s*(?=(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token"
-    r"|[\w-]*(?:key|token|secret|password|credential))\s"
+    r"|[\w-]*(?:key|token|secret|password|credential|signature))\s"
     r"|(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{2,})\s+[\w!#$%&'*+.^`|~-]+\s*=)",
     re.IGNORECASE,
 )
@@ -226,6 +226,11 @@ def _authorization_values(match: re.Match) -> list[str]:
     pairs = [(name, re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))) for name, value in pairs]
     # The serialized spelling too, so an echo that keeps its escapes still matches.
     values = [value for _, value in pairs] + [value for value in raw if "\\" in value]
+    # Coalesced duplicates ("Basic a==, Basic b=") are classified on their own.
+    coalesced = []
+    for member in _COALESCED_MEMBER.split(match["more"] or "")[1:]:
+        parsed = _QUERY_AUTHORIZATION.match("Authorization: " + member)
+        coalesced += _authorization_values(parsed) if parsed else []
     scheme = re.sub(r"[^a-z0-9]", "", match["scheme"].lower())
     if (
         scheme in _REGISTERED_SCHEME_NAMES
@@ -243,13 +248,8 @@ def _authorization_values(match: re.Match) -> list[str]:
     ):
         # "dXNl...= server" also parses as a parameter; keep the padded token68 itself.
         padded = [piece for piece in found.split() if re.fullmatch(r"[\w.~+/-]+=+", piece)]
-        # Coalesced duplicates: "Basic a==, Basic b=".
-        coalesced = []
-        for member in _COALESCED_MEMBER.split(match["more"] or "")[1:]:
-            parsed = _QUERY_AUTHORIZATION.match("Authorization: " + member)
-            coalesced += _authorization_values(parsed) if parsed else []
         return values + padded + coalesced
-    return []
+    return coalesced
 
 
 def _array_values(match: re.Match) -> list[str]:
@@ -281,7 +281,9 @@ def _sanitize_public_query(query: str) -> str:
         for value in _array_values(match)
     ]
     for value in found:
-        for variant in {value, value.rstrip(_TOKEN_PUNCTUATION + ".!?")}:
+        trimmed = value.rstrip(_TOKEN_PUNCTUATION + ".!?")
+        # A log may also drop base64 padding before echoing.
+        for variant in {value, trimmed, trimmed.rstrip("=")}:
             # A log may percent-encode the echo (dTo+ -> dTo%2B).
             exact.update({quote(variant, safe = ""), quote(variant), quote_plus(variant)})
             # JSON serializers may escape the solidus (a/b -> a\/b).
