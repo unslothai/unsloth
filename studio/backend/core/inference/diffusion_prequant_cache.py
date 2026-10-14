@@ -184,18 +184,20 @@ def _content_identity(real: str, st: Any) -> str:
     """What says the PAYLOAD is unchanged, beside the header (two uploads of one architecture share a header).
 
     A Hub cache snapshot links to ``blobs/<sha256 of the file>``, a free content hash. Anything else (a local model
-    dir) falls back to size + mtime, so an edited file re-quantizes rather than serving the old build."""
+    dir) falls back to the file's stat: size + mtime, plus inode and ctime, which a replacement changes even when it
+    preserves size and mtime (a metadata-preserving copy or reproducible archive), so a swapped file re-quantizes
+    rather than serving the old build."""
     name = os.path.basename(real)
     if len(name) == 64 and all(c in "0123456789abcdef" for c in name):
         return "blob:" + name
-    return f"stat:{st.st_size}:{st.st_mtime_ns}"
+    return f"stat:{st.st_size}:{st.st_mtime_ns}:{st.st_ino}:{st.st_ctime_ns}"
 
 
 def source_fingerprint(shards: Iterable[Any]) -> Optional[str]:
     """sha256 over (basename, header, content identity) of every shard, order-independent. None when any shard is
     unreadable.
 
-    Memoised on (realpath, mtime_ns, size): planners resolve sources several times per load."""
+    Memoised on (realpath, size, mtime_ns, inode, ctime_ns): planners resolve sources several times per load."""
     digest = hashlib.sha256()
     entries = []
     for shard in shards:
@@ -204,7 +206,7 @@ def source_fingerprint(shards: Iterable[Any]) -> Optional[str]:
             st = os.stat(real)
         except OSError:
             return None
-        memo = (real, st.st_mtime_ns, st.st_size)
+        memo = (real, st.st_mtime_ns, st.st_size, st.st_ino, st.st_ctime_ns)
         with _lock:
             cached = _HEADER_MEMO.get(memo)
         if cached is None:

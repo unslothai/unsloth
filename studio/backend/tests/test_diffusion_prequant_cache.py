@@ -679,14 +679,18 @@ def test_an_artifact_over_the_budget_never_evicts_the_existing_cache(env, tmp_pa
 
 
 def test_bases_sharing_their_weights_but_not_their_identity_never_share_an_entry(env, tmp_path, scheme):
-    """Two renamed copies of one checkpoint (same bytes, size and mtime) fingerprint alike, but the loader validates
-    the artifact's recorded base_model_id against the requested base: each needs its own entry."""
-    import shutil
-
+    """Two bases whose shards are one Hub blob (a mirror and its upstream under different names) fingerprint alike,
+    but the loader validates the artifact's recorded base_model_id against the requested base: each needs its own
+    entry."""
     base_a, model = _write_base(tmp_path, name = "model-a")
-    base_b = tmp_path / "model-b"
-    shutil.copytree(base_a, base_b)  # copy2: same size and mtime
     shard = "transformer/diffusion_pytorch_model.safetensors"
+    blob = tmp_path / "blobs" / ("ab" * 32)
+    blob.parent.mkdir()
+    os.replace(base_a / shard, blob)
+    base_b = tmp_path / "model-b"
+    (base_b / "transformer").mkdir(parents = True)
+    for b in (base_a, base_b):
+        os.symlink(blob, b / shard)
     assert C.source_fingerprint([base_a / shard]) == C.source_fingerprint([base_b / shard])
     _quantize(model, scheme)
     assert C.save_runtime_quant(model, _fam(base_a), base_repo = str(base_a))
@@ -826,3 +830,21 @@ def test_every_load_path_hands_its_cancellation_check_to_the_cache_save():
     video = inspect.getsource(V.VideoBackend.load_pipeline)
     assert "_raise_if_video_load_superseded(_load_token)" in video.split("_save_runtime_quant_to_cache(", 1)[1][:400]
     assert "cancel_check = cancel_check" in inspect.getsource(V._save_runtime_quant_to_cache)
+
+
+def test_a_local_shard_replaced_with_its_size_and_mtime_kept_is_a_new_source(env, tmp_path):
+    """A metadata-preserving replacement (same header, size and mtime, different weights) must change the key."""
+    from safetensors.torch import save_file
+
+    base, _model = _write_base(tmp_path)
+    shard = base / "transformer" / "diffusion_pytorch_model.safetensors"
+    before = C.source_fingerprint([shard])
+    st = shard.stat()
+    torch.manual_seed(321)
+    fresh = tmp_path / "fresh.safetensors"
+    save_file({k: v.contiguous() for k, v in Tiny().to(torch.bfloat16).state_dict().items()}, str(fresh))
+    assert fresh.stat().st_size == st.st_size
+    os.replace(fresh, shard)
+    os.utime(shard, ns = (st.st_atime_ns, st.st_mtime_ns))
+    assert shard.stat().st_mtime_ns == st.st_mtime_ns and shard.stat().st_size == st.st_size
+    assert C.source_fingerprint([shard]) != before
