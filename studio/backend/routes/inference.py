@@ -3827,6 +3827,8 @@ from models.inference import (
 )
 from core.inference.anthropic_compat import (
     TOOL_RESULT_IMAGE_OMITTED,
+    anthropic_input_split,
+    cached_prompt_tokens,
     anthropic_messages_to_openai,
     anthropic_reference_block_text,
     fold_tool_results_into_user,
@@ -39089,6 +39091,7 @@ async def _responses_non_streaming(
         usage_data = body.get("usage", {})
         input_tokens = usage_data.get("prompt_tokens", 0)
         output_tokens = usage_data.get("completion_tokens", 0)
+        cached_input = cached_prompt_tokens(usage_data)
 
         resp_id = f"resp_{uuid.uuid4().hex[:12]}"
 
@@ -39132,6 +39135,9 @@ async def _responses_non_streaming(
                 input_tokens = input_tokens,
                 output_tokens = output_tokens,
                 total_tokens = input_tokens + output_tokens,
+                input_tokens_details = (
+                    None if cached_input is None else {"cached_tokens": cached_input}
+                ),
             ),
             temperature = payload.temperature,
             top_p = payload.top_p,
@@ -39326,6 +39332,7 @@ async def _responses_stream(
         full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
+        cached_input: Optional[int] = None
         # From the chat chunks; applied once before finish, so chunk order does not matter.
         stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
@@ -39444,11 +39451,13 @@ async def _responses_stream(
             return output_index
 
         def _apply_usage(u, timings = None) -> None:
-            nonlocal input_tokens, output_tokens
+            nonlocal input_tokens, output_tokens, cached_input
             # No early return on a falsy usage: the final chunk can carry timings alone.
             if isinstance(u, dict):
                 input_tokens = u.get("prompt_tokens", input_tokens)
                 output_tokens = u.get("completion_tokens", output_tokens)
+                cached = cached_prompt_tokens(u)
+                cached_input = cached_input if cached is None else cached
             _monitor_usage(monitor_id, u, llama_backend.context_length, timings = timings)
 
         def _ensure_reasoning_open() -> list[str]:
@@ -40214,6 +40223,11 @@ async def _responses_stream(
                     "input_tokens": input_tokens,
                     "output_tokens": output_tokens,
                     "total_tokens": total_tokens,
+                    **(
+                        {}
+                        if cached_input is None
+                        else {"input_tokens_details": {"cached_tokens": cached_input}}
+                    ),
                 },
             },
         }
@@ -43266,6 +43280,7 @@ def _anthropic_message_json_response(
 ) -> Response:
     """Assemble the terminal Anthropic non-streaming JSON response shared by the
     tool / plain / passthrough paths."""
+    input_tokens, cache_read = anthropic_input_split(usage)
     return _model_json_response(
         AnthropicMessagesResponse(
             id = message_id,
@@ -43273,7 +43288,8 @@ def _anthropic_message_json_response(
             content = content_blocks,
             stop_reason = stop_reason,
             usage = AnthropicUsage(
-                input_tokens = usage.get("prompt_tokens", 0),
+                input_tokens = input_tokens,
+                cache_read_input_tokens = cache_read,
                 output_tokens = usage.get("completion_tokens", 0),
             ),
         )
