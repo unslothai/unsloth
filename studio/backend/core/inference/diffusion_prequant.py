@@ -772,6 +772,9 @@ def prefer_cached_pickle_twins(
 
 
 _LOCAL_FILES_ONLY = contextvars.ContextVar("unsloth_prequant_local_files_only", default = False)
+# The load's own Hub token, for the probes it reaches without one in their signature (the local pre-quant cache's
+# freshness check of a gated base). Nested calls keep an outer token.
+_LOAD_HF_TOKEN: contextvars.ContextVar = contextvars.ContextVar("unsloth_prequant_hf_token", default = None)
 
 
 def scoped_local_files_only(fn: Any) -> Any:
@@ -783,9 +786,11 @@ def scoped_local_files_only(fn: Any) -> Any:
         token = _LOCAL_FILES_ONLY.set(
             bool(kwargs.get("local_files_only")) or _LOCAL_FILES_ONLY.get()
         )
+        hf_token = _LOAD_HF_TOKEN.set(kwargs.get("hf_token") or _LOAD_HF_TOKEN.get())
         try:
             return fn(*args, **kwargs)
         finally:
+            _LOAD_HF_TOKEN.reset(hf_token)
             _LOCAL_FILES_ONLY.reset(token)
 
     return _wrapper

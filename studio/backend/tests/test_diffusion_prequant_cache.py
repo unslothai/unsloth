@@ -956,3 +956,25 @@ def test_an_online_hit_on_a_hub_snapshot_is_revalidated_against_the_moved_main(e
 
     monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", down)
     assert C.lookup(fam, scheme, base_repo = "org/tiny") == path
+
+
+def test_the_freshness_check_of_a_gated_base_carries_the_loads_token(env, monkeypatch):
+    import huggingface_hub
+
+    from core.inference.diffusion_prequant import scoped_local_files_only
+
+    seen = []
+
+    def metadata(url, token = None, **_k):
+        seen.append(token)
+        return types.SimpleNamespace(etag = "e" * 64)
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", metadata)
+    C._REMOTE_MEMO.clear()
+
+    @scoped_local_files_only
+    def load(**_kwargs):
+        return C._remote_etag("org/gated", "transformer/diffusion_pytorch_model.safetensors")
+
+    assert load(hf_token = "hf_request_token") == "e" * 64
+    assert seen == ["hf_request_token"]

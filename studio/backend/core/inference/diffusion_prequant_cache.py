@@ -566,8 +566,16 @@ def _remote_etag(repo: str, filename: str) -> Optional[str]:
     except Exception:  # noqa: BLE001
         return None
     try:
+        from .diffusion_prequant import _LOAD_HF_TOKEN
+
+        token = _LOAD_HF_TOKEN.get()  # a gated / private base answers only to the load's own token
+    except Exception:  # noqa: BLE001
+        token = None
+    try:
         etag = get_hf_file_metadata(
-            hf_hub_url(repo, filename, revision = "main"), timeout = _REMOTE_TIMEOUT_SECONDS
+            hf_hub_url(repo, filename, revision = "main"),
+            token = token or None,
+            timeout = _REMOTE_TIMEOUT_SECONDS,
         ).etag
         value = str(etag) if etag else None  # already normalized (no quotes, no W/ prefix)
     except EntryNotFoundError:
