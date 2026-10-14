@@ -1062,7 +1062,6 @@ def test_latency_gate_picks_cublas_where_the_tile_regressed_and_persists(monkeyp
     assert len(calls) == 2 and set(calls[0][3]) >= {default, *g8._ALT_TILES[(8, 0)]}
     files = list(tmp_path.glob("tune_*.json"))
     assert len(files) == 1
-    # A later load reads the file: nothing is timed again.
     g8._DEVICE_PLAN.clear()
     assert g8.tune(0, {(18432, 3072)}) == plan and len(calls) == 2
 
@@ -1074,7 +1073,6 @@ def test_latency_gate_prefers_the_fused_kernel_unless_cublas_wins(monkeypatch, t
     ms = lambda tiles: {g8._CUBLAS: 1.40, default: 1.10, **{t: 1.09 for t in tiles if t != default}}
     _fake_tune_env(monkeypatch, tmp_path, ms)
     assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}
-    # The static tile is the status quo: cuBLAS a little faster (inside the margin) keeps it, clearly faster replaces it.
     for cub, want in ((1.0, default), (0.9, g8._CUBLAS)):
         g8._DEVICE_PLAN.clear()
         for f in tmp_path.glob("tune_*.json"):
@@ -1100,7 +1098,6 @@ def test_latency_gate_prefers_the_fused_kernel_unless_cublas_wins(monkeypatch, t
     g8._DEVICE_PLAN.clear()
     for f in tmp_path.glob("tune_*.json"):
         f.unlink()
-    # A clearly faster alternative tile wins, and must pass the bit-exact probe.
     g8._DEVICE_PLAN.clear()
     for f in tmp_path.glob("tune_*.json"):
         f.unlink()

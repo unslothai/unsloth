@@ -24,15 +24,11 @@ accumulate in int32, so the output does not depend on the tile.
 Kill switch: ``UNSLOTH_DIFFUSION_INT8_GEMM=0``; ``=1`` also enables it on an unmeasured arch (still probe-gated).
 ``UNSLOTH_DIFFUSION_INT8_GEMM_TILES=0`` keeps the arch default tile for every shape.
 
-LATENCY GATE: a static tile table goes stale with the toolchain (A100 on Triton 3.8: the shipped 128x128x128 tile runs
-the DiT shapes at ~59 TOPS vs ~430 on Triton 3.6 / 3.7, while cuBLAS ``_int_mm`` holds ~420). At install, every swapped
-(N, K) is timed once per M bucket on this device: the probed tile, the per-shape tile and a few arch candidates against
-cuBLAS ``_int_mm`` plus one int32 -> bf16 pass (the bytes the stock epilogue moves once Inductor fuses it into the
-consumer). A challenger must beat the status quo by ``_CUBLAS_MARGIN`` (``decide``); a cuBLAS bucket keeps the stock
-torchao forward for that call (traced, so Inductor still fuses its epilogue). A chosen alternative tile still has to
-pass the bit-exact probe. Results persist per toolchain (GPU name, capability, torch, Triton, CUDA, kernel source) as
-JSON under the Studio cache (``UNSLOTH_DIFFUSION_INT8_GEMM_TUNE_DIR`` overrides), so a later load only reads them.
-``UNSLOTH_DIFFUSION_INT8_GEMM_AUTOTUNE=0`` skips the gate (static table, the previous behaviour).
+LATENCY GATE: static tiles go stale with the toolchain (A100 Triton 3.8: 128x128x128 at ~59 TOPS vs cuBLAS ~420).
+At install each swapped (N, K) is timed per M bucket (probed, per-shape and arch tiles vs cuBLAS ``_int_mm`` + one
+int32 -> bf16 pass); a winner must beat the status quo by ``_CUBLAS_MARGIN`` and alt tiles must pass the bit-exact
+probe. Results persist per toolchain under the Studio cache (``UNSLOTH_DIFFUSION_INT8_GEMM_TUNE_DIR``);
+``UNSLOTH_DIFFUSION_INT8_GEMM_AUTOTUNE=0`` keeps the static table.
 
 ConvRot Linears (MiniMax-H3, Qwen-Image-2.1 ConvRot) run ``ConvRotLinear.forward``'s own rotation first, so eager
 output stays bit-identical; kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT=0``.
@@ -104,31 +100,22 @@ _SHAPE_TILES: dict = {
 }
 _SHAPE_MIN_M = 1024
 
-# Latency gate. Extra fused candidates per arch, timed beside the probed default and the per-shape tile. Triton 3.8 on
-# sm80 / sm89 slows every tile holding 128 int32 accumulators per thread (A100 128x128x128 / 4 warps 430 -> 59 TOPS,
-# L4 256x128x128 / 8 warps 96 -> 25); the 64-per-thread tiles below stay fast there (A100 ~290, L4 ~110 TOPS).
+# Triton 3.8 on sm80/sm89 slows tiles with 128 int32 accumulators per thread; these 64-per-thread tiles stay fast.
 _ALT_TILES: dict = {
     (8, 0): ((64, 128, 128, 8, 4, 4), (128, 64, 128, 8, 4, 4), (128, 128, 128, 8, 8, 3)),
     (8, 9): ((128, 128, 128, 8, 8, 3), (128, 128, 64, 8, 8, 4), (128, 128, 64, 8, 4, 4)),
     (12, 0): ((128, 128, 64, 8, 4, 3), (128, 128, 64, 8, 8, 4)),
 }
-# M buckets: (upper bound exclusive, M timed). Text-stream / small images, then image and video token grids.
+# (upper bound exclusive, M timed)
 _M_BUCKETS = ((2048, 1024), (None, 4096))
-# Whoever replaces the status quo (the static tile ``tile_for`` picks) must beat it by this factor: cuBLAS over the
-# static tile, and a new fused tile over cuBLAS. The cuBLAS arm pays a full int32 -> bf16 pass, yet near-ties of a new
-# tile still lost end to end (a swapped Linear also changes what Inductor fuses around it): A100 / Triton 3.8 klein
-# with near-tie buckets on new tiles ran 1.7% slower than all cuBLAS, Z-Image 3% (1.249 vs 1.256 ms, 1.041 vs 1.092).
-# The static tiles were measured end to end on their toolchain, so they too only leave on a clear loss.
+# Replacing the status quo needs a clear win: near-tie new tiles ran 1.7-3% slower end to end than cuBLAS (A100).
 _CUBLAS_MARGIN = 1.1
-# Alternative tiles must beat the probed default by this factor (timing noise must not churn the tile).
 _ALT_MARGIN = 0.97
-# Timing scratch cap (int32 accumulator of the cuBLAS arm); a bigger bucket is timed at fewer rows.
 _TUNE_MAX_BYTES = 384 << 20
 _TUNE_VERSION = 1
 _CUBLAS = "cublas"
-# device index -> {(n, k, bucket): tile tuple or _CUBLAS}
+# device -> {(n, k, bucket): tile or _CUBLAS}
 _DEVICE_PLAN: dict = {}
-# device index -> {tile: probe passed}
 _PROBED: dict = {}
 
 
