@@ -1616,12 +1616,16 @@ def _set_attn_impl(config, impl):
 
 
 def _holds_attention(model, name):
-    """Whether the device-map entry ``name`` covers an attention module; unresolvable counts as yes."""
+    """Whether the device-map entry ``name`` is or sits inside an attention module, or covers one.
+    Unresolvable counts as yes."""
+    parts = name.split(".") if name else []
     try:
         module = model.get_submodule(name) if name else model
+        # A fine-grained map can place q_proj alone; its attention parent then runs there too.
+        ancestors = [model.get_submodule(".".join(parts[:i])) for i in range(1, len(parts))]
     except Exception:
         return True
-    return any("attention" in type(m).__name__.lower() for m in module.modules())
+    return any("attention" in type(m).__name__.lower() for m in (*ancestors, *module.modules()))
 
 
 def _pre_ampere_cuda_devices(model):
@@ -1673,7 +1677,10 @@ def fall_back_from_flash_attention_on_pre_ampere(model):
         impl = _config_get(config, "_attn_implementation", None)
         if isinstance(impl, str) and impl.startswith("flash_attention"):
             model_type = (_config_get(config, "model_type", "") or "").lower()
-            fallback = "sdpa" if class_sdpa and not _is_sdpa_excluded(model_type) else "eager"
+            # SDPA cannot apply an attention-logit softcap (Gemma 2), so those stay exact on eager.
+            softcap = _config_get(config, "attn_logit_softcapping", None)
+            sdpa_ok = class_sdpa and not _is_sdpa_excluded(model_type) and not softcap
+            fallback = "sdpa" if sdpa_ok else "eager"
             _write_attn_impl(config, fallback)
             changed = fallback if changed in (None, fallback) else "sdpa / eager"
     if changed:

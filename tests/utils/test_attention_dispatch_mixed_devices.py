@@ -228,3 +228,31 @@ def test_hf_fallback_keeps_known_broken_sdpa_models_on_eager(monkeypatch):
     model = _Model({"a": 0, "b": 1}, model_type = "gpt_oss")
     assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
     assert model.config._attn_implementation == "eager"
+
+
+def test_hf_fine_grained_projection_placements_count_as_attention(monkeypatch):
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    model = _Model({"layers.0.self_attn.q_proj": 1, "layers.0": 0})
+    model.layers = torch.nn.ModuleList([_Decoder()])
+    model.layers[0].self_attn.q_proj = torch.nn.Linear(2, 2)
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
+    assert model.config._attn_implementation == "sdpa"
+
+
+def test_hf_fallback_keeps_softcapped_models_on_eager(monkeypatch):
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    model = _Model({"a": 0, "b": 1}, model_type = "gemma2")
+    model.config.attn_logit_softcapping = 50.0
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
+    assert model.config._attn_implementation == "eager"
+
+
+def test_same_class_secondary_cards_are_never_probed():
+    calls = []
+
+    def probe(device, supports_bf16 = None):
+        calls.append(device)
+        return True
+
+    assert ad._per_device_backends(((12, 0), (12, 0), (12, 0)), probe = probe) is None
+    assert calls == []

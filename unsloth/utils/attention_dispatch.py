@@ -85,7 +85,8 @@ _XFORMERS_FP32_UNSUPPORTED = (
 def _per_device_backends(capabilities, probe = _xformers_runs_on_device):
     """(flash runs, xformers runs, xformers rejects fp32, bf16 kernels) per CUDA device index, or None
     when every device has device 0's capability class, so homogeneous hosts never consult the table."""
-    if len(capabilities) < 2:
+    # Same capability class everywhere: device 0's verdicts hold, and no other card is probed.
+    if len({(c[0] >= 8, c[0] >= 10, c[0] >= 12) for c in capabilities}) < 2:
         return None
     table = []
     for index, capability in enumerate(capabilities):
