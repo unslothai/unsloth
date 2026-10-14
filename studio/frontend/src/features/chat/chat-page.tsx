@@ -406,7 +406,7 @@ function BrowserOverlay(): ReactElement {
   };
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm sm:p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 sm:p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) {
           useBrowserStore.getState().closePanel();
@@ -2796,6 +2796,7 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
+  const loadedIsMlx = useChatRuntimeStore((state) => state.loadedIsMlx);
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
@@ -2870,7 +2871,8 @@ export function ChatPage({
     : null;
   const { items: currentProjectItems, loaded: currentProjectItemsLoaded } =
     useChatSidebarItems({
-    projectId: currentProjectId ?? "__no_project_selected__",
+      projectId: currentProjectId ?? "__no_project_selected__",
+      enabled: Boolean(currentProjectId),
     });
   const currentChatTitle = activeThreadId
     ? currentProjectItems.find((item) => item.id === activeThreadId)?.title
@@ -4712,6 +4714,7 @@ export function ChatPage({
                   residentCheckpoint,
                 })}
                 activeGgufVariant={activeGgufVariant}
+                activeVariantIsMlx={loadedIsMlx === true}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
                 configRequest={modelConfigRequest}

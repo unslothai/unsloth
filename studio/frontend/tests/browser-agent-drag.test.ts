@@ -25,7 +25,7 @@ test("a drag whose press navigates the tab is not released on the new page", asy
   globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
     sent.push(`${op.op}${op.phase ? `:${op.phase}` : ""}`);
     if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc } };
-    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s" } };
+    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s", doc } };
     if (op.op === "pointer" && op.phase === "down") {
       // The page's own mousedown handler loads another document at the same address.
       doc = "r9001";
@@ -53,7 +53,7 @@ test("a drag between fractional points reaches its end and is released", async (
   globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
     sent.push(op);
     if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
-    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s" } };
+    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s", doc: "r1" } };
     return { installed: true, result: { ok: true, text: "page", links: [] } };
   };
   // On the tab the test above opened.
@@ -63,6 +63,8 @@ test("a drag between fractional points reaches its end and is released", async (
   assert.equal(posted.at(-1)?.result.error, undefined);
   const up = sent.find((op) => op.op === "pointer" && op.phase === "up");
   assert.deepEqual(up && [up.x, up.y], [1.9, 10]);
+  // The document check rides on the describes the drag makes anyway: no status round trips before the drop.
+  assert.equal(sent.slice(0, sent.indexOf(up!)).filter((op) => op.op === "status").length, 0);
 });
 
 /** Drags on the tab the first test opened, with `onOp` seeing each page command; returns what was sent and the result. */
@@ -77,7 +79,7 @@ async function drag(id: string, runKey: string, onOp: (op: Record<string, unknow
     sent.push(`${op.op}${op.phase ? `:${op.phase}` : ""}`);
     onOp(op, sent);
     if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
-    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s" } };
+    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s", doc: "r1" } };
     return { installed: true, result: { ok: true, text: "page", links: [] } };
   };
   const tabId = useBrowserStore.getState().tabs[0].id;
@@ -103,7 +105,7 @@ test("a drag whose page moves its address without a new document is cancelled, n
 
 test("Stop during the checks before the drop cancels the drag instead of releasing it", async () => {
   const { sent, result } = await drag("p2", "r", (op, sent) => {
-    if (op.op === "status" && sent.includes("pointer:move")) stopBrowserAgent();
+    if (op.op === "describe" && sent.includes("pointer:move")) stopBrowserAgent();
   });
   assert.equal(result?.ok, false);
   assert.ok(sent.includes("pointer:cancel"), sent.join(", "));

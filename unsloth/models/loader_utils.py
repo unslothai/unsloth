@@ -197,6 +197,19 @@ def prepare_device_map():
     return device_map, True
 
 
+def deepspeed_zero3_device_map(device_map):
+    """None under DeepSpeed ZeRO-3 init: transformers refuses any device_map there, since ZeRO-3 places the
+    weights itself (#225). Only a placement left to us is dropped; a map the caller chose still raises."""
+    try:
+        from transformers.integrations import is_deepspeed_zero3_enabled
+        zero3 = is_deepspeed_zero3_enabled()
+    except Exception:
+        zero3 = False
+    if not zero3:
+        return device_map
+    return None if is_automatic_device_map(device_map) else device_map
+
+
 UNSLOTH_DEVICE_MAP = "unsloth"
 
 # Same planner, different answer when it declines: every veto path ends in "sequential", which fills the first device to its whole free budget, wrong for a caller that picked several cards.
@@ -3364,7 +3377,7 @@ def sync_load_when_quantizing(quantization_config, model_config):
 
 
 def gptq_trainable_quantization_config(model_config, user_quantization_config):
-    """GPTQConfig asking gptqmodel for a trainable kernel on a GPTQ checkpoint, else None.
+    """GPTQConfig / AwqConfig asking gptqmodel for a trainable kernel on a GPTQ or AWQ checkpoint, else None.
 
     gptqmodel's default kernels (Marlin / ExLlama) raise NotImplementedError on model.train(); only
     `backend` is a loading attribute, so the checkpoint's own bits / group_size still apply.
@@ -3374,17 +3387,31 @@ def gptq_trainable_quantization_config(model_config, user_quantization_config):
     qc = getattr(model_config, "quantization_config", None)
     if qc is not None and not isinstance(qc, dict):
         qc = qc.to_dict()
-    if not qc or str(qc.get("quant_method", "")).lower() != "gptq":
+    quant_method = str((qc or {}).get("quant_method", "")).lower()
+    if quant_method not in ("gptq", "awq"):
         return None
-    if qc.get("backend") not in (None, "auto"):
+    # transformers 4.x wrote "autoawq" / "llm-awq" into AWQ configs (Qwen3-8B-AWQ); AwqConfig reads both as auto.
+    default_backends = (
+        (None, "auto", "autoawq", "llm-awq") if quant_method == "awq" else (None, "auto")
+    )
+    if qc.get("backend") not in default_backends:
         return None
     try:
-        from transformers import GPTQConfig
+        from transformers import AwqConfig, GPTQConfig
         from transformers.utils import is_gptqmodel_available
     except ImportError:
         return None
     if not is_gptqmodel_available() or "backend" not in inspect.signature(GPTQConfig).parameters:
         return None
+    if quant_method == "awq":
+        # transformers < 5 AwqConfig has no auto_trainable backend (autoawq era).
+        try:
+            from transformers.utils.quantization_config import AwqBackend
+        except ImportError:
+            return None
+        if not hasattr(AwqBackend, "AUTO_TRAINABLE"):
+            return None
+        return AwqConfig(bits = qc.get("bits", 4), backend = "auto_trainable")
     return GPTQConfig(bits = qc["bits"], backend = "auto_trainable")
 
 

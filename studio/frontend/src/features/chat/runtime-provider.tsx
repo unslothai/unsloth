@@ -56,7 +56,7 @@ import {
   streamChatCompletions,
   uploadChatAttachmentOriginal,
 } from "./api/chat-api";
-import { compactionNoticeMessageIds } from "@/components/assistant-ui/message-derived";
+import { compactionDividerCount } from "@/components/assistant-ui/message-derived";
 import { selectCodeToolNames } from "./api/code-tool-placement";
 import { getResearchThreadState } from "./api/research-api";
 import {
@@ -183,8 +183,17 @@ import {
 } from "./utils/saved-history-reconciliation";
 import { createGenerationToolRecovery } from "./utils/generation-tool-recovery";
 import { providerCompactionConnectionKey } from "./utils/provider-compaction";
-import { mergeContextTruncation } from "./utils/context-truncation";
+import {
+  appendCompactionMarker,
+  type CompactionMarker,
+  compactionAnchorToolCallId,
+  mergeContextTruncation,
+} from "./utils/context-truncation";
 import { registerLiveThreadView } from "./utils/live-thread-head";
+import {
+  cancelReplyFinishedNotification,
+  notifyReplyFinished,
+} from "./utils/reply-finished-notification";
 import {
   extractDeltaText,
   parseAssistantContent,
@@ -1755,11 +1764,22 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
+                const toolCalls = carried
+                  .map((entry) => entry.part as { type?: unknown } | null)
+                  .filter((part) => part?.type === "tool-call") as Array<{
+                  toolCallId?: unknown;
+                  toolName?: unknown;
+                }>;
                 currentMetadata = {
                   ...currentMetadata,
                   contextTruncation: mergeContextTruncation(
                     currentMetadata.contextTruncation as OpenAIChatChunk["context_truncated"],
                     chunk.context_truncated,
+                  ),
+                  compactionMarkers: appendCompactionMarker(
+                    currentMetadata.compactionMarkers as CompactionMarker[] | undefined,
+                    chunk.context_truncated,
+                    compactionAnchorToolCallId(toolCalls, chunk.context_truncated),
                   ),
                 };
               }
@@ -2375,6 +2395,7 @@ function createPersistedRunAdapter(
   return {
     ...adapter,
     async *run(options) {
+      cancelReplyFinishedNotification();
       const trackedRunStartThreadIds = runStartThreadIdsForMessages(
         options.messages,
       );
@@ -2436,9 +2457,12 @@ function createPersistedRunAdapter(
       }
       if (typeof result === "object" && Symbol.asyncIterator in result) {
         yield* result;
-        return;
+      } else {
+        yield await result;
       }
-      yield await result;
+      if (!options.abortSignal?.aborted) {
+        notifyReplyFinished();
+      }
     },
   };
 }
@@ -3811,7 +3835,7 @@ function CompactionCountRegistrar({
 }): ReactElement | null {
   const threadId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
   const count = useAuiState(
-    ({ thread }) => compactionNoticeMessageIds(thread.messages).size,
+    ({ thread }) => compactionDividerCount(thread.messages),
   );
 
   useEffect(() => {

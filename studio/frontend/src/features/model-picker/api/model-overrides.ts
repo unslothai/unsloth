@@ -29,6 +29,9 @@ export interface ApiModelOverride {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
   engine?: "auto" | "vllm" | "sglang";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   llama_extra_args?: string[];
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -337,6 +340,13 @@ export function fromApiOverride(
     engineParallelism: override.engine_parallelism ?? local.engineParallelism ?? "tensor",
     enginePrecision:
       override.engine_precision ?? local.enginePrecision ?? "auto",
+    engineKvCacheDtype:
+      override.engine_kv_cache_dtype ?? local.engineKvCacheDtype ?? "auto",
+    engineSeed: override.engine_seed ?? local.engineSeed ?? null,
+    engineGpuMemoryUtilization:
+      override.engine_gpu_memory_utilization ??
+      local.engineGpuMemoryUtilization ??
+      null,
     customContextLength: serverStatesPin
       ? (override.custom_context_length ?? null)
       : local.customContextLength,
@@ -400,6 +410,9 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
     engine: config.engine ?? "auto",
     engine_precision: config.enginePrecision ?? "auto",
     engine_parallelism: config.engineParallelism ?? "tensor",
+    engine_kv_cache_dtype: config.engineKvCacheDtype ?? "auto",
+    engine_seed: config.engineSeed ?? null,
+    engine_gpu_memory_utilization: config.engineGpuMemoryUtilization ?? null,
   };
   if (config.maxSeqLength && config.maxSeqLength > 0) {
     payload.max_seq_length = config.maxSeqLength;

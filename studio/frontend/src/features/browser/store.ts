@@ -57,9 +57,17 @@ export type FileViewState = {
   consoleOpen: boolean;
   errorCount: number;
   wrap: boolean;
+  /** A PDF page to scroll to; a new object asks again for the same page. */
+  pageTarget: { page: number } | null;
 };
 
-export const DEFAULT_FILE_VIEW: FileViewState = { mode: "preview", consoleOpen: false, errorCount: 0, wrap: false };
+export const DEFAULT_FILE_VIEW: FileViewState = {
+  mode: "preview",
+  consoleOpen: false,
+  errorCount: 0,
+  wrap: false,
+  pageTarget: null,
+};
 
 export type BrowserTab = {
   id: string;
@@ -92,6 +100,8 @@ export type OpenFileInput = {
   contentType?: string;
   plainText?: boolean;
   key?: string;
+  /** 1-based PDF page to show; reopening the tab jumps to it. */
+  page?: number;
 };
 
 // Blobs live outside the store; documents can be 50 MB.
@@ -352,6 +362,19 @@ function zoomFor(tab: BrowserTab, entry: BrowserEntry, traversal = false): numbe
   return tab.zoom;
 }
 
+/** The same-origin address the page's router moved to, for Reload; null if unmoved or a POST. */
+function routerEntry(tab: BrowserTab): BrowserEntry | null {
+  const entry = currentEntry(tab);
+  if (nativeWebHistory || entry.kind !== "web" || entry.method === "POST") return null;
+  if (!tab.displayUrl || tab.displayUrl === entry.url) return null;
+  try {
+    if (new URL(tab.displayUrl).origin !== new URL(entry.url).origin) return null;
+  } catch {
+    return null;
+  }
+  return webEntry(tab.displayUrl, "GET", undefined, undefined, entry.temporary);
+}
+
 function pushEntry(tab: BrowserTab, entry: BrowserEntry, replace = false): BrowserTab {
   const zoom = zoomFor(tab, entry);
   const history = tab.history.slice(0, replace ? tab.index : tab.index + 1);
@@ -507,7 +530,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (options?.newTab === undefined && focusExisting(openKey)) return;
       openTab(createTab(webEntry(target, undefined, undefined, options?.from), openKey), options?.background);
     },
-    openFile: ({ blob, name, contentType, plainText, key }) => {
+    openFile: ({ blob, name, contentType, plainText, key, page }) => {
       const openKey = key ? `file:${key}` : null;
       const fileId = newId("file");
       files.set(fileId, blob);
@@ -525,6 +548,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
         focusExisting(openKey);
+        if (page) get().setFileView(existing.id, { pageTarget: { page } });
         // refresh changed files in order per tab so the last reopen wins.
         const previous = refreshes.get(existing.id) ?? Promise.resolve();
         queuedFiles.add(fileId);
@@ -552,7 +576,9 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         });
         return;
       }
-      openTab(createTab(entry, openKey));
+      const tab = createTab(entry, openKey);
+      openTab(tab);
+      if (page) get().setFileView(tab.id, { pageTarget: { page } });
     },
     navigate: (tabId, request, options) => {
       if (!isWeb(request.url)) return;
@@ -589,7 +615,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const tab = get().tabs.find((candidate) => candidate.id === tabId);
       if (tab) pageCache.delete(currentEntry(tab));
       set((state) => ({
-        tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, reloadKey: tab.reloadKey + 1 })),
+        tabs: patchTab(state.tabs, tabId, (tab) => {
+          const moved = routerEntry(tab);
+          if (!moved) return { ...tab, reloadKey: tab.reloadKey + 1 };
+          // Swapped in place, as a browser's reload: Forward keeps its pages.
+          const next = pushEntry(tab, moved, true);
+          return { ...next, history: [...next.history, ...tab.history.slice(tab.index + 1)], reloadKey: tab.reloadKey + 1 };
+        }),
       }));
     },
     activateTab: (tabId) => set({ activeTabId: tabId, annotateTabId: null }),

@@ -114,6 +114,7 @@ __all__ = [
     "skip_swapped_checkpoint_keys",
     "get_moe_target_parameters",
     "get_moe_target_modules",
+    "add_moe_target_modules",
     "get_moe_expert_submodule_leaves",
     "moe_expert_submodule_regex",
     "widen_target_regex_to_expert_submodules",
@@ -3570,6 +3571,12 @@ import transformers.trainer
 
 transformers.trainer.get_model_param_count = get_model_param_count
 
+# gc.freeze() the setup-time heap for each outermost Trainer.train(). Installed at import, before
+# PatchFastRL (llama.py) captures `train` for the RL resume guard, so every trainer goes through it.
+from ._gc_train_scope import patch_trainer_train_gc_scope as _patch_trainer_train_gc_scope
+
+_patch_trainer_train_gc_scope(transformers.trainer.Trainer)
+
 
 def patch_mistral_nemo_config(config):
     if "head_dim (" not in config:
@@ -3815,6 +3822,23 @@ elif DEVICE_TYPE == "npu":
     # Ask torch_npu: the module-level False silently rewrote an explicit bfloat16 to float16.
     SUPPORTS_BFLOAT16 = torch.npu.is_bf16_supported()
 
+
+def _xformers_fa3_lacks_sm90a(build_info, capability, flash3) -> bool:
+    # Bundled FA3 is compiled for TORCH_CUDA_ARCH_LIST verbatim; without "9.0a" (conda-forge) its wgmma
+    # kernels trap on H100 and poison the CUDA context (#3963). Unset list = xformers' "8.0 9.0a" default.
+    if tuple(capability) != (9, 0):
+        return False
+    if getattr(flash3, "_C_flashattention3", None) is None:
+        return False
+    if getattr(flash3, "FLASH_VERSION", None) == "pip_pkg":
+        return False
+    try:
+        arch_list = str(build_info.build_env.get("TORCH_CUDA_ARCH_LIST") or "")
+    except Exception:
+        return False
+    return bool(arch_list) and "9.0a" not in arch_list
+
+
 try:
     _xformers_logger = logging.getLogger("xformers")
     _xformers_logger.setLevel(logging.ERROR)
@@ -3876,7 +3900,7 @@ try:
     from xformers._cpp_lib import _register_extensions
 
     try:
-        _register_extensions()
+        _xformers_build = _register_extensions()
     except Exception as error:
         raise ImportError(
             "Unsloth: Xformers was not installed correctly.\n"
@@ -3886,6 +3910,17 @@ try:
             "Longer error message:\n" + str(error)
         ) from error
     import xformers.ops.fmha as xformers
+
+    if (
+        DEVICE_TYPE == "cuda"
+        and torch.cuda.is_available()
+        and hasattr(xformers, "_set_use_fa3")
+        and _xformers_fa3_lacks_sm90a(
+            _xformers_build, torch.cuda.get_device_capability(), getattr(xformers, "flash3", None)
+        )
+    ):
+        xformers._set_use_fa3(False)
+    del _xformers_build
 
     xformers_attention = xformers.memory_efficient_attention
 except ModuleNotFoundError:
@@ -4321,8 +4356,17 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
+
+    # DeepSpeed keeps its type even on one device: reporting NO turns on accelerate's native AMP, whose
+    # dtype-less autocast under DeepSpeed is float16 and breaks a bfloat16 model (#225).
+    def _single_device_distributed_type(self):
+        real = getattr(self.__dict__.get("state"), "distributed_type", None)
+        return (
+            DistributedType.DEEPSPEED if real == DistributedType.DEEPSPEED else DistributedType.NO
+        )
+
     # Must be a property: a bare function binds as a method, inverting every `!= DistributedType.NO` guard in accelerate (#10016).
-    accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
+    accelerate.accelerator.Accelerator.distributed_type = property(_single_device_distributed_type)
 
 
 _PER_LAYER_DEVICE_MISSING = object()
@@ -5359,6 +5403,9 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer.__init__ = _unsloth_trainer_init
         Trainer._unsloth_init_wrapped_for_accelerate_gas = True
 
+    # Idempotent: already installed at import unless Trainer was reloaded since.
+    _patch_trainer_train_gc_scope(Trainer)
+
 
 # Real children only: PEFT's LoraModel forwards `base_model` to the backbone, skipping the loss head.
 _LOSS_KWARGS_CHILDREN = ("base_model", "model") + _UNSLOTH_WRAPPED_MODULE_ATTRS
@@ -5496,9 +5543,27 @@ def _loss_head(model):
     return None
 
 
+# Unwrapped forward -> the child it hands the loss count to (or None): parsed once, not every step.
+_PASS_THROUGH_ATTRS = {}
+
+
 def _pass_through_child(m, modules):
     try:
-        tree = ast.parse(textwrap.dedent(inspect.getsource(inspect.unwrap(type(m).forward))))
+        forward = inspect.unwrap(type(m).forward)
+    except Exception:
+        return None
+    try:
+        attr = _PASS_THROUGH_ATTRS[forward]
+    except KeyError:
+        attr = _PASS_THROUGH_ATTRS[forward] = _pass_through_attr(forward)
+    except TypeError:
+        attr = _pass_through_attr(forward)
+    return modules[attr] if attr is not None and attr in modules else None
+
+
+def _pass_through_attr(forward):
+    try:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(forward)))
     except Exception:
         return None
     node = next(
@@ -5521,7 +5586,6 @@ def _pass_through_child(m, modules):
         isinstance(func, ast.Attribute)
         and isinstance(func.value, ast.Name)
         and func.value.id == "self"
-        and func.attr in modules
     ):
         return None
     kwarg = node.args.kwarg.arg if node.args.kwarg is not None else None
@@ -5543,7 +5607,7 @@ def _pass_through_child(m, modules):
         or (kw.arg == "num_items_in_batch" and carries_count(kw.value))
         for kw in call.keywords
     )
-    return modules[func.attr] if forwards_count else None
+    return func.attr if forwards_count else None
 
 
 def _call_forwards_count(node, call):
@@ -8912,6 +8976,21 @@ def get_moe_target_modules(model, target_modules = None) -> List[str]:
             targets.add(f"{leaf}.{expert_index}")
 
     return sorted(targets)
+
+
+def add_moe_target_modules(target_modules, moe_module_targets):
+    """Extend target_modules with get_moe_target_modules' per-expert suffixes, in whichever form PEFT was given: a leaf list, or one regex string (fullmatched against the module path)."""
+    if not moe_module_targets:
+        return target_modules
+    if isinstance(target_modules, str):
+        # PEFT's "all-linear" already reaches every expert Linear; wrapping it in a regex would drop that meaning.
+        if target_modules == "all-linear":
+            return target_modules
+        leaves = sorted({t.rsplit(".", 1)[0] for t in moe_module_targets})
+        expert_alt = r".*\.experts\.(?:" + "|".join(re.escape(leaf) for leaf in leaves) + r")\.\d+"
+        return f"(?:{target_modules})|(?:{expert_alt})"
+    target_modules = list(target_modules)
+    return target_modules + [t for t in moe_module_targets if t not in target_modules]
 
 
 _EXPERT_SUBMODULE_PATTERN = re.compile(r"(?:^|\.)(?:experts\.\d+|shared_experts?)\.([A-Za-z_]\w*)$")

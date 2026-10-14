@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The live Thinking box (#11703): bounded only while the `auto` setting holds a block open for
-// its stream, lifted by a hand open, and never an inner scroller (#11704 review).
+// The Thinking box (#11703): bounded under `auto`, lifted by its Expand toggle, never a scroller (#11704).
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -21,58 +20,43 @@ const { reasoningTailCapped, resolveReasoningOpen } = await import(
 const reasoning = readSrc("components/assistant-ui/reasoning.tsx");
 const transcript = readSrc("components/assistant-ui/reasoning-transcript.tsx");
 
-test("only a block the auto setting opened for its stream is bounded", () => {
+test("only the auto setting bounds a block, whether the stream or a hand opened it", () => {
   for (const visibility of DISPLAY_VISIBILITIES) {
-    for (const override of [null, false, true]) {
-      for (const isStreaming of [false, true]) {
-        const open = resolveReasoningOpen({
-          isStreaming,
-          visibility,
-          override,
-        });
-        const capped = reasoningTailCapped({ visibility, override });
-        const shown = open && capped;
-        assert.equal(
-          shown,
-          visibility === "auto" && override === null && isStreaming,
-          `${visibility} override=${override} streaming=${isStreaming}`,
-        );
-      }
-    }
+    assert.equal(
+      reasoningTailCapped({ visibility }),
+      visibility === "auto",
+      visibility,
+    );
   }
 });
 
-test("the box clips at the top instead of scrolling, and Show full is a hand open", () => {
+test("the box clips at the top instead of scrolling, and Expand toggles without a permanent open", () => {
   const tail = reasoning.slice(
     reasoning.indexOf("function ReasoningTail("),
     reasoning.indexOf("// With the fold preference on"),
   );
   assert.match(
     tail,
-    /flex max-h-\[[^\]]+\] flex-col justify-end overflow-hidden/,
+    /flex min-w-0 max-h-\[[^\]]+\] flex-col overflow-hidden px-\[[^\]]+\] supports-\[overflow:clip\]:overflow-x-visible supports-\[overflow:clip\]:overflow-y-clip/,
   );
   assert.doesNotMatch(tail, /overflow-(y-)?(auto|scroll)|scrollTop|scrollTo\(/);
   assert.match(
     reasoning,
-    /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility, override \}\);/,
+    /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility \}\);/,
   );
-  assert.match(
-    reasoning,
-    /<ReasoningTail\s+capped=\{capped\}\s+onShowFull=\{\(\) => handleOpenChange\(true\)\}/,
-  );
-  assert.match(reasoning, /bounded=\{capped\}/);
+  assert.match(tail, /\{cappable && overflowing && \(/);
+  assert.match(tail, /onClick=\{\(\) => onExpandedChange\(!expanded\)\}/);
+  assert.match(tail, /aria-expanded=\{expanded\}/);
+  assert.match(tail, /\{expanded \? "Collapse thinking" : "Expand thinking"\}/);
+  assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
+  assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
 });
 
-test("Show full hands keyboard focus to the block header before its button unmounts", () => {
-  const tail = reasoning.slice(
-    reasoning.indexOf("function ReasoningTail("),
-    reasoning.indexOf("// With the fold preference on"),
-  );
+test("changing the setting drops a hand Expand along with the hand open", () => {
   assert.match(
-    tail,
-    /event\.currentTarget === document\.activeElement\)[\s\S]*?closest\('\[data-slot="reasoning-root"\]'\)[\s\S]*?querySelector<HTMLElement>\('\[data-slot="reasoning-trigger"\]'\)[\s\S]*?\.focus\(\{ preventScroll: true \}\);\s*onShowFull\(\);/,
+    reasoning,
+    /if \(lastVisibility !== visibility\) \{\s*setLastVisibility\(visibility\);\s*setOverride\(null\);\s*setTailExpanded\(false\);\s*\}/,
   );
-  assert.match(tail, /focus-visible:ring-1 focus-visible:ring-ring/);
 });
 
 test("focus landing in the clipped lines lifts the cap instead of staying invisible", () => {
@@ -82,7 +66,7 @@ test("focus landing in the clipped lines lifts the cap instead of staying invisi
   );
   assert.match(
     tail,
-    /onFocus=\{\(event\) => \{[\s\S]*?clipped &&[\s\S]*?event\.target\.getBoundingClientRect\(\)\.top <\s*event\.currentTarget\.getBoundingClientRect\(\)\.top[\s\S]*?onShowFull\(\);/,
+    /onFocus=\{\(event\) => \{[\s\S]*?clipped &&\s*\(streaming \? target\.top < box\.top : target\.bottom > box\.bottom\)[\s\S]*?onExpandedChange\(true\);/,
   );
 });
 
@@ -100,7 +84,7 @@ test("a bounded transcript corrects nothing through the thread and mounts the ta
   assert.match(transcript, /boundedRef\.current = bounded;/);
   assert.match(
     transcript,
-    /if \(!bounded \|\| covered\) return;[\s\S]*?BOUNDED_TAIL_PX[\s\S]*?end: fragments\.length[\s\S]*?setIslands\(next\);/,
+    /if \(!bounded \|\| !streaming \|\| covered\) return;[\s\S]*?BOUNDED_TAIL_PX[\s\S]*?end: fragments\.length[\s\S]*?setIslands\(next\);/,
     "the newest rows are not mounted while the prefix catches up",
   );
   assert.match(transcript, /recapture\.current\(true\);\s*\}, \[bounded\]\);/);
@@ -114,4 +98,25 @@ test("a closing block keeps the cap it had while open", () => {
   );
   const open = reasoning.indexOf("const isOpen = resolveReasoningOpen(");
   assert.ok(open !== -1 && open < reasoning.indexOf("const cappedNow ="));
+});
+
+test("Expand thinking ends in a chevron: right while bounded, up once expanded", () => {
+  const tail = reasoning.slice(
+    reasoning.indexOf("function ReasoningTail("),
+    reasoning.indexOf("// With the fold preference on"),
+  );
+  assert.match(
+    tail,
+    /\{expanded \? "Collapse thinking" : "Expand thinking"\}\s*<ChevronDownIcon[\s\S]*?expanded \? "-rotate-180" : "-rotate-90"/,
+  );
+});
+
+test("a streaming box shows the newest lines, a finished one shows the start", () => {
+  const tail = reasoning.slice(
+    reasoning.indexOf("function ReasoningTail("),
+    reasoning.indexOf("// With the fold preference on"),
+  );
+  assert.match(tail, /capped && \(streaming \? "justify-end" : "justify-start"\)/);
+  assert.match(tail, /to_bottom,transparent[\s\S]*?to_top,transparent/);
+  assert.match(reasoning, /streaming=\{isReasoningStreaming\}\s*onExpandedChange=/);
 });

@@ -36,6 +36,7 @@ import sys
 import tempfile
 import contextlib
 import threading
+import zlib
 from contextvars import ContextVar
 
 # What a truncated result costs besides its body, charged where the cut is decided rather than held back in advance.
@@ -16192,6 +16193,80 @@ class _HTMLBodyLocator(HTMLParser):
         self.handle_entityref("#" + name)
 
 
+# What _ContentDecoder undoes, and what the fetcher's Accept-Encoding names: with none, any coding is
+# acceptable (RFC 9110 12.5.3), brotli and zstd included.
+_DECODED_CODINGS = ("gzip", "x-gzip", "deflate")
+
+
+class _ContentDecoder:
+    """Undoes a gzip or deflate Content-Encoding as the body is read. Servers send one unasked (python.org
+    does even for ``Accept-Encoding: identity``). Output is bounded per read and input by ``wire_limit``,
+    so a small compressed body can't expand past the caller's budget."""
+
+    def __init__(self, coding):
+        self.gzip = coding != "deflate"
+        self.inflater = None
+        # Before the first byte, or between gzip members: an end of input here is a complete body.
+        self.at_boundary = True
+        self.members = 0
+        self.unread = b""
+        self.wire = 0
+        self.wire_limit = 0
+        self.finished = False
+
+    def read(self, read_wire, size):
+        """At most ``size`` decoded bytes. ``b""`` before ``finished`` means only input was consumed: call again."""
+        if self.finished:
+            return b""
+        data, self.unread = self.unread, b""
+        draining = False
+        if len(data) < 2 and (self.inflater is None or not data):
+            more = read_wire(65536)
+            self.wire += len(more)
+            if self.wire > self.wire_limit:
+                raise ValueError("compressed response exceeds the byte limit")
+            if not more:
+                # An empty coded body (a 204, or Content-Length: 0) has nothing to decode; after a member, a
+                # stray byte is padding.
+                if self.at_boundary and (not data or self.members):
+                    self.finished = True
+                    return b""
+                if self.inflater is None:
+                    raise ValueError("truncated compressed response")
+                # zlib can hold output back past a full buffer with all the input consumed (raw deflate).
+                draining = True
+            data += more
+            if self.inflater is None and len(data) < 2:
+                self.unread = data
+                return b""
+        if self.inflater is None:
+            if self.gzip:
+                if self.members and not data.startswith(b"\x1f\x8b"):
+                    # Bytes after the last member are padding, which browsers ignore too.
+                    self.finished = True
+                    return b""
+                # Concatenated gzip members are one body (RFC 1952 2.2).
+                self.inflater = zlib.decompressobj(31)
+            else:
+                # "deflate" is meant to be zlib-wrapped (RFC 9110 8.4.1.2); some servers send it raw.
+                wrapped = data[0] & 0x0F == 8 and (data[0] << 8 | data[1]) % 31 == 0
+                self.inflater = zlib.decompressobj(15 if wrapped else -15)
+            self.at_boundary = False
+        out = self.inflater.decompress(data, size)
+        if draining and not out and not self.inflater.eof:
+            raise ValueError("truncated compressed response")
+        if not self.inflater.eof:
+            self.unread = self.inflater.unconsumed_tail
+        elif self.gzip:
+            self.members += 1
+            self.unread = self.inflater.unused_data
+            self.inflater = None
+            self.at_boundary = True
+        else:
+            self.finished = True
+        return out
+
+
 def _read_capped_body(
     resp,
     max_bytes,
@@ -16200,13 +16275,18 @@ def _read_capped_body(
     cancel_event,
     body_window = None,
     charset = None,
+    decoder = None,
 ):
-    """read at most ``max_bytes``, and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
+    """read at most ``max_bytes`` (decoded, with a ``decoder``), and ``body_window`` past the end of ``<head>``; returns ``(error, body)``."""
     # HTTPError exposes the socket for deadline updates; chunk checks bound test doubles without one
     fp = getattr(resp, "fp", None)
     sock = getattr(getattr(getattr(fp, "fp", fp), "raw", None), "_sock", None)
     # read1 avoids buffered read(n) waiting for n bytes past the budget
     read = getattr(resp, "read1", None) or resp.read
+    if decoder is not None:
+        read_wire = read
+        decoder.wire_limit = decoder.wire + max_bytes + 65536
+        read = lambda size: decoder.read(read_wire, size)
     chunks = []
     remaining = max_bytes
     body_at = None
@@ -16224,8 +16304,18 @@ def _read_capped_body(
                 sock.settimeout(_fetch_hop_timeout(timeout, deadline))
             except Exception:
                 pass
-        chunk = read(min(65536, remaining))
+        try:
+            chunk = read(min(65536, remaining))
+        except (ValueError, zlib.error) as exc:
+            if decoder is None:
+                raise
+            if decoder.wire > decoder.wire_limit:
+                return f"(compressed content exceeds the {decoder.wire_limit} byte limit)", b""
+            return f"Failed to decode the compressed response: {exc}", b""
         if not chunk:
+            # Checks the budget between compressed chunks that decode to nothing yet.
+            if decoder is not None and not decoder.finished:
+                continue
             break
         chunks.append(chunk)
         remaining -= len(chunk)
@@ -16415,6 +16505,7 @@ def _fetch_url_raw(
             headers = {
                 "User-Agent": ua,
                 "Host": validated_netloc,
+                "Accept-Encoding": "gzip, deflate",
             }
             if extra_headers:
                 headers.update(extra_headers)
@@ -16457,6 +16548,11 @@ def _fetch_url_raw(
                         return hop_error, "", ""
                     continue
 
+            coding = (resp.headers.get("Content-Encoding") or "").strip().lower()
+            if coding not in ("", "identity", *_DECODED_CODINGS):
+                return f"Failed to fetch URL: unsupported Content-Encoding {coding[:40]!r}.", "", ""
+            decoder = _ContentDecoder(coding) if coding in _DECODED_CODINGS else None
+
             # get_content_type() maps absent headers to text/plain per RFC 2045; "" marks absence.
             if resp.headers.get("Content-Type") is None:
                 content_type = ""
@@ -16485,6 +16581,7 @@ def _fetch_url_raw(
                 cancel_event,
                 body_window = max_bytes if declared_html else None,
                 charset = resp.headers.get_content_charset() if declared_html else None,
+                decoder = decoder,
             )
             if body_error is not None:
                 return body_error, "", ""
@@ -16508,6 +16605,7 @@ def _fetch_url_raw(
                     timeout,
                     deadline,
                     cancel_event,
+                    decoder = decoder,
                 )
                 if tail_error is not None:
                     return tail_error, "", ""
@@ -16756,9 +16854,11 @@ def _tool_result_char_budget() -> int:
     return _result_char_budget(cap)
 
 
-def _other_tool_result_char_budget() -> int:
-    """Non-code tools keep the install cap: the setting names Python and Terminal, and these results have no spill to
-    page back through."""
+def _other_tool_result_char_budget(name = None) -> int:
+    """Web, edit and the other built-in tools keep the install cap: their results are bounded by their own caps. An MCP
+    result has none, so it follows the Settings > Chat limit like Python and Terminal (#13576)."""
+    if isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX):
+        return _tool_result_char_budget()
     return _result_char_budget(_MAX_OUTPUT_CHARS)
 
 
@@ -18066,13 +18166,9 @@ def _check_signal_escape_patterns(code: str):
             "warnings": [],
         }
 
-    # Whether a recognised egress call is possible AT ALL in this source. Every route to one -- an
-    # import, an alias of an import, a star import, or the module written out at the call -- spells
-    # the module's own name, so a source with none of these substrings has no candidate to resolve
-    # and the alias machinery below has nothing to say about it. One pass over the text, against
-    # three walks of the tree and a second visitor pass.
-    # Whether a recognised egress call is possible AT ALL in this tree. Read below.
-    network_possible = _network_candidates_possible(_tree_nodes(tree))
+    _LOCAL_DATABASE_MODULES = ("sqlite3", "duckdb")
+    tree_nodes = _tree_nodes(tree)
+    network_possible = _network_candidates_possible(tree_nodes)
 
     signal_tampering = []
     exception_catching = []
@@ -19241,17 +19337,72 @@ def _check_signal_escape_patterns(code: str):
             ]
         return []
 
-    # What a name may be bound to and still be trusted to name `urllib.request.Request` or the
-    # module path leading to it.
+    def _is_local_database_target(target: str) -> bool:
+        if target.startswith(("md:", "motherduck:", "file:")):
+            return False
+        if len(target) >= 2 and target[0] in "/\\" and target[1] in "/\\":
+            return False
+        if (
+            len(target) >= 3
+            and target[0].isascii()
+            and target[0].isalpha()
+            and target[1] == ":"
+            and target[2] in "/\\"
+        ):
+            return True
+        return "://" not in target
+
+    def _local_database_names(nodes) -> frozenset:
+        """names that can only ever hold `sqlite3` / `duckdb`, judged over the whole source.
+
+        Deliberately scope-blind: any other binding of the name anywhere (parameter, assignment,
+        loop target, class attribute, `nonlocal` rebinding, ...) or any star import fails closed
+        to the host check, so no scope resolution can be fooled. `db = sqlite3` copies are kept,
+        resolved with a worklist so long copy chains stay linear.
+        """
+        imported: set[str] = set()
+        other: set[str] = set()
+        copies: dict[str, set[str]] = {}
+        for node in nodes:
+            if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
+                return frozenset()
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module = alias.name.partition(".")[0]
+                    name = alias.asname or module
+                    (imported if module in _LOCAL_DATABASE_MODULES else other).add(name)
+            elif (
+                isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Name)
+            ):
+                copies.setdefault(node.targets[0].id, set()).add(node.value.id)
+            else:
+                other.update(_binding_names(node))
+        trusted = {name for name in imported - other if name not in copies}
+        remaining = {
+            name: set(sources) - trusted for name, sources in copies.items() if name not in other
+        }
+        waiting: dict[str, list[str]] = {}
+        for name, sources in remaining.items():
+            for source in sources:
+                waiting.setdefault(source, []).append(name)
+        queue = [name for name, sources in remaining.items() if not sources]
+        while queue:
+            name = queue.pop()
+            trusted.add(name)
+            for dependent in waiting.pop(name, ()):
+                remaining[dependent].discard(name)
+                if not remaining[dependent]:
+                    queue.append(dependent)
+        return frozenset(trusted)
+
+    # bindings that can still resolve to `urllib.request.Request`.
     _REQUEST_SAFE_BINDINGS = frozenset({"urllib", "urllib.request", "urllib.request.Request"})
 
     def _scope_bodies(nodes, tree):
-        """`(scope id, statement list)` for the module and for every function, lambda and class body.
-
-        A shadow belongs to the scope whose body it sits directly in, so this is what says which
-        statements can shadow a name for which calls. The module is scope 0. A lambda has an
-        expression rather than a body, so it contributes no statements, only its parameters.
-        """
+        """yield statement scopes; module id is 0, while lambdas contribute only parameters."""
         yield 0, getattr(tree, "body", [])
         for node in nodes:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
@@ -19470,30 +19621,15 @@ def _check_signal_escape_patterns(code: str):
 
     class NetworkAndIoVisitor(ast.NodeVisitor):
         def __init__(self):
-            # Alias -> the module it binds, and bare name -> the network function it binds. The shell-exec half of
-            # this analyzer already resolves both; without them `import urllib.request as u; u.urlopen(...)` matched
-            # no prefix and a hardcoded attacker host passed the screen untouched.
-            # Name -> every network module ever bound to it, because this map is not scope
-            # aware: a nested `def f(): import socket as r` would otherwise overwrite an outer
-            # `import requests as r`, and the module-level `r.get(...)` after it would carry
-            # only unrecognised candidates. Accumulating keeps resolution monotone, so a binding
-            # anywhere can add a way to recognise a call and never take one away.
+            # accumulate module aliases so nested imports cannot hide outer network calls
             self.module_aliases: dict[str, set[str]] = {}
-            # Name -> every network function ever bound to it, accumulated for the same reason:
-            # `from requests import get as fetch` followed by a nested, never-called
-            # `from socket import inet_aton as fetch` still calls `requests.get` at module level,
-            # and overwriting the entry resolved the call to the unrecognised socket function.
+            # accumulate function aliases for the same scope-insensitive rebinding case
             self.func_aliases: dict[str, set[str]] = {}
-            # Name -> every string literal it can hold, None when unreadable. `url =
-            # "https://huggingface.co/x"; requests.get(url)` is still a host this screen can read.
-            # All three are read ONLY to answer a question about a recognised egress call, so
-            # when the source cannot name a network module none of them can change a verdict and
-            # none are built. That is the difference between walking this tree three more times
-            # and not touching it at all, and ordinary tool code takes the second path.
+            self.local_databases: "frozenset | None" = None
+            # collect literals only when egress is possible to avoid three extra tree walks
             nodes = _tree_nodes(tree) if network_possible else ()
             self.literal_names = _collect_literal_names(nodes) if network_possible else {}
-            # Names bound anywhere, in any scope, to something other than `urllib.request.Request`
-            # or the module path to it. Read only by `_unwrapped_url_arg`: see the note there.
+            # track names rebound away from `urllib.request.Request` for URL unwrapping
             self.rebound_anywhere = (
                 _names_bound_to_something_else(nodes) if network_possible else frozenset()
             )
@@ -19870,11 +20006,17 @@ def _check_signal_escape_patterns(code: str):
                     self.visit(value)
 
         def _register_alias(self, name: str, node) -> None:
-            """Note where a network alias was bound to `name`, so a shadow older than this one no
-            longer applies. See `_is_shadowed`."""
+            """record network alias positions so newer imports supersede older shadows."""
             self.alias_lines.setdefault(name, []).append(
                 (getattr(node, "lineno", 0), getattr(node, "col_offset", 0))
             )
+
+        def _names_local_database(self, owner) -> bool:
+            if not isinstance(owner, ast.Name):
+                return False
+            if self.local_databases is None:
+                self.local_databases = _local_database_names(tree_nodes)
+            return owner.id in self.local_databases
 
         def _is_shadowed(
             self,
@@ -19882,19 +20024,7 @@ def _check_signal_escape_patterns(code: str):
             at,
             after_star: bool = False,
         ) -> bool:
-            """Whether a module-level rebinding of `name` has certainly happened by `at`.
-
-            Positions are `(lineno, col_offset)`, so a semicolon-separated
-            `from requests import get as fetch; fetch = print; fetch(url)` orders correctly where
-            comparing lines alone made the rebinding invisible.
-
-            A call inside a function, lambda or class body is never shadowed: the body can be
-            invoked at any point, including before the rebinding. At module level the rebinding
-            counts only for what comes AFTER it, and only while no alias registration comes between
-            the two: the last `import`, `from ... import` or module-carrying assignment before the
-            call supersedes every shadow older than it. For a star-imported name the star import is
-            that registration, since it rebinds every exported name.
-            """
+            """whether a module binding shadows an alias until a later registration."""
             registrations = self.star_lines if after_star else self.alias_lines.get(name, ())
             floor = max((where for where in registrations if where < at), default = (0, -1))
             return any(
@@ -20610,7 +20740,11 @@ def _check_signal_escape_patterns(code: str):
                     if isinstance(e0, ast.Constant) and isinstance(e0.value, str):
                         host_lit = e0.value
                 elif isinstance(a0, ast.Constant) and isinstance(a0.value, str):
-                    host_lit = a0.value
+                    if not (
+                        self._names_local_database(node.func.value)
+                        and _is_local_database_target(a0.value.lower())
+                    ):
+                        host_lit = a0.value
                 if host_lit:
                     if _is_metadata_host(host_lit):
                         network_calls.append(
@@ -21311,10 +21445,15 @@ def _fit_result_to_room(text, name = None):
     notice and no paging hint.
 
     With no priced room (external providers, the hosted path, any loop that does not measure its own
-    conversation) the text is returned untouched.
+    conversation) the text is returned untouched, except an MCP result under a lowered setting.
     """
-    if _request_result_room() is None or not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text:
         return text
+    if _request_result_room() is None:
+        # Against the shipped default: an environment cap sets `_MAX_OUTPUT_CHARS` too.
+        lowered = _tool_result_max_chars() < tool_result_limit.DEFAULT_MAX_CHARS
+        if not (lowered and isinstance(name, str) and name.startswith(MCP_TOOL_PREFIX)):
+            return text
     # Only the part the model will actually be shown is measured and cut. The rest is a frontend-only envelope (an MCP
     # image array, web_search thumbnails, RAG sources) which `strip_result_for_model` removes before the result is
     # replayed, so it costs the window nothing and must come back byte-identical: every consumer of the __MCP_IMAGES__
@@ -21323,7 +21462,7 @@ def _fit_result_to_room(text, name = None):
     body, suffix = _split_frontend_suffix(text, name)
     if not body:
         return text
-    fitted = _truncate(body, _other_tool_result_char_budget())
+    fitted = _truncate(body, _other_tool_result_char_budget(name))
     return fitted + suffix if fitted is not body else text
 
 

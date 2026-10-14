@@ -203,10 +203,14 @@ def _enable_hf_packed_attention() -> None:
         logging.getLogger(__name__).info(f"Unsloth: packed varlen attention not enabled ({exc})")
 
 
-def _scope_flash_attention_impl(model, trainer) -> None:
+def _scope_flash_attention_impl(
+    model,
+    trainer,
+    sequence_lengths_key = "seq_lengths",
+) -> None:
     try:
         from .flash_impl import scope_flash_attention_impl_to_train
-        scope_flash_attention_impl_to_train(trainer, model)
+        scope_flash_attention_impl_to_train(trainer, model, sequence_lengths_key)
     except Exception as exc:
         logging.getLogger(__name__).info(f"Unsloth: flash attention impl not scoped ({exc})")
 
@@ -237,7 +241,7 @@ def enable_sample_packing(
     if collator is None or not hasattr(collator, "torch_call"):
         return
     _enable_hf_packed_attention()
-    _scope_flash_attention_impl(model, trainer)
+    _scope_flash_attention_impl(model, trainer, sequence_lengths_key)
     if getattr(collator, "_unsloth_packing_wrapped", False):
         return
 
