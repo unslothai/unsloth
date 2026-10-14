@@ -31,7 +31,6 @@ STEP = {
 @seeder("routine")
 def seed_routine(account) -> dict[str, str]:
     from storage import routines_db
-
     routine = run_as(
         account,
         routines_db.save_routine,
@@ -54,9 +53,7 @@ def seed_routine_with_run(account) -> dict[str, str]:
 
 
 FACTORIES = {
-    "routes.routines:GET:/{routine_id}/runs": Factory(
-        "routine-with-run", fragment = MARKER
-    ),
+    "routes.routines:GET:/{routine_id}/runs": Factory("routine-with-run", fragment = MARKER),
     "routes.routines:PATCH:/{routine_id}/enabled": Factory(
         "routine", {"enabled": True}, fragment = MARKER
     ),

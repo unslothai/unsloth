@@ -4628,7 +4628,9 @@ class PersonalizationCustomization(BaseModel):
         seen: set[str] = set()
         items = [item for item in value if not (item.id in seen or seen.add(item.id))]
         if "routines" not in seen:
-            recipes = next((index for index, item in enumerate(items) if item.id == "recipes"), None)
+            recipes = next(
+                (index for index, item in enumerate(items) if item.id == "recipes"), None
+            )
             if recipes is not None:
                 items.insert(
                     recipes + 1,
