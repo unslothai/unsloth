@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import hashlib
 import json
 import logging
@@ -122,6 +123,8 @@ class Backend:
     slots_busy: Optional[int] = None
     client: Optional[httpx.AsyncClient] = None
     _cond: Optional[asyncio.Condition] = field(default = None, repr = False)
+    # Queued requests in arrival order: a freed slot goes to the head only.
+    _waiters: collections.deque = field(default_factory = collections.deque, repr = False)
 
     @property
     def base_url(self) -> str:
@@ -549,9 +552,11 @@ class SparkRouter:
             if backend.queued >= backend.queue_limit:
                 raise RouterError(503, f"backend {backend.name} is at capacity", retry_after = 1)
             backend.queued += 1
+            ticket = object()
+            backend._waiters.append(ticket)
             try:
                 deadline = time.monotonic() + self.queue_wait_s
-                while not self._has_room(backend):
+                while not (self._has_room(backend) and backend._waiters[0] is ticket):
                     if not backend.healthy or not self._started:
                         raise UpstreamUnreachable(f"backend {backend.name} went away while queued")
                     remaining = deadline - time.monotonic()
@@ -566,12 +571,17 @@ class SparkRouter:
                 backend.in_flight += 1
             finally:
                 backend.queued -= 1
+                was_head = backend._waiters[0] is ticket
+                backend._waiters.remove(ticket)
+                if was_head and backend._waiters and self._has_room(backend):
+                    cond.notify_all()
 
     async def _release(self, backend: Backend) -> None:
         cond = backend.cond()
         async with cond:
             backend.in_flight = max(0, backend.in_flight - 1)
-            cond.notify()
+            # All, since only the head may take the slot and notify() can wake someone else.
+            cond.notify_all()
 
     def _choose(self, key: Optional[str]) -> Backend:
         healthy = self.healthy_backends()

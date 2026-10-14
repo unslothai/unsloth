@@ -400,6 +400,43 @@ def test_a_freed_slot_goes_to_the_queued_request_not_a_newcomer():
     run(scenario())
 
 
+def test_a_newcomer_waiting_on_the_lock_during_a_release_does_not_take_the_slot():
+    """Regression: a request blocked on the condition's lock while a slot was released was woken
+    before the notified waiter re-took the lock, saw room, and took the slot ahead of it."""
+
+    async def scenario():
+        a = await FakeLlama("a").start()
+        router = await _router(a, slots = 1, queue_limit = 2)
+        try:
+            backend = router.get_backend("a")
+            await router._acquire(backend)
+            order: List[str] = []
+
+            async def take(name: str):
+                await router._acquire(backend)
+                order.append(name)
+
+            queued = asyncio.create_task(take("queued"))
+            await _until(lambda: backend.queued == 1)
+            cond = backend.cond()
+            async with cond:
+                newcomer = asyncio.create_task(take("newcomer"))
+                await asyncio.sleep(0)
+                backend.in_flight -= 1
+                cond.notify_all()
+            await _until(lambda: len(order) == 1)
+            assert order == ["queued"]
+            await router._release(backend)
+            await asyncio.gather(queued, newcomer)
+            assert order == ["queued", "newcomer"]
+            await router._release(backend)
+        finally:
+            await router.stop()
+            await a.stop()
+
+    run(scenario())
+
+
 def test_openai_end_user_id_is_not_a_conversation_key():
     # "user" is OpenAI's stable per-end-user abuse identifier, superseded by safety_identifier, not
     # a thread id.
