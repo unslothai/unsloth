@@ -2015,17 +2015,18 @@ def _video_auto_denoiser_scheme(
             for s in video_family_prequant_schemes(fam)
             if denoiser_prequant_sources(fam, s, base_repo, hf_token = hf_token) is not None
         )
-        if not hosted and not auto:
-            # No hosted row: an EXPLICIT scheme may still seed from a build this machine quantized on an earlier load
-            # of the same weights (diffusion_prequant_cache). Never under auto, so a cache entry cannot change what an
-            # auto load picks.
+        if not auto and normalize_transformer_quant(requested) not in hosted:
+            # No hosted row for the REQUESTED scheme (another scheme may be hosted, e.g. HunyuanVideo-1.5's nvfp4): an
+            # EXPLICIT scheme may still seed from a build this machine quantized on an earlier load of the same
+            # weights (diffusion_prequant_cache). Never under auto, so a cache entry cannot change what an auto load
+            # picks.
             from .diffusion_prequant_cache import CACHEABLE_SCHEMES
             wanted = normalize_transformer_quant(requested)
             if (
                 wanted in CACHEABLE_SCHEMES
                 and denoiser_prequant_sources(fam, wanted, base_repo, hf_token = hf_token) is not None
             ):
-                hosted = (wanted,)
+                hosted = hosted + (wanted,)
         if not hosted or (not auto and normalize_transformer_quant(requested) not in hosted):
             return None
 

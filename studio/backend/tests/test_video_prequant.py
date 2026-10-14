@@ -1916,3 +1916,18 @@ def test_unreadability_is_reported_only_when_it_is_what_kept_bfloat16(monkeypatc
     monkeypatch.setattr(pq, "restricted_prequant_load_supported", lambda *a, **k: True)
     monkeypatch.setattr(vid, "_h3_free_device_bytes", lambda device: 80 * 1000**3)
     assert ask() == vid.H3_AUTO_FALLBACK_SCHEME and fired == []
+
+
+def test_an_explicit_cached_scheme_seeds_even_when_another_scheme_is_hosted(monkeypatch):
+    """HunyuanVideo-1.5 hosts nvfp4; an explicit int8 that this machine cached on an earlier load must still seed
+    instead of re-reading and re-quantizing the dense denoiser on every load."""
+    from core.inference import video as vid
+    from core.inference import video_denoiser_prequant as vdp
+
+    monkeypatch.setattr(vid, "video_family_prequant_schemes", lambda fam: ("nvfp4",))
+    sources = {"nvfp4": object(), "int8": object()}  # int8 resolves only through the local cache
+    monkeypatch.setattr(vdp, "denoiser_prequant_sources", lambda fam, s, base, hf_token = None: sources.get(s))
+    assert _video_auto(monkeypatch, scheme = "int8", requested = "int8") == "int8"
+    # Nothing cached for the requested scheme: still no seed.
+    sources.pop("int8")
+    assert _video_auto(monkeypatch, scheme = "int8", requested = "int8") is None
