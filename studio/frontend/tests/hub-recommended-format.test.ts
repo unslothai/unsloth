@@ -167,3 +167,14 @@ test("GGUF-only views ask the Hub for GGUF repos, others list every format", asy
     /listingTags:\s*mode === "search"\s*\?\s*listingTagsForFormat\(effectiveDiscoverFormat, checkpointQuantFormats\)\s*:\s*undefined/,
   );
 });
+
+test("a Discover browse floats unsloth repos first under any sort, other pickers keep their listing", async () => {
+  const discover = await readSrcAsync("features/hub/hooks/use-discover-search.ts");
+  assert.match(discover, /unslothFirstBrowse: true,/);
+  const search = await readSrcAsync("features/hub/hooks/use-hub-model-search.ts");
+  assert.match(search, /unslothFirstBrowse = false,/);
+  assert.match(
+    search,
+    /if \(\s*\(hasFilters \|\| unslothFirstBrowse\) &&\s*pinUnslothFirst &&\s*!unslothOnly\s*\) \{\s*return mergedModelIterator\(/,
+  );
+});

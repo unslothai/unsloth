@@ -141,6 +141,7 @@ export function useDiscoverSearch({
     ownerScope,
     enabled: canProbe && isDiscoverTab && !isDatasetMode,
     keepUnsupportedTags: true,
+    unslothFirstBrowse: true,
     listingTags,
     channel,
     filters,

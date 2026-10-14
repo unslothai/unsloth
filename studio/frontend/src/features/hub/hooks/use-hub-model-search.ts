@@ -667,6 +667,8 @@ export function useHubModelSearch(
     channel?: HfModelSearchChannel | null;
     /** Hub tags for the no-query listing, e.g. ["gguf"] when the view shows only GGUF rows. */
     listingTags?: readonly string[];
+    /** Float unsloth repos above the rest of a no-query browse under any sort, as a search does. */
+    unslothFirstBrowse?: boolean;
     filters?: ModelSearchFilters;
   },
 ) {
@@ -683,6 +685,7 @@ export function useHubModelSearch(
     keepUnsupportedTags = false,
     channel = null,
     listingTags,
+    unslothFirstBrowse = false,
     filters,
   } = options ?? {};
   const unslothOnly = ownerScope === "unsloth";
@@ -788,7 +791,11 @@ export function useHubModelSearch(
             filterRange,
           ) as AsyncGenerator<unknown>;
         }
-        if (hasFilters && pinUnslothFirst && !unslothOnly) {
+        if (
+          (hasFilters || unslothFirstBrowse) &&
+          pinUnslothFirst &&
+          !unslothOnly
+        ) {
           return mergedModelIterator(
             "",
             task,
@@ -869,6 +876,7 @@ export function useHubModelSearch(
       hasFilters,
       filterRange,
       browseTags,
+      unslothFirstBrowse,
     ],
   );
 
