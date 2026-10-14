@@ -355,6 +355,21 @@ def test_runtime_filter_mismatch_skips(env, tmp_path, scheme):
     assert C.save_runtime_quant(model, _fam(base), base_repo = str(base)) is None
 
 
+def test_fp8_forced_non_default_accumulate_is_not_cached_under_the_auto_label(env, tmp_path):
+    """A precise-accumulate fp8 build must not be stored as the auto (fast) artifact a default load would restore."""
+    from core.inference.diffusion_transformer_quant import _resolve_fast_accum
+
+    base, model = _write_base(tmp_path)
+    _quantize(model, "fp8")
+    model._unsloth_runtime_quant_info["fast_accum"] = not _resolve_fast_accum(None)
+    assert C.save_runtime_quant(model, _fam(base), base_repo = str(base)) is None
+    assert C.lookup(_fam(base), "fp8", base_repo = str(base)) is None
+    # The auto mode (and a forced value equal to it) is what the key and the metadata describe.
+    model._unsloth_runtime_quant_info["fast_accum"] = _resolve_fast_accum(None)
+    path = C.save_runtime_quant(model, _fam(base), base_repo = str(base))
+    assert path is not None and C.lookup(_fam(base), "fp8", base_repo = str(base)) == path
+
+
 # ------------------------------------------------------------------------------------------------ eviction
 def test_lru_eviction_spares_recent_and_kept_keys(env):
     env.mkdir(parents = True)

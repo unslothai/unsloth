@@ -567,6 +567,16 @@ def save_runtime_quant(
         ):
             _log(logger, "info", "skipped (runtime exclusion list differs)")
             return None
+        if parts["fast_accum"] is not None:
+            # The cache bakes the auto accumulate mode, exactly like the hosted fp8 builds, and lookup cannot see a
+            # forced one (planners treat a forced non-default value as ruling out every pre-quant: see
+            # diffusion_prequant.hosted_fast_accum_conflict). A build quantized under a forced different mode would be
+            # labelled as the auto one, so it is not cached.
+            from .diffusion_transformer_quant import _resolve_fast_accum
+
+            if _resolve_fast_accum(info.get("fast_accum")) != parts["fast_accum"]:
+                _log(logger, "info", "skipped (fp8 quantized with a forced non-default accumulate mode)")
+                return None
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
             return None
