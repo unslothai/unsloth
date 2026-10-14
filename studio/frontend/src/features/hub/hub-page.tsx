@@ -121,6 +121,7 @@ import {
   registerRefresh,
   supersedingRefresh,
 } from "./lib/superseded-refresh";
+import type { CapabilityKey } from "./lib/model-capabilities";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
@@ -139,7 +140,6 @@ import {
 } from "./stores/hub-feed-store";
 import type {
   CachedInventoryRow,
-  CapabilityFilter,
   DiscoverRow,
   LocalInventoryRow,
   ModelFormatFilter,
@@ -648,8 +648,10 @@ export function ModelsPage() {
   const searchFilters =
     hubSource === "modelscope" ? NO_SEARCH_FILTERS : storedSearchFilters;
   const hasSearchFilters = hasModelSearchFilters(searchFilters);
-  const [capabilityFilter, setCapabilityFilter] =
-    useState<CapabilityFilter>("all");
+  // Several capabilities show models with any of them; none shows every model.
+  const [capabilityFilters, setCapabilityFilters] = useState<CapabilityKey[]>(
+    [],
+  );
   // Pipeline tasks from an audio page's Search Hub link; they apply while the Audio filter is on.
   const [linkedAudioTask, setLinkedAudioTask] = useState<
     PipelineType[] | null
@@ -702,7 +704,7 @@ export function ModelsPage() {
       if (next === resourceType) return;
       setResourceType(next);
       setDownloadedFormat("all");
-      setCapabilityFilter("all");
+      setCapabilityFilters([]);
       setSearchFilters({});
       setSortBrowseActive(false);
       if (next === "models") {
@@ -734,7 +736,7 @@ export function ModelsPage() {
         setSortBy(preset.sort);
         setDirection("desc");
       }
-      setCapabilityFilter("all");
+      setCapabilityFilters([]);
       setSearchFilters({});
       setSortBrowseActive(false);
       // Clear search: an active query outranks the section in `mode`, hiding the curated list.
@@ -751,7 +753,7 @@ export function ModelsPage() {
     setDiscoverFormat(preset?.format ?? "recommended");
     setSortBy(preset?.sort ?? "trendingScore");
     setDirection("desc");
-    setCapabilityFilter("all");
+    setCapabilityFilters([]);
     setSearchFilters({});
     setSortBrowseActive(false);
     void navigate({
@@ -764,7 +766,7 @@ export function ModelsPage() {
     setModelsTab("discover");
     setResourceType("models");
     setQuery("");
-    setCapabilityFilter("all");
+    setCapabilityFilters([]);
     setSearchFilters({});
     setDownloadedFormat("all");
     setDiscoverFormat(preset?.format ?? "recommended");
@@ -793,7 +795,7 @@ export function ModelsPage() {
     setResourceType("models");
     setQuery("");
     setDiscoverFormat("all");
-    setCapabilityFilter(urlCapability);
+    setCapabilityFilters([urlCapability]);
     setLinkedAudioTask(
       urlCapability === "audio" && urlTaskKey
         ? (urlTaskKey.split("|") as PipelineType[])
@@ -818,7 +820,7 @@ export function ModelsPage() {
     });
   }, [urlCapability, urlTaskKey, navigate, setOwnerScope]);
   // Picking another filter drops the link's tasks, so returning to Audio shows every audio model.
-  if (capabilityFilter !== "audio" && linkedAudioTask !== null) {
+  if (!capabilityFilters.includes("audio") && linkedAudioTask !== null) {
     setLinkedAudioTask(null);
   }
 
@@ -849,7 +851,7 @@ export function ModelsPage() {
     [hubHfEndpoint, apiHfToken],
   );
   const deferredFormatFilter = useDeferredValue(formatFilter);
-  const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
+  const deferredCapabilityFilters = useDeferredValue(capabilityFilters);
 
   const hasQuery = deferredDebouncedQuery.trim() !== "";
   const mode: DiscoverMode = isModelDiscover
@@ -932,7 +934,10 @@ export function ModelsPage() {
     ownerScope,
     filters: searchFilters,
     task:
-      capabilityFilter === "audio" ? (linkedAudioTask ?? undefined) : undefined,
+      // Asked of the Hub only when Audio is the one filter: with others it would drop their models.
+      capabilityFilters.length === 1 && capabilityFilters[0] === "audio"
+        ? (linkedAudioTask ?? undefined)
+        : undefined,
   });
 
   const cachedListEntry = useHubFeedStore((state) =>
@@ -1063,9 +1068,13 @@ export function ModelsPage() {
               detectResultFormat(row.result),
               effectiveDiscoverFormat,
             )) &&
-        matchesCapability(row.capabilities, deferredCapabilityFilter) &&
-        (deferredCapabilityFilter !== "audio" ||
-          matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)) &&
+        (deferredCapabilityFilters.length === 0 ||
+          deferredCapabilityFilters.some(
+            (key) =>
+              matchesCapability(row.capabilities, key) &&
+              (key !== "audio" ||
+                matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)),
+          )) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
@@ -1081,7 +1090,7 @@ export function ModelsPage() {
     effectiveDiscoverFormat,
     checkpointQuantFormats,
     diffusionQuantFormats,
-    deferredCapabilityFilter,
+    deferredCapabilityFilters,
     linkedAudioTask,
     activeChannel,
     fitOnDeviceOnly,
@@ -1250,7 +1259,7 @@ export function ModelsPage() {
         deferredDebouncedQuery,
         resourceType,
         deferredFormatFilter,
-        deferredCapabilityFilter,
+        deferredCapabilityFilters,
         searchFilters,
         inventoryTypeFilter,
         effectiveSort,
@@ -1262,7 +1271,7 @@ export function ModelsPage() {
       deferredDebouncedQuery,
       resourceType,
       deferredFormatFilter,
-      deferredCapabilityFilter,
+      deferredCapabilityFilters,
       searchFilters,
       inventoryTypeFilter,
       effectiveSort,
@@ -1285,7 +1294,7 @@ export function ModelsPage() {
       setDownloadedFormat("all");
       setInventoryTypeFilter("all");
     }
-    setCapabilityFilter("all");
+    setCapabilityFilters([]);
     setSearchFilters({});
   }, [isDiscoverTab, urlSection, navigate]);
   const handleDiscoverFetchIntent = useCallback(() => {
@@ -1371,7 +1380,7 @@ export function ModelsPage() {
       setDiscoverFormat(preset?.format ?? "recommended");
       setSortBy(preset?.sort ?? "trendingScore");
       setDirection("desc");
-      setCapabilityFilter("all");
+      setCapabilityFilters([]);
       setSearchFilters({});
       setSortBrowseActive(false);
       setQuery("");
@@ -1390,7 +1399,7 @@ export function ModelsPage() {
     (next: string) => {
       if (next.trim() === "") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
-        setCapabilityFilter("all");
+        setCapabilityFilters([]);
         setSearchFilters({});
         setSortBrowseActive(false);
         if (preset) {
@@ -1485,7 +1494,7 @@ export function ModelsPage() {
     setDiscoverFormat(preset.format);
     setSortBy(preset.sort);
     setDirection("desc");
-    setCapabilityFilter("all");
+    setCapabilityFilters([]);
     setSearchFilters({});
   }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
@@ -1545,7 +1554,7 @@ export function ModelsPage() {
       setModelsTab("discover");
       setResourceType("models");
       setDiscoverFormat("all");
-      setCapabilityFilter("all");
+      setCapabilityFilters([]);
       setSearchFilters({});
       setSortBrowseActive(false);
       // Base models come from other publishers, so search the whole Hub.
@@ -1742,7 +1751,7 @@ export function ModelsPage() {
           !isFeedMode &&
           ((isModelDiscover && hasSearchFilters) ||
             deferredFormatFilter !== "all" ||
-            deferredCapabilityFilter !== "all" ||
+            deferredCapabilityFilters.length > 0 ||
             (tab === "downloaded" && typeFilterActive)),
         typeFilterActive,
         // A single format filter makes every row's format dot the same; Recommended mixes GGUF and checkpoints.
@@ -1774,7 +1783,7 @@ export function ModelsPage() {
       discoverFetchIntent,
       discoverManualFetchAvailable,
       deferredFormatFilter,
-      deferredCapabilityFilter,
+      deferredCapabilityFilters,
       hasSearchFilters,
       inventoryTypeFilter,
     ],
@@ -1982,8 +1991,8 @@ export function ModelsPage() {
           onFormatFilterChange={setFormatFilter}
           searchFilters={searchFilters}
           onSearchFiltersChange={setSearchFilters}
-          capabilityFilter={capabilityFilter}
-          onCapabilityFilterChange={setCapabilityFilter}
+          capabilityFilters={capabilityFilters}
+          onCapabilityFiltersChange={setCapabilityFilters}
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}

@@ -14,6 +14,7 @@ import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
   AiChipIcon,
+  ArrowUpDownIcon,
   CancelCircleIcon,
   Database02Icon,
   Delete02Icon,
@@ -40,6 +41,7 @@ import type {
   ModelsTab,
   ResourceTypeFilter,
 } from "../types";
+import type { CapabilityKey } from "../lib/model-capabilities";
 import { type HubOption, HubOptionMenu } from "./hub-option-menu";
 import type { ModelSearchFilters } from "../lib/model-search-filters";
 import { ModelSearchFiltersControl } from "./model-search-filters";
@@ -72,8 +74,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onResourceTypeChange,
   formatFilter,
   onFormatFilterChange,
-  capabilityFilter,
-  onCapabilityFilterChange,
+  capabilityFilters,
+  onCapabilityFiltersChange,
   fitOnDeviceOnly,
   onFitOnDeviceOnlyChange,
   onManageLocalFolders,
@@ -96,8 +98,9 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onResourceTypeChange: (value: ResourceTypeFilter) => void;
   formatFilter: ModelFormatFilter;
   onFormatFilterChange: (value: ModelFormatFilter) => void;
-  capabilityFilter: CapabilityFilter;
-  onCapabilityFilterChange: (value: CapabilityFilter) => void;
+  /** None picked means every capability. */
+  capabilityFilters: CapabilityKey[];
+  onCapabilityFiltersChange: (value: CapabilityKey[]) => void;
   /** Shared with the chat model selector: hide models over the device budget. */
   fitOnDeviceOnly: boolean;
   onFitOnDeviceOnlyChange: (value: boolean) => void;
@@ -442,9 +445,15 @@ export const ModelsToolbar = memo(function ModelsToolbar({
 
         {tab === "discover" && !isDataset && !npuList && (
           <HubOptionMenu
-            value={capabilityFilter}
+            value="all"
             options={capabilityOptions}
-            onValueChange={onCapabilityFilterChange}
+            onValueChange={() => onCapabilityFiltersChange([])}
+            values={capabilityFilters}
+            onValuesChange={(next) =>
+              onCapabilityFiltersChange(
+                next.filter((key): key is CapabilityKey => key !== "all"),
+              )
+            }
             ariaLabel="Capability filter"
             className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
           />
@@ -468,6 +477,19 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onValueChange={onSortChange}
             ariaLabel="Sort models"
             className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
+            // The sort icon the chat model picker's sort menus carry.
+            triggerContent={
+              <span className="flex items-center gap-1">
+                <HugeiconsIcon
+                  icon={ArrowUpDownIcon}
+                  strokeWidth={1.75}
+                  className="size-3.5 shrink-0 text-foreground"
+                />
+                <span className="truncate">
+                  {sortOptions.find((option) => option.value === sortBy)?.label ?? sortBy}
+                </span>
+              </span>
+            }
             footer={
               isDataset ? undefined : (
                 <Tooltip>
@@ -483,7 +505,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                         checked={fitOnDeviceOnly}
                         tabIndex={-1}
                         aria-hidden={true}
-                        className="pointer-events-none size-3.5 rounded-full [&_svg]:!size-2.5"
+                        // Dark mode's default border all but vanished on the menu surface.
+                        className="pointer-events-none size-3.5 rounded-full dark:border-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-edge-gain,1)),transparent)] dark:data-checked:border-primary [&_svg]:!size-2.5"
                       />
                       Only show models that fit
                     </button>
