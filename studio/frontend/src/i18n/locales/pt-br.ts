@@ -845,6 +845,13 @@ export const ptBR = {
       // Header of the menu's section-visibility toggles.
       show: "Mostrar",
       newSection: "Nova seção",
+      deleteAllChats: "Excluir todos os chats",
+      deleteAllChatsTitle: "Excluir todos os chats?",
+      deleteAllChatsDescription: "Exclui permanentemente todos os chats neste dispositivo. Não é possível desfazer.",
+      deleteAllChatsDone: "{count} chats excluídos.",
+      deleteAllChatsNothingCleared: "Nenhum chat para excluir.",
+      deleteAllChatsFailed: "Falha ao excluir todos os chats.",
+      deleteAllChatsPartial: "{deleted} chats excluídos, {failed} não puderam ser excluídos.",
     },
     // User-made sidebar sections that group chats and projects.
     sections: {

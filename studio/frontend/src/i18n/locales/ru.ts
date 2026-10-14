@@ -845,6 +845,13 @@ export const ru = {
       // Header of the menu's section-visibility toggles.
       show: "Показывать",
       newSection: "Новый раздел",
+      deleteAllChats: "Удалить все чаты",
+      deleteAllChatsTitle: "Удалить все чаты?",
+      deleteAllChatsDescription: "Безвозвратно удалить все чаты на этом устройстве. Это действие нельзя отменить.",
+      deleteAllChatsDone: "Удалено {count} чатов.",
+      deleteAllChatsNothingCleared: "Нет чатов для удаления.",
+      deleteAllChatsFailed: "Не удалось удалить все чаты.",
+      deleteAllChatsPartial: "{deleted} чатов удалено, {failed} не удалось удалить.",
     },
     // User-made sidebar sections that group chats and projects.
     sections: {

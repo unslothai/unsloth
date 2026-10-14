@@ -840,6 +840,13 @@ export const zhCN = {
       // Header of the menu's section-visibility toggles.
       show: "显示",
       newSection: "新建分区",
+      deleteAllChats: "删除所有聊天",
+      deleteAllChatsTitle: "删除所有聊天？",
+      deleteAllChatsDescription: "永久删除此设备上的所有聊天。此操作无法撤销。",
+      deleteAllChatsDone: "已删除 {count} 个聊天。",
+      deleteAllChatsNothingCleared: "没有可删除的聊天。",
+      deleteAllChatsFailed: "删除所有聊天失败。",
+      deleteAllChatsPartial: "已删除 {deleted} 个聊天，{failed} 个无法删除。",
     },
     // User-made sidebar sections that group chats and projects.
     sections: {

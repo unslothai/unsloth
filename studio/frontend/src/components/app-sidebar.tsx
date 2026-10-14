@@ -225,6 +225,7 @@ import {
   removeCustomSectionWithUndo,
   sectionKeyLanding,
   useSectionDrag,
+  clearAllChats,
 } from "@/features/chat";
 import {
   imeOwnsInputKeydown,
@@ -3732,7 +3733,8 @@ export function AppSidebar() {
     | { kind: "chats"; items: SidebarItem[] }
     | { kind: "project"; project: ProjectRecord }
     | { kind: "projects"; projects: ProjectRecord[] }
-    | { kind: "run"; run: TrainingRunSummary };
+    | { kind: "run"; run: TrainingRunSummary }
+    | { kind: "clearAll" };
   const [confirmingDelete, setConfirmingDelete] =
     useState<DeleteTarget | null>(null);
   const [deleteFilesOnDelete, setDeleteFilesOnDelete] = useState(false);
@@ -3742,7 +3744,7 @@ export function AppSidebar() {
     // Chats follow the preference, so the switch shows what will happen and can
     // still be turned off for this one delete. A project workspace is a bigger
     // thing to remove, so it keeps asking from scratch.
-    const chats = target.kind === "chat" || target.kind === "chats";
+    const chats = target.kind === "chat" || target.kind === "chats" || target.kind === "clearAll";
     setDeleteFilesOnDelete(chats && alwaysDeleteChatFiles);
     setConfirmingDelete(target);
   }
@@ -3762,7 +3764,8 @@ export function AppSidebar() {
       (target.kind === "project" || target.kind === "projects") &&
       deleteFilesOnDelete;
     const shouldDeleteChatFiles =
-      (target.kind === "chat" || target.kind === "chats") && deleteFilesOnDelete;
+      (target.kind === "chat" || target.kind === "chats" || target.kind === "clearAll") &&
+      deleteFilesOnDelete;
     setConfirmingDelete(null);
     // Reset so the next delete never inherits this switch.
     setDeleteFilesOnDelete(false);
@@ -3778,6 +3781,33 @@ export function AppSidebar() {
       for (const item of target.items) {
         await deleteChatWithCleanup(item, {
           deleteFiles: shouldDeleteChatFiles,
+        });
+      }
+      return;
+    }
+    if (target.kind === "clearAll") {
+      try {
+        const result = await clearAllChats({ deleteFiles: shouldDeleteChatFiles });
+        const clearedCount = result.deletedThreadIds.length;
+        const failedCount = result.failedThreadIds.length;
+        clearSelection();
+        notifyChatHistoryUpdated();
+        if (failedCount > 0) {
+          toast.warning(t("shell.organize.deleteAllChatsPartial", { deleted: clearedCount, failed: failedCount }));
+        } else {
+          toast.success(
+            clearedCount === 0
+              ? t("shell.organize.deleteAllChatsNothingCleared")
+              : t("shell.organize.deleteAllChatsDone", { count: clearedCount }),
+          );
+        }
+        // The active chat was among those deleted; navigate to a fresh one.
+        if (activeThreadId && result.deletedThreadIds.includes(activeThreadId)) {
+          navigate({ to: "/chat", search: { new: createNavigationNonce() } });
+        }
+      } catch (err) {
+        toast.error(t("shell.organize.deleteAllChatsFailed"), {
+          description: err instanceof Error ? err.message : undefined,
         });
       }
       return;
@@ -4458,6 +4488,14 @@ export function AppSidebar() {
           <DropdownMenuItem onSelect={() => setSectionDialog({ mode: "create" })}>
             <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
             <span>{t("shell.organize.newSection")}</span>
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => openDeleteDialog({ kind: "clearAll" })}
+          >
+            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+            <span>{t("shell.organize.deleteAllChats")}</span>
           </DropdownMenuItem>
         </>
       );
@@ -6844,7 +6882,9 @@ export function AppSidebar() {
                   ? t("shell.selection.deleteTitle")
                   : confirmingDelete?.kind === "projects"
                     ? t("shell.selection.deleteProjectsTitle")
-                    : t("shell.dialog.deleteChat.title")}
+                    : confirmingDelete?.kind === "clearAll"
+                      ? t("shell.organize.deleteAllChatsTitle")
+                      : t("shell.dialog.deleteChat.title")}
           </DialogTitle>
           <DialogDescription>
             {confirmingDelete?.kind === "run" ? (
@@ -6867,6 +6907,8 @@ export function AppSidebar() {
               t("shell.selection.deleteProjectsDescription", {
                 count: confirmingDelete.projects.length,
               })
+            ) : confirmingDelete?.kind === "clearAll" ? (
+              t("shell.organize.deleteAllChatsDescription")
             ) : confirmingDelete?.kind === "project" ? (
               <>
                 Delete{" "}

@@ -940,6 +940,13 @@ export const sv = {
       sortPinnedChats: "Sortera fästa chattar",
       show: "Visa",
       newSection: "Nytt avsnitt",
+      deleteAllChats: "Radera alla chattar",
+      deleteAllChatsTitle: "Radera alla chattar?",
+      deleteAllChatsDescription: "Radera permanent alla chattar på den här enheten. Det går inte att ångra.",
+      deleteAllChatsDone: "{count} chattar raderade.",
+      deleteAllChatsNothingCleared: "Inga chattar att radera.",
+      deleteAllChatsFailed: "Det gick inte att radera alla chattar.",
+      deleteAllChatsPartial: "{deleted} chattar raderade, {failed} kunde inte raderas.",
     },
     sections: {
       createTitle: "Nytt avsnitt",
