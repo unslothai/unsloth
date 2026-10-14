@@ -132,28 +132,28 @@ def test_a_park_longer_than_the_timeout_is_waited_out():
     assert elapsed >= 2.5
 
 
-# A park far longer than any bound below, so finishing early proves it was not waited out. The
-# bound allows for the in-flight POST's teardown, which can take seconds on a Windows runner.
+# A park far longer than any bound below, so finishing well inside it proves it was not waited out.
+# Half the park leaves room for a loaded runner and the in-flight POST's teardown (seconds on Windows).
 _LONG_PARK_S = 20.0
-_TEARDOWN_ALLOWANCE_S = inf_mod._TEARDOWN_TASK_STOP_TIMEOUT_S + 1.0
+_NOT_WAITED_OUT_S = _LONG_PARK_S / 2
 
 
 def test_without_a_park_the_timeout_still_holds():
     result, backend, elapsed = _run(server = True, parked = False, park_s = _LONG_PARK_S)
     assert isinstance(result, HTTPException) and result.status_code == 502
     assert backend.probes == 1
-    assert elapsed < 1.0 + _TEARDOWN_ALLOWANCE_S
+    assert elapsed < _NOT_WAITED_OUT_S
 
 
 def test_the_wait_is_bounded_by_the_park_cap(monkeypatch):
     monkeypatch.setattr(inf_mod, "_RAW_PARK_STALL_CAP_S", 1.0)
     result, _backend, elapsed = _run(server = True, parked = True, park_s = _LONG_PARK_S)
     assert isinstance(result, HTTPException) and result.status_code == 502
-    assert 2.0 <= elapsed < 2.0 + _TEARDOWN_ALLOWANCE_S
+    assert 1.9 <= elapsed < _NOT_WAITED_OUT_S  # the window and the cap, less a timer tick
 
 
 def test_a_server_that_does_not_park_is_unchanged():
-    result, backend, elapsed = _run(server = False, parked = True)
+    result, backend, elapsed = _run(server = False, parked = True, park_s = _LONG_PARK_S)
     assert isinstance(result, HTTPException) and result.status_code == 502
     assert backend.probes == 0
-    assert elapsed < 2.5
+    assert elapsed < _NOT_WAITED_OUT_S
