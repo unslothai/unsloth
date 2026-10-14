@@ -14,7 +14,7 @@ const STUBS = {
   "../native-support":
     "export const useNativeBrowser = { getState: () => ({ enabled: false }) }; export const callNative = async () => null;",
   "../panel-availability": "export const browserPanelAvailable = () => true;",
-  "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {} }) };",
+  "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ history: globalThis.__browserHistory ?? [], recordVisit() {} }) };",
 };
 
 export function resolve(specifier, context, next) {
