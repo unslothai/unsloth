@@ -279,7 +279,7 @@ const HEADER_ICON = { width: 16, height: 16 } as const;
 const CompactCardsContext = createContext(false);
 
 const PILL =
-  "inline-flex h-8 max-w-[calc(12rem*var(--ui-space-scale,1))] items-center gap-1.5 rounded-full px-3 text-ui-13 transition-colors";
+  "inline-flex h-8 max-w-[calc(14rem*var(--ui-space-scale,1))] items-center gap-1.5 rounded-full px-3 text-ui-13 transition-colors";
 
 function LinkedFolderCard({
   name,

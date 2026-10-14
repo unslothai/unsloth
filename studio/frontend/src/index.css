@@ -6285,7 +6285,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	@apply max-h-[40dvh] flex-wrap overflow-x-hidden overflow-y-auto;
 }
 .unsloth-files-panel-strip[data-show-all="true"] .unsloth-files-pill {
-	@apply max-w-[calc(12rem*var(--ui-space-scale,1))];
+	@apply max-w-[calc(14rem*var(--ui-space-scale,1))];
 }
 
 .unsloth-files-panel-action {
