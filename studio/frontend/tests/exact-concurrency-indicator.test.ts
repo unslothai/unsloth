@@ -139,12 +139,16 @@ test("the chat header renders it beside the model selector, for the resident loc
   // output.
   assert.match(
     CHAT_PAGE,
-    /triggerDataTour="chat-model-selector"[\s\S]{0,1500}exactConcurrencyChipApplies\(\{[\s\S]{0,120}\}\) && <ExactConcurrencyChip \/>/,
+    /triggerDataTour="chat-model-selector"[\s\S]{0,1500}exactConcurrencyChipApplies\(\{[\s\S]{0,200}\}\) && <ExactConcurrencyChip \/>/,
   );
 });
 
 test("the chip applies to a resident local model and to nothing else", () => {
-  const resident = { isExternalModel: false, residentCheckpoint: "qwen" };
+  const resident = {
+    isExternalModel: false,
+    residentCheckpoint: "qwen",
+    selectedCheckpoint: "qwen",
+  };
   assert.equal(exactConcurrencyChipApplies(resident), true);
   assert.equal(
     exactConcurrencyChipApplies({ ...resident, isExternalModel: true }),
@@ -160,6 +164,11 @@ test("the chip applies to a resident local model and to nothing else", () => {
     exactConcurrencyChipApplies({ ...resident, residentCheckpoint: undefined }),
     false,
     "residency unknown",
+  );
+  assert.equal(
+    exactConcurrencyChipApplies({ ...resident, selectedCheckpoint: "gemma" }),
+    false,
+    "another local checkpoint picked while qwen is still resident",
   );
   assert.equal(
     exactConcurrencyChipApplies({ ...resident, modelLoading: true }),

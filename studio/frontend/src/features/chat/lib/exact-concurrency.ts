@@ -42,15 +42,23 @@ export function exactConcurrencyChip(
   return null;
 }
 
-/** The state is the local server's, which stays resident beside a hosted model. */
+/** The state is the resident local server's: a hosted model, or another local checkpoint picked
+ *  while the previous one is still loaded, is not what it describes. */
 export function exactConcurrencyChipApplies({
   isExternalModel,
   residentCheckpoint,
+  selectedCheckpoint,
   modelLoading = false,
 }: {
   isExternalModel: boolean;
   residentCheckpoint: string | null | undefined;
+  selectedCheckpoint: string | null | undefined;
   modelLoading?: boolean;
 }): boolean {
-  return !isExternalModel && !modelLoading && residentCheckpoint != null;
+  return (
+    !isExternalModel &&
+    !modelLoading &&
+    residentCheckpoint != null &&
+    selectedCheckpoint === residentCheckpoint
+  );
 }

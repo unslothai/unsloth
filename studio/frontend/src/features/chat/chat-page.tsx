@@ -4753,6 +4753,7 @@ export function ChatPage({
               exactConcurrencyChipApplies({
                 isExternalModel,
                 residentCheckpoint,
+                selectedCheckpoint: inferenceCheckpoint,
                 modelLoading,
               }) && <ExactConcurrencyChip />}
             {view.mode !== "compare" && currentProjectId && (
