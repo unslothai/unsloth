@@ -443,6 +443,11 @@ def lookup(
         if keyed is None:
             return None
         key, _parts = keyed
+        # Ask the Hub only when there is an entry to serve (a manifest), never on a plain miss.
+        if not (cache_root() / key / MANIFEST_NAME).is_file():
+            return None
+        if _hub_source_stale(source_shards(base_repo or getattr(fam, "base_repo", None), component), logger):
+            return None
         # Check + touch under the lock eviction holds while it re-checks an entry: once this returns, the entry was
         # used within the eviction grace window, so no process removes it before the loader opens it.
         with _cache_lock():
@@ -523,6 +528,79 @@ def note_rejected(path: Any, logger: Any = None) -> None:
         _log(logger, "warning", f"entry {Path(str(path)).parent.name} failed to load; the next save replaces it")
     except Exception:  # noqa: BLE001
         pass
+
+
+# ------------------------------------------------------------------------------------------------- hub revision
+# A remote answer is reused this long: planners resolve the source several times per load.
+_REMOTE_TTL_SECONDS = 300.0
+_REMOTE_TIMEOUT_SECONDS = 5.0
+_REMOTE_MEMO: dict[tuple, tuple] = {}
+_GONE = "gone"
+
+
+def _hub_coords(path: Any) -> Optional[tuple[str, str, str]]:
+    """``(repo_id, filename, blob)`` of a Hub cache snapshot path (``.../models--org--name/snapshots/<commit>/<file>``),
+    or None for anything else (a local model dir)."""
+    parts = Path(str(path)).parts
+    try:
+        i = len(parts) - 1 - parts[::-1].index("snapshots")
+    except ValueError:
+        return None
+    if i < 1 or i + 2 >= len(parts) or not parts[i - 1].startswith("models--"):
+        return None
+    repo = parts[i - 1][len("models--") :].replace("--", "/")
+    return repo, "/".join(parts[i + 2 :]), os.path.basename(os.path.realpath(str(path)))
+
+
+def _remote_etag(repo: str, filename: str) -> Optional[str]:
+    """The Hub's current etag (the blob name) of ``filename`` on ``repo``'s main revision, ``_GONE`` when the file is no
+    longer there, or None when it cannot be answered (network, auth): then the local snapshot stands, as offline."""
+    memo = (repo, filename)
+    with _lock:
+        hit = _REMOTE_MEMO.get(memo)
+    if hit is not None and time.monotonic() - hit[0] < _REMOTE_TTL_SECONDS:
+        return hit[1]
+    try:
+        from huggingface_hub import get_hf_file_metadata, hf_hub_url
+        from huggingface_hub.utils import EntryNotFoundError
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        etag = get_hf_file_metadata(
+            hf_hub_url(repo, filename, revision = "main"), timeout = _REMOTE_TIMEOUT_SECONDS
+        ).etag
+        value = str(etag) if etag else None  # already normalized (no quotes, no W/ prefix)
+    except EntryNotFoundError:
+        value = _GONE
+    except Exception:  # noqa: BLE001 - offline, gated without a token, rate limited: unanswerable
+        return None
+    with _lock:
+        _REMOTE_MEMO[memo] = (time.monotonic(), value)
+    return value
+
+
+def _hub_source_stale(shards: Optional[list], logger: Any = None) -> bool:
+    """Whether an online load would read different dense weights than the cached Hub snapshot these shards come from:
+    the cache hit skips the ``from_pretrained`` request that advances an unpinned ref, so a moved ``main`` must be
+    seen here. Offline / local-files-only loads keep the local snapshot, like ``from_pretrained`` would."""
+    if not shards:
+        return False
+    try:
+        from .diffusion_prequant import _LOCAL_FILES_ONLY, hub_offline
+        if _LOCAL_FILES_ONLY.get() or hub_offline():
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    for shard in shards:
+        coords = _hub_coords(shard)
+        if coords is None:
+            continue
+        repo, filename, blob = coords
+        etag = _remote_etag(repo, filename)
+        if etag is not None and etag != blob:
+            _log(logger, "info", f"miss ({repo}:{filename} changed on the Hub since it was cached)")
+            return True
+    return False
 
 
 def note_hit(path: Any, logger: Any = None) -> None:

@@ -870,3 +870,69 @@ def test_a_local_shard_replaced_with_its_size_and_mtime_kept_is_a_new_source(env
     os.utime(shard, ns = (st.st_atime_ns, st.st_mtime_ns))
     assert shard.stat().st_mtime_ns == st.st_mtime_ns and shard.stat().st_size == st.st_size
     assert C.source_fingerprint([shard]) != before
+
+
+def _hub_snapshot(tmp_path: Path, base_dir: Path, commit: str = "c" * 40) -> tuple[str, str]:
+    """Lay ``base_dir``'s shard out like the Hub cache: snapshots/<commit>/<file> -> blobs/<sha256>."""
+    import hashlib
+
+    shard = base_dir / "transformer" / "diffusion_pytorch_model.safetensors"
+    data = shard.read_bytes()
+    blob_name = hashlib.sha256(data).hexdigest()
+    repo_dir = tmp_path / "hub" / "models--org--tiny"
+    (repo_dir / "blobs").mkdir(parents = True)
+    (repo_dir / "blobs" / blob_name).write_bytes(data)
+    snap = repo_dir / "snapshots" / commit / "transformer"
+    snap.mkdir(parents = True)
+    link = snap / "diffusion_pytorch_model.safetensors"
+    os.symlink(repo_dir / "blobs" / blob_name, link)
+    return str(link), blob_name
+
+
+def test_an_online_hit_on_a_hub_snapshot_is_revalidated_against_the_moved_main(env, tmp_path, scheme, monkeypatch):
+    import huggingface_hub
+
+    from core.inference import diffusion_prequant as P
+
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    link, blob = _hub_snapshot(tmp_path, base)
+    monkeypatch.setattr(C, "source_shards", lambda *_a, **_k: [link])
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    C._REMOTE_MEMO.clear()
+    remote = {"etag": blob, "calls": 0}
+
+    def metadata(url, **_k):
+        remote["calls"] += 1
+        assert "org/tiny" in url and "transformer/diffusion_pytorch_model.safetensors" in url
+        return types.SimpleNamespace(etag = remote["etag"])
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", metadata)
+    fam = _fam(base)
+    path = C.save_runtime_quant(model, fam, base_repo = "org/tiny")
+    assert path and C.lookup(fam, scheme, base_repo = "org/tiny") == path  # main unchanged: a hit
+
+    C._REMOTE_MEMO.clear()
+    remote["etag"] = "f" * 64  # main moved to new weights
+    assert C.lookup(fam, scheme, base_repo = "org/tiny") is None
+
+    # Offline or local-files-only: the local snapshot stands, and the Hub is not asked.
+    C._REMOTE_MEMO.clear()
+    calls = remote["calls"]
+    token = P._LOCAL_FILES_ONLY.set(True)
+    try:
+        assert C.lookup(fam, scheme, base_repo = "org/tiny") == path
+    finally:
+        P._LOCAL_FILES_ONLY.reset(token)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", True)
+    assert C.lookup(fam, scheme, base_repo = "org/tiny") == path
+    assert remote["calls"] == calls
+
+    # Unanswerable (network down, gated without a token): the local snapshot stands.
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+
+    def down(url, **_k):
+        raise OSError("network unreachable")
+
+    monkeypatch.setattr(huggingface_hub, "get_hf_file_metadata", down)
+    assert C.lookup(fam, scheme, base_repo = "org/tiny") == path
