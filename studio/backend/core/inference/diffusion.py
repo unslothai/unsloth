@@ -189,6 +189,7 @@ from .diffusion_speed import (
     apply_speed_optims,
     engage_pinned_denoisers,
     auto_dynamic_active,
+    _gguf_dequant_compilable,
     compile_eligible,
     compiled_shapes_are_static,
     rocm_compile_probe_new_load,
@@ -7988,12 +7989,18 @@ class DiffusionBackend:
                     # first compiled forward pays the 25-58s compile once.
                     if (
                         effective_speed in (SPEED_DEFAULT, SPEED_MAX)
-                        # GGUF default compiles only the dequant, which never needs the regional ROCm probe.
-                        and compile_eligible(
-                            target,
-                            is_gguf = gguf_transformer,
-                            family = fam,
-                            probe = not (gguf_transformer and effective_speed == SPEED_DEFAULT),
+                        # ROCm GGUF default compiles only the dequant: gate on that predicate, never the regional probe.
+                        and (
+                            _gguf_dequant_compilable(
+                                True,
+                                getattr(target, "device", None) == "cuda",
+                                bool(getattr(fam, "supports_torch_compile", True)),
+                                target,
+                            )
+                            if gguf_transformer
+                            and effective_speed == SPEED_DEFAULT
+                            and getattr(target, "backend", None) == "rocm"
+                            else compile_eligible(target, is_gguf = gguf_transformer, family = fam)
                         )
                         and not fp16_unet_offloaded(
                             target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE

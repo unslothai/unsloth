@@ -82,7 +82,10 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
         import torch
     except Exception as exc:  # noqa: BLE001
         return False, f"torch unavailable: {exc}"
-    if not getattr(getattr(torch, "version", None), "hip", None):
+    from .rocm_bf16 import is_rocm_torch
+
+    # Not torch.version.hip alone: AMD SDK / Radeon wheels leave it unset and carry the tag in __version__.
+    if not is_rocm_torch(torch):
         return True, "not ROCm"
     index = _index(device)
     with _lock:
