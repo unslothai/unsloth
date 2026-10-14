@@ -392,14 +392,16 @@ function OsSandboxSections() {
     };
   }, []);
 
+  // Waits for the first status read: before it the section is too short to scroll to.
+  const settled = status !== null || error !== null || absent;
   useEffect(() => {
-    if (scrollTarget !== "sandbox-os") return;
+    if (scrollTarget !== "sandbox-os" || !settled) return;
     const frame = window.requestAnimationFrame(() => {
       sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
       consumeScrollTarget("sandbox-os");
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [consumeScrollTarget, scrollTarget]);
+  }, [consumeScrollTarget, scrollTarget, settled]);
 
   // Callers set `loading`: a synchronous setState from the mount effect would cascade a render.
   const refresh = useCallback(
