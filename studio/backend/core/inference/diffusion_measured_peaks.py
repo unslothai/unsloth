@@ -320,7 +320,7 @@ def lookup_bucket(
 ) -> Optional[tuple[int, int]]:
     """``lookup`` plus the pixels the peak covers and whether it scales squared: (peak MiB, bucket pixels,
     quadratic), or None. A ``graphs:on`` label (a load placed before it knows whether placement keeps the whole-step
-    graph or records per block) reads the larger of the ``graphs:step`` and ``graphs:blocks`` peaks."""
+    graph or records per block) reads an envelope over the ``graphs:step`` and ``graphs:blocks`` entries."""
     if "graphs:on" in str(quant or "").split("|"):
         found = [
             lookup_bucket(
@@ -339,7 +339,15 @@ def lookup_bucket(
             for mode in ("step", "blocks")
         ]
         found = [f for f in found if f is not None]
-        return max(found, key = lambda f: f[0]) if found else None
+        if not found:
+            return None
+        # one envelope over both modes (the placement can arm either): the larger peak over the smaller covered
+        # bucket, scaled squared if either mode is, sizes every later request at least as large as either mode would
+        return (
+            max(f[0] for f in found),
+            min(f[1] for f in found),
+            any(f[2] for f in found),
+        )
     if not enabled() or not family or not identified(quant):
         return None
     path = store_path()

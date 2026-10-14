@@ -2025,3 +2025,52 @@ def test_partially_resident_text_encoder_pads_the_window_difference(monkeypatch)
     assert dm._encoder_stream_window_mib(pipe) == 6
     groups[0]._unsloth_resident = False  # fully streamed: already the baseline
     assert dm._encoder_stream_window_mib(pipe) == 0
+
+
+# --------------------------------------------------------------------------------------------------- review round 17
+
+
+def test_graph_mode_envelope_covers_either_mode(store):
+    base = dict(family = "flux.2-klein", speed_mode = "default")
+    # a 3000 MiB step peak covering 4 MP, a 2900 MiB block peak covering 1 MP
+    assert mp.record(**base, quant = "q|graphs:step", width = 2048, height = 2048, peak_mib = 3000)
+    assert mp.record(**base, quant = "q|graphs:blocks", width = 1024, height = 1024, peak_mib = 2900)
+    blocks = mp.lookup_bucket(**base, quant = "q|graphs:blocks", width = 1024, height = 1024)
+    peak, pixels, quadratic = mp.lookup_bucket(
+        **base, quant = "q|graphs:on", width = 1024, height = 1024
+    )
+    assert peak == 3000 and pixels == blocks[1]  # the larger peak over the smaller covered bucket
+    assert not quadratic
+    # a later 2 MP request scaled from the envelope covers what the block entry alone asks for
+    want = mp.resolution_bucket(1448, 1448, 1)
+    assert peak * want / pixels >= mp.lookup(
+        **base, quant = "q|graphs:blocks", width = 1448, height = 1448
+    )
+
+
+def test_in_process_video_peak_is_on_the_streamed_baseline(monkeypatch):
+    monkeypatch.setenv(mp.LEARNED_PEAKS_ENV, "0")  # persistence off: the keyed table alone answers
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    key = vsr.calibration_key("wan2.2-ti2v-5b", "Wan-AI/x", "group", "cuda:0", speed_mode = "default")
+    work = 1280 * 704 * 49
+
+    class _Torch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def max_memory_allocated(dev):
+                return (3000 + 100) << 20
+
+    def run(pad):
+        monkeypatch.setattr(dm, "stream_window_pad_mib", lambda pipe: pad)
+        module = types.SimpleNamespace(_unsloth_video_pending = (work, 100 << 20, "cuda:0"))
+        module._unsloth_video_calibration_key = key
+        with monkeypatch.context() as m:
+            m.setitem(__import__("sys").modules, "torch", _Torch)
+            assert vsr.record_request_peak(types.SimpleNamespace(transformer = module)) == 3000
+        return module
+
+    run(None)  # unknown placement: nothing enters the keyed table
+    assert vsr.measured_extra_mib(key, work) is None
+    module = run(600)  # groups kept resident: the reused peak includes the prefetch window
+    assert vsr.measured_extra_mib(key, work) == 3600
+    assert module._unsloth_video_peaks[work] == 3000  # the module's own diagnostic stays raw
