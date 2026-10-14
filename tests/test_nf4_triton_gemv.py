@@ -267,6 +267,8 @@ def test_rows_gemv_rejects_an_out_it_cannot_fill(monkeypatch):
     for bad in (
         torch.empty(2, 1, 1023, dtype = torch.bfloat16, device = "cuda"),
         torch.empty(1, 1, 1024, dtype = torch.bfloat16, device = "cuda"),
+        torch.empty(2, 0, 1024, dtype = torch.bfloat16, device = "cuda"),
+        torch.empty(2, 2, 1024, dtype = torch.bfloat16, device = "cuda"),
         torch.empty(2048, dtype = torch.bfloat16, device = "cuda").as_strided((2, 1, 1024), (512, 512, 1)),
     ):
         assert utils._gemv_rows(X, W, W_quant, bad) is None
