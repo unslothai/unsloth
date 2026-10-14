@@ -1888,3 +1888,74 @@ def test_another_pipelines_reset_keeps_this_pipes_capture_dirty(monkeypatch):
     assert diffusion._start_peak_probe(state) is None
     live[0] = 0  # nothing alive on the card: nothing unaccounted can remain
     assert diffusion._start_peak_probe(state) is not None
+
+
+# --------------------------------------------------------------------------------------------------- review round 15
+
+
+def test_record_reports_whether_the_store_holds_the_sample(store):
+    kw = dict(family = "some-new-dit", quant = "q", speed_mode = "default", width = 1024, height = 1024)
+    held: list = []
+    assert mp.record(**kw, peak_mib = 2000, held = held) and held == [True]
+    held = []
+    assert not mp.record(**kw, peak_mib = 1500, held = held) and held == [True]  # already covered
+    held = []
+    assert not mp.record_work(("k",), 10, 0, held = held) and held == []
+    assert mp.record_work(("k",), 10, 100, held = held) and held == [True]
+
+
+def test_unpersisted_image_sample_keeps_its_graphs_dirty(store, monkeypatch):
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
+    monkeypatch.setattr(cg, "live_graph_count", lambda index: 4)
+    monkeypatch.setattr(cg, "capture_generation", lambda index: 9)
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0)
+    state = types.SimpleNamespace(pipe = pipe, speed_mode = "default")
+    monkeypatch.setattr(mp, "record", lambda **kw: False)  # the store is unavailable
+    diffusion._record_peak_probe(state, _Probe(2400), width = 1024, height = 1024, batch_size = 1)
+    assert pipe._unsloth_peak_graphs == 0
+    monkeypatch.setattr(mp, "record", lambda **kw: kw["held"].append(True) or True)
+    diffusion._record_peak_probe(state, _Probe(2400), width = 1024, height = 1024, batch_size = 1)
+    assert pipe._unsloth_peak_graphs == 4 and pipe._unsloth_peak_graph_gen == 9
+
+
+def test_unknown_local_video_build_persists_nothing():
+    known = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = "/models/wan@local:ab:cd")
+    unknown = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = "unknown")
+    unread = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = None)
+    assert vsr._store_key(known) is not None
+    assert vsr._store_key(unknown) is None and vsr._store_key(unread) is None
+    src = (__import__("pathlib").Path(dm.__file__).parent / "video.py").read_text(encoding = "utf-8")
+    assert "revision = _peak_model_identity(" in src
+
+
+def test_local_weight_shards_change_the_video_revision(tmp_path, monkeypatch):
+    import core.inference.diffusion as diffusion
+
+    (tmp_path / "model_index.json").write_text("{}")
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "transformer" / "config.json").write_text("{}")
+    shard = tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
+    shard.write_bytes(b"a" * 8)
+    before = diffusion._peak_model_identity(str(tmp_path), None, "pipeline", None)
+    shard.write_bytes(b"b" * 16)  # same manifests, new weights
+    after = diffusion._peak_model_identity(str(tmp_path), None, "pipeline", None)
+    assert before != "unknown" and before != after
+
+
+def test_learned_peak_label_carries_the_graph_mode(klein_pipe, monkeypatch):
+    import core.inference.diffusion as diffusion
+
+    label = dm.learned_peak_label(klein_pipe, "native", "m", "none", "dense", "off", "on")
+    assert label.endswith("|graphs:on")
+    assert dm.learned_peak_label(klein_pipe, "native", "m", "none", "dense", "off", "off") != label
+    state = types.SimpleNamespace(resolved = None, speed_optims = ("compiled",), cuda_graphs = ())
+    assert diffusion._live_graph_mode(state) == "off"
+    state.speed_optims = ("compiled", "cuda_graph")
+    assert diffusion._live_graph_mode(state) == "on"
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert 'label = with_label_part(label, "graphs", _live_graph_mode(state))' in src
+    assert "graphs = peak_graphs," in src

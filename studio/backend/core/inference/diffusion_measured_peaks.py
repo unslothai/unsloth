@@ -211,10 +211,12 @@ def record(
     peak_mib: int,
     device_name: Optional[str] = None,
     quadratic: bool = False,
+    held: Optional[list] = None,
 ) -> bool:
     """Keep the max peak seen for this key and bucket, scaled to the bucket's ceiling so a smaller render in the bucket
     still answers a full-size one (squared with ``quadratic``: SDPA math attention grows with pixels squared, and the
-    key's entry keeps scaling that way). Returns True when the stored value rose."""
+    key's entry keeps scaling that way). Returns True when the stored value rose. ``held`` (a list) gets True appended
+    when the store holds at least this peak afterwards (raised, or already covered): False when nothing was persisted."""
     if (
         not enabled()
         or peak_mib is None
@@ -248,6 +250,8 @@ def record(
             peaks = entry.setdefault("peaks", {})
             old = int(peaks.get(bucket) or 0)
             if int(peak_mib) <= old:
+                if held is not None:
+                    held.append(True)
                 return False
             peaks[bucket] = int(peak_mib)
             if quadratic:
@@ -258,6 +262,8 @@ def record(
                 for stale in list(entries)[: len(entries) - _MAX_ENTRIES]:
                     entries.pop(stale, None)
             _write(path, data)
+            if held is not None:
+                held.append(True)
             return True
     except Exception:  # noqa: BLE001 - persistence is best-effort
         return False
@@ -347,8 +353,9 @@ def lookup_bucket(
     )
 
 
-def record_work(key: Any, work: int, peak_mib: int) -> bool:
-    """Persist a peak under an opaque calibration key (the video path's work = pixels x frames table); max wins."""
+def record_work(key: Any, work: int, peak_mib: int, held: Optional[list] = None) -> bool:
+    """Persist a peak under an opaque calibration key (the video path's work = pixels x frames table); max wins.
+    ``held`` as in ``record``."""
     if not enabled() or key is None or peak_mib is None or int(peak_mib) <= 0 or int(work) <= 0:
         return False
     path = store_path()
@@ -362,12 +369,16 @@ def record_work(key: Any, work: int, peak_mib: int) -> bool:
             table[repr(key)] = peaks
             old = int(peaks.get(str(int(work))) or 0)
             if int(peak_mib) <= old:
+                if held is not None:
+                    held.append(True)
                 return False
             peaks[str(int(work))] = int(peak_mib)
             if len(table) > _MAX_ENTRIES:
                 for stale in list(table)[: len(table) - _MAX_ENTRIES]:
                     table.pop(stale, None)
             _write(path, data)
+            if held is not None:
+                held.append(True)
             return True
     except Exception:  # noqa: BLE001 - persistence is best-effort
         return False

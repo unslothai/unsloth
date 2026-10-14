@@ -2675,19 +2675,16 @@ def _calibration_revision(state: Any) -> Optional[str]:
     cached = getattr(pipe, "_unsloth_calibration_revision", None)
     if cached is not None:
         return cached or None
-    from .diffusion_component_sizes import checkpoint_fingerprint
+    from .diffusion import _peak_model_identity
 
-    revision = checkpoint_fingerprint(
-        getattr(state, "repo_id", None), getattr(state, "gguf_filename", None)
+    # the image peak identity's rule: snapshot commit, or a local folder's manifests plus its weight files' size and
+    # mtime, plus the companion base for a GGUF / single-file load; "unknown" persists nothing
+    revision = _peak_model_identity(
+        getattr(state, "repo_id", None),
+        getattr(state, "gguf_filename", None),
+        getattr(state, "kind", None),
+        getattr(state, "base_repo", None),
     )
-    if getattr(state, "kind", "pipeline") != "pipeline":
-        # a GGUF / single-file load takes its companions from a base repo: its id and exact weights are part of it
-        base = getattr(state, "base_repo", None)
-        revision = (
-            f"{revision or ''}|base={base or ''}@{checkpoint_fingerprint(base) or ''}"
-            if base
-            else revision
-        )
     try:
         pipe._unsloth_calibration_revision = revision or ""
     except Exception:  # noqa: BLE001

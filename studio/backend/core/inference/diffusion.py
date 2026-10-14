@@ -2050,6 +2050,8 @@ def _live_peak_identity(state: Any) -> tuple:
     )
     label = with_label_part(label, "vae", live_vae_saver_tag(pipe))
     label = with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
+    if "|graphs:" in label:
+        label = with_label_part(label, "graphs", _live_graph_mode(state))
     speed = getattr(state, "speed_mode", None)
     if "compile_fallback_eager" in tuple(getattr(state, "speed_optims", ()) or ()):
         speed = None  # the compiled tier fell back to eager: an execution path no key names
@@ -2067,6 +2069,19 @@ def _live_peak_identity(state: Any) -> tuple:
     if getattr(pipe, "_unsloth_loras", None):
         speed = None  # LoRA adapters add rank-dependent activations no key names
     return (family, label, speed)
+
+
+def _live_graph_mode(state: Any) -> str:
+    """``on`` while the load's CUDA graphs are armed and not dropped (``live_status``), else ``off``."""
+    try:
+        _, optims = cuda_graph.live_status(
+            getattr(state, "resolved", None),
+            getattr(state, "speed_optims", ()),
+            getattr(state, "cuda_graphs", ()),
+        )
+        return "on" if "cuda_graph" in optims else "off"
+    except Exception:  # noqa: BLE001
+        return "unknown"
 
 
 def _local_weights_digest(path: Any) -> Optional[str]:
@@ -2178,12 +2193,12 @@ def _record_peak_probe(
             return
         family, quant, speed_mode = identity
         pipe = state.pipe
-        # this sample covers the graphs it recorded
         index = getattr(probe.device, "index", None)
-        pipe._unsloth_peak_graphs = cuda_graph.live_graph_count(index)
-        pipe._unsloth_peak_graph_gen = cuda_graph.capture_generation(index)
+        graphs = cuda_graph.live_graph_count(index)
+        generation = cuda_graph.capture_generation(index)
         peak += int(getattr(probe, "window_pad", 0) or 0)
-        if record(
+        held: list = []
+        raised = record(
             family = family,
             quant = quant,
             speed_mode = speed_mode,
@@ -2193,7 +2208,13 @@ def _record_peak_probe(
             peak_mib = peak,
             device_name = device_name(probe.device),
             quadratic = _quadratic_attention(target, engaged, state.pipe),
-        ):
+            held = held,
+        )
+        if held:
+            # the store holds this sample, so it covers the graphs the render recorded; unpersisted, they stay dirty
+            pipe._unsloth_peak_graphs = graphs
+            pipe._unsloth_peak_graph_gen = generation
+        if raised:
             logger.info(
                 "diffusion.memory: learned activation peak %d MiB recorded for %s / %s / %s at %dx%d x%d",
                 peak,
@@ -8396,6 +8417,14 @@ class DiffusionBackend:
                     peak_te = str(te_quant or "dense")
                     # an auto step cache toggles per request: only uncached renders (the full transformer) record
                     peak_cache = "off" if cache_may_toggle else str(cache_engaged or "off")
+                    # graph statics and pools sit above a graph-free peak; a graph armed after an offloaded placement
+                    # counts as on
+                    peak_graphs = (
+                        "on"
+                        if speed_applied.get("cuda_graph")
+                        or getattr(pipe, "_unsloth_cuda_graph_after_placement", False)
+                        else "off"
+                    )
                     try:
                         # the learned-peak key: recorded at every completed render, read by later loads
                         pipe._unsloth_peak_identity = (
@@ -8407,6 +8436,7 @@ class DiffusionBackend:
                                 peak_vae,
                                 peak_te,
                                 peak_cache,
+                                peak_graphs,
                             ),
                             effective_speed,
                         )
@@ -8425,6 +8455,7 @@ class DiffusionBackend:
                             vae = peak_vae,
                             te = peak_te,
                             cache = peak_cache,
+                            graphs = peak_graphs,
                         )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (

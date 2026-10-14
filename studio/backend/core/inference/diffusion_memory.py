@@ -2339,6 +2339,7 @@ def learned_peak_label(
     vae: Optional[str] = None,
     te: Optional[str] = None,
     cache: Optional[str] = None,
+    graphs: Optional[str] = None,
 ) -> str:
     """``denoiser_quant_label`` plus the loaded model (variants of one family differ in size), the text encoders'
     precision (a dense streamed encoder peaks above a quantised one), the VAE savers (an untiled decode peaks far
@@ -2351,6 +2352,7 @@ def learned_peak_label(
         ("cache", cache),
         ("vae", vae),
         ("attn", attention),
+        ("graphs", graphs),
     ):
         if value is not None:
             label = f"{label}|{name}:{value}"
@@ -2693,6 +2695,7 @@ def refine_plan_from_loaded_weights(
     vae: Optional[str] = None,
     te: Optional[str] = None,
     cache: Optional[str] = None,
+    graphs: Optional[str] = None,
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
@@ -2725,7 +2728,7 @@ def refine_plan_from_loaded_weights(
         if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
             # measured on fp16 / fp32 cards only; bf16 cards can compile later
             return plan
-        quant = learned_peak_label(pipe, attention, model, vae, te, cache)
+        quant = learned_peak_label(pipe, attention, model, vae, te, cache, graphs)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
         except Exception:  # noqa: BLE001 - a pipe refusing attributes only skips recording

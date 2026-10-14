@@ -192,6 +192,8 @@ def _store_key(key: Any) -> Any:
     and workers with different ``CUDA_VISIBLE_DEVICES`` never share one card's peaks with another."""
     if not isinstance(key, tuple) or len(key) != 5:
         return key
+    if dict(key[4]).get("revision", "?") in ("", "None", "unknown"):
+        return None  # the exact weights are unknown (an unreadable local build): nothing persists for them
     try:
         from .diffusion_measured_peaks import device_name
         name = device_name(key[3]) if key[3] else None
@@ -371,12 +373,12 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         if key is not None and _failed_captures() == getattr(
             module, "_unsloth_video_failed_captures", 0
         ):
-            module._unsloth_video_graphs = _live_graphs(
-                dev
-            )  # this sample covers the graphs it recorded
-            module._unsloth_video_graph_gen = _capture_generation(dev)
+            graphs, generation = _live_graphs(dev), _capture_generation(dev)
             shared = _key_peaks(key)
             shared[work] = max(extra, shared.get(work, 0))
+            stored_key = _store_key(key)
+            # an unpersistable key keeps this process's table only, where max wins: nothing lower can be stored later
+            held: list = [True] if stored_key is None else []
             try:
                 from .diffusion_measured_peaks import record_work
                 from .diffusion_memory import stream_window_pad_mib
@@ -384,10 +386,14 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
                 # persisted on the streamed baseline, as image peaks: a later load of the key may stream groups this
                 # request kept resident; an unknown placement persists nothing
                 pad = stream_window_pad_mib(pipe)
-                if pad is not None:
-                    record_work(_store_key(key), work, extra + pad)
+                if pad is not None and stored_key is not None:
+                    record_work(stored_key, work, extra + pad, held = held)
             except Exception:  # noqa: BLE001 - persistence is best-effort
                 pass
+            if held:
+                # the store holds this sample: it covers the graphs the request recorded; unpersisted, they stay dirty
+                module._unsloth_video_graphs = graphs
+                module._unsloth_video_graph_gen = generation
         _COUNTS["recorded"] += 1
         if logger is not None:
             logger.info("video.dit_resident: request peak %d MiB above its start recorded", extra)
