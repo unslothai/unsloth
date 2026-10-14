@@ -242,3 +242,14 @@ def test_an_image_does_not_count_as_prompt_text_in_the_overflow_check():
     }
 
     assert routes._replay_passthrough_cut({"messages": later}, "truncate_oldest", 4096, SCOPE) == 0
+
+
+def test_the_cut_scope_reads_a_backend_without_identity_attributes():
+    # The passthrough handlers are driven with backend objects that carry neither attribute; the rest of
+    # routes/inference.py reads both through getattr, and a bare attribute read here failed every one.
+    class Bare:
+        pass
+
+    scope = routes._passthrough_cut_scope(Bare(), {"tools": []})
+    assert scope == ("passthrough", None, None, ())
+    assert routes._replay_passthrough_cut({"messages": []}, "truncate_oldest", None, scope) == 0
