@@ -162,9 +162,10 @@ class _Model(torch.nn.Module):
         self,
         device_map,
         impl = "flash_attention_2",
+        model_type = "llama",
     ):
         super().__init__()
-        self.config = SimpleNamespace(_attn_implementation = impl)
+        self.config = SimpleNamespace(_attn_implementation = impl, model_type = model_type)
         self.hf_device_map = device_map
 
 
@@ -196,4 +197,34 @@ def test_hf_non_flash_models_are_untouched(monkeypatch):
     _capability(monkeypatch, {0: AMPERE, 1: TURING})
     model = _Model({"a": 0, "b": 1}, impl = "eager")
     assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is False
+    assert model.config._attn_implementation == "eager"
+
+
+class _SelfAttention(torch.nn.Module):
+    pass
+
+
+class _Decoder(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.self_attn = _SelfAttention()
+
+
+def test_hf_flash_stays_when_only_non_attention_modules_reach_pre_ampere(monkeypatch):
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    model = _Model({"layers.0": 0, "lm_head": 1, "embed": "cuda:1"})
+    model.layers = torch.nn.ModuleList([_Decoder()])
+    model.lm_head = torch.nn.Linear(2, 2)
+    model.embed = torch.nn.Embedding(2, 2)
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is False
+    assert model.config._attn_implementation == "flash_attention_2"
+    model.hf_device_map = {"layers.0": 1, "lm_head": 0}
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
+    assert model.config._attn_implementation == "sdpa"
+
+
+def test_hf_fallback_keeps_known_broken_sdpa_models_on_eager(monkeypatch):
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    model = _Model({"a": 0, "b": 1}, model_type = "gpt_oss")
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
     assert model.config._attn_implementation == "eager"

@@ -1615,21 +1615,35 @@ def _set_attn_impl(config, impl):
     return impl
 
 
-def _pre_ampere_cuda_devices(device_map):
-    """CUDA indices in a loaded `hf_device_map` that Flash Attention 2 cannot run on (sm < 80)."""
+def _holds_attention(model, name):
+    """Whether the device-map entry ``name`` covers an attention module; unresolvable counts as yes."""
+    try:
+        module = model.get_submodule(name) if name else model
+    except Exception:
+        return True
+    return any("attention" in type(m).__name__.lower() for m in module.modules())
+
+
+def _pre_ampere_cuda_devices(model):
+    """CUDA indices that Flash Attention 2 cannot run on (sm < 80) and that the loaded `hf_device_map`
+    puts attention layers on. An `lm_head` or embedding alone there never calls flash."""
+    device_map = getattr(model, "hf_device_map", None)
     if DEVICE_TYPE != "cuda" or not isinstance(device_map, dict):
         return []
     indices = set()
-    for placement in device_map.values():
+    for name, placement in device_map.items():
         if isinstance(placement, int):
-            indices.add(placement)
-            continue
-        try:
-            device = torch.device(placement)
-        except (RuntimeError, TypeError):
-            continue  # "cpu" / "disk" offload
-        if device.type == "cuda":
-            indices.add(device.index or 0)
+            index = placement
+        else:
+            try:
+                device = torch.device(placement)
+            except (RuntimeError, TypeError):
+                continue  # "cpu" / "disk" offload
+            if device.type != "cuda":
+                continue
+            index = device.index or 0
+        if index not in indices and _holds_attention(model, name):
+            indices.add(index)
     try:
         return sorted(i for i in indices if torch.cuda.get_device_capability(i)[0] < 8)
     except Exception:
@@ -1637,15 +1651,19 @@ def _pre_ampere_cuda_devices(device_map):
 
 
 def fall_back_from_flash_attention_on_pre_ampere(model):
-    """Device 0 chose Flash Attention 2; switch to SDPA (or eager) when the device map also put layers
-    on a pre-Ampere card, where every flash call would raise. Same-generation hosts never change."""
+    """Device 0 chose Flash Attention 2; switch to SDPA (or eager) when the device map also put attention
+    layers on a pre-Ampere card, where every flash call would raise. Same-generation hosts never change."""
     if not HAS_FLASH_ATTENTION:
         return False
-    pre_ampere = _pre_ampere_cuda_devices(getattr(model, "hf_device_map", None))
+    pre_ampere = _pre_ampere_cuda_devices(model)
     if not pre_ampere:
         return False
-    fallback = "sdpa" if getattr(type(model), "_supports_sdpa", False) else "eager"
-    changed = False
+    model_class = type(model)
+    # Same SDPA eligibility as resolve_attention_implementation: a known-wrong SDPA stays on eager.
+    class_sdpa = getattr(model_class, "_supports_sdpa", False) and not _declares_no_sdpa(
+        model_class
+    )
+    changed = None
     seen = set()
     for module in model.modules():
         config = getattr(module, "config", None)
@@ -1654,14 +1672,16 @@ def fall_back_from_flash_attention_on_pre_ampere(model):
         seen.add(id(config))
         impl = _config_get(config, "_attn_implementation", None)
         if isinstance(impl, str) and impl.startswith("flash_attention"):
+            model_type = (_config_get(config, "model_type", "") or "").lower()
+            fallback = "sdpa" if class_sdpa and not _is_sdpa_excluded(model_type) else "eager"
             _write_attn_impl(config, fallback)
-            changed = True
+            changed = fallback if changed in (None, fallback) else "sdpa / eager"
     if changed:
         print(
             f"Unsloth: Layers were placed on cuda:{pre_ampere[0]}, which cannot run Flash Attention 2 "
-            f"(compute capability below 8.0), so the model uses {fallback} attention instead."
+            f"(compute capability below 8.0), so the model uses {changed} attention instead."
         )
-    return changed
+    return bool(changed)
 
 
 _REMOTE_CODE_HUB_KWARGS = (
