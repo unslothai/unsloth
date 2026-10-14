@@ -9,7 +9,11 @@ import { type ReactElement, useEffect, useState } from "react";
 import { SettingsRow } from "./settings-row";
 
 /** Offers to re-embed documents indexed under a previous embedding model; hidden when none are. */
-export function ReembedDocumentsRow(): ReactElement | null {
+export function ReembedDocumentsRow({
+  needsDownload = false,
+}: {
+  needsDownload?: boolean;
+}): ReactElement | null {
   const t = useT();
   const status = useReembedStore((s) => s.status);
   const [stoppingJobId, setStoppingJobId] = useState<string | null>(null);
@@ -65,6 +69,7 @@ export function ReembedDocumentsRow(): ReactElement | null {
         <Button
           variant="outline"
           size="sm"
+          disabled={needsDownload}
           onClick={() => void useReembedStore.getState().start()}
         >
           {t("settings.general.rag.reembed.action")}
