@@ -1010,8 +1010,9 @@ def _note_failed_upgrade(accelerator: str) -> None:
 # kernels for 27 gfx targets but bundles no HIP/BLAS runtime (NEEDED libhipblas.so.3,
 # librocblas.so.5, libamdhip64.so.7 from the HOST), so any host without a matching ROCm userspace
 # fails it. Linux: exits 0 listing CPU only (caught by the device probe). Windows: exits 0xC0000135
-# with no output (caught by exit status). One-way and one-deep; CUDA needs no rung.
-_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan"}
+# with no output (caught by exit status). One-way and one-deep; CUDA needs no rung. Vulkan falls
+# to CPU: a CPU-torch host is routed to it, and one that cannot start it must not lose sd.cpp.
+_ACCELERATOR_FALLBACK: dict[str, str] = {"rocm": "vulkan", "vulkan": "cpu"}
 
 
 # The sonames the upstream ROCm archive imports and does not ship.
@@ -3161,11 +3162,25 @@ class SdCppDiffusionBackend:
             # A paravirtual Mac GPU runs sd.cpp on the CPU backend (see metal_text_encoder_flags), so record that.
             if sd_cpp_args_mod.forces_cpu_backend(device):
                 device = "cpu"
+            # A CPU torch routed to the Vulkan build renders on a card torch never measured, so
+            # auto offloads rather than assume the model fits in its VRAM.
+            vulkan_on_cpu_torch = (
+                device == "cpu"
+                and off_torch is None
+                and _accelerator_class_of(self._resolved_accelerator(self._loading_card))
+                == "vulkan"
+            )
+            if vulkan_on_cpu_torch:
+                device = "vulkan"
             spawn_env = off_torch.child_env() if off_torch is not None else None
             # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
             offload: tuple[str, ...] = ()
             if device != "cpu":
-                offload = tuple(offload_flags(_memory_policy(memory_mode, cpu_offload)))
+                offload = tuple(
+                    offload_flags(
+                        _memory_policy(memory_mode, cpu_offload or vulkan_on_cpu_torch)
+                    )
+                )
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
             # the ggml device names come from whichever build ends up running. It is added at each point the flags are

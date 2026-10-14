@@ -1,0 +1,205 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A CPU torch beside an AMD or Arc GPU installs the Vulkan sd.cpp build (#13666).
+
+Vega, RDNA1 and Polaris get no ROCm wheel, so torch is CPU-only there while llama.cpp already
+renders on the card through Vulkan. Every hardware answer is stubbed."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from core.inference import diffusion_engine_router as r
+from core.inference import sd_cpp_backend
+from core.inference.diffusion_families import detect_family
+from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+_STUDIO = Path(__file__).resolve().parents[2]
+if str(_STUDIO) not in sys.path:
+    sys.path.insert(0, str(_STUDIO))
+
+_ENVS = (
+    "UNSLOTH_DIFFUSION_ENGINE",
+    "UNSLOTH_DIFFUSION_SD_CPP",
+    "UNSLOTH_DIFFUSION_SD_CPP_DEVICE",
+    "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK",
+    "ROCR_VISIBLE_DEVICES",
+    "GGML_VK_VISIBLE_DEVICES",
+)
+
+_VEGA = {"vendor": "amd", "index": 0, "name": None, "source": "sysfs-drm"}
+_ARC_LINUX = {"vendor": "intel", "index": 0, "name": None, "xpu_class": True}
+_UHD_LINUX = {"vendor": "intel", "index": 0, "name": None, "xpu_class": False}
+_ARC_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) Arc(TM) A770 Graphics"}
+_UHD_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) UHD Graphics 770"}
+_RTX = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060"}
+
+
+def _host(*devices, unanswered = (), unknown = False):
+    return {"unknown": unknown, "unanswered": list(unanswered), "devices": list(devices)}
+
+
+def _platform(monkeypatch, system, machine):
+    monkeypatch.setattr(r, "sys", SimpleNamespace(platform = system, modules = sys.modules))
+    monkeypatch.setattr(r, "platform", SimpleNamespace(machine = lambda: machine))
+
+
+@pytest.fixture(autouse = True)
+def _pinned_host(monkeypatch):
+    for e in _ENVS:
+        monkeypatch.delenv(e, raising = False)
+    _platform(monkeypatch, "linux", "x86_64")
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_VEGA))
+    monkeypatch.setattr(r, "_vulkan_loader_loads", lambda: True)
+    import utils.hardware.amd as amd
+
+    monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
+
+
+@pytest.mark.parametrize(
+    "devices,expected",
+    [
+        ((_VEGA,), "vulkan"),
+        ((_ARC_LINUX,), "vulkan"),
+        ((_UHD_LINUX, _VEGA), "vulkan"),
+        ((_UHD_LINUX,), "auto"),
+        ((), "auto"),
+        ((_VEGA, _RTX), "auto"),
+        ((_RTX,), "auto"),
+    ],
+)
+def test_cpu_torch_vulkan_follows_the_cards(monkeypatch, devices, expected):
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(*devices))
+    assert r.image_install_accelerator("cpu") == expected
+
+
+@pytest.mark.parametrize("device,expected", [(_ARC_WINDOWS, "vulkan"), (_UHD_WINDOWS, "auto")])
+def test_windows_intel_is_read_by_name(monkeypatch, device, expected):
+    _platform(monkeypatch, "win32", "AMD64")
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(device))
+    assert r.image_install_accelerator("cpu") == expected
+
+
+@pytest.mark.parametrize(
+    "inventory",
+    [_host(_VEGA, unanswered = ["nvidia"]), _host(unknown = True)],
+)
+def test_an_unanswered_nvidia_probe_keeps_cpu(monkeypatch, inventory):
+    monkeypatch.setattr(r, "_physical_inventory", lambda: inventory)
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+@pytest.mark.parametrize("var", ["ROCR_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES"])
+def test_a_mask_vulkan_does_not_read_keeps_cpu(monkeypatch, var):
+    monkeypatch.setenv(var, "0")
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+@pytest.mark.parametrize(
+    "system,machine", [("linux", "aarch64"), ("win32", "ARM64"), ("darwin", "arm64")]
+)
+def test_hosts_without_a_vulkan_bundle_keep_cpu(monkeypatch, system, machine):
+    _platform(monkeypatch, system, machine)
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+def test_no_vulkan_driver_or_loader_keeps_cpu(monkeypatch):
+    import utils.hardware.amd as amd
+
+    monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: True)
+    assert r.image_install_accelerator("cpu") == "auto"
+    monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
+    monkeypatch.setattr(r, "_vulkan_loader_loads", lambda: False)
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+def test_the_fallback_knob_opts_out(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK", "0")
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+@pytest.mark.parametrize("backend,expected", [("cuda", "cuda"), ("rocm", "rocm"), ("xpu", "vulkan")])
+def test_gpu_torch_backends_are_unchanged(backend, expected):
+    assert r.image_install_accelerator(backend) == expected
+
+
+def test_video_keeps_torchs_build():
+    assert r._install_accelerator_for("cpu") == "auto"
+
+
+def test_a_vulkan_build_that_cannot_run_falls_to_cpu(monkeypatch):
+    monkeypatch.setattr(sd_cpp_backend, "_accelerator_runtime_failures", {})
+    monkeypatch.setattr(sd_cpp_backend, "_stored_accelerator_runtime_failures", lambda: {})
+    monkeypatch.setattr(sd_cpp_backend, "_persist_accelerator_runtime_failures", lambda _r: None)
+    monkeypatch.setattr(sd_cpp_backend, "_accelerator_fingerprint", lambda *_a: {"bundle": "t"})
+    assert sd_cpp_backend.fallback_accelerator_for("vulkan") == "cpu"
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "vulkan"
+    sd_cpp_backend.note_accelerator_runtime_failure("vulkan", proven = True)
+    assert sd_cpp_backend.preferred_accelerator("vulkan") == "cpu"
+
+
+def test_selection_installs_the_vulkan_build(monkeypatch):
+    monkeypatch.setattr(
+        r, "resolve_diffusion_device_target", lambda: SimpleNamespace(backend = "cpu", device = "cpu")
+    )
+    monkeypatch.setattr(r, "_off_torch_warned", set())
+    monkeypatch.setattr(sd_cpp_backend, "_installed_accelerator_of", lambda _b: "vulkan")
+    monkeypatch.setattr(
+        r,
+        "get_active_diffusion_engine",
+        lambda: SimpleNamespace(
+            status = lambda: {"loaded": False, "repo_id": None}, unload = lambda: None
+        ),
+    )
+    monkeypatch.setattr(r, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(r, "SdCppEngine", lambda **_: SimpleNamespace(version = lambda: "sd-cli v0"))
+    asked: list[str] = []
+
+    def _ensure(**kwargs):
+        asked.append(kwargs["accelerator"])
+        return None
+
+    monkeypatch.setattr(r, "ensure_sd_server_binary", _ensure)
+    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **kw: asked.append(kw["accelerator"]) or "/opt/sd/sd-cli")
+    saved = (r._active_engine_name, r._fallback_reason)
+    try:
+        r.select_and_activate_engine(detect_family("z-image"))
+        assert r.active_engine_name() == ENGINE_SD_CPP
+    finally:
+        r._active_engine_name, r._fallback_reason = saved
+    assert asked and set(asked) == {"vulkan"}
+
+
+_PINNED_RELEASE_ASSETS = [
+    "sd-master-951-f89d9b1-uafac7a7-bin-Linux-Ubuntu-22.04-x86_64-cuda12.zip",
+    "sd-master-951-f89d9b1-uafac7a7-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+    "sd-master-951-f89d9b1-uafac7a7-bin-Linux-Ubuntu-22.04-x86_64.zip",
+    "sd-master-951-f89d9b1-uafac7a7-bin-Linux-Ubuntu-24.04-aarch64.zip",
+    "sd-master-951-f89d9b1-uafac7a7-bin-win-cpu-x64.zip",
+    "sd-master-951-f89d9b1-uafac7a7-bin-win-cuda12-x64.zip",
+    "sd-master-951-f89d9b1-uafac7a7-bin-win-vulkan-x64.zip",
+]
+
+
+@pytest.mark.parametrize(
+    "system,machine,expected",
+    [
+        ("Linux", "x86_64", "sd-master-951-f89d9b1-uafac7a7-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip"),
+        ("Windows", "AMD64", "sd-master-951-f89d9b1-uafac7a7-bin-win-vulkan-x64.zip"),
+        ("Linux", "aarch64", None),
+    ],
+)
+def test_the_pinned_release_has_the_vulkan_bundle_it_routes_to(system, machine, expected):
+    from install_sd_cpp_prebuilt import resolve_release_asset
+
+    assert (
+        resolve_release_asset(
+            _PINNED_RELEASE_ASSETS, system = system, machine = machine, accelerator = "vulkan"
+        )
+        == expected
+    )

@@ -1576,6 +1576,22 @@ def test_paravirtual_mac_load_records_the_cpu_device(monkeypatch):
     assert b._state.device == "mps"
 
 
+@pytest.mark.parametrize("accelerator", ["vulkan", "auto"])
+def test_cpu_torch_on_the_vulkan_build_offloads_by_default(monkeypatch, accelerator):
+    # #13666: the card's VRAM was never measured, so auto streams weights instead of assuming they fit.
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: accelerator)
+    )
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    if accelerator == "vulkan":
+        assert b._state.device == "vulkan"
+        assert "--offload-to-cpu" in b._state.offload_flags
+    else:
+        assert b._state.device == "cpu"
+        assert b._state.offload_flags == ()
+
+
 def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []

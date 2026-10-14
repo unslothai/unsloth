@@ -58,6 +58,7 @@ from core.inference.sd_cpp_backend import (
     off_torch_build_mismatch,
     preferred_accelerator,
     sd_cpp_binary_runs_family,
+    sd_cpp_vulkan_fallback_enabled,
     usable_or_recorded_failure,
 )
 from core.inference.sd_cpp_engine import (
@@ -162,11 +163,78 @@ def off_torch_sd_cpp_device(backend: Optional[str] = None) -> Optional[OffTorchD
     return OffTorchDevice(vendor = vendor, index = index, accelerator = accelerator)
 
 
+# Hosts the pinned release ships a Vulkan sd.cpp bundle for.
+_VULKAN_SD_CPP_PLATFORMS = frozenset({("linux", "x86_64"), ("win32", "amd64")})
+
+
+@functools.lru_cache(maxsize = 1)
+def _vulkan_loader_loads() -> bool:
+    """Whether the Vulkan loader library opens here. The Vulkan build links it, so without it
+    neither sd-cli nor sd-server would start."""
+    import ctypes
+
+    try:
+        if sys.platform == "win32":
+            ctypes.WinDLL("vulkan-1.dll")
+        else:
+            ctypes.CDLL("libvulkan.so.1")
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _vulkan_gpu_for_cpu_torch() -> bool:
+    """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
+    an AMD card (Vega, RDNA1 and Polaris get no ROCm wheel) or an Intel Arc. Never beside NVIDIA,
+    which Vulkan could enumerate first, nor under a mask Vulkan does not read (#13666)."""
+    if not sd_cpp_vulkan_fallback_enabled():
+        return False
+    if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:
+        return False
+    if os.environ.get("ROCR_VISIBLE_DEVICES") is not None or os.environ.get(
+        "GGML_VK_VISIBLE_DEVICES"
+    ) is not None:
+        return False
+    inventory = _physical_inventory()
+    if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
+        return False
+    devices = [d for d in inventory.get("devices") or () if isinstance(d, dict)]
+    if any(d.get("vendor") == "nvidia" for d in devices):
+        return False
+
+    def _renders(device: dict) -> bool:
+        if device.get("vendor") == "amd":
+            return True
+        if device.get("vendor") != "intel":
+            return False
+        # Arc only: a UHD iGPU renders slower than the CPU build. Linux carries the PCI class,
+        # the Windows registry only the name.
+        if "xpu_class" in device:
+            return device.get("xpu_class") is True
+        return "arc" in str(device.get("name") or "").lower().replace("(tm)", " ").split()
+
+    if not any(_renders(d) for d in devices):
+        return False
+    try:
+        from utils.hardware.amd import the_vulkan_loader_has_no_usable_driver
+
+        if the_vulkan_loader_has_no_usable_driver():
+            return False
+    except Exception:  # noqa: BLE001
+        pass
+    return _vulkan_loader_loads()
+
+
 def image_install_accelerator(backend: str) -> str:
-    """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's.
-    Video keeps ``_install_accelerator_for``, since torch places its loads."""
+    """The sd.cpp build the IMAGE engine wants: the off-torch card's when one is set, else torch's,
+    else Vulkan for a CPU torch beside an AMD or Arc GPU. Video keeps ``_install_accelerator_for``,
+    since torch places its loads."""
     off_torch = off_torch_sd_cpp_device(backend)
-    return off_torch.accelerator if off_torch is not None else _install_accelerator_for(backend)
+    if off_torch is not None:
+        return off_torch.accelerator
+    if backend == "cpu" and _vulkan_gpu_for_cpu_torch():
+        return "vulkan"
+    return _install_accelerator_for(backend)
 
 
 # The engine the current load committed to, and why a non-native choice was made. Mutated only under _lock.
@@ -475,7 +543,7 @@ def select_and_activate_engine(
         # Once, so server and CLI cannot disagree.
         selected_card = _selected_card(gpu_ordinal)
         install_accelerator = preferred_accelerator(
-            _install_accelerator_for(backend), selected_card
+            image_install_accelerator(backend), selected_card
         )
         if off_torch is not None:
             install_accelerator = preferred_accelerator(off_torch.accelerator, selected_card)
