@@ -59,8 +59,14 @@ test("numbers written as inline maths render as maths", () => {
     ["a $10$-fold increase", ["10"]],
     ["Range $1$-$2$", ["1", "2"]],
     ["The number $42$'s factors are 2, 3, and 7.", ["42"]],
+    ["There are $3$*red* balls.", ["3"]],
+    ["There are $3$_red_ balls.", ["3"]],
     ["There are $3$**red** balls.", ["3"]],
     ["There are $3$__red__ balls.", ["3"]],
+    ["| value |\n| --- |\n| $42$! |", ["42"]],
+    ["| value |\n| --- |\n| $10$-fold |", ["10"]],
+    ["answer = $42$!", ["42"]],
+    ['- consider "Is it $3$?"', ["3"]],
     ["The answer is $42$[source](https://example.com).", ["42"]],
     ["The answer is $42$[^1].\n\n[^1]: Source.", ["42"]],
     ['He said "The answer is $42$[source](https://example.com)."', ["42"]],
@@ -86,6 +92,8 @@ test("numbers written as inline maths render as maths", () => {
     assert.deepEqual(renderedMath(html), expected, source);
     assert.ok(!visibleText(html).includes("$"), `${source} showed a dollar`);
   }
+  assert.match(render("There are $3$*red* balls."), /<em>red<\/em>/);
+  assert.match(render("There are $3$_red_ balls."), /<em>red<\/em>/);
   assert.match(
     render("There are $3$**red** balls."),
     /data-streamdown="strong">red<\/span>/,
@@ -146,6 +154,8 @@ test("a shell parameter right after a positional one stays text", () => {
     ["Run echo $1$* to print both.", "$1$*"],
     ["Run echo $1$- to print both.", "$1$-"],
     ["Run echo $1$? to print both.", "$1$?"],
+    ["value=$1$?", "$1$?"],
+    ["echo x | $1$?", "$1$?"],
     ["Run echo $1$! to print both.", "$1$!"],
     ["Run echo $1$[n] to print both.", "$1$[n]"],
     ["Run echo $1$[1] to print both.", "$1$[1]"],
@@ -226,6 +236,19 @@ test("shell quote state carries across long and multiline words", () => {
     const html = render(source);
     assert.deepEqual(renderedMath(html), [], source);
     assert.ok(visibleText(html).includes("$1$?"), source);
+  }
+});
+
+test("shell quote state resets at Markdown block boundaries", () => {
+  for (const source of [
+    '- Run echo "oops\n- The answer is $42$!',
+    'Run echo "oops\n\nThe answer is $42$!',
+    'Run echo "oops\n# The answer is $42$!',
+    'Run echo "oops\n> The answer is $42$!',
+    'Run echo "oops\n| value |\n| $42$! |',
+  ]) {
+    const html = render(source);
+    assert.deepEqual(renderedMath(html), ["42"], source);
   }
 });
 
