@@ -186,8 +186,7 @@ def _linear4bit(
 @pytest.mark.parametrize("bsz", [2, 3, 8])
 @pytest.mark.parametrize("shape", [(1024, 4096), (4096, 14336), (1000, 192)], ids = str)
 def test_rows_kernel_is_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
-    """Each decode row equals gemv_nf4 on that row alone, bit for bit, written into a strided
-    out as fast_swiglu_inference passes up[:, :, :hd]."""
+    """Strided out, as fast_swiglu_inference passes up[:, :, :hd]."""
     from unsloth.kernels.nf4_gemv import gemv_nf4_rows
 
     q, s = _quant(*shape, torch.bfloat16, nested = nested)
@@ -202,8 +201,6 @@ def test_rows_kernel_is_the_batch_1_kernel_per_row(shape, bsz, nested, kernel):
 
 @pytest.mark.parametrize("bsz", [2, 3, 4])
 def test_small_decode_batches_skip_the_dequantize(bsz, monkeypatch):
-    """Batched decode (q_len 1) of up to _GEMV_MAX_ROWS rows takes the GEMV instead of
-    dequantizing the whole weight to 16bit every token (#2798)."""
     utils = _utils_with_kernels()
     proj = _linear4bit(1024, 4096)
     X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
@@ -215,7 +212,6 @@ def test_small_decode_batches_skip_the_dequantize(bsz, monkeypatch):
     monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: pytest.fail("dequantized"))
     first = utils.fast_linear_forward(proj, X)
     assert _rel_err(first.view(bsz, -1), ref) < TOL[torch.bfloat16]
-    # Later decode steps rerun the planned launch into the caller's buffer.
     out = torch.empty(bsz, 1, 1024, dtype = torch.bfloat16, device = "cuda")
     for _ in range(3):
         assert torch.equal(utils.fast_linear_forward(proj, X, out = out), first)
@@ -242,9 +238,6 @@ def test_larger_decode_batches_still_dequantize(monkeypatch):
 
 
 def test_rows_or_dequantize_is_timed_once_per_shape_and_rows(monkeypatch):
-    """The GEMV is taken only where it times clearly faster than dequantize + matmul on this GPU
-    (B200 dequantizes fast enough that it never is), decided once per weight shape and row count,
-    never while a CUDA graph is captured."""
     utils = _utils_with_kernels()
     monkeypatch.setattr(utils, "_GEMV_ROWS_WINS", {})
     proj = _linear4bit(1024, 4096)

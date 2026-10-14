@@ -1428,7 +1428,6 @@ def _quant_state_dtype(quant_state):
     return getattr(quant_state, "dtype", None)
 
 
-# (device, out_features, in_features, dtype, rows) -> whether gemv_nf4_rows beats dequantizing.
 _GEMV_ROWS_WINS = {}
 
 
@@ -1446,9 +1445,7 @@ def _time_us(fn, reps = 3):
 
 
 def _gemv_rows_win(X, W, quant_state, args):
-    """Each GEMV row costs about one batch-1 GEMV, while dequantize + matmul costs the same for
-    any small batch: 4.8x a GEMV on A100, 11x on T4, under 2x on B200. So time both once per
-    weight shape and row count on this GPU (eager, outside graph capture) and keep the winner."""
+    """Time GEMV vs dequantize once per (device, weight shape, rows), never while compiling or capturing."""
     shape = args[-1]
     key = (X.device.index, int(shape[0]), int(shape[1]), X.dtype, X.shape[0])
     win = _GEMV_ROWS_WINS.get(key)
@@ -1460,15 +1457,12 @@ def _gemv_rows_win(X, W, quant_state, args):
         dequant_us = _time_us(
             lambda: torch_matmul(X, fast_dequantize(W.t(), quant_state, use_global_buffer = True))
         )
-    # Only switch where the GEMV clearly wins, so the choice is stable across runs.
     win = _GEMV_ROWS_WINS[key] = rows_us < 0.9 * dequant_us
     return win
 
 
 def _gemv_rows(X, W, quant_state, out):
-    """Decode rows 2.._GEMV_MAX_ROWS through one gemv_nf4_rows launch where that beats
-    dequantizing the whole weight to 16bit every token (#2798). None when it does not apply;
-    the caller then dequantizes."""
+    """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
     M = X.shape[0]
     eager = (
         not _is_compiling()
@@ -1477,7 +1471,6 @@ def _gemv_rows(X, W, quant_state, out):
         and X.device.index == _current_device()
     )
     if eager:
-        # As in fast_gemv: repeat this weight's launch for M rows, or go straight to dequantize.
         plans = getattr(quant_state, "_unsloth_gemv_rows", None)
         plan = plans.get(M) if plans is not None else None
         if plan is False:
@@ -1531,7 +1524,7 @@ def _gemv_rows(X, W, quant_state, out):
 
 
 class _NF4Plans(dict):
-    # Row count -> _NF4Plan, or False where dequantize + matmul won. Dropped by copies and pickles.
+    # Rows -> _NF4Plan or False (dequantize won); dropped by copies and pickles.
     def __reduce__(self):
         return (_no_plan, ())
 

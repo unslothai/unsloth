@@ -50,8 +50,7 @@ def _gemv_nf4_kernel(
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
-    # One program per (activation row, weight tile); a tile's M rows run next to each other, so
-    # the weight is read from memory once. M == 1 is specialized away.
+    # A tile's M rows run adjacently so the weight is read once.
     pid = tl.program_id(0)
     X += (pid % M) * K
     OUT += (pid % M) * OUT_STRIDE
@@ -118,8 +117,7 @@ def _gemv_nf4_words_kernel(
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
-    # One program per (activation row, weight tile); a tile's M rows run next to each other, so
-    # the weight is read from memory once. M == 1 is specialized away.
+    # A tile's M rows run adjacently so the weight is read once.
     pid = tl.program_id(0)
     X += (pid % M) * K
     OUT += (pid % M) * OUT_STRIDE
@@ -414,8 +412,7 @@ def gemv_nf4_planned(
     )
 
 
-# Most decode rows gemv_nf4_rows takes: each row costs about one batch-1 GEMV, and at 8 rows
-# dequantize + matmul decoded faster end to end on A100 and RTX PRO 6000.
+# At 8 rows dequantize + matmul won end to end on A100 and RTX PRO 6000.
 GEMV_MAX_ROWS = int(os.environ.get("UNSLOTH_GEMV_MAX_ROWS", "4"))  # 1 = always dequantize
 
 
@@ -455,8 +452,7 @@ def _gemv_nf4_rows_op(
 
 
 def gemv_nf4_rows(X, W_u8, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out):
-    """gemv_nf4 for M decode rows in one launch into out (M, 1, N), whose rows may be strided
-    (a slice of a wider buffer). X must be contiguous (M, 1, K). Each row equals gemv_nf4 on it."""
+    """X (M, 1, K) contiguous -> out (M, 1, N), maybe strided; each row bit-identical to gemv_nf4."""
     N, K = int(shape[0]), int(shape[1])
     blocksize, blocksize2 = int(blocksize), int(blocksize2) if code2 is not None else 0
     if _is_compiling():
@@ -489,8 +485,7 @@ def gemv_nf4_rows(X, W_u8, absmax, code2, absmax2, offset, code, blocksize, bloc
 def gemv_nf4_rows_planned(
     X, W_u8, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out
 ):
-    """Eager gemv_nf4_rows on the current device, returning a function (X, out) that repeats the
-    launch for this weight and row count (see gemv_nf4_planned), or None."""
+    """gemv_nf4_planned for gemv_nf4_rows."""
     return _launch(
         _KERNELS,
         X,
