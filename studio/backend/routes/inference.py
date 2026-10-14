@@ -3342,7 +3342,10 @@ _ARM_RESIDENCY_READ_S = 0.25
 
 
 def _refresh_residency_before_planning(controller) -> None:
-    """Read the cache afresh before arming plans against it, without owning the loop."""
+    """Read the cache afresh before arming plans against it, without owning the loop. Skipped when
+    the server parks slots itself: Studio picks no victims, so the reading would go unused."""
+    if controller.server_mode:
+        return
     try:
         asyncio.get_running_loop()
     except RuntimeError:
