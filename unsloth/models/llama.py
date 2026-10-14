@@ -121,7 +121,6 @@ from unsloth.models._attn_mask_compat import (
     AttentionMaskConverter,
     _prepare_4d_causal_attention_mask_for_sdpa,
 )
-from unsloth.models._gemma2_attention_mask import Gemma2AttentionMaskConverter
 from transformers.cache_utils import DynamicCache, Cache
 from ..kernels import *
 from ..kernels.utils import _has_active_lora_bias, has_mxfp4_base
@@ -1079,6 +1078,27 @@ def _is_left_padded(attention_mask):
     if attention_mask.dim() != 2 or attention_mask.shape[-1] < 2:
         return False
     return not bool(attention_mask[:, 0].all())
+
+
+class Gemma2AttentionMaskConverter(AttentionMaskConverter):
+    """Gemma2's window counts the current key as well as the preceding keys."""
+
+    @staticmethod
+    def _make_causal_mask(
+        input_ids_shape,
+        dtype,
+        device,
+        past_key_values_length = 0,
+        sliding_window = None,
+    ):
+        # The legacy converter counts preceding keys; its static helper also accepts zero for a one-key window.
+        return AttentionMaskConverter._make_causal_mask(
+            input_ids_shape,
+            dtype,
+            device,
+            past_key_values_length = past_key_values_length,
+            sliding_window = sliding_window - 1 if sliding_window is not None else None,
+        )
 
 
 # Ported from transformers models/llama/modeling_llama.py#L825
