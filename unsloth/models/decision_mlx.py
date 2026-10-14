@@ -67,8 +67,11 @@ def _row_audio(row: dict) -> list:
     found = []
     for clip in audio if isinstance(audio, (list, tuple)) else [audio]:
         if hasattr(clip, "get_all_samples"):
-            # datasets 4 decodes an audio column to a decoder that reads like the dict.
-            clip = {"array": clip["array"], "sampling_rate": clip["sampling_rate"]}
+            # datasets 4 decodes an audio column to a decoder that reads like the dict; a clip it cannot decode fails its row.
+            try:
+                clip = {"array": clip["array"], "sampling_rate": clip["sampling_rate"]}
+            except RuntimeError as exc:
+                raise ValueError(f"an audio clip could not be decoded: {exc}") from None
         elif isinstance(clip, dict) and "array" in clip:
             clip = {"array": clip["array"], "sampling_rate": clip.get("sampling_rate")}
         elif isinstance(clip, dict) and set(clip) <= {"bytes", "path"}:

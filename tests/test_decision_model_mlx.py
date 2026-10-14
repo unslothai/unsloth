@@ -484,12 +484,20 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
         def __getitem__(self, key):
             return clip[key]
 
+    class Corrupt(Decoder):
+        def __getitem__(self, key):
+            raise RuntimeError("invalid data found")
+
     heard = [
         {**_row(0), "audio": [sound, {"bytes": b"RIFF"}]},
         {**_row(1), "audio": {"bytes": None, "path": str(tmp_path / "a.wav")}},
         {**_row(2), "audio": [None, {"bytes": None, "path": None}, clip, Decoder()]},
         {**_row(3), "audio": {"bytes": None, "path": str(tmp_path / "none.wav")}},
     ]
+    items, report = FastDecisionModel.build_dataset(
+        [_row(0), {**_row(1), "audio": [Decoder(), Corrupt()]}], tokenizer, model
+    )
+    assert [item["row"] for item in items] == [0] and "could not be decoded" in report["reason"]
     del seen[:]
     items, report = FastDecisionModel.build_dataset(heard, tokenizer, model)
     assert [item["row"] for item in items] == [0, 1, 2] and "none.wav" in report["reason"]
