@@ -6980,7 +6980,7 @@ def opencode(
     as_subagent = as_subagent or auto_route
     _check_app_flags(app, ctx.args, as_subagent)
     command_name, opencode_v2 = _opencode_command()
-    install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
+    install_hint = _npm_install_hint("@opencode/cli" if opencode_v2 else "opencode-ai")
     _require_agent_for_launch(command_name, install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,

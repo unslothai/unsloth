@@ -6666,6 +6666,19 @@ def test_opencode_bare_launch_never_passes_root_model_flag(fake_studio, monkeypa
     assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
 
 
+def test_opencode_v2_install_hint_names_the_opencode_cli_package(fake_studio, monkeypatch):
+    # OpenCode 2 ships on npm as @opencode/cli; @opencode-ai/cli only carries 0.0.0-beta builds.
+    monkeypatch.setattr(start, "_opencode_command", lambda *_: ("opencode2", True))
+    hints = []
+    monkeypatch.setattr(start, "_run", lambda *a, **k: hints.append(k["install_hint"]))
+
+    result = CliRunner().invoke(start.start_app, ["opencode"])
+
+    assert result.exit_code == 0, result.output
+    assert len(hints) == 1 and "@opencode/cli" in hints[0], hints
+    assert "@opencode-ai/cli" not in hints[0]
+
+
 def test_connect_opencode_v2_no_launch_uses_resolved_off_path_binary(
     fake_studio, monkeypatch, tmp_path
 ):
