@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""With preemption off a tool round is re-costed as before preemption existed.
+"""With preemption off a tool round is re-costed exactly as before preemption existed.
 
-Main waited for room on a wall clock where yielding was safe, and when the ledger declined
-carried on at the old figure. The preemption work refuses such a round instead, re-counts the
-wire prompt, and waits on a stall clock; all three belong to the share pricing and must not reach
-a server that does not park.
+Main charged the round's conversation, catalogue, top-level fields and media, waited for room on
+a wall clock where yielding was safe, and when the ledger declined carried on at the old figure.
+The preemption work refuses such a round instead, re-counts the wire prompt, waits on a stall
+clock and prices the finalized conversation in place of the payload; all of that belongs to the
+share pricing and must not reach a server that does not park. The figures below are main's
+(cc7e8aaeb) for the same calls.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ _TOOLS = [
 ]
 _SYSTEM = "Answer briefly. " * 60
 _GROWN = "more " * 2000
+_GROWN = "more " * 2000
 _CONVERSATION = [
     {"role": "system", "content": _SYSTEM},
     {"role": "user", "content": "find it " * 300},
@@ -62,6 +65,9 @@ _CONVERSATION = [
     },
     {"role": "tool", "tool_call_id": "c1", "content": "result " * 500},
 ]
+
+# (opening charge, charge after the round re-cost) on main.
+MAIN_RECOST = {(16384, 4): (4096, 4096), (262144, 4): (65536, 65536), (4096, 2): (2048, 3106)}
 
 _ids = iter(range(1_000_000))
 
@@ -99,6 +105,21 @@ def _recost(reservation, payload, backend, conversation = _CONVERSATION):
         injected_tools = _TOOLS,
         wire_tools = _TOOLS,
     )
+
+
+@pytest.mark.parametrize("shape", sorted(MAIN_RECOST))
+def test_the_round_is_charged_what_main_charged(shape):
+    async def run():
+        backend = _backend(*shape)
+        reservation, payload = _open(backend)
+        lease = reservation.lease_nowait()
+        opened = lease.tokens
+        assert _recost(reservation, payload, backend) is None, "no wire cap without preemption"
+        recosted = lease.tokens
+        reservation.cancel()
+        return opened, recosted
+
+    assert asyncio.run(run()) == MAIN_RECOST[shape]
 
 
 def test_a_round_the_ledger_declines_carries_on_at_its_old_figure():
@@ -156,3 +177,48 @@ def test_with_share_pricing_a_declined_round_is_refused(share_pricing):
             second.cancel()
 
     asyncio.run(run())
+
+
+_ANTHROPIC_TOOLS = [
+    {
+        "name": "web_search",
+        "description": "Search",
+        "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }
+]
+_ANTHROPIC_SYSTEM = "You are careful. " * 100
+_TRANSLATED = [
+    {"role": "system", "content": _ANTHROPIC_SYSTEM},
+    {"role": "user", "content": "hello " * 200},
+]
+# Main's opening charge for the Anthropic surface: passthrough, tool loop, plain, at four slots.
+MAIN_ANTHROPIC_OPENING = {
+    16384: {"raw": 2218, "tool": 4096, "plain": 2173},
+    262144: {"raw": 2218, "tool": 65536, "plain": 2173},
+}
+
+
+@pytest.mark.parametrize("budget", sorted(MAIN_ANTHROPIC_OPENING))
+@pytest.mark.parametrize("shape", ["raw", "tool", "plain"])
+def test_an_anthropic_request_opens_at_mains_charge(budget, shape):
+    """As `_admitted_anthropic` prices it: the translated messages, and the conversation."""
+    tool_loop = shape == "tool"
+    payload = _Payload(
+        system = _ANTHROPIC_SYSTEM,
+        tools = None if shape == "plain" else _ANTHROPIC_TOOLS,
+        messages = [{"role": "user", "content": "hello " * 200}],
+        max_tokens = 1000,
+    )
+    charged = inf._openai_llama_admission_tokens(
+        payload,
+        budget = budget,
+        capacity = 4,
+        tool_loop = tool_loop,
+        injected_tools = inf._anthropic_admission_injected_tools(
+            None if shape == "plain" else _TOOLS, tool_loop = tool_loop
+        ),
+        conversation = _TRANSLATED,
+        messages_override = _TRANSLATED,
+        context_window = budget,
+    )
+    assert charged == MAIN_ANTHROPIC_OPENING[budget][shape]

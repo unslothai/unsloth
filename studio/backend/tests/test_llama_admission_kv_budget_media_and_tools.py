@@ -1185,7 +1185,23 @@ class TestARoundIsCostedTheSameWayTheReservationWas:
             committed == opened
         ), f"round zero shrank an uncapped loop from {opened} to {committed}"
 
-    def test_round_zero_keeps_a_top_level_system_prompt(self):
+    def test_round_zero_keeps_a_top_level_system_prompt_without_preemption(self):
+        """Anthropic keeps `system` and `tools` out of `messages` entirely, so for that
+        route this is most of the prompt. Priced as main priced it: preemption is off."""
+        payload = _Payload(
+            messages = [{"role": "user", "content": "hi"}],
+            system = "You are a careful assistant that cites its sources. " * 200,
+            enable_tools = True,
+            max_tokens = 128,
+        )
+        opened, committed, _ = self._round_zero(payload, output_tokens = 128)
+        assert opened > 1024, f"the system text should push this past the share: {opened}"
+        assert committed == opened, (
+            f"round zero shrank the lease from {opened} to {committed}, dropping the "
+            f"non-message prompt the reservation charged"
+        )
+
+    def test_round_zero_keeps_a_top_level_system_prompt(self, share_pricing):
         """Count Anthropic system content once in both admission and re-cost."""
         system = "You are a careful assistant that cites its sources. " * 200
         payload = _Payload(
@@ -1303,7 +1319,8 @@ class TestARoundStopsPayingForAnEvictedClip:
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_finalized_video_admission_prices_only_surviving_clips(legacy):
+def test_finalized_video_admission_prices_only_surviving_clips(legacy, share_pricing):
+    """Pricing the finalized conversation is the share pricing's; off, the payload is priced."""
     clip = "A" * 4000
     payload = _Payload(
         messages = [{"role": "user", "content": "Describe the clip"}],

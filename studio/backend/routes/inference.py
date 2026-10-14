@@ -2709,7 +2709,8 @@ def _openai_llama_admission_charged_prompt_tokens(
     """The prompt term of the admission charge: the part of it that becomes resident."""
     if counted_prompt_tokens is not None:
         return counted_prompt_tokens
-    if conversation is not None:
+    # Off, the opening charge is main's: the payload's own fields on top of the messages.
+    if conversation is not None and _openai_llama_admission_fair_share():
         return _openai_llama_admission_wire_prompt_tokens(
             conversation,
             image_tokens = image_tokens,
@@ -3934,6 +3935,14 @@ async def _openai_llama_admission_reserve_async(
     )
 
 
+def _anthropic_admission_injected_tools(wire_tools, *, tool_loop: bool):
+    """The catalogue an Anthropic request's opening charge prices. Off, only the tool loop's, as
+    before preemption; a passthrough's client tools are already priced from the payload."""
+    if tool_loop or _openai_llama_admission_fair_share():
+        return wire_tools
+    return None
+
+
 def _openai_llama_admission_recost_without_preemption(
     lease,
     conversation,
@@ -3949,8 +3958,9 @@ def _openai_llama_admission_recost_without_preemption(
     capacity: int,
     vision: bool,
 ) -> None:
-    """The round re-cost as it ran before preemption: charge the conversation, wait for room on a
-    wall clock where yielding is safe, and carry on at the old figure when the ledger declines."""
+    """The round re-cost as it ran before preemption: charge the conversation with main's estimate
+    (top-level fields included), wait for room on a wall clock where yielding is safe, and carry
+    on at the old figure when the ledger declines."""
     if count_prepared_prompt:
         prompt_tokens, _exact = _count_gguf_admission_prompt_detail(
             llama_backend, payload, conversation, injected_tools, cancel_event = cancel_event
@@ -3958,14 +3968,17 @@ def _openai_llama_admission_recost_without_preemption(
         if cancel_event is not None and cancel_event.is_set():
             raise LlamaAdmissionCancelled("stopped while the round was being counted")
     else:
-        prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
-            conversation,
+        estimate_messages, message_image_parts = _openai_llama_admission_messages_for_estimate(
+            conversation, vision = vision
+        )
+        prompt_tokens = estimate_messages_tokens_dense(estimate_messages)
+        prompt_tokens += _openai_llama_admission_injected_tool_tokens(injected_tools)
+        prompt_tokens += _openai_llama_admission_extra_prompt_tokens(payload)
+        prompt_tokens += _openai_llama_admission_media_tokens(
+            payload,
+            message_image_parts = message_image_parts,
             image_tokens = _openai_llama_admission_image_tokens(llama_backend),
-            injected_tools = injected_tools,
-            markup = _openai_llama_admission_markup(llama_backend),
-            vision = vision,
-        ) + _openai_llama_admission_transport_tokens(
-            payload, message_video_clips = _conversation_video_clips(conversation)
+            message_video_clips = _conversation_video_clips(conversation),
         )
     share = max(1, budget // max(1, capacity))
     output_tokens = _openai_llama_admission_output_allowance(
@@ -44541,7 +44554,7 @@ async def anthropic_messages(
                 tool_loop = tool_loop,
                 conversation = openai_messages,
                 messages_override = openai_messages,
-                injected_tools = wire_tools,
+                injected_tools = _anthropic_admission_injected_tools(wire_tools, tool_loop = tool_loop),
                 pausable = not raw,
             )
             if tool_loop:
