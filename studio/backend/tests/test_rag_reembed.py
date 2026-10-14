@@ -7,7 +7,7 @@ import threading
 
 import pytest
 
-from core.rag import config, embeddings, ingestion, reembed, retrieval, store
+from core.rag import chunking, config, embeddings, ingestion, reembed, retrieval, store
 from storage import rag_db
 
 OLD, NEW, NEWER = "org/old-embedder", "org/new-embedder", "org/newer-embedder"
@@ -80,7 +80,7 @@ def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_
     broken = _ingest(tmp_path, scope, "broken.txt", "poison alpha")
     healthy = _ingest(tmp_path, scope, "ok.txt", "bravo charlie")
     _ingest(tmp_path, scope, "broken2.txt", "poison bravo")
-    original = (rag_db.VECTORS_DROPPED, _row(broken)[1])  # chunks kept; NEW's width drops vectors
+    original = (rag_db.VECTORS_DROPPED + embeddings.embedding_identity(OLD), _row(broken)[1])
     models.update(model = NEW, fail = lambda texts: any("poison" in t for t in texts))
     assert ((job := _run_job())["status"], job["done"], job["failed"]) == ("completed", 1, 2)
     assert (_row(broken), _row(healthy)[0]) == (original, embeddings.embedding_identity(NEW))
@@ -120,11 +120,14 @@ def test_documents_a_width_change_stripped_stay_stale_after_switching_back(model
     assert _run_job()["status"] == "cancelled"  # b re-embedded, which dropped a's vectors
     models["model"] = OLD
     assert (reembed.stale_counts()["documents"], _run_job()["done"]) == (2, 2)
+    old, chunk = embeddings.embedding_identity(OLD), chunking.Chunk("text b", 2, None, 0, 0, 0, 6)
     with _connect() as c:
-        store.set_document_status(c, ids[1], "pending")  # vectors written, not yet completed
-        rag_db.ensure_vec(c, 4, ids[0]) or c.commit()  # the document being written keeps its stamp
+        store.set_document_status(c, ids[1], "pending")  # still being ingested
+        rag_db.ensure_vec(c, 4, ids[0]) or rag_db.ensure_vec(c, 6, ids[0])  # ids[0] is writing
+        assert store.get_document(c, ids[1])["embedding_model"] == rag_db.VECTORS_DROPPED + old
         assert store.count_untagged_documents(c) == 0
-    assert [_row(d)[0] for d in ids] == [embeddings.embedding_identity(OLD), rag_db.VECTORS_DROPPED]
+        store.add_chunks(c, store.kb_scope("K9"), ids[1], [chunk], [[0.5] * 6])  # its writer lands
+    assert [_row(d)[0] for d in ids] == [old, old]
 
 
 def test_cancel_and_retirement_stop_before_the_document_in_flight_is_written(models, tmp_path):

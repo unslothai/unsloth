@@ -520,6 +520,8 @@ def add_chunks(
                 (scope, chunk_id, _f32(vector)),
             ).lastrowid
         )
+    # Another writer's width change may have marked this document while it was encoding.
+    rag_db.restore_dropped_identity(conn, document_id)
     conn.commit()
     _remember_vec_rowids(conn, document_id, vec_rowids)
 
@@ -1014,8 +1016,8 @@ def count_untagged_documents(conn: sqlite3.Connection) -> int:
     tags = " ".join(f"AND embedding_model NOT LIKE '{t}:%'" for t in config.EMBEDDING_IDENTITY_TAGS)
     row = conn.execute(
         f"SELECT COUNT(*) AS n FROM documents WHERE embedding_model IS NOT NULL {tags} "
-        "AND embedding_model != ?",
-        (rag_db.VECTORS_DROPPED,),
+        "AND embedding_model NOT LIKE ?",
+        (rag_db.VECTORS_DROPPED + "%",),
     ).fetchone()
     return int(row["n"]) if row else 0
 
