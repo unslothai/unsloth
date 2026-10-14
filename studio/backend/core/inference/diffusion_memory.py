@@ -2285,12 +2285,14 @@ def measured_image_runtime_mib(
     dense_transformer_mib: Optional[int] = None,
     compute_bytes: int = 2,
     quant: Optional[str] = None,
+    phase_seeds: bool = False,
 ) -> Optional[int]:
     """Measured runtime headroom for ``family`` at this size, or None (unmeasured: use the flat estimate).
     ``dense_transformer_mib`` selects the dense eager table; ``compute_bytes`` scales it (fp32 Qwen-Image: 8480 vs 4248).
 
     Seeds: the peak tables above, then the per-phase calibration (``_MEASURED_IMAGE_ACTIVATION_MIB``, the same
-    quantity per phase) for a quantised family the peak table lacks. ``quant`` (``denoiser_quant_label``) adds the
+    quantity per phase) for a quantised family the peak table lacks, only with ``phase_seeds`` (the target is where
+    those were measured: NVIDIA with a sub-quadratic attention kernel, ``_calibrated_activation``). ``quant`` (``denoiser_quant_label``) adds the
     peak this machine recorded for (family, quant, speed tier, resolution bucket) at an earlier render
     (diffusion_measured_peaks): it raises a seed and stands in for a missing one, never lowers a seed."""
     if _env_off(MEASURED_ACTIVATION_ENV):
@@ -2308,7 +2310,7 @@ def measured_image_runtime_mib(
                 seed = peak
     elif str(speed_mode or "") in _MEASURED_PEAK_SPEED_MODES:
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
-        if seed is None:
+        if seed is None and phase_seeds:
             phases = _MEASURED_IMAGE_ACTIVATION_MIB.get(str(family or "").lower())
             if phases is not None:
                 # worst of encoder / denoise / untiled decode at 1024x1024 for this tier
@@ -2355,21 +2357,41 @@ def with_label_part(label: str, name: str, value: str) -> str:
     )
 
 
-def planned_vae_saver_tag(pipe: Any, plan: Any) -> str:
-    """The VAE savers ``plan`` asks for that this pipeline can engage (what ``apply_memory_plan`` will turn on)."""
+_VAE_SAVERS = (
+    ("use_tiling", "enable_vae_tiling", "enable_tiling"),
+    ("use_slicing", "enable_vae_slicing", "enable_slicing"),
+)
+
+
+def _vae_saver_can(pipe: Any, pipe_method: str, vae_method: str) -> bool:
+    return callable(getattr(pipe, pipe_method, None)) or callable(
+        getattr(getattr(pipe, "vae", None), vae_method, None)
+    )
+
+
+def _vae_savers_observable(pipe: Any) -> bool:
+    """False when a saver can be engaged but the VAE keeps no ``use_*`` flag to read it back: its state is unknown."""
     vae = getattr(pipe, "vae", None)
+    return all(
+        hasattr(vae, flag) or not _vae_saver_can(pipe, pm, vm) for flag, pm, vm in _VAE_SAVERS
+    )
 
-    def can(pipe_method: str, vae_method: str) -> bool:
-        return callable(getattr(pipe, pipe_method, None)) or callable(getattr(vae, vae_method, None))
 
+def planned_vae_saver_tag(pipe: Any, plan: Any) -> str:
+    """The VAE savers ``plan`` asks for that this pipeline can engage (what ``apply_memory_plan`` will turn on);
+    ``unknown`` (no learned peak used or recorded) when the VAE cannot report them."""
+    if not _vae_savers_observable(pipe):
+        return "unknown"
     return vae_saver_tag(
-        getattr(plan, "vae_tiling", False) and can("enable_vae_tiling", "enable_tiling"),
-        getattr(plan, "vae_slicing", False) and can("enable_vae_slicing", "enable_slicing"),
+        getattr(plan, "vae_tiling", False) and _vae_saver_can(pipe, *_VAE_SAVERS[0][1:]),
+        getattr(plan, "vae_slicing", False) and _vae_saver_can(pipe, *_VAE_SAVERS[1][1:]),
     )
 
 
 def live_vae_saver_tag(pipe: Any) -> str:
-    """The VAE savers in force right now."""
+    """The VAE savers in force right now (``unknown`` as in ``planned_vae_saver_tag``)."""
+    if not _vae_savers_observable(pipe):
+        return "unknown"
     vae = getattr(pipe, "vae", None)
     return vae_saver_tag(getattr(vae, "use_tiling", False), getattr(vae, "use_slicing", False))
 
@@ -2600,11 +2622,14 @@ def refine_plan_from_loaded_weights(
             dense_transformer_mib = dense_mib,
             compute_bytes = compute_bytes or 2,
             quant = quant,
+            phase_seeds = bool(getattr(pipe, "_unsloth_phase_seeds", False)),
         )
         if headroom is None:
             return plan
         from .diffusion_measured_peaks import lookup_bucket
-        learned, learned_pixels = lookup_bucket(family = family, quant = quant, speed_mode = speed_mode) or (None, None)
+        learned, learned_pixels, learned_quadratic = lookup_bucket(
+            family = family, quant = quant, speed_mode = speed_mode
+        ) or (None, None, False)
         overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
         floor = headroom + overhead + other
         estimates = dict(plan.estimates)
@@ -2612,6 +2637,7 @@ def refine_plan_from_loaded_weights(
             measured_runtime_headroom_mib = headroom,
             measured_learned_peak_mib = learned,
             measured_learned_peak_pixels = learned_pixels,
+            measured_learned_peak_quadratic = learned_quadratic,
             measured_dense_transformer_mib = dense_mib,
             measured_compute_bytes = compute_bytes,
             loaded_transformer_mib = dit,
@@ -3264,13 +3290,22 @@ def measured_request_extra_mib(
     # A seeded family keeps the seed and the learned peak the load placed from: a peak this session's renders recorded
     # after the load only places the NEXT load, it must not stream resident groups for a request the same size as one
     # that just completed. An unseeded family was placed from its learned peak, which is all there is to check against.
+    sized["phase_seeds"] = bool(getattr(pipe, "_unsloth_phase_seeds", False))
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
     if need is not None and learned:
+        from .diffusion_measured_peaks import resolution_bucket
+
         w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
         h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+        batch = max(1, int(batch_size or 1))
         covered = reserve[6] if len(reserve) > 6 and reserve[6] else DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
-        scale = max(1.0, (w * h * max(1, int(batch_size or 1))) / float(covered))
+        # the learned store's own scaling: a request past the covered bucket takes its bucket's ceiling, squared for
+        # a math-attention entry
+        scale = 1.0
+        if w * h * batch > int(covered):
+            power = 2 if len(reserve) > 7 and reserve[7] else 1
+            scale = (resolution_bucket(w, h, batch) / float(covered)) ** power
         step = _MEASURED_PEAK_ROUND_MIB
         need = max(need, int(-(-(float(learned) * scale * _MEASURED_PEAK_MARGIN) // step) * step))
     if need is None and isinstance(identity, tuple) and len(identity) == 3:
@@ -3710,6 +3745,13 @@ def denoisers_pinned_resident(pipe: Any) -> bool:
             return False
         pinned = True
     return pinned
+
+
+def _has_offload_groups(module: Any) -> bool:
+    try:
+        return bool(_offload_groups(module))
+    except Exception:  # noqa: BLE001 - an unreadable module counts as unhooked
+        return False
 
 
 def _offload_groups(module: Any) -> list:
@@ -4412,6 +4454,7 @@ def _apply_group_offload(
     installed = 0
     # every component's torch forward hooks before this call: an OOM after hooks exist unwinds to this state
     hook_snapshots: list = []
+    grouped_before: set = set()
     try:
         import inspect
 
@@ -4425,6 +4468,7 @@ def _apply_group_offload(
             for comp in (getattr(pipe, "components", {}) or {}).values()
             if isinstance(comp, torch.nn.Module)
         ]
+        grouped_before = {id(comp) for comp, _ in hook_snapshots if _has_offload_groups(comp)}
 
         # A dual-DiT pipeline (Ideogram 4) carries a second denoiser as large as the first, so stream every DiT and keep
         # only smaller companions resident.
@@ -4599,6 +4643,11 @@ def _apply_group_offload(
                 module.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
+        # apply_group_offloading can raise after hooking part of a module, before ``installed`` counts it
+        if not installed and any(
+            id(comp) not in grouped_before and _has_offload_groups(comp) for comp, _ in hook_snapshots
+        ):
+            installed = 1
         if installed and _is_oom(exc) and _unwind_group_offload(pipe, hook_snapshots, logger):
             # An OOM after some hooks exist (a later DiT, an encoder moved resident): every hook is gone again, so
             # the caller's one lower-residency retry can run instead of the load failing.

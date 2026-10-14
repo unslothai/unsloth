@@ -299,14 +299,15 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
 
         module._unsloth_video_pending = None
         work, start, dev = pending
+        extra = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
         window = getattr(module, "_unsloth_video_window", None)
         module._unsloth_video_window = None
         if window is not None:
             from .diffusion_measured_peaks import close_window
 
+            # closed after the read: a render arming in between would otherwise reset the peak unseen
             if not close_window(window[0], window[1]):
                 return None  # another render on the card reset the peak meanwhile
-        extra = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
         if extra <= 0:
             return None
         peaks = getattr(module, "_unsloth_video_peaks", None)

@@ -2001,6 +2001,27 @@ def _live_peak_label(state: Any) -> str:
     return with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
 
 
+def _peak_model_identity(
+    repo_id: Any, gguf_filename: Optional[str], kind: Optional[str], base: Any
+) -> str:
+    """The exact build for the learned-peak key: the denoiser source and its weights' revision / fingerprint, plus the
+    companion base and its revision for a GGUF / single-file load. ``unknown`` (no learned peak used or recorded)
+    when a revision cannot be read."""
+    from .diffusion_component_sizes import checkpoint_fingerprint
+
+    source = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
+    revision = checkpoint_fingerprint(repo_id, gguf_filename)
+    if not revision:
+        return "unknown"
+    identity = f"{source}@{revision}"
+    if (kind or "pipeline") != "pipeline" and base and str(base) != str(repo_id):
+        base_revision = checkpoint_fingerprint(base)
+        if not base_revision:
+            return "unknown"
+        identity += f"+{base}@{base_revision}"
+    return identity
+
+
 def _refresh_learned_reserve(pipe: Any) -> None:
     """After the peak identity moved (a VAE saver that did not engage, a deferred attention switch), let the request
     guard size from the new key's learned peak when it exceeds the one the placement reserved."""
@@ -2012,9 +2033,9 @@ def _refresh_learned_reserve(pipe: Any) -> None:
         from .diffusion_measured_peaks import lookup_bucket
 
         found = lookup_bucket(family = identity[0], quant = identity[1], speed_mode = identity[2])
-        reserve = tuple(reserve) + (None,) * max(0, 7 - len(reserve))
+        reserve = tuple(reserve) + (None,) * max(0, 8 - len(reserve))
         if found is not None and found[0] > int(reserve[5] or 0):
-            pipe._unsloth_measured_reserve = (*reserve[:5], found[0], found[1])
+            pipe._unsloth_measured_reserve = (*reserve[:5], *found)
     except Exception:  # noqa: BLE001 - the load-time reserve stands
         pass
 
@@ -8263,7 +8284,12 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
-                    peak_model = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
+                    peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)
+                    try:
+                        # the phase-table seed holds only where it was measured
+                        pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
+                    except Exception:  # noqa: BLE001
+                        pass
                     peak_vae = planned_vae_saver_tag(pipe, plan)
                     peak_te = str(te_quant or "dense")
                     try:
@@ -8302,6 +8328,7 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_compute_bytes"),
                                 plan.estimates.get("measured_learned_peak_mib"),
                                 plan.estimates.get("measured_learned_peak_pixels"),
+                                plan.estimates.get("measured_learned_peak_quadratic"),
                             )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention

@@ -176,7 +176,7 @@ def record(
     """Keep the max peak seen for this key and bucket, scaled to the bucket's ceiling so a smaller render in the bucket
     still answers a full-size one (squared with ``quadratic``: SDPA math attention grows with pixels squared, and the
     key's entry keeps scaling that way). Returns True when the stored value rose."""
-    if not enabled() or peak_mib is None or int(peak_mib) <= 0 or not family:
+    if not enabled() or peak_mib is None or int(peak_mib) <= 0 or not family or not identified(quant):
         return False
     path = store_path()
     if path is None:
@@ -245,6 +245,12 @@ def lookup(
     return None if found is None else found[0]
 
 
+def identified(quant: Optional[str]) -> bool:
+    """False when a part of the label could not be identified (``name:unknown``): such a load neither reads nor
+    records a learned peak and keeps the static estimate."""
+    return not any(part.endswith(":unknown") for part in str(quant or "").split("|"))
+
+
 def lookup_bucket(
     *,
     family: Optional[str],
@@ -256,8 +262,9 @@ def lookup_bucket(
     frames: int = 1,
     device: Optional[str] = None,
 ) -> Optional[tuple[int, int]]:
-    """``lookup`` plus the pixels the peak covers: (peak MiB, bucket pixels), or None."""
-    if not enabled() or not family:
+    """``lookup`` plus the pixels the peak covers and whether it scales squared: (peak MiB, bucket pixels,
+    quadratic), or None."""
+    if not enabled() or not family or not identified(quant):
         return None
     path = store_path()
     if path is None:
@@ -275,11 +282,12 @@ def lookup_bucket(
         return None
     want = resolution_bucket(width, height, batch_size)
     above = [b for b in peaks if b >= want]
+    quadratic = bool((entry or {}).get("quadratic"))
     if above:
-        return peaks[min(above)], min(above)
+        return peaks[min(above)], min(above), quadratic
     largest = max(peaks)
-    power = 2 if (entry or {}).get("quadratic") else 1
-    return int(math.ceil(peaks[largest] * (want / float(largest)) ** power)), want
+    power = 2 if quadratic else 1
+    return int(math.ceil(peaks[largest] * (want / float(largest)) ** power)), want, quadratic
 
 
 def record_work(key: Any, work: int, peak_mib: int) -> bool:
@@ -383,13 +391,14 @@ class PeakProbe:
     def finish(self) -> Optional[int]:
         if self.device is None or self.base is None:
             return None
-        if not close_window(self.device, getattr(self, "window", None)):
-            return None
         try:
             import torch
             torch.cuda.synchronize(self.device)
             peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
         except Exception:  # noqa: BLE001
+            peak = None
+        # closed only after the read: a render arming in between would otherwise reset the peak unseen
+        if not close_window(self.device, getattr(self, "window", None)) or peak is None:
             return None
         return -(-peak // (1024 * 1024)) if peak > 0 else None
 

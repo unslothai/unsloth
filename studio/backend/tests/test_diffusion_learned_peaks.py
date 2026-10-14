@@ -67,7 +67,7 @@ def klein_pipe(monkeypatch, store):
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: dict(KLEIN_LOADED))
     monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
     monkeypatch.setattr(dm, "denoiser_quant_label", lambda pipe: "torchao:Int8Tensor")
-    return types.SimpleNamespace()
+    return types.SimpleNamespace(_unsloth_phase_seeds = True)
 
 
 def _refine(
@@ -85,8 +85,8 @@ def _refine(
 def test_family_missing_from_peak_table_is_seeded_from_phase_calibration(store):
     assert "flux.2-klein" not in dm._MEASURED_IMAGE_PEAK_MIB
     # worst of encoder 1516 / denoise 1160 / untiled decode 2645 x 1.15, rounded up to 256 MiB
-    assert dm.measured_image_runtime_mib("flux.2-klein", "default") == 3072
-    assert dm.measured_image_runtime_mib("flux.2-klein", "max") == 3328
+    assert dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True) == 3072
+    assert dm.measured_image_runtime_mib("flux.2-klein", "max", phase_seeds = True) == 3328
     # eager tiers and unseeded families still keep the flat estimate
     assert dm.measured_image_runtime_mib("flux.2-klein", "off") is None
     assert dm.measured_image_runtime_mib("hidream", "default") is None
@@ -153,20 +153,20 @@ def test_store_off_and_corrupt_file(store, monkeypatch):
 
 
 def test_learned_peak_raises_a_seed_but_never_lowers_it(store):
-    seed = dm.measured_image_runtime_mib("flux.2-klein", "default", quant = "torchao:Int8Tensor")
+    seed = dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor")
     assert seed == 3072
     kw = dict(family = "flux.2-klein", quant = "torchao:Int8Tensor", speed_mode = "default")
     mp.record(**kw, width = 1024, height = 1024, peak_mib = 1000)
     assert (
-        dm.measured_image_runtime_mib("flux.2-klein", "default", quant = "torchao:Int8Tensor") == 3072
+        dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor") == 3072
     )
     mp.record(**kw, width = 1024, height = 1024, peak_mib = 4000)
     # 4000 x 1.15 = 4600 -> 4608
     assert (
-        dm.measured_image_runtime_mib("flux.2-klein", "default", quant = "torchao:Int8Tensor") == 4608
+        dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True, quant = "torchao:Int8Tensor") == 4608
     )
     # without a quant label (callers that never measured) the seed alone answers
-    assert dm.measured_image_runtime_mib("flux.2-klein", "default") == 3072
+    assert dm.measured_image_runtime_mib("flux.2-klein", "default", phase_seeds = True) == 3072
 
 
 def test_unseeded_family_is_placed_from_its_learned_peak_on_the_next_load(klein_pipe):
@@ -935,10 +935,14 @@ def test_learned_peaks_are_keyed_by_text_encoder_precision(klein_pipe):
 
 def test_vae_key_names_only_the_savers_the_pipeline_can_engage():
     plan = types.SimpleNamespace(vae_tiling = True, vae_slicing = True)
-    untileable = types.SimpleNamespace(vae = types.SimpleNamespace(enable_slicing = lambda: None))
+    untileable = types.SimpleNamespace(
+        vae = types.SimpleNamespace(enable_slicing = lambda: None, use_slicing = False)
+    )
     assert dm.planned_vae_saver_tag(untileable, plan) == "sliced"
     both = types.SimpleNamespace(
-        vae = types.SimpleNamespace(enable_slicing = lambda: None, enable_tiling = lambda: None)
+        vae = types.SimpleNamespace(
+            enable_slicing = lambda: None, enable_tiling = lambda: None, use_slicing = False, use_tiling = False
+        )
     )
     assert dm.planned_vae_saver_tag(both, plan) == "tiled+sliced"
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
@@ -959,7 +963,7 @@ def test_identity_change_refreshes_the_learned_reserve(store):
         _unsloth_measured_reserve = (3072, "flux.2-klein", "default", None, None, 2600, 1 << 20),
     )
     diffusion._refresh_learned_reserve(pipe)
-    assert pipe._unsloth_measured_reserve[5:] == (5000, 1 << 20)
+    assert pipe._unsloth_measured_reserve[5:] == (5000, 1 << 20, False)
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     deferred = src.index("def _engage_deferred_profile")
     assert "_refresh_learned_reserve(state.pipe)" in src[deferred : deferred + 4000]
@@ -1055,3 +1059,115 @@ def test_residency_fit_registers_its_video_measurement_window():
     fit = src.index("def fit_for_request")
     assert "dev = _open_window(module, dev)" in src[fit:]
     assert src.count("dev = _open_window(module, dev)") == 2
+
+
+# ---------------------------------------------------------------------------------------------------- review round 6
+
+
+def test_request_guard_scales_a_reserved_peak_to_the_request_bucket(klein_pipe):
+    klein_pipe._unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default")
+    klein_pipe._unsloth_measured_reserve = (4608, "flux.2-klein", "default", None, None, 4000, 1 << 20, False)
+    # 1088x1024 crosses into the 2 MP bucket: 4000 x 2 x 1.15 = 9200 -> 9216, not 1.06x
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1088, height = 1024) == 9216 - 4608
+    klein_pipe._unsloth_measured_reserve = (4608, "flux.2-klein", "default", None, None, 4000, 1 << 20, True)
+    # a math-attention entry scales squared: 4000 x 4 x 1.15 = 18400 -> 18432
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1088, height = 1024) == 18432 - 4608
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
+
+
+def test_peak_window_stays_open_until_the_high_water_mark_is_read(monkeypatch):
+    fake = _FakeCudaTorch()
+    read = fake.cuda.max_memory_allocated
+    late = []
+
+    def racing_read(dev = None):
+        late.append(mp.open_window("cuda:0"))  # a render arms between the sync and the read
+        return read(dev)
+
+    fake.cuda.max_memory_allocated = staticmethod(racing_read)
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake)
+    probe = mp.PeakProbe("cuda:0")
+    fake.alloc(500)
+    assert probe.finish() is None
+    assert not mp.close_window("cuda:0", late[0])
+
+
+def test_unobservable_vae_savers_use_and_record_no_learned_peak(store):
+    pipe = types.SimpleNamespace(vae = types.SimpleNamespace(enable_slicing = lambda: None, use_tiling = False))
+    plan = types.SimpleNamespace(vae_tiling = False, vae_slicing = True)
+    assert dm.planned_vae_saver_tag(pipe, plan) == "unknown"
+    assert dm.live_vae_saver_tag(pipe) == "unknown"
+    kw = dict(family = "some-new-dit", quant = "q|vae:unknown|attn:native", speed_mode = "default")
+    assert not mp.record(**kw, width = 1024, height = 1024, peak_mib = 2000)
+    assert mp.lookup(**kw) is None
+
+
+def test_peak_model_identity_names_the_whole_build(monkeypatch):
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_component_sizes as sizes
+
+    revisions = {("org/dit", "dit-Q4.gguf"): "abc", ("org/base", None): "def"}
+    monkeypatch.setattr(sizes, "checkpoint_fingerprint", lambda repo, filename = None: revisions.get((repo, filename)))
+    assert diffusion._peak_model_identity("org/dit", "dit-Q4.gguf", "gguf", "org/base") == (
+        "org/dit/dit-Q4.gguf@abc+org/base@def"
+    )
+    assert diffusion._peak_model_identity("org/dit", "dit-Q4.gguf", "gguf", "org/other") == "unknown"
+    assert diffusion._peak_model_identity("org/gone", None, "pipeline", None) == "unknown"
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert "peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)" in src
+
+
+def test_phase_table_seed_needs_its_measured_configuration(klein_pipe):
+    assert dm.measured_image_runtime_mib("flux.2-klein", "default") is None
+    plan = _klein_flat_plan()
+    klein_pipe._unsloth_phase_seeds = False  # ROCm, or quadratic SDPA only
+    assert _refine(klein_pipe, plan) is plan
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert "pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None" in src
+
+
+def test_oom_inside_the_first_offload_apply_unwinds_its_hooks(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import diffusers.hooks as hooks
+
+    def fake_apply(module, **kwargs):
+        module._fake_hooked = True  # hooked part of the module, then ran out of memory
+        raise _OOM("CUDA out of memory")
+
+    unwound = []
+
+    def fake_unwind(pipe, snapshots, logger = None):
+        for module, _ in snapshots:
+            module.__dict__.pop("_fake_hooked", None)
+        unwound.append(True)
+        return True
+
+    monkeypatch.setattr(hooks, "apply_group_offloading", fake_apply)
+    monkeypatch.setattr(dm, "_offload_groups", lambda m: [object()] if getattr(m, "_fake_hooked", False) else [])
+    monkeypatch.setattr(dm, "_unwind_group_offload", fake_unwind)
+    dit = torch.nn.Linear(4, 4)
+    pipe = types.SimpleNamespace(transformer = dit, components = {"transformer": dit})
+    assert dm._apply_group_offload(pipe, "cpu", None) is False
+    assert unwound and not getattr(dit, "_fake_hooked", False)
+    assert dm._is_oom(getattr(pipe, dm._GROUP_OFFLOAD_FAILURE_ATTR))
+
+
+def test_video_window_stays_open_until_the_high_water_mark_is_read(store, monkeypatch):
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    work = 1280 * 704 * 49
+    module = types.SimpleNamespace(
+        _unsloth_video_pending = (work, 0, "cuda:0"),
+        _unsloth_video_window = ("cuda:0", mp.open_window("cuda:0")),
+        _unsloth_video_calibration_key = None,
+    )
+
+    class _Torch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def max_memory_allocated(dev):
+                mp.open_window("cuda:0")  # an image render arms between the decode and the read
+                return 3000 << 20
+
+    with monkeypatch.context() as m:
+        m.setitem(__import__("sys").modules, "torch", _Torch)
+        assert vsr.record_request_peak(types.SimpleNamespace(transformer = module)) is None
