@@ -224,6 +224,31 @@ def lookup(
 
     The smallest recorded bucket at or above the request's bucket answers as is (an overestimate); with only smaller
     buckets recorded, the largest one is scaled linearly by pixel count."""
+    found = lookup_bucket(
+        family = family,
+        quant = quant,
+        speed_mode = speed_mode,
+        width = width,
+        height = height,
+        batch_size = batch_size,
+        frames = frames,
+        device = device,
+    )
+    return None if found is None else found[0]
+
+
+def lookup_bucket(
+    *,
+    family: Optional[str],
+    quant: Optional[str],
+    speed_mode: Optional[str],
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    batch_size: int = 1,
+    frames: int = 1,
+    device: Optional[str] = None,
+) -> Optional[tuple[int, int]]:
+    """``lookup`` plus the pixels the peak covers: (peak MiB, bucket pixels), or None."""
     if not enabled() or not family:
         return None
     path = store_path()
@@ -243,9 +268,9 @@ def lookup(
     want = resolution_bucket(width, height, batch_size)
     above = [b for b in peaks if b >= want]
     if above:
-        return peaks[min(above)]
+        return peaks[min(above)], min(above)
     largest = max(peaks)
-    return int(math.ceil(peaks[largest] * want / float(largest)))
+    return int(math.ceil(peaks[largest] * want / float(largest))), want
 
 
 def record_work(key: Any, work: int, peak_mib: int) -> bool:

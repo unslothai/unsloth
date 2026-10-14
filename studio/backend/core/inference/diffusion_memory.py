@@ -2330,11 +2330,13 @@ def measured_image_runtime_mib(
     return int(-(-need // step) * step)
 
 
-def learned_peak_label(pipe: Any, attention: Optional[str] = None) -> str:
-    """``denoiser_quant_label`` plus the engaged attention backend: backends with different workspaces never share a
-    learned peak."""
-    quant = denoiser_quant_label(pipe)
-    return quant if attention is None else f"{quant}|attn:{attention}"
+def learned_peak_label(pipe: Any, attention: Optional[str] = None, model: Optional[str] = None) -> str:
+    """``denoiser_quant_label`` plus the loaded model (variants of one family differ in size) and the engaged attention
+    backend (backends with different workspaces): neither shares a learned peak."""
+    label = denoiser_quant_label(pipe)
+    if model is not None:
+        label = f"{label}|model:{model}"
+    return label if attention is None else f"{label}|attn:{attention}"
 
 
 def denoiser_quant_label(pipe: Any) -> str:
@@ -2498,6 +2500,7 @@ def refine_plan_from_loaded_weights(
     speed_mode: Optional[str],
     logger: Any = None,
     attention: Optional[str] = None,
+    model: Optional[str] = None,
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
@@ -2530,7 +2533,7 @@ def refine_plan_from_loaded_weights(
         if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
             # measured on fp16 / fp32 cards only; bf16 cards can compile later
             return plan
-        quant = learned_peak_label(pipe, attention)
+        quant = learned_peak_label(pipe, attention, model)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
         except Exception:  # noqa: BLE001 - a pipe refusing attributes only skips recording
@@ -2544,15 +2547,15 @@ def refine_plan_from_loaded_weights(
         )
         if headroom is None:
             return plan
-        from .diffusion_measured_peaks import lookup as learned_peak
-
-        learned = learned_peak(family = family, quant = quant, speed_mode = speed_mode)
+        from .diffusion_measured_peaks import lookup_bucket
+        learned, learned_pixels = lookup_bucket(family = family, quant = quant, speed_mode = speed_mode) or (None, None)
         overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
         floor = headroom + overhead + other
         estimates = dict(plan.estimates)
         estimates.update(
             measured_runtime_headroom_mib = headroom,
             measured_learned_peak_mib = learned,
+            measured_learned_peak_pixels = learned_pixels,
             measured_dense_transformer_mib = dense_mib,
             measured_compute_bytes = compute_bytes,
             loaded_transformer_mib = dit,
@@ -3072,11 +3075,7 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
     torch.cuda.synchronize(onload)
 
 
-def _unwind_group_offload(
-    pipe: Any,
-    snapshots: list,
-    logger: Any = None,
-) -> bool:
+def _unwind_group_offload(pipe: Any, snapshots: list, logger: Any = None) -> bool:
     """Undo a partial ``_apply_group_offload``: group hooks, the prefetchers' torch hooks and attributes, deferred
     pins. The weights stay where the hooks left them (host copies or the card); the caller's retry moves them."""
     try:
@@ -3213,11 +3212,8 @@ def measured_request_extra_mib(
     if need is not None and learned:
         w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
         h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
-        scale = max(
-            1.0,
-            (w * h * max(1, int(batch_size or 1)))
-            / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT),
-        )
+        covered = reserve[6] if len(reserve) > 6 and reserve[6] else DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
+        scale = max(1.0, (w * h * max(1, int(batch_size or 1))) / float(covered))
         step = _MEASURED_PEAK_ROUND_MIB
         need = max(need, int(-(-(float(learned) * scale * _MEASURED_PEAK_MARGIN) // step) * step))
     if need is None and isinstance(identity, tuple) and len(identity) == 3:

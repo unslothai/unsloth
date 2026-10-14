@@ -8217,11 +8217,12 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
+                    peak_model = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
                     try:
                         # the learned-peak key: recorded at every completed render, read by later loads
                         pipe._unsloth_peak_identity = (
                             fam.name,
-                            learned_peak_label(pipe, attention_engaged or "native"),
+                            learned_peak_label(pipe, attention_engaged or "native", peak_model),
                             effective_speed,
                         )
                     except Exception:  # noqa: BLE001 - recording is optional
@@ -8235,6 +8236,7 @@ class DiffusionBackend:
                             speed_mode = effective_speed,
                             logger = logger,
                             attention = attention_engaged or "native",
+                            model = peak_model,
                         )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
@@ -8247,6 +8249,7 @@ class DiffusionBackend:
                                 plan.estimates.get("measured_dense_transformer_mib"),
                                 plan.estimates.get("measured_compute_bytes"),
                                 plan.estimates.get("measured_learned_peak_mib"),
+                                plan.estimates.get("measured_learned_peak_pixels"),
                             )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention

@@ -651,7 +651,7 @@ def test_load_passes_the_engaged_attention_backend_to_the_peak_identity():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert 'learned_peak_label(pipe, attention_engaged or "native")' in src
+    assert 'learned_peak_label(pipe, attention_engaged or "native", peak_model)' in src
     assert 'attention = attention_engaged or "native",' in src
     assert 'plan.estimates.get("measured_learned_peak_mib"),' in src
 
@@ -703,3 +703,60 @@ def test_store_cap_evicts_the_oldest_entry_not_the_alphabetically_first(store, m
         assert mp.record_work(("k", fam), 10, 100)
     assert mp.record_work(("k", "a"), 10, 100)
     assert list(json.loads(store.read_text())["work"]) == [repr(("k", f)) for f in ("n", "o", "a")]
+
+
+# ---------------------------------------------------------------------------------------------------- review round 3
+
+
+def test_learned_peaks_are_keyed_by_the_loaded_model(klein_pipe):
+    mp.record(
+        family = "some-new-dit",
+        quant = "torchao:Int8Tensor|model:org/dit-4b|attn:native",
+        speed_mode = "default",
+        width = 1024,
+        height = 1024,
+        peak_mib = 2600,
+    )
+    plan = _klein_flat_plan()
+    kw = dict(family = "some-new-dit", speed_mode = "default", attention = "native")
+    small = dm.refine_plan_from_loaded_weights(klein_pipe, plan, model = "org/dit-4b", **kw)
+    assert small.estimates["measured_runtime_headroom_mib"] == 3072
+    assert klein_pipe._unsloth_peak_identity[1] == "torchao:Int8Tensor|model:org/dit-4b|attn:native"
+    # a larger variant of the same family never reuses the smaller one's peak
+    assert dm.refine_plan_from_loaded_weights(klein_pipe, plan, model = "org/dit-9b", **kw) is plan
+
+
+def test_load_passes_the_model_to_the_peak_identity():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert 'learned_peak_label(pipe, attention_engaged or "native", peak_model)' in src
+    assert "model = peak_model," in src
+    assert 'plan.estimates.get("measured_learned_peak_pixels"),' in src
+
+
+def test_request_guard_keeps_the_learned_peaks_source_bucket(klein_pipe):
+    mp.record(
+        family = "flux.2-klein",
+        quant = "torchao:Int8Tensor",
+        speed_mode = "default",
+        width = 1448,
+        height = 1448,
+        peak_mib = 8000,
+    )
+    new = _refine(klein_pipe, _klein_flat_plan())
+    learned = new.estimates["measured_learned_peak_mib"]
+    assert learned >= 8000
+    headroom = new.estimates["measured_runtime_headroom_mib"]
+    klein_pipe._unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default")
+    klein_pipe._unsloth_measured_reserve = (
+        headroom,
+        "flux.2-klein",
+        "default",
+        None,
+        None,
+        learned,
+        new.estimates.get("measured_learned_peak_pixels"),
+    )
+    # the stored peak already covers 2 MP: a 2 MP request needs nothing beyond the load's reserve
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1448, height = 1448) == 0
