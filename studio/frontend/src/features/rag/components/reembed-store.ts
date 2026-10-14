@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { create } from "zustand";
@@ -111,6 +112,19 @@ function markOutdated(): void {
   freshAfter = ++clock;
   reconciling = true;
   schedulePoll();
+}
+
+/** Signing out keeps this module loaded for the next account, so the job it followed is dropped. */
+function resetOnSignOut(): void {
+  if (pollTimer !== null) clearTimeout(pollTimer);
+  pollTimer = null;
+  watchedJobId = null;
+  reconciling = false;
+  useReembedStore.setState({ status: null });
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(AUTH_SESSION_CLEARED_EVENT, resetOnSignOut);
 }
 
 function schedulePoll(): void {

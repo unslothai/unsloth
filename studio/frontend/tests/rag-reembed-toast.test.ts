@@ -3,9 +3,13 @@
 
 import assert from "node:assert/strict";
 import { register } from "node:module";
-import test from "node:test";
+import test, { afterEach } from "node:test";
+
+import { AUTH_SESSION_CLEARED_EVENT } from "../src/features/auth/session-events.ts";
+import { installLocalStorageFake } from "./helpers/kit.ts";
 
 register("./helpers/igpu-carveout-resolver.mjs", import.meta.url);
+const { fireWindowEvent } = installLocalStorageFake();
 
 const { calls } = await import("./helpers/toast-stub.mjs");
 const { setAuthFetchHandler } = await import("./helpers/store-stubs/auth.ts");
@@ -28,19 +32,34 @@ const idle = { staleDocuments: 0, staleArchived: 0 };
 const stale = { staleDocuments: 2, staleArchived: 0 };
 const kinds = () => calls.map((call) => call.kind);
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-const offline = () => {
-  throw new Error("offline");
-};
+const offline = () => Promise.reject(new Error("offline"));
+const reply = (body: object) => new Response(JSON.stringify(body));
+const signOut = () => fireWindowEvent(AUTH_SESSION_CLEARED_EVENT, {});
+afterEach(signOut);
 
 function serve(status: object, posted: string[] = []) {
   calls.length = 0;
   setAuthFetchHandler((url, init) => {
-    if (init?.method !== "POST") return new Response(JSON.stringify(status));
+    if (init?.method !== "POST") return reply(status);
     posted.push(url);
-    return new Response(JSON.stringify({ job: job("running") }));
+    return reply({ job: job("running") });
   });
   return posted;
 }
+
+test("signing out forgets the job and stops polling for it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  serve({ ...stale, job: job("running", 0, "j11") });
+  await useReembedStore.getState().load();
+  setAuthFetchHandler(offline);
+  await useReembedStore.getState().cancel(); // leaves the state to reconcile
+  signOut();
+  await useReembedStore.getState().load(); // a read that fails once signed out
+  serve({ ...idle, job: job("completed", 0, "j11") });
+  t.mock.timers.tick(1500);
+  await flush();
+  assert.deepEqual([useReembedStore.getState().status, kinds()], [null, []]);
+});
 
 test("a save that leaves documents stale offers Re-embed, which starts the job", async () => {
   const posted = serve({ staleDocuments: 3, staleArchived: 0, job: null });
@@ -106,23 +125,21 @@ test("a status reply older than a start reply is replaced by a fresh read", asyn
   setAuthFetchHandler((_url, init) => {
     if (init?.method === "POST") {
       server = { ...stale, job: job("running", 0, "j3") };
-      return new Response(JSON.stringify({ job: job("running", 0, "j3") }));
+      return reply({ job: job("running", 0, "j3") });
     }
-    if (held.get) return new Response(JSON.stringify(server));
+    if (held.get) return reply(server);
     return new Promise((resolve) => {
       held.get = resolve;
     });
   });
   const late = toastEmbeddingModelSaved("Saved");
   await useReembedStore.getState().start();
-  held.get?.(new Response(JSON.stringify({ ...stale, job: null })));
+  held.get?.(reply({ ...stale, job: null }));
   await late;
   assert.equal(useReembedStore.getState().status?.job?.id, "j3");
   const saved = calls.at(-1)?.options;
   assert.equal(saved?.description?.startsWith("2 documents"), true);
   assert.equal(saved?.action, undefined);
-  serve({ ...idle, job: job("cancelled", 0, "j3") });
-  await useReembedStore.getState().load();
 });
 
 test("a late start reply neither hides its job nor announces its end twice", async (t) => {
@@ -137,10 +154,9 @@ test("a late start reply neither hides its job nor announces its end twice", asy
       });
     }
     if (server === null) throw new Error("offline");
-    return new Response(JSON.stringify(server));
+    return reply(server);
   });
-  const startReply = (id: string) =>
-    new Response(JSON.stringify({ job: job("running", 0, id) }));
+  const startReply = (id: string) => reply({ job: job("running", 0, id) });
   let started = useReembedStore.getState().start();
   await useReembedStore.getState().load();
   server = null; // the read that replaces the dropped start reply fails once
@@ -169,12 +185,10 @@ test("a finished job in a start or cancel reply refreshes the stale counts", asy
   let online = false;
   setAuthFetchHandler((_url, init) => {
     if (init?.method === "POST") {
-      return new Response(JSON.stringify({ job: job("completed", 0, "j8") }));
+      return reply({ job: job("completed", 0, "j8") });
     }
     if (!online) throw new Error("offline");
-    return new Response(
-      JSON.stringify({ ...idle, job: job("completed", 0, "j8") }),
-    );
+    return reply({ ...idle, job: job("completed", 0, "j8") });
   });
   await useReembedStore.getState().cancel();
   await flush();
@@ -190,17 +204,12 @@ test("a start whose reply was lost is found by the next status read", async (t) 
   await useReembedStore.getState().load();
   setAuthFetchHandler((_url, init) => {
     if (init?.method === "POST") throw new Error("offline");
-    return new Response(
-      JSON.stringify({ ...idle, job: job("running", 0, "j9") }),
-    );
+    return reply({ ...idle, job: job("running", 0, "j9") });
   });
   await useReembedStore.getState().start();
   t.mock.timers.tick(1500);
   await flush();
   assert.equal(useReembedStore.getState().status?.job?.id, "j9");
-  serve({ ...idle, job: job("cancelled", 0, "j9") });
-  t.mock.timers.tick(1500);
-  await flush();
 });
 
 test("a status reply sent before a failed start cannot end the recovery", async (t) => {
@@ -209,9 +218,7 @@ test("a status reply sent before a failed start cannot end the recovery", async 
   setAuthFetchHandler((_url, init) => {
     if (init?.method === "POST") throw new Error("offline");
     if (held.get) {
-      return new Response(
-        JSON.stringify({ ...idle, job: job("running", 0, "j10") }),
-      );
+      return reply({ ...idle, job: job("running", 0, "j10") });
     }
     return new Promise((resolve) => {
       held.get = resolve;
@@ -219,9 +226,7 @@ test("a status reply sent before a failed start cannot end the recovery", async 
   });
   const early = useReembedStore.getState().load();
   await useReembedStore.getState().start();
-  held.get?.(new Response(JSON.stringify({ ...idle, job: null })));
+  held.get?.(reply({ ...idle, job: null }));
   await early;
   assert.equal(useReembedStore.getState().status?.job?.id, "j10");
-  serve({ ...idle, job: job("cancelled", 0, "j10") });
-  await useReembedStore.getState().load();
 });
