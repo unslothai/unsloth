@@ -335,6 +335,9 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
         cmd.extend(["--accelerator", phase["accelerator"]])
     if phase.get("pin_release_tag"):
         cmd.extend(["--published-release-tag", phase["pin_release_tag"]])
+        if _target()[1] is None:
+            # The installer re-checks under its lock, which the guard above cannot hold.
+            cmd.append("--keep-newer")
     logger.info("audio.cpp update: installing", cmd = " ".join(cmd))
     env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
     try:

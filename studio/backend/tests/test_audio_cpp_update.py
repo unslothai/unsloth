@@ -397,6 +397,7 @@ def test_the_installer_gets_the_managed_dir_and_recorded_accelerator(run_env, ma
         "cpu",
         "--published-release-tag",
         _LATEST,
+        "--keep-newer",
     ]
     assert run_env.calls["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
@@ -454,6 +455,7 @@ def test_a_user_pin_still_installs_an_older_release(run_env, managed, monkeypatc
     result = aupd.run_chained_phase(phase, lambda fraction: None)
     assert "install" in run_env.events
     assert result["to_tag"] == "v0.9.0-unsloth.1"
+    assert "--keep-newer" not in run_env.calls["cmd"]
 
 
 def test_an_unloaded_model_asks_for_a_reload(run_env, monkeypatch):

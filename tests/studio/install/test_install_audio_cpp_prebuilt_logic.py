@@ -508,6 +508,27 @@ def test_a_pinned_older_release_is_installed(monkeypatch, tmp_path):
     assert M.read_install_record(root)["release_tag"] == OLDER_TAG
 
 
+def test_keep_newer_keeps_a_newer_install_over_the_pinned_offer(monkeypatch, tmp_path, capsys):
+    # The in-app update pins the release it offered; a setup run that installed a newer one under the lock first wins.
+    _install(monkeypatch, tmp_path, _release(tmp_path, CPU_ZIP))
+    root = tmp_path / "audio.cpp"
+    before = _tree_digest(root)
+    monkeypatch.setattr(M, "resolve", lambda *a, **k: pytest.fail("no lookup expected"))
+    monkeypatch.setattr(M, "_download", lambda *a: pytest.fail("no download expected"))
+    capsys.readouterr()
+    argv = [
+        "--install-dir",
+        str(root),
+        "--accelerator",
+        "cpu",
+        "--published-release-tag",
+        OLDER_TAG,
+    ]
+    assert M.main([*argv, "--keep-newer"]) == M.EXIT_OK
+    assert f"audio.cpp: already matches {CPU_ZIP}" in capsys.readouterr().out
+    assert _tree_digest(root) == before
+
+
 @pytest.mark.parametrize(
     "tag, key",
     [
