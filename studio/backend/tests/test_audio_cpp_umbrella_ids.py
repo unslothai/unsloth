@@ -209,6 +209,47 @@ def test_folder_guard_matches_the_folder_however_it_was_loaded(monkeypatch, load
     assert deletion._audio_cpp_blocks_delete(AUDIO_CPP_REPO) is True
 
 
+def test_a_compound_scope_does_not_name_a_larger_sibling(hub):
+    # GigaAM: `multilingual-ctc` named both `...-multilingual-ctc-` and `...-multilingual-large-ctc-`,
+    # so the Hub key resolved to neither and delete / reveal answered 404.
+    folder = "GigaAM-ASR-GGUF"
+    small = acm.AudioCppVariant(
+        "gigaam-multilingual-ctc/F16", (), f"{folder}/gigaam-multilingual-ctc-f16.gguf"
+    )
+    large = acm.AudioCppVariant("large/F16", (), f"{folder}/gigaam-multilingual-large-ctc-f16.gguf")
+    assert acm._cached_variants_named([small, large], "multilingual-ctc/F16", folder) == [small]
+    assert acm._cached_variants_named([small, large], "multilingual-large-ctc/F16", folder) == [
+        large
+    ]
+    assert acm._state_key_named(
+        f"{folder}/gigaam-multilingual-ctc-f16", "multilingual-ctc/F16", folder
+    )
+    assert not acm._state_key_named(
+        f"{folder}/gigaam-multilingual-large-ctc-f16", "multilingual-ctc/F16", folder
+    )
+
+
+def test_a_timestamped_asr_holds_the_forced_aligner_it_opened(monkeypatch):
+    # Qwen3-ASR attaches the aligner only for Timestamps and reports ASR as loaded, so the
+    # folder-scoped guard let a live aligner be deleted.
+    from core.inference import stt_audiocpp_sidecar
+    from hub.services.models import deletion
+
+    aligner = stt_audiocpp_sidecar.QWEN3_ALIGNER.id
+    _idle(monkeypatch)
+    side = stt_audiocpp_sidecar.get_audio_cpp_stt_sidecar()
+    assert deletion._audio_cpp_blocks_delete(aligner) is False
+    monkeypatch.setattr(side, "_server_alive", lambda: True)
+    side._aligned = True
+    assert deletion._audio_cpp_blocks_delete(aligner) is True
+    assert deletion._audio_cpp_blocks_delete(KOKORO) is False
+    side._aligned = False
+    assert deletion._audio_cpp_blocks_delete(aligner) is False
+    # A Qwen3-ASR load in flight may still attach it.
+    _idle(monkeypatch, stt = ASR)
+    assert deletion._audio_cpp_blocks_delete(aligner) is True
+
+
 def test_folder_guard_maps_a_legacy_dictation_key_to_its_folder(monkeypatch):
     from hub.services.models import deletion
 

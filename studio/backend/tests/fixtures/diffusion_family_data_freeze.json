@@ -3412,11 +3412,13 @@
    "minimax-h3": "MiniMax-H3",
    "qwen-image": "Qwen-Image",
    "sdxl": "SDXL",
+   "wan2.2-ti2v-5b": "Wan2.2 TI2V 5B",
    "z-image": "Z-Image"
   },
   "trainable_video_families": [
    "ltx-2",
-   "minimax-h3"
+   "minimax-h3",
+   "wan2.2-ti2v-5b"
   ],
   "trusted_image_repos": [
    "alpha-vllm/lumina-image-2.0",

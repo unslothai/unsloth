@@ -11,6 +11,7 @@ import {
   type AudioCppModel,
   type AudioCppTask,
   audioCppDisplayName,
+  isAudioCppFolderId,
 } from "../../../audio/audio-cpp-catalog.ts";
 import {
   type GgufFitClass,
@@ -1113,7 +1114,21 @@ export function curatedRowLabelFor(
   // GGUF reads like a text model's row: the repo name already ends in -GGUF, so a chip would only repeat the suffix.
   if (hit.artifact.format === "gguf") {
     const leaf = hit.artifact.repoId.split("/").pop() ?? hit.artifact.repoId;
-    return { name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`), tags: [] };
+    // A hub repo named like a bundled folder ("Qwen3-ASR-0.6B-GGUF") would read as its twin.
+    const twin =
+      !isAudioCppFolderId(hit.artifact.repoId) &&
+      catalog.some((group) =>
+        group.artifacts.some(
+          (artifact) =>
+            artifact.format === "gguf" &&
+            artifact.repoId.toLowerCase() !== hit.artifact.repoId.toLowerCase() &&
+            artifact.repoId.split("/").pop()?.toLowerCase() === leaf.toLowerCase(),
+        ),
+      );
+    return {
+      name: qualify(GGUF_SUFFIX_RE.test(leaf) ? leaf : `${leaf}-GGUF`),
+      tags: twin ? ["llama.cpp"] : [],
+    };
   }
   // A group with one artifact has nothing to distinguish, so it stays bare.
   if (hit.group.artifacts.length <= 1) return { name: qualify(hit.group.displayName), tags: [] };
@@ -1146,13 +1161,16 @@ export function catalogToModelOptions(
       // A host that can only run the native engine is not offered pipeline rows it would be refused at
       // load. The `models` prop is built only here, so this covers the trigger name and seed ids both.
       if (!curatedArtifactIsOfferable(artifact.repoId, host)) continue;
+      const name =
+        curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
+        group.displayName;
       options.push({
         id: artifact.repoId,
-        name:
-          curatedDisplayNameFor(artifact.repoId, catalog, host, denseQuantSchemes) ??
-          group.displayName,
+        name,
         description: group.description,
-        descriptionSuffix: artifact.label,
+        // "Kokoro-82M-GGUF - GGUF" would only repeat the name.
+        descriptionSuffix:
+          artifact.format === "gguf" && GGUF_SUFFIX_RE.test(name) ? undefined : artifact.label,
         isGguf: artifact.format === "gguf",
         deviceQuant: artifact.deviceQuant,
       });
