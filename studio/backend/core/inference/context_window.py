@@ -943,6 +943,8 @@ _SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
 _ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
 # Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
 _ATTACHMENT_FIT_MARGIN = 0.125
+# No tokenizer packs more characters than this into one token, so a longer body cannot fit and is never counted.
+_MAX_CHARS_PER_TOKEN = 16
 
 
 def _attachment_spans(text: str):
@@ -987,7 +989,7 @@ def _cut_attachment_bodies(text: str, keep_chars: int, *, excerpt: bool) -> str:
         )
         if kept:
             out.append(
-                f"{note.group(0)}{opened}{kept.rstrip(chr(10))}{close}\n[{name} is too long for the context window: "
+                f"{note.group(0)}{opened}{kept[:-1]}{close}\n[{name} is too long for the context window: "
                 f"only its first {kept.count(chr(10))} of {total} lines are above. {where} instead of answering "
                 f"from this excerpt.]{tail}"
             )
@@ -1069,9 +1071,12 @@ def fit_oversized_attachments(
             content = _cut_content(message["content"], keep_chars, excerpt = excerpt)
             return count_tokens([*base, {**message, "content": content}]) <= limit
 
-        if fits(longest, budget) or (excerpt and not fits(0, budget)):
+        cap = target * _MAX_CHARS_PER_TOKEN
+        if (longest <= budget * _MAX_CHARS_PER_TOKEN and fits(longest, budget)) or (
+            excerpt and not fits(0, budget)
+        ):
             continue
-        low, high = 0, longest if fits(0) else 0
+        low, high = 0, min(longest, cap) if fits(0) else 0
         while high - low > 64:
             middle = (low + high) // 2
             if fits(middle):

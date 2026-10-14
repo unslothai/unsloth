@@ -237,3 +237,30 @@ def test_a_path_only_turn_that_fits_the_budget_is_served():
     assert "line 1: " not in text
     assert "(2000 lines) is too long for the context window to show" in text
     assert count([messages[0], messages[-1]]) <= 1536
+
+
+def test_an_excerpt_ending_in_blank_lines_keeps_them_and_counts_right():
+    lines = "\n".join(
+        ("" if i % 3 == 0 else f"line {i}: the quick brown fox") for i in range(1, 3002)
+    )
+    text = _fit(_messages(body = attachment(lines)))[-1]["content"]
+
+    excerpt = text.split("<attachment name=notes.txt>\n", 1)[1].split("\n</attachment>", 1)[0]
+    assert excerpt.endswith("\n")
+    assert f"only its first {len(excerpt.split(chr(10)))} of 3001 lines are above" in text
+
+
+def test_a_huge_file_is_sized_without_counting_all_of_it():
+    sizes = []
+
+    def counting(messages):
+        sizes.append(sum(len(str(m.get("content", ""))) for m in messages))
+        return count(messages)
+
+    body = attachment(LINES * 200)
+    fit_oversized_attachments(
+        _messages(body = body), context_length = 2048, max_tokens = 512, count_tokens = counting
+    )
+
+    # Only the first gate sees the whole turn; the search never counts more than the window could hold.
+    assert max(sizes[1:]) < 1536 * 16 + 1000
