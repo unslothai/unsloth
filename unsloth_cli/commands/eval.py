@@ -75,6 +75,20 @@ def resolve_base_model(model: str) -> Optional[str]:
     return data.get("base_model_name_or_path") if isinstance(data, dict) else None
 
 
+def _is_studio_output(path: Path) -> bool:
+    # same scope as Studio Chat: downloads and merged exports keep the 4-bit default
+    try:
+        from unsloth_cli._inference import ensure_studio_backend_path
+
+        ensure_studio_backend_path(seed_cache_env = False)
+        from utils.paths import outputs_root
+
+        path.resolve().relative_to(outputs_root().resolve())
+        return True
+    except Exception:
+        return False
+
+
 def _trained_in_4bit(model: str) -> bool:
     path = Path(model)
     is_adapter = (path / "adapter_config.json").is_file()
@@ -86,11 +100,18 @@ def _trained_in_4bit(model: str) -> bool:
     if not isinstance(config, dict):
         return True
     if not is_adapter:
-        return "quantization_config" in config
+        return "quantization_config" in config or not _is_studio_output(path)
     recorded = config.get("unsloth_load_in_4bit")
     if isinstance(recorded, bool):
         return recorded
-    return config.get("unsloth_training_method") != "lora"
+    method = config.get("unsloth_training_method")
+    if method:
+        return method != "lora"
+    # checkpoint-N folders carry no unsloth_* keys; Studio Chat reads the base name instead
+    base = config.get("base_model_name_or_path")
+    return not (
+        isinstance(base, str) and "-bnb-4bit" not in base.lower() and _is_studio_output(path)
+    )
 
 
 def _has_tokenizer_files(model: str) -> bool:

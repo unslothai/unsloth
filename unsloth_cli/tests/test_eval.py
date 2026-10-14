@@ -404,31 +404,47 @@ def test_unsloth_backend_reports_missing_bitsandbytes(env, tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize(
-    "files, flags, expected",
+    "files, flags, in_outputs, expected",
     [
-        ({"config.json": {"model_type": "llama"}}, [], False),
-        ({"config.json": {"quantization_config": {"load_in_4bit": True}}}, [], True),
-        ({"adapter_config.json": {"unsloth_load_in_4bit": False}}, [], False),
-        ({"adapter_config.json": {"unsloth_training_method": "lora"}}, [], False),
-        ({"adapter_config.json": {"unsloth_load_in_4bit": True}}, [], True),
-        ({"adapter_config.json": {}}, [], True),
-        ({"config.json": {"model_type": "llama"}}, ["--load-in-4bit"], True),
-        ({"adapter_config.json": {"unsloth_load_in_4bit": True}}, ["--no-load-in-4bit"], False),
+        ({"config.json": {"model_type": "llama"}}, [], True, False),
+        ({"config.json": {"model_type": "llama"}}, [], False, True),
+        ({"config.json": {"text_config": {"quantization_config": {}}}}, [], False, True),
+        ({"config.json": {"quantization_config": {"load_in_4bit": True}}}, [], True, True),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": False}}, [], False, False),
+        ({"adapter_config.json": {"unsloth_training_method": "lora"}}, [], False, False),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": True}}, [], True, True),
+        ({"adapter_config.json": {}}, [], True, False),
+        ({"adapter_config.json": {"base_model_name_or_path": "org/base-bnb-4bit"}}, [], True, True),
+        ({"adapter_config.json": {}}, [], False, True),
+        ({"config.json": {"model_type": "llama"}}, ["--load-in-4bit"], True, True),
+        (
+            {"adapter_config.json": {"unsloth_load_in_4bit": True}},
+            ["--no-load-in-4bit"],
+            True,
+            False,
+        ),
     ],
     ids = [
         "full_finetune",
+        "downloaded_full_model",
+        "downloaded_nested_quantized",
         "prequantized",
         "lora_16bit",
         "lora_method_only",
         "qlora",
+        "lora_16bit_checkpoint",
+        "qlora_checkpoint",
         "unknown_adapter",
         "explicit_4bit",
         "explicit_16bit",
     ],
 )
-def test_checkpoint_loads_in_the_precision_it_was_trained_in(env, tmp_path, files, flags, expected):
-    run = tmp_path / "run"
-    run.mkdir()
+def test_checkpoint_loads_in_the_precision_it_was_trained_in(
+    env, tmp_path, monkeypatch, files, flags, in_outputs, expected
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    run = (tmp_path / "studio" / "outputs" if in_outputs else tmp_path) / "run"
+    run.mkdir(parents = True)
     for name, data in files.items():
         (run / name).write_text(json.dumps({"base_model_name_or_path": "org/base", **data}))
     result = _run(str(run), "--tasks", "gsm8k", *flags, "-o", str(tmp_path / "out"))
