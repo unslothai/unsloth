@@ -3932,6 +3932,7 @@ export const ja = {
     discard: "破棄",
     mentions: "スキル",
     manage: "スキルを管理",
+    turnOff: "スキルをオフにする",
     bulkActions: "スキルの操作",
     enableAll: "すべて有効にする",
     disableAll: "すべて無効にする",

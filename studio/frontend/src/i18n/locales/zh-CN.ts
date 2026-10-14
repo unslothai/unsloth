@@ -3889,6 +3889,7 @@ export const zhCN = {
     discard: "放弃",
     mentions: "技能",
     manage: "管理技能",
+    turnOff: "关闭技能",
     bulkActions: "技能操作",
     enableAll: "全部启用",
     disableAll: "全部停用",

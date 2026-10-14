@@ -4068,6 +4068,7 @@ export const fr = {
     discard: "Abandonner",
     mentions: "Compétences",
     manage: "Gérer les compétences",
+    turnOff: "Désactiver les compétences",
     bulkActions: "Actions sur les compétences",
     enableAll: "Tout activer",
     disableAll: "Tout désactiver",

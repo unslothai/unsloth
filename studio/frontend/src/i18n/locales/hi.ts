@@ -3993,6 +3993,7 @@ export const hi = {
     discard: "छोड़ें",
     mentions: "कौशल",
     manage: "कौशल प्रबंधित करें",
+    turnOff: "कौशल बंद करें",
     bulkActions: "कौशल क्रियाएँ",
     enableAll: "सभी चालू करें",
     disableAll: "सभी बंद करें",

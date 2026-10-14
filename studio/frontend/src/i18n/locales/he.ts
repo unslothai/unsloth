@@ -4098,6 +4098,7 @@ export const he = {
     discard: "ביטול שינויים",
     mentions: "מיומנויות",
     manage: "ניהול מיומנויות",
+    turnOff: "כיבוי מיומנויות",
     bulkActions: "פעולות מיומנויות",
     enableAll: "הפעל הכול",
     disableAll: "השבת הכול",

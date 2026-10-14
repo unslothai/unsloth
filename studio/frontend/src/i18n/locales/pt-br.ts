@@ -4016,6 +4016,7 @@ export const ptBR = {
     discard: "Descartar",
     mentions: "Habilidades",
     manage: "Gerenciar habilidades",
+    turnOff: "Desativar habilidades",
     bulkActions: "Ações de habilidades",
     enableAll: "Ativar todas",
     disableAll: "Desativar todas",

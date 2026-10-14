@@ -4056,6 +4056,7 @@ export const es = {
     discard: "Descartar",
     mentions: "Habilidades",
     manage: "Gestionar habilidades",
+    turnOff: "Desactivar habilidades",
     bulkActions: "Acciones de habilidades",
     enableAll: "Activar todas",
     disableAll: "Desactivar todas",
