@@ -7750,7 +7750,11 @@ class DiffusionBackend:
                                         loras = loras,
                                         base = base,
                                         source_base = _base_local_dir or fetch_base,
+                                        cancel_check = lambda: self._raise_if_load_cancelled(
+                                            _load_token
+                                        ),
                                     )
+                                    self._raise_if_load_cancelled(_load_token)
                                 else:
                                     # A clean decline can remain bf16; a partial in-place conversion is unusable.
                                     dirty = [
@@ -8887,7 +8891,9 @@ class DiffusionBackend:
                 base_repo = base,
                 source_base = base_local_dir or fetch_base,
                 logger = logger,
+                cancel_check = check_cancelled,
             )
+            check_cancelled()
         return pipe, scheme
 
     @staticmethod
@@ -8899,6 +8905,7 @@ class DiffusionBackend:
         loras: Any,
         base: Optional[str],
         source_base: Optional[str],
+        cancel_check: Optional[Callable[[], None]] = None,
     ) -> Optional[str]:
         """A full-pipeline load that quantized its one denoiser at load keeps that build for the next load of the same
         weights (diffusion_prequant_cache), which then seeds it like a hosted checkpoint instead of reading the dense
@@ -8916,6 +8923,7 @@ class DiffusionBackend:
                 base_repo = base,
                 source_base = source_base,
                 logger = logger,
+                cancel_check = cancel_check,
             )
         except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
             logger.warning("diffusion.prequant_cache: skipped (%s)", exc)

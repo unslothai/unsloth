@@ -739,3 +739,35 @@ def test_a_forced_accumulate_mismatch_is_not_a_bad_entry(env, tmp_path, scheme, 
     assert rejected == []
     assert P.load_prequantized_transformer(Tiny, "x", source, **kwargs) is None
     assert len(rejected) == 1
+
+
+def test_a_cancelled_load_stops_the_cache_write_between_tensors(env, tmp_path, scheme):
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    calls = []
+
+    def cancel_check():
+        calls.append(1)
+        if len(calls) > 2:
+            raise RuntimeError("Diffusion load was cancelled.")
+
+    assert C.save_runtime_quant(model, _fam(base), base_repo = str(base), cancel_check = cancel_check) is None
+    assert len(calls) == 3
+    leftovers = [p for p in env.rglob("*") if p.is_file() and p.name != C._LOCK_NAME]
+    assert leftovers == []
+
+
+def test_every_load_path_hands_its_cancellation_check_to_the_cache_save():
+    import inspect
+
+    from core.inference import diffusion as D
+    from core.inference import video as V
+
+    dense = inspect.getsource(D.DiffusionBackend._load_dense_quant_pipeline)
+    assert "cancel_check = check_cancelled" in dense
+    pipeline = inspect.getsource(D.DiffusionBackend.load_pipeline)
+    assert "_save_pipeline_quant_to_cache(" in pipeline and "cancel_check = lambda" in pipeline
+    assert "cancel_check = cancel_check" in inspect.getsource(D.DiffusionBackend._save_pipeline_quant_to_cache)
+    video = inspect.getsource(V.VideoBackend.load_pipeline)
+    assert "_raise_if_video_load_superseded(_load_token)" in video.split("_save_runtime_quant_to_cache(", 1)[1][:400]
+    assert "cancel_check = cancel_check" in inspect.getsource(V._save_runtime_quant_to_cache)

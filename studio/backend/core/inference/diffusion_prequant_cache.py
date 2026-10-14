@@ -565,6 +565,7 @@ def write_streaming_safetensors(
     path: Any,
     tensors: dict,
     metadata: Optional[dict] = None,
+    cancel_check: Optional[Any] = None,
 ) -> int:
     """Write ``tensors`` (any device) to ``path`` as safetensors, holding one tensor at a time on the host.
 
@@ -595,6 +596,8 @@ def write_streaming_safetensors(
         fh.write(struct.pack("<Q", len(blob)))
         fh.write(blob)
         for _name, tensor in order:
+            if cancel_check is not None:
+                cancel_check()  # raises for a cancelled / superseded load; the caller removes the temp file
             if tensor.numel() == 0:
                 continue
             flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
@@ -671,6 +674,7 @@ def save_runtime_quant(
     source_base: Optional[str] = None,
     component: str = "transformer",
     logger: Any = None,
+    cancel_check: Optional[Any] = None,
 ) -> Optional[str]:
     """Persist a transformer ``quantize_transformer`` just quantized, so the next load skips the dense read.
 
@@ -680,6 +684,18 @@ def save_runtime_quant(
     if not enabled():
         return None
     t0 = time.perf_counter()
+    cancelled = [False]
+    user_cancel_check = cancel_check
+
+    def cancel_check() -> None:
+        if user_cancel_check is None:
+            return
+        try:
+            user_cancel_check()
+        except BaseException:
+            cancelled[0] = True
+            raise
+
     try:
         info = dict(getattr(transformer, "_unsloth_runtime_quant_info", None) or {})
         scheme = info.get("scheme")
@@ -807,7 +823,7 @@ def save_runtime_quant(
         fd, tmp = tempfile.mkstemp(dir = str(kdir), prefix = f".{FILE_NAME}.", suffix = _TEMP_SUFFIX)
         os.close(fd)
         try:
-            size = write_streaming_safetensors(tmp, flat, header)
+            size = write_streaming_safetensors(tmp, flat, header, cancel_check = cancel_check)
             del flat, state_dict
             os.replace(tmp, kdir / FILE_NAME)
             tmp = None
@@ -833,6 +849,11 @@ def save_runtime_quant(
         evict(logger = logger, keep = key)
         return str(kdir / FILE_NAME)
     except Exception as exc:  # noqa: BLE001 - a cache write must never fail a load
+        if cancelled[0]:
+            # The load was cancelled or superseded mid-write: the temp file is already gone; the caller's own
+            # cancellation check reports it.
+            _log(logger, "info", "skipped (load cancelled during the save)")
+            return None
         _log(logger, "warning", f"skipped (save failed: {type(exc).__name__}: {str(exc)[:200]})")
         return None
 

@@ -2054,7 +2054,12 @@ def _video_auto_denoiser_scheme(
 
 
 def _save_runtime_quant_to_cache(
-    fam: Any, views: Any, *, base: Optional[str], source: Optional[str]
+    fam: Any,
+    views: Any,
+    *,
+    base: Optional[str],
+    source: Optional[str],
+    cancel_check: Any = None,
 ) -> None:
     """Persist a runtime-quantized single denoiser (diffusion_prequant_cache), so the next explicit load of the same
     weights seeds it like a hosted checkpoint. An MoE's second expert has no lookup slot here, so MoE is skipped."""
@@ -2074,6 +2079,7 @@ def _save_runtime_quant_to_cache(
             source_base = source,
             component = "transformer",
             logger = logger,
+            cancel_check = cancel_check,
         )
     except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
         logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
@@ -6493,6 +6499,10 @@ class VideoBackend:
 
     # ── the load itself ──────────────────────────────────────────────────────
 
+    def _raise_if_video_load_superseded(self, token: Optional[int]) -> None:
+        if token is not None and token != self._load_token:
+            raise RuntimeError("Video load was cancelled or superseded.")
+
     @_invalidates_gpu_memory("video load")
     @scoped_local_files_only
     def load_pipeline(
@@ -7713,7 +7723,14 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
-                _save_runtime_quant_to_cache(fam, views, base = base, source = _base_local_dir or base)
+                _save_runtime_quant_to_cache(
+                    fam,
+                    views,
+                    base = base,
+                    source = _base_local_dir or base,
+                    cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
+                )
+                self._raise_if_video_load_superseded(_load_token)
             elif transformer_quant_pinned is not None:
                 transformer_quant_decline = (
                     f"'{transformer_quant_pinned}' did not engage on family '{fam.name}' with this "
