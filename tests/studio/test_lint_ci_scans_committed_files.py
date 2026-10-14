@@ -45,3 +45,8 @@ def test_the_file_scans_list_committed_files():
         assert (
             '"git", "ls-files"' in block and "tracked(" in block
         ), f"the {name} scan does not read git ls-files"
+        # git prints raw path bytes, and a tracked name need not be UTF-8: a strict .decode()
+        # would abort the scan where rglob (surrogateescape) did not.
+        assert (
+            "os.fsdecode(out)" in block and "out.decode()" not in block
+        ), f"the {name} scan decodes git's paths strictly"
