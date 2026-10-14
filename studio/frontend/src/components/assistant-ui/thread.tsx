@@ -3932,6 +3932,7 @@ const Composer: FC<{
   const lastDraftScopeRef = useRef(draftScope);
   // save only after this chat's paste restore finishes to avoid premature clearing
   const restoredPasteScopeRef = useRef<string | null | undefined>(undefined);
+  const restoringPasteScopeRef = useRef<string | null | undefined>(undefined);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // draftScope re-runs the restore on every chat switch, though the key stays the same.
   useEffect(() => {
@@ -4007,25 +4008,38 @@ const Composer: FC<{
       }
     }
     pasteScopeShownRef.current = draftScope;
-    // The composer can outlive a thread switch, still holding the shared
-    // draft's pastes: adopt them rather than adding them a second time.
-    if (
-      draftScope === INCOGNITO_DRAFT_SCOPE ||
-      composer.getState().attachments.length > 0
-    ) {
+    if (draftScope === INCOGNITO_DRAFT_SCOPE) {
       restoredPasteScopeRef.current = draftScope;
       return;
     }
-    const stored = readPasteDraft(pasteDraftKey);
-    if (stored.length === 0) {
+    // Only the saved pastes not already on screen: the composer can outlive a
+    // thread switch still holding them, and another attachment (an image a
+    // handoff adds) is no sign they were restored.
+    const shown = composer
+      .getState()
+      .attachments.flatMap((attachment) => {
+        const text = pastedTextOf((attachment as { file?: File }).file);
+        return text === undefined ? [] : [text];
+      });
+    const missing = readPasteDraft(pasteDraftKey).filter((text) => {
+      const at = shown.indexOf(text);
+      if (at === -1) return true;
+      shown.splice(at, 1);
+      return false;
+    });
+    if (missing.length === 0) {
       restoredPasteScopeRef.current = draftScope;
       return;
     }
+    // Its own additions re-run this; one pass per scope, or they double up.
+    if (restoringPasteScopeRef.current === draftScope) return;
+    restoringPasteScopeRef.current = draftScope;
     // Claim the chat only once the attachments are in, so the save effect
     // cannot write an empty composer over the draft still being restored.
     void Promise.all(
-      stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
+      missing.map((text) => composer.addAttachment(createPastedTextFile(text))),
     ).finally(() => {
+      restoringPasteScopeRef.current = undefined;
       // A switch while these were added re-runs the restore for the new scope instead.
       if (draftScopeRef.current === draftScope) {
         restoredPasteScopeRef.current = draftScope;

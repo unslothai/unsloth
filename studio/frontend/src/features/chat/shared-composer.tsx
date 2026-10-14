@@ -672,6 +672,12 @@ export function SharedComposer({
     if (incognito || text === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
     publishDraft(text, draftSource);
+    // Emptied (a send, or cleared by hand): gone at once, so a reload can't bring back a sent prompt.
+    if (text === "") {
+      writeComposerDraft(composerDraftKey(), "");
+      unsavedDraftRef.current = null;
+      return;
+    }
     unsavedDraftRef.current = text;
     const timer = setTimeout(() => {
       writeComposerDraft(composerDraftKey(), text);
