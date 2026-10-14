@@ -1428,37 +1428,28 @@ def _quant_state_dtype(quant_state):
     return getattr(quant_state, "dtype", None)
 
 
-_GEMV_ROWS_WINS = {}
-
-
-def _time_us(fn, reps = 3):
-    fn()
-    start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
-    best = float("inf")
-    for _ in range(reps):
-        start.record()
-        fn()
-        end.record()
-        end.synchronize()
-        best = min(best, start.elapsed_time(end))
-    return best * 1000
+# Most decode rows the GEMV takes, per compute capability, from end-to-end decode A/Bs (#2798): T4, L4 and
+# RTX PRO 6000 win up to 4 rows, A100 only at 2. Fixed rather than timed so a prompt decodes to the same
+# tokens every run. Unmeasured GPUs dequantize; UNSLOTH_GEMV_MAX_ROWS overrides for every GPU.
+_GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
+_GEMV_ROWS_CAP = {}
 
 
 def _gemv_rows_win(X, W, quant_state, args):
-    """Time GEMV vs dequantize once per (device, weight shape, rows), never while compiling or capturing."""
-    shape = args[-1]
-    key = (X.device.index, int(shape[0]), int(shape[1]), X.dtype, X.shape[0])
-    win = _GEMV_ROWS_WINS.get(key)
-    if win is not None or _is_compiling() or torch.cuda.is_current_stream_capturing():
-        return bool(win)
-    out = torch_empty((X.shape[0], 1, shape[0]), dtype = X.dtype, device = X.device)
-    with torch_gpu_device(X.device):
-        rows_us = _time_us(lambda: gemv_nf4_rows(X, W, *args, out))
-        dequant_us = _time_us(
-            lambda: torch_matmul(X, fast_dequantize(W.t(), quant_state, use_global_buffer = True))
-        )
-    win = _GEMV_ROWS_WINS[key] = rows_us < 0.9 * dequant_us
-    return win
+    index = X.device.index
+    cap = _GEMV_ROWS_CAP.get(index)
+    if cap is None:
+        if "UNSLOTH_GEMV_MAX_ROWS" in os.environ:
+            cap = _GEMV_MAX_ROWS
+        else:
+            try:
+                # ROCm reports gfx versions here (gfx1200 is (12, 0)), so the table is CUDA only.
+                arch = None if torch.version.hip else torch.cuda.get_device_capability(X.device)
+            except Exception:
+                arch = None
+            cap = min(_GEMV_MAX_ROWS, _GEMV_ROWS_BY_ARCH.get(arch, 1))
+        _GEMV_ROWS_CAP[index] = cap
+    return X.shape[0] <= cap
 
 
 def _gemv_rows(X, W, quant_state, out):

@@ -237,18 +237,44 @@ def test_larger_decode_batches_still_dequantize(monkeypatch):
     assert calls
 
 
-def test_rows_or_dequantize_is_timed_once_per_shape_and_rows(monkeypatch):
+@pytest.mark.parametrize(
+    "arch, env, wins",
+    [
+        ((7, 5), None, {2: True, 3: True, 4: True}),
+        ((8, 9), None, {2: True, 4: True}),
+        ((12, 0), None, {2: True, 4: True}),
+        ((8, 0), None, {2: True, 3: False, 4: False}),
+        ((9, 0), None, {2: False, 4: False}),
+        ((10, 0), None, {2: False, 4: False}),
+        ((10, 0), "3", {2: True, 3: True}),
+        ((7, 5), "1", {2: False}),
+    ],
+)
+def test_rows_or_dequantize_is_fixed_per_architecture(monkeypatch, arch, env, wins):
     utils = _utils_with_kernels()
-    monkeypatch.setattr(utils, "_GEMV_ROWS_WINS", {})
+    monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
+    if env is None:
+        monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
+    else:
+        monkeypatch.setenv("UNSLOTH_GEMV_MAX_ROWS", env)
+        monkeypatch.setattr(utils, "_GEMV_MAX_ROWS", int(env))
+    monkeypatch.setattr(torch.version, "hip", None)
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: arch)
     proj = _linear4bit(1024, 4096)
-    timings = iter([50.0, 100.0, 95.0, 100.0])  # rows, dequantize; twice
-    calls = []
-    monkeypatch.setattr(utils, "_time_us", lambda fn: calls.append(1) or next(timings))
     W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
-    for bsz, wins in ((2, True), (3, False), (2, True), (3, False)):
-        X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
-        assert (utils._gemv_rows(X, W, W_quant, None) is not None) is wins
-    assert len(calls) == 4
-    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
-    X = torch.randn(4, 1, 4096, dtype = torch.bfloat16, device = "cuda")
-    assert utils._gemv_rows(X, W, W_quant, None) is None and len(calls) == 4
+    for _ in range(2):
+        for bsz, win in wins.items():
+            X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+            assert (utils._gemv_rows(X, W, W_quant, None) is not None) is win
+
+
+def test_rocm_never_takes_the_rows_gemv_by_default(monkeypatch):
+    utils = _utils_with_kernels()
+    monkeypatch.setattr(utils, "_GEMV_ROWS_CAP", {})
+    monkeypatch.delenv("UNSLOTH_GEMV_MAX_ROWS", raising = False)
+    monkeypatch.setattr(torch.version, "hip", "6.4")
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    proj = _linear4bit(1024, 4096)
+    W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
+    X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    assert utils._gemv_rows(X, W, W_quant, None) is None
