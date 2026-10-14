@@ -125,6 +125,32 @@ def test_an_unset_equivalent_ze_mask_is_not_a_mask(monkeypatch, value):
     assert r.image_install_accelerator("cpu") == "vulkan"
 
 
+@pytest.mark.parametrize("value", ["abc", "-1", "0,x", "2"])
+def test_a_ggml_vulkan_mask_naming_no_card_keeps_cpu(monkeypatch, value):
+    # Malformed selects nothing or throws; "2" is past the two GPUs listed.
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", value)
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _VEGA))
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "vk::Queue::submit: ErrorDeviceLost",
+        "VK_ERROR_DEVICE_LOST",
+        "vk::createInstance: ErrorIncompatibleDriver",
+    ],
+)
+def test_vulkan_failures_are_recognised(output):
+    assert sd_cpp_backend.output_shows_accelerator_failure(output)
+
+
+def test_an_incompatible_vulkan_driver_is_decisive():
+    assert sd_cpp_backend.output_shows_decisive_accelerator_failure("ErrorIncompatibleDriver")
+    assert not sd_cpp_backend.output_shows_decisive_accelerator_failure("ErrorDeviceLost")
+    assert not sd_cpp_backend.output_shows_accelerator_failure("VK_ERROR_OUT_OF_DEVICE_MEMORY")
+
+
 def test_a_ggml_vulkan_mask_pins_the_card(monkeypatch):
     # ggml reads it, so it also settles which device a mixed UHD + Radeon host uses.
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")

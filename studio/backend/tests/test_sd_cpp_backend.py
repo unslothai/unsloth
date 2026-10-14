@@ -1590,6 +1590,28 @@ def test_cpu_torch_on_the_vulkan_build_offloads_by_default(monkeypatch, accelera
         assert b._state.offload_flags == ()
 
 
+@pytest.mark.parametrize("lands", [True, False])
+def test_cpu_torch_placement_follows_a_deferred_vulkan_install(monkeypatch, lands):
+    # The deferred upgrade may land the Vulkan build or keep the resident CPU one; place for what runs.
+    installed = {"accelerator": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed["accelerator"])
+
+    def _upgrade(self, server_binary, **_kw):
+        if lands:
+            installed["accelerator"] = "vulkan"
+        return server_binary
+
+    monkeypatch.setattr(SdCppDiffusionBackend, "_upgraded_or_refused", _upgrade)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "vulkan")
+    )
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)  # a resident server defers it
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    assert b._state.device == ("vulkan" if lands else "cpu")
+    assert ("--offload-to-cpu" in b._state.offload_flags) is lands
+
+
 def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []

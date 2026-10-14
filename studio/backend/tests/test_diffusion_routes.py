@@ -1363,11 +1363,27 @@ def test_cpu_native_load_skips_gpu_arbiter(client, monkeypatch):
     # A native sd.cpp load on a pure-CPU host never touches the GPU, so the route must NOT evict the resident chat model.
     from core.inference.sd_cpp_engine import ENGINE_SD_CPP
 
+    import core.inference.diffusion_engine_router as router
+
     backend = diffusion_module.get_diffusion_backend()
     acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "auto")
     resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
     assert resp.status_code == 200
     assert acquired == []  # no arbiter handoff for a CPU native load
+
+
+def test_cpu_torch_vulkan_native_load_takes_arbiter(client, monkeypatch):
+    # #13666: a CPU torch routed to the Vulkan sd.cpp build renders on the AMD / Arc card.
+    import core.inference.diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "vulkan")
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == [gpu_arbiter.DIFFUSION]
 
 
 def test_gpu_native_load_takes_arbiter(client, monkeypatch):

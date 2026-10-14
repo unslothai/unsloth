@@ -1666,6 +1666,9 @@ _ACCELERATOR_DECISIVE_FAILURE_MARKERS: tuple[str, ...] = (
     "hiperrornobinaryforgpu",
     "no kernel image is available",
     "invalid device function",
+    # vulkan-hpp's spellings and the C enum: this driver cannot run the Vulkan build.
+    "errorincompatibledriver",
+    "vk_error_incompatible_driver",
 )
 
 # AMBIGUOUS: names a GPU fault without establishing the BUILD as the cause. #9278 with offload on
@@ -1677,6 +1680,10 @@ _ACCELERATOR_AMBIGUOUS_FAILURE_MARKERS: tuple[str, ...] = (
     "rocm error",
     "rocblas error",
     "memory access fault by gpu node",
+    "errordevicelost",
+    "vk_error_device_lost",
+    "errorinitializationfailed",
+    "vk_error_initialization_failed",
 )
 
 # Windows loader deaths print nothing, so only the exit status shows them. DECISIVE.
@@ -3168,25 +3175,24 @@ class SdCppDiffusionBackend:
             # A paravirtual Mac GPU runs sd.cpp on the CPU backend (see metal_text_encoder_flags), so record that.
             if sd_cpp_args_mod.forces_cpu_backend(device):
                 device = "cpu"
-            # A CPU torch routed to the Vulkan build renders on a card torch never measured, so
-            # auto offloads rather than assume the model fits in its VRAM.
-            # Read off the build this load runs, not a fresh host probe; a deferred install lands
-            # the resolved one below.
-            run_accelerator = server_accelerator if mode == "server" else engine_accelerator
-            vulkan_on_cpu_torch = device == "cpu" and off_torch is None
-            if vulkan_on_cpu_torch:
-                if self._deferred_accelerator_install:
-                    run_accelerator = self._resolved_accelerator(self._loading_card)
-                vulkan_on_cpu_torch = _accelerator_class_of(run_accelerator) == "vulkan"
-            if vulkan_on_cpu_torch:
-                device = "vulkan"
-            spawn_env = off_torch.child_env() if off_torch is not None else None
-            # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
-            offload: tuple[str, ...] = ()
-            if device != "cpu":
-                offload = tuple(
-                    offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan_on_cpu_torch))
+            torch_device = device
+
+            def _placement(run_accelerator: Optional[str]) -> tuple[str, tuple[str, ...]]:
+                # A CPU torch running the Vulkan build renders on a card torch never measured, so
+                # auto offloads. Read off the build this load runs, never the requested one.
+                vulkan = (
+                    torch_device == "cpu"
+                    and off_torch is None
+                    and _accelerator_class_of(run_accelerator) == "vulkan"
                 )
+                placed = "vulkan" if vulkan else torch_device
+                # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
+                if placed == "cpu":
+                    return placed, ()
+                return placed, tuple(offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan)))
+
+            device, offload = _placement(server_accelerator if mode == "server" else engine_accelerator)
+            spawn_env = off_torch.child_env() if off_torch is not None else None
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
             # the ggml device names come from whichever build ends up running. It is added at each point the flags are
@@ -3227,6 +3233,10 @@ class SdCppDiffusionBackend:
                     # archive.
                     server_accelerator = _installed_accelerator_of(server_binary)
                     engine_accelerator = _installed_accelerator_of(getattr(engine, "binary", None))
+                    # The upgrade may have landed or kept the old build; place for whichever runs.
+                    device, offload = _placement(
+                        server_accelerator if mode == "server" else engine_accelerator
+                    )
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about
                 # this graph.
                 self._cpu_backend_forced = False

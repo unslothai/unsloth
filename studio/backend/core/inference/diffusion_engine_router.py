@@ -32,6 +32,7 @@ from __future__ import annotations
 import functools
 import importlib.util
 import os
+import re
 import platform
 import sys
 import threading
@@ -209,10 +210,14 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
             return False
     except Exception:  # noqa: BLE001
         return False
-    # ggml reads this one itself, so it pins the card; empty hides every device.
+    # ggml reads this one itself, so a list of ordinals pins the card; anything else selects
+    # nothing or throws.
     vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
-    if vk_mask is not None and not vk_mask.strip():
-        return False
+    vk_ids: list[int] = []
+    if vk_mask is not None:
+        if not re.fullmatch(r"\s*\d+\s*(,\s*\d+\s*)*", vk_mask):
+            return False
+        vk_ids = [int(part) for part in vk_mask.split(",")]
     inventory = _physical_inventory()
     if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
         return False
@@ -232,8 +237,10 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return "arc" in str(device.get("name") or "").lower().replace("(tm)", " ").split()
 
     gpus = [d for d in devices if d.get("vendor") in ("amd", "intel")]
+    if not gpus or any(index >= len(gpus) for index in vk_ids):
+        return False
     # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
-    if not gpus or not (all(_renders(d) for d in gpus) or vk_mask is not None):
+    if not (all(_renders(d) for d in gpus) or vk_ids):
         return False
     if sys.platform != "win32" and not _linux_render_node_accessible():
         return False
