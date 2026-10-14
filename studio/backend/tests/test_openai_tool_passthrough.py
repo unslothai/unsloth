@@ -11768,11 +11768,25 @@ class _MLXCompletionBackend:
             from core.inference.orchestrator import GenStreamError
             yield GenStreamError("No grammar here.", public = True, openai_param = "response_format")
             return
-        yield from ("a", "ab")
+        yield from ("a", "ab" + ("" if kw["seed"] is None else str(kw["seed"])))
         n = len(prompt_ids)
         usage = {"prompt_tokens": n, "completion_tokens": n, "total_tokens": 2 * n}
         usage["prompt_tokens_details"] = {"cached_tokens": n - 1}
         stats_holder["stats"] = {"usage": usage, "finish_reason": "length" if n == 2 else "stop"}
+
+    def generate_completion_batch(self, rows, cancel_event, stats_holder, **kw):
+        self.batches = [*getattr(self, "batches", []), len(rows)]
+        stats_holder["stats"] = [{} for _ in rows]
+        for row, spec in enumerate(rows):
+            for text in self.generate_completion(
+                spec["prompt_ids"],
+                cancel_event,
+                stats_holder["stats"][row],
+                **kw,
+                seed = spec["seed"],
+            ):
+                yield row, text
+            stats_holder["stats"][row] = stats_holder["stats"][row]["stats"]
 
     def reset_generation_state(self, _event):
         pass
@@ -11873,13 +11887,10 @@ def test_mlx_completion_fans_out_prompts_and_n_in_llama_server_order(monkeypatch
     body = {"prompt": ["a", "bb"], "n": 2, "seed": 7, "echo": True}
     backend, out = _run_mlx_completion(monkeypatch, body)
     got = [(c["index"], c["text"], c["finish_reason"]) for c in out["choices"]]
-    assert got == [
-        (0, "aab", "length"),
-        (1, "aab", "length"),
-        (2, "bbab", "stop"),
-        (3, "bbab", "stop"),
-    ]
+    texts = ["aab7", "aab8", "bbab7", "bbab8"]
+    assert got == [(i, t, "length" if i < 2 else "stop") for i, t in enumerate(texts)]
     assert backend.runs == [([1, 2], 7), ([1, 2], 8), ([1, 2] * 2, 7), ([1, 2] * 2, 8)]
+    assert backend.batches == [4], "every choice in one command"
     # Cached prompt tokens count once per prompt, as its prompt tokens do.
     cached = {"prompt_tokens_details": {"cached_tokens": 4}}
     assert out["usage"] == {
@@ -11888,10 +11899,14 @@ def test_mlx_completion_fans_out_prompts_and_n_in_llama_server_order(monkeypatch
         "total_tokens": 18,
         **cached,
     }
-    assert "Choice 4:\nab" in inf_mod.api_monitor.snapshot()[0]["reply_preview"]
-    # Cancelled during the first choice: it answers, the rest never start.
-    cancelled, out = _run_mlx_completion(monkeypatch, {**body, "stop": "cancel"})
-    assert len(cancelled.runs) == 1 and [c["finish_reason"] for c in out["choices"]] == ["stop"]
+    assert "Choice 4:\nab8" in inf_mod.api_monitor.snapshot()[0]["reply_preview"]
+    # Cancelled mid-batch: every choice decoding with it answers as stopped.
+    _, out = _run_mlx_completion(monkeypatch, {**body, "stop": "cancel"})
+    assert [(c["text"], c["finish_reason"]) for c in out["choices"]] == [(t, "stop") for t in texts]
+    # No batch is wider than chat's cap on n, however many prompts there are.
+    monkeypatch.setitem(inf_mod._LLAMA_HARD_LIMITS, "n_cmpl", (1, 3))
+    backend, out = _run_mlx_completion(monkeypatch, body)
+    assert backend.batches == [3, 1] and [c["text"] for c in out["choices"]] == texts
 
 
 @pytest.mark.parametrize(

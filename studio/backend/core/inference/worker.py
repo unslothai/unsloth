@@ -1138,6 +1138,10 @@ def _generation_kwargs(backend, cmd: dict, cancel_event) -> dict:
         if not _backend_declares(backend, "video"):
             raise RuntimeError("The loaded backend does not read video.")
         gen_kwargs["video"] = cmd["video_base64"]
+    # Only a raw completion carries these; its batch rows are planned from them.
+    for raw in ("prompt_ids", "penalty_window", "grammar"):
+        if raw in cmd:
+            gen_kwargs[raw] = cmd[raw]
 
     return gen_kwargs
 
@@ -1319,13 +1323,17 @@ def _rows_apart(backend, requests, cancel_event, stats: list):
     """A declined batch served reply by reply, as the batch's own (row, snapshot) events."""
     for row, request in enumerate(requests):
         if not cancel_event.is_set():
-            generator = backend.generate_chat_response(
-                **{
-                    name: value
-                    for name, value in request.items()
-                    if _backend_declares(backend, name)
-                },
-                cancel_event = cancel_event,
+            generator = (
+                _completion_generator(backend, request, cancel_event)
+                if "prompt_ids" in request
+                else backend.generate_chat_response(
+                    **{
+                        name: value
+                        for name, value in request.items()
+                        if _backend_declares(backend, name)
+                    },
+                    cancel_event = cancel_event,
+                )
             )
             try:
                 for cumulative_text in generator:
@@ -1463,8 +1471,6 @@ class _ResidentBatch:
             return "this batch has already refused these replies"
         if cmd.get("use_adapter") is not None:
             return "the reply asks for a particular adapter state"
-        if "prompt_ids" in cmd:
-            return "the reply continues a raw prompt"
         reason = narrow_load_reason(cmd)
         if reason is not None:
             return reason

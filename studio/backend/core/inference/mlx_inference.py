@@ -3537,7 +3537,7 @@ def _request_batch_gap(request):
         return "a reply carries a video clip"
     if request.get("tools") or request.get("tool_protocol_active"):
         return "a reply runs the tool protocol"
-    if request.get("response_format") is not None:
+    if request.get("response_format") is not None or request.get("grammar") is not None:
         return "a reply is constrained to a response format"
     return None
 
@@ -3638,6 +3638,8 @@ def _row_kwargs(request):
         frequency_penalty = request.get("frequency_penalty", 0.0),
         logit_bias = request.get("logit_bias"),
         stop = request.get("stop"),
+        prompt_ids = request.get("prompt_ids"),
+        penalty_window = request.get("penalty_window"),
     )
 
 
@@ -4006,7 +4008,7 @@ class _VisionBatchSession:
         try:
             row_number = self.stream.add(
                 GenerationRequest(
-                    prompt = backend._vlm_batch_prompt(plan.prompt),
+                    **backend._vlm_batch_prompt(plan.prompt),
                     image = plan.images[0] if plan.images else None,
                     max_tokens = plan.max_tokens,
                     sampling = SamplingParams(**plan.sampling),
@@ -5943,33 +5945,40 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
         tool_protocol_active = None,
+        prompt_ids = None,
+        penalty_window = None,
     ) -> "_TextRowPlan":
         from mlx_lm.sample_utils import make_sampler
 
-        render_result = self._render_text_prompt(
-            messages,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-        )
-        prompt = render_result.prompt
-        reasoning_channel_markers = render_result.reasoning_channel_markers
-        _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
-
-        think_prefix = _think_prefix(
-            prompt,
-            getattr(self._tokenizer, "all_special_tokens", None),
-            messages,
-            continue_final_message,
-            preserves_think_close = (
-                bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+        if prompt_ids is not None:
+            # A raw completion prompt, planned as _generate_text runs one.
+            prompt, reasoning_channel_markers, think_prefix = list(prompt_ids), None, ""
+            _resumed_partial = False
+        else:
+            render_result = self._render_text_prompt(
+                messages,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
             )
-            and decoder_preserves_token(
-                self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
-            ),
-        )
+            prompt = render_result.prompt
+            reasoning_channel_markers = render_result.reasoning_channel_markers
+            _resumed_partial = bool(continue_final_message and trailing_assistant_text(messages))
+
+            think_prefix = _think_prefix(
+                prompt,
+                getattr(self._tokenizer, "all_special_tokens", None),
+                messages,
+                continue_final_message,
+                preserves_think_close = (
+                    bool(tools) or tool_protocol_active or reasoning_channel_markers is not None
+                )
+                and decoder_preserves_token(
+                    self._tokenizer, "</think>", reasoning_control_tokens(reasoning_channel_markers)
+                ),
+            )
         if seed is None:
             sampler = make_sampler(
                 temp = temperature,
@@ -5991,6 +6000,8 @@ class MLXInferenceBackend:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            penalty_window = penalty_window,
+            penalty_prompt = prompt_ids,
         )
 
         normalizer = (
@@ -6010,7 +6021,11 @@ class MLXInferenceBackend:
             decode = (
                 None
                 if normalizer is not None
-                else lambda ids: self._tokenizer.decode(ids, skip_special_tokens = True)
+                else lambda ids: self._tokenizer.decode(
+                    ids,
+                    skip_special_tokens = True,
+                    **({"clean_up_tokenization_spaces": False} if prompt_ids is not None else {}),
+                )
             ),
         )
         return _TextRowPlan(
@@ -6021,7 +6036,9 @@ class MLXInferenceBackend:
             sampler = sampler,
             processors = logits_processors,
             max_tokens = (
-                self._unset_generation_budget(prompt) if max_new_tokens is None else max_new_tokens
+                self._unset_generation_budget(prompt, prompt_ids)
+                if max_new_tokens is None
+                else max_new_tokens
             ),
         )
 
@@ -6184,8 +6201,10 @@ class MLXInferenceBackend:
     def _plan_vlm_request(self, request) -> "_VLMRowPlan":
         image = request.get("image")
         messages = request.get("messages") or []
-        conversation = self._conversation_to_render(
-            messages, request.get("system_prompt", ""), image
+        conversation = (
+            []
+            if request.get("prompt_ids") is not None
+            else self._conversation_to_render(messages, request.get("system_prompt", ""), image)
         )
         return self._plan_vlm_row(conversation, image, **_row_kwargs(request))
 
@@ -6210,24 +6229,30 @@ class MLXInferenceBackend:
         frequency_penalty = 0.0,
         logit_bias = None,
         stop = None,
+        prompt_ids = None,
+        penalty_window = None,
     ) -> "_VLMRowPlan":
         images = [image] if image is not None else None
-        prompt, chat_target, markers = self._render_vlm_prompt(
-            messages,
-            images,
-            tools = tools,
-            enable_thinking = enable_thinking,
-            reasoning_effort = reasoning_effort,
-            preserve_thinking = preserve_thinking,
-            continue_final_message = continue_final_message,
-        )
+        if prompt_ids is not None:
+            # A raw completion prompt, planned as _generate_vlm runs one.
+            prompt, markers, think_prefix = list(prompt_ids), None, ""
+        else:
+            prompt, chat_target, markers = self._render_vlm_prompt(
+                messages,
+                images,
+                tools = tools,
+                enable_thinking = enable_thinking,
+                reasoning_effort = reasoning_effort,
+                preserve_thinking = preserve_thinking,
+                continue_final_message = continue_final_message,
+            )
 
-        think_prefix = _think_prefix(
-            prompt,
-            getattr(chat_target, "all_special_tokens", None),
-            messages,
-            continue_final_message,
-        )
+            think_prefix = _think_prefix(
+                prompt,
+                getattr(chat_target, "all_special_tokens", None),
+                messages,
+                continue_final_message,
+            )
         normalizer = (
             make_reasoning_normalizer(
                 markers,
@@ -6248,6 +6273,7 @@ class MLXInferenceBackend:
         max_new_tokens = self._generation_limit(
             prompt,
             max_new_tokens,
+            prompt_ids,
             images = images,
             cap = UNSET_GENERATION_BUDGET if images else None,
         )
@@ -6272,6 +6298,8 @@ class MLXInferenceBackend:
             presence_penalty = presence_penalty,
             frequency_penalty = frequency_penalty,
             logit_bias = logit_bias,
+            penalty_window = penalty_window,
+            penalty_prompt = prompt_ids,
         )
         if processors:
             # Never the repetition_penalty shortcut: mlx-vlm would build that processor
@@ -6798,6 +6826,10 @@ class MLXInferenceBackend:
         gap = _row_processor_gap(engine, requests)
         if gap is not None:
             return gap
+        if not getattr(engine, "VLM_TOKEN_ID_PROMPTS", False) and any(
+            request.get("prompt_ids") is not None for request in requests
+        ):
+            return "the installed unsloth-zoo cannot batch a raw prompt on a vision model"
         if not getattr(self._model, "_is_vlm_model", False):
             return "this model was not loaded as a vision model"
         return None
@@ -6859,6 +6891,8 @@ class MLXInferenceBackend:
                 session.close()
 
     def _vlm_batch_prompt(self, prompt):
+        if isinstance(prompt, list):
+            return {"prompt_token_ids": prompt}
         from unsloth_zoo.mlx.generate import vlm_batch_adds_special_tokens
 
         bos = getattr(self._tokenizer, "bos_token", None)
@@ -6869,8 +6903,8 @@ class MLXInferenceBackend:
             and vlm_batch_adds_special_tokens(self._model, self._processor)
         ):
             # The single path encodes a text load's prompt itself, keeping only the template's BOS.
-            return prompt[len(bos) :]
-        return prompt
+            return {"prompt": prompt[len(bos) :]}
+        return {"prompt": prompt}
 
     def _generate_vlm_batch(
         self,
@@ -6891,7 +6925,7 @@ class MLXInferenceBackend:
         plans = [self._plan_vlm_request(request) for request in requests]
         batch = [
             GenerationRequest(
-                prompt = self._vlm_batch_prompt(plan.prompt),
+                **self._vlm_batch_prompt(plan.prompt),
                 image = plan.images[0] if plan.images else None,
                 max_tokens = plan.max_tokens,
                 sampling = SamplingParams(**plan.sampling),
@@ -6986,7 +7020,7 @@ class MLXInferenceBackend:
     def _batch_prompt_row(self, prompt, adapter_state):
         rest, cache, key, tokens, cached_n = self._prepare_prompt_cache(prompt, adapter_state)
         if cache is None or tokens is None:
-            tokens = self._encode_prompt(prompt)
+            tokens = list(prompt) if isinstance(prompt, list) else self._encode_prompt(prompt)
             rest, cached_n, key = tokens, 0, None
             cache = self._make_row_cache()
         return list(tokens[:cached_n]), list(rest), cache, key, list(tokens)

@@ -3039,6 +3039,23 @@ class InferenceOrchestrator:
             **sampling,
         )
 
+    def generate_completion_batch(
+        self,
+        rows: list,
+        cancel_event = None,
+        stats_holder: Optional[dict] = None,
+        **sampling,
+    ) -> Generator[Any, None, None]:
+        """Several raw-prompt completions in one command, each row giving its ``prompt_ids``,
+        reported as :meth:`generate_chat_batch` reports its rows."""
+        yield from self._generate_inner(
+            messages = [],
+            rows = rows,
+            cancel_event = cancel_event,
+            stats_holder = stats_holder,
+            **sampling,
+        )
+
     def generate_chat_response(
         self,
         messages: list,

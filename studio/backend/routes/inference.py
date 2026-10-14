@@ -37550,9 +37550,8 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             **{**sampling, "seed": _choice_seed(sampling["seed"], choice)},
         )
 
-    def choice_end(prompt_ids):
-        """The finish reason, usage and stats of the choice that just ran."""
-        stats = stats_holder.pop("stats", None)
+    def choice_end(prompt_ids, stats):
+        """A choice's finish reason and usage from its stats."""
         if budget == 0:
             reason = "length"
         elif cancel_event.is_set():
@@ -37564,7 +37563,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
             "completion_tokens": 0,
             "total_tokens": len(prompt_ids),
         }
-        return reason, usage, stats
+        return reason, usage
 
     if body.get("stream") is True:
         prompt_ids = resolved[0]["ids"]
@@ -37618,7 +37617,8 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
                 if cancel_event.is_set():
                     backend.reset_generation_state(cancel_event)
                     mark_current_response_failed()
-                reason, usage, stats = choice_end(prompt_ids)
+                stats = stats_holder.pop("stats", None)
+                reason, usage = choice_end(prompt_ids, stats)
                 api_monitor.set_perf(monitor_id, stop_reason = reason)
                 _monitor_usage(monitor_id, usage, timings = (stats or {}).get("timings"))
                 yield sse(_text_completion_chunk(completion_id, created, model_name, "", reason))
@@ -37661,37 +37661,71 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
 
         return _sse_streaming_response(stream_chunks(), unstarted_cleanup = unstarted_cleanup)
 
-    def drain(prompt_ids, choice):
-        text = ""
-        for text in generate(prompt_ids, choice):
-            if isinstance(text, GenStreamError):
-                return text
-        return text
-
     # llama-server's order: each prompt's n choices in turn, choice j seeded as chat seeds it.
+    rows = [
+        {"prompt_ids": resolved[i // n]["ids"], "seed": _choice_seed(sampling["seed"], i % n)}
+        for i in range(len(resolved) * n)
+    ]
+
+    def drain_rows(chunk):
+        """Each row's text and stats; several rows decode as one batch."""
+        texts, batch_stats = [""] * len(chunk), {}
+        if len(rows) == 1:
+            events = (
+                text if isinstance(text, GenStreamError) else (0, text)
+                for text in generate(chunk[0]["prompt_ids"])
+            )
+        else:
+            events = backend.generate_completion_batch(
+                chunk,
+                cancel_event = cancel_event,
+                stats_holder = batch_stats,
+                max_new_tokens = budget,
+                **{k: v for k, v in sampling.items() if k != "seed"},
+            )
+        for event in events:
+            if isinstance(event, GenStreamError):
+                return event
+            row, text = event
+            if text is not None:
+                texts[row] = text
+        reported = (
+            [stats_holder.pop("stats", None)] if len(rows) == 1 else batch_stats.get("stats") or []
+        )
+        return [
+            (text, reported[row] if row < len(reported) else None) for row, text in enumerate(texts)
+        ]
+
+    def drain():
+        """Every choice, at most chat's n cap per batch, so many prompts cannot exhaust memory."""
+        produced, width = [], _LLAMA_HARD_LIMITS["n_cmpl"][1]
+        for start in range(0, len(rows), width):
+            chunk = rows[start : start + width]
+            if cancel_event.is_set() and produced:
+                produced += [("", None)] * len(chunk)
+                continue
+            result = drain_rows(chunk)
+            if isinstance(result, GenStreamError):
+                return result
+            produced += result
+        return produced
+
     choices, replies, stats = [], [], None
     prompt_tokens = completion_tokens = 0
     cached_tokens: Optional[int] = None
     failure = None
     watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
-        for index in range(len(resolved) * n):
+        produced = (
+            [("", None)] * len(rows)
+            if budget == 0 or cancel_event.is_set()
+            else await _run_blocking_generation(drain, cancel_event, name = "openai-completions")
+        )
+        if isinstance(produced, GenStreamError):
+            failure, produced = produced, []
+        for index, (text, stats) in enumerate(produced):
             prompt_index, choice = divmod(index, n)
-            # Choice 0 answers even when cancelled; the rest are not started.
-            if index and cancel_event.is_set():
-                break
-            prompt_ids = resolved[prompt_index]["ids"]
-            text = (
-                ""
-                if budget == 0 or cancel_event.is_set()
-                else await _run_blocking_generation(
-                    lambda: drain(prompt_ids, choice), cancel_event, name = "openai-completions"
-                )
-            )
-            if isinstance(text, GenStreamError):
-                failure = text
-                break
-            reason, usage, stats = choice_end(prompt_ids)
+            reason, usage = choice_end(resolved[prompt_index]["ids"], stats)
             if not choice:
                 prompt_tokens += usage["prompt_tokens"]
                 cached = cached_prompt_tokens(usage)

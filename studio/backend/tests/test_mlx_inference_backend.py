@@ -2514,6 +2514,37 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
     assert seen["cache"] == (None, None, "")
 
 
+def test_mlx_batch_rows_plan_a_raw_completion_prompt_untemplated(monkeypatch):
+    from core.inference import mlx_inference
+
+    backend = _install_fake_text_stack(monkeypatch, {"generated": [7]}, [])
+    monkeypatch.setattr(backend, "_render_text_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    seen = {}
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
+    row = mlx_inference._row_kwargs({"prompt_ids": [1, 2, 3], "penalty_window": 2})
+    plan = backend._plan_text_row([], **row)
+    assert (plan.prompt, plan.think_prefix, seen["penalty_prompt"], seen["penalty_window"]) == (
+        [1, 2, 3],
+        "",
+        [1, 2, 3],
+        2,
+    )
+    backend._make_row_cache = lambda: None
+    assert backend._batch_prompt_row(plan.prompt, None)[1] == [1, 2, 3]
+    kwargs = []
+    monkeypatch.setattr(type(backend._tokenizer), "decode", lambda _t, _i, **kw: kwargs.append(kw))
+    plan.stream._decode([7])
+    assert kwargs[-1]["clean_up_tokenization_spaces"] is False
+    monkeypatch.setattr(backend, "_render_vlm_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    monkeypatch.setattr(
+        backend, "_generation_limit", lambda prompt, limit, ids, **_k: (prompt, ids)
+    )
+    vision = backend._plan_vlm_request({"prompt_ids": [4, 5], "messages": []})
+    assert (vision.prompt, vision.max_tokens) == ([4, 5], ([4, 5], [4, 5]))
+    assert backend._vlm_batch_prompt([4, 5]) == {"prompt_token_ids": [4, 5]}
+    assert mlx_inference._request_batch_gap({"grammar": "G"})
+
+
 _COMPLETION_TOK = SimpleNamespace(
     encode = lambda text, add_special_tokens: [100] * add_special_tokens + [ord(c) for c in text],
     decode = lambda ids, skip_special_tokens, clean_up_tokenization_spaces = True: "".join(

@@ -499,8 +499,13 @@ def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serve
     cmd = built[0]
     assert (cmd["messages"], cmd["prompt_ids"], cmd["penalty_window"]) == ([], [5, 6], 0)
     assert cmd["grammar"] == "G"
-    # A chat batch would render it as messages.
-    assert _ResidentBatch.unavailable_reason(SimpleNamespace(_refused = ()), cmd)
+    with pytest.raises(_Built):
+        list(o.generate_completion_batch([{"prompt_ids": [5]}], penalty_window = 1))
+    assert (built[1]["messages"], built[1]["rows"], built[1]["penalty_window"]) == (
+        [],
+        [{"prompt_ids": [5]}],
+        1,
+    )
 
     class _MLX:
         last_generation_stats = None
