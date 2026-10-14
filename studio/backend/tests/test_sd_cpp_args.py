@@ -1037,3 +1037,73 @@ def test_device_backend_flags_are_appended_not_folded_into_the_policy():
     before = list(policy)
     device_backend_flags("CUDA1", policy)
     assert policy == before
+
+
+# ── Metal mmap (leejet/stable-diffusion.cpp#2037) ───────────────────────────
+
+
+def _managed_install(tmp_path, tag):
+    import json
+
+    root = tmp_path / "stable-diffusion.cpp"
+    (root / "bin").mkdir(parents = True)
+    binary = root / "bin" / "sd-cli"
+    binary.write_text("")
+    (root / ".unsloth-sd-cpp-install.json").write_text(json.dumps({"tag": tag, "accelerator": "cpu"}))
+    _sd_cpp_args_module._installed_sd_cpp_tag.cache_clear()
+    return str(binary)
+
+
+def _all_builders(binary, extra_args = None):
+    files = SdCppModelFiles(diffusion_model = "/m/model.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf")
+    yield build_sd_cpp_command(
+        binary, files, SdCppGenParams(prompt = "a cat"), output_path = "/o.png", extra_args = extra_args
+    )
+    yield build_sd_cpp_video_command(
+        binary, files, SdCppVideoGenParams(prompt = "a cat", width = 256, height = 256, num_frames = 5), output_path = "/o.webm", extra_args = extra_args
+    )
+    yield build_sd_cpp_server_command(binary, files, host = "127.0.0.1", port = 1, extra_args = extra_args)
+
+
+@pytest.mark.parametrize(
+    "tag, expected",
+    [
+        ("master-951-f89d9b1-uafac7a7", True),  # the pinned bundle
+        ("master-907-500ef5f", True),  # the build that merged #2037
+        ("master-906-abcdef0", False),  # --mmap there hands Metal an unaddressable CPU buffer
+        ("master-813-bfbef5b-u6321a69", False),
+        ("b1234", False),  # undatable: fail closed
+    ],
+)
+def test_mmap_rides_every_macos_builder_from_the_metal_mmap_build(monkeypatch, tmp_path, tag, expected):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    monkeypatch.setattr("sys.platform", "darwin")
+    binary = _managed_install(tmp_path, tag)
+    for cmd in _all_builders(binary):
+        assert ("--mmap" in cmd) is expected
+        assert cmd.count("--mmap") <= 1
+
+
+def test_mmap_is_macos_only_and_never_on_an_unrecorded_binary(monkeypatch, tmp_path):
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
+    binary = _managed_install(tmp_path, "master-951-f89d9b1-uafac7a7")
+    for other in ("linux", "win32"):
+        monkeypatch.setattr("sys.platform", other)
+        assert all("--mmap" not in cmd for cmd in _all_builders(binary))
+    monkeypatch.setattr("sys.platform", "darwin")
+    stray = tmp_path / "elsewhere" / "sd-cli"
+    stray.parent.mkdir()
+    stray.write_text("")
+    assert all("--mmap" not in cmd for cmd in _all_builders(str(stray)))
+
+
+def test_mmap_env_override_and_no_duplicate(monkeypatch, tmp_path):
+    monkeypatch.setattr("sys.platform", "darwin")
+    new = _managed_install(tmp_path, "master-951-f89d9b1-uafac7a7")
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "0")
+    assert all("--mmap" not in cmd for cmd in _all_builders(new))
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", "1")
+    assert all("--mmap" in cmd for cmd in _all_builders("/usr/local/bin/sd-cli"))
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP")
+    for cmd in _all_builders(new, extra_args = ["--mmap"]):
+        assert cmd.count("--mmap") == 1

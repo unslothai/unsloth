@@ -641,6 +641,83 @@ def _mps_supports_bfloat16(torch: Any) -> bool:
         return False
 
 
+MPS_HIGH_WATERMARK_ENV = "PYTORCH_MPS_HIGH_WATERMARK_RATIO"
+# torch's accepted range for the high watermark ratio (MPSAllocator default_high_watermark_upper_bound).
+_MPS_RATIO_MAX = 2.0
+# Room left outside the cap for macOS, the window server and this process's own CPU-side memory.
+_MPS_CAP_OS_RESERVE_MIN = 1536 * 1024**2
+_MPS_CAP_OS_RESERVE_FRAC = 0.10
+
+
+def mps_high_watermark_ratio(
+    recommended_bytes: Optional[int], total_ram_bytes: Optional[int]
+) -> Optional[float]:
+    """The MPS high watermark ratio (a multiple of the recommended working set) that caps Metal allocations at
+    physical RAM minus an OS reserve, never below the working set Apple recommends. None when either reading is
+    missing (no cap: the caller keeps the unbounded allocator).
+
+    torch's own default is 1.7x the working set, which is above physical RAM on every Apple Silicon Mac (the working
+    set is ~2/3 to 3/4 of RAM), so past RAM it swaps instead of raising; 0.0 removes the limit entirely. A finite cap
+    turns that into an "MPS backend out of memory" RuntimeError that the batch backoff and VAE tile retry handle."""
+    try:
+        recommended = int(recommended_bytes or 0)
+        total = int(total_ram_bytes or 0)
+    except (TypeError, ValueError):
+        return None
+    if recommended <= 0 or total <= 0:
+        return None
+    reserve = max(_MPS_CAP_OS_RESERVE_MIN, int(total * _MPS_CAP_OS_RESERVE_FRAC))
+    cap = max(recommended, total - reserve)
+    return round(min(_MPS_RATIO_MAX, cap / recommended), 4)
+
+
+def _total_ram_bytes() -> Optional[int]:
+    try:
+        import psutil
+
+        return int(psutil.virtual_memory().total)
+    except Exception:  # noqa: BLE001 -- fall back to sysconf
+        pass
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES"))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _mps_cap_disabled() -> bool:
+    if MPS_HIGH_WATERMARK_ENV in os.environ and os.environ.get(MPS_HIGH_WATERMARK_ENV) != "0.0":
+        return True
+    # The oversized-load opt-in asks to run past the unified-memory guard, so it keeps the unbounded allocator too.
+    return os.environ.get("UNSLOTH_DIFFUSION_ALLOW_OVERSIZED_LOAD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def apply_mps_memory_cap(torch: Any, logger: Any = None) -> Optional[float]:
+    """Cap MPS allocations below physical RAM (``mps_high_watermark_ratio``). Returns the ratio set, or None when
+    nothing was changed: a user-set PYTORCH_MPS_HIGH_WATERMARK_RATIO, the oversized-load opt-in, or torch without
+    ``recommended_max_memory`` (< 2.5) / ``set_per_process_memory_fraction``. Set at runtime because the allocator
+    may already exist (its env reading is one-shot), and best-effort: a failure keeps today's allocator."""
+    if _mps_cap_disabled():
+        return None
+    try:
+        mps = torch.mps
+        ratio = mps_high_watermark_ratio(mps.recommended_max_memory(), _total_ram_bytes())
+        if ratio is None:
+            return None
+        mps.set_per_process_memory_fraction(float(ratio))
+    except Exception as exc:  # noqa: BLE001 -- old torch / no reading: keep the unbounded allocator
+        if logger is not None:
+            logger.info("diffusion: MPS memory cap not set (%s)", exc)
+        return None
+    if logger is not None:
+        logger.info("diffusion: MPS allocations capped at %.3fx the recommended working set", ratio)
+    return ratio
+
+
 def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     mps_available = False
     try:
@@ -654,14 +731,17 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
         mps_available = False
 
     if mps_available:
-        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, at the first MPS allocation (the probe below), so relax it
-        # first or the allocator caps at ~1.7x recommendedMaxWorkingSet and can OOM a model that would fit. setdefault
-        # respects an override.
-        os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+        user_ratio = MPS_HIGH_WATERMARK_ENV in os.environ
+        # torch reads PYTORCH_MPS_HIGH_WATERMARK_RATIO once, when the allocator is built (the probe below, or an earlier
+        # recommended_max_memory() reading). 0.0 here only lifts torch's 1.7x-of-working-set default, which sits above
+        # physical RAM; apply_mps_memory_cap() then sets the finite cap. setdefault respects an override.
+        os.environ.setdefault(MPS_HIGH_WATERMARK_ENV, "0.0")
         # Prefer bfloat16, else float32, NEVER silent float16: modern DiTs produce activations far outside fp16's
         # range (Z-Image MLP peaks near 9e5 -> inf -> NaN -> black image). bf16 (macOS 14+) shares fp32's exponent
         # range; older macOS uses fp32.
         dtype = torch.bfloat16 if _mps_supports_bfloat16(torch) else torch.float32
+        if not user_ratio:
+            apply_mps_memory_cap(torch)
         return DiffusionDeviceTarget(
             device = "mps",
             dtype = dtype,
