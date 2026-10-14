@@ -277,6 +277,21 @@ def test_rows_gemv_rejects_an_out_it_cannot_fill(monkeypatch):
         assert utils._gemv_rows(torch.randn(2, 1, wrong_k, dtype = torch.bfloat16, device = "cuda"), W, W_quant, None) is None
 
 
+def test_rows_gemv_needs_the_weight_on_the_activation_device(monkeypatch):
+    utils = _utils_with_kernels()
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    proj = _linear4bit(1024, 4096)
+    W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
+    X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    # Triton rejects a CPU pointer but not another GPU's, so the guard must stop the launch itself.
+    for name in ("gemv_nf4_rows", "gemv_nf4_rows_planned"):
+        monkeypatch.setattr(utils, name, lambda *a: pytest.fail("launched"))
+    assert utils._gemv_rows(X, W.data.cpu(), W_quant, None) is None
+    absmax = W_quant.absmax
+    monkeypatch.setattr(W_quant, "absmax", absmax.cpu())
+    assert utils._gemv_rows(X, W, W_quant, None) is None
+
+
 def test_empty_decode_batch_keeps_the_matmul_path(monkeypatch):
     utils = _utils_with_kernels()
     monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)

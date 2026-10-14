@@ -1457,7 +1457,7 @@ def _gemv_rows(X, W, quant_state, out):
     """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
     M = X.shape[0]
     # Checked first: rows above the cap must cost the dequantize path nothing extra.
-    if not 2 <= M <= _gemv_rows_cap(X.device):
+    if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
         return None
     eager = (
         not _is_compiling()
@@ -1503,6 +1503,7 @@ def _gemv_rows(X, W, quant_state, out):
         shape[1] % blocksize != 0
         or X.dtype not in (torch.float16, torch.bfloat16)
         or X.numel() != M * shape[1]
+        or any(t is not None and t.device != X.device for t in (absmax, code, code2, absmax2))
     ):
         return None
     if out is not None and (
