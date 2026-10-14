@@ -81,12 +81,13 @@ def _is_studio_output(path: Path) -> bool:
         from unsloth_cli._inference import ensure_studio_backend_path
 
         ensure_studio_backend_path(seed_cache_env = False)
-        from utils.paths import outputs_root
+        from utils.paths import studio_root
 
-        path.resolve().relative_to(outputs_root().resolve())
-        return True
+        parts = path.resolve().relative_to(studio_root().resolve()).parts
     except Exception:
         return False
+    # owner runs live in outputs/, other accounts' in accounts/<id>/outputs/
+    return parts[:1] == ("outputs",) or (parts[:1] == ("accounts",) and parts[2:3] == ("outputs",))
 
 
 def _trained_in_4bit(model: str) -> bool:

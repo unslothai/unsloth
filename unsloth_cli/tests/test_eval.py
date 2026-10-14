@@ -404,6 +404,22 @@ def test_unsloth_backend_reports_missing_bitsandbytes(env, tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize(
+    "where, expected",
+    [("outputs", False), ("accounts/acct1/outputs", False), ("accounts/acct1/exports", True)],
+)
+def test_full_finetune_in_any_account_outputs_loads_in_16bit(
+    env, tmp_path, monkeypatch, where, expected
+):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    run = tmp_path / "studio" / where / "run"
+    run.mkdir(parents = True)
+    (run / "config.json").write_text(json.dumps({"model_type": "llama"}))
+    result = _run(str(run), "--tasks", "gsm8k", "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
+
+
+@pytest.mark.parametrize(
     "files, flags, in_outputs, expected",
     [
         ({"config.json": {"model_type": "llama"}}, [], True, False),
