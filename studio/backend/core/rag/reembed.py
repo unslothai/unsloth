@@ -194,6 +194,11 @@ def _run(job: _Job) -> None:
                 failures = 0
             except _Stopped:
                 raise
+            except embeddings.EmbeddingModelDownloadRequiredError as exc:
+                # The model, not the document: every other document would fail the same way.
+                job.error = str(exc)
+                job.status = "failed"
+                return
             except Exception as exc:  # noqa: BLE001 - one bad document must not end the job
                 logger.warning("re-embedding document %s failed", doc["id"], exc_info = True)
                 failed.add((doc["id"], identity))

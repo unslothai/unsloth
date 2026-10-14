@@ -19,8 +19,8 @@ def models(rag_home, stub_embeddings, monkeypatch):
     state = {"model": OLD, "encoded": [], "fail": lambda texts: False}
 
     def encode(texts, model_name, **_):
-        if model_name != OLD and state["fail"](texts):
-            raise RuntimeError("embedder down")
+        if model_name != OLD and (failure := state["fail"](texts)):
+            raise failure if isinstance(failure, Exception) else RuntimeError("embedder down")
         state["encoded"].append((model_name, list(texts)))
         digests = (hashlib.sha256(f"{model_name}{t}".encode()).digest() for t in texts)
         return [[b / 255.0 + 1e-3 for b in d[: WIDTHS[model_name]]] for d in digests]
@@ -90,6 +90,8 @@ def test_failures_keep_the_old_index_and_only_a_streak_ends_the_job(models, tmp_
     models["fail"] = lambda texts: True
     job = _run_job()
     assert (job["status"], job["remaining"], job["error"]) == ("failed", 0, "embedder down")
+    models["fail"] = lambda texts: embeddings.EmbeddingModelDownloadRequiredError("gone")
+    assert ((job := _run_job())["status"], job["failed"], job["error"]) == ("failed", 0, "gone")
 
 
 def test_a_model_switch_mid_job_redoes_what_the_previous_model_wrote(models, tmp_path):
