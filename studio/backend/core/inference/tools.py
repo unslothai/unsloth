@@ -17457,14 +17457,21 @@ def _fetch_page_text(
                     max_chars,
                 )
 
+    meta: dict = {}
     err, body, content_type = _fetch_url_raw(
         url,
         timeout = timeout,
         deadline = deadline,
         cancel_event = cancel_event,
+        meta_out = meta,
         **policy_kwargs,
     )
     if err is not None:
+        if meta.get("bot_check"):
+            return (
+                f"{err.rstrip()}. The site's bot protection blocked this automated request; "
+                "fetching this site again will not help, so use another source."
+            )
         return err
 
     # Trust a declared HTML type, and otherwise sniff the body: servers with a missing or wrong Content-Type still get
