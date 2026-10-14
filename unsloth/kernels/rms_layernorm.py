@@ -80,6 +80,8 @@ def _rms_backward_row(
     mask,
     n_cols: tl.constexpr,
     GEMMA: tl.constexpr,
+    dW_acc,
+    TRAIN_W: tl.constexpr,
 ):
     dY += row_idx * dY_row_stride
     X += row_idx * X_row_stride
@@ -97,6 +99,10 @@ def _rms_backward_row(
     # Get saved row variance
     inv_var = tl.load(r).to(tl.float32)
     normed = X_row * inv_var
+    if TRAIN_W:
+        # dL/dW for this row, (1 + W) for Gemma included. Added before the row sum so the fp32 dY row
+        # is not held across it: fewer registers, so every persistent program stays resident.
+        dW_acc += dY_row * normed
 
     if GEMMA:
         dY_W = dY_row * (W_row + 1.0)
@@ -106,8 +112,7 @@ def _rms_backward_row(
     rowsum_dY_normed = tl.sum(dY_W * normed, axis = 0)
     output = inv_var / n_cols * (n_cols * dY_W - normed * rowsum_dY_normed)
     tl.store(dX + col_offsets, output, mask = mask)
-    # dL/dW for this row, (1 + W) for Gemma included; dead code unless TRAIN_W.
-    return dY_row * normed
+    return dW_acc
 
 
 def _rms_layernorm_backward(
@@ -147,7 +152,7 @@ def _rms_layernorm_backward(
         dW_acc = tl.zeros((BLOCK_SIZE,), dtype = tl.float32)
         row_start = pid * rows_per_program
         for row_idx in range(row_start, tl.minimum(row_start + rows_per_program, n_rows)):
-            dW_acc += _rms_backward_row(
+            dW_acc = _rms_backward_row(
                 dY,
                 dY_row_stride,
                 dX,
@@ -162,6 +167,8 @@ def _rms_layernorm_backward(
                 mask,
                 n_cols,
                 GEMMA,
+                dW_acc,
+                True,
             )
         tl.store(dW + pid * n_cols + col_offsets, dW_acc, mask = mask)
     else:
@@ -180,6 +187,8 @@ def _rms_layernorm_backward(
             mask,
             n_cols,
             GEMMA,
+            0.0,
+            False,
         )
 
 
@@ -432,7 +441,7 @@ def _rms_sum_dw_partials(
     cols = tl.program_id(0) * BLOCK_COLS + tl.arange(0, BLOCK_COLS)
     col_mask = cols < n_cols
     acc = tl.zeros((BLOCK_ROWS, BLOCK_COLS), dtype = tl.float32)
-    for start in range(0, n_programs, BLOCK_ROWS):
+    for start in tl.range(0, n_programs, BLOCK_ROWS, num_stages = 3):
         rows = start + tl.arange(0, BLOCK_ROWS)
         mask = (rows < n_programs)[:, None] & col_mask[None, :]
         acc += tl.load(partials + rows[:, None] * n_cols + cols[None, :], mask = mask, other = 0)
@@ -612,12 +621,39 @@ def _sm_count(device):
         return 128
 
 
-def _dw_launch(units, device):
+@functools.lru_cache(maxsize = None)
+def _max_sm_threads(device):
+    try:
+        return int(torch.cuda.get_device_properties(device).max_threads_per_multi_processor)
+    except Exception:
+        return 0
+
+
+def _dw_split(units, max_programs):
     # Empty input: one program, no rows, a zero partial.
-    per_program = max(
-        1, triton.cdiv(units, max(1, min(units, _sm_count(device) * _DW_PROGRAMS_PER_SM)))
-    )
+    per_program = max(1, triton.cdiv(units, max(1, min(units, max_programs))))
     return max(1, triton.cdiv(units, per_program)), per_program
+
+
+def _dw_launch(units, device):
+    return _dw_split(units, _sm_count(device) * _DW_PROGRAMS_PER_SM)
+
+
+@functools.lru_cache(maxsize = None)
+def _dw_row_config(device, n_cols):
+    # Cached: at small shapes the backward is host bound, so the launch choice must cost nothing.
+    # 64-warp SMs (A100 / H100 / B200), <= 16 elements per lane: cap registers at 64 so 32 warps of
+    # programs are all resident; uncapped, wide rows kept one program per SM. T4: measured no gain.
+    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
+    per_sm, launch = _DW_PROGRAMS_PER_SM, {}
+    if (
+        device.type == "cuda"
+        and not torch.version.hip
+        and BLOCK_SIZE <= 512 * num_warps
+        and _max_sm_threads(device) >= 2048
+    ):
+        per_sm, launch = max(1, 32 // num_warps), {"maxnreg": 64}
+    return BLOCK_SIZE, num_warps, _sm_count(device) * per_sm, launch
 
 
 def _rms_backward(
@@ -673,11 +709,13 @@ def _rms_backward(
             _multirow_disable(f"launch failed: {error!r}")
         else:
             return _rms_sum_partials(partials, W, wrap)
-    BLOCK_SIZE, num_warps = calculate_settings(n_cols)
-    programs, per_program = n_rows, 1
+    programs, per_program, launch = n_rows, 1, {}
     if train_w:
-        programs, per_program = _dw_launch(n_rows, dY.device)
+        BLOCK_SIZE, num_warps, max_programs, launch = _dw_row_config(dY.device, int(n_cols))
+        programs, per_program = _dw_split(n_rows, max_programs)
         partials = torch.empty((programs, n_cols), dtype = torch.float32, device = dY.device)
+    else:
+        BLOCK_SIZE, num_warps = calculate_settings(n_cols)
     wrap(_rms_layernorm_backward)[(programs,)](
         dY,
         dY.stride(0),
@@ -699,6 +737,7 @@ def _rms_backward(
         BLOCK_SIZE = BLOCK_SIZE,
         TRAIN_W = train_w,
         num_warps = num_warps,
+        **launch,
     )
     return _rms_sum_partials(partials, W, wrap)
 
