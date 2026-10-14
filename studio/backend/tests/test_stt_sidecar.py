@@ -1622,10 +1622,8 @@ def test_bounded_decoder_rejects_malformed_audio(audio):
         _REAL_DECODE_AUDIO_BOUNDED(audio)
 
 
-def test_a_damaged_frame_does_not_drop_the_rest_of_the_audio():
-    av = pytest.importorskip("av")
-    rate = 44100
-    tone = (0.3 * np.sin(np.arange(rate * 20) * 0.06) * 32767).astype(np.int16).reshape(1, -1)
+def _mp3(av, rate, seconds):
+    tone = (0.3 * np.sin(np.arange(int(rate * seconds)) * 0.06) * 32767).astype(np.int16).reshape(1, -1)
     buf = io.BytesIO()
     with av.open(buf, mode = "w", format = "mp3") as out:
         stream = out.add_stream("libmp3lame", rate = rate, layout = "mono")
@@ -1638,13 +1636,26 @@ def test_a_damaged_frame_does_not_drop_the_rest_of_the_audio():
                 out.mux(packet)
         for packet in stream.encode(None):
             out.mux(packet)
-    audio = bytearray(buf.getvalue())
+    return buf.getvalue()
+
+
+def test_a_damaged_frame_does_not_drop_the_rest_of_the_audio():
+    av = pytest.importorskip("av")
+    audio = bytearray(_mp3(av, 44100, 20))
     middle = len(audio) // 2
     audio[middle : middle + 2048] = bytes(range(256)) * 8
 
     decoded = _REAL_DECODE_AUDIO_BOUNDED(bytes(audio))
 
     assert len(decoded) / 16000 > 19
+
+
+def test_a_stream_that_cannot_continue_keeps_the_audio_before_it():
+    av = pytest.importorskip("av")
+
+    decoded = _REAL_DECODE_AUDIO_BOUNDED(_mp3(av, 44100, 10) + _mp3(av, 22050, 10))
+
+    assert len(decoded) / 16000 > 9.5
 
 
 def test_bounded_decoder_rejects_container_without_audio_stream(monkeypatch):
