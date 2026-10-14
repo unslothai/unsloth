@@ -134,3 +134,87 @@ def test_real_tokenizer_without_post_processor():
     tok = _tokenizer_from_json(None, ["<pad>"])
     tok.pad_token = "<pad>"
     assert tok.pad_token_id not in tu._special_ids_added_on_encode(tok)
+
+
+class _PadTok(_Tok):
+    def __init__(
+        self,
+        pad_token_id,
+        eos_token_id,
+        suffix = (),
+    ):
+        super().__init__(suffix = suffix)
+        self.pad_token_id, self.eos_token_id = pad_token_id, eos_token_id
+
+
+def _model(
+    padding_idx,
+    tied = False,
+    config_eos = None,
+    generation_eos = None,
+):
+    import types
+
+    torch = pytest.importorskip("torch")
+    model = torch.nn.Module()
+    model.embed = torch.nn.Embedding(8, 4, padding_idx = padding_idx)
+    with torch.no_grad():
+        model.embed.weight.fill_(1.0)
+    model.lm_head = torch.nn.Linear(4, 8, bias = False)
+    if tied:
+        model.lm_head.weight = model.embed.weight
+    model.config = types.SimpleNamespace(eos_token_id = config_eos)
+    model.generation_config = types.SimpleNamespace(eos_token_id = generation_eos)
+    return model
+
+
+def _zeroed(model):
+    return [i for i in range(8) if not model.embed.weight[i].any()]
+
+
+def test_plain_pad_row_is_zeroed():
+    model = _model(5)
+    tu.zero_pad_embedding_rows(model, _PadTok(5, 2))
+    assert _zeroed(model) == [5]
+
+
+def test_pad_equal_to_eos_is_never_zeroed():
+    # pad == eos: zeroing would wipe the EOS row the model needs to learn to stop.
+    model = _model(2)
+    tu.zero_pad_embedding_rows(model, _PadTok(2, 2))
+    assert _zeroed(model) == []
+
+
+@pytest.mark.parametrize("where", ["config", "generation"])
+def test_pad_in_model_eos_list_is_never_zeroed(where):
+    # Llama 3 style: several EOS ids in config / generation_config, the tokenizer names one.
+    kwargs = {"config_eos": [2, 5]} if where == "config" else {"generation_eos": [2, 5]}
+    model = _model(5, **kwargs)
+    tu.zero_pad_embedding_rows(model, _PadTok(5, 2))
+    assert _zeroed(model) == []
+
+
+def test_config_padding_idx_on_eos_row_is_not_zeroed():
+    # Phi-3.5-mini: config pad_token_id 32000 is EOS, the tokenizer pads with 32009.
+    model = _model(2)
+    tu.zero_pad_embedding_rows(model, _PadTok(6, 2))
+    assert _zeroed(model) == []
+
+
+def test_emitted_pad_row_is_kept():
+    model = _model(5)
+    tu.zero_pad_embedding_rows(model, _PadTok(5, 2, suffix = [5]))
+    assert _zeroed(model) == []
+
+
+def test_tied_embedding_is_not_zeroed():
+    model = _model(5, tied = True)
+    tu.zero_pad_embedding_rows(model, _PadTok(5, 2))
+    assert _zeroed(model) == []
+
+
+def test_no_tokenizer_or_pad_is_a_no_op():
+    model = _model(5)
+    tu.zero_pad_embedding_rows(model, None)
+    tu.zero_pad_embedding_rows(model, _PadTok(None, 2))
+    assert _zeroed(model) == []

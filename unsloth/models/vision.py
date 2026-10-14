@@ -4983,35 +4983,9 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
-        # Set weight[padding_idx] = 0 only for embeddings NOT tied with the lm_head: when tied, zeroing the padding row zeros the lm_head row and forces logit = 0 for the pad token. Only when the tokenizer is defined, since eos_token == pad_token sometimes.
-        pad_token_id = getattr(tokenizer, "pad_token_id", None)
-        lm_head = getattr(model, "lm_head", None)
-        lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
-        # Also skipped when the tokenizer appends the pad token to every input: microsoft/harrier-oss-v1-0.6b pools its <|endoftext|> row (#4984).
-        from ..tokenizer_utils import _special_ids_added_on_encode
+        from ..tokenizer_utils import zero_pad_embedding_rows
 
-        if (
-            tokenizer is not None
-            and getattr(tokenizer, "eos_token_id", None) != pad_token_id
-            and pad_token_id not in _special_ids_added_on_encode(tokenizer)
-        ):
-            with torch.no_grad():
-                for name, module in model.named_modules():
-                    if type(module) is torch.nn.Embedding:
-                        if (
-                            getattr(module, "weight", None) is not None
-                            and getattr(module, "padding_idx", None) is not None
-                        ):
-                            if (
-                                module.padding_idx == pad_token_id
-                                and module.padding_idx < module.weight.shape[0]
-                            ):
-                                if (
-                                    lm_head_weight is not None
-                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
-                                ):
-                                    continue
-                                module.weight[module.padding_idx] = 0
+        zero_pad_embedding_rows(model, tokenizer)
         return model
 
     @staticmethod

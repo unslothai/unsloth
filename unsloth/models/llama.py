@@ -3794,35 +3794,9 @@ class FastLlamaModel:
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
-        # Zero weight[padding_idx] only for embeddings NOT tied to lm_head: when tied, zeroing the row
-        # forces pad logit = 0, which beats the negative logits of real tokens (Gemma) and makes the
-        # decoder emit <pad>. Skipped when eos_token == pad_token.
-        eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
-        pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
-        if tokenizer is not None and eos_token_id != pad_token_id:
-            from ..tokenizer_utils import _special_ids_added_on_encode
+        from ..tokenizer_utils import zero_pad_embedding_rows
 
-            # A row the tokenizer adds to every input is a real token, not padding (#4984).
-            emitted_ids = _special_ids_added_on_encode(tokenizer)
-            lm_head = getattr(model, "lm_head", None)
-            lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
-            with torch.no_grad():
-                for name, module in model.named_modules():
-                    if type(module) is torch.nn.Embedding:
-                        if (
-                            getattr(module, "weight", None) is not None
-                            and getattr(module, "padding_idx", None) is not None
-                        ):
-                            if (
-                                module.padding_idx < module.weight.shape[0]
-                                and module.padding_idx not in emitted_ids
-                            ):
-                                if (
-                                    lm_head_weight is not None
-                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
-                                ):
-                                    continue
-                                module.weight[module.padding_idx] = 0
+        zero_pad_embedding_rows(model, tokenizer)
 
         # LAST: post_patch replaces the embedding modules and the QKV/MLP patching below replaces the
         # forwards a hook wraps, so an earlier attach is lost. Skipped under vLLM, which owns the

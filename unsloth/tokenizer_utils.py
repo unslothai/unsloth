@@ -162,6 +162,44 @@ def _special_ids_added_on_encode(tokenizer):
     return frozenset(flat(with_special)) - frozenset(flat(without_special))
 
 
+def _as_id_set(ids):
+    if ids is None:
+        return set()
+    if isinstance(ids, int):
+        return {ids}
+    return {i for i in ids if isinstance(i, int)}
+
+
+def zero_pad_embedding_rows(model, tokenizer):
+    """Zero the input embedding row of the token the tokenizer pads with.
+
+    Skipped for any EOS id (tokenizer, config or generation config): zeroing it breaks learning to
+    stop. Skipped for an id the tokenizer adds to every input (#4984: harrier-oss-v1-0.6b pools its
+    <|endoftext|> pad row). Skipped for embeddings tied to lm_head: a zero row forces pad logit = 0,
+    which beats real tokens' negative logits (Gemma) and makes the decoder emit <pad>.
+    """
+    pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
+    if not isinstance(pad_token_id, int):
+        return
+    eos_ids = _as_id_set(getattr(tokenizer, "eos_token_id", None))
+    for config in (getattr(model, "config", None), getattr(model, "generation_config", None)):
+        eos_ids |= _as_id_set(getattr(config, "eos_token_id", None))
+    if pad_token_id in eos_ids or pad_token_id in _special_ids_added_on_encode(tokenizer):
+        return
+    lm_head_weight = getattr(getattr(model, "lm_head", None), "weight", None)
+    with torch.no_grad():
+        for module in model.modules():
+            if (
+                type(module) is torch.nn.Embedding
+                and module.padding_idx == pad_token_id
+                and pad_token_id < module.weight.shape[0]
+                and (
+                    lm_head_weight is None or module.weight.data_ptr() != lm_head_weight.data_ptr()
+                )
+            ):
+                module.weight[pad_token_id] = 0
+
+
 def _strip_bos_from_chat_template_text(chat_template):
     if not isinstance(chat_template, str) or not chat_template:
         return chat_template
