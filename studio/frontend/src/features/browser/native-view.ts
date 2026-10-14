@@ -408,6 +408,8 @@ function overlays(selector: string, rect: DOMRect | null, skip: string | null = 
   const boxes: DOMRect[] = [];
   for (const element of outsideThread(selector)) {
     if (element.closest("[data-native-page]")) continue;
+    // The dialog the browser opens in over compare, projects and phones holds the page, not covers it.
+    if (element.querySelector("[data-native-page]")) continue;
     if (skip && element.querySelector(skip)) continue;
     const box = element.getBoundingClientRect();
     if (box.width > 0 && box.height > 0 && (!rect || intersects(box, rect))) boxes.push(box);
