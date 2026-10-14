@@ -6235,9 +6235,6 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel-row {
 	@apply flex items-center gap-2;
 }
-.unsloth-files-panel-row[data-show-all="true"] {
-	@apply items-end;
-}
 .unsloth-files-panel-row:has(.unsloth-files-panel-strip:empty) {
 	display: none;
 }
@@ -6255,11 +6252,29 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	@apply gap-2.5 pt-3 pb-3;
 }
 /* Beside a Show all, the strip ends at the button instead of the panel edge. */
-.unsloth-files-panel-row:has(> .unsloth-files-panel-action) > .unsloth-files-panel-strip {
+.unsloth-files-panel-row:has(> .unsloth-files-panel-more) > .unsloth-files-panel-strip {
 	@apply mr-0 pr-0;
+	mask-image: linear-gradient(to left, transparent, black 1.5rem);
 }
+.unsloth-files-panel-more {
+	@apply inline-flex h-7 shrink-0 items-center gap-0.5 rounded-full pr-1.5 pl-2.5 text-ui-12 text-muted-foreground transition-colors hover:text-foreground;
+}
+.unsloth-files-panel-more:hover {
+	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+}
+/* Show all: equal columns across the full width, every pill stretched to its column. */
 .unsloth-files-panel-strip[data-show-all="true"] {
-	@apply max-h-[40dvh] flex-wrap overflow-x-hidden overflow-y-auto;
+	@apply grid max-h-[40dvh] items-center overflow-x-hidden overflow-y-auto;
+	grid-template-columns: repeat(auto-fill, minmax(calc(12rem * var(--ui-space-scale, 1)), 1fr));
+}
+.unsloth-files-panel-strip[data-show-all="true"] :is(.unsloth-files-pill-item, .unsloth-files-pill-item > div) {
+	@apply min-w-0 flex-1;
+}
+.unsloth-files-panel-strip[data-show-all="true"] .unsloth-files-pill {
+	@apply w-full max-w-none;
+}
+.unsloth-files-panel-strip[data-show-all="true"] > .unsloth-files-panel-more {
+	@apply justify-self-start;
 }
 .unsloth-files-panel-action {
 	@apply inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-ui-13 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;

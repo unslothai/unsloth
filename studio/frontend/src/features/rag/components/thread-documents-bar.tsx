@@ -12,11 +12,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
+import { PlusIcon, XIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  ArrowExpand01Icon,
-  ArrowShrink01Icon,
   AttachmentIcon,
   FileDatabaseIcon,
   FolderAttachmentIcon,
@@ -44,7 +42,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tick02Icon } from "@/lib/tick-icon";
-import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import {
+  ChevronDownStandardIcon,
+  ChevronUpStandardIcon,
+} from "@/lib/chevron-icons";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
@@ -291,7 +292,10 @@ function LinkedFolderCard({
   const title = `${label}: ${count}, kept in sync and shared with every chat in this project. Manage it in the project's Sources tab.`;
   if (compact) {
     return (
-      <div title={title} className={cn("shrink-0 cursor-default", PILL, CARD_EDGE)}>
+      <div
+        title={title}
+        className={cn("unsloth-files-pill shrink-0 cursor-default", PILL, CARD_EDGE)}
+      >
         {indexing > 0 ? (
           <Spinner className="size-3.5 shrink-0" />
         ) : (
@@ -556,12 +560,13 @@ function DocumentCard({
     );
   if (compact) {
     return (
-      <div ref={setSlot} className="flex shrink-0 items-center gap-1">
-        <div className="group/attachment-card relative flex">
+      <div ref={setSlot} className="unsloth-files-pill-item flex shrink-0 items-center gap-1">
+        <div className="group/attachment-card relative flex min-w-0">
           {wrapDialog(
             <button
               {...buttonProps}
               className={cn(
+                "unsloth-files-pill",
                 PILL,
                 "text-left disabled:cursor-default",
                 CARD_EDGE,
@@ -721,17 +726,16 @@ function ChatFilesPanel({
 }) {
   const collapsed = useChatPreferencesStore((s) => s.filesPanelCollapsed);
   const setCollapsed = useChatPreferencesStore((s) => s.setFilesPanelCollapsed);
+  // Show all lays every file out as pills without touching the saved collapse, so Show less
+  // returns to the cards when it started from them.
   const [showAll, setShowAll] = useState(false);
+  const compact = collapsed || showAll;
   const stripRef = useRef<HTMLDivElement>(null);
-  const [scroll, setScroll] = useState({ back: false, forward: false });
+  const [overflowing, setOverflowing] = useState(false);
   const measure = useCallback(() => {
     const el = stripRef.current;
     if (!el) return;
-    const back = el.scrollLeft > 1;
-    const forward = el.scrollWidth - el.clientWidth - el.scrollLeft > 1;
-    setScroll((prev) =>
-      prev.back === back && prev.forward === forward ? prev : { back, forward },
-    );
+    setOverflowing(el.scrollWidth - el.clientWidth > 1);
   }, []);
   useLayoutEffect(() => {
     const el = stripRef.current;
@@ -747,12 +751,6 @@ function ChatFilesPanel({
       mutations.disconnect();
     };
   }, [measure]);
-  const page = (direction: 1 | -1) => {
-    const el = stripRef.current;
-    if (!el) return;
-    el.scrollBy({ left: direction * el.clientWidth * 0.8, behavior: "smooth" });
-  };
-  const overflowing = scroll.back || scroll.forward;
   // Drops here are indexed; elsewhere they attach to the message. The page handler skips
   // prevented drops, and the desktop's window-wide handler skips registered targets.
   const ignoreDrop = useCallback(() => {}, []);
@@ -774,7 +772,7 @@ function ChatFilesPanel({
       ref={acceptsDrop ? nativeDropTarget : undefined}
       aria-label={title}
       className="unsloth-files-panel"
-      data-collapsed={children && collapsed ? "true" : undefined}
+      data-collapsed={children && compact ? "true" : undefined}
       data-dragging={acceptsDrop && dragging ? "true" : undefined}
       {...(acceptsDrop ? dropProps : {})}
     >
@@ -814,42 +812,20 @@ function ChatFilesPanel({
         {note}
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {headerControls}
-          {overflowing ? (
-            <>
-              <button
-                type="button"
-                className="unsloth-files-panel-icon-btn"
-                onClick={() => page(-1)}
-                disabled={!scroll.back}
-                aria-label="Scroll files back"
-              >
-                <ChevronLeftIcon className="size-4" />
-              </button>
-              <button
-                type="button"
-                className="unsloth-files-panel-icon-btn"
-                onClick={() => page(1)}
-                disabled={!scroll.forward}
-                aria-label="Scroll files forward"
-              >
-                <ChevronRightIcon className="size-4" />
-              </button>
-            </>
-          ) : null}
           {children ? (
             <button
               type="button"
               className="unsloth-files-panel-icon-btn"
               onClick={() => {
-                setCollapsed(!collapsed);
+                setCollapsed(!compact);
                 setShowAll(false);
               }}
-              aria-expanded={!collapsed}
-              aria-label={collapsed ? "Expand files" : "Collapse files"}
-              title={collapsed ? "Expand files" : "Collapse files"}
+              aria-expanded={!compact}
+              aria-label={compact ? "Expand files" : "Collapse files"}
+              title={compact ? "Expand files" : "Collapse files"}
             >
               <HugeiconsIcon
-                icon={collapsed ? ArrowExpand01Icon : ArrowShrink01Icon}
+                icon={compact ? ChevronDownStandardIcon : ChevronUpStandardIcon}
                 strokeWidth={1.75}
                 className="size-4"
               />
@@ -872,30 +848,38 @@ function ChatFilesPanel({
         <div className="unsloth-files-panel-row" data-show-all={showAll ? "true" : undefined}>
           <div
             ref={stripRef}
-            onScroll={measure}
             className="unsloth-files-panel-strip"
             data-show-all={showAll ? "true" : undefined}
           >
-            <CompactCardsContext.Provider value={collapsed}>
+            <CompactCardsContext.Provider value={compact}>
               {children}
             </CompactCardsContext.Provider>
+            {/* In the grid, Show less takes the next free cell instead of a column of its own. */}
+            {showAll ? (
+              <button
+                type="button"
+                className="unsloth-files-panel-more"
+                aria-expanded={true}
+                onClick={() => setShowAll(false)}
+              >
+                Show less
+                <HugeiconsIcon icon={ChevronUpStandardIcon} strokeWidth={1.75} className="size-3.5" />
+              </button>
+            ) : null}
           </div>
-          {overflowing || showAll ? (
-            // Show all wraps the pills, so from the cards it collapses first.
+          {overflowing && !showAll ? (
             <button
               type="button"
-              className="unsloth-files-panel-action"
-              aria-expanded={showAll}
-              onClick={() => {
-                if (showAll) {
-                  setShowAll(false);
-                  return;
-                }
-                setCollapsed(true);
-                setShowAll(true);
-              }}
+              className="unsloth-files-panel-more"
+              aria-expanded={false}
+              onClick={() => setShowAll(true)}
             >
-              {showAll ? "Show less" : "Show all"}
+              Show all
+              <HugeiconsIcon
+                icon={ChevronDownStandardIcon}
+                strokeWidth={1.75}
+                className="size-3.5"
+              />
             </button>
           ) : null}
         </div>
