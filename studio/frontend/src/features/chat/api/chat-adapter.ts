@@ -8062,6 +8062,10 @@ export function createOpenAIStreamAdapter(
                 structuredReasoningContinues,
                 hasStructuredReasoning,
               } = extractDeltaText(rawDelta);
+              // Output after a give-up is a later pass making progress, so the give-up no longer ends the turn.
+              if (preemptGaveUp && delta) {
+                preemptGaveUp = false;
+              }
               const deltaExtraContent = (
                 chunk.choices?.[0]?.delta as
                   | { extra_content?: unknown }

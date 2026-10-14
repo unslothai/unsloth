@@ -30,7 +30,7 @@ test("a finished answer clears the give-up, a length stop does not", () => {
 });
 
 function replay(
-  chunks: readonly { finishReason?: string; gaveUp?: boolean }[],
+  chunks: readonly { finishReason?: string; gaveUp?: boolean; content?: string }[],
 ): IncompleteReason | null {
   let incompleteReason: IncompleteReason | null = null;
   let preemptGaveUp = false;
@@ -38,6 +38,9 @@ function replay(
     if (chunk.gaveUp) {
       preemptGaveUp = true;
       continue;
+    }
+    if (preemptGaveUp && chunk.content) {
+      preemptGaveUp = false;
     }
     if (chunk.finishReason === "length") {
       incompleteReason = "length";
@@ -74,6 +77,30 @@ test("a turn that gave up and stopped there is still paused", () => {
     "this is the case the override exists for: the backend could not get the model " +
       "back, and `paused` is also what refuses the automatic continuation",
   );
+});
+
+test("a give-up followed by a final pass that answers and then hits length is a length stop", () => {
+  assert.equal(
+    replay([
+      { finishReason: "tool_calls" },
+      { gaveUp: true },
+      { content: "The answer is" },
+      { finishReason: "length" },
+    ]),
+    "length",
+    "the final pass made progress, so the turn ended on its own output limit and should " +
+      "offer the usual continuation, not a paused Resume",
+  );
+});
+
+test("the adapter clears the latch on output after the give-up", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/api/chat-adapter.ts", import.meta.url),
+    "utf8",
+  );
+  const at = source.indexOf("} = extractDeltaText(rawDelta);");
+  assert.ok(at > 0, "the delta extraction moved; this test has to move with it");
+  assert.match(source.slice(at, at + 400), /if \(preemptGaveUp && delta\) \{\s*preemptGaveUp = false;/);
 });
 
 test("a give-up after an answer still wins", () => {
