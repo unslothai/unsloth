@@ -253,7 +253,7 @@ test("a linked folder's files collapse into one folder card", () => {
   }
 });
 
-// Every indexed card opens: Studio's browser renders any format, with fallbacks without it.
+// Every indexed card opens: the browser, the attachment viewer or a new tab.
 test("indexed cards of any format open", () => {
   extraProjectDocs = [
     { id: "doc-2", filename: "notes.docx", status: "completed" },

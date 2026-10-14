@@ -50,7 +50,7 @@ function chipProps(doc: Record<string, unknown>): Record<string, unknown> {
   return element.props;
 }
 
-// Every indexed source opens through the shared trigger: Studio's browser renders every format.
+// Every indexed source opens through the shared trigger, which picks where it shows.
 test("an indexed source of any format opens through the document trigger", () => {
   for (const filename of ["handbook.pdf", "notes.md", "Docs/report.docx", "archive.epub"]) {
     const props = chipProps({ id: "doc-2", filename, status: "completed" });

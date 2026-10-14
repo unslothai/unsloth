@@ -3,7 +3,9 @@
 
 import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
 import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
+import { canShowFile } from "@/features/browser/file-kind";
 import { useBrowserPanelAvailable } from "@/features/browser/panel-availability";
+import { useBrowserPrefsStore } from "@/features/browser/prefs-store";
 import { toast } from "@/lib/toast";
 import { type ReactElement, cloneElement } from "react";
 import { getDocumentFileUrl } from "../api/rag-api";
@@ -11,9 +13,8 @@ import { openRagDocumentInBrowser } from "../lib/open-document";
 import { asViewerFile, fetchSourceFile, isViewableSource } from "./source-file";
 
 /**
- * Opens an indexed document from `children` (a button): in Studio's browser, which renders every
- * indexed format. Without the browser panel (mobile), viewable files use the attachment viewer and
- * the rest a new tab.
+ * Opens an indexed document from `children` (a button): in Studio's browser when it can show the
+ * format and files open there. Otherwise viewable files use the attachment viewer, the rest a new tab.
  */
 export function RagDocumentTrigger({
   documentId,
@@ -24,7 +25,13 @@ export function RagDocumentTrigger({
   filename: string;
   children: ReactElement;
 }) {
-  const browser = useBrowserPanelAvailable();
+  const panel = useBrowserPanelAvailable();
+  const filesInBrowser = useBrowserPrefsStore((s) => s.openFilesInBrowser);
+  // A non-empty type, so only the name decides: canShowFile accepts any file with no type.
+  const browser =
+    panel &&
+    filesInBrowser &&
+    canShowFile(filename, "application/octet-stream");
   if (browser) {
     return cloneElement(children as ReactElement<{ onClick?: () => void }>, {
       onClick: () => openRagDocumentInBrowser(documentId, filename),

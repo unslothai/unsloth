@@ -444,7 +444,7 @@ function DocumentCard({
   const ready = doc.status === "completed" && !pending;
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const thumbnail = useDocumentThumbnail(doc, ready, slot);
-  // Studio's browser renders every format; RagDocumentTrigger falls back without it.
+  // Every indexed file opens: RagDocumentTrigger picks the browser, the viewer or a new tab.
   const canOpen = ready;
   const preview =
     thumbnail?.kind === "image" ? (
