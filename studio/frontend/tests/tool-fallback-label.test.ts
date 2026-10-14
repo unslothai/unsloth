@@ -129,8 +129,11 @@ test("a document search lists its passages in the card, opening documents in the
   const kb = read("components/assistant-ui/tool-ui-knowledge-base.tsx");
   assert.match(
     kb,
-    /citations\.map\(\(citation, i\) => \(\s*<li[\s\S]*?<CitationBadge/,
+    /shown\.map\(\(citation, i\) => \(\s*<li[\s\S]*?<CitationBadge/,
   );
+  // A model-chosen top_k has no ceiling: the rest wait behind "Show N more".
+  assert.match(kb, /citations\.slice\(0, PASSAGES_SHOWN\)/);
+  assert.match(kb, /Show \{citations\.length - shown\.length\} more/);
   assert.match(kb, /<p className="line-clamp-3[^"]*">\s*\{citation\.text\}/);
   assert.match(kb, /<RagDocumentTrigger/);
   const trigger = read("features/rag/components/rag-document-trigger.tsx");

@@ -16,7 +16,7 @@ import { useToolAwaitingApproval } from "@/features/chat";
 import { RagDocumentTrigger } from "@/features/rag/components/rag-document-trigger";
 import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
-import { type ComponentProps, memo, useMemo } from "react";
+import { type ComponentProps, memo, useMemo, useState } from "react";
 import { Badge } from "./badge";
 import {
   isToolCallRunning,
@@ -86,6 +86,8 @@ const LibraryGlyph = (
 
 // Longer queries get a scroll box rather than a line of text.
 const QUERY_INLINE_MAX = 80;
+// The model picks top_k with no ceiling, so a huge search would mount every passage at once.
+const PASSAGES_SHOWN = 20;
 
 const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   args,
@@ -104,6 +106,8 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
     [citations],
   );
   const docCount = documents.length;
+  const [showAll, setShowAll] = useState(false);
+  const shown = showAll ? citations : citations.slice(0, PASSAGES_SHOWN);
 
   const hasText = useAuiState(({ message }) =>
     partsHaveNonEmptyText(message.content),
@@ -148,7 +152,7 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
                   {docCount === 1 ? "" : "s"}.
                 </div>
                 <ol className="flex flex-col gap-2.5">
-                  {citations.map((citation, i) => (
+                  {shown.map((citation, i) => (
                     <li
                       key={citation.id}
                       className="flex flex-col items-start gap-1"
@@ -162,6 +166,15 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
                     </li>
                   ))}
                 </ol>
+                {shown.length < citations.length ? (
+                  <button
+                    type="button"
+                    onClick={() => setShowAll(true)}
+                    className="self-start text-xs underline-offset-2 hover:text-foreground hover:underline"
+                  >
+                    Show {citations.length - shown.length} more
+                  </button>
+                ) : null}
               </>
             ) : resultText ? (
               <ScrollPane
