@@ -510,6 +510,11 @@ from state.tool_approvals import (
 )
 from utils.paths.path_utils import _is_wsl, is_appledouble_metadata
 from utils.code_integrity import code_integrity_block_reason, code_integrity_user_message
+from utils.first_token_timeout import (
+    finish_first_token_wait,
+    socket_timeout,
+    start_first_token_wait,
+)
 
 # The leaf module, not utils.models: importing anything from that package runs its __init__,
 # which pulls in model_config and therefore PyYAML. This is the chat backend, imported wherever
@@ -37644,7 +37649,7 @@ class LlamaCppBackend:
             trust_env = False,
             verify = _local_ssl_context(),
         ) as client:
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = start_first_token_wait()
             with self._stream_with_retry(
                 client,
                 url,
@@ -37707,7 +37712,7 @@ class LlamaCppBackend:
         """Iterate a stream while polling cancel and stall timeouts."""
         text_iter = response.iter_text()
         if first_token_deadline is None:
-            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+            first_token_deadline = start_first_token_wait()
         last_chunk_at: Optional[float] = None
         last_prefill_progress: Optional[float] = None
         prefill_sse_buffer = ""
@@ -37720,7 +37725,7 @@ class LlamaCppBackend:
                     remaining_s = first_token_deadline - time.monotonic()
                     if remaining_s <= 0:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
-                    LlamaCppBackend._set_stream_read_timeout(response, remaining_s)
+                    LlamaCppBackend._set_stream_read_timeout(response, socket_timeout(remaining_s))
                 chunk = next(text_iter)
                 starts_output = last_chunk_at is not None
                 if chunk and last_chunk_at is None:
@@ -37738,8 +37743,9 @@ class LlamaCppBackend:
                             last_prefill_progress is None or processed > last_prefill_progress
                         ):
                             last_prefill_progress = processed
-                            first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                            first_token_deadline = start_first_token_wait()
                 if chunk and starts_output:
+                    finish_first_token_wait()
                     if last_chunk_at is None and post_first_chunk_read_timeout_s is not None:
                         LlamaCppBackend._set_stream_read_timeout(
                             response,
@@ -37759,7 +37765,9 @@ class LlamaCppBackend:
                 continue
 
     @staticmethod
-    def _set_stream_read_timeout(response: "httpx.Response", read_timeout_s: float) -> None:
+    def _set_stream_read_timeout(
+        response: "httpx.Response", read_timeout_s: Optional[float]
+    ) -> None:
         """Lower only post-header stream reads; keep prefill timeout long."""
         try:
             timeout_ext = response.request.extensions.get("timeout")
@@ -37813,18 +37821,19 @@ class LlamaCppBackend:
         stall timeout instead of the long prefill timeout."""
         import httpcore
 
-        def _live_read_timeout() -> Optional[float]:
+        def _live_read_timeout(snapshot: Optional[float]) -> Optional[float]:
             if response is None:
-                return None
+                return snapshot
             try:
                 ext = response.request.extensions.get("timeout")
-                if isinstance(ext, dict):
-                    value = ext.get("read")
-                    if isinstance(value, (int, float)):
-                        return float(value)
+                if isinstance(ext, dict) and "read" in ext:
+                    value = ext["read"]
+                    # None is a live value too: an unlimited first-token wait has no read bound.
+                    if value is None or isinstance(value, (int, float)):
+                        return value
             except Exception:
                 pass
-            return None
+            return snapshot
 
         try:
             pool = getattr(getattr(client, "_transport", None), "_pool", None)
@@ -37840,8 +37849,7 @@ class LlamaCppBackend:
                     timeout = None,
                     _orig = orig_read,
                 ):
-                    live = _live_read_timeout()
-                    effective = live if live is not None else timeout
+                    effective = _live_read_timeout(timeout)
                     deadline = None if effective is None else time.monotonic() + effective
                     while True:
                         if cancel_event.is_set():
@@ -37906,11 +37914,14 @@ class LlamaCppBackend:
 
         try:
             if first_token_deadline is None:
-                first_token_deadline = time.monotonic() + _DEFAULT_FIRST_TOKEN_TIMEOUT_S
+                first_token_deadline = start_first_token_wait()
             prefill_read_timeout = max(0.1, first_token_deadline - time.monotonic())
+            if sys.platform == "win32":
+                # Stop cannot wake a Winsock recv parked before headers, so that wait keeps the default bound.
+                prefill_read_timeout = min(prefill_read_timeout, _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
             prefill_timeout = httpx.Timeout(
                 connect = 30,
-                read = prefill_read_timeout,
+                read = socket_timeout(prefill_read_timeout),
                 write = 10,
                 pool = 10,
             )
@@ -37922,11 +37933,13 @@ class LlamaCppBackend:
                 headers = headers,
             ) as response:
                 _response_ref[0] = response
-                if cancel_event is not None:
-                    # Portable mid-stream cancel: the reader polls cancel itself, so
-                    # Stop interrupts a stalled read where the watcher's Windows socket
-                    # shutdown does not. Pass response to honor the live stall timeout.
-                    LlamaCppBackend._install_cancel_aware_read(client, cancel_event, response)
+                # Portable mid-stream cancel: the reader polls cancel itself, so Stop
+                # interrupts a stalled read where the watcher's Windows socket shutdown
+                # does not. Installed without a cancel event too: only this wrapper
+                # honors the live stall timeout over the one latched for the header wait.
+                LlamaCppBackend._install_cancel_aware_read(
+                    client, cancel_event or threading.Event(), response
+                )
                 if cancel_event is not None and cancel_event.is_set():
                     raise _LlamaStreamCancelled
                 yield response
