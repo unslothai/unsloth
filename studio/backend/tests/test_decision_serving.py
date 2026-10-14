@@ -1373,7 +1373,8 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
     (folder / "config.json").write_text(
         json.dumps({"embd_layer": {"audio_embd_layer": {}}}), encoding = "utf-8"
     )
-    assert laya_runtime.input_modalities(tuned) == ["text"]
+    # A model that hears but does not see still reports the audio it is routed.
+    assert hears(tuned) and laya_runtime.input_modalities(tuned) == ["text", "audio"]
     (folder / "config.json").write_text(json.dumps(omni), encoding = "utf-8")
     zoo.ClefModel = SimpleNamespace(takes_images = True)
     assert not hears(tuned)
@@ -1418,6 +1419,14 @@ def test_clef_omni_is_served_by_the_mlx_engine_or_not_at_all(home, client, engin
     assert client.post("/v1/systemone", json = body).headers["x-unsloth-decision-backend"] == "mlx"
     assert engine.loaded == [("clef-omni-8bit", "clef", None)] and engine.read[1] == (None, [clip])
     assert not laya_runtime.input_modalities(catalog.CHECKPOINTS["clef"])[2:]
+    # It needs no PyTorch, so a --no-torch install on Apple Silicon enables and lists it.
+    with monkeypatch.context() as patch:
+        patch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: "no torch")
+        systemone_settings.validate(enabled = True, model = "clef-omni")
+        with pytest.raises(ValueError, match = "no torch"):
+            systemone_settings.validate(enabled = True, model = "clef")
+        listed = [m["id"] for m in systemone.decision_model_objects()]
+        assert "clef-omni" in listed and "clef" not in listed
     for runtime in ("pytorch", "llama.cpp"):
         with pytest.raises(laya_runtime.Unavailable, match = "clef-omni is served only by MLX"):
             laya_runtime.select(omni, preference = runtime)

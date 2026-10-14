@@ -618,8 +618,14 @@ def native_ready(checkpoint) -> bool:
 
 def input_modalities(checkpoint) -> list[str]:
     """What this entry reads here: images too when llama.cpp serves it with a vision projector, or MLX a Clef that has its tower; audio when MLX serves a Clef that hears."""
-    if mlx_ready(checkpoint) and _mlx_reads_images(checkpoint):
-        return ["text", "image", *(["audio"] if _mlx_reads(checkpoint, "audio") else [])]
+    if mlx_ready(checkpoint):
+        media = [
+            kind
+            for kind, media in (("image", "images"), ("audio", "audio"))
+            if _mlx_reads(checkpoint, media)
+        ]
+        if media:
+            return ["text", *media]
     if not native_ready(checkpoint):
         return ["text"]
     return ["text", "image"] if _native_reads_images(_native_target(checkpoint)) else ["text"]

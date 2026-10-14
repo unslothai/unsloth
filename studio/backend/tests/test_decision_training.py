@@ -764,13 +764,16 @@ def test_s3_audio_rows_keep_their_clips_after_the_download_is_cleaned_up(monkeyp
 
     from core.training import s3_dataset
 
-    clips = [tmp_path / "a.wav", tmp_path / "b.wav"]
+    clips = [tmp_path / "a.wav", tmp_path / "b.wav", tmp_path / "c.wav"]
     for index, clip in enumerate(clips):
         clip.write_bytes(b"RIFF" + bytes([index]))
     manifest = tmp_path / "rows.jsonl"
     rows = [
         {**_row(0), "audio": {"bytes": None, "path": str(clips[0])}},
         {**_row(1), "audio": [{"bytes": None, "path": str(clips[1])}]},
+        # A plain path string, as the S3 rewrite leaves a manifest's usual audio cell.
+        {**_row(2), "audio": str(clips[2])},
+        _row(3),
     ]
     manifest.write_text("\n".join(json.dumps(row) for row in rows), encoding = "utf-8")
     copy = tmp_path / "download"
@@ -784,10 +787,12 @@ def test_s3_audio_rows_keep_their_clips_after_the_download_is_cleaned_up(monkeyp
 
     monkeypatch.setattr(s3_dataset, "prepare_s3_dataset_download", download)
     loaded, _, _ = _load(s3_config = {"bucket": "b"})
-    assert [loaded[0]["audio"]["bytes"], loaded[1]["audio"][0]["bytes"]] == [
-        b"RIFF\x00",
-        b"RIFF\x01",
-    ]
+    assert [
+        loaded[0]["audio"]["bytes"],
+        loaded[1]["audio"][0]["bytes"],
+        loaded[2]["audio"]["bytes"],
+    ] == [b"RIFF\x00", b"RIFF\x01", b"RIFF\x02"]
+    assert "audio" not in loaded[3]
     assert not any(clip.exists() for clip in clips)
     # A slice reads only the clips of the rows it keeps.
     for index, clip in enumerate(clips):

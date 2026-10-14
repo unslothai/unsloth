@@ -133,10 +133,21 @@ def _hold_audio(rows: list[dict]) -> None:
     # The audio files an S3 download rewrote rows to name are deleted with it, before training reads them.
     for row in rows:
         audio = row.get("audio")
-        for clip in audio if isinstance(audio, list) else [audio]:
-            if isinstance(clip, dict) and clip.get("bytes") is None and clip.get("path"):
-                if os.path.isfile(clip["path"]):
-                    clip["bytes"] = Path(clip["path"]).read_bytes()
+        if audio is None:
+            continue
+        clips = audio if isinstance(audio, list) else [audio]
+        held = [_held_clip(clip) for clip in clips]
+        row["audio"] = held if isinstance(audio, list) else held[0]
+
+
+def _held_clip(clip):
+    # The rewrite leaves a plain path string or a {"path"} dict naming the download.
+    if isinstance(clip, str) and os.path.isabs(clip) and os.path.isfile(clip):
+        return {"bytes": Path(clip).read_bytes(), "path": clip}
+    if isinstance(clip, dict) and clip.get("bytes") is None and clip.get("path"):
+        if os.path.isfile(clip["path"]):
+            clip["bytes"] = Path(clip["path"]).read_bytes()
+    return clip
 
 
 def _eval_sample(rows, seed: int):
