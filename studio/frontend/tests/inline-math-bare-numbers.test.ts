@@ -64,6 +64,10 @@ test("numbers written as inline maths render as maths", () => {
     ["The answer is $42$[source](https://example.com).", ["42"]],
     ["The answer is $42$[^1].\n\n[^1]: Source.", ["42"]],
     ['He said "The answer is $42$[source](https://example.com)."', ["42"]],
+    [
+      'Reference: "$42$[source](https://example.com)." Then he said "The answer is $42$!"',
+      ["42", "42"],
+    ],
     ['He said "$42$[^1]."\n\n[^1]: Source.', ["42"]],
     ["The answer is $42$[x+1][ref].\n\n[ref]: https://example.com", ["42"]],
     [
@@ -182,6 +186,29 @@ test("protected regions do not leak shell quote state into later prose", () => {
     assert.deepEqual(renderedMath(html), ["42"], source);
     assert.match(html, /data-streamdown="strong">done<\/span>/, source);
   }
+});
+
+test("link destinations do not reset surrounding prose quote state", () => {
+  const source =
+    'There are $3$ red balls and $5$ blue balls, so $3 + 5 = 8$ in total. The answer is $8$. Shell examples "$1$x", "$1$?", "$1${2}", "$1$$", "$1$(date)", and "$1$((n+1))" stay literal. The answer is $42$! Is it $3$? Quote check: echo "$1$" and **then** echo "ok". Reference check: "$42$[source](https://example.com)." Prose check: He said "The answer is $42$!" after a $10$-fold increase across $1$-$2$.';
+  const html = render(source);
+  assert.deepEqual(renderedMath(html), [
+    "3",
+    "5",
+    "3 + 5 = 8",
+    "8",
+    "42",
+    "3",
+    "1",
+    "42",
+    "42",
+    "10",
+    "1",
+    "2",
+  ]);
+  assert.ok(visibleText(html).includes("$1$x"));
+  assert.ok(visibleText(html).includes("$1$?"));
+  assert.match(html, /data-streamdown="strong">then<\/span>/);
 });
 
 test("a closing shell-word quote does not consume later Markdown", () => {

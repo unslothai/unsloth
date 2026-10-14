@@ -121,6 +121,8 @@ function hasShellCommandPrefix(
   while (lineStart > minimum && text.charCodeAt(lineStart - 1) !== 10) {
     lineStart--;
   }
+  const completeLinePrefix =
+    lineStart === 0 || text.charCodeAt(lineStart - 1) === 10;
   const prefix = text
     .slice(lineStart, at)
     .trimEnd()
@@ -140,6 +142,7 @@ function hasShellCommandPrefix(
   if (SHELL_COMMANDS.has(command) || /^\.{0,2}\//.test(command)) return true;
   if (
     allowBareCommand &&
+    completeLinePrefix &&
     command.length >= 2 &&
     SHELL_WORD_RE.test(command) &&
     (commandIndex === words.length - 1 ||
@@ -152,26 +155,22 @@ function hasShellCommandPrefix(
 
 function findShellQuoteStates(
   text: string,
-  protectedRegions: ReadonlyArray<readonly [number, number]>,
+  resetRegions: ReadonlyArray<readonly [number, number]>,
 ): Map<number, number> {
   const states = new Map<number, number>();
   let quote = 0;
-  let protectedIndex = 0;
+  let resetIndex = 0;
   for (let index = 0; index < text.length; index++) {
     while (
-      protectedIndex < protectedRegions.length &&
-      protectedRegions[protectedIndex][1] <= index
+      resetIndex < resetRegions.length &&
+      resetRegions[resetIndex][1] <= index
     ) {
-      protectedIndex++;
+      resetIndex++;
     }
-    const protectedRegion = protectedRegions[protectedIndex];
-    if (
-      protectedRegion &&
-      index >= protectedRegion[0] &&
-      index < protectedRegion[1]
-    ) {
+    const resetRegion = resetRegions[resetIndex];
+    if (resetRegion && index >= resetRegion[0] && index < resetRegion[1]) {
       quote = 0;
-      index = protectedRegion[1] - 1;
+      index = resetRegion[1] - 1;
       continue;
     }
     const char = text.charCodeAt(index);
@@ -1004,10 +1003,7 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
   );
   const rawTextRegions = findRawTextRegions(text);
   const shellQuoteStates = SHELL_QUOTE_CONTEXT_CANDIDATE_RE.test(text)
-    ? findShellQuoteStates(
-        text,
-        mergeRegions(mergeRegions(codeRegions, linkRegions), rawTextRegions),
-      )
+    ? findShellQuoteStates(text, mergeRegions(codeRegions, rawTextRegions))
     : new Map<number, number>();
   const legacyArithmeticCloses = text.includes("$[")
     ? findLegacyArithmeticCloses(text)
