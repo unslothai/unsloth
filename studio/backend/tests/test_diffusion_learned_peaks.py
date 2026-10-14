@@ -1912,7 +1912,9 @@ def test_unpersisted_image_sample_keeps_its_graphs_dirty(store, monkeypatch):
     monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
     monkeypatch.setattr(cg, "live_graph_count", lambda index: 4)
     monkeypatch.setattr(cg, "capture_generation", lambda index: 9)
-    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0)
+    pipe = types.SimpleNamespace(
+        _unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0
+    )
     state = types.SimpleNamespace(pipe = pipe, speed_mode = "default")
     monkeypatch.setattr(mp, "record", lambda **kw: False)  # the store is unavailable
     diffusion._record_peak_probe(state, _Probe(2400), width = 1024, height = 1024, batch_size = 1)
@@ -1923,7 +1925,9 @@ def test_unpersisted_image_sample_keeps_its_graphs_dirty(store, monkeypatch):
 
 
 def test_unknown_local_video_build_persists_nothing():
-    known = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = "/models/wan@local:ab:cd")
+    known = vsr.calibration_key(
+        "wan", "/models/wan", "group", "cuda:0", revision = "/models/wan@local:ab:cd"
+    )
     unknown = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = "unknown")
     unread = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = None)
     assert vsr._store_key(known) is not None
@@ -1956,6 +1960,8 @@ def test_learned_peak_label_carries_the_graph_mode(klein_pipe, monkeypatch):
     assert diffusion._live_graph_mode(state) == "off"
     state.speed_optims = ("compiled", "cuda_graph")
     assert diffusion._live_graph_mode(state) == "on"
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
     assert 'label = with_label_part(label, "graphs", _live_graph_mode(state))' in src
     assert "graphs = peak_graphs," in src

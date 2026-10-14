@@ -353,7 +353,12 @@ def lookup_bucket(
     )
 
 
-def record_work(key: Any, work: int, peak_mib: int, held: Optional[list] = None) -> bool:
+def record_work(
+    key: Any,
+    work: int,
+    peak_mib: int,
+    held: Optional[list] = None,
+) -> bool:
     """Persist a peak under an opaque calibration key (the video path's work = pixels x frames table); max wins.
     ``held`` as in ``record``."""
     if not enabled() or key is None or peak_mib is None or int(peak_mib) <= 0 or int(work) <= 0:
