@@ -3311,6 +3311,19 @@ def measured_request_extra_mib(
     sized["phase_seeds"] = bool(getattr(pipe, "_unsloth_phase_seeds", False))
     need = measured_image_runtime_mib(family, speed_mode, **sized)
     learned = reserve[5] if len(reserve) > 5 else None
+    if (learned or need is None) and (
+        getattr(pipe, "_unsloth_peak_static", False) or getattr(pipe, "_unsloth_loras", None)
+    ):
+        # the learned peak no longer describes this pipeline (runtime LoRA adapters, a planned VAE saver that did not
+        # engage): requests size from the flat estimate
+        flat = estimate_image_runtime_mib(
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            family = family,
+            condition_pixels = condition_pixels,
+        )
+        return max(0, int(flat) - int(headroom))
     if need is not None and learned:
         from .diffusion_measured_peaks import resolution_bucket
 
@@ -3318,12 +3331,15 @@ def measured_request_extra_mib(
         h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
         batch = max(1, int(batch_size or 1))
         covered = reserve[6] if len(reserve) > 6 and reserve[6] else DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
-        # the learned store's own scaling: a request past the covered bucket takes its bucket's ceiling, squared for
-        # a math-attention entry
+        # the learned store's own scaling: a request past the covered bucket takes its bucket's ceiling, squared over
+        # the image's pixels for a math-attention entry (linear over the batch)
         scale = 1.0
-        if w * h * batch > int(covered):
-            power = 2 if len(reserve) > 7 and reserve[7] else 1
-            scale = (resolution_bucket(w, h, batch) / float(covered)) ** power
+        if len(reserve) > 7 and reserve[7]:
+            if w * h > int(covered):
+                scale = (resolution_bucket(w, h, 1) / float(covered)) ** 2
+            scale *= batch
+        elif w * h * batch > int(covered):
+            scale = resolution_bucket(w, h, batch) / float(covered)
         step = _MEASURED_PEAK_ROUND_MIB
         need = max(need, int(-(-(float(learned) * scale * _MEASURED_PEAK_MARGIN) // step) * step))
     if need is None and isinstance(identity, tuple) and len(identity) == 3:

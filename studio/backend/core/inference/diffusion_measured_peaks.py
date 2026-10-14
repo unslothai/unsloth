@@ -95,8 +95,32 @@ def model_key(
     )
 
 
+_runtime: list = []
+
+
+def runtime_stamp() -> str:
+    """The runtimes a peak depends on (kernel choice, workspaces): a store written under others is ignored."""
+    if not _runtime:
+        from importlib.metadata import version
+
+        parts = []
+        for dist in ("torch", "diffusers"):
+            try:
+                parts.append(f"{dist}={version(dist)}")
+            except Exception:  # noqa: BLE001
+                parts.append(f"{dist}=?")
+        try:
+            import torch
+
+            parts.append(f"cuda={torch.version.cuda or torch.version.hip or '?'}")
+        except Exception:  # noqa: BLE001
+            parts.append("cuda=?")
+        _runtime.append("|".join(parts))
+    return _runtime[0]
+
+
 def _empty() -> dict:
-    return {"version": _VERSION, "entries": {}}
+    return {"version": _VERSION, "runtime": runtime_stamp(), "entries": {}}
 
 
 def _read(path: Path, fresh: bool = False) -> dict:
@@ -116,6 +140,7 @@ def _read(path: Path, fresh: bool = False) -> dict:
         if (
             not isinstance(data, dict)
             or data.get("version") != _VERSION
+            or data.get("runtime") != runtime_stamp()
             or not isinstance(data.get("entries"), dict)
         ):
             data = _empty()
@@ -178,6 +203,8 @@ def record(
     key's entry keeps scaling that way). Returns True when the stored value rose."""
     if not enabled() or peak_mib is None or int(peak_mib) <= 0 or not family or not identified(quant):
         return False
+    if quadratic and int(batch_size or 1) > 1:
+        return False  # a math-attention entry holds single images: it scales squared in pixels, linearly in batch
     path = store_path()
     if path is None:
         return False
@@ -281,14 +308,17 @@ def lookup_bucket(
         return None
     if not peaks:
         return None
-    want = resolution_bucket(width, height, batch_size)
-    above = [b for b in peaks if b >= want]
     quadratic = bool((entry or {}).get("quadratic"))
+    batch = max(1, int(batch_size or 1))
+    # a math-attention entry holds single images (``record``): its buckets are per image, the batch scales linearly
+    want = resolution_bucket(width, height, 1 if quadratic else batch)
+    times = batch if quadratic else 1
+    above = [b for b in peaks if b >= want]
     if above:
-        return peaks[min(above)], min(above), quadratic
+        return peaks[min(above)] * times, min(above), quadratic
     largest = max(peaks)
     power = 2 if quadratic else 1
-    return int(math.ceil(peaks[largest] * (want / float(largest)) ** power)), want, quadratic
+    return int(math.ceil(peaks[largest] * (want / float(largest)) ** power)) * times, want, quadratic
 
 
 def record_work(key: Any, work: int, peak_mib: int) -> bool:

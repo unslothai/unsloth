@@ -371,6 +371,18 @@ def _meta(t: Any) -> tuple:
     return (tuple(t.shape), tuple(t.stride()), t.dtype, t.device, bool(t.is_inference()))
 
 
+_LIVE_BLOCKS: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def live_block_graph_count(device_index: Optional[int]) -> int:
+    """Per-block graphs alive on CUDA device ``device_index`` (``diffusion_cuda_graph.live_graph_count``)."""
+    return sum(
+        len(b.cache)
+        for b in tuple(_LIVE_BLOCKS)
+        if getattr(b, "_unsloth_capture_device", None) == device_index
+    )
+
+
 class BlockGraph:
     """Replaces one block's compute callable (below its offload hooks) with a recording keyed by inputs and weight
     placement. Any refusal or failure runs ``compute`` itself, so the block is never worse than ungraphed."""
@@ -594,9 +606,10 @@ class BlockGraph:
             self.stats["recaptures"] += 1
         self.cache[full] = entry
         self.stats["captures"] += 1
-        from . import diffusion_cuda_graph
+        from .diffusion_cuda_graph import capture_device
 
-        diffusion_cuda_graph._CAPTURED[0] += 1
+        self._unsloth_capture_device = capture_device()
+        _LIVE_BLOCKS.add(self)
         while len(self.cache) > self.max_graphs:
             _, evicted = self.cache.popitem(last = False)
             self._forget(evicted)

@@ -1975,10 +1975,12 @@ def _start_peak_probe(state: Any) -> Any:
     try:
         from .diffusion_measured_peaks import PeakProbe, enabled
 
-        graphs = cuda_graph.captured_graph_count()
-        if getattr(pipe, "_unsloth_peak_graphs", None) is None:
-            pipe._unsloth_peak_graphs = graphs  # the load's own graphs: every render starts above them
-        if graphs != pipe._unsloth_peak_graphs:
+        graphs = cuda_graph.live_graph_count(_peak_device_index(state))
+        accounted = getattr(pipe, "_unsloth_peak_graphs", None)
+        if accounted is None or graphs < accounted:
+            # the load's own graphs (every render starts above them), or fewer after a reset freed some
+            pipe._unsloth_peak_graphs = accounted = graphs
+        if graphs > accounted:
             # an unrecorded render (cache-served, refused, failed) left graphs allocated: a later peak above that
             # start omits memory a fresh process allocates on its first render
             return None
@@ -1999,6 +2001,17 @@ def _start_peak_probe(state: Any) -> Any:
         probe.conditioning_hits = _conditioning_cache_hits(pipe)
         return probe
     except Exception:  # noqa: BLE001 - measurement only
+        return None
+
+
+def _peak_device_index(state: Any) -> Optional[int]:
+    """CUDA ordinal the pipeline renders on (``state.device`` may be un-indexed: the thread's current card)."""
+    try:
+        import torch
+
+        dev = torch.device(getattr(state, "device", None) or "cuda")
+        return dev.index if dev.index is not None else torch.cuda.current_device()
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -2026,6 +2039,8 @@ def _live_peak_identity(state: Any) -> tuple:
     expects_cfg = bool(getattr(family_obj, "uses_negative_prompt", False))
     if bool(getattr(pipe, "_unsloth_peak_cfg", expects_cfg)) != expects_cfg:
         speed = None
+    if getattr(pipe, "_unsloth_loras", None):
+        speed = None  # LoRA adapters add rank-dependent activations no key names
     return (family, label, speed)
 
 
@@ -2144,7 +2159,8 @@ def _record_peak_probe(
             return
         family, quant, speed_mode = identity
         pipe = state.pipe
-        pipe._unsloth_peak_graphs = cuda_graph.captured_graph_count()  # this sample covers the graphs it recorded
+        # this sample covers the graphs it recorded
+        pipe._unsloth_peak_graphs = cuda_graph.live_graph_count(getattr(probe.device, "index", None))
         peak += int(getattr(probe, "window_pad", 0) or 0)
         if record(
             family = family,
@@ -8347,6 +8363,8 @@ class DiffusionBackend:
                         )
                     plan = refined_plan
                     peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)
+                    if getattr(pipe, "_unsloth_loras", None):
+                        peak_model = "unknown"  # adapters baked in at load: a build the key cannot name
                     try:
                         # the phase-table seed holds only where it was measured
                         pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None
@@ -8453,7 +8471,8 @@ class DiffusionBackend:
                         live_vae = with_label_part(identity[1], "vae", live_vae_saver_tag(pipe))
                         if live_vae != identity[1]:
                             pipe._unsloth_peak_identity = (identity[0], live_vae, identity[2])
-                            _refresh_learned_reserve(pipe)
+                            # placed from the planned saver's peak: requests size from the flat estimate instead
+                            pipe._unsloth_peak_static = True
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since

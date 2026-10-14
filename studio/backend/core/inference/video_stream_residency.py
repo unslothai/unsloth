@@ -277,18 +277,20 @@ def _open_window(module: Any, dev: Any) -> Any:
     if stale is not None:
         close_window(stale[0], stale[1])
     module._unsloth_video_window = (dev, open_window(dev))
-    graphs = _captured_graphs()
-    if getattr(module, "_unsloth_video_graphs", None) is None:
-        module._unsloth_video_graphs = graphs  # the load's own graphs: every request starts above them
+    graphs = _live_graphs(dev)
+    accounted = getattr(module, "_unsloth_video_graphs", None)
+    if accounted is None or graphs < accounted:
+        # the load's own graphs (every request starts above them), or fewer after a reset freed some
+        module._unsloth_video_graphs = accounted = graphs
     # graphs a discarded request recorded stay allocated: a peak above that start would omit them
-    module._unsloth_video_graphs_clean = graphs == module._unsloth_video_graphs
+    module._unsloth_video_graphs_clean = graphs == accounted
     return dev
 
 
-def _captured_graphs() -> int:
+def _live_graphs(dev: Any) -> int:
     try:
-        from .diffusion_cuda_graph import captured_graph_count
-        return captured_graph_count()
+        from .diffusion_cuda_graph import live_graph_count
+        return live_graph_count(getattr(dev, "index", None))
     except Exception:  # noqa: BLE001
         return -1
 
@@ -349,7 +351,7 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         key = getattr(module, "_unsloth_video_calibration_key", None)
         # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of the keyed and persisted peaks
         if key is not None and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0):
-            module._unsloth_video_graphs = _captured_graphs()  # this sample covers the graphs it recorded
+            module._unsloth_video_graphs = _live_graphs(dev)  # this sample covers the graphs it recorded
             shared = _key_peaks(key)
             shared[work] = max(extra, shared.get(work, 0))
             try:

@@ -300,13 +300,25 @@ def captures_exhausted() -> bool:
     return len(_FAILED_GRAPHS) >= MAX_FAILED_CAPTURES
 
 
-_CAPTURED = [0]
+def capture_device() -> Optional[int]:
+    """The CUDA ordinal a capture records on (the current device), or None when unreadable."""
+    try:
+        return int(_torch().cuda.current_device())
+    except Exception:  # noqa: BLE001
+        return None
 
 
-def captured_graph_count() -> int:
-    """Graphs recorded in this process so far (whole-step and per-block). Their statics and pool stay allocated after
-    the render that recorded them, so a later render's start allocation includes them."""
-    return _CAPTURED[0]
+def live_graph_count(device_index: Optional[int]) -> int:
+    """Graphs alive on CUDA device ``device_index`` (whole-step and per-block). Their statics and pool stay allocated
+    after the render that recorded them, so a later render's start allocation includes them; a reset frees them."""
+    total = sum(
+        len(w.cache)
+        for w in tuple(_LIVE_WRAPPERS)
+        if getattr(w, "_unsloth_capture_device", None) == device_index
+    )
+    from .diffusion_block_graph import live_block_graph_count
+
+    return total + live_block_graph_count(device_index)
 
 
 def failed_capture_count() -> int:
@@ -1145,7 +1157,7 @@ class GraphedForward:
                 return self._eager(eager_args, eager_kwargs)
             entry = captured
             self.cache[key] = entry
-            _CAPTURED[0] += 1
+            self._unsloth_capture_device = capture_device()
             if self.logger is not None:
                 self.logger.debug(
                     "diffusion.cuda_graph: captured %s graph %d/%d over %d input tensor(s)",

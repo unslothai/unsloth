@@ -950,7 +950,7 @@ def test_vae_key_names_only_the_savers_the_pipeline_can_engage():
     # after placement the key follows the savers that actually engaged, and the reserve follows the key
     after_apply = src.index("plan = applied_plan(pipe, plan)")
     assert 'with_label_part(identity[1], "vae", live_vae_saver_tag(pipe))' in src[after_apply : after_apply + 800]
-    assert "_refresh_learned_reserve(pipe)" in src[after_apply : after_apply + 800]
+    assert "pipe._unsloth_peak_static = True" in src[after_apply : after_apply + 800]
 
 
 def test_identity_change_refreshes_the_learned_reserve(store):
@@ -1339,10 +1339,16 @@ def test_graphs_left_by_an_unrecorded_render_stop_image_sampling(store, monkeypa
 
     diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
     monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
-    monkeypatch.setattr(cg, "_CAPTURED", [3])
+    monkeypatch.setattr(diffusion, "_peak_device_index", lambda state: 0)
+    live = {0: 3, 1: 0}
+    monkeypatch.setattr(cg, "live_graph_count", lambda index: live.get(index, 0))
     assert diffusion._start_peak_probe(state) is not None  # the load's own graphs are the baseline
-    cg._CAPTURED[0] += 2  # a cache-served render recorded graphs and was not sampled
+    live[1] = 5  # another card's graphs never count
+    assert diffusion._start_peak_probe(state) is not None
+    live[0] = 5  # a cache-served render recorded graphs on this card and was not sampled
     assert diffusion._start_peak_probe(state) is None
+    live[0] = 0  # an OOM reset freed every graph: nothing unaccounted is left
+    assert diffusion._start_peak_probe(state) is not None
 
 
 def test_graphs_a_recorded_render_captured_keep_sampling_open(store, monkeypatch):
@@ -1351,9 +1357,8 @@ def test_graphs_a_recorded_render_captured_keep_sampling_open(store, monkeypatch
 
     monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
     monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
-    monkeypatch.setattr(cg, "_CAPTURED", [0])
+    monkeypatch.setattr(cg, "live_graph_count", lambda index: 4)  # recorded during this sampled render
     pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0)
-    cg._CAPTURED[0] = 4  # recorded during this sampled render
     diffusion._record_peak_probe(
         types.SimpleNamespace(pipe = pipe, speed_mode = "default"), _Probe(2400), width = 1024, height = 1024, batch_size = 1
     )
@@ -1365,14 +1370,15 @@ def test_graphs_left_by_a_discarded_video_request_stop_video_sampling(store, mon
     import core.inference.diffusion_cuda_graph as cg
 
     monkeypatch.setattr(vsr, "_PEAKS", {})
-    monkeypatch.setattr(cg, "_CAPTURED", [1])
+    live = {0: 1}
+    monkeypatch.setattr(cg, "live_graph_count", lambda index: live.get(index, 0))
     module = types.SimpleNamespace(_unsloth_video_calibration_key = None)
     pipe = types.SimpleNamespace(transformer = module)
     vsr._open_window(module, torch.device("cuda", 0))
-    cg._CAPTURED[0] += 1  # the request recorded a graph, then was cancelled
+    live[0] += 1  # the request recorded a graph, then was cancelled
     vsr.discard_request(pipe)
     vsr._open_window(module, torch.device("cuda", 0))
-    module._unsloth_video_pending = (1280 * 704 * 49, 0, "cuda:0")
+    module._unsloth_video_pending = (1280 * 704 * 49, 0, torch.device("cuda", 0))
 
     class _Torch:
         class cuda:  # noqa: N801
@@ -1383,6 +1389,30 @@ def test_graphs_left_by_a_discarded_video_request_stop_video_sampling(store, mon
     with monkeypatch.context() as m:
         m.setitem(__import__("sys").modules, "torch", _Torch)
         assert vsr.record_request_peak(pipe) is None
+
+
+def test_live_graph_count_is_per_device_and_drops_reset_graphs():
+    import core.inference.diffusion_block_graph as bg
+    import core.inference.diffusion_cuda_graph as cg
+
+    class _Wrapper:
+        def __init__(self, device, n):
+            self._unsloth_capture_device = device
+            self.cache = dict.fromkeys(range(n))
+
+    a, b = _Wrapper(0, 2), _Wrapper(1, 3)
+    blocks = _Wrapper(0, 4)
+    cg._LIVE_WRAPPERS.add(a)
+    cg._LIVE_WRAPPERS.add(b)
+    bg._LIVE_BLOCKS.add(blocks)
+    try:
+        assert cg.live_graph_count(0) == 6 and cg.live_graph_count(1) == 3
+        a.cache.clear()  # reset_all
+        assert cg.live_graph_count(0) == 4
+    finally:
+        cg._LIVE_WRAPPERS.discard(a)
+        cg._LIVE_WRAPPERS.discard(b)
+        bg._LIVE_BLOCKS.discard(blocks)
 
 
 def test_render_without_the_familys_cfg_is_not_probed(monkeypatch):
@@ -1408,3 +1438,50 @@ def test_render_forced_eager_while_the_compile_is_pending_is_not_probed(monkeypa
         assert diffusion._start_peak_probe(state) is None
     finally:
         bg._FORCE_EAGER.reset(token)
+
+
+# ---------------------------------------------------------------------------------------------------- review round 10
+
+
+def test_render_with_lora_adapters_is_not_probed(monkeypatch):
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    assert diffusion._start_peak_probe(state) is not None
+    state.pipe._unsloth_loras = (("style", "/loras/style.safetensors", 0.8),)
+    assert diffusion._start_peak_probe(state) is None
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert 'peak_model = "unknown"  # adapters baked in at load' in src
+
+
+def test_learned_reserve_falls_back_to_the_flat_estimate_with_loras_or_a_failed_saver(klein_pipe):
+    klein_pipe._unsloth_phase_seeds = False  # unseeded: the reserve came from the learned peak alone
+    klein_pipe._unsloth_peak_identity = ("some-new-dit", "torchao:Int8Tensor", "default")
+    klein_pipe._unsloth_measured_reserve = (3072, "some-new-dit", "default", None, None, 2600, 1 << 20, False)
+    flat = dm.estimate_image_runtime_mib(width = 1024, height = 1024, batch_size = 1, family = "some-new-dit")
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
+    klein_pipe._unsloth_loras = (("style", "/loras/style.safetensors", 0.8),)
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == flat - 3072
+    klein_pipe._unsloth_loras = ()
+    klein_pipe._unsloth_peak_static = True  # a planned VAE saver failed to engage
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == flat - 3072
+
+
+def test_store_written_under_other_runtimes_is_ignored(store, monkeypatch):
+    kw = dict(family = "some-new-dit", quant = "q", speed_mode = "default")
+    assert mp.record(**kw, width = 1024, height = 1024, peak_mib = 2000)
+    assert mp.lookup(**kw) == 2000
+    monkeypatch.setattr(mp, "_runtime", ["torch=9.9|diffusers=9.9|cuda=99"])  # an upgraded runtime
+    mp._cache.update(path = None, mtime = None, data = None)
+    assert mp.lookup(**kw) is None
+
+
+def test_quadratic_peaks_scale_linearly_across_the_batch(store, klein_pipe):
+    kw = dict(family = "some-new-dit", quant = "q", speed_mode = "default")
+    assert not mp.record(**kw, width = 1024, height = 1024, batch_size = 2, peak_mib = 3000, quadratic = True)
+    assert mp.record(**kw, width = 1024, height = 1024, peak_mib = 1000, quadratic = True)
+    assert mp.lookup(**kw, width = 1024, height = 1024, batch_size = 2) == 2000  # not 4000
+    assert mp.lookup(**kw, width = 1448, height = 1448) >= 4000  # pixels still square
+    klein_pipe._unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default")
+    klein_pipe._unsloth_measured_reserve = (4608, "flux.2-klein", "default", None, None, 4000, 1 << 20, True)
+    # batch 2 at 1 MP: 4000 x 2 x 1.15 = 9200 -> 9216, not 4000 x 4
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024, batch_size = 2) == 9216 - 4608
