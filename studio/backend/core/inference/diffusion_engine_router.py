@@ -239,24 +239,27 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return False
     if sys.platform != "win32" and not _linux_render_node_accessible():
         return False
-    return _hardware_vulkan_driver() and _vulkan_loader_loads()
+    vendors = {d.get("vendor") for d in gpus}
+    return _hardware_vulkan_driver(vendors) and _vulkan_loader_loads()
 
 
-# Software rasterisers: a Vulkan device, but slower than the CPU sd.cpp build.
-_SOFTWARE_ICD_NEEDLES = ("lvp_icd", "lavapipe", "llvmpipe", "swiftshader")
+# The ICD manifests that drive each vendor's cards (RADV, AMDVLK / Adrenalin, ANV); a software
+# rasteriser or another vendor's driver lists none of them.
+_VENDOR_ICD_NEEDLES = {"amd": ("radeon", "amd"), "intel": ("intel",)}
 
 
-def _hardware_vulkan_driver() -> bool:
-    """Whether the loader would load a hardware driver, not only a software one. Windows registers
-    drivers in ways the manifest walk may not read, so an empty walk there is no evidence."""
+def _hardware_vulkan_driver(vendors) -> bool:
+    """Whether the loader, under its active filters, would load a driver for one of ``vendors``.
+    Windows registers drivers in ways the manifest walk may not read, so an empty walk there is no
+    evidence."""
     try:
         from utils.hardware.amd import _loadable_icd_manifests, _vulkan_icd_manifest_paths
+
         if not _vulkan_icd_manifest_paths():
             return sys.platform == "win32"
+        needles = [n for vendor in vendors for n in _VENDOR_ICD_NEEDLES.get(vendor, ())]
         return any(
-            not any(
-                needle in os.path.basename(str(path)).lower() for needle in _SOFTWARE_ICD_NEEDLES
-            )
+            any(needle in os.path.basename(str(path)).lower() for needle in needles)
             for path in _loadable_icd_manifests()
         )
     except Exception:  # noqa: BLE001

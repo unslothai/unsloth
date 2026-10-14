@@ -67,7 +67,7 @@ def _pinned_host(monkeypatch):
     import utils.hardware.amd as amd
 
     monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
-    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda: True)
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: True)
     monkeypatch.setattr(r, "_linux_nvidia_pci_present", lambda: False)
 
 
@@ -166,25 +166,28 @@ def test_an_nvidia_card_nvidia_smi_cannot_see_keeps_cpu(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "manifests,expected",
+    "vendors,manifests,expected",
     [
-        (["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"], True),
-        (["/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"], False),
+        ({"amd"}, ["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"], True),
+        ({"amd"}, ["/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"], False),
+        # VK_ICD_FILENAMES picked another vendor's driver: it lists no AMD card.
+        ({"amd"}, ["/etc/vulkan/icd.d/intel_icd.json"], False),
         (
+            {"intel"},
             ["/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", "/etc/vulkan/icd.d/intel_icd.json"],
             True,
         ),
-        ([], False),
+        ({"amd"}, [], False),
     ],
 )
-def test_only_a_hardware_vulkan_driver_counts(monkeypatch, manifests, expected):
+def test_only_a_driver_for_the_listed_cards_counts(monkeypatch, vendors, manifests, expected):
     import utils.hardware.amd as amd
 
     monkeypatch.undo()
     _platform(monkeypatch, "linux", "x86_64")
     monkeypatch.setattr(amd, "_vulkan_icd_manifest_paths", lambda: list(manifests))
     monkeypatch.setattr(amd, "_loadable_icd_manifests", lambda paths = None: list(manifests))
-    assert r._hardware_vulkan_driver() is expected
+    assert r._hardware_vulkan_driver(vendors) is expected
 
 
 def test_an_unmounted_render_node_keeps_cpu(monkeypatch):
@@ -205,9 +208,9 @@ def test_hosts_without_a_vulkan_bundle_keep_cpu(monkeypatch, system, machine):
 def test_no_vulkan_driver_or_loader_keeps_cpu(monkeypatch):
     import utils.hardware.amd as amd
 
-    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda: False)
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: False)
     assert r.image_install_accelerator("cpu") == "auto"
-    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda: True)
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: True)
     monkeypatch.setattr(r, "_vulkan_loader_loads", lambda: False)
     assert r.image_install_accelerator("cpu") == "auto"
 
