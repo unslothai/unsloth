@@ -15,11 +15,7 @@ export type ViewportBox = {
   rtl: boolean;
 };
 
-/**
- * Padding that puts the dock's content box exactly on the thread viewport's content box, so the
- * composer and the message column share one width. The scrollbar strip is measured, not assumed:
- * it is 0 for overlay scrollbars and differs by platform.
- */
+/** Dock padding that lands on the viewport's content box; the scrollbar is measured (0 when overlay). */
 export function composerColumnInset(
   viewport: ViewportBox,
   dock: { left: number; right: number },

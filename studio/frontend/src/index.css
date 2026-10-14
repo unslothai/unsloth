@@ -3744,8 +3744,7 @@ html[data-chat-font] .aui-root {
 		font-weight: 500;
 	}
 
-	/* The dock measures the message column's edges (ThreadComposerDock); the fallback is the
-	   viewport's own px-5 until the first measurement. */
+	/* ThreadComposerDock sets the measured message-column insets; px-5 until then. */
 	.unsloth-composer-dock-inner {
 		padding-left: var(--composer-dock-inset-left, 1.25rem);
 		padding-right: var(--composer-dock-inset-right, 1.25rem);

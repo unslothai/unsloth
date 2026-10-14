@@ -276,9 +276,7 @@ const UnmeasuredCollapsibleContent = React.forwardRef<
           className,
         )}
       >
-        {/* Clips the collapse vertically only: list markers and wide glyphs hang past the column's
-            side edges. Without `overflow: clip` (Safari < 16) it falls back to hidden. min-w-0 because
-            a visible x-overflow no longer lets the grid item shrink below its longest word. */}
+        {/* Vertical clip only, so hanging list markers show; min-w-0 replaces the shrink hidden gave. */}
         <div className="min-h-0 min-w-0 overflow-hidden supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip">{present && children}</div>
       </div>
     );

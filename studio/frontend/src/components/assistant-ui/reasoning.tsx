@@ -576,8 +576,7 @@ function ReasoningTail({
             onExpandedChange(true);
         }}
         className={cn(
-          // The fade mask paints only inside this box, so it reaches into the thread's side padding
-          // (offset by the same padding) to keep hanging list markers.
+          // A mask paints only inside its box: bleed into the side padding so list markers survive.
           capped &&
             "-mx-[calc(1.25rem*var(--ui-space-scale,1))] flex min-w-0 max-h-[min(18rem,40vh)] flex-col overflow-hidden px-[calc(1.25rem*var(--ui-space-scale,1))] supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip [&>*]:shrink-0",
           capped && (streaming ? "justify-end" : "justify-start"),

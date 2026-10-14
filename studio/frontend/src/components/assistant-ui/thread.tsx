@@ -2568,8 +2568,6 @@ const ThreadComposerDock: FC<{
     };
   }, [onHeightChange]);
 
-  // Pad the composer onto the message column's edges: the viewport's gutter and padding are
-  // measured, so the two match at every pane width, interface scale and scrollbar style.
   const dockInnerRef = useRef<HTMLDivElement | null>(null);
   useLayoutEffect(() => {
     const dock = dockRef.current;
