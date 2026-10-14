@@ -166,6 +166,8 @@ def has_conditional_experts(config) -> bool:
 LORA_TARGETS_HYBRID_ATTENTION = ("in_proj_qkvz", "in_proj_qkv", "in_proj_z", "out_proj")
 # Phi-3 fuses q/k/v and gate/up while keeping the Llama o_proj / down_proj names.
 LORA_TARGETS_FUSED = ("qkv_proj", "gate_up_proj")
+# DeepSeek-style MLA attention inputs, beside Llama-named o_proj and MLP.
+LORA_TARGETS_MLA = ("q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj")
 
 
 def lora_target_modules(model) -> List[str]:
@@ -186,7 +188,7 @@ def lora_target_modules(model) -> List[str]:
                 names.add(name.rsplit(".", 1)[-1])
     keep = [n for n in LORA_TARGETS_LLAMA if n in names]
     if keep:
-        extra = LORA_TARGETS_FUSED + LORA_TARGETS_HYBRID_ATTENTION
+        extra = LORA_TARGETS_FUSED + LORA_TARGETS_MLA + LORA_TARGETS_HYBRID_ATTENTION
         return keep + [n for n in extra if n in names]
     if names:
         return sorted(names)
@@ -553,7 +555,8 @@ def _materialise(model, model_name, cfg, device, dtype, log):
     # stores only the embedding key, so an exact-name filter looked for `lm_head.weight`, found
     # nothing, and the meta check below refused the load.
     aliases = {alias: src for alias, src in _tied_aliases(model).items() if src}
-    wanted |= set(aliases.values())
+    # Only for a head this stage keeps: a middle stage would otherwise read the whole embedding.
+    wanted |= {src for alias, src in aliases.items() if alias in wanted}
     snap = (
         model_name
         if osp.isdir(model_name)
@@ -1473,9 +1476,13 @@ def build_torch_schedule(
         kw["args_chunk_spec"] = (TensorChunkSpec(0),)
     # `scale_grads` does not exist before torch 2.7, and 2.6 does no scaling of its own: it was
     # added in 2.7 together with `PipelineStage.scale_grads`.
-    upstream_scales_grads = "scale_grads" in sched_params
-    if upstream_scales_grads:
-        kw["scale_grads"] = PP_SCALE_GRADS
+    # A V layout puts the first and last stage on one rank; with tied weights both stage modules
+    # hold the same Parameter, and upstream scales per stage, so it would be divided twice.
+    per_stage = [{id(p) for p in mod.parameters()} for mod in mods]
+    shared = sum(len(ids) for ids in per_stage) > len(set().union(*per_stage)) if mods else False
+    upstream_scales_grads = "scale_grads" in sched_params and not shared
+    if "scale_grads" in sched_params:
+        kw["scale_grads"] = PP_SCALE_GRADS and not shared
     multi = len(stages) > 1 or "stages" in sched_params
     schedule = sched_cls(stages if multi else stages[0], microbatches, **kw)
 
@@ -1501,7 +1508,13 @@ def build_torch_schedule(
                     seen.add(id(p))
                     p.grad.div_(microbatches)
 
-    where = "upstream" if upstream_scales_grads else "here (this torch has no scale_grads)"
+    where = (
+        "upstream"
+        if upstream_scales_grads
+        else "here (stages on this rank share parameters)"
+        if shared
+        else "here (this torch has no scale_grads)"
+    )
     log(
         f"torch.distributed.pipelining: {sched_cls.__name__} "
         f"{plan['num_stages']} stages ({plan['stages_per_rank']}/rank, "
