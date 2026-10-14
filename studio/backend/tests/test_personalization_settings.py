@@ -538,6 +538,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "projects", "pinned": False},
                     {"id": "library", "pinned": True},
                     {"id": "recipes", "pinned": False},
+                    {"id": "routines", "pinned": True},
                     {"id": "export", "pinned": False},
                     {"id": "api", "pinned": False},
                 ],

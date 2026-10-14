@@ -68,7 +68,9 @@ def test_schedule_skips_missed_intervals_and_pause_blocks_claim(routine_db):
     run_id = db.claim_due()
     assert run_id is not None
     assert db.get_run(run_id)["trigger"] == "schedule"
-    assert db.get_routine(routine["id"])["next_run_at"] > time.time()
+    scheduled_at = db.get_routine(routine["id"])["next_run_at"]
+    claimed_at = db.get_run(run_id)["created_at"]
+    assert claimed_at < scheduled_at <= claimed_at + 15 * 60
     assert db.claim_due() is None
 
     db.claim_queued_run()
@@ -80,7 +82,7 @@ def test_schedule_skips_missed_intervals_and_pause_blocks_claim(routine_db):
     db.set_enabled(routine["id"], False)
     assert db.claim_due() is None
     resumed = db.set_enabled(routine["id"], True)
-    assert resumed["next_run_at"] > time.time() + 14 * 60
+    assert resumed["next_run_at"] == resumed["updated_at"] + 15 * 60
 
 
 def test_missing_folder_has_actionable_error(monkeypatch):
