@@ -292,6 +292,11 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization: Basic YTpi returned received%3DYTpi"
     )
     assert "dTo" not in _sanitize_public_query("Authorization: Basic dTo+ then received=dTo%2B why")
+    padded = "Authorization: Basic dXNlcjpwYXNzd2Q= server echoed dXNlcjpwYXNzd2Q="
+    assert "dXNlcjpwYXNzd2Q" not in _sanitize_public_query(padded)
+    assert "Onh4" not in _sanitize_public_query(
+        "Authorization: Basic YWE+Onh4 got received=YWE%2bOnh4 why"
+    )
     spring = "{Authorization=[Basic qrstuvwxyzabcdef==, Basic abcdefghijklmnop==]} why"
     assert "abcdefghijklmnop" not in _sanitize_public_query(spring)
     assert _sanitize_public_query("Authorization: design patterns") == "patterns"

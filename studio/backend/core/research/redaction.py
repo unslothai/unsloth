@@ -188,6 +188,15 @@ def _shield_untrusted(text: str) -> str:
     return _REPORT_BOUNDARY_TAG.sub(escape, _PROMPT_DELIMITER_TAGS.sub(escape, text))
 
 
+def _escape_echo(text: str) -> str:
+    # Percent escapes match in either hex case: %2B and %2b are the same byte.
+    return re.sub(
+        r"%([0-9A-F])([0-9A-F])",
+        lambda m: "%" + "".join(f"[{c}{c.lower()}]" if c.isalpha() else c for c in m.groups()),
+        re.escape(text),
+    )
+
+
 def _authorization_values(match: re.Match) -> list[str]:
     """Decoded credential values of an Authorization match; empty when it reads as prose."""
     found = match["credentials"]
@@ -218,7 +227,8 @@ def _authorization_values(match: re.Match) -> list[str]:
         or _CREDENTIAL_SHAPE.match(value)
         for name, value in pairs
     ):
-        return values
+        # "dXNl...= server" also parses as a parameter; keep the padded token68 itself.
+        return values + [piece for piece in found.split() if re.fullmatch(r"[\w.~+/-]+=+", piece)]
     return []
 
 
@@ -270,7 +280,7 @@ def _sanitize_public_query(query: str) -> str:
     if exact:
         # Echoes of identified values, also inside fields like received=YTpi or {"received":"a b"}.
         values = sorted(exact, key = len, reverse = True)
-        echo = "|".join(r"\s+".join(map(re.escape, value.split())) for value in values)
+        echo = "|".join(r"\s+".join(map(_escape_echo, value.split())) for value in values)
         query = re.sub(
             rf"(?:(?<![\w.~+-])|(?<=%[0-9A-Fa-f]{{2}}))(?:{echo})(?![\w~+-]|\.[\w~+-])", " ", query
         )
