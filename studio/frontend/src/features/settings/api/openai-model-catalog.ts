@@ -87,3 +87,37 @@ export function audioModelsFromCatalog(body: unknown): AudioApiModel[] {
       : [],
   );
 }
+
+const AUDIO_CATALOG_RETRY_MS = 15000;
+const AUDIO_CATALOG_IDLE_MS = 60000;
+
+// Polls because downloads, loads and idle unloads move no store state; slower once one is resident.
+export function watchAudioModels(
+  list: () => Promise<AudioApiModel[]>,
+  onModels: (models: AudioApiModel[]) => void,
+): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const update = () => {
+    list()
+      .then(
+        (models) => {
+          if (!stopped) onModels(models);
+          return models.some((m) => m.loaded);
+        },
+        () => false,
+      )
+      .then((resident) => {
+        if (stopped) return;
+        timer = setTimeout(
+          update,
+          resident ? AUDIO_CATALOG_IDLE_MS : AUDIO_CATALOG_RETRY_MS,
+        );
+      });
+  };
+  update();
+  return () => {
+    stopped = true;
+    if (timer !== null) clearTimeout(timer);
+  };
+}

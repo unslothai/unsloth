@@ -18,6 +18,7 @@ import {
   loadOpenAIAutoSwitchSettings,
   subscribeOpenAIAutoSwitchSettings,
 } from "../api/openai-auto-switch";
+import { watchAudioModels } from "../api/openai-model-catalog";
 import {
   type AudioApiModel,
   listOpenAIAudioModels,
@@ -173,12 +174,10 @@ export function AudioApiExamples({
     };
   }, [scrollTarget]);
 
+  useEffect(() => watchAudioModels(listOpenAIAudioModels, setModels), []);
+
   useEffect(() => {
     let cancelled = false;
-    listOpenAIAudioModels().then(
-      (listed) => !cancelled && setModels(listed),
-      () => undefined,
-    );
     loadOpenAIAutoSwitchSettings().then(
       (settings) => !cancelled && setAutoSwitch(settings.enabled),
       () => undefined,
