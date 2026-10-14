@@ -30,8 +30,7 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
-# IANA HTTP Authentication Scheme Registry plus common vendor schemes; OAuth and Mutual are left
-# out because "OAuth 2.0" and "Mutual TLS" are far more often prose than a header.
+# IANA registry plus vendor schemes; not OAuth/Mutual, mostly prose ("OAuth 2.0", "Mutual TLS").
 _REGISTERED_AUTH_SCHEMES = frozenset(
     {
         "aws4-hmac-sha256",
@@ -59,8 +58,6 @@ _SCHEME_ALTERNATION = "|".join(
 )
 # Rich-text pastes carry no-break and thin spaces where a header has plain ones.
 _HSPACE = "[ \\t\u00a0\u2000-\u200a\u202f\u205f\u3000]"
-# Spaces around "=" only after an identifier-like name (nonce, keyId), so a padded token68
-# followed by prose ("Zm9vYmE= kubernetes") does not read as a parameter.
 _AUTH_PARAM = r"""(?:[\w!#$%&'*+.^`|~-]+=(?:[ \t]+(?=\\?["'“‘]|[^\s,"]+[ \t]*,[ \t]*[\w!#$%&'*+.^`|~-]+[ \t]*=)|(?:(?<=key=)|(?<=token=)|(?<=secret=)|(?<=password=)|(?<=credential=)|(?<=signature=)|(?<=nonce=)|(?<=response=))(?:[ \t]*\r?\n)?[ \t]+)?|[\w!#$%&'*+.^`|~-]+[ \t]+=[ \t]*|(?=[A-Za-z_-]{1,15}\*?=)(?-i:[A-Z]?[a-z][a-z_-]*(?:[A-Z][a-z_-]+)*|[A-Z][A-Z_-]*)\*?=[ \t]*)(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
     r"[ \t]", _HSPACE
 )
@@ -77,12 +74,10 @@ _QUERY_AUTHORIZATION = re.compile(
         r"[ \t]", _HSPACE
     )
 )
-# HAR records may list "value" before "name"; JSON key order carries no meaning.
 _REVERSED_HAR_HEADER = re.compile(
     r"""(?i)(?P<value>\\?"value\\?"\s*:\s*\\?"(?:[^"\\]|\\.)*?\\?")(?P<sep>\s*,\s*)"""
     r"""(?P<name>\\?"name\\?"\s*:\s*\\?"(?:proxy-|x-)?authorization\\?")"""
 )
-# Multi-value header maps: {"Authorization": ["Basic a", "Basic b"]}.
 _QUERY_AUTHORIZATION_ARRAY = re.compile(
     r"""(?i)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?\s*(?:=>|[:=,])|\]?\s*(?:=>|[:=]))\s*\[(?P<members>[^\[\]]*)\]"""
 )
@@ -238,7 +233,6 @@ def _shield_untrusted(text: str) -> str:
 
 
 def _escape_echo(text: str) -> str:
-    # Percent escapes match in either hex case: %2B and %2b are the same byte.
     return re.sub(
         r"%([0-9A-Fa-f])([0-9A-Fa-f])",
         lambda m: "%"
@@ -260,9 +254,7 @@ def _authorization_values(match: re.Match) -> list[str]:
         ]
     raw = [value.strip("\\\"'“”‘’") for _, value in pairs]
     pairs = [(name, re.sub(r"\\(.)", r"\1", value.strip("\\\"'“”‘’"))) for name, value in pairs]
-    # The serialized spelling too, so an echo that keeps its escapes still matches.
     values = [value for _, value in pairs] + [value for value in raw if "\\" in value]
-    # Coalesced duplicates ("Basic a==, Basic b=") are classified on their own.
     coalesced = []
     repeated = rf"\s*,\s*(?={re.escape(match['scheme'])}\s)"
     members = _COALESCED_MEMBER.split(match["more"] or "")
@@ -303,12 +295,10 @@ def _array_values(match: re.Match) -> list[str]:
 
 
 def _sanitize_public_query(query: str) -> str:
-    # The Authorization pass may eat a label a later pass needs, so keep only tokens that also
-    # survive without it: it can remove more than the plain passes, never less.
+    # Keep only tokens the plain passes also keep, so this can never remove less than they do.
     query = _REVERSED_HAR_HEADER.sub(r"\g<name>\g<sep>\g<value>", query)
     plain = _redact_public_query(query, authorization = False)
     with_authorization = _redact_public_query(query, authorization = True)
-    # An echoed copy of an identified credential (an error repeating it) goes too.
     credentials, exact = set(), set()
     found = [
         value
@@ -322,9 +312,7 @@ def _sanitize_public_query(query: str) -> str:
     ]
     for value in found:
         trimmed = value.rstrip(_TOKEN_PUNCTUATION + ".!?")
-        # A log may also drop base64 padding before echoing.
         for variant in {value, trimmed, trimmed.rstrip("=")}:
-            # A log may percent-encode the echo (dTo+ -> dTo%2B).
             exact.update(
                 {
                     quote(variant, safe = "", errors = "surrogatepass"),
@@ -332,7 +320,6 @@ def _sanitize_public_query(query: str) -> str:
                     quote_plus(variant, errors = "surrogatepass"),
                 }
             )
-            # JSON serializers may escape the solidus (a/b -> a\/b).
             exact.update({variant, variant.replace("/", "\\/")})
             credentials.update(piece for piece in [variant, *variant.split()] if len(piece) >= 8)
     exact.discard("")
@@ -347,7 +334,6 @@ def _sanitize_public_query(query: str) -> str:
         ]
     query = " ".join(tokens)
     if exact:
-        # Echoes of identified values, also inside fields like received=YTpi or {"received":"a b"}.
         values = sorted(exact, key = len, reverse = True)
         echo = "|".join(r"\s+".join(map(_escape_echo, value.split())) for value in values)
         query = re.sub(
