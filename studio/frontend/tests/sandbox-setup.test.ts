@@ -851,6 +851,11 @@ test("with nothing to install, the High popup says why instead of showing nothin
       "",
     );
   }
+  const readyNow = { ...deadEnd, pythonOsIsolated: true, terminalOsIsolated: true, reason: "passed" };
+  assert.equal(
+    setupState.sandboxSetupView({ capability: readyNow, job: null, consent: false }).reason,
+    "",
+  );
   for (const state of ["running", "failed"] as const) {
     assert.equal(
       setupState.sandboxSetupView({ capability: deadEnd, job: setupJob({ state }), consent: false }).reason,

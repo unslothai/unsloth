@@ -77,7 +77,9 @@ export function sandboxSetupView({
       capability.setupBlocked === "not_owner" ||
       capability.setupBlocked === "not_local") &&
     capability.setupBlocked !== "no_elevation";
+  // A check that now passes (set up from another window) is not a reason to show here.
   const deadEnd =
+    !(capability.pythonOsIsolated && capability.terminalOsIsolated) &&
     install === null &&
     command === "" &&
     !showOwnerOnly &&
