@@ -17,6 +17,7 @@ attributes are restored after the call; the level that worked is remembered per 
 from __future__ import annotations
 
 import functools
+import math
 import os
 from typing import Any, Optional
 
@@ -25,6 +26,9 @@ OOM_RETRY_ENV = "UNSLOTH_VAE_OOM_RETRY"
 # the untiled decode, 8-latent LTX-2 (32x) tiles 0.019. A render that cannot fit 8-latent tiles fails as before.
 MIN_TILE_LATENTS = 8
 MAX_HALVINGS = 6
+# Halved tiles must decode a corner crop this close to the untiled crop (FLUX.1 16-latent tiles measured 36.8 dB on a
+# 2048 px image, LTX-2.5 8-latent tiles 33.5, HunyuanImage-2.1 8-latent tiles 26.7 at LPIPS 0.19).
+MIN_PSNR_DB = 30.0
 
 _AXES = ("size", "height", "width")
 
@@ -150,6 +154,19 @@ def _release_cache(z: Any, vae: Any = None) -> None:
         pass
 
 
+def _free_bytes(z: Any) -> Optional[int]:
+    """Device free bytes plus this process's cached-but-unused bytes, or None off CUDA."""
+    try:
+        import torch
+
+        if z.device.type != "cuda":
+            return None
+        free, _ = torch.cuda.mem_get_info(z.device)
+        return int(free + torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _compiling() -> bool:
     try:
         import torch
@@ -186,8 +203,10 @@ def install(vae: Any, logger: Any = None) -> bool:
     ratio = _spatial_ratio(vae)
     factor = vae.__dict__.get("tile_overlap_factor")
     factor = float(factor) if isinstance(factor, (int, float)) and not isinstance(factor, bool) else None
-    stats = {"calls": 0, "oom": 0, "tiled_retry": 0, "halvings": 0, "recovered": 0, "failed": 0, }
+    stats = {"calls": 0, "oom": 0, "tiled_retry": 0, "halvings": 0, "recovered": 0, "failed": 0,
+             "quality_refused": 0, "probe_psnr": {}}  # fmt: skip
     memo: dict = {}
+    quality: dict = {}
     depth = [0]
 
     def _key(z: Any) -> tuple:
@@ -206,6 +225,47 @@ def install(vae: Any, logger: Any = None) -> bool:
             vae.use_tiling = prev_tiling
             _set_attrs(vae, current)
             vae._unsloth_vae_oom_halvings = 0
+
+    def _level_quality_ok(level: int, z: Any, args: tuple, kwargs: dict) -> bool:
+        """Halved tiles decode a small corner crop (3 tiles a side, 2 frames) within MIN_PSNR_DB of the untiled crop.
+        Measured once per level; an untiled crop that itself runs out of memory leaves the level allowed."""
+        if level in quality:
+            return quality[level]
+        values = halved(stock_attrs, ratio, level, factor) or {}
+        lat = min(
+            [values[n] // ratio for n in values if n.startswith("tile_sample_min_") and "overlap" not in n]
+            + [values[n] for n in values if n.startswith("tile_latent_min_")]
+            or [MIN_TILE_LATENTS]
+        )
+        sl = [slice(None)] * z.dim()
+        sl[-1] = slice(0, min(int(z.shape[-1]), 3 * lat))
+        sl[-2] = slice(0, min(int(z.shape[-2]), 3 * lat))
+        if z.dim() == 5:
+            sl[2] = slice(0, min(int(z.shape[2]), 2))
+        crop = z[tuple(sl)]
+        prev_tiling = bool(getattr(vae, "use_tiling", False))
+        try:
+            import torch
+
+            with torch.no_grad():
+                vae.use_tiling = False
+                try:
+                    ref = _decoded(inner(crop, *args, **kwargs)).float()
+                finally:
+                    vae.use_tiling = prev_tiling
+                tiled = _decoded(_attempt(level, crop, args, kwargs)).float()
+                mse = float((tiled - ref).pow(2).mean())
+            del ref, tiled
+        except Exception as exc:  # noqa: BLE001
+            if not is_oom(exc):
+                raise
+            _release_cache(z, vae)
+            return True
+        psnr = 99.0 if mse == 0 else 10.0 * math.log10(4.0 / mse)
+        quality[level] = psnr >= MIN_PSNR_DB
+        stats["probe_psnr"][level] = round(psnr, 1)
+        _release_cache(z, vae)
+        return quality[level]
 
     def _shape_ok(out: Any, z: Any) -> bool:
         dec = _decoded(out)
@@ -229,7 +289,15 @@ def install(vae: Any, logger: Any = None) -> bool:
     def _retrying(z: Any, args: tuple, kwargs: dict) -> Any:
         stats["calls"] += 1
         tiled_now = bool(getattr(vae, "use_tiling", False))
-        start = memo.get(_key(z), 0) if tiled_now else 0
+        level_free = memo.get(_key(z)) if tiled_now else None
+        start = 0
+        if level_free is not None:
+            free = _free_bytes(z)
+            # More memory than when the stock tiles failed: try them again rather than keep the smaller tiles.
+            if free is not None and level_free[1] is not None and free > 1.25 * level_free[1]:
+                memo.pop(_key(z), None)
+            else:
+                start = level_free[0]
         if start == 0:
             # The fast path: no wrapper state changes, exactly the stock call.
             try:
@@ -238,12 +306,14 @@ def install(vae: Any, logger: Any = None) -> bool:
                 if not is_oom(exc) or (not tiled_now and _outer_gate_owns_untiled(vae)):
                     raise
                 stats["oom"] += 1
+            free_at_fail = _free_bytes(z)
             # Untiled failed: the stock tiles first (level 0, tiling on). Tiled failed: halve.
             levels = [0] if not tiled_now else []
             levels += list(range(1, MAX_HALVINGS + 1))
             if not tiled_now:
                 stats["tiled_retry"] += 1
         else:
+            free_at_fail = level_free[1]
             levels = list(range(start, MAX_HALVINGS + 1)) + [0]
         error = "VAE decode ran out of memory at every tile size; free GPU memory or lower the resolution"
         for level in levels:
@@ -251,6 +321,14 @@ def install(vae: Any, logger: Any = None) -> bool:
                 if level > start:
                     break
                 continue
+            if level and not _level_quality_ok(level, z, args, kwargs):
+                # Smaller tiles only get worse: fail as the stock decode would have.
+                stats["quality_refused"] += 1
+                error = (
+                    f"VAE decode ran out of memory, and tiles small enough to fit decode {type(vae).__name__} "
+                    "with visible seams; free GPU memory or lower the resolution"
+                )
+                break
             _release_cache(z, vae)  # outside the handler: the failed attempt's tensors are gone
             if logger is not None:
                 logger.warning(
@@ -269,7 +347,7 @@ def install(vae: Any, logger: Any = None) -> bool:
                 stats["recovered"] += 1
                 stats["halvings"] = max(stats["halvings"], level)
                 if level:
-                    memo[_key(z)] = level
+                    memo[_key(z)] = (level, free_at_fail)
                 else:
                     memo.pop(_key(z), None)
                 return out

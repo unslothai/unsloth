@@ -31,6 +31,7 @@ class _WanLike(torch.nn.Module):
         self.tile_sample_stride_height = 192
         self.tile_sample_stride_width = 192
         self.fits = fits
+        self.seam_below = 0
         self.seen = []
 
     def enable_tiling(self):
@@ -38,7 +39,12 @@ class _WanLike(torch.nn.Module):
 
     def _decode(self, z, return_dict = True):
         side = z.shape[-1] * 8 if not self.use_tiling else self.tile_sample_min_height
-        self.seen.append((self.use_tiling, self.tile_sample_min_height, self.tile_sample_stride_height))
+        if z.shape[-1] == 64:  # the full latent; the quality probe decodes a smaller corner crop
+            self.seen.append((self.use_tiling, self.tile_sample_min_height, self.tile_sample_stride_height))
+        else:  # the probe crop always fits
+            out = z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1
+            # tiles under ``seam_below`` px decode with a visible error
+            return (out + (1.0 if self.use_tiling and self.tile_sample_min_height < self.seam_below else 0.0),)
         if side > self.fits:
             raise _FakeOOM()
         return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
@@ -93,6 +99,19 @@ def test_tiled_level_is_memoised_per_shape():
     vae.seen.clear()
     vae._decode(z)
     assert [s[1] for s in vae.seen] == [64]  # straight to the level that fit
+    assert vae.tile_sample_min_height == 256
+
+
+def test_halved_tiles_that_seam_are_refused():
+    vae = _WanLike(fits = 64)
+    vae.seam_below = 128  # 64 px tiles fit but seam; 128 px tiles are clean but OOM
+    vae.use_tiling = True
+    O.install(vae)
+    with pytest.raises(RuntimeError, match = "visible seams"):
+        vae._decode(torch.zeros(1, 4, 1, 64, 64))
+    stats = vae._unsloth_vae_oom_stats
+    assert stats["quality_refused"] == 1 and stats["probe_psnr"][2] < O.MIN_PSNR_DB
+    assert stats["probe_psnr"][1] >= O.MIN_PSNR_DB
     assert vae.tile_sample_min_height == 256
 
 
