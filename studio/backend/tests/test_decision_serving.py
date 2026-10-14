@@ -1362,6 +1362,19 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
     (folder / "config.json").write_text(json.dumps(omni), encoding = "utf-8")
     assert hears(tuned) and not hears(kev) and not hears(catalog.CHECKPOINTS["clef-flash"])
     assert laya_runtime.input_modalities(tuned) == ["text", "image", "audio"]
+    # Phi-4-multimodal and Nemotron Omni name their towers otherwise.
+    phi4 = {"embd_layer": {"image_embd_layer": {}, "audio_embd_layer": {}}}
+    for config, modalities in (
+        (phi4, ["text", "image", "audio"]),
+        ({"vision_config": {}, "sound_config": {}}, ["text", "image", "audio"]),
+    ):
+        (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+        assert hears(tuned) and laya_runtime.input_modalities(tuned) == modalities
+    (folder / "config.json").write_text(
+        json.dumps({"embd_layer": {"audio_embd_layer": {}}}), encoding = "utf-8"
+    )
+    assert laya_runtime.input_modalities(tuned) == ["text"]
+    (folder / "config.json").write_text(json.dumps(omni), encoding = "utf-8")
     zoo.ClefModel = SimpleNamespace(takes_images = True)
     assert not hears(tuned)
     zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)

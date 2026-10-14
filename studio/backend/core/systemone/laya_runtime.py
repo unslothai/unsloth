@@ -204,11 +204,15 @@ def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
         return False
     if not isinstance(config, dict):
         return False
-    # An omni model keeps its towers under the thinker.
-    thinker = config.get("thinker_config")
-    tower = "vision_config" if media == "images" else "audio_config"
+    # Qwen3-Omni keeps its towers under the thinker, Phi-4-multimodal under `embd_layer`; Nemotron Omni hears through a sound tower.
+    parts = (config, config.get("thinker_config"), config.get("embd_layer"))
+    towers = (
+        ("vision_config", "image_embd_layer")
+        if media == "images"
+        else ("audio_config", "sound_config", "audio_embd_layer")
+    )
     return any(
-        isinstance(part, dict) and part.get(tower) is not None for part in (config, thinker)
+        isinstance(part, dict) and part.get(tower) is not None for part in parts for tower in towers
     ) and any(
         (folder / name).is_file() for name in ("processor_config.json", "preprocessor_config.json")
     )
