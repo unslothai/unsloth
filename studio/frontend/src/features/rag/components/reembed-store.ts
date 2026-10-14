@@ -28,6 +28,8 @@ let freshAfter = 0;
 /** The shown state is known to be outdated (a dropped reply, a failed start or cancel, or the counts
  * a finished job changed) until a reply applies; failed reads keep retrying meanwhile. */
 let reconciling = false;
+/** Replies to requests sent before this sign-out describe the account that signed out. */
+let signedOutAt = 0;
 
 /** Applies the reply unless it was sent before `freshAfter`, which would roll the job back or
  * announce its end twice. Such a reply returns false, and the caller reads the current state. */
@@ -39,6 +41,8 @@ async function request<T>(
   try {
     const value = await send();
     const arrivedAt = ++clock;
+    // Sent before signing out: settled without effect, as is its failure below.
+    if (sentAt <= signedOutAt) return true;
     if (sentAt <= freshAfter) {
       reconciling = true;
       return false;
@@ -48,6 +52,7 @@ async function request<T>(
     apply(value);
     return true;
   } catch (error) {
+    if (sentAt <= signedOutAt) return true;
     // A failed request must not end the polling that reports the job's progress and end.
     if (watchedJobId !== null || reconciling) schedulePoll();
     throw error;
@@ -120,6 +125,7 @@ function resetOnSignOut(): void {
   pollTimer = null;
   watchedJobId = null;
   reconciling = false;
+  signedOutAt = ++clock;
   useReembedStore.setState({ status: null });
 }
 

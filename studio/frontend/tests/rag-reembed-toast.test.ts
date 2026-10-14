@@ -53,6 +53,10 @@ test("signing out forgets the job and stops polling for it", async (t) => {
   await useReembedStore.getState().load();
   setAuthFetchHandler(offline);
   await useReembedStore.getState().cancel(); // leaves the state to reconcile
+  serve({ ...stale, job: job("running", 0, "j11") });
+  void useReembedStore.getState().load(); // answered after signing out
+  setAuthFetchHandler(offline);
+  void useReembedStore.getState().start(); // fails after signing out
   signOut();
   await useReembedStore.getState().load(); // a read that fails once signed out
   serve({ ...idle, job: job("completed", 0, "j11") });
@@ -71,7 +75,6 @@ test("a save that leaves documents stale offers Re-embed, which starts the job",
   );
   assert.equal(saved.options?.duration, 10_000);
   saved.options?.action?.onClick();
-  await new Promise((resolve) => setTimeout(resolve, 0));
   assert.deepEqual(posted, ["/api/rag/reembed"]);
 });
 
