@@ -100,8 +100,10 @@ export const BUDGET = {
   // (#13722) 2.1 KB raw / 0.5 KB transfer, the collapsed sidebar rail's Images and Audio entries (#13731)
   // 2.1 KB raw / 0.4 KB transfer, and #13665, #13614, #13732, #13661, #13538 the rest (#13744's revert
   // gave back 0.4 KB raw). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_028_911,
-  rawBytes: 6_751_615,
+  // Then the Audio API card in Settings (#12821) 2,019 B raw / 557 B transfer and #13630 132 B raw
+  // (6,750,599 -> 6,752,750 B raw, 2,028,544 -> 2,029,099 B transfer to dd56fb3572, same machine and build).
+  transferBytes: 2_029_466,
+  rawBytes: 6_753_766,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
