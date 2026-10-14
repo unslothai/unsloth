@@ -480,12 +480,15 @@ def refine_plan_for_multigpu(
 ) -> Any:
     """Post-load: an offloading plan becomes a resident split when the LOADED components can be shared by the cards.
 
-    No-op without a selection, for explicit offload modes, a plan already resident (or already split), unified memory
+    No-op without a selection, for explicit offload modes, a plan already resident (unless forced) or split, unified memory
     or an unknown budget. Returns the plan (a ``dataclasses.replace`` copy when it changed)."""
     selection = current_selection()
     if selection is None or plan is None:
         return plan
-    if getattr(plan, "secondary_ordinal", None) is not None or plan.offload_policy == "none":
+    if getattr(plan, "secondary_ordinal", None) is not None:
+        return plan
+    # force: a resident plan too (the pre-load planner keeps one card resident when sizes were unknown)
+    if plan.offload_policy == "none" and multigpu_mode() != "force":
         return plan
     if getattr(plan, "requested_mode", None) not in ("auto", "fast"):
         return plan

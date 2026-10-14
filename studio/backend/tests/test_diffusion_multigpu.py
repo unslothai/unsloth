@@ -1474,3 +1474,18 @@ def test_foreign_submodule_hook_declines_the_replica():
         assert mg._hooks_present(hooked) is None
     finally:
         _global_state_hook.__module__ = saved
+
+
+def test_force_mode_refines_a_resident_plan(monkeypatch):
+    plan = dataclasses.replace(_plan(), offload_policy = dm.OFFLOAD_NONE)
+    sizes = {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        assert mg.refine_plan_for_multigpu(object(), plan) is plan  # auto: a resident plan stays on one card
+        monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
+        refined = mg.refine_plan_for_multigpu(object(), plan)
+    assert refined.secondary_ordinal == 1 and refined.offload_policy == dm.OFFLOAD_NONE
+    assert refined.secondary_components == ("text_encoder", "vae")
+    assert refined.fallback_plan is plan
