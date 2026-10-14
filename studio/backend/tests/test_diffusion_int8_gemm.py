@@ -1064,18 +1064,18 @@ def test_latency_gate_picks_cublas_where_the_tile_regressed_and_persists(monkeyp
     assert g8.tune(0, {(18432, 3072)}) == plan and len(calls) == 2
 
 
-def test_latency_gate_prefers_the_fused_kernel_unless_cublas_clearly_wins(monkeypatch, tmp_path):
+def test_latency_gate_prefers_the_fused_kernel_unless_cublas_wins(monkeypatch, tmp_path):
     default = g8._ARCH_CONFIG[(8, 0)]
     alt = g8._ALT_TILES[(8, 0)][0]
     # Triton 3.7: shipped tile 430 TOPS, cuBLAS + one pass a little slower; an alt tile within noise does not churn.
     ms = lambda tiles: {g8._CUBLAS: 1.40, default: 1.10, **{t: 1.09 for t in tiles if t != default}}
     _fake_tune_env(monkeypatch, tmp_path, ms)
     assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}
-    # cuBLAS inside the margin keeps the fused kernel too.
+    # cuBLAS (whose arm already pays a full epilogue pass) not faster keeps the fused kernel too.
     g8._DEVICE_PLAN.clear()
     for f in tmp_path.glob("tune_*.json"):
         f.unlink()
-    ms2 = lambda tiles: {g8._CUBLAS: 1.05, default: 1.10, **{t: 1.5 for t in tiles if t != default}}
+    ms2 = lambda tiles: {g8._CUBLAS: 1.10 / g8._CUBLAS_MARGIN, default: 1.10, **{t: 1.5 for t in tiles if t != default}}
     monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles: ms2(tiles))
     assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}
     # A clearly faster alternative tile wins, and must pass the bit-exact probe.
