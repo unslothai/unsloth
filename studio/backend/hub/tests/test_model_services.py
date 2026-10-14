@@ -4467,9 +4467,9 @@ def test_hf_cache_scan_flags_a_companion_only_pipeline(
             ),
             encoding = "utf-8",
         )
-        (snapshot / "transformer" / "diffusion_pytorch_model-00001-of-00002.safetensors").write_bytes(
-            b"weights"
-        )
+        (
+            snapshot / "transformer" / "diffusion_pytorch_model-00001-of-00002.safetensors"
+        ).write_bytes(b"weights")
     elif with_denoiser:
         (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
     (snapshot / "model_index.json").write_text(
