@@ -98,7 +98,7 @@ const SHELL_ARGUMENT_RE =
 const MARKDOWN_CONTAINER_PREFIX_RE =
   /^(?:(?: {0,3}>[ \t]?)|(?: {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?))+/;
 const SHELL_PROMPT_PREFIX_RE = /^\$[ \t]+/;
-const SPACED_MATH_CLOSER_RE = /[^\\$]\$(?=[\s.,;:)]|$)/;
+const SPACED_MATH_CLOSER_RE = /[^\\$]\$(?=[\s.,;:)]|$)|\s\$(?=[!?])/;
 const MARKDOWN_TABLE_PREFIX_RE = /^[ \t]*\|/;
 const SHELL_ASSIGNMENT_PREFIX_RE = /(?:^|[;&|]\s*)[A-Za-z_]\w*=$/;
 const SHELL_ASSIGNMENT_WORD_RE = /^[A-Za-z_]\w*=\S*$/;
@@ -466,6 +466,8 @@ function enclosingMarkdownEmphasisOpener(
     ) {
       return opener;
     }
+    // lastIndexOf clamps a negative start to 0, which would return the same opener forever.
+    if (opener === 0) break;
     opener = text.lastIndexOf(token, opener - 1);
   }
   return -1;

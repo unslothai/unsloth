@@ -344,10 +344,20 @@ test("spaced inline math at a line start is not a shell prompt", () => {
   for (const [source, expected] of [
     ["$ x^2 + 1 $", ["x^2 + 1"]],
     ["The equation is:\n$ x = 3 $\nDone.", ["x = 3"]],
+    ["$ x = 3 $!", ["x = 3"]],
+    ["$ x = 3 $?", ["x = 3"]],
   ] as Array<[string, string[]]>) {
     assert.deepEqual(renderedMath(render(source)), expected, source);
   }
   const prompt = render("$ ls -la\n$ cd /tmp");
   assert.deepEqual(renderedMath(prompt), []);
   assert.ok(visibleText(prompt).includes("$ ls -la"));
+});
+
+test("nested emphasis at offset zero does not hang the emphasis scan", () => {
+  for (const source of ["*There **are** $3$*", "_There __are__ $3$_"]) {
+    const started = performance.now();
+    preprocessLaTeX(source);
+    assert.ok(performance.now() - started < 2000, source);
+  }
 });
