@@ -1428,10 +1428,8 @@ def _quant_state_dtype(quant_state):
     return getattr(quant_state, "dtype", None)
 
 
-# Most decode rows the GEMV takes, per compute capability, from end-to-end decode A/Bs (#2798): T4, L4 and
-# RTX PRO 6000 win up to 4 rows, A100 only at 2. Fixed rather than timed so a prompt decodes to the same
-# tokens every run. Unmeasured GPUs dequantize; UNSLOTH_GEMV_MAX_ROWS overrides the cap wherever the
-# Triton GEMV runs eagerly (as for batch 1).
+# Max GEMV decode rows per compute capability, from end-to-end decode A/Bs (#2798). Fixed, not timed, so
+# decoding is reproducible; others dequantize. UNSLOTH_GEMV_MAX_ROWS overrides where the Triton GEMV runs.
 _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
 
@@ -1456,7 +1454,7 @@ def _gemv_rows_cap(device):
 def _gemv_rows(X, W, quant_state, out):
     """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
     M = X.shape[0]
-    # Checked first: rows above the cap must cost the dequantize path nothing extra.
+    # First, so rows above the cap cost the dequantize path nothing.
     if not 2 <= M <= _gemv_rows_cap(X.device) or W.device != X.device:
         return None
     eager = (

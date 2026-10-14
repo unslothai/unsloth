@@ -227,7 +227,7 @@ def test_planned_rows_skip_a_strided_out(monkeypatch):
     X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
     ref = utils.fast_linear_forward(proj, X)
     wide = torch.zeros(2, 1, 2048, dtype = torch.bfloat16, device = "cuda")
-    utils.fast_linear_forward(proj, X, out = wide[:, :, :1024])  # plans for row stride 2048
+    utils.fast_linear_forward(proj, X, out = wide[:, :, :1024])
     strided = wide[:, :, ::2]
     assert strided.stride(0) == 2048 and strided.stride(-1) == 2
     assert _rel_err(utils.fast_linear_forward(proj, X, out = strided).float(), ref.float()) < TOL[torch.bfloat16]
@@ -263,7 +263,7 @@ def test_rows_gemv_rejects_an_out_it_cannot_fill(monkeypatch):
     W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
     X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
     good = torch.empty(2, 1, 1024, dtype = torch.bfloat16, device = "cuda")
-    assert utils._gemv_rows(X, W, W_quant, good) is good  # plans for this stride
+    assert utils._gemv_rows(X, W, W_quant, good) is good
     for bad in (
         torch.empty(2, 1, 1023, dtype = torch.bfloat16, device = "cuda"),
         torch.empty(1, 1, 1024, dtype = torch.bfloat16, device = "cuda"),
@@ -283,7 +283,7 @@ def test_rows_gemv_needs_the_weight_on_the_activation_device(monkeypatch):
     proj = _linear4bit(1024, 4096)
     W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
     X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
-    # Triton rejects a CPU pointer but not another GPU's, so the guard must stop the launch itself.
+    # Triton rejects a CPU pointer but not another GPU's: the guard must stop the launch.
     for name in ("gemv_nf4_rows", "gemv_nf4_rows_planned"):
         monkeypatch.setattr(utils, name, lambda *a: pytest.fail("launched"))
     assert utils._gemv_rows(X, W.data.cpu(), W_quant, None) is None
