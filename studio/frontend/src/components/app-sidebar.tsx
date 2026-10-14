@@ -160,7 +160,6 @@ import {
 import {
   archiveChatItem,
   ChatSearchDialog,
-  clearNewChatDraft,
   canForkChatRow,
   EditProjectDialog,
   forkChatRow,
@@ -3367,7 +3366,6 @@ export function AppSidebar() {
   }
 
   function openNewChat(projectId = activeProjectId) {
-    clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(projectId);
     // The normal new-chat affordance is always a saved chat; only the toolbar toggle is temporary.
@@ -3380,7 +3378,6 @@ export function AppSidebar() {
    *  Marked once the new chat is on screen, so the chat being left is never the one filed. */
   function openNewChatInSection(sectionId: string) {
     const nonce = createNavigationNonce();
-    clearNewChatDraft();
     setActiveThreadId(null);
     useChatRuntimeStore.getState().setActiveProjectId(null);
     useChatRuntimeStore.getState().setIncognito(false);

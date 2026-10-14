@@ -7338,6 +7338,40 @@ def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeyp
     ]
 
 
+def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
+    """Loading deferred MCP tools is not a tool round (#10997)."""
+    from core.inference import tools as tools_mod
+
+    ping = {
+        "type": "function",
+        "function": {
+            "name": "mcp__srv1__ping",
+            "description": "[A] Ping.",
+            "parameters": {"type": "object"},
+        },
+    }
+    monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
+    streams = [
+        _structured_tool_call("mcp_tool_search", {"query": "ping"}, "call_search"),
+        _structured_tool_call("mcp__srv1__ping", {}, "call_ping"),
+        [_sse({"content": "Pinged."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "ok")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "ping it"}],
+        [tools_mod._mcp_tool_search_spec([])],
+        max_tool_iterations = 1,
+    )
+
+    assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
+    assert "mcp__srv1__ping" in [t["function"]["name"] for t in payloads[1].get("tools", [])]
+
+
 def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):
     # The template renders tools at the top of the system prompt. Dropping them on the final
     # pass changed the prompt from its first tokens, so llama-server re-processed the whole
@@ -7507,3 +7541,59 @@ def test_restored_replay_is_the_branch_the_tools_are_given(monkeypatch):
     assert branches
     replayed = [m for m in branches[0] if m.get("tool_call_id") == "call_old"]
     assert len(replayed) == 1
+
+
+def test_budget_notice_folded_into_a_denied_result_is_reported_for_replay(monkeypatch):
+    # A denial is the round's last tool message too, so the notice can land on it: the client has
+    # to be told, or it replays the bare denial and the next turn misses the cache there.
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+    # One call runs and spends the budget; the batch's last call is declined.
+    blocks = (
+        '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+        '<tool_call>{"name":"python","arguments":{"code":"print(2)"}}</tool_call>'
+    )
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "Done."}), _done()]]
+    backend, _payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "OK")
+    decisions = iter(["allow", "deny"])
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
+    monkeypatch.setattr("core.inference.llama_cpp.begin_tool_decision", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: next(decisions)
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run python"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            confirm_tool_calls = True,
+            permission_mode = "ask",
+            session_id = "sess",
+        )
+    )
+
+    assert calls == [("python", {"code": "print(1)"})]
+    tool_end = [e for e in events if e.get("type") == "tool_end"][-1]
+    notes = [e for e in events if e.get("type") == "tool_model_note"]
+    assert notes == [
+        {
+            "type": "tool_model_note",
+            "tool_call_id": tool_end["tool_call_id"],
+            "suffix": f"\n\n{BUDGET_EXHAUSTED_NUDGE}",
+        }
+    ]
+
+
+def test_appended_notice_keeps_an_image_part_an_image():
+    from core.inference.tool_loop_controller import with_appended_text as _with_appended_text
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    out = _with_appended_text([{"type": "text", "text": "Over the cap."}, image], "\n\nStop.")
+    assert out == [
+        {"type": "text", "text": "Over the cap."},
+        image,
+        {"type": "text", "text": "\n\nStop."},
+    ]
+    assert _with_appended_text("Over the cap.", "\n\nStop.") == "Over the cap.\n\nStop."

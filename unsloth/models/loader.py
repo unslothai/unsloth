@@ -45,6 +45,7 @@ from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_piss
 from ..tokenizers_v1 import tokenizers_v1_on_return
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    deepspeed_zero3_device_map,
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
@@ -62,7 +63,7 @@ from .loader_utils import (
     _is_offline_related_error,
     raise_if_fast_inference_under_fsdp2,
 )
-import os, contextlib, sys
+import os, contextlib, functools, sys
 
 try:
     from huggingface_hub import get_token
@@ -972,6 +973,26 @@ def _vllm_unavailable_error():
     )
 
 
+def _diffusion_peft_kwargs(
+    model,
+    args,
+    kwargs,
+    signature_of = None,
+):
+    """The caller's get_peft_model arguments, bound against its own signature (FastLanguageModel's by default)
+    so positional ones keep their meaning, for FastDiffusionModel.get_peft_model. Omitted ones stay omitted
+    (profile defaults apply)."""
+    import inspect
+
+    bound = inspect.signature(signature_of or FastLlamaModel.get_peft_model).bind(
+        model, *args, **kwargs
+    )
+    arguments = dict(bound.arguments)
+    arguments.pop("model", None)
+    arguments.update(arguments.pop("kwargs", {}))
+    return arguments
+
+
 # load_vllm-only kwargs; transformers' from_pretrained rejects them.
 _VLLM_ENGINE_KWARGS = (
     "max_loras",
@@ -995,6 +1016,32 @@ def _drop_vllm_engine_kwargs(kwargs):
 
 
 class FastLanguageModel(FastLlamaModel):
+    # Text-diffusion models load through FastModel's slow path; these route them there for the PEFT / mode helpers.
+    @staticmethod
+    @functools.wraps(FastLlamaModel.get_peft_model)
+    def get_peft_model(model, *args, **kwargs):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.get_peft_model(
+                model, **_diffusion_peft_kwargs(model, args, kwargs)
+            )
+        return FastLlamaModel.get_peft_model(model, *args, **kwargs)
+
+    @staticmethod
+    @functools.wraps(FastLlamaModel.for_inference)
+    def for_inference(model):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            return FastDiffusionModel.for_inference(model)
+        return FastLlamaModel.for_inference(model)
+
+    @staticmethod
+    @functools.wraps(FastLlamaModel.for_training)
+    def for_training(model, use_gradient_checkpointing = None):
+        if getattr(model, "_unsloth_slow_diffusion", False):
+            if use_gradient_checkpointing is None:
+                use_gradient_checkpointing = getattr(model, "_unsloth_gradient_checkpointing", True)
+            return FastDiffusionModel.for_training(model, use_gradient_checkpointing)
+        return FastLlamaModel.for_training(model, use_gradient_checkpointing)
+
     @staticmethod
     @tokenizers_v1_on_return
     @_offline_aware_load
@@ -1068,7 +1115,7 @@ class FastLanguageModel(FastLlamaModel):
                 dtype = bnb_compute_dtype
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
-        device_map = requested_device_map(device_map)
+        device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
@@ -1872,7 +1919,10 @@ class FastModel(FastBaseModel):
     def get_peft_model(model, *args, **kwargs):
         # Route text-diffusion models (slow path) to the transformers-only PEFT helper.
         if getattr(model, "_unsloth_slow_diffusion", False):
-            return FastDiffusionModel.get_peft_model(model, *args, **kwargs)
+            return FastDiffusionModel.get_peft_model(
+                model,
+                **_diffusion_peft_kwargs(model, args, kwargs, FastBaseModel.get_peft_model),
+            )
         return FastBaseModel.get_peft_model(model, *args, **kwargs)
 
     @staticmethod
@@ -2047,7 +2097,7 @@ class FastModel(FastBaseModel):
             qat_scheme = "int8-int4"
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
-        device_map = requested_device_map(device_map)
+        device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
