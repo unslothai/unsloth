@@ -537,14 +537,14 @@ def _patch_remote(
         calls.append(remote)
         if remote.startswith("test -f"):
             return 0, "YES\n" if model_present else "NO\n", ""
-        if remote.startswith("stat -c"):
+        if remote.startswith("stat "):
             # The peer answers with the SAME size and mtime as the local file, which is what a
             # correctly replicated node looks like.
             import re as _re
 
-            paths = _re.findall(r"stat -c '%s %Y' (\S+)", remote)
+            paths = _re.findall(r"stat (-L )?-c '%s %Y' (\S+)", remote)
             lines = []
-            for raw in paths:
+            for follow, raw in paths:
                 path = raw.strip("'\"")
                 if path in set(absent_paths):
                     lines.append("NOSTAT")
@@ -553,7 +553,8 @@ def _patch_remote(
                     lines.append("NOSTAT")
                     continue
                 try:
-                    st = os.stat(path)
+                    # GNU stat reports the link itself unless -L.
+                    st = os.stat(path) if follow else os.lstat(path)
                 except OSError:
                     lines.append("NOSTAT")
                     continue
@@ -755,6 +756,36 @@ def test_after_load_attaches_replicas_behind_the_router(cluster, monkeypatch, tm
             await asyncio.sleep(ss.SUPERVISOR_INTERVAL_S * 2.5)
             assert ss.state().topology == "single"
             assert ss.state().router is None and ss.state().peer_process is None
+        finally:
+            await ss.shutdown()
+            await fake.stop()
+
+    run(scenario())
+
+
+def test_a_hub_cache_snapshot_link_is_compared_by_its_blob(cluster, monkeypatch, tmp_path):
+    """Regression: HF snapshot entries are links into blobs/. The peer's stat described the link (a
+    few bytes) while os.stat here followed it, so a model cached on both nodes never replicated."""
+    cluster.topology = "replicas"
+    monkeypatch.setenv(ss.ENV_PEER, "127.0.0.1")
+    blob = tmp_path / "blobs" / "abc123"
+    blob.parent.mkdir()
+    blob.write_bytes(b"x" * 100)
+    snapshot = tmp_path / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    model = snapshot / "m.gguf"
+    model.symlink_to(blob)
+    _calls, started = _patch_remote(
+        monkeypatch, binary = "$HOME/.unsloth/llama.cpp/build/bin/llama-server"
+    )
+
+    async def scenario():
+        fake = await FakeLlama("main").start()
+        backend = _FakeBackend(fake.port, str(model))
+        try:
+            await ss.after_load(backend, 16)
+            assert ss.state().topology == "replicas", ss.state().reason
+            assert ss.state().peer_model_present is True
         finally:
             await ss.shutdown()
             await fake.stop()
@@ -3178,7 +3209,7 @@ def test_a_generated_chat_template_is_copied_rather_than_demanded(cluster, monke
         copied = [c for c in _calls if "base64 -d" in c]
         assert len(copied) == 1 and str(template) in copied[0]
         # And it is NOT in the file-presence check, which it could never satisfy.
-        checks = [c for c in _calls if c.startswith("stat -c")]
+        checks = [c for c in _calls if c.startswith("stat ")]
         assert checks and str(template) not in checks[0]
     finally:
         template.unlink(missing_ok = True)
@@ -3435,7 +3466,7 @@ def test_a_peer_holding_a_different_file_at_the_same_path_does_not_become_a_repl
     assert "does not have the same" in ss.state().reason
     assert str(model) in ss.state().reason, "the reason has to name the file that disagrees"
     # the probe really did ask for identity, not just presence
-    assert any(c.startswith("stat -c") for c in _calls)
+    assert any(c.startswith("stat ") for c in _calls)
 
 
 def test_an_unknown_mtp_verdict_is_still_turned_off_on_a_wide_split():
@@ -3699,7 +3730,7 @@ def test_a_relative_chat_template_is_absolutised_for_the_replica(cluster, monkey
     assert "mine.jinja" not in peer_argv
     # And it is preflighted, so a peer that does not have it is found out before the launch rather
     # than after the startup window.
-    checks = [c for c in _calls if c.startswith("stat -c")]
+    checks = [c for c in _calls if c.startswith("stat ")]
     assert checks and str(template) in checks[0]
 
 
@@ -4163,7 +4194,7 @@ def test_environment_only_launch_files_are_preflighted_on_the_peer(cluster, monk
     }
     run(ss.after_load(backend, 16))
 
-    checks = [c for c in _calls if c.startswith("stat -c")]
+    checks = [c for c in _calls if c.startswith("stat ")]
     assert checks, "the peer was asked about the launch files"
     assert str(projector) in checks[0], "an env-only projector was never checked on the peer"
     assert str(template) in checks[0], "an env-only chat template was never checked on the peer"

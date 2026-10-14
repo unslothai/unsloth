@@ -2891,11 +2891,11 @@ class SparkServing:
                 return
         self.peer_keys = _read_keys(secrets_needed)
         needed = [p for p in needed if p not in set(generated) | set(secrets_needed)]
-        # Size and mtime, not just existence.
+        # Size and mtime, not just existence; -L as os.stat does, since HF snapshot entries are links.
         mismatch: List[str] = []
         if needed:
             fmt = "; ".join(
-                f"stat -c '%s %Y' {shlex.quote(p)} 2>/dev/null || echo NOSTAT" for p in needed
+                f"stat -L -c '%s %Y' {shlex.quote(p)} 2>/dev/null || echo NOSTAT" for p in needed
             )
             rc, out, _ = await ssh_run(peer, fmt, timeout = 25.0)
             remote = (out or "").strip().splitlines()
