@@ -96,7 +96,15 @@ def model_key(
 
 
 _runtime: list = []
-_KERNEL_DISTS = ("triton", "torchao", "flash-attn", "flash_attn_3", "xformers", "sageattention", "kernels")
+_KERNEL_DISTS = (
+    "triton",
+    "torchao",
+    "flash-attn",
+    "flash_attn_3",
+    "xformers",
+    "sageattention",
+    "kernels",
+)
 
 
 def runtime_stamp() -> str:
