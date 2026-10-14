@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// One composer draft shared by every chat, persisted in localStorage, so whatever was typed last
-// follows the user to any chat, new or saved, and across reloads and tabs. The account switch
-// clears it with the other chat-draft keys (account-transition.ts).
+// One draft shared by every chat, so the last thing typed follows the user. The chat-draft prefix
+// is what the account switch clears (account-transition.ts).
 const DRAFT_KEY = "chat-draft:latest";
 const PASTE_DRAFT_KEY = "chat-draft-pastes:latest";
-// Drafts used to be kept per chat under these prefixes; only deleting a chat still touches them.
+// Pre-upgrade per-chat drafts: adopted when their chat opens, removed with their chat.
 const LEGACY_DRAFT_PREFIX = "chat-draft:";
 const LEGACY_PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
 
@@ -120,7 +119,6 @@ export function publishDraft(text: string, source: symbol): void {
   for (const listener of draftListeners) listener(text, source);
 }
 
-/** Calls `listener` with every other composer's text, and another tab's. */
 export function subscribeDraft(source: symbol, listener: (text: string) => void): () => void {
   const wrapped: DraftListener = (text, from) => {
     if (from !== source) listener(text);
@@ -135,7 +133,7 @@ if (typeof window !== "undefined" && typeof window.addEventListener === "functio
   });
 }
 
-// Removes a deleted chat's leftover per-chat draft. Never the shared draft, which belongs to no chat.
+// A deleted chat's leftover per-chat draft; never the shared one.
 export function clearComposerDraft(threadId: string): void {
   try {
     window.localStorage.removeItem(`${LEGACY_DRAFT_PREFIX}${threadId}`);

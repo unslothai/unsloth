@@ -648,7 +648,6 @@ export function SharedComposer({
     }
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
-  // The same shared draft as the chat composer; a temporary chat leaves it alone.
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const [text, setText] = useState(() =>
     useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
@@ -659,8 +658,7 @@ export function SharedComposer({
   const unsavedDraftRef = useRef<string | null>(null);
   const incognitoBeforeRef = useRef(incognito);
   useEffect(() => {
-    // Leaving a temporary chat (Compare can mount just before that resets) brings the saved draft
-    // back rather than publishing the temporary composer's text over it.
+    // Leaving a temporary chat (Compare can mount just before it resets) restores the saved draft.
     if (incognitoBeforeRef.current !== incognito) {
       incognitoBeforeRef.current = incognito;
       if (!incognito) {

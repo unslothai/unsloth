@@ -3916,9 +3916,7 @@ const Composer: FC<{
   const canQueueAttachmentPrompt =
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
-  // One draft shared by every chat, mirrored to localStorage and restored
-  // whenever the chat on screen changes, so the last thing typed follows the user.
-  // A temporary chat promises nothing is saved: it neither reads nor writes it.
+  // The shared draft, restored on every chat switch; a temporary chat never reads or writes it.
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
   const draftKey = composerDraftKey();
@@ -4012,9 +4010,8 @@ const Composer: FC<{
       restoredPasteScopeRef.current = draftScope;
       return;
     }
-    // Only the saved pastes not already on screen: the composer can outlive a
-    // thread switch still holding them, and another attachment (an image a
-    // handoff adds) is no sign they were restored.
+    // Only the saved pastes not on screen: the composer can outlive a switch holding
+    // them, and another attachment (a handoff's image) is no sign they were restored.
     const shown = composer
       .getState()
       .attachments.flatMap((attachment) => {
