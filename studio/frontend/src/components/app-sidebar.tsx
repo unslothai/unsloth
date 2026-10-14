@@ -1082,11 +1082,7 @@ function AudioMoreSubmenu(props: MediaMoreSubmenuProps<AudioWorkflowId>) {
   );
 }
 
-/**
-* The collapsed rail hides the workflow rows under Images and Audio, so their rail icon opens
-* them as a flyout instead: hover previews it, ArrowRight opens it from the keyboard, and a
-* click on the icon still just opens the page.
-*/
+/** The collapsed rail hides the Images / Audio workflow rows, so the icon opens them as a flyout. */
 function MediaRailFlyout<Id extends string>({
   label,
   tabs,
@@ -6104,7 +6100,6 @@ export function AppSidebar() {
                       id === "images" && "group/images-item",
                       id === "audio" && "group/audio-item",
                     )}
-                    // The collapsed rail has no room for the workflow rows below.
                     flyout={
                       sidebarRowsLabelled ||
                       rowState.disabled ||
