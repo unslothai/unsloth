@@ -211,17 +211,21 @@ def _accessible_render_vendors(vendors) -> set:
 
     found = set()
     for node in glob.glob("/dev/dri/renderD*"):
+        accessible = os.access(node, os.R_OK | os.W_OK)
         try:
             with open(
                 f"/sys/class/drm/{os.path.basename(node)}/device/vendor", encoding = "utf-8"
             ) as f:
                 pci_vendor = f.read().strip().lower()
         except OSError:
+            # An openable node of unknown vendor could be the device sd.cpp picks first.
+            if accessible:
+                return set()
             continue
         vendor = _RENDER_NODE_VENDORS.get(pci_vendor)
         if vendor is None:
             return set()
-        if vendor in vendors and os.access(node, os.R_OK | os.W_OK):
+        if vendor in vendors and accessible:
             found.add(vendor)
     return found
 

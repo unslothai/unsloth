@@ -47138,6 +47138,9 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        if device == "cpu" and off_torch is None:
+            # Re-settled on the engine actually activated: a CPU diffusers fallback takes no GPU.
+            needs_gpu = activated == ENGINE_SD_CPP and vulkan_on_cpu_torch
         if activated == ENGINE_MLX or (activated == ENGINE_SD_CPP and vulkan_on_cpu_torch):
             needs_gpu = True
         if activated == ENGINE_SD_CPP and cpu_rung_on_gpu_torch:

@@ -1066,7 +1066,7 @@ def rocm_runtime_missing_sonames() -> Optional[list[str]]:
 
 
 ACCELERATOR_FALLBACK_CLEAR_HINT = (
-    "to retry the ROCm build after fixing that, clear the record with "
+    "to retry the failed GPU build after fixing that, clear the record with "
     "DELETE /api/settings/diffusion-accelerator-fallback (or restart with "
     "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK=0 to never fall back)"
 )

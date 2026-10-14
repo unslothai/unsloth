@@ -369,6 +369,13 @@ def test_only_a_render_node_of_the_listed_vendor_counts(monkeypatch, tmp_path):
     vendors["renderD130"] = "0x1af4"
     accessible.add("/dev/dri/renderD130")
     assert r._accessible_render_vendors({"amd"}) == set()
+    del vendors["renderD130"]
+    # A node whose vendor cannot be read: unknown, so it blocks only while openable.
+    nodes = [*vendors, "renderD999"]
+    monkeypatch.setattr(glob, "glob", lambda pattern: [f"/dev/dri/{n}" for n in nodes])
+    assert r._accessible_render_vendors({"amd"}) == {"amd"}
+    accessible.add("/dev/dri/renderD999")
+    assert r._accessible_render_vendors({"amd"}) == set()
 
 
 @pytest.mark.parametrize("var", ["VK_LOADER_DRIVERS_DISABLE", "VK_LOADER_DRIVERS_SELECT"])
