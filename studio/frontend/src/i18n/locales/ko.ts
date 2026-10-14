@@ -719,6 +719,7 @@ export const ko = {
       library: "라이브러리",
       train: "학습",
       recipes: "레시피",
+      routines: "루틴",
       images: "이미지",
       video: "동영상",
       audio: "오디오",

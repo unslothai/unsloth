@@ -722,6 +722,7 @@ export const es = {
       library: "Biblioteca",
       train: "Entrenar",
       recipes: "Recetas",
+      routines: "Rutinas",
       images: "Imágenes",
       video: "Vídeo",
       audio: "Audio",

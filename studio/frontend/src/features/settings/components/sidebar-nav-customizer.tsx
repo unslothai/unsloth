@@ -3,6 +3,7 @@
 
 import {
   ChefHatIcon,
+  Clock01Icon,
   DashboardCircleIcon,
   Download01Icon,
   DragDropVerticalIcon,
@@ -42,6 +43,7 @@ const ITEM_META: Record<
   video: { icon: FlimSlateIcon, labelKey: "shell.navigation.video" },
   audio: { icon: AiSpeechIcon, labelKey: "shell.navigation.audio" },
   recipes: { icon: ChefHatIcon, labelKey: "shell.navigation.recipes" },
+  routines: { icon: Clock01Icon, labelKey: "shell.navigation.routines" },
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
   api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
 };

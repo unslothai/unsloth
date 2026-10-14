@@ -721,6 +721,7 @@ export const ja = {
       library: "ライブラリ",
       train: "トレーニング",
       recipes: "レシピ",
+      routines: "ルーティン",
       images: "画像",
       video: "動画",
       audio: "音声",

@@ -4482,6 +4482,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "audio": False,
     "train": True,
     "recipes": False,
+    "routines": True,
     "export": False,
     "api": False,
 }
@@ -4524,6 +4525,7 @@ SidebarNavItemId = Literal[
     "audio",
     "train",
     "recipes",
+    "routines",
     "export",
     "api",
 ]
@@ -4621,9 +4623,18 @@ class PersonalizationCustomization(BaseModel):
     def _validate_sidebar_nav(
         cls, value: list[PersonalizationSidebarNavItem]
     ) -> list[PersonalizationSidebarNavItem]:
-        # Like sidebarMenu, but order is preserved: dedupe, then append missing.
+        # Like sidebarMenu, but order is preserved. Place a newly introduced
+        # Routines row beside Recipes in records saved before this feature.
         seen: set[str] = set()
         items = [item for item in value if not (item.id in seen or seen.add(item.id))]
+        if "routines" not in seen:
+            recipes = next((index for index, item in enumerate(items) if item.id == "recipes"), None)
+            if recipes is not None:
+                items.insert(
+                    recipes + 1,
+                    PersonalizationSidebarNavItem(id = "routines", pinned = True),
+                )
+                seen.add("routines")
         for item_id, pinned in SIDEBAR_NAV_ITEM_DEFAULTS.items():
             if item_id not in seen:
                 items.append(PersonalizationSidebarNavItem(id = item_id, pinned = pinned))

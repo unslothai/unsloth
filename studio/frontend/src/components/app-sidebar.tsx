@@ -101,6 +101,7 @@ import {
   Cancel01Icon,
   BadgeInfoIcon,
   ChefHatIcon,
+  Clock01Icon,
   CloudIcon,
   CpuIcon,
   CursorInfo02Icon,
@@ -3294,6 +3295,18 @@ export function AppSidebar() {
             module.preloadRecipes(),
           ),
         );
+      },
+    },
+    routines: {
+      icon: Clock01Icon,
+      label: t("shell.navigation.routines"),
+      active: pathname === "/routines",
+      onClick: () => {
+        navigateFromRow({ to: "/routines" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/routines" }));
       },
     },
     export: {

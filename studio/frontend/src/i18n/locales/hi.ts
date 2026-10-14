@@ -723,6 +723,7 @@ export const hi = {
       library: "लाइब्रेरी",
       train: "ट्रेनिंग",
       recipes: "रेसिपी",
+      routines: "नियमित कार्य",
       images: "इमेज",
       video: "वीडियो",
       audio: "ऑडियो",

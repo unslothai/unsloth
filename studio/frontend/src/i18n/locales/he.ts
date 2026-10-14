@@ -792,6 +792,7 @@ export const he = {
       hub: "מאגר המודלים",
       train: "אימון",
       recipes: "מתכונים",
+      routines: "משימות חוזרות",
       images: "תמונות",
       video: "וידאו",
       audio: "אודיו",

@@ -723,6 +723,7 @@ export const fr = {
       library: "Bibliothèque",
       train: "Entraîner",
       recipes: "Recettes",
+      routines: "Routines",
       images: "Images",
       video: "Vidéo",
       audio: "Audio",

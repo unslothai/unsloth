@@ -630,6 +630,7 @@ export const it = {
       library: "Libreria",
       train: "Addestra",
       recipes: "Ricette",
+      routines: "Routine",
       images: "Immagini",
       video: "Video",
       audio: "Audio",

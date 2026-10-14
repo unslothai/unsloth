@@ -198,6 +198,7 @@ FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("audio", False),
     ("train", True),
     ("recipes", False),
+    ("routines", True),
     ("export", False),
     ("api", False),
 ]
@@ -239,6 +240,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("audio", False),
         ("train", True),
         ("recipes", False),
+        ("routines", True),
         ("export", False),
         ("api", False),
     ]
