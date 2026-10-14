@@ -1019,7 +1019,7 @@ def test_latency_gate_op_body_honours_the_plan(monkeypatch):
 def test_latency_gate_alt_tile_launch_failure_falls_back_to_the_default(monkeypatch):
     default, alt = (128, 128, 64, 8, 4, 4), (64, 128, 128, 8, 4, 4)
     g8._DEVICE_CFG[None] = default
-    g8._DEVICE_PLAN[None] = {(2048, 1024, 1): alt}
+    g8._DEVICE_PLAN[None] = {(2048, 1024, 1): alt, (2048, 1024, 0): g8._CUBLAS}
     used = []
 
     def launch(a, w, xs, ws, bias, cfg):
@@ -1032,7 +1032,8 @@ def test_latency_gate_alt_tile_launch_failure_falls_back_to_the_default(monkeypa
     a = torch.zeros(4096, 1024, dtype = torch.int8)
     w = torch.zeros(2048, 1024, dtype = torch.int8)
     assert g8._run(a, w, torch.ones(4096), torch.ones(2048), None) == "fused"
-    assert used == [alt, default] and g8._DEVICE_PLAN[None] == {} and g8._DEVICE_CFG[None] == default
+    assert used == [alt, default] and g8._DEVICE_CFG[None] == default
+    assert g8._DEVICE_PLAN[None] == {(2048, 1024, 1): default, (2048, 1024, 0): g8._CUBLAS}
 
 
 def _fake_tune_env(monkeypatch, tmp_path, ms):

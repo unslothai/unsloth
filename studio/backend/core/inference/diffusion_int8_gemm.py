@@ -393,8 +393,11 @@ def _run(a: Any, w: Any, xs: Any, ws: Any, bias: Any) -> Any:
         try:
             return _launch(a, w, xs, ws, bias, cfg)
         except Exception:  # noqa: BLE001 - a failed launch keeps the stock math
-            if choice is not None and cfg != _DEVICE_CFG.get(index):
-                _DEVICE_PLAN[index] = {}  # drop the timed tiles, keep the probed default
+            default = _DEVICE_CFG.get(index)
+            if choice is not None and cfg != default:
+                # timed alternative tiles fall back to the probed default; cuBLAS decisions stand
+                plan = _DEVICE_PLAN.get(index, {})
+                _DEVICE_PLAN[index] = {s: (c if c == _CUBLAS else default) for s, c in plan.items()}
                 return _run(a, w, xs, ws, bias)
             if cfg != _DEVICE_CFG.get(index) and _DEVICE_TILES.get(index):
                 _DEVICE_TILES[index] = ()  # drop the shape tiles, keep the probed default
