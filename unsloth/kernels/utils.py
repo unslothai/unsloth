@@ -1456,7 +1456,7 @@ def _gemv_rows(X, W, quant_state, out):
     """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
     M = X.shape[0]
     # Checked first: rows above the cap must cost the dequantize path nothing extra.
-    if M > _gemv_rows_cap(X.device):
+    if not 2 <= M <= _gemv_rows_cap(X.device):
         return None
     eager = (
         not _is_compiling()
@@ -1481,6 +1481,8 @@ def _gemv_rows(X, W, quant_state, out):
                     and out.data_ptr() & 15 == 0
                     and out.stride(0) == plan[4]
                     and out.stride(-1) == 1
+                    and out.shape[0] == M
+                    and out.shape[-1] == plan[6]
                 )
             )
         ):
@@ -1497,7 +1499,13 @@ def _gemv_rows(X, W, quant_state, out):
     )
     if shape[1] % blocksize != 0 or X.dtype not in (torch.float16, torch.bfloat16):
         return None
-    if out is not None and (out.dtype != X.dtype or out.stride(-1) != 1):
+    if out is not None and (
+        out.dtype != X.dtype
+        or out.stride(-1) != 1
+        or out.shape[0] != M
+        or out.shape[-1] != shape[0]
+        or out.stride(0) < shape[0]
+    ):
         return None
     if not X.is_contiguous():
         X = X.contiguous()
@@ -1579,7 +1587,7 @@ def fast_linear_forward(
         # The 4bit gemv kernels are fp16/bf16 only.
         out = fast_gemv(X, W, W_quant, out = out)
     elif (
-        bsz <= _GEMV_MAX_ROWS
+        2 <= bsz <= _GEMV_MAX_ROWS
         and _USE_NF4_KERNELS
         and _TRITON_GEMV_EAGER
         and _quant_state_dtype(W_quant) != torch_float32

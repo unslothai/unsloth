@@ -256,6 +256,31 @@ def test_planned_rows_are_reused_without_an_out(monkeypatch):
     assert again.data_ptr() != first.data_ptr() and torch.equal(again, first)
 
 
+def test_rows_gemv_rejects_an_out_it_cannot_fill(monkeypatch):
+    utils = _utils_with_kernels()
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    proj = _linear4bit(1024, 4096)
+    W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
+    X = torch.randn(2, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    good = torch.empty(2, 1, 1024, dtype = torch.bfloat16, device = "cuda")
+    assert utils._gemv_rows(X, W, W_quant, good) is good  # plans for this stride
+    for bad in (
+        torch.empty(2, 1, 1023, dtype = torch.bfloat16, device = "cuda"),
+        torch.empty(1, 1, 1024, dtype = torch.bfloat16, device = "cuda"),
+        torch.empty(2048, dtype = torch.bfloat16, device = "cuda").as_strided((2, 1, 1024), (512, 512, 1)),
+    ):
+        assert utils._gemv_rows(X, W, W_quant, bad) is None
+
+
+def test_empty_decode_batch_keeps_the_matmul_path(monkeypatch):
+    utils = _utils_with_kernels()
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
+    proj = _linear4bit(1024, 4096)
+    monkeypatch.setattr(utils, "_gemv_rows", lambda *a: pytest.fail("rows GEMV for 0 rows"))
+    X = torch.randn(0, 1, 4096, dtype = torch.bfloat16, device = "cuda")
+    assert utils.fast_linear_forward(proj, X).shape == (0, 1, 1024)
+
+
 def test_larger_decode_batches_still_dequantize(monkeypatch):
     utils = _utils_with_kernels()
     proj = _linear4bit(1024, 4096)
