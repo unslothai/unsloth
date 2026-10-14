@@ -103,9 +103,7 @@ class TestEveryChatIsPermittedItsWholeWindow:
 class TestThePoolIsNeverFilledToTheLastCell:
     """Reserve room for template overhead and llama-server's next-token check."""
 
-    @pytest.fixture(autouse = True)
-    def _no_reclaimer(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
+    pytestmark = pytest.mark.usefixtures("share_pricing")
 
     def test_a_full_capacity_leaves_the_pool_room_to_step(self):
         for window, slots in ((16384, 4), (16384, 2), (16384, 8), (65536, 4), (4096, 4)):
@@ -190,9 +188,7 @@ class TestTheMarkupTheBuilderRewrites:
 
     _MARKER = "<|im_start|>"
 
-    @pytest.fixture(autouse = True)
-    def _no_reclaimer(self, monkeypatch):
-        monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
+    pytestmark = pytest.mark.usefixtures("share_pricing")
 
     def _bound(self, markers):
         backend = _backend(window = 16384, total = 16384, slots = 4)
@@ -227,6 +223,8 @@ class TestTheMarkupTheBuilderRewrites:
 
 class TestTheCatalogueCostsAPreambleToo:
     """Charge the once-per-catalogue template preamble as well as individual tool schemas."""
+
+    pytestmark = pytest.mark.usefixtures("share_pricing")
 
     _TOOLS = [
         {
@@ -370,6 +368,8 @@ class TestPricingNeverTouchesThePrompt:
 
 
 class TestWhatIsLeftAlone:
+    pytestmark = pytest.mark.usefixtures("share_pricing")
+
     def test_a_stated_cap_is_never_clamped(self):
         """It is already honest: charged and sent as the same number."""
         backend = _backend(window = 16384, total = 16384, slots = 4)
@@ -513,8 +513,21 @@ class TestWhenNothingWillReclaim:
         )
         assert enforced == 4096 - prompt - _RESERVE
 
-    def test_the_switch_off_brings_the_share_back_and_four_of_them_fit(self, monkeypatch):
+    def test_the_switch_off_leaves_the_wire_alone_and_charges_the_flat_allowance(
+        self, monkeypatch
+    ):
+        """Off is what Studio did before preemption: the caller's max_tokens on the wire and the
+        flat allowance on the ledger, which four of fit."""
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")
+        prompt = _prompt_tokens(_chat("hi"))
+        assert _enforced(_chat("hi"), self._backend()) is None
+        charged = _openai_llama_admission_tokens(
+            _chat("hi"), budget = 16384, capacity = 4, context_window = 16384
+        )
+        assert charged == prompt + _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS
+        assert 4 * charged <= 16384
+
+    def test_with_share_pricing_and_nothing_to_reclaim_four_shares_fit(self, share_pricing):
         prompt = _prompt_tokens(_chat("hi"))
         enforced = _enforced(_chat("hi"), self._backend())
         assert enforced == 4096 - prompt - _RESERVE
@@ -533,6 +546,7 @@ def _charged(cap, prompt, *, active):
         context_window = BUDGET,
         share = SHARE,
         preemption_active = active,
+        fair_share = True,
     )
 
 

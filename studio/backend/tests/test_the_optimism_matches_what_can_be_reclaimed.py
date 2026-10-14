@@ -250,7 +250,7 @@ class TestAdmissionReadsTheCacheAfresh:
         reservation = queue.reserve(
             capacity = 4, config = LlamaAdmissionConfig(), budget = 8192, tokens = 2048
         )
-        policy = inference_route._openai_llama_preemption_arm(
+        policy = await inference_route._openai_llama_preemption_arm_async(
             request = None,
             llama_backend = _backend(base_url = "http://arm-probe.test"),
             reservation = reservation,
@@ -265,7 +265,7 @@ class TestAdmissionReadsTheCacheAfresh:
         )
 
     def test_a_slow_probe_does_not_hold_the_loop(self):
-        """Arming runs inside async route bodies, so the read is bounded, not awaited."""
+        """On the loop the synchronous read only starts the probe; it never joins it there."""
         import asyncio
 
         controller = _controller("http://arm-slow.test")
@@ -281,8 +281,25 @@ class TestAdmissionReadsTheCacheAfresh:
             waited = asyncio.run(_drive())
         finally:
             released.set()
-        assert waited < inference_route._ARM_RESIDENCY_READ_S + 1.0
-        assert waited >= inference_route._ARM_RESIDENCY_READ_S
+        assert waited < inference_route._ARM_RESIDENCY_READ_S / 2
+
+    def test_the_awaited_read_is_bounded(self):
+        import asyncio
+
+        controller = _controller("http://arm-slow-async.test")
+        released = threading.Event()
+        controller.set_residency_probe(released.wait)
+
+        async def _drive():
+            started = asyncio.get_event_loop().time()
+            await inference_route._refresh_residency_before_planning_async(controller)
+            return asyncio.get_event_loop().time() - started
+
+        try:
+            waited = asyncio.run(_drive())
+        finally:
+            released.set()
+        assert inference_route._ARM_RESIDENCY_READ_S <= waited < inference_route._ARM_RESIDENCY_READ_S + 1.0
 
     def test_off_the_loop_it_simply_reads(self):
         controller = _controller("http://arm-sync.test")

@@ -55,6 +55,9 @@ from routes.inference import (
     anthropic_messages,
 )
 
+# The cap exists only with preemption on; without it the wire carries the caller's max_tokens.
+pytestmark = pytest.mark.usefixtures("share_pricing")
+
 _CTX = 4096
 _SHARE = _CTX // 4
 
