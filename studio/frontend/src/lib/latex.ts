@@ -88,6 +88,7 @@ const SHELL_ARGUMENT_RE =
   /^(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
 const MARKDOWN_CONTAINER_PREFIX_RE =
   /^(?:(?: {0,3}>[ \t]?)|(?: {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+))+/;
+const MARKDOWN_TABLE_PREFIX_RE = /^[ \t]*\|/;
 const SHELL_ASSIGNMENT_PREFIX_RE = /(?:^|[;&|]\s*)[A-Za-z_]\w*=$/;
 const SHELL_OPERATOR_PREFIX_RE = /\S\s*[;&|]{1,2}$/;
 const SHELL_QUOTE_BLOCK_START_RE =
@@ -129,14 +130,13 @@ function hasShellCommandPrefix(
   }
   const completeLinePrefix =
     lineStart === 0 || text.charCodeAt(lineStart - 1) === 10;
-  const prefix = text
-    .slice(lineStart, at)
-    .trimEnd()
-    .replace(MARKDOWN_CONTAINER_PREFIX_RE, "");
+  const rawPrefix = text.slice(lineStart, at).trimEnd();
+  const prefix = rawPrefix.replace(MARKDOWN_CONTAINER_PREFIX_RE, "");
   if (!prefix) return false;
   if (
     SHELL_ASSIGNMENT_PREFIX_RE.test(prefix) ||
-    SHELL_OPERATOR_PREFIX_RE.test(prefix)
+    (!MARKDOWN_TABLE_PREFIX_RE.test(rawPrefix) &&
+      SHELL_OPERATOR_PREFIX_RE.test(prefix))
   ) {
     return true;
   }

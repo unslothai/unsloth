@@ -65,6 +65,7 @@ test("numbers written as inline maths render as maths", () => {
     ["There are $3$__red__ balls.", ["3"]],
     ["| value |\n| --- |\n| $42$! |", ["42"]],
     ["| value |\n| --- |\n| $10$-fold |", ["10"]],
+    ["| case | value |\n| --- | --- |\n| answer | $42$! |", ["42"]],
     ["answer = $42$!", ["42"]],
     ['- consider "Is it $3$?"', ["3"]],
     ["The answer is $42$[source](https://example.com).", ["42"]],
