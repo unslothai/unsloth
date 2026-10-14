@@ -544,6 +544,16 @@ class ClusterServing:
         devices, error = (
             await asyncio.to_thread(list_devices, binary, endpoints) if endpoints else ([], "")
         )
+        while endpoints and error and not any(d.remote for d in devices):
+            # One worker that answers TCP but fails the handshake aborts the whole listing.
+            bad = next((e for e in endpoints if e in error), None)
+            if bad is None:
+                break
+            endpoints.remove(bad)
+            down.append(bad)
+            devices, error = (
+                await asyncio.to_thread(list_devices, binary, endpoints) if endpoints else ([], "")
+            )
         if self._cancelled():
             self.topology, self.reason = "single", "the load was cancelled"
             return request
@@ -646,16 +656,14 @@ class ClusterServing:
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)
             )
         ctx, cache_type, cache_type_v = ss.effective_kv_settings(request, extras)
-        kv = 0.0
+        kv = None
         if local_file and ctx:
-            kv = float(
-                await asyncio.to_thread(
-                    ss.estimate_kv_bytes, local_file, ctx, cache_type, cache_type_v
-                )
-                or 0.0
+            kv = await asyncio.to_thread(
+                ss.estimate_kv_bytes, local_file, ctx, cache_type, cache_type_v
             )
-        elif ctx and size:
-            kv = KV_UNKNOWN_FRACTION * float(size)
+        if kv is None:
+            kv = KV_UNKNOWN_FRACTION * float(size) if ctx and size else 0.0
+        kv = float(kv)
         return (None if size is None else float(size)), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:
@@ -695,9 +703,13 @@ class ClusterServing:
             self._passthrough = False
             return
         self._cancel_event = None
-        if self._pre_load is not None:
-            self.topology, self.reason, self.plan, self.block = self._pre_load
-            self._pre_load = None
+        pre, self._pre_load = self._pre_load, None
+        if self._backend is not None and getattr(self._backend, "is_loaded", False):
+            if pre is not None:
+                self.topology, self.reason, self.plan, self.block = pre
+        else:
+            # The failed load got as far as tearing the old one down.
+            self.forget_served()
 
     def forget_served(self) -> None:
         """A load that bypassed planning replaced the served split; its workers can stay."""

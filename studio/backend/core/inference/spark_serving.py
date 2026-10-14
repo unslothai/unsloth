@@ -3464,21 +3464,23 @@ async def before_load(
         or str(getattr(request, "engine", "auto") or "auto") != "auto"
     )
     if _cluster_active():
-        if (
-            replacing
-            and _STATE is not None
-            and (_STATE.peer_process is not None or _STATE.router is not None)
-        ):
-            # A two-Spark split or replica set from before the cluster was configured.
-            if confirm_teardown is not None:
-                confirm_teardown()
-            await _STATE.detach()
-        return await cluster_serving.state().before_load(
+        out = await cluster_serving.state().before_load(
             request,
             n_parallel,
             inherited_extra_args = inherited_extra_args,
             cancel_event = cancel_event,
         )
+        if (
+            replacing
+            and _STATE is not None
+            and (_STATE.peer_process is not None or _STATE.router is not None)
+        ):
+            # A two-Spark split or replica set from before the cluster was configured; only once
+            # the cluster has a plan, so a refused one leaves it serving.
+            if confirm_teardown is not None:
+                confirm_teardown()
+            await _STATE.detach()
+        return out
     if cluster_serving._STATE is not None and (
         cluster_serving._STATE.workers or cluster_serving._STATE._backend is not None
     ):

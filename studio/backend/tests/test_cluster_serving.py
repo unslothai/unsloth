@@ -332,11 +332,16 @@ def test_a_bad_cluster_config_serves_here_and_says_why(monkeypatch, tmp_path):
 
 def test_a_failed_load_puts_the_previous_topology_back(monkeypatch):
     _cluster_env(monkeypatch)
-    run(ss.before_load(_request(), 4))
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
     _cluster_env(monkeypatch, model_bytes = 10 * GIB)
     run(ss.before_load(_request(), 4))
     assert ss.status()["topology"] == "single"
-    run(ss.load_failed())
+    run(ss.load_failed())  # the split it would have replaced is still loaded
     assert ss.status()["topology"] == "layer_split"
 
 
@@ -750,3 +755,62 @@ def test_a_load_that_bypassed_the_planner_clears_the_served_split(monkeypatch):
     run(ss.reconcile_internal_load())
     state = cs.state()
     assert state.topology == "single" and state.block == [] and state._resident == {}
+
+
+def test_a_refused_cluster_plan_leaves_the_two_spark_split_serving(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 900 * GIB)
+    detached = []
+    legacy = ss.state()
+    legacy.peer_process = object()
+
+    async def fake_detach():
+        detached.append(1)
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 4))
+    assert detached == []
+
+
+def test_a_failed_replacement_forgets_a_split_it_already_tore_down(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    run(ss.before_load(_request(model_path = "/models/other.gguf"), 4))
+    backend.is_loaded = False  # the replacement unloaded it, then failed to start
+    run(ss.load_failed())
+    assert ss.status()["topology"] == "single" and ss.status()["split_args"] is None
+
+
+def test_a_worker_that_breaks_the_combined_listing_is_dropped_and_listed_again(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    calls = []
+
+    def fake_list(binary, endpoints):
+        calls.append(list(endpoints))
+        if "10.0.0.3:50052" in endpoints:
+            return [], "Failed to connect to 10.0.0.3:50052"
+        return [
+            d
+            for d in cs.parse_device_list(LISTING, endpoints)
+            if not d.remote or d.endpoint in endpoints
+        ], ""
+
+    monkeypatch.setattr(cs, "list_devices", fake_list)
+    out = run(ss.before_load(_request(), 4))
+    assert len(calls) == 2 and "10.0.0.3:50052" not in calls[1]
+    assert (
+        out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
+        == "10.0.0.2:50052,10.0.0.4:50052"
+    )
+
+
+def test_a_header_kv_estimate_that_fails_reserves_the_fallback(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: None)
+    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    assert ss.status()["topology"] == "layer_split"
