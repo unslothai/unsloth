@@ -1657,6 +1657,8 @@ class TestFitterKeepsTheWiredHeadroom:
         mlx.core = core
         monkeypatch.setitem(sys.modules, "mlx", mlx)
         monkeypatch.setitem(sys.modules, "mlx.core", core)
+        # The working-set reader falls back to torch.mps; keep the host's torch out of it.
+        monkeypatch.setitem(sys.modules, "torch", None)
 
     @pytest.mark.parametrize(
         "seen_gib,headroom_gib,expected_mib",

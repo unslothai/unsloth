@@ -11012,18 +11012,38 @@ class LlamaCppBackend:
 
     @staticmethod
     def _apple_metal_memory_budget_bytes() -> int:
-        """Smaller of the Metal ceiling and currently free RAM, times a fraction; 0 off Apple Silicon."""
+        """Unified-memory budget for GGUF context fitting on Apple Silicon.
+
+        No GPU is enumerated on Metal, so the context would default to native and
+        over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
+        fraction of the Metal working set, else total RAM; 0 off Apple Silicon or
+        when unresolvable, so callers skip the cap.
+
+        Both of those inputs describe the MACHINE, not the moment. MLX's
+        max_recommended_working_set_size is a static device property, and
+        virtual_memory().total obviously is, so on a 16 GB Mac the budget came
+        out around 9 GB whether the machine was idle or already holding several
+        gigabytes. Unsloth's own idle footprint alone is over a gigabyte once the
+        warm thread has imported torch and, on Apple Silicon, MLX. The fit then
+        sized a context against headroom that was not there, and llama-server
+        died in KV or compute allocation.
+
+        So take whichever is smaller: the device ceiling, or what is actually
+        available right now. The ceiling still applies on a machine with plenty
+        free, which is the case the working-set number was chosen for.
+
+        _APPLE_UNIFIED_MEMORY_FRACTION then earns a second job it did not have
+        over a static ceiling: available is a snapshot, and llama-server spends
+        seconds loading weights, so another app can take memory inside that
+        window. Budgeting all of it would re-create the failure this avoids.
+        """
         from utils.hardware import is_apple_silicon
 
         if not is_apple_silicon():
             return 0
-        rec_bytes = 0
-        try:
-            import mlx.core as mx
-            if mx.metal.is_available():
-                rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
-        except Exception:
-            rec_bytes = 0
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+
+        rec_bytes = _metal_recommended_working_set_bytes()
         vm = None
         try:
             import psutil
@@ -11199,15 +11219,8 @@ class LlamaCppBackend:
             return 0
         # 0 means the kernel default, Metal's recommended working set.
         if cap_bytes <= 0:
-            try:
-                import mlx.core as mx
-                from utils.hardware.hardware import _mlx_device_info
-                if mx.metal.is_available():
-                    cap_bytes = int(
-                        _mlx_device_info(mx).get("max_recommended_working_set_size") or 0
-                    )
-            except Exception:
-                cap_bytes = 0
+            from utils.hardware.hardware import _metal_recommended_working_set_bytes
+            cap_bytes = _metal_recommended_working_set_bytes()
         if cap_bytes <= 0:
             return 0
         from utils.hardware.hardware import _read_apple_gpu_stats
@@ -11230,14 +11243,10 @@ class LlamaCppBackend:
         headroom = LlamaCppBackend._apple_metal_wired_ceiling_bytes()
         if headroom <= 0:
             return 0.0
-        try:
-            import mlx.core as mx
-            from utils.hardware.hardware import _mlx_device_info
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
 
-            if not mx.metal.is_available():
-                return 0.0
-            seen = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
-        except Exception:
+        seen = _metal_recommended_working_set_bytes()
+        if seen <= 0:
             return 0.0
         return max(0.0, (seen - headroom) / (1024 * 1024))
 

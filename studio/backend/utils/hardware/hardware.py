@@ -2033,6 +2033,25 @@ def _mlx_device_info(mx: Any) -> Dict[str, Any]:
     return {}
 
 
+def _metal_recommended_working_set_bytes() -> int:
+    """Metal's recommendedMaxWorkingSetSize, or 0. MLX first; torch.mps (2.5+) covers macOS 13, which has no MLX wheel."""
+    try:
+        import mlx.core as mx
+        if mx.metal.is_available():
+            rec = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
+            if rec > 0:
+                return rec
+    except Exception:
+        pass
+    try:
+        import torch
+        if torch.backends.mps.is_available():
+            return max(0, int(torch.mps.recommended_max_memory()))
+    except Exception:
+        pass
+    return 0
+
+
 def _apple_unified_free_bytes(available_bytes: int, device_info: Any) -> int:
     """What is available right now, bounded by the Metal working set. Total RAM minus GPU-only usage counts host RAM as free, which the training-method policy reads as room it does not have. The cap is not reduced by the AGX "In use system memory" counter, which is whole-device and only the active subset, while the working set is the per-process budget torch.mps applies. A floor rather than a capacity: macOS reclaims compressed and file-backed pages, and reading low costs a QLoRA suggestion where reading high costs an OOM mid-run."""
     free = max(0, int(available_bytes or 0))

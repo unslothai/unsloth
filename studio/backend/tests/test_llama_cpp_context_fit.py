@@ -619,8 +619,24 @@ def test_select_gpus_reserves_per_device_overhead():
 
 def _force_apple(monkeypatch):
     import platform as _platform
+
     monkeypatch.setattr(_platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_platform, "machine", lambda: "arm64")
+    # The working-set reader falls back to torch.mps; keep the host's torch out of it.
+    monkeypatch.setitem(sys.modules, "torch", None)
+
+
+def _install_fake_torch_mps(
+    monkeypatch,
+    working_set_bytes,
+    available = True,
+):
+    fake = _types.ModuleType("torch")
+    fake.backends = _types.SimpleNamespace(
+        mps = _types.SimpleNamespace(is_available = lambda: available)
+    )
+    fake.mps = _types.SimpleNamespace(recommended_max_memory = lambda: working_set_bytes)
+    monkeypatch.setitem(sys.modules, "torch", fake)
 
 
 def _install_fake_mlx(monkeypatch, working_set_bytes):
@@ -674,6 +690,34 @@ class TestAppleUnifiedMemoryBudget:
         _install_fake_psutil(monkeypatch, total = 36 * GIB, available = 36 * GIB)
         assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
             36 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_without_mlx_torch_mps_supplies_the_working_set(self, monkeypatch):
+        """macOS 13 has no MLX wheel; budgeting from total RAM exceeds what ggml-metal can use."""
+        _force_apple(monkeypatch)
+        monkeypatch.setitem(sys.modules, "mlx", None)
+        _install_fake_torch_mps(monkeypatch, 10 * GIB)
+        _install_fake_psutil(monkeypatch, total = 16 * GIB, available = 14 * GIB)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            10 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_mlx_wins_over_torch_mps(self, monkeypatch):
+        _force_apple(monkeypatch)
+        _install_fake_mlx(monkeypatch, 10 * GIB)
+        _install_fake_torch_mps(monkeypatch, 12 * GIB)
+        _install_fake_psutil(monkeypatch, total = 16 * GIB, available = 14 * GIB)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            10 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
+        )
+
+    def test_torch_without_mps_keeps_total_ram(self, monkeypatch):
+        _force_apple(monkeypatch)
+        monkeypatch.setitem(sys.modules, "mlx", None)
+        _install_fake_torch_mps(monkeypatch, 10 * GIB, available = False)
+        _install_fake_psutil(monkeypatch, total = 16 * GIB, available = 16 * GIB)
+        assert LlamaCppBackend._apple_metal_memory_budget_bytes() == int(
+            16 * GIB * _APPLE_UNIFIED_MEMORY_FRACTION
         )
 
     def test_a_busy_machine_budgets_from_what_is_free(self, monkeypatch):
@@ -780,6 +824,12 @@ class TestAppleWiredCeiling:
     def test_no_readable_limit_is_unresolved(self, monkeypatch):
         _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 0, in_use = 2 * GIB)
         assert _REAL_WIRED_CEILING() == 0
+
+    def test_without_mlx_the_default_limit_comes_from_torch_mps(self, monkeypatch):
+        _install_wired_probes(monkeypatch, sysctl_mb = 0, working_set = 0, in_use = 2 * GIB)
+        monkeypatch.setitem(sys.modules, "mlx", None)
+        _install_fake_torch_mps(monkeypatch, 48 * GIB)
+        assert _REAL_WIRED_CEILING() == int(46 * GIB * _APPLE_WIRED_CEILING_FRACTION)
 
     @pytest.mark.parametrize(
         "counter,expected",
