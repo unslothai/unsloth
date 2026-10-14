@@ -8,9 +8,8 @@ wrappers (fp16 non-finite rerun, compiled decode guard, untiled-when-fits) and o
 an untiled decode is retried tiled (ComfyUI's one retry); a tiled decode is retried with the spatial tile geometry
 the VAE exposes halved (``tile_sample_min_*`` / ``tile_latent_min_*`` / ``tile_sample_stride_*`` /
 ``tile_sample_min_overlap_*``, ``tile_overlap_factor`` kept), every size kept a whole number of latents and the
-overlap fraction kept, so the stock blended seams stay; down to a 4-latent floor. A halving whose failed attempt
-peaked no lower than the previous one stops the ladder (that decode's memory is not in its tiles, e.g. a causal video
-decoder's output buffer), and a halved decode whose output size differs from the latent's is discarded. The tile
+overlap fraction kept, so the stock blended seams stay; down to an 8-latent floor (a few retries at most). A halved
+decode whose output size differs from the latent's is discarded. The tile
 attributes are restored after the call; the level that worked is remembered per latent shape. Kill switch
 ``UNSLOTH_VAE_OOM_RETRY=0``.
 """
@@ -26,8 +25,6 @@ OOM_RETRY_ENV = "UNSLOTH_VAE_OOM_RETRY"
 # the untiled decode, 8-latent LTX-2 (32x) tiles 0.019. A render that cannot fit 8-latent tiles fails as before.
 MIN_TILE_LATENTS = 8
 MAX_HALVINGS = 6
-# A halving must lower the failing attempt's peak below this fraction of the previous one to be worth another try.
-_PEAK_PROGRESS = 0.9
 
 _AXES = ("size", "height", "width")
 
@@ -153,27 +150,6 @@ def _release_cache(z: Any, vae: Any = None) -> None:
         pass
 
 
-def _reset_peak(z: Any) -> None:
-    try:
-        import torch
-
-        if z.device.type == "cuda":
-            torch.cuda.reset_peak_memory_stats(z.device)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _peak(z: Any) -> Optional[int]:
-    try:
-        import torch
-
-        if z.device.type == "cuda":
-            return int(torch.cuda.max_memory_allocated(z.device))
-    except Exception:  # noqa: BLE001
-        pass
-    return None
-
-
 def _compiling() -> bool:
     try:
         import torch
@@ -210,7 +186,7 @@ def install(vae: Any, logger: Any = None) -> bool:
     ratio = _spatial_ratio(vae)
     factor = vae.__dict__.get("tile_overlap_factor")
     factor = float(factor) if isinstance(factor, (int, float)) and not isinstance(factor, bool) else None
-    stats = {"calls": 0, "oom": 0, "tiled_retry": 0, "halvings": 0, "recovered": 0, "failed": 0, "stopped": 0}
+    stats = {"calls": 0, "oom": 0, "tiled_retry": 0, "halvings": 0, "recovered": 0, "failed": 0, }
     memo: dict = {}
     depth = [0]
 
@@ -256,21 +232,18 @@ def install(vae: Any, logger: Any = None) -> bool:
         start = memo.get(_key(z), 0) if tiled_now else 0
         if start == 0:
             # The fast path: no wrapper state changes, exactly the stock call.
-            _reset_peak(z)
             try:
                 return inner(z, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001
                 if not is_oom(exc) or (not tiled_now and _outer_gate_owns_untiled(vae)):
                     raise
                 stats["oom"] += 1
-            last_peak = _peak(z)
             # Untiled failed: the stock tiles first (level 0, tiling on). Tiled failed: halve.
             levels = [0] if not tiled_now else []
             levels += list(range(1, MAX_HALVINGS + 1))
             if not tiled_now:
                 stats["tiled_retry"] += 1
         else:
-            last_peak = None
             levels = list(range(start, MAX_HALVINGS + 1)) + [0]
         error = "VAE decode ran out of memory at every tile size; free GPU memory or lower the resolution"
         for level in levels:
@@ -285,7 +258,6 @@ def install(vae: Any, logger: Any = None) -> bool:
                     type(vae).__name__,
                     "tiled" if level == 0 else f"with tiles halved {level}x",
                 )
-            _reset_peak(z)
             failed = False
             try:
                 out = _attempt(level, z, args, kwargs)
@@ -305,16 +277,6 @@ def install(vae: Any, logger: Any = None) -> bool:
                 del out  # this VAE's stock tiling does not cover the latent at that size
                 continue
             stats["oom"] += 1
-            peak = _peak(z)
-            if level and last_peak is not None and peak is not None and peak >= _PEAK_PROGRESS * last_peak:
-                # Smaller tiles did not lower the peak: the memory is not in the tiles.
-                stats["stopped"] += 1
-                error = (
-                    "VAE decode ran out of memory and smaller tiles do not lower its peak; free GPU memory "
-                    "or lower the resolution / frame count"
-                )
-                break
-            last_peak = peak
         stats["failed"] += 1
         _release_cache(z, vae)
         raise RuntimeError(error)
