@@ -327,7 +327,9 @@ def _transformers_constraint_args() -> tuple[list[str], str | None]:
         try:
             pins.append(f"{name}=={_dist_version(name)}\n")
         except Exception:
-            continue
+            # Absent or unreadable datasets would otherwise be installed fresh at its newest (5.x).
+            if name == "datasets":
+                pins.append("datasets<5.0.0\n")
     if not pins:
         return [], None
     fd, path = tempfile.mkstemp(prefix = "mlx_repair_", suffix = ".txt")

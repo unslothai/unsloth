@@ -148,6 +148,26 @@ def test_constraint_pins_installed_transformers(monkeypatch):
             Path(path).unlink(missing_ok = True)
 
 
+def test_constraint_caps_datasets_when_its_metadata_is_missing(monkeypatch):
+    import importlib.metadata as md
+
+    real_version = md.version
+
+    def _version(name):
+        if name == "datasets":
+            raise md.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(md, "version", _version)
+    args, path = mr._transformers_constraint_args()
+    try:
+        assert path is not None
+        assert "datasets<5.0.0" in Path(path).read_text().splitlines()
+    finally:
+        if path:
+            Path(path).unlink(missing_ok = True)
+
+
 def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     pytest.importorskip("transformers")
     captured = {}
