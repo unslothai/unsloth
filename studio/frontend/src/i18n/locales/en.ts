@@ -607,22 +607,19 @@ export const en = {
   // /rewind and the prompt More menu's Rewind item.
   rewind: {
     title: "Rewind",
+    confirmTitle: "Rewind to this message?",
+    restoreLabel: "Restore",
     pickDescription: "Choose a message to rewind to.",
     pickEmpty: "There are no messages to rewind to yet.",
     attachmentOnly: "Attachments only",
-    chooseDescription:
-      "The message opens for editing so you can resend it. The current replies stay available with the branch arrows.",
     modeBoth: "Conversation and files",
     modeConversation: "Conversation only",
     modeFiles: "Files only",
-    checking: "Checking file changes…",
     checkFailed: "Could not check file changes: {error}",
-    noFileChanges: "No file changes after this message",
     summary: "Files to restore: {restore}. To remove: {remove}. To recreate: {recreate}.",
     conflicts: "Changed since, will be skipped",
     untracked: "Cannot be restored",
-    scopeNote:
-      "Running programs, installed packages and anything outside this chat's folder are not changed.",
+    scopeNote: "Files include code. Programs, packages and files outside this chat's folder are not changed.",
     back: "Back",
     cancel: "Cancel",
     confirm: "Rewind",

@@ -46,13 +46,15 @@ test("an assistant id or a message off the branch yields no turns", () => {
 
 test("the picker lists prompts newest first on one line", () => {
   assert.deepEqual(rewindPickerEntries(branch), [
-    { id: "u3", preview: "" },
-    { id: "u2", preview: "second line" },
-    { id: "u1", preview: "first" },
+    { id: "u3", text: "", preview: "" },
+    { id: "u2", text: "second line", preview: "second line" },
+    { id: "u1", text: "first", preview: "first" },
   ]);
   const long = rewindPickerEntries([{ id: "u", role: "user", content: "x".repeat(200) }]);
   assert.ok(long[0].preview.length <= 80);
   assert.ok(long[0].preview.endsWith("…"));
+  // The confirm dialog quotes the whole prompt and clamps it by lines instead.
+  assert.equal(long[0].text, "x".repeat(200));
 });
 
 test("files are offered by default only when the turns changed files", () => {
@@ -97,4 +99,14 @@ test("the composer opens the rewind picker instead of sending /rewind", () => {
   assert.ok(intercept < submit.indexOf("if (disabled || shouldBlockSend())"));
   assert.ok(intercept < submit.indexOf("interceptSend(event)"));
   assert.match(thread, /<RewindMessageButton \/>\s*<ForkCountBadge \/>\s*<ForkMessageButton \/>/);
+});
+
+test("the dialog lists only options that can run and skips itself for a conversation-only rewind", () => {
+  const dialog = readSrc("components/assistant-ui/rewind-dialog.tsx");
+  // No disabled radio rows: the dialog renders only when files changed, so every option can run.
+  assert.ok(!dialog.includes("RadioGroupItem"));
+  assert.match(dialog, /if \(!hasChanges \|\| result === null\) return null;/);
+  assert.match(dialog, /void rewind\("conversation"\);/);
+  assert.match(dialog, /t\("rewind\.confirmTitle"\)/);
+  assert.match(dialog, /<SelectTrigger id="rewind-restore"/);
 });
