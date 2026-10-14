@@ -1975,16 +1975,19 @@ def _start_peak_probe(state: Any) -> Any:
     try:
         from .diffusion_measured_peaks import PeakProbe, enabled
 
-        if _live_peak_label(state) != str(identity[1]):
-            # this render runs a state the key does not name (a VAE saver the guard engaged for it, another
-            # attention backend): its peak belongs to no key
+        if _live_peak_identity(state) != tuple(identity):
+            # this render runs a configuration the key does not name (a speed tier or step cache that toggled, a VAE
+            # saver the guard engaged for it, another attention backend): its peak belongs to no key
             return None
         if not enabled():
             return None
+        window_pad = stream_window_pad_mib(pipe)
+        if window_pad is None:
+            return None  # the streamed baseline is unknown: the peak cannot be put on the common scale
         probe = PeakProbe(getattr(state, "device", None))
         if probe.device is None:
             return None
-        probe.window_pad = stream_window_pad_mib(pipe)
+        probe.window_pad = window_pad
         probe.failed_captures = cuda_graph.failed_capture_count()
         probe.conditioning_hits = _conditioning_cache_hits(pipe)
         return probe
@@ -1992,13 +1995,35 @@ def _start_peak_probe(state: Any) -> Any:
         return None
 
 
-def _live_peak_label(state: Any) -> str:
-    """The load's learned-peak label with the parts that can change after the load (VAE savers, attention backend)
-    read from the live pipeline."""
+def _live_peak_identity(state: Any) -> tuple:
+    """The load's learned-peak identity (the canonical configuration captured at load) with every part that can change
+    after the load read from the live state: speed tier, step cache, VAE savers, attention backend. A render records
+    only when this equals the identity."""
     pipe = getattr(state, "pipe", None)
-    label = str(getattr(pipe, "_unsloth_peak_identity", ("", ""))[1])
+    family, label, _ = tuple(getattr(pipe, "_unsloth_peak_identity", ("", "", None)))[:3]
+    label = with_label_part(str(label), "cache", str(getattr(state, "transformer_cache", None) or "off"))
     label = with_label_part(label, "vae", live_vae_saver_tag(pipe))
-    return with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
+    label = with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
+    return (family, label, getattr(state, "speed_mode", None))
+
+
+def _local_weights_digest(path: Any) -> Optional[str]:
+    """Size and mtime of every weight file under a local pipeline folder (``checkpoint_fingerprint`` reads only its
+    manifests); None for a repo id or an unreadable folder."""
+    try:
+        import hashlib
+
+        root = Path(str(path)).expanduser()
+        if not root.is_dir():
+            return None
+        digest = hashlib.sha256()
+        for f in sorted(root.rglob("*")):
+            if f.is_file() and f.suffix in (".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"):
+                st = f.stat()
+                digest.update(f"{f.relative_to(root)}:{st.st_size}:{st.st_mtime_ns}\0".encode())
+        return digest.hexdigest()[:16]
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _peak_model_identity(
@@ -2013,11 +2038,21 @@ def _peak_model_identity(
     revision = checkpoint_fingerprint(repo_id, gguf_filename)
     if not revision:
         return "unknown"
+    if str(revision).startswith("local:"):
+        weights = _local_weights_digest(repo_id)
+        if not weights:
+            return "unknown"
+        revision = f"{revision}:{weights}"
     identity = f"{source}@{revision}"
     if (kind or "pipeline") != "pipeline" and base and str(base) != str(repo_id):
         base_revision = checkpoint_fingerprint(base)
         if not base_revision:
             return "unknown"
+        if str(base_revision).startswith("local:"):
+            weights = _local_weights_digest(base)
+            if not weights:
+                return "unknown"
+            base_revision = f"{base_revision}:{weights}"
         identity += f"+{base}@{base_revision}"
     return identity
 
@@ -8292,12 +8327,19 @@ class DiffusionBackend:
                         pass
                     peak_vae = planned_vae_saver_tag(pipe, plan)
                     peak_te = str(te_quant or "dense")
+                    # an auto step cache toggles per request: only uncached renders (the full transformer) record
+                    peak_cache = "off" if cache_may_toggle else str(cache_engaged or "off")
                     try:
                         # the learned-peak key: recorded at every completed render, read by later loads
                         pipe._unsloth_peak_identity = (
                             fam.name,
                             learned_peak_label(
-                                pipe, attention_engaged or "native", peak_model, peak_vae, peak_te
+                                pipe,
+                                attention_engaged or "native",
+                                peak_model,
+                                peak_vae,
+                                peak_te,
+                                peak_cache,
                             ),
                             effective_speed,
                         )
@@ -8315,6 +8357,7 @@ class DiffusionBackend:
                             model = peak_model,
                             vae = peak_vae,
                             te = peak_te,
+                            cache = peak_cache,
                         )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
@@ -10469,10 +10512,11 @@ class DiffusionBackend:
         if isinstance(identity, tuple) and len(identity) == 3:
             # later renders record under the backend that now runs
             try:
+                # the profile engages the default tier too (state.speed_mode below)
                 state.pipe._unsloth_peak_identity = (
                     identity[0],
                     with_label_part(identity[1], "attn", attention_engaged or "native"),
-                    identity[2],
+                    SPEED_DEFAULT,
                 )
             except Exception:  # noqa: BLE001 - recording is optional
                 pass

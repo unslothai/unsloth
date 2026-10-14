@@ -2338,13 +2338,20 @@ def learned_peak_label(
     model: Optional[str] = None,
     vae: Optional[str] = None,
     te: Optional[str] = None,
+    cache: Optional[str] = None,
 ) -> str:
     """``denoiser_quant_label`` plus the loaded model (variants of one family differ in size), the text encoders'
     precision (a dense streamed encoder peaks above a quantised one), the VAE savers (an untiled decode peaks far
     above a tiled one) and the engaged attention backend (backends with different workspaces): none shares a learned
     peak. The VAE savers and the backend can change after the load; ``with_label_part`` rewrites them."""
     label = denoiser_quant_label(pipe)
-    for name, value in (("model", model), ("te", te), ("vae", vae), ("attn", attention)):
+    for name, value in (
+        ("model", model),
+        ("te", te),
+        ("cache", cache),
+        ("vae", vae),
+        ("attn", attention),
+    ):
         if value is not None:
             label = f"{label}|{name}:{value}"
     return label
@@ -2396,9 +2403,10 @@ def live_vae_saver_tag(pipe: Any) -> str:
     return vae_saver_tag(getattr(vae, "use_tiling", False), getattr(vae, "use_slicing", False))
 
 
-def stream_window_pad_mib(pipe: Any) -> int:
+def stream_window_pad_mib(pipe: Any) -> Optional[int]:
     """MiB a learned peak measured with no denoiser group streaming adds to reach the streamed baseline (the prefetch
-    window a streamed placement holds above its start allocation), so every placement reads one conservative scale."""
+    window a streamed placement holds above its start allocation), so every placement reads one conservative scale.
+    None when that window cannot be sized (the peak is then not recorded)."""
     for name, module in (getattr(pipe, "components", {}) or {}).items():
         if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
             continue
@@ -2407,7 +2415,8 @@ def stream_window_pad_mib(pipe: Any) -> int:
                 return 0
         except Exception:  # noqa: BLE001
             continue
-    return max(0, _stream_window_mib(pipe))
+    window = _stream_window_mib(pipe)
+    return None if window < 0 else window
 
 
 def vae_saver_tag(tiling: Any, slicing: Any) -> str:
@@ -2579,6 +2588,7 @@ def refine_plan_from_loaded_weights(
     model: Optional[str] = None,
     vae: Optional[str] = None,
     te: Optional[str] = None,
+    cache: Optional[str] = None,
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
@@ -2611,7 +2621,7 @@ def refine_plan_from_loaded_weights(
         if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
             # measured on fp16 / fp32 cards only; bf16 cards can compile later
             return plan
-        quant = learned_peak_label(pipe, attention, model, vae, te)
+        quant = learned_peak_label(pipe, attention, model, vae, te, cache)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
         except Exception:  # noqa: BLE001 - a pipe refusing attributes only skips recording

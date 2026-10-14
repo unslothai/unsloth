@@ -651,7 +651,7 @@ def test_load_passes_the_engaged_attention_backend_to_the_peak_identity():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "pipe, attention_engaged or \"native\", peak_model, peak_vae, peak_te" in src
+    assert "peak_model,\n                                peak_vae,\n                                peak_te,\n                                peak_cache," in src
     assert 'attention = attention_engaged or "native",' in src
     assert 'plan.estimates.get("measured_learned_peak_mib"),' in src
 
@@ -730,7 +730,7 @@ def test_load_passes_the_model_to_the_peak_identity():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert "pipe, attention_engaged or \"native\", peak_model, peak_vae, peak_te" in src
+    assert "peak_model,\n                                peak_vae,\n                                peak_te,\n                                peak_cache," in src
     assert "model = peak_model," in src
     assert 'plan.estimates.get("measured_learned_peak_pixels"),' in src
 
@@ -874,7 +874,8 @@ def test_render_with_a_vae_saver_the_key_lacks_is_not_probed(monkeypatch):
     pipe = types.SimpleNamespace(
         _unsloth_peak_identity = ("some-new-dit", "q|model:m|vae:full|attn:native", "default"), vae = vae
     )
-    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0", speed_mode = "default")
     assert diffusion._start_peak_probe(state) is not None
     vae.use_tiling = True  # the activation guard tiled this request's decode
     assert diffusion._start_peak_probe(state) is None
@@ -984,7 +985,7 @@ def test_render_under_another_attention_backend_than_the_key_is_not_probed(monke
         _unsloth_peak_identity = ("x", "q|vae:full|attn:native", "default"),
         vae = types.SimpleNamespace(use_tiling = False, use_slicing = False),
     )
-    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0", attention_backend = None)
+    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0", attention_backend = None, speed_mode = "default")
     assert diffusion._start_peak_probe(state) is not None
     state.attention_backend = "flash"
     assert diffusion._start_peak_probe(state) is None
@@ -1051,7 +1052,7 @@ def test_peak_measured_with_no_streamed_denoiser_is_raised_to_the_streamed_basel
     )
     assert mp.lookup(family = "some-new-dit", quant = "q", speed_mode = "default") == 3300
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
-    assert "probe.window_pad = stream_window_pad_mib(pipe)" in src
+    assert "window_pad = stream_window_pad_mib(pipe)" in src
 
 
 def test_residency_fit_registers_its_video_measurement_window():
@@ -1171,3 +1172,82 @@ def test_video_window_stays_open_until_the_high_water_mark_is_read(store, monkey
     with monkeypatch.context() as m:
         m.setitem(__import__("sys").modules, "torch", _Torch)
         assert vsr.record_request_peak(types.SimpleNamespace(transformer = module)) is None
+
+
+# ---------------------------------------------------------------------------------------------------- review round 7
+
+
+def _probe_state(monkeypatch, label, **live):
+    import core.inference.diffusion as diffusion
+
+    class _Probe:
+        def __init__(self, device):
+            self.device = "cuda:0"
+
+    monkeypatch.setattr(mp, "PeakProbe", _Probe)
+    monkeypatch.setattr(mp, "enabled", lambda: True)
+    pipe = types.SimpleNamespace(
+        _unsloth_peak_identity = ("x", label, "off"),
+        vae = types.SimpleNamespace(use_tiling = False, use_slicing = False),
+    )
+    state = types.SimpleNamespace(
+        pipe = pipe, device = "cuda:0", attention_backend = None, speed_mode = "off", transformer_cache = None
+    )
+    for name, value in live.items():
+        setattr(state, name, value)
+    return diffusion, state
+
+
+def test_local_pipeline_identity_covers_its_weight_files(tmp_path):
+    import core.inference.diffusion as diffusion
+
+    (tmp_path / "transformer").mkdir()
+    (tmp_path / "model_index.json").write_text("{}")
+    (tmp_path / "transformer" / "config.json").write_text("{}")
+    weights = tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"
+    weights.write_bytes(b"0" * 64)
+    before = diffusion._peak_model_identity(str(tmp_path), None, "pipeline", None)
+    weights.write_bytes(b"0" * 128)  # a heavier build, same manifests
+    after = diffusion._peak_model_identity(str(tmp_path), None, "pipeline", None)
+    assert before != "unknown" and after != "unknown" and before != after
+
+
+def test_unknown_stream_window_records_no_peak(monkeypatch):
+    monkeypatch.setattr(dm, "_stream_window_mib", lambda pipe: -1)
+    assert dm.stream_window_pad_mib(types.SimpleNamespace(components = {})) is None
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+    state.pipe.components = {}
+    assert diffusion._start_peak_probe(state) is None
+    monkeypatch.setattr(dm, "_stream_window_mib", lambda pipe: 700)
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", dm.stream_window_pad_mib)
+    assert diffusion._start_peak_probe(state).window_pad == 700
+
+
+def test_bare_unknown_or_empty_format_is_unidentified(store):
+    for label in ("unknown", "", None, "unknown|model:x|attn:native"):
+        assert not mp.identified(label)
+        assert not mp.record(
+            family = "some-new-dit", quant = label, speed_mode = "default", width = 1024, height = 1024, peak_mib = 900
+        )
+    assert mp.identified("torchao:Int8Tensor|model:x|attn:native")
+
+
+def test_render_with_a_toggled_step_cache_is_not_probed(monkeypatch):
+    diffusion, state = _probe_state(monkeypatch, "q|cache:off|vae:full|attn:native")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    assert diffusion._start_peak_probe(state) is not None
+    state.transformer_cache = "fbcache"  # a high-step request auto-engaged FBCache
+    assert diffusion._start_peak_probe(state) is None
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert 'peak_cache = "off" if cache_may_toggle else str(cache_engaged or "off")' in src
+
+
+def test_deferred_profile_retags_the_speed_tier(monkeypatch):
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    state.speed_mode = "default"  # the deferred profile engaged the default tier
+    assert diffusion._start_peak_probe(state) is None  # an off-tier key never takes a compiled render
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    deferred = src.index("def _engage_deferred_profile")
+    block = src[deferred : deferred + 5000]
+    assert 'with_label_part(identity[1], "attn", attention_engaged or "native"),\n                    SPEED_DEFAULT,' in block

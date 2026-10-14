@@ -246,9 +246,10 @@ def lookup(
 
 
 def identified(quant: Optional[str]) -> bool:
-    """False when a part of the label could not be identified (``name:unknown``): such a load neither reads nor
-    records a learned peak and keeps the static estimate."""
-    return not any(part.endswith(":unknown") for part in str(quant or "").split("|"))
+    """False when the label or a part of it could not be identified (empty, a bare ``unknown`` format,
+    ``name:unknown``): such a load neither reads nor records a learned peak and keeps the static estimate."""
+    parts = str(quant or "").split("|")
+    return bool(parts[0]) and not any(part == "unknown" or part.endswith(":unknown") for part in parts)
 
 
 def lookup_bucket(
