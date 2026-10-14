@@ -727,7 +727,7 @@ function loadToastArgs(
 }
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
-const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama", "openai"]);
+const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama"]);
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
