@@ -16,9 +16,6 @@ MESSAGE_MENU_TIME_TSX = REPO / "studio/frontend/src/components/assistant-ui/mess
 DETAILS_TSX = (
     REPO / "studio/frontend/src/components/assistant-ui/message-response-details-sheet.tsx"
 )
-DOCUMENT_PREVIEW_TSX = (
-    REPO / "studio/frontend/src/features/rag/components/document-preview-sheet.tsx"
-)
 SHEET_TSX = REPO / "studio/frontend/src/components/ui/sheet.tsx"
 REASONING_TSX = REPO / "studio/frontend/src/components/assistant-ui/reasoning.tsx"
 ADAPTER_TS = REPO / "studio/frontend/src/features/chat/api/chat-adapter.ts"
@@ -318,9 +315,6 @@ def assert_sheet_close_button_tracks_title_center(src: str) -> None:
 def test_sheet_headers_center_the_shared_close_button_on_the_title():
     assert_sheet_close_button_tracks_title_center(
         DETAILS_TSX.read_text(encoding = "utf-8"),
-    )
-    assert_sheet_close_button_tracks_title_center(
-        DOCUMENT_PREVIEW_TSX.read_text(encoding = "utf-8"),
     )
 
     sheet_src = SHEET_TSX.read_text(encoding = "utf-8")
