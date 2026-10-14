@@ -284,6 +284,11 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     ):
         assert "dXNlcjpwYXNzd29yZA" not in _sanitize_public_query(text), text
     assert _sanitize_public_query("Authorization: Basic YTpi why did YTpi fail") == "why did fail"
+    assert "requirements" in _sanitize_public_query("pre-authorization: Basic requirements for MRI")
+    assert (
+        _sanitize_public_query("Authorization: Bearer abcdefghijklmnop, GET /v1/users return 401")
+        == "GET /v1/users return 401"
+    )
     assert "YTpi" not in _sanitize_public_query(
         'Authorization: Basic YTpi response {"received":"YTpi"}'
     )
