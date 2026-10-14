@@ -3136,6 +3136,7 @@ export const ru = {
       desktopAppVersion: "Версия настольного приложения",
       desktopAppVersionUnavailable: "Недоступно",
       llamaCppVersion: "Версия llama.cpp",
+      audioCppVersion: "Версия audio.cpp",
       hardware: "Оборудование",
       gpu: "GPU",
       cuda: "CUDA",

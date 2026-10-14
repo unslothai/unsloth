@@ -3162,6 +3162,7 @@ export const es = {
       desktopAppVersion: "Versión de la app de escritorio",
       desktopAppVersionUnavailable: "No disponible",
       llamaCppVersion: "Versión de llama.cpp",
+      audioCppVersion: "Versión de audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

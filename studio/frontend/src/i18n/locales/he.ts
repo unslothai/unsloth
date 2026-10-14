@@ -3241,6 +3241,7 @@ export const he = {
       desktopAppVersion: "גרסת אפליקציית Desktop",
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
+      audioCppVersion: "גרסת audio.cpp",
       hardware: "חומרה",
       gpu: "GPU",
       cuda: "CUDA",

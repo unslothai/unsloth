@@ -3109,6 +3109,7 @@ export const ko = {
       desktopAppVersion: "데스크톱 앱 버전",
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
+      audioCppVersion: "audio.cpp 버전",
       hardware: "하드웨어",
       gpu: "GPU",
       cuda: "CUDA",

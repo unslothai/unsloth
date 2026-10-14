@@ -3130,6 +3130,7 @@ export const hi = {
       desktopAppVersion: "डेस्कटॉप ऐप संस्करण",
       desktopAppVersionUnavailable: "उपलब्ध नहीं",
       llamaCppVersion: "llama.cpp संस्करण",
+      audioCppVersion: "audio.cpp संस्करण",
       hardware: "हार्डवेयर",
       gpu: "GPU",
       cuda: "CUDA",
