@@ -196,7 +196,16 @@ def test_rocm_target(monkeypatch):
     t = dd.resolve_diffusion_device_target()
     assert (t.device, t.backend, t.vendor) == ("cuda", "rocm", "amd")
     assert t.dtype == BF16
-    assert t.supports_default_torch_compile is False  # ROCm disables default compile
+    # ROCm may compile; whether this install can is probed at compile time (diffusion_rocm_compile).
+    assert t.supports_default_torch_compile is True
+
+
+def test_rocm_target_compile_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    torch = _make_torch(cuda_available = True, bf16_supported = True)
+    _install(monkeypatch, torch, studio_device = "cuda", is_rocm = True)
+    t = dd.resolve_diffusion_device_target()
+    assert t.backend == "rocm" and t.supports_default_torch_compile is False
 
 
 def test_rocm_without_bf16_uses_fp16(monkeypatch):

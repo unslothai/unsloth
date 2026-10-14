@@ -372,6 +372,8 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
         return False
     if not bool(getattr(family, "supports_torch_compile", True)):
         return False
+    if not rocm_compile_probe_passes(target):
+        return False
     dtype = getattr(target, "dtype", None)
     if _is_bfloat16(dtype):
         return True
@@ -380,6 +382,17 @@ def compile_eligible(target: Any, *, is_gguf: bool, family: Any) -> bool:
     if bool(getattr(family, "fp16_incompatible", False)):
         return False
     return _is_float16(dtype) and _fp16_compile_capable(target)
+
+
+def rocm_compile_probe_passes(target: Any) -> bool:
+    """True off ROCm; on ROCm, whether one small block compiles and runs correctly here (probed once per process)."""
+    if getattr(target, "backend", None) != "rocm":
+        return True
+    try:
+        from .diffusion_rocm_compile import rocm_block_compile_works
+        return rocm_block_compile_works(getattr(target, "ordinal", None))
+    except Exception:  # noqa: BLE001 - optimisation only
+        return False
 
 
 def fp16_compile_explicit_only(target: Any) -> bool:

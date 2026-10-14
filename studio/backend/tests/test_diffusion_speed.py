@@ -2570,3 +2570,32 @@ def test_int8_gemm_install_follows_the_denoiser_placement(
         denoiser_offloaded = denoiser_offloaded,
     )
     assert seen == [expected]
+
+
+def test_compile_eligible_on_rocm_follows_the_probe(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    rocm = types.SimpleNamespace(
+        device = "cuda", dtype = "bfloat16", backend = "rocm", ordinal = None, supports_default_torch_compile = True
+    )
+    monkeypatch.setattr(ds_mod, "_is_bfloat16", lambda d: d == "bfloat16")
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: False)
+    assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is False
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: True)
+    assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is True
+    # Off ROCm the probe is never consulted.
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: 1 / 0)
+    cuda = types.SimpleNamespace(device = "cuda", dtype = "bfloat16", backend = "cuda", supports_default_torch_compile = True)
+    assert ds_mod.compile_eligible(cuda, is_gguf = False, family = _family()) is True
+
+
+def test_rocm_compile_probe_settings(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    rc._reset_for_tests()
+    monkeypatch.setenv(rc.ENV, "0")
+    assert rc.rocm_block_compile_probe() == (False, f"{rc.ENV}=0") and not rc.rocm_compile_allowed()
+    monkeypatch.setenv(rc.ENV, "1")
+    assert rc.rocm_block_compile_probe()[0] is True and rc.rocm_compile_allowed()

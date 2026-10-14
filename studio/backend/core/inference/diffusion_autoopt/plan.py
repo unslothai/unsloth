@@ -112,6 +112,8 @@ def compile_ineligible_reason(target: Any, family: Any) -> Optional[str]:
         return "device does not support the default torch.compile profile"
     if not bool(getattr(family, "supports_torch_compile", True)):
         return "family opts out of torch.compile"
+    if not ds.rocm_compile_probe_passes(target):
+        return "ROCm regional compile probe failed on this install"
     dtype = getattr(target, "dtype", None)
     if ds._is_bfloat16(dtype):
         return None

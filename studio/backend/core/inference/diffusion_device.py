@@ -538,7 +538,7 @@ def diffusion_device_target_from_torch_device(
             backend = "rocm" if is_rocm else "cuda",
             vendor = "amd" if is_rocm else "nvidia",
             supports_model_cpu_offload = True,
-            supports_default_torch_compile = not is_rocm,
+            supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
             supports_pinned_transfer = True,
             # An overriding caller's "cuda:1" is a device choice to keep, not one to drop back to ordinal 0.
             ordinal = int(index) if index.isdigit() else None,
@@ -571,6 +571,16 @@ def float64_device(device: Any) -> Any:
     """Device to build float64 values on before moving the result to ``device``: itself, or CPU when it has no float64."""
     target = diffusion_device_target_from_torch_device(str(device), None)
     return device if target.supports_float64 else "cpu"
+
+
+def _rocm_compile_allowed() -> bool:
+    """ROCm may take the regional compile unless ``UNSLOTH_DIFFUSION_ROCM_COMPILE=0``; whether this install can is probed
+    when a compiling tier first asks (``diffusion_rocm_compile``), not here."""
+    try:
+        from .diffusion_rocm_compile import rocm_compile_allowed
+        return rocm_compile_allowed()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _cuda_or_rocm_target(
@@ -607,7 +617,7 @@ def _cuda_or_rocm_target(
         backend = "rocm" if is_rocm else "cuda",
         vendor = "amd" if is_rocm else "nvidia",
         supports_model_cpu_offload = True,
-        supports_default_torch_compile = not is_rocm,
+        supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
         supports_pinned_transfer = True,
         ordinal = ordinal,
     )
