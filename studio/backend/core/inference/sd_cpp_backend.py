@@ -3177,9 +3177,7 @@ class SdCppDiffusionBackend:
             offload: tuple[str, ...] = ()
             if device != "cpu":
                 offload = tuple(
-                    offload_flags(
-                        _memory_policy(memory_mode, cpu_offload or vulkan_on_cpu_torch)
-                    )
+                    offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan_on_cpu_torch))
                 )
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and

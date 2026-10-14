@@ -172,7 +172,6 @@ def _vulkan_loader_loads() -> bool:
     """Whether the Vulkan loader library opens here. The Vulkan build links it, so without it
     neither sd-cli nor sd-server would start."""
     import ctypes
-
     try:
         if sys.platform == "win32":
             ctypes.WinDLL("vulkan-1.dll")
@@ -191,9 +190,10 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return False
     if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:
         return False
-    if os.environ.get("ROCR_VISIBLE_DEVICES") is not None or os.environ.get(
-        "GGML_VK_VISIBLE_DEVICES"
-    ) is not None:
+    if (
+        os.environ.get("ROCR_VISIBLE_DEVICES") is not None
+        or os.environ.get("GGML_VK_VISIBLE_DEVICES") is not None
+    ):
         return False
     inventory = _physical_inventory()
     if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
@@ -217,7 +217,6 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return False
     try:
         from utils.hardware.amd import the_vulkan_loader_has_no_usable_driver
-
         if the_vulkan_loader_has_no_usable_driver():
             return False
     except Exception:  # noqa: BLE001

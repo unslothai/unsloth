@@ -40,7 +40,11 @@ _UHD_WINDOWS = {"vendor": "intel", "index": 0, "name": "Intel(R) UHD Graphics 77
 _RTX = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060"}
 
 
-def _host(*devices, unanswered = (), unknown = False):
+def _host(
+    *devices,
+    unanswered = (),
+    unknown = False,
+):
     return {"unknown": unknown, "unanswered": list(unanswered), "devices": list(devices)}
 
 
@@ -123,7 +127,9 @@ def test_the_fallback_knob_opts_out(monkeypatch):
     assert r.image_install_accelerator("cpu") == "auto"
 
 
-@pytest.mark.parametrize("backend,expected", [("cuda", "cuda"), ("rocm", "rocm"), ("xpu", "vulkan")])
+@pytest.mark.parametrize(
+    "backend,expected", [("cuda", "cuda"), ("rocm", "rocm"), ("xpu", "vulkan")]
+)
 def test_gpu_torch_backends_are_unchanged(backend, expected):
     assert r.image_install_accelerator(backend) == expected
 
@@ -165,7 +171,9 @@ def test_selection_installs_the_vulkan_build(monkeypatch):
         return None
 
     monkeypatch.setattr(r, "ensure_sd_server_binary", _ensure)
-    monkeypatch.setattr(r, "ensure_sd_cpp_binary", lambda **kw: asked.append(kw["accelerator"]) or "/opt/sd/sd-cli")
+    monkeypatch.setattr(
+        r, "ensure_sd_cpp_binary", lambda **kw: asked.append(kw["accelerator"]) or "/opt/sd/sd-cli"
+    )
     saved = (r._active_engine_name, r._fallback_reason)
     try:
         r.select_and_activate_engine(detect_family("z-image"))
@@ -189,14 +197,17 @@ _PINNED_RELEASE_ASSETS = [
 @pytest.mark.parametrize(
     "system,machine,expected",
     [
-        ("Linux", "x86_64", "sd-master-951-f89d9b1-uafac7a7-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip"),
+        (
+            "Linux",
+            "x86_64",
+            "sd-master-951-f89d9b1-uafac7a7-bin-Linux-Ubuntu-22.04-x86_64-vulkan.zip",
+        ),
         ("Windows", "AMD64", "sd-master-951-f89d9b1-uafac7a7-bin-win-vulkan-x64.zip"),
         ("Linux", "aarch64", None),
     ],
 )
 def test_the_pinned_release_has_the_vulkan_bundle_it_routes_to(system, machine, expected):
     from install_sd_cpp_prebuilt import resolve_release_asset
-
     assert (
         resolve_release_asset(
             _PINNED_RELEASE_ASSETS, system = system, machine = machine, accelerator = "vulkan"
