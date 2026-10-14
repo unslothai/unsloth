@@ -230,7 +230,10 @@ def test_planned_rows_skip_a_strided_out(monkeypatch):
     utils.fast_linear_forward(proj, X, out = wide[:, :, :1024])
     strided = wide[:, :, ::2]
     assert strided.stride(0) == 2048 and strided.stride(-1) == 2
-    assert _rel_err(utils.fast_linear_forward(proj, X, out = strided).float(), ref.float()) < TOL[torch.bfloat16]
+    assert (
+        _rel_err(utils.fast_linear_forward(proj, X, out = strided).float(), ref.float())
+        < TOL[torch.bfloat16]
+    )
 
 
 def test_one_row_into_a_taller_out_writes_only_that_row():
@@ -269,12 +272,19 @@ def test_rows_gemv_rejects_an_out_it_cannot_fill(monkeypatch):
         torch.empty(1, 1, 1024, dtype = torch.bfloat16, device = "cuda"),
         torch.empty(2, 0, 1024, dtype = torch.bfloat16, device = "cuda"),
         torch.empty(2, 2, 1024, dtype = torch.bfloat16, device = "cuda"),
-        torch.empty(2048, dtype = torch.bfloat16, device = "cuda").as_strided((2, 1, 1024), (512, 512, 1)),
+        torch.empty(2048, dtype = torch.bfloat16, device = "cuda").as_strided(
+            (2, 1, 1024), (512, 512, 1)
+        ),
     ):
         assert utils._gemv_rows(X, W, W_quant, bad) is None
     assert utils._gemv_rows(X, W, W_quant, torch.empty(2, 1, 1024, dtype = torch.bfloat16)) is None
     for wrong_k in (4095, 4097):
-        assert utils._gemv_rows(torch.randn(2, 1, wrong_k, dtype = torch.bfloat16, device = "cuda"), W, W_quant, None) is None
+        assert (
+            utils._gemv_rows(
+                torch.randn(2, 1, wrong_k, dtype = torch.bfloat16, device = "cuda"), W, W_quant, None
+            )
+            is None
+        )
 
 
 def test_rows_gemv_needs_the_weight_on_the_activation_device(monkeypatch):
