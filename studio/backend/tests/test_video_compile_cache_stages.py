@@ -237,7 +237,11 @@ def test_overlapping_loads_each_release_their_own_context(cache_dir, fake_megaca
     def begin(token, dim):
         pipe = types.SimpleNamespace(transformer = _DiT(dim = dim), components = {})
         ctx, _ = backend._begin_stage_compile_cache(
-            token = token, roots = (pipe,), speed_optims = ("compiled",), dtype = None, quant = None,
+            token = token,
+            roots = (pipe,),
+            speed_optims = ("compiled",),
+            dtype = None,
+            quant = None,
             attention_backend = None,
         )
         return ctx
@@ -247,7 +251,9 @@ def test_overlapping_loads_each_release_their_own_context(cache_dir, fake_megaca
     backend._release_precommit_compile_cache(1)  # the stale load fails
     assert str(old.dir) not in cc._live_dirs
     assert str(new.dir) in cc._live_dirs
-    backend._commit_precommit_compile_cache(2)  # the new load commits: its state owns the context now
+    backend._commit_precommit_compile_cache(
+        2
+    )  # the new load commits: its state owns the context now
     assert backend._precommit_compile_caches == {}
     assert str(new.dir) in cc._live_dirs
     cc.restore(new)
@@ -263,8 +269,11 @@ def test_overlapping_loads_each_release_their_own_context(cache_dir, fake_megaca
 )
 def test_wan_fusion_switches_key_bundles_apart(monkeypatch, name, value):
     """The fused Wan block is a class-level forward swap the module tree does not show, so its switches key it."""
-    for env in ("UNSLOTH_DIFFUSION_WAN_FUSED_ADALN", "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE",
-                "UNSLOTH_DIFFUSION_PATCH_WAN_FUSED"):
+    for env in (
+        "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN",
+        "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE",
+        "UNSLOTH_DIFFUSION_PATCH_WAN_FUSED",
+    ):
         monkeypatch.delenv(env, raising = False)
     stock = _key([_DiT()])
     monkeypatch.setenv(name, "1")  # the default value keeps every existing key
