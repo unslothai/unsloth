@@ -445,6 +445,7 @@ export const en = {
       resubmit: "This page came from a form. Loading it again sends the form again, which could repeat what it did.",
       upload: "File uploads don't work in this view. Open the page in your system browser to send it.",
       scriptNavigation: "This page tried to go to another address by script, which this view can't follow. Open it in your system browser instead.",
+      needsBrowser: "This page tried to use a browser feature this view blocks, so parts of it may not work. Open it in your system browser instead.",
     },
     native: {
       externalPrompt: "{host} wants to open {url}",

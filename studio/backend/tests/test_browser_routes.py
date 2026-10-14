@@ -87,6 +87,23 @@ def test_the_shell_guards():
     assert "requestSubmit = " not in shell
 
 
+def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
+    # Checked in Chromium, Firefox and WebKit, as this suite has no browser to run the shell in.
+    shell = browser_mod._FRAME_HTML
+    boot = shell[shell.index("const boot = ") : shell.index("const escapeAttr")]
+    assert boot.count('post({ type: "needsBrowser" });') == 1
+    for guard in (
+        "if (refused) return;",
+        "IDBFactory.prototype.open = function (...args) {",
+        "if (event.error ? securityError(event.error) : indexedDbThrew) tellRefused();",
+        "if (securityError(event.reason)) tellRefused();",
+        'for (const type of ["fullscreenerror", "webkitfullscreenerror"])',
+        "if (!document.fullscreenEnabled) tellRefused();",
+    ):
+        assert guard in boot, guard
+    assert boot.index("IDBFactory.prototype.open = ") < boot.index("const shellPathname")
+
+
 def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
     shell = browser_mod._FRAME_HTML
     # Inside boot, where cfg and post exist, before any page script can capture fetch.

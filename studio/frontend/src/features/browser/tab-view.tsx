@@ -139,11 +139,13 @@ function useFrameMessages(tabId: string, origin: string | null) {
           store.reload(tabId);
           break;
         case "upload":
-        case "scriptNavigation": {
+        case "scriptNavigation":
+        case "needsBrowser": {
           const tab = store.tabs.find((candidate) => candidate.id === tabId);
           const entry = tab ? currentEntry(tab) : null;
           const url = tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
-          toast(t(message.type === "upload" ? "browser.error.upload" : "browser.error.scriptNavigation"), {
+          toast(t(`browser.error.${message.type}`), {
+            id: `browser-${message.type}-${tabId}`,
             action: url ? { label: t("browser.openExternal"), onClick: () => openExternalLink(url) } : undefined,
           });
           break;

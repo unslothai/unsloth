@@ -54,6 +54,10 @@ test("an upload notice carries nothing a page could fill", () => {
   assert.deepEqual(from({ type: "scriptNavigation", url: "https://evil.example/" }), { type: "scriptNavigation" });
 });
 
+test("a page the sandbox refused a feature reaches the panel as a bare notice", () => {
+  assert.deepEqual(from({ type: "needsBrowser", url: "https://evil.example/" }), { type: "needsBrowser" });
+});
+
 test("a page's zoom is a step in, out or back to 100%, and nothing else", () => {
   assert.deepEqual(from({ type: "zoom", direction: 1 }), { type: "zoom", direction: 1, wheel: false });
   assert.deepEqual(from({ type: "zoom", direction: -1, wheel: true }), { type: "zoom", direction: -1, wheel: true });

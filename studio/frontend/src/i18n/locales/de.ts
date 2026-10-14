@@ -448,6 +448,7 @@ export const de = {
       resubmit: "Diese Seite stammt aus einem Formular. Erneutes Laden sendet das Formular noch einmal und kann dessen Aktion wiederholen.",
       upload: "Datei-Uploads funktionieren in dieser Ansicht nicht. Öffne die Seite im Systembrowser, um sie zu senden.",
       scriptNavigation: "Diese Seite wollte per Skript zu einer anderen Adresse wechseln, was diese Ansicht nicht nachvollziehen kann. Öffne sie stattdessen im Systembrowser.",
+      needsBrowser: "Diese Seite wollte eine Browserfunktion nutzen, die diese Ansicht blockiert, daher funktionieren Teile davon möglicherweise nicht. Öffne sie stattdessen im Systembrowser.",
     },
     native: {
       externalPrompt: "{host} möchte {url} öffnen",

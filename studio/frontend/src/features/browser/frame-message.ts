@@ -18,6 +18,7 @@ export type FrameMessage =
   | { type: "reload" }
   | { type: "upload" }
   | { type: "scriptNavigation" }
+  | { type: "needsBrowser" }
   /** Find in page: how many matches the query has, and which one is shown (-1: none). */
   | { type: "findResult"; count: number; active: number }
   /** The page's current markup, for printing; null when it couldn't be copied or was too large. */
@@ -147,6 +148,7 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return { type: "reload" };
     case "upload":
     case "scriptNavigation":
+    case "needsBrowser":
       return { type: message.type };
     case "findResult": {
       const { count, active } = message;

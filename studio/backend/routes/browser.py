@@ -245,6 +245,30 @@ _FRAME_HTML = r"""<!doctype html>
           let jar = "";
           Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
         } catch {}
+        let refused = false;
+        const tellRefused = () => {
+          if (refused) return;
+          refused = true;
+          post({ type: "needsBrowser" });
+        };
+        const securityError = (error) => error instanceof DOMException && error.name === "SecurityError";
+        // Other sites' scripts report errors as "Script error." with no error, so IndexedDB's is noted as thrown.
+        let indexedDbThrew = false;
+        const openDatabase = IDBFactory.prototype.open;
+        IDBFactory.prototype.open = function (...args) {
+          try { return openDatabase.apply(this, args); } catch (error) {
+            if (securityError(error)) {
+              indexedDbThrew = true;
+              setTimeout(() => { indexedDbThrew = false; });
+            }
+            throw error;
+          }
+        };
+        window.addEventListener("error", (event) => { if (event.error ? securityError(event.error) : indexedDbThrew) tellRefused(); });
+        window.addEventListener("unhandledrejection", (event) => { if (securityError(event.reason)) tellRefused(); });
+        for (const type of ["fullscreenerror", "webkitfullscreenerror"]) {
+          document.addEventListener(type, () => { if (!document.fullscreenEnabled) tellRefused(); }, true);
+        }
         /* BROWSER_NETWORK_JS */
         const shellPathname = location.pathname;
         // Throttle to 200 ms: some sites replaceState per scroll.

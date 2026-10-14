@@ -448,6 +448,7 @@ export const es = {
       resubmit: "Esta página proviene de un formulario. Volver a cargarla envía el formulario de nuevo, lo que podría repetir lo que hizo.",
       upload: "Las subidas de archivos no funcionan en esta vista. Abre la página en el navegador del sistema para enviarla.",
       scriptNavigation: "Esta página intentó ir a otra dirección mediante un script, algo que esta vista no puede seguir. Ábrela en el navegador del sistema.",
+      needsBrowser: "Esta página intentó usar una función del navegador que esta vista bloquea, así que puede que partes de ella no funcionen. Ábrela en el navegador del sistema.",
     },
     native: {
       externalPrompt: "{host} quiere abrir {url}",
