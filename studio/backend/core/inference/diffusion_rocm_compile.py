@@ -26,6 +26,8 @@ _lock = threading.Lock()
 _result: dict[Any, tuple[bool, str]] = {}
 # Indexes whose cached result is an OOM: held for the rest of the load, dropped by start_load().
 _transient: set[Any] = set()
+# Bumped per load: an OOM published by a probe that started before the boundary is not cached for the new load.
+_epoch = 0
 
 
 def rocm_compile_setting() -> str:
@@ -58,12 +60,17 @@ def rocm_block_compile_known(device: Any = None) -> Optional[bool]:
 
 def start_load() -> None:
     """A load boundary: an OOM probe from the previous load may be retried now."""
+    global _epoch
+    _epoch += 1
     for index in list(_transient):
         _result.pop(index, None)
         _transient.discard(index)
 
 
 def _index(device: Any) -> Any:
+    # A bare ordinal: torch.device(int) is not accepted by every supported torch.
+    if isinstance(device, int) and not isinstance(device, bool):
+        return device
     try:
         import torch
         index = torch.cuda.current_device() if device is None else torch.device(device).index
@@ -91,6 +98,7 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
     with _lock:
         if index in _result:
             return _result[index]
+        epoch = _epoch
         ok, why = _probe(torch, index)
         (logger.info if ok else logger.warning)(
             "diffusion.speed: ROCm regional compile probe on cuda:%s: %s (%s)",
@@ -100,6 +108,8 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
         )
         # An OOM says the card was busy, not that the compiler is broken: held for this load, retried at the next.
         if not ok and "OutOfMemoryError" in why:
+            if epoch != _epoch:
+                return ok, why
             _transient.add(index)
         _result[index] = (ok, why)
         return ok, why

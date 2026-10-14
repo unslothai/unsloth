@@ -2889,3 +2889,38 @@ def test_rocm_probe_wrapped_oom_stays_transient(monkeypatch, exc):
     ds_mod.rocm_compile_probe_new_load()
     assert rc.probe_result(0) is None
     rc._reset_for_tests()
+
+
+
+def test_rocm_probe_oom_from_before_a_load_boundary_is_not_cached(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+
+    def _probe(torch, index):
+        rc.start_load()  # another load begins while this probe is still compiling
+        return False, "OutOfMemoryError: HIP out of memory"
+
+    monkeypatch.setattr(rc, "_probe", _probe)
+    rc._reset_for_tests()
+    assert rc.rocm_block_compile_probe()[0] is False
+    assert rc.probe_result(0) is None
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_index_keeps_an_integer_ordinal(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+
+    def _old_device(*args, **kwargs):  # torch 2.4: no torch.device(int)
+        if args and isinstance(args[0], int):
+            raise TypeError("device() received an invalid combination of arguments")
+        return types.SimpleNamespace(index = None)
+
+    monkeypatch.setattr(torch, "device", _old_device)
+    assert rc._index(1) == 1
+    assert rc._index(3) == 3

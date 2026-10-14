@@ -529,7 +529,11 @@ def diffusion_device_target_from_torch_device(
     if device == "cuda":
         try:
             import torch
-            is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+
+            from .rocm_bf16 import is_rocm_torch
+
+            # Tag-aware: AMD SDK / Radeon wheels leave torch.version.hip unset.
+            is_rocm = is_rocm_torch(torch)
         except Exception:
             is_rocm = False
         return DiffusionDeviceTarget(

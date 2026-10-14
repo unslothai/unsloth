@@ -321,6 +321,18 @@ def test_from_torch_device_cuda(monkeypatch):
     assert t.is_cuda_torch_device
 
 
+def test_from_torch_device_tag_only_rocm(monkeypatch):
+    # AMD SDK / Radeon wheels: no torch.version.hip, ROCm only in __version__. Must stay ROCm so the
+    # probe and UNSLOTH_DIFFUSION_ROCM_COMPILE apply.
+    torch = _make_torch()
+    torch.__version__ = "2.9.0+rocm7.1.0"
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    t = dd.diffusion_device_target_from_torch_device("cuda:1", BF16)
+    assert (t.backend, t.vendor, t.ordinal) == ("rocm", "amd", 1)
+    assert t.supports_default_torch_compile is False
+
+
 def test_from_torch_device_mps_and_cpu(monkeypatch):
     torch = _make_torch()
     monkeypatch.setitem(sys.modules, "torch", torch)
