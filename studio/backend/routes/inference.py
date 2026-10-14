@@ -30879,7 +30879,8 @@ async def produce_openai_chat_completions(
                     "response_format needs a grammar engine, and the transformers backend "
                     "has none; load an MLX or GGUF model to use it.",
                 )
-            if payload.tool_choice not in (None, "auto", "none"):
+            # With tools sent, the format yields to them (_response_format_beside_tools).
+            if payload.tool_choice not in (None, "auto", "none") and not payload.tools:
                 _raise_unsupported_openai_parameter(
                     "tool_choice",
                     "response_format cannot be combined with a tool_choice that requires a "
@@ -34479,15 +34480,9 @@ async def produce_openai_chat_completions(
         and _sf_supports_tools
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
-    if (
-        _sf_client_tools
-        and payload.tools
-        and payload.tool_choice != "none"
-        and _response_format_constrains_decoding(payload)
-    ):
-        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
-        gen_kwargs["response_format"] = None
-        _sf_single_block = False
+    if _sf_client_tools:
+        gen_kwargs["response_format"] = _response_format_beside_tools(payload, payload.tools)
+        _sf_single_block = _sf_single_block and gen_kwargs["response_format"] is not None
     # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
     # markup never reached the prompt. Gating the healer on the caller's list instead would
     # promote a dropped tool with a clean NAME out of text-form output, handing the client a
@@ -44761,6 +44756,15 @@ def _reject_unhonorable_response_format(payload) -> None:
         _raise_unsupported_openai_parameter("response_format", str(exc))
 
 
+def _response_format_beside_tools(payload, tools):
+    """The request's ``response_format``, or None while ``tools`` can still be called:
+    decoding locked to the document would never emit the call."""
+    if tools and payload.tool_choice != "none" and _response_format_constrains_decoding(payload):
+        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
+        return None
+    return _extract_response_format(payload)
+
+
 def _build_openai_passthrough_body(
     payload,
     backend_ctx = None,
@@ -44793,10 +44797,9 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
-    response_format = _response_format_for_llama_server(_extract_response_format(payload))
-    if tools and tool_choice != "none" and _response_format_constrains_decoding(payload):
-        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
-        response_format = None
+    response_format = _response_format_for_llama_server(
+        _response_format_beside_tools(payload, tools)
+    )
     body = _build_passthrough_payload(
         messages,
         tools,

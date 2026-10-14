@@ -3029,6 +3029,25 @@ class TestBuildPassthroughPayloadToolChoice:
             {"role": "user", "content": "hi"},
         ]
 
+    @pytest.mark.parametrize(
+        "tool_choice, kept",
+        [("auto", False), ("required", False), ("none", True)],
+    )
+    def test_passthrough_body_sets_response_format_aside_for_callable_tools(
+        self, tool_choice, kept
+    ):
+        payload = ChatCompletionRequest(
+            model = "default",
+            messages = [{"role": "user", "content": "hi"}],
+            tools = self._args()["openai_tools"],
+            tool_choice = tool_choice,
+            response_format = {"type": "json_object"},
+        )
+
+        body = _build_openai_passthrough_body(payload, backend_ctx = 4096)
+
+        assert ("response_format" in body) is kept
+
 
 class TestOpenAIPassthroughSSETerminalState:
     def test_done_sentinel(self):

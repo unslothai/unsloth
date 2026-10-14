@@ -1541,11 +1541,14 @@ def _mlx_format_call(monkeypatch, backend, **fields):
 
     monkeypatch.setattr(inf, "_reject_unhonorable_response_format", lambda payload: None)
     backend.models["sf-model"]["is_mlx"] = True
-    return _call(_request(tools = [LOOKUP_TOOL], **fields), monkeypatch, backend)
+    return _call(_request(**{"tools": [LOOKUP_TOOL], **fields}), monkeypatch, backend)
 
 
 @pytest.mark.parametrize("response_format", [_RF_FORMAT, {"type": "json_object"}])
-@pytest.mark.parametrize("tool_choice", [None, "auto"])
+@pytest.mark.parametrize(
+    "tool_choice",
+    [None, "auto", "required", {"type": "function", "function": {"name": "lookup"}}],
+)
 def test_a_response_format_does_not_lock_out_callable_tools(
     monkeypatch, response_format, tool_choice
 ):
@@ -1574,13 +1577,55 @@ def test_a_streamed_response_format_does_not_lock_out_callable_tools(monkeypatch
     assert "tool_calls" in finishes
 
 
-def test_a_response_format_still_applies_when_tools_cannot_be_called(monkeypatch):
+_RF_TOOL_HISTORY = [
+    ChatMessage(role = "user", content = "hi"),
+    ChatMessage(
+        role = "assistant",
+        content = None,
+        tool_calls = [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": '{"q": "cats"}'},
+            }
+        ],
+    ),
+    ChatMessage(role = "tool", tool_call_id = "call_1", content = "Paris"),
+]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"tool_choice": "none"}, {"tools": None, "messages": _RF_TOOL_HISTORY}],
+    ids = ["tool_choice_none", "history_without_tools"],
+)
+def test_a_response_format_still_applies_when_tools_cannot_be_called(monkeypatch, fields):
     backend = _ScriptedBackend(_fixed('{"city":"Paris"}'))
     reply = _mlx_format_call(
-        monkeypatch, backend, tool_choice = "none", response_format = _RF_FORMAT, stream = False
+        monkeypatch, backend, response_format = _RF_FORMAT, stream = False, **fields
     )
     assert backend.calls[0]["response_format"] == _RF_FORMAT
     assert _json_body(reply)["choices"][0]["message"]["content"] == '{"city":"Paris"}'
+
+
+@pytest.mark.parametrize(
+    "tool_choice", ["required", {"type": "function", "function": {"name": "x"}}]
+)
+def test_a_forced_tool_choice_beside_a_response_format_needs_tools(monkeypatch, tool_choice):
+    from fastapi import HTTPException
+
+    backend = _ScriptedBackend(_fixed('{"city":"Paris"}'))
+    with pytest.raises(HTTPException) as exc:
+        _mlx_format_call(
+            monkeypatch,
+            backend,
+            tools = None,
+            tool_choice = tool_choice,
+            response_format = _RF_FORMAT,
+            stream = False,
+        )
+    assert exc.value.status_code == 400
+    assert not backend.calls
 
 
 class _FittedToolLoopBackend(_ToolLoopBackend):
