@@ -707,6 +707,11 @@ def save_runtime_quant(
             )
             return None
         nbytes = sum(_tensor_bytes(t) for t in flat.values())
+        # Before any space-making eviction: an artifact the budget refuses must not cost the entries already cached.
+        budget = max_cache_bytes()
+        if budget is not None and nbytes > budget:
+            _log(logger, "info", "skipped (artifact larger than the cache budget)")
+            return None
         root = cache_root()
         root.mkdir(parents = True, exist_ok = True)
         free = shutil.disk_usage(str(root)).free
@@ -721,10 +726,6 @@ def save_runtime_quant(
                 "info",
                 f"skipped (disk short: {free / 2**30:.1f} GiB free, need {need / 2**30:.1f} GiB)",
             )
-            return None
-        budget = max_cache_bytes()
-        if budget is not None and nbytes > budget:
-            _log(logger, "info", "skipped (artifact larger than the cache budget)")
             return None
 
         from .diffusion_prequant import prequant_format_for

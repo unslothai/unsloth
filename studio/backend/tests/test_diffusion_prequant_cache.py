@@ -664,3 +664,15 @@ def test_a_windows_lock_that_stays_contended_still_runs_the_section(env, monkeyp
     with C._cache_lock(env):
         ran.append(True)
     assert ran == [True]
+
+
+def test_an_artifact_over_the_budget_never_evicts_the_existing_cache(env, tmp_path, scheme, monkeypatch):
+    """A save the budget will refuse anyway must not first evict valid entries to make disk room for it."""
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    stale = _old_entry(env, "c" * 32, 4096, age = 7200)
+    monkeypatch.setenv(C.ENV_MAX_GB, str(1 / (1 << 30)))  # a 1-byte budget: every artifact is over it
+    usage = types.SimpleNamespace(total = 1 << 41, used = 0, free = 1 << 20)
+    monkeypatch.setattr(C.shutil, "disk_usage", lambda _p: usage)
+    assert C.save_runtime_quant(model, _fam(base), base_repo = str(base)) is None
+    assert stale.exists()
