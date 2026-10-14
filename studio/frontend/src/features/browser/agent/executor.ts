@@ -15,7 +15,7 @@ import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, currentEntry, useBrowserStore } from "../store";
 import { askUser, setActiveAction, useBrowserAgentStore } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
-import { ruleFor } from "./permissions";
+import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
 import { waitForPage } from "./page-wait";
 
@@ -45,14 +45,7 @@ export type BrowserAction = {
 };
 
 /** `scope`: the chat the run belongs to; sites approved in one chat aren't approved in another. */
-export type ActionContext = {
-  runKey: string;
-  scope?: string;
-  userText: string;
-  /** Full access captured for this turn, never taken from the model's action or another chat's live settings. */
-  bypassPermissions?: boolean;
-  signal?: AbortSignal;
-};
+export type ActionContext = { runKey: string; scope?: string; userText: string; fullAccess?: boolean; signal?: AbortSignal };
 
 type Result = { ok: boolean; error?: string; url?: string; title?: string; text?: string; note?: string; image?: string };
 
@@ -142,7 +135,7 @@ function record(op: string, url: string): void {
 }
 
 function admit(url: string, gate: Gate, context: ActionContext): void {
-  if (context.bypassPermissions === true) return;
+  if (context.fullAccess === true) return;
   const host = hostOfUrl(url);
   if (!host) return;
   reachedHosts.add(host);
@@ -405,11 +398,11 @@ async function untilFilled(tab: BrowserTab, since: number, signal?: AbortSignal)
   return (await waitOnPage(tab.id, (now) => currentEntry(now) !== entry, since, FILL_QUIET_MAX_MS, signal, FILL_IDLE_QUIET_MS)) === "loading";
 }
 
-async function pass(gate: Gate, context: ActionContext): Promise<string | null> {
+async function pass(gate: Gate, signal?: AbortSignal): Promise<string | null> {
   if (gate.kind === "allow") return null;
   if (gate.kind === "block") return `Not done: ${gate.reason}.`;
   const { ask, host, name, detail } = gate;
-  const allowed = await askInPanel({ ask, host, name, detail }, context);
+  const allowed = await askInPanel({ ask, host, name, detail }, signal);
   // Not gate.prompt: it quotes the page's label, and errors reach the model outside the fence.
   return allowed ? null : `The user declined ${DECLINED[ask]} on ${host || "this page"}. Do something else, or ask them.`;
 }
@@ -424,12 +417,11 @@ const DECLINED: Record<Question["ask"], string> = {
   pointer: "clicking where the page doesn't say what is there",
 };
 
-/** Full access skips questions, not blocks; otherwise the panel has to be on screen to ask. */
-function askInPanel(question: Question, context: ActionContext): Promise<boolean> {
-  if (context.bypassPermissions === true) return Promise.resolve(!context.signal?.aborted);
+/** Questions show in the panel's agent bar, so the panel has to be on screen to ask. */
+function askInPanel(question: Question, signal?: AbortSignal): Promise<boolean> {
   const store = useBrowserStore.getState();
   if (!store.open) store.openPanel();
-  return askUser(question, context.signal);
+  return askUser(question, signal);
 }
 
 async function observe(tab: BrowserTab, context: ActionContext, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
@@ -449,7 +441,7 @@ async function observe(tab: BrowserTab, context: ActionContext, note?: string, o
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
-  if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(context.bypassPermissions === true ? [] : answer.links ?? []);
+  if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(context.fullAccess === true ? [] : answer.links ?? []);
   return {
     ok: true,
     url: tabUrl(fresh),
@@ -476,14 +468,25 @@ async function open(url: string, signal?: AbortSignal): Promise<BrowserTab | nul
   return waitForLoad(tabId, signal);
 }
 
-const permissions = () => useBrowserAgentStore.getState().permissions;
+function permissions(context: ActionContext) {
+  const saved = useBrowserAgentStore.getState().permissions;
+  if (!context.fullAccess) return saved;
+  const allow = (rule: SiteRule): SiteRule => ({
+    browsing: rule.browsing === "block" ? "block" : "allow",
+    actions: "allow",
+    downloads: rule.downloads === "block" ? "block" : "allow",
+    unlabelled: "allow",
+  });
+  return { defaults: allow(saved.defaults), sites: Object.fromEntries(Object.entries(saved.sites).map(([site, rule]) => [site, allow(rule)])) };
+}
 
 function navigationContext(action: BrowserAction, context: ActionContext) {
   const tab = agentTab();
+  const currentUrl = tab ? tabUrl(tab) : "";
   return {
     policy: action.policy,
-    permissions: permissions(),
-    currentUrl: tab ? tabUrl(tab) : "",
+    permissions: permissions(context),
+    currentUrl: reachedHosts.has(hostOfUrl(currentUrl)) ? currentUrl : "",
     knownHosts,
     pageLinks,
     userText: context.userText,
@@ -507,7 +510,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (action.op === "navigate") {
     const url = action.url ?? "";
     const gate = gateNavigation(url, navigationContext(action, context));
-    const refused = await pass(gate, context);
+    const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
     admit(url, gate, context);
     const since = Date.now();
@@ -541,19 +544,19 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
             ? entry.url
             : "";
     if (destination) {
-      const blocked = navigationBlocks(destination, action.policy, permissions());
+      const blocked = navigationBlocks(destination, action.policy, permissions(context));
       const gate: Gate = blocked
         ? { kind: "block", reason: blocked }
         : hostOfUrl(destination) === hostOfUrl(before) && reachedHosts.has(hostOfUrl(before))
           ? { kind: "allow" }
           : gateNavigation(destination, navigationContext(action, context));
-      const refused = await pass(gate, context);
+      const refused = await pass(gate, signal);
       if (refused) return { ok: false, error: refused };
       admit(destination, gate, context);
     } else if (nativeMove) {
       // History from before this chat, or from the user browsing in the tab: where it leads is unknown.
       const where = action.op === "back" ? "the previous page" : "the next page";
-      const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, context);
+      const refused = await pass({ kind: "ask", ask: "open", host: where, name: "", detail: "", prompt: `Open ${where}?` }, signal);
       if (refused) return { ok: false, error: refused };
     }
     const since = Date.now();
@@ -615,25 +618,25 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   }
   const info: ElementInfo = described.info;
   const gates: Gate[] = [];
-  if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, here, action.policy, permissions()));
-  const opaque = point ? opaqueGate(info, here) : null;
+  if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, here, action.policy, permissions(context)));
+  const opaque = point ? opaqueGate(info, here, context) : null;
   if (opaque) gates.push(opaque);
   if (action.op === "select") {
     // The option the page will select: its value can differ from the label the user sees.
     const chosen = info.role === "combobox" ? { ...info, name: info.option || action.value || "" } : info;
     // A card-expiry or other secret dropdown is the user's to fill, as its text field would be.
-    if (info.tag === "select" || info.role === "combobox") gates.push(gateElement("type", info, here, action.policy, permissions()));
-    gates.push(gateElement("select", chosen, here, action.policy, permissions()));
+    if (info.tag === "select" || info.role === "combobox") gates.push(gateElement("type", info, here, action.policy, permissions(context)));
+    gates.push(gateElement("select", chosen, here, action.policy, permissions(context)));
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
   const activates = action.op === "press" && (action.key === "Enter" || action.key === "Space");
-  if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", info, here, action.policy, permissions()));
+  if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", info, here, action.policy, permissions(context)));
   // Deleting is editing: a password or card field the agent can't type into it can't empty either.
   if (action.op === "press" && (action.key === "Backspace" || action.key === "Delete")) {
-    gates.push(gateElement("type", info, here, action.policy, permissions()));
+    gates.push(gateElement("type", info, here, action.policy, permissions(context)));
     // Outside a text field it is an app's delete shortcut, asked like a Delete button.
     if (!TEXT_ROLES.has(info.role)) {
-      gates.push(gateElement("click", { ...info, name: `delete key on ${info.name || info.role}` }, here, action.policy, permissions()));
+      gates.push(gateElement("click", { ...info, name: `delete key on ${info.name || info.role}` }, here, action.policy, permissions(context)));
     }
   }
   // Enter in a field sends its form, so it is held to what a submit button would be.
@@ -655,15 +658,15 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     formAction && hostOfUrl(formAction) !== hostOfUrl(here) ? gateNavigation(formAction, navigationContext(action, context)) : null;
   if (formAction) {
     // A submit button's own click gate already asks what a submit would.
-    if (!info.submits) gates.push(gateElement("submit", info, here, action.policy, permissions()));
+    if (!info.submits) gates.push(gateElement("submit", info, here, action.policy, permissions(context)));
     if (formGate) gates.push(formGate);
   }
   for (const gate of gates) {
-    const refused = await pass(gate, context);
+    const refused = await pass(gate, signal);
     if (refused) return { ok: false, error: refused };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  if (opaque && context.bypassPermissions !== true) opaqueHosts.add(opaque.host);
+  if (opaque) opaqueHosts.add(opaque.host);
   // A point's control can be relabelled or rewired around the same leaf while the user decides.
   if (point && gates.some((gate) => gate.kind === "ask")) {
     if (!(await unchanged(ready, point, described.hit ?? "", JSON.stringify(info)))) {
@@ -689,7 +692,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       // A link: opened in this tab, under the same rules as any other address. Its href is read
       // now, so it may not be one the last snapshot listed.
       const gate = gateNavigation(clicked.navigate, navigationContext(action, context));
-      const refused = await pass(gate, context);
+      const refused = await pass(gate, signal);
       if (refused) return { ok: false, error: refused };
       admit(clicked.navigate, gate, context);
       const sent = Date.now();
@@ -809,12 +812,12 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   for (const point of [from, end]) {
     const described = await pageCall(tab, { op: "describe", ref: "", ...point });
     if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
-    for (const gate of [gateElement("click", described.info, before, action.policy, permissions()), opaqueGate(described.info, before)]) {
+    for (const gate of [gateElement("click", described.info, before, action.policy, permissions(context)), opaqueGate(described.info, before, context)]) {
       if (!gate) continue;
       asked ||= gate.kind === "ask";
-      const refused = await pass(gate, context);
+      const refused = await pass(gate, signal);
       if (refused) return { ok: false, error: refused };
-      if (gate.kind === "ask" && gate.ask === "pointer" && context.bypassPermissions !== true) opaqueHosts.add(gate.host);
+      if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
     }
     hits.push(described.hit ?? "");
     sigs.push(described.sig ?? "");
@@ -865,11 +868,11 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
   if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
   if (!target?.ok || !target.info) return cancel(target?.error ?? "nothing is at the drag's end.");
   if (target.hit !== hits[1] || JSON.stringify(target.info) !== infos[1]) {
-    for (const gate of [gateElement("click", target.info, before, action.policy, permissions()), opaqueGate(target.info, before)]) {
+    for (const gate of [gateElement("click", target.info, before, action.policy, permissions(context)), opaqueGate(target.info, before, context)]) {
       if (!gate) continue;
-      const refused = await pass(gate, context);
+      const refused = await pass(gate, signal);
       if (refused) return cancel(refused);
-      if (gate.kind === "ask" && gate.ask === "pointer" && context.bypassPermissions !== true) opaqueHosts.add(gate.host);
+      if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
     }
     const again = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
     if (!sameTab() || again?.doc !== doc) return left(again?.doc);
@@ -882,10 +885,10 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
 }
 
 /** An unlabelled point (a canvas) may be a Buy button nothing can read: ask once per site per chat. */
-function opaqueGate(info: ElementInfo, pageUrl: string): (Gate & { kind: "ask" }) | null {
+function opaqueGate(info: ElementInfo, pageUrl: string, context: ActionContext): (Gate & { kind: "ask" }) | null {
   if (info.role !== "element" || info.name.trim() || info.href) return null;
   const host = hostOfUrl(pageUrl);
-  const rule = ruleFor(pageUrl, permissions()).rule;
+  const rule = ruleFor(pageUrl, permissions(context)).rule;
   if (!host || opaqueHosts.has(host) || rule.actions === "allow" || rule.unlabelled === "allow") return null;
   return { kind: "ask", ask: "pointer", host, name: "", detail: info.tag, prompt: `Click unlabelled parts of ${host}?` };
 }
@@ -900,7 +903,7 @@ async function unchanged(tab: BrowserTab, point: { x: number; y: number }, hit: 
 const SCRIPT_WAIT_MS = 15_000;
 const SCRIPTS_OFF = "The user doesn't let the agent run scripts on pages.";
 
-/** A script bypasses element gates, so it is asked every time outside Full access, whatever the site permissions. */
+/** A script bypasses every rule above, so it is shown verbatim and asked every time, whatever the site permissions. */
 async function runScript(tab: BrowserTab, action: BrowserAction, context: ActionContext, before: string): Promise<Result> {
   const { signal } = context;
   const script = action.script ?? "";
@@ -908,7 +911,7 @@ async function runScript(tab: BrowserTab, action: BrowserAction, context: Action
   // The document the user sees as they approve: a reload or a page at the same address is another one.
   const doc = (await pageCall(tab, { op: "status" })).doc;
   if (!doc) return { ok: false, error: "the page is not answering; take a snapshot." };
-  const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, context);
+  const refused = await pass({ kind: "ask", ask: "script", host: hostOfUrl(before), name: "", detail: script, prompt: "" }, signal);
   if (refused) return { ok: false, error: refused };
   if (signal?.aborted) return { ok: false, error: STOPPED };
   // Settings can change while the question is open.
@@ -972,15 +975,15 @@ async function arrive(
   const url = tabUrl(tab);
   const host = hostOfUrl(url);
   if (url) {
-    const blocked = navigationBlocks(url, action.policy, permissions());
+    const blocked = navigationBlocks(url, action.policy, permissions(context));
     if (blocked) return { ok: false, error: `The page went to ${host}, but ${blocked}. Go back.` };
     if (host && host !== hostOfUrl(requested) && !reachedHosts.has(host)) {
       const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: requested });
-      const refused = await pass(gate, context);
+      const refused = await pass(gate, context.signal);
       if (refused) return { ok: false, error: `The page went to ${host}. ${refused}` };
       admit(url, gate, context);
     }
-    if (host && context.bypassPermissions !== true) reachedHosts.add(host);
+    if (host && context.fullAccess !== true) reachedHosts.add(host);
     record(action.op, url);
   }
   return observeLoaded(tab, context, since, note);
@@ -992,11 +995,11 @@ async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Act
   const url = tabUrl(tab);
   const host = hostOfUrl(url);
   if (!host) return null;
-  const blocked = navigationBlocks(url, action.policy, permissions());
+  const blocked = navigationBlocks(url, action.policy, permissions(context));
   if (blocked) return `The page is on ${host}, but ${blocked}. Use browser_navigate to go elsewhere.`;
   if (reachedHosts.has(host)) return null;
   const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: "" });
-  const refused = await pass(gate, context);
+  const refused = await pass(gate, context.signal);
   if (refused) return `The page is on ${host}. ${refused}`;
   admit(url, gate, context);
   return null;
@@ -1093,11 +1096,12 @@ const HISTORY_LIMIT = 50;
 
 /** The browser_history tool: the user's visits, by their Settings choice (never, ask, allow). */
 async function readHistory(action: BrowserAction, context: ActionContext): Promise<Result> {
-  const access = useBrowserAgentStore.getState().historyAccess;
+  const saved = useBrowserAgentStore.getState().historyAccess;
+  const access = context.fullAccess && saved === "ask" ? "allow" : saved;
   if (access === "never") return { ok: false, error: "The user doesn't let the agent read their browsing history." };
   if (access === "ask") {
     const query = action.query ?? "";
-    const allowed = await askInPanel({ ask: "history", host: "", name: query, detail: query }, context);
+    const allowed = await askInPanel({ ask: "history", host: "", name: query, detail: query }, context.signal);
     if (!allowed) return { ok: false, error: "The user declined to share their browsing history. Do something else, or ask them." };
   }
   const terms = (action.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);

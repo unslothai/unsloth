@@ -13,7 +13,7 @@ export type UnlabelledRule = "ask" | "allow";
 export type SiteRule = { browsing: BrowsingRule; actions: ActionsRule; downloads: DownloadsRule; unlabelled: UnlabelledRule };
 export type AgentPermissions = { defaults: SiteRule; sites: Record<string, SiteRule> };
 export type HistoryAccess = "ask" | "allow" | "never";
-/** No persistent "allow": scripts need individual approval outside the composer's session-only Full access. */
+/** No "allow": approving each script is the only check a script passes. */
 export type ScriptAccess = "ask" | "never";
 
 export const DEFAULT_RULE: SiteRule = { browsing: "ask", actions: "ask", downloads: "ask", unlabelled: "ask" };

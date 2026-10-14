@@ -165,9 +165,8 @@ BROWSER_EVALUATE_TOOL = {
         "description": (
             "Run JavaScript in the current page and get back what it returns, for what the other "
             "browser tools cannot do. script is the body of an async function: use return to give "
-            "a value (made into JSON), and await if needed. Outside Full access, the user sees "
-            "the script and is asked first every time; Full access skips approval. Keep it short "
-            "and plain. " + _UNTRUSTED_NOTE
+            "a value (made into JSON), and await if needed. The user sees the script and is asked "
+            "first every time, so keep it short and plain. " + _UNTRUSTED_NOTE
         ),
         "parameters": {
             "type": "object",
