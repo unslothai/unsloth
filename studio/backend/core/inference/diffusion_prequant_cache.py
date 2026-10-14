@@ -229,6 +229,20 @@ def _hub_cache_dir() -> Optional[str]:
         return None
 
 
+def _hub_cache_roots() -> list:
+    """The live Hub cache root, plus huggingface_hub's import-time root when it differs (``cache_dir = None``)."""
+    roots = [_hub_cache_dir()]
+    try:
+        from huggingface_hub import constants
+
+        other = constants.HF_HUB_CACHE
+        if other and (roots[0] is None or os.path.realpath(other) != os.path.realpath(roots[0])):
+            roots.append(other)
+    except Exception:  # noqa: BLE001
+        pass
+    return roots
+
+
 def _local_file(repo_or_dir: str, filename: str, cache_dir: Optional[str]) -> Optional[str]:
     """``filename`` of a local directory or a Hub repo already in the cache; never a network call."""
     if os.path.isdir(os.path.expanduser(repo_or_dir)):
@@ -251,7 +265,20 @@ def source_shards(
     """Local paths of the dense safetensors shards of ``base``'s ``component``, or None when not all are local."""
     if not base:
         return None
-    cache_dir = cache_dir or _hub_cache_dir()
+    if cache_dir is not None:
+        return _source_shards_in(base, component, cache_dir)
+    # The live root first, then huggingface_hub's import-time root when a cache-folder change moved the live one: the
+    # loaders fetch with reuse_other_cache_root, so the dense shards may sit in either. A key needs only the shard
+    # headers and blob names, which are the same bytes wherever they are stored.
+    roots = [r for r in _hub_cache_roots() if r] or [None]
+    for root in roots:
+        found = _source_shards_in(base, component, root)
+        if found:
+            return found
+    return None
+
+
+def _source_shards_in(base: str, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
     candidates = [str(base)]
     try:
         from .diffusion_families import canonical_base, mirror_repo

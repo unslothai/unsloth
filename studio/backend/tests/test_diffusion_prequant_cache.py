@@ -537,3 +537,24 @@ def test_full_pipeline_image_quantize_is_saved_to_the_cache(monkeypatch):
     engaged = src.index("if engaged and len(engaged) == len(denoisers):")
     assert "_save_pipeline_quant_to_cache(" in src[engaged:engaged + 600]
 
+
+def test_source_shards_are_found_in_the_pre_change_hub_root(tmp_path, monkeypatch):
+    """After a cache-folder change the dense shards may still sit in huggingface_hub's import-time root (the loaders
+    fetch with reuse_other_cache_root): the key must still be computable from them."""
+    from huggingface_hub import constants
+    from safetensors.torch import save_file
+
+    old_root, live_root = tmp_path / "old_hub", tmp_path / "live_hub"
+    live_root.mkdir()
+    repo = "org/tiny"
+    snap = old_root / "models--org--tiny" / "snapshots" / ("c" * 40) / "transformer"
+    snap.mkdir(parents = True)
+    (old_root / "models--org--tiny" / "refs").mkdir(parents = True)
+    (old_root / "models--org--tiny" / "refs" / "main").write_text("c" * 40)
+    save_file({"w": torch.zeros(4)}, str(snap / "diffusion_pytorch_model.safetensors"))
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", str(old_root))
+    monkeypatch.setattr(C, "_hub_cache_dir", lambda: str(live_root))
+    found = C.source_shards(repo)
+    assert found and found[0].endswith("diffusion_pytorch_model.safetensors")
+    # An explicit cache_dir is still that root only.
+    assert C.source_shards(repo, cache_dir = str(live_root)) is None
