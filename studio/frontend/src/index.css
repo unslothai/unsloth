@@ -6259,7 +6259,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 }
 .dark .unsloth-files-panel-show-all {
-	box-shadow: 0 4px 14px var(--background);
+	box-shadow: none;
 }
 /* Over the cards it straddles their bottom edge instead of covering a preview. */
 .unsloth-files-panel:not([data-collapsed]) .unsloth-files-panel-show-all {
