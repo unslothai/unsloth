@@ -196,7 +196,6 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     # transformers is pinned via a constraint file so the mlx install cannot
     # upgrade it underneath Unsloth, and the temp constraint file is cleaned up.
     assert "--constraint" in cmd
-    # Only the MLX packages may move: a bare --upgrade would also upgrade their dependencies.
     assert "--upgrade" not in cmd
     reinstall_pairs = set(zip(cmd, cmd[1:]))
     for name in mr._MLX_PACKAGE_NAMES:
