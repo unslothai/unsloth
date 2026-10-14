@@ -14926,6 +14926,8 @@ def build_synthetic_search_exchange(
     call_id = call_prefix + _uuid.uuid4().hex[:12]
     args = {"query": query}
     full_result = text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
+    # Local and round-less: the client replays it as its own exchange.
+    provenance = {"source": "local"}
     events = [
         {"type": "status", "text": f"{status_label}: {query[:60]}"},
         {
@@ -14933,12 +14935,14 @@ def build_synthetic_search_exchange(
             "tool_name": tool_name,
             "tool_call_id": call_id,
             "arguments": args,
+            "provenance": provenance,
         },
         {
             "type": "tool_end",
             "tool_name": tool_name,
             "tool_call_id": call_id,
             "result": full_result,
+            "provenance": provenance,
         },
         {"type": "status", "text": ""},
     ]
