@@ -651,7 +651,7 @@ def test_only_admission_comments_renew_the_lease_from_the_stream():
     """Only admission comments renew the lease; a keep-alive during a stall would keep a wedge alive."""
     import inspect
 
-    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce)
+    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce_run)
     for marker in ("_ADMISSION_DONE_MARKER in text", "_ADMISSION_WAIT_MARKER in text"):
         guard = source.index(marker)
         renew = source.index("_try_touch_progress", guard)
@@ -664,7 +664,7 @@ def test_leaving_the_queue_renews_without_waiting_for_the_rate_limit():
     the default first-token timeout, so that difference is negative margin."""
     import inspect
 
-    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce)
+    source = inspect.getsource(runs_mod.ChatGenerationSupervisor._produce_run)
     guard = source.index("_ADMISSION_DONE_MARKER in text")
     renew = source.index("_try_touch_progress", guard)
     between = source[guard:renew]

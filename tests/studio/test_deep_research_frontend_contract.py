@@ -347,7 +347,8 @@ def test_research_is_one_shot_per_thread_without_disabling_normal_chat() -> None
     assert "runtime.setDeepResearchEnabled(false)" in adapter
     assert "effectiveDeepResearchEnabled" in thread
     assert "researchAvailable={!researchUsed}" in thread
-    assert "{researchAvailable ? (" in thread
+    # #13679: the + menu is a keyed list.
+    assert "deepResearch: researchAvailable ? (" in thread
     assert "setToolsEnabled" in thread
     assert "Web search" in thread
 

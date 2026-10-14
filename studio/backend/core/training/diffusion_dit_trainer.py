@@ -3,8 +3,8 @@
 
 """Flow-matching LoRA training for the rectified-flow DiT families.
 
-Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Z-Image, Krea 2. Video: LTX-2 (from a
-still-image dataset; see the ``_LTX2_TARGETS`` block for what a video family adds).
+Image: FLUX.1-dev, FLUX.2 (dev + Klein), Qwen-Image, Z-Image, Krea 2. Video: LTX-2 and Wan2.2-TI2V-5B (from a
+still-image dataset; see the ``_LTX2_TARGETS`` and ``_WAN_TARGETS`` blocks for what a video family adds).
 
 These are rectified-flow transformers, not the SDXL U-Net, so they share only the plumbing in
 ``diffusion_train_common`` (config, dataset discovery, events, stop, publishing). The training math
@@ -170,6 +170,10 @@ class _FamilySpec:
     latent_shape: Optional[Callable[..., tuple]] = None
     decode_latents: Optional[Callable[..., Any]] = None
     sample_forward_kwargs: Optional[dict] = None
+    # cfg -> FlowMatchEuler scheduler. None = load scheduler/ (only valid if it IS FlowMatchEuler; Wan ships UniPC).
+    training_scheduler: Optional[Callable[..., Any]] = None
+    # Saver takes ``adapter_metadata``; without it diffusers' loader assumes lora_alpha == rank.
+    save_takes_metadata: bool = False
 
 
 def _gather_sigmas(sigma_table, indices, device, dtype, n_dim):
@@ -1508,6 +1512,194 @@ def _ltx2_save(pipe_cls, out_dir, transformer_lora_layers):
     )
 
 
+# Wan2.2-TI2V-5B, trained from stills (a 1-frame clip is a valid T2V sample). Targets match DiffSynth-Studio /
+# musubi-tuner; bare "to_q" is safe (single stream), add_k/v_proj exist only on I2V-14B.
+_WAN_TARGETS = (
+    "to_q",
+    "to_k",
+    "to_v",
+    "to_out.0",
+    "ffn.net.0.proj",
+    "ffn.net.2",
+)
+_WAN_MAX_SEQUENCE_LENGTH = 512
+
+
+def _wan_pipeline_cls():
+    from diffusers import WanPipeline
+    return WanPipeline
+
+
+def _wan_load_conditioners(cfg, device, weight_dtype):
+    """UMT5 + tokenizer + VAE. VAE loads fp32 directly; the shared bf16-then-fp32 cast would round it through bf16."""
+    import torch
+    from diffusers import AutoencoderKLWan
+
+    vae = AutoencoderKLWan.from_pretrained(
+        cfg.base_model, subfolder = "vae", torch_dtype = torch.float32, token = cfg.hf_token
+    )
+    pipe = _wan_pipeline_cls().from_pretrained(
+        cfg.base_model,
+        transformer = None,
+        vae = vae,
+        torch_dtype = torch.bfloat16,
+        token = cfg.hf_token,
+    )
+    # VAE stays on host; the shared loop moves it only after UMT5-XXL (11.4 GB) is freed.
+    return pipe, pipe.vae
+
+
+def _wan_load_transformer(cfg, device, weight_dtype, base_precision):
+    from diffusers import WanTransformer3DModel
+    return _load_dit_transformer(WanTransformer3DModel, cfg, device, base_precision)
+
+
+def _wan_trim_padding(embeds):
+    """Drop trailing zero-pad rows; lossless since ``_wan_collate`` re-pads."""
+    nonzero = embeds[0].abs().amax(dim = -1) > 0
+    idx = nonzero.nonzero()
+    keep = int(idx.max()) + 1 if idx.numel() else 1
+    return embeds[:, :keep].contiguous()
+
+
+def _wan_encode_prompts(pipe, captions, device):
+    import torch
+
+    _encoders_to_device(pipe, device)
+    out = []
+    with torch.no_grad():
+        for cap in captions:
+            pe, _neg = pipe.encode_prompt(
+                prompt = cap,
+                do_classifier_free_guidance = False,
+                num_videos_per_prompt = 1,
+                max_sequence_length = _WAN_MAX_SEQUENCE_LENGTH,
+                device = device,
+            )
+            out.append((_wan_trim_padding(pe).cpu(),))
+    return out
+
+
+def _wan_latent_affine(vae, ref):
+    """Per-channel (mean, std); training latent is ``(z - mean) / std``."""
+    import torch
+
+    z = int(vae.config.z_dim)
+    mean = torch.tensor(vae.config.latents_mean, device = ref.device, dtype = ref.dtype).view(
+        1, z, 1, 1, 1
+    )
+    std = torch.tensor(vae.config.latents_std, device = ref.device, dtype = ref.dtype).view(
+        1, z, 1, 1, 1
+    )
+    return mean, std
+
+
+def _wan_pixels(vae, pixel_values):
+    return pixel_values.to(dtype = next(vae.parameters()).dtype).unsqueeze(2)
+
+
+def _wan_encode_latents(vae, pixel_values):
+    import torch
+
+    with torch.no_grad():
+        lat = vae.encode(_wan_pixels(vae, pixel_values)).latent_dist.sample()
+    mean, std = _wan_latent_affine(vae, lat)
+    return (lat - mean) / std
+
+
+def _wan_encode_latent_stats(vae, pixel_values):
+    import torch
+
+    with torch.no_grad():
+        dist = vae.encode(_wan_pixels(vae, pixel_values)).latent_dist
+    mean, std = _wan_latent_affine(vae, dist.mean)
+    return (dist.mean - mean) / std, dist.std / std
+
+
+def _wan_collate(
+    entries,
+    device,
+    weight_dtype,
+    pad_to = None,
+):
+    import torch
+    import torch.nn.functional as F
+
+    # Zero-pad as _get_t5_prompt_embeds does, on the DEVICE: host-side pad/cat stalled steps ~100 ms.
+    length = max(_WAN_MAX_SEQUENCE_LENGTH, *(e[0].shape[1] for e in entries))
+    padded = [
+        F.pad(
+            e[0].to(device = device, dtype = weight_dtype, non_blocking = True),
+            (0, 0, 0, length - e[0].shape[1]),
+        )
+        for e in entries
+    ]
+    return (padded[0] if len(padded) == 1 else torch.cat(padded),)
+
+
+def _wan_forward(transformer, noisy, timesteps, sigmas, embeds_batch, cfg, device, weight_dtype):
+    (prompt_embeds,) = embeds_batch
+    # [B] timestep == the pipeline's per-token expand_timesteps form for T2V.
+    return transformer(
+        hidden_states = noisy,
+        timestep = timesteps.to(device = noisy.device).reshape(-1),
+        encoder_hidden_states = prompt_embeds,
+        return_dict = False,
+    )[0]
+
+
+def _wan_save(
+    pipe_cls,
+    out_dir,
+    transformer_lora_layers,
+    adapter_metadata = None,
+):
+    # Older diffusers savers lack the metadata argument; they still get the weights.
+    import inspect
+
+    save = _wan_pipeline_cls().save_lora_weights
+    kwargs = {}
+    if (
+        adapter_metadata
+        and "transformer_lora_adapter_metadata" in inspect.signature(save).parameters
+    ):
+        kwargs["transformer_lora_adapter_metadata"] = dict(adapter_metadata)
+    save(
+        save_directory = out_dir,
+        transformer_lora_layers = transformer_lora_layers,
+        weight_name = DEFAULT_LORA_FILENAME,
+        **kwargs,
+    )
+
+
+def _lora_adapter_metadata(transformer) -> Optional[dict]:
+    try:
+        return transformer.peft_config["default"].to_dict()
+    except Exception:  # noqa: BLE001 -- metadata is best-effort; the weights still save
+        return None
+
+
+def _adapter_saver(spec, transformer):
+    if not spec.save_takes_metadata:
+        return spec.save
+    import functools
+    return functools.partial(spec.save, adapter_metadata = _lora_adapter_metadata(transformer))
+
+
+def _wan_training_scheduler(cfg):
+    """FlowMatchEuler with Wan's UniPC ``flow_shift`` baked in; loading it from the UniPC config silently drops the
+    shift. UniPC flow sigmas equal FlowMatchEuler's static shift."""
+    from diffusers import FlowMatchEulerDiscreteScheduler
+
+    conf = FlowMatchEulerDiscreteScheduler.load_config(
+        cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+    )
+    return FlowMatchEulerDiscreteScheduler(
+        num_train_timesteps = int(conf.get("num_train_timesteps", 1000)),
+        shift = float(conf.get("flow_shift") or 1.0),
+    )
+
+
 def _vae8_latent_shape(vae, height, width):
     return (1, vae.config.latent_channels, height // 8, width // 8), (height // 16) * (width // 16)
 
@@ -1655,6 +1847,22 @@ _SPECS: dict[str, _FamilySpec] = {
         collate = _ltx2_collate,
         forward = _ltx2_forward,
         save = _ltx2_save,
+    ),
+    "wan2.2-ti2v-5b": _FamilySpec(
+        family = "wan2.2-ti2v-5b",
+        lora_targets = _WAN_TARGETS,
+        force_bf16 = True,
+        dense_bf16_gb = 10.0,
+        load_conditioners = _wan_load_conditioners,
+        load_transformer = _wan_load_transformer,
+        encode_prompts = _wan_encode_prompts,
+        encode_latents = _wan_encode_latents,
+        encode_latent_stats = _wan_encode_latent_stats,
+        collate = _wan_collate,
+        forward = _wan_forward,
+        save = _wan_save,
+        training_scheduler = _wan_training_scheduler,
+        save_takes_metadata = True,
     ),
 }
 
@@ -1920,11 +2128,19 @@ def _sample_cached_latents(cache, idxs, variant_rng, device, weight_dtype):
         a, b = variants[variant_rng.randrange(len(variants))] if len(variants) > 1 else variants[0]
         parts_a.append(a)
         parts_b.append(b)
-    lat_a = torch.cat(parts_a).to(device, non_blocking = True)
+    lat_a = _to_device_cat(parts_a, device)
     if parts_b[0] is None:
         return lat_a.to(dtype = weight_dtype)
-    lat_b = torch.cat(parts_b).to(device, non_blocking = True)
+    lat_b = _to_device_cat(parts_b, device)
     return (lat_a + lat_b * torch.randn_like(lat_a)).to(dtype = weight_dtype)
+
+
+def _to_device_cat(parts, device):
+    """Copy pinned parts, then cat on ``device``: a host cat yields pageable memory and a sync copy."""
+    import torch
+
+    moved = [p.to(device, non_blocking = True) for p in parts]
+    return moved[0] if len(moved) == 1 else torch.cat(moved)
 
 
 def _should_compile(
@@ -2062,7 +2278,7 @@ def run_dit_lora_training(
     on_event: Optional[EventCb] = None,
     should_stop: Optional[StopCb] = None,
 ) -> str:
-    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2) and
+    """Train a flow-matching DiT LoRA (FLUX.1 / FLUX.2 / Qwen-Image / Z-Image / Krea 2 / LTX-2 / Wan2.2-TI2V-5B) and
     export it. Resumable: ``cfg.resume_from_checkpoint`` restores the adapter, optimizer moments,
     LR position, EMA shadow, sampler cycle and RNG streams from a ``checkpoint-<N>`` bundle, and
     the loop runs steps N+1..train_steps (the TARGET TOTAL). A stop-and-save and every
@@ -2270,6 +2486,9 @@ def _train_dit(
             torch.cuda.empty_cache()
         elif device == "xpu":
             torch.xpu.empty_cache()
+        # Some families keep the VAE on host while text encoders are resident.
+        if vae is not None:
+            vae.to(device)
 
         if use_cache:
             latent_cache = _build_latent_cache(
@@ -2370,9 +2589,13 @@ def _train_dit(
     optimizer = _make_optimizer(
         lora_params, cfg.learning_rate, recorded_optimizer_class(cfg, identity)
     )
-    scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
-        fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
-    )
+    if spec.training_scheduler is not None:
+        scheduler = spec.training_scheduler(fetch_cfg)
+    else:
+        scheduler = FlowMatchEulerDiscreteScheduler.from_pretrained(
+            fetch_cfg.base_model, subfolder = "scheduler", token = cfg.hf_token
+        )
+    # getattr defaults keep an un-normalized config on the historical behaviour.
     flow_shift = getattr(cfg, "flow_shift", None)
     if flow_shift is None and spec.family in AUTO_FLOW_SHIFT_FAMILIES:
         flow_shift = "auto"
@@ -2687,12 +2910,14 @@ def _train_dit(
         if stopped and done > 0:
             _save_checkpoint(done)
         layers = get_peft_model_state_dict(transformer)
-        spec.save(pipe, str(out_dir), layers)
+        save_adapter = _adapter_saver(spec, transformer)
+        save_adapter(pipe, str(out_dir), layers)
         lora_path = str(out_dir / DEFAULT_LORA_FILENAME)
         catalog_path = _publish_to_lora_catalog(lora_path, cfg, done)
         if ema is not None and ema.updates > 0:
             try:
-                ema_dir = save_ema_adapter(ema, transformer, spec.save, str(out_dir))
+                # Report the adapter FILE, like lora_path, so a caller can load it directly.
+                ema_dir = save_ema_adapter(ema, transformer, save_adapter, str(out_dir))
                 ema_path = str(Path(ema_dir) / DEFAULT_LORA_FILENAME)
             except Exception as exc:  # noqa: BLE001 -- the primary adapter is already saved
                 _emit(on_event, "warning", message = f"EMA adapter save failed: {exc}")

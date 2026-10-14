@@ -2218,9 +2218,6 @@ def test_kb_deletion_retries_retired_scope_cleanup_after_failure(
             subject = "test",
         )
     assert getattr(exc_info.value, "status_code", None) == 404
-    with pytest.raises(Exception) as exc_info:
-        rag_routes.preview_target(document["id"], subject = "test")
-    assert getattr(exc_info.value, "status_code", None) == 404
     with _connection() as conn:
         assert (
             conn.execute(

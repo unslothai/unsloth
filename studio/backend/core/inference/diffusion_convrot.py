@@ -145,6 +145,30 @@ def rotate_convrot_weight_(module: Any, group_size: int) -> None:
     module.weight.data = (blocks @ h.T).reshape(out_features, in_features).to(weight.dtype)
 
 
+def quantize_convrot_int8_weight(weight: Any, group_size: int) -> tuple[Any, Any]:
+    """``(int8 codes, float32 per-row scale)`` of ``W @ blockdiag(H).T``, matching comfy-kitchen
+    ``quantize_int8_convrot_weight``. Float32 with TF32 off on purpose: bf16 rotation changes ~9% of the codes."""
+    import torch
+
+    out_features, in_features = weight.shape
+    if in_features % group_size:
+        raise ValueError(
+            f"in_features {in_features} is not divisible by the ConvRot group {group_size}"
+        )
+    h = build_convrot_hadamard(group_size, device = weight.device, dtype = torch.float32)
+    blocks = weight.float().reshape(out_features, in_features // group_size, group_size)
+    tf32 = torch.backends.cuda.matmul.allow_tf32
+    torch.backends.cuda.matmul.allow_tf32 = False
+    try:
+        rotated = (blocks @ h.T).reshape(out_features, in_features)
+    finally:
+        torch.backends.cuda.matmul.allow_tf32 = tf32
+    del blocks
+    scale = (rotated.abs().amax(dim = -1, keepdim = True) / 127.0).clamp(min = 1e-30)
+    codes = rotated.div_(scale).round_().clamp_(-128.0, 127.0).to(torch.int8)
+    return codes, scale
+
+
 @lru_cache(maxsize = None)
 def convrot_linear_class() -> Any:
     """Built once and cached: a fresh class per call makes torch.compile retrace every rotated block."""

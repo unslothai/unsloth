@@ -3,8 +3,9 @@
 
 """Cold-start I/O for the image load path, byte-for-byte neutral: ``start_load_prefetch`` warms the page
 cache with the files the load reads next (parallel slice reads beat mmap page faults); ``fast_upload``
-moves plain host tensors through a pinned ring and hands them to the existing ``.to`` via a
-``TorchFunctionMode``, so placement semantics stay the module's own. Kill switches
+moves plain host tensors (and the inner tensors of torchao-style wrapper subclasses) through a pinned
+ring and hands them to the existing ``.to`` via a ``TorchFunctionMode``, so placement semantics stay
+the module's own. Kill switches
 ``UNSLOTH_DIFFUSION_PREFETCH=0`` / ``UNSLOTH_DIFFUSION_FAST_UPLOAD=0``.
 """
 
@@ -367,6 +368,63 @@ def _upload_candidates(modules: Sequence[Any], device: Any) -> list[Any]:
     return out
 
 
+def _wrapper_subclass_parts(tensor: Any) -> Optional[tuple[list[str], Any, list[Any]]]:
+    """``(inner names, flatten context, inner tensors)`` of a CPU torchao-style wrapper subclass with plain dense
+    contiguous CPU inner tensors; else None. Its own ``.to`` copies inside ``__torch_dispatch__``, bypassing the ring."""
+    import torch
+
+    try:
+        from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+    except ImportError:  # noqa: BLE001 - an older torch keeps the subclass's own .to
+        return None
+    try:
+        if not is_traceable_wrapper_subclass(tensor) or tensor.device.type != "cpu":
+            return None
+        if not callable(getattr(type(tensor), "__tensor_unflatten__", None)):
+            return None
+        names, ctx = tensor.__tensor_flatten__()
+        inner = [getattr(tensor, name) for name in names]
+    except Exception:  # noqa: BLE001
+        return None
+    # A context that records a device (torchao's ``device`` attribute) would come back still naming the host.
+    values = (
+        ctx.values() if isinstance(ctx, dict) else ctx if isinstance(ctx, (list, tuple)) else (ctx,)
+    )
+    if (isinstance(ctx, dict) and "device" in ctx) or any(
+        isinstance(v, torch.device) for v in values
+    ):
+        return None
+    for part in inner:
+        if type(part) is not torch.Tensor or part.device.type != "cpu":
+            return None
+        if (
+            part.is_sparse
+            or part.is_quantized
+            or not part.is_contiguous()
+            or part.storage_offset() < 0
+        ):
+            return None
+    return list(names), ctx, inner
+
+
+def _subclass_candidates(
+    modules: Sequence[Any], plain_seen: set[int]
+) -> list[tuple[Any, list[str], Any, list[Any]]]:
+    out: list[tuple[Any, list[str], Any, list[Any]]] = []
+    seen: set[int] = set()
+    for module in modules:
+        if module is None or not hasattr(module, "parameters"):
+            continue
+        for tensor in list(module.parameters()) + list(module.buffers()):
+            if id(tensor) in seen or id(tensor) in plain_seen:
+                continue
+            seen.add(id(tensor))
+            parts = _wrapper_subclass_parts(tensor)
+            if parts is not None:
+                out.append((tensor, *parts))
+    return out
+
+
 def _ring_copy(sources: list[Any], device: Any) -> list[Any]:
     """Device copies of ``sources`` (byte-identical), read through a pinned ring on worker threads."""
     from concurrent.futures import ThreadPoolExecutor
@@ -463,18 +521,30 @@ def fast_upload(
                 if target.index is None:
                     target = torch.device("cuda", torch.cuda.current_device())
                 sources = _upload_candidates(modules, target)
+                subclasses = _subclass_candidates(modules, {id(t) for t in sources})
+                known = {id(t) for t in sources}
+                for _tensor, _names, _ctx, inner in subclasses:
+                    for part in inner:
+                        if id(part) not in known:
+                            known.add(id(part))
+                            sources.append(part)
                 total = sum(t.numel() * t.element_size() for t in sources)
                 if sources and total >= _UPLOAD_MIN_TOTAL_BYTES:
                     with torch.no_grad():
                         copies = _ring_copy(sources, target)
                     staged = {id(src): (src, dst) for src, dst in zip(sources, copies)}
-                    mode = _StagedTo(staged, target)
+                    wrapped = {
+                        id(tensor): (tensor, names, ctx, inner)
+                        for tensor, names, ctx, inner in subclasses
+                    }
+                    mode = _StagedTo(staged, target, wrapped)
                     if logger is not None:
                         logger.info(
-                            "diffusion.fast_upload: staged %.1f GiB in %d tensor(s) onto %s",
+                            "diffusion.fast_upload: staged %.1f GiB in %d tensor(s) onto %s%s",
                             total / 2**30,
                             len(sources),
                             target,
+                            f" ({len(wrapped)} quantized weight(s))" if wrapped else "",
                         )
     except Exception as exc:  # noqa: BLE001 - the stock .to() still runs inside the block
         if logger is not None:
@@ -498,10 +568,36 @@ def _staged_to_class():
     class _StagedToMode(TorchFunctionMode):
         """Answers ``Tensor.to`` for a staged source with its device copy; every other call runs as usual."""
 
-        def __init__(self, staged: dict[int, tuple[Any, Any]], device: Any):
+        def __init__(
+            self,
+            staged: dict[int, tuple[Any, Any]],
+            device: Any,
+            wrapped: Optional[dict[int, tuple[Any, list[str], Any, list[Any]]]] = None,
+        ):
             super().__init__()
             self.staged = staged
             self.device = device
+            self.wrapped = wrapped or {}
+
+        def _wrapped_copy(self, tensor: Any, device: Any, dtype: Any) -> Any:
+            hit = self.wrapped.get(id(tensor))
+            if hit is None or hit[0] is not tensor:
+                return None
+            if not _same_device(device, self.device) or (
+                dtype is not None and dtype != tensor.dtype
+            ):
+                return None
+            _tensor, names, ctx, inner = hit
+            parts = {}
+            for name, part in zip(names, inner):
+                staged = self.staged.get(id(part))
+                if staged is None or staged[0] is not part:
+                    return None
+                parts[name] = staged[1]
+            out = type(tensor).__tensor_unflatten__(parts, ctx, tensor.size(), tensor.stride())
+            if type(out) is not type(tensor) or not _same_device(out.device, self.device):
+                return None
+            return out
 
         def __torch_function__(
             self,
@@ -533,10 +629,30 @@ def _staged_to_class():
                         if args[0].requires_grad and torch.is_grad_enabled():
                             out = out.requires_grad_(True)
                         return out
+                elif self.wrapped and id(args[0]) in self.wrapped:
+                    try:
+                        device, dtype, _non_blocking, memory_format = torch._C._nn._parse_to(
+                            *args[1:], **kwargs
+                        )
+                        out = None
+                        if (
+                            device is not None
+                            and memory_format is None
+                            and not kwargs.get("copy", False)
+                        ):
+                            out = self._wrapped_copy(args[0], device, dtype)
+                    except Exception:  # noqa: BLE001 - the subclass's own .to below
+                        out = None
+                    if out is not None:
+                        return out
             return func(*args, **kwargs)
 
     return _StagedToMode
 
 
-def _StagedTo(staged: dict[int, tuple[Any, Any]], device: Any) -> Any:
-    return _staged_to_class()(staged, device)
+def _StagedTo(
+    staged: dict[int, tuple[Any, Any]],
+    device: Any,
+    wrapped: Optional[dict[int, tuple[Any, list[str], Any, list[Any]]]] = None,
+) -> Any:
+    return _staged_to_class()(staged, device, wrapped)

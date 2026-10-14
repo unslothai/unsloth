@@ -1067,48 +1067,6 @@ def _verify_document_token(document_id: str, token: str) -> AccountContext | Non
     return None if account is None or account.is_owner else account
 
 
-@router.get("/documents/{document_id}/preview-target")
-def preview_target(
-    document_id: str,
-    chunk_id: str | None = Query(default = None),
-    subject: str = Depends(get_current_subject),
-) -> dict:
-    """Resolve a citation to filename, page, and highlight regions."""
-    _require_rag()
-    conn = _rag_connection()
-    try:
-        doc = store.get_visible_document(conn, document_id)
-        if doc is None:
-            raise HTTPException(status_code = 404, detail = "Document not found")
-        _require_document_owner(conn, doc)
-        ext = os.path.splitext(doc["filename"])[1].lower()
-        out = {
-            "documentId": document_id,
-            "filename": doc["filename"],
-            "mediaKind": "pdf" if ext == ".pdf" else "text",
-            "targetPage": None,
-            "pdfRegions": [],
-            "text": None,
-        }
-        if chunk_id:
-            row = conn.execute(
-                "SELECT text, page_number, pdf_regions_json FROM chunks "
-                "WHERE id=? AND document_id=?",
-                (chunk_id, document_id),
-            ).fetchone()
-            if row is not None:
-                out["text"] = row["text"]
-                out["targetPage"] = row["page_number"]
-                if row["pdf_regions_json"]:
-                    try:
-                        out["pdfRegions"] = json.loads(row["pdf_regions_json"])
-                    except Exception:
-                        out["pdfRegions"] = []
-        return out
-    finally:
-        conn.close()
-
-
 @router.get("/documents/{document_id}/file-url")
 def document_file_url(
     document_id: str,

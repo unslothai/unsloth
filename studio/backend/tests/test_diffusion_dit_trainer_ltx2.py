@@ -427,8 +427,8 @@ def test_ltx2_bases_route_to_the_ltx2_trainer(base):
 @pytest.mark.parametrize(
     "base, family",
     [
-        ("Wan-AI/Wan2.2-TI2V-5B-Diffusers", "wan2.2-ti2v-5b"),
         ("Wan-AI/Wan2.2-T2V-A14B-Diffusers", "wan2.2-t2v-a14b"),
+        ("Wan-AI/Wan2.1-T2V-1.3B-Diffusers", "wan2.1-t2v-1.3b"),
         ("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v", "hunyuanvideo-1.5"),
     ],
 )
@@ -443,8 +443,8 @@ def test_video_families_without_a_spec_are_refused_by_name(base, family):
 
 def test_explicit_video_model_family_override_is_honoured_and_gated():
     assert resolve_trainable_family("/tmp/some-local-checkout", "ltx-2") == "ltx-2"
-    with pytest.raises(ValueError, match = "wan2.2-ti2v-5b"):
-        resolve_trainable_family("/tmp/some-local-checkout", "wan2.2-ti2v-5b")
+    with pytest.raises(ValueError, match = "wan2.2-t2v-a14b"):
+        resolve_trainable_family("/tmp/some-local-checkout", "wan2.2-t2v-a14b")
 
 
 def test_unknown_model_family_lists_the_video_families_too():

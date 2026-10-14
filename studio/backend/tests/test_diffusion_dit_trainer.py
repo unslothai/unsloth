@@ -54,6 +54,7 @@ def test_specs_cover_the_dit_families():
         "flux.2-klein",
         "flux.2-dev",
         "ltx-2",
+        "wan2.2-ti2v-5b",
     }
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
     assert "add_q_proj" in _SPECS["qwen-image"].lora_targets

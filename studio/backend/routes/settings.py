@@ -90,7 +90,7 @@ from utils.helper_precache_settings import (
     helper_model_disabled_by_env,
     set_helper_precache_enabled,
 )
-from utils import sandbox_memory_limit, systemone_settings, tool_result_limit
+from utils import first_token_timeout, sandbox_memory_limit, systemone_settings, tool_result_limit
 from utils.download_transport_settings import (
     get_download_transport_mode,
     set_download_transport_mode,
@@ -1406,6 +1406,28 @@ def update_upload_limit(
             log = logger,
         ) from exc
     return _upload_limit_response(limit_mb)
+
+
+class FirstTokenTimeoutPayload(BaseModel):
+    minutes: StrictInt = Field(ge = 0, le = first_token_timeout.MAX_MINUTES)
+
+
+class FirstTokenTimeoutResponse(FirstTokenTimeoutPayload):
+    default_minutes: int = first_token_timeout.DEFAULT_MINUTES
+    max_minutes: int = first_token_timeout.MAX_MINUTES
+
+
+@_shared_settings_router.get("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def get_first_token_timeout(current_subject: str = Depends(get_current_subject)):
+    return FirstTokenTimeoutResponse(minutes = first_token_timeout.get_minutes())
+
+
+@_owner_settings_router.put("/first-token-timeout", response_model = FirstTokenTimeoutResponse)
+def update_first_token_timeout(
+    payload: FirstTokenTimeoutPayload, current_subject: str = Depends(get_current_subject)
+):
+    first_token_timeout.set_minutes(payload.minutes)
+    return FirstTokenTimeoutResponse(minutes = payload.minutes)
 
 
 def _tool_result_limit_response() -> ToolResultLimitResponse:

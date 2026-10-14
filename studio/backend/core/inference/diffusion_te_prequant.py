@@ -122,7 +122,23 @@ TE_INT8_CONVROT_BUDGET_SCALE = 0.56
 def te_prequant_budget_scale(
     fam: Any, *, te_quant_mode: Optional[str], target: Any, base: str
 ) -> float:
-    """Keyed on te_prequant_sources: a runtime cast peaks at bf16; only a pre-cast is fp8 throughout."""
+    """Scale to apply to a family's bf16 text-encoder size when budgeting memory for this pick:
+    ``TE_PREQUANT_BUDGET_SCALE`` when the load takes its encoder PRE-CAST from a hosted fp8
+    checkpoint, else 1.0.
+
+    Keyed on ``te_prequant_sources`` -- the same pure resolver the download plan and the load
+    itself use, so a budget can never disagree with them about what gets loaded -- and NOT on
+    ``text_encoder_quant`` alone. That distinction is the conservative one: the runtime cast
+    (``quantize_text_encoders``) runs *after* pipeline assembly has already materialised the
+    dense encoder, so its steady state is fp8 but its peak is bf16, and the peak is what a
+    budget has to cover. Only the pre-cast path is fp8-sized end to end.
+
+    Best-effort like the rest of this module: anything unresolvable returns 1.0, i.e. today's
+    bf16 budget."""
+    if getattr(fam, "name", None) == "ltx-2.5":
+        from .video_ltx25 import ltx25_te_budget_scale
+        components = getattr(fam, "bf16_components_gb", None) or (0.0, 0.0)
+        return ltx25_te_budget_scale(te_quant_mode, components[1])
     try:
         sources = te_prequant_sources_for_base(
             fam,

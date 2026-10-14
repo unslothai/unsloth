@@ -231,9 +231,6 @@ FACTORIES = {
     "routes.rag:GET:/documents/{document_id}/file-url": Factory(
         "rag-document", fragment = "file-signed"
     ),
-    "routes.rag:GET:/documents/{document_id}/preview-target": Factory(
-        "rag-document", fragment = FILENAME
-    ),
     "routes.rag:GET:/jobs/{job_id}": Factory("rag-job", fragment = DOCUMENT_ID),
     "routes.rag:GET:/jobs/{job_id}/events": Factory(
         "rag-job",

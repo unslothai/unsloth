@@ -2314,6 +2314,11 @@ def _start_mlx_stop_poller(stop_queue):
         trainer = trainer_ref[0]
         if trainer is not None:
             trainer.stop_requested = True
+            # Early stopping set load_best_model_at_end; a manual stop keeps the current adapters instead, since the
+            # stop checkpoint stores this step's optimizer state next to them.
+            args = getattr(trainer, "args", None)
+            if getattr(args, "load_best_model_at_end", False):
+                args.load_best_model_at_end = False
 
     stop_thread = _start_worker_stop_poller(
         stop_queue,
@@ -2559,6 +2564,9 @@ def _finalize_mlx_training(
                 resume_blocked = True,
             )
             return
+    if not stopped_after_save and getattr(trainer, "_early_stopped", False):
+        # Zoo ends an early-stopped run without stop_requested, so it reads as a plain completion otherwise.
+        completion_message = "Training completed (stopped early: eval loss stopped improving)"
     send(
         "complete",
         output_dir = output_dir if bool(trainer.is_main_process) else None,
@@ -3147,6 +3155,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "report_grad_norm" in _supported_fields:
         # Grad norm is free under global-norm clipping; switching clip modes would change loss.
         mlx_config_kwargs["report_grad_norm"] = True
+    if (
+        "early_stopping_patience" in _supported_fields
+        and "load_best_model_at_end" in _supported_fields
+    ):
+        from core.training.early_stopping import early_stopping_patience
+
+        # Zoo counts patience in evaluations and restores the best adapters itself, the CUDA path's contract.
+        patience = early_stopping_patience(config.get("early_stopping_patience"))
+        if patience and eval_dataset is not None and eval_steps_value > 0:
+            mlx_config_kwargs["early_stopping_patience"] = patience
+            mlx_config_kwargs["load_best_model_at_end"] = True
     if "append_eos" in _supported_fields:
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
 
@@ -4737,6 +4756,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = tensorboard_dir,
             eval_dataset = eval_dataset,
             eval_steps = eval_steps,
+            early_stopping_patience = config.get("early_stopping_patience", 0),
             max_seq_length = config.get("max_seq_length", 2048),
             vision_image_size = config.get("vision_image_size"),
             optim = config.get("optim", "adamw_8bit"),

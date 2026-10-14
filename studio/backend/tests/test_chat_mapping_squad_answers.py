@@ -55,7 +55,7 @@ def test_template_mapping_trains_the_squad_answer_not_the_dict():
 def test_cell_text_reads_the_text_of_an_answer_dict():
     assert cell_text({"text": ["first", "second"], "answer_start": [1, 9]}) == "first"
     assert cell_text({"text": [], "answer_start": []}) == ""
-    assert cell_text({"label": 1}) == "{'label': 1}"
+    assert cell_text({"label": 1}) == '{"label": 1}'
     assert cell_text({"label": ["A", "B"], "text": ["x", "y"]}) == (
-        "{'label': ['A', 'B'], 'text': ['x', 'y']}"
+        '{"label": ["A", "B"], "text": ["x", "y"]}'
     )

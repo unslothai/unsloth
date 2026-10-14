@@ -99,7 +99,7 @@ def test_causal_conv1d_reuses_torch_2_10_wheel_on_2_11():
     [
         None,
         _env("2.11.0+cpu", ""),
-        _env("2.11.0+cu130", "13.0", platform_tag = "win_amd64"),
+        _env("2.12.0+cu130", "13.0", platform_tag = "win_amd64"),
     ],
 )
 def test_causal_conv1d_has_no_wheel_off_linux_cuda(env):
@@ -335,7 +335,12 @@ def test_console_entry_drops_an_unwritable_ssl_keylog_file(tmp_path):
             "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
             "flash_attn-2.8.4+cu13torch2.13cxx11abiTRUE-cp313-cp313-linux_x86_64.whl",
         ),
-        (_env("2.11.0+cu130", "13.0", platform_tag = "win_amd64"), None),
+        (
+            _env("2.11.0+cu130", "13.0", platform_tag = "win_amd64"),
+            "https://github.com/unslothai/unsloth/releases/download/prebuilt-wheels-cu13/"
+            "flash_attn-2.8.4+cu13torch2.11cxx11abiTRUE-cp313-cp313-win_amd64.whl",
+        ),
+        (_env("2.12.0+cu130", "13.0", platform_tag = "win_amd64"), None),
         (_env("2.11.0+cpu", ""), None),
     ],
 )

@@ -152,10 +152,6 @@ def test_list_knowledge_bases_degrades_to_empty(rag_home, reset_unavailable_warn
             id = "job-status",
         ),
         pytest.param(
-            lambda r: r.preview_target("doc1", subject = "tester"),
-            id = "preview-target",
-        ),
-        pytest.param(
             lambda r: r.document_file_url("doc1", subject = "tester"),
             id = "file-url",
         ),
