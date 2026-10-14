@@ -2142,8 +2142,8 @@ test("a UTF-16 text source opened from the files panel previews as its text", as
   assert.match(dialog, /blob instanceof File\s*\?\s*await readAttachmentText\(blob, source\.name, blob\.type\)/);
   const sourceFile = await readFile(new URL("../src/features/rag/components/source-file.ts", import.meta.url), "utf8");
   assert.match(sourceFile, /new File\(\[file\], file\.name, \{ type: "text\/plain" \}\)/);
-  const bar = await readFile(new URL("../src/features/rag/components/thread-documents-bar.tsx", import.meta.url), "utf8");
-  assert.match(bar, /return asViewerFile\(file\);/);
+  const trigger = await readFile(new URL("../src/features/rag/components/rag-document-trigger.tsx", import.meta.url), "utf8");
+  assert.match(trigger, /return asViewerFile\(file\);/);
 });
 
 async function readRtf(rtf: string | Uint8Array<ArrayBuffer>): Promise<string> {

@@ -242,3 +242,18 @@ test("a file with no embedding learning rate leaves the current one alone", () =
   importConfig("training:\n  max_seq_length: 4096\n");
   assert.equal(useTrainingConfigStore.getState().embeddingLearningRate, 4e-5);
 });
+
+test("saving and reloading a config keeps the early stopping patience", () => {
+  seedTunedModelDefaults();
+  useTrainingConfigStore.setState({ evalSteps: 0.1, earlyStoppingPatience: 4 });
+
+  const saved = serializeConfigToYaml(useTrainingConfigStore.getState(), false);
+
+  useTrainingConfigStore.setState({ earlyStoppingPatience: 0 });
+  importConfig(saved);
+  assert.equal(useTrainingConfigStore.getState().earlyStoppingPatience, 4);
+
+  // A file from before the setting existed leaves the current value alone.
+  importConfig("training:\n  eval_steps: 0.1\n");
+  assert.equal(useTrainingConfigStore.getState().earlyStoppingPatience, 4);
+});

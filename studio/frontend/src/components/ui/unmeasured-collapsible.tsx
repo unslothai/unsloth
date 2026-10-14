@@ -225,7 +225,8 @@ const UnmeasuredCollapsibleContent = React.forwardRef<
           className,
         )}
       >
-        <div className="min-h-0 overflow-hidden">{present && children}</div>
+        {/* Vertical clip only, so hanging list markers show; min-w-0 replaces the shrink hidden gave. */}
+        <div className="min-h-0 min-w-0 overflow-hidden supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip">{present && children}</div>
       </div>
     );
   },

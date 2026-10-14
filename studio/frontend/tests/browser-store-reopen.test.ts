@@ -307,3 +307,28 @@ test("leaving a chat closes a duplicated page that no longer claims the card's k
   store.closeChatPages();
   assert.equal(useBrowserStore.getState().tabs.length, 0);
 });
+
+test("a file opened at a page asks for it again on every reopen, and a reopen with no page leaves it", () => {
+  const store = useBrowserStore.getState();
+  for (const tab of useBrowserStore.getState().tabs) store.closeTab(tab.id);
+  const open = (page?: number) =>
+    store.openFile({ blob: new Blob(["%PDF"]), name: "guide.pdf", key: "rag:doc-1", ...(page ? { page } : {}) });
+  const target = () => {
+    const state = useBrowserStore.getState();
+    return state.fileViews[state.activeTabId ?? ""]?.pageTarget ?? null;
+  };
+  open(3);
+  const first = target();
+  assert.deepEqual(first, { page: 3 });
+  open(3);
+  assert.deepEqual(target(), { page: 3 });
+  assert.notEqual(target(), first);
+  open(7);
+  assert.deepEqual(target(), { page: 7 });
+  const seventh = target();
+  open();
+  assert.equal(target(), seventh);
+  assert.equal(useBrowserStore.getState().tabs.length, 1);
+  store.openFile({ blob: new Blob(["%PDF"]), name: "other.pdf", key: "rag:doc-2" });
+  assert.equal(target(), null);
+});

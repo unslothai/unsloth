@@ -52,6 +52,9 @@ import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
+const skillsForTools = () =>
+  useSkillsSwitchStore.getState().on === false ? [] : getSkillsSnapshot().skills;
+
 function messageText(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -262,6 +265,7 @@ import {
 } from "../provider-capabilities";
 import { selectCodeToolNames } from "./code-tool-placement";
 import { skillToolNames } from "./skill-tools";
+import { useSkillsSwitchStore } from "../stores/skills-switch-store";
 import { ragScopeContextLength } from "./rag-context-length";
 import {
   type PendingImageEditReference,
@@ -2264,7 +2268,7 @@ export async function buildLocalTokenCountExtras(
   // re-fetch for every counted user turn so skills created since page load match request pricing.
   await settleSkillsForText(userTexts(messages).join("\n"));
   const skillTools = skillToolNames(
-    getSkillsSnapshot().skills,
+    skillsForTools(),
     codeToolsEnabled,
     userTexts(messages),
   );
@@ -6465,7 +6469,7 @@ export function createOpenAIStreamAdapter(
             await settleSkillsForText(userTexts(outboundMessages).join("\n"));
           }
           const skillTools = skillToolNames(
-            getSkillsSnapshot().skills,
+            skillsForTools(),
             codeToolsEnabled,
             userTexts(outboundMessages),
           );

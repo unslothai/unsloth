@@ -15,7 +15,6 @@ import type {
   KnowledgeBase,
   LinkedFolder,
   LinkedFolderScope,
-  PreviewTarget,
   RagDocument,
   UploadedDocument,
 } from "../types/rag";
@@ -758,18 +757,8 @@ export function streamFolderSyncJobEvents(
   );
 }
 
-export function getPreviewTarget(
-  documentId: string,
-  chunkId?: string,
-): Promise<PreviewTarget> {
-  const qs = chunkId ? `?chunk_id=${encodeURIComponent(chunkId)}` : "";
-  return ragRequest(
-    `/documents/${encodeURIComponent(documentId)}/preview-target${qs}`,
-  );
-}
-
-// Signed URL so pdf.js can issue Range requests; absolute because Tauri resolves relative paths
-// against the webview origin.
+// Signed URL (no bearer) so pdf.js can issue Range requests. Absolute because consumers bypass
+// authFetch, and a relative path under Tauri resolves against the webview origin.
 export async function getDocumentFileUrl(documentId: string): Promise<string> {
   const data = await ragRequest<{ url: string }>(
     `/documents/${encodeURIComponent(documentId)}/file-url`,

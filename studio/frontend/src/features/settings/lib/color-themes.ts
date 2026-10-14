@@ -53,16 +53,16 @@ type ColorThemeMeta = {
 
 export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
   standard: {
-    light: { accent: "#17b88b", background: "#fefefd", foreground: "#262626" },
-    dark: { accent: "#17b88b", background: "#181818", foreground: "#dfdfdf" },
+    light: { accent: "#17b88b", background: "#fefefd", foreground: "#0f1114" },
+    dark: { accent: "#17b88b", background: "#181818", foreground: "#fcfcfc" },
   },
   classic: {
     light: { accent: "#339cff", background: "#ffffff", foreground: "#1a1c1f" },
-    dark: { accent: "#4dabff", background: "#181818", foreground: "#dfdfdf" },
+    dark: { accent: "#4dabff", background: "#181818", foreground: "#fcfcfc" },
   },
   minimal: {
     light: { accent: "#171717", background: "#ffffff", foreground: "#171717" },
-    dark: { accent: "#ededed", background: "#181818", foreground: "#dfdfdf" },
+    dark: { accent: "#ededed", background: "#181818", foreground: "#fcfcfc" },
   },
   matcha: {
     name: "Matcha",

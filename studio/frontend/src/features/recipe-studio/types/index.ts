@@ -154,7 +154,7 @@ export type Score = {
   options: ScoreOption[];
 };
 
-export type McpProviderType = "stdio" | "streamable_http";
+export type McpProviderType = "stdio" | "sse" | "streamable_http";
 
 export type McpEnvVar = {
   key: string;

@@ -56,9 +56,17 @@ export type FileViewState = {
   consoleOpen: boolean;
   errorCount: number;
   wrap: boolean;
+  /** A PDF page to scroll to; a new object asks again for the same page. */
+  pageTarget: { page: number } | null;
 };
 
-export const DEFAULT_FILE_VIEW: FileViewState = { mode: "preview", consoleOpen: false, errorCount: 0, wrap: false };
+export const DEFAULT_FILE_VIEW: FileViewState = {
+  mode: "preview",
+  consoleOpen: false,
+  errorCount: 0,
+  wrap: false,
+  pageTarget: null,
+};
 
 export type BrowserTab = {
   id: string;
@@ -90,6 +98,8 @@ export type OpenFileInput = {
   contentType?: string;
   plainText?: boolean;
   key?: string;
+  /** 1-based PDF page to show; reopening the tab jumps to it. */
+  page?: number;
 };
 
 // Blobs live outside the store; documents can be 50 MB.
@@ -515,7 +525,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (options?.newTab === undefined && focusExisting(openKey)) return;
       openTab(createTab(webEntry(target, undefined, undefined, options?.from), openKey), options?.background);
     },
-    openFile: ({ blob, name, contentType, plainText, key }) => {
+    openFile: ({ blob, name, contentType, plainText, key, page }) => {
       const openKey = key ? `file:${key}` : null;
       const fileId = newId("file");
       files.set(fileId, blob);
@@ -533,6 +543,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const existing = openKey ? get().tabs.find((tab) => tab.openKey === openKey) : undefined;
       if (openKey && existing) {
         focusExisting(openKey);
+        if (page) get().setFileView(existing.id, { pageTarget: { page } });
         // refresh changed files in order per tab so the last reopen wins.
         const previous = refreshes.get(existing.id) ?? Promise.resolve();
         queuedFiles.add(fileId);
@@ -560,7 +571,9 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         });
         return;
       }
-      openTab(createTab(entry, openKey));
+      const tab = createTab(entry, openKey);
+      openTab(tab);
+      if (page) get().setFileView(tab.id, { pageTarget: { page } });
     },
     navigate: (tabId, request, options) => {
       if (!isWeb(request.url)) return;

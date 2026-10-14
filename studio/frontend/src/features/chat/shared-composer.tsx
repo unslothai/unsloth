@@ -140,13 +140,12 @@ import {
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
 import { McpComposerButton } from "./mcp-composer-button";
-import { SkillsComposerButton } from "./skills-composer-button";
+import { SkillsComposerButton, useSkillsSwitch } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
 import { reasoningCapsFromLoad } from "./lib/apply-inference-status-to-store";
 import { resyncInferenceStatusAfterServerModelChange } from "./hooks/use-chat-model-runtime";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
 import { NewProjectDialog } from "./components/new-project-dialog";
-import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { ChatAudioUploadMount } from "./components/chat-audio-upload-mount";
 import { useChatProjects } from "./hooks/use-chat-projects";
 import { useChatAudioUpload } from "./hooks/use-chat-audio-upload";
@@ -205,7 +204,7 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import {
-  PLUS_MENU_ORDER,
+  splitPlusMenuItems,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
@@ -661,7 +660,7 @@ export function SharedComposer({
   const [dragging, setDragging] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
-  const [skillsOpen, setSkillsOpen] = useState(false);
+  const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
   const [recentPrompts, setRecentPrompts] = useState<PromptEntry[]>([]);
   const [recentLists, setRecentLists] = useState<PromptListEntry[]>([]);
@@ -690,6 +689,7 @@ export function SharedComposer({
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+  const plusOrder = usePlusMenuPrefsStore((s) => s.order);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
   const queueRef = useRef<string[]>([]);
@@ -764,6 +764,7 @@ export function SharedComposer({
   const preserveThinking = useChatRuntimeStore((s) => s.preserveThinking);
   const setPreserveThinking = useChatRuntimeStore((s) => s.setPreserveThinking);
   const supportsTools = useChatRuntimeStore((s) => s.supportsTools);
+  const [skillsSwitchOn] = useSkillsSwitch();
 
   const mentionOpenRef = useRef(false);
   const skillMentions = useTextareaSkillMentions({
@@ -771,7 +772,7 @@ export function SharedComposer({
     setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
-    enabled: supportsTools,
+    enabled: supportsTools && skillsSwitchOn,
   });
   mentionOpenRef.current = skillMentions.inputProps["aria-expanded"];
   const supportsBuiltinWebSearch = useChatRuntimeStore(
@@ -2412,6 +2413,9 @@ export function SharedComposer({
   );
 
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    // Compare runs no research, so the item has nothing to offer here.
+    deepResearch: null,
+    browserUse: <BrowserAgentMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
@@ -2441,9 +2445,15 @@ export function SharedComposer({
       </DropdownMenuItem>
     ),
     skills: (
-      <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
+      <DropdownMenuItem
+        className={skillsOn ? "text-primary font-medium" : undefined}
+        onSelect={() => setSkillsOn(!skillsOn)}
+      >
         <HugeiconsIcon icon={Scroll01Icon} strokeWidth={2} />
         Skills
+        {skillsOn ? (
+          <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
+        ) : null}
       </DropdownMenuItem>
     ),
     savedPrompts: (
@@ -2566,8 +2576,8 @@ export function SharedComposer({
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
+    splitPlusMenuItems(plusOrder, plusPins);
 
   return (
     <div
@@ -2577,7 +2587,6 @@ export function SharedComposer({
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}
       data-writing-expanded={isWritingExpanded ? "true" : undefined}
     >
-      <ChatSkillsDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
       <ChatAudioUploadMount audioUpload={audioUpload} />
 
       <PromptStorageDialog
@@ -2806,12 +2815,8 @@ export function SharedComposer({
                 )}
                 <DropdownMenuSeparator />
                 {/* Browser use sits right under Chat with files, or leads this section without it. */}
-                {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
                 {pinnedPlusItems.map((id) => (
-                  <Fragment key={id}>
-                    {plusMenuNodes[id]}
-                    {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
-                  </Fragment>
+                  <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                 ))}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>

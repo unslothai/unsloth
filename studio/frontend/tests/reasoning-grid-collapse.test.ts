@@ -54,8 +54,15 @@ test("the unmeasured collapsible reads no geometry at all", () => {
   }
 });
 
-test("the animating child carries min-height:0 and overflow:hidden", () => {
-  assert.match(UNMEASURED, /className="min-h-0 overflow-hidden"/);
+test("the animating child carries min-height:0 and clips vertically only", () => {
+  // All on one element, and that element is the wrapper the component renders itself, so a
+  // caller cannot omit them. Hidden is the fallback where `overflow: clip` is missing; the x axis
+  // stays visible so list markers hanging past the column are not cut, and min-w-0 stands in
+  // for the shrink that hidden used to give.
+  assert.match(
+    UNMEASURED,
+    /className="min-h-0 min-w-0 overflow-hidden supports-\[overflow:clip\]:overflow-x-visible supports-\[overflow:clip\]:overflow-y-clip"/,
+  );
 });
 
 test("the collapse is a grid-template-rows transition between 0fr and 1fr", () => {

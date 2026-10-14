@@ -179,6 +179,7 @@ function ToolFallbackTrigger({
   mcpTool,
   status,
   icon: ToolIcon,
+  singleLine = false,
   className,
   ...props
 }: ComponentProps<typeof CollapsibleTrigger> & {
@@ -188,7 +189,10 @@ function ToolFallbackTrigger({
   mcpTool?: string;
   status?: ToolCallMessagePartStatus;
   icon?: ElementType;
+  /** Keep the label to one line when open, for a label that repeats an argument the content shows in full. */
+  singleLine?: boolean;
 }) {
+  const wrapWhenOpen = !singleLine;
   const statusType = status?.type ?? "complete";
   const isRunning = isToolCallRunning(status);
   const isCancelled = isToolCallCancelled(status);
@@ -236,7 +240,8 @@ function ToolFallbackTrigger({
         <span
           className={cn(
             "block truncate leading-normal",
-            "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
+            wrapWhenOpen &&
+              "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
           )}
         >
           {label}:{" "}
@@ -248,6 +253,7 @@ function ToolFallbackTrigger({
             data-slot="tool-fallback-trigger-shimmer"
             className={cn(
               "aui-tool-fallback-trigger-shimmer shimmer pointer-events-none absolute inset-0 block truncate leading-normal motion-reduce:animate-none",
+              wrapWhenOpen &&
               "group-data-[state=open]/trigger:overflow-visible group-data-[state=open]/trigger:whitespace-normal group-data-[state=open]/trigger:break-words",
             )}
           >
