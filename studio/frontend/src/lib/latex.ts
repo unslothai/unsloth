@@ -55,38 +55,99 @@ function startsLikeVariable(text: string, at: number): boolean {
 }
 
 const MAX_SHELL_EXPANSION_SPAN = 4096;
-const SHELL_QUOTE_CONTEXT_CANDIDATE_RE = /\$(?:["'!?]|\[)/;
+const SHELL_QUOTE_CONTEXT_CANDIDATE_RE = /\$(?:["'!\-?]|\[)/;
+const SHELL_COMMANDS = new Set([
+  "awk",
+  "bash",
+  "dash",
+  "echo",
+  "env",
+  "eval",
+  "exec",
+  "export",
+  "find",
+  "fish",
+  "grep",
+  "ksh",
+  "printf",
+  "read",
+  "sed",
+  "set",
+  "sh",
+  "source",
+  "test",
+  "unset",
+  "xargs",
+  "zsh",
+]);
+const SHELL_LEADIN_RE = /^(?:Run|Use|Try|Execute|sudo|command|builtin|env)$/i;
+const SHELL_WORD_RE = /^(?:[a-z_][\w.-]*|\.{0,2}\/[^\s]+)$/;
+
+function hasShellCommandPrefix(text: string, at: number): boolean {
+  const minimum = Math.max(0, at - 256);
+  let lineStart = at;
+  while (lineStart > minimum && text.charCodeAt(lineStart - 1) !== 10) {
+    lineStart--;
+  }
+  const prefix = text.slice(lineStart, at).trimEnd();
+  if (!prefix) return false;
+  if (/[=|&;]$/.test(prefix)) return true;
+  if (/\b(?:shell|bash|command) examples?\b[^\n.]*$/i.test(prefix)) return true;
+  const words = prefix.match(/[^\s]+/g) ?? [];
+  const last = words.at(-1) ?? "";
+  if (SHELL_COMMANDS.has(last) || /^\.{0,2}\//.test(last)) return true;
+  const previous = words.at(-2) ?? "";
+  if (SHELL_LEADIN_RE.test(previous) && SHELL_WORD_RE.test(last)) return true;
+  return /[;&|]\s*[a-z_][\w.-]*\s*$/.test(prefix);
+}
 
 function findShellQuoteStates(text: string): Map<number, number> {
   const states = new Map<number, number>();
   let quote = 0;
   for (let index = 0; index < text.length; index++) {
     const char = text.charCodeAt(index);
+    const activeQuote = Math.abs(quote);
     if (char === 36) states.set(index, quote);
-    if (char === 92 && quote !== 39) {
+    if (char === 92 && activeQuote !== 39) {
       index++;
     } else if (quote === 0 && (char === 34 || char === 39)) {
       if (char === 39 && isWordChar(text.charCodeAt(index - 1))) {
         continue;
       }
-      quote = char;
-    } else if (char === quote) {
+      quote = hasShellCommandPrefix(text, index) ? char : -char;
+    } else if (char === activeQuote) {
       quote = 0;
     }
   }
   return states;
 }
 
+function findLegacyArithmeticCloses(text: string): Int32Array {
+  const closes = new Int32Array(text.length);
+  let nextClose = -1;
+  for (let index = text.length - 1; index >= 0; index--) {
+    const char = text.charCodeAt(index);
+    if (char === 93) nextClose = index;
+    else if (char === 91 && text.charCodeAt(index - 1) === 36) {
+      closes[index] = nextClose + 1;
+    }
+  }
+  return closes;
+}
+
 function startsLegacyArithmetic(
   text: string,
   at: number,
-  quote: number,
+  numericOffset: number,
+  quoteState: number,
+  closes: Int32Array | undefined,
 ): boolean {
   const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
-  const close = text.indexOf("]", at + 1);
+  const close = (closes?.[at] ?? 0) - 1;
   if (close === -1 || close >= limit || text[at + 1] === "^") return false;
   if (text[close + 1] === "(" || text[close + 1] === "[") return false;
-  if (quote !== 0) return true;
+  if (quoteState < 0) return false;
+  if (quoteState > 0 || hasShellCommandPrefix(text, numericOffset)) return true;
   return /[+\-*/%<>&|=~?:()]/.test(text.slice(at + 1, close));
 }
 
@@ -94,14 +155,26 @@ function startsLegacyArithmetic(
 function startsShellExpansion(
   text: string,
   at: number,
-  quote: number,
+  numericOffset: number,
+  quoteState: number,
+  legacyArithmeticCloses: Int32Array | undefined,
 ): boolean {
   if (at >= text.length) return false;
   const char = text.charCodeAt(at);
+  const quote = Math.abs(quoteState);
   if (char === 34 || char === 39) return quote !== char;
-  if (char === 33 || char === 63) return quote !== 0;
-  if (char === 91) return startsLegacyArithmetic(text, at, quote);
-  if (char === 42 || char === 64 || char === 35 || char === 45) return true;
+  if (char === 33 || char === 45 || char === 63) {
+    return quoteState > 0 || hasShellCommandPrefix(text, numericOffset);
+  }
+  if (char === 91)
+    return startsLegacyArithmetic(
+      text,
+      at,
+      numericOffset,
+      quoteState,
+      legacyArithmeticCloses,
+    );
+  if (char === 42 || char === 64 || char === 35) return true;
   return isWordChar(char) || char === 123 || char === 40 || char === 36;
 }
 
@@ -639,6 +712,7 @@ function hasInlineMathCloser(
   offset: number,
   mathRegions: Array<[number, number]>,
   shellQuoteStates: Map<number, number>,
+  legacyArithmeticCloses: Int32Array | undefined,
   isStreaming: boolean,
 ): boolean {
   const maxSpan = 200;
@@ -662,7 +736,13 @@ function hasInlineMathCloser(
     if (BARE_NUMBER_RE.test(body)) {
       if (isStreaming && i + 1 === content.length) return false;
       if (
-        !startsShellExpansion(content, i + 1, shellQuoteStates.get(offset) ?? 0)
+        !startsShellExpansion(
+          content,
+          i + 1,
+          offset,
+          shellQuoteStates.get(offset) ?? 0,
+          legacyArithmeticCloses,
+        )
       )
         return true;
     }
@@ -837,6 +917,9 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
   const shellQuoteStates = SHELL_QUOTE_CONTEXT_CANDIDATE_RE.test(text)
     ? findShellQuoteStates(text)
     : new Map<number, number>();
+  const legacyArithmeticCloses = text.includes("$[")
+    ? findLegacyArithmeticCloses(text)
+    : undefined;
   const inCode = regionCursor(codeRegions);
   const inLink = regionCursor(linkRegions);
   const inMath = regionCursor(mathRegions);
@@ -869,6 +952,7 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
         offset,
         mathRegions,
         shellQuoteStates,
+        legacyArithmeticCloses,
         isStreaming,
       )
     ) {
@@ -928,7 +1012,9 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
       startsShellExpansion(
         text,
         offset + 1,
+        numericOffset,
         shellQuoteStates.get(numericOffset) ?? 0,
+        legacyArithmeticCloses,
       ) &&
       !inCode(offset) &&
       !inLink(offset) &&

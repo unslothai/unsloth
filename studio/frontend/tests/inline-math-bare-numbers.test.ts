@@ -52,6 +52,11 @@ test("numbers written as inline maths render as maths", () => {
     ["Is it $3$?", ["3"]],
     ["It's $3$!", ["3"]],
     ["Users' answer is $3$!", ["3"]],
+    ['He said "The answer is $42$!"', ["42"]],
+    ['He said ("The answer is $42$!")', ["42"]],
+    ['She asked "Is it $3$?"', ["3"]],
+    ["a $10$-fold increase", ["10"]],
+    ["Range $1$-$2$", ["1", "2"]],
     ["The answer is $42$[source](https://example.com).", ["42"]],
     ["The answer is $42$[^1].\n\n[^1]: Source.", ["42"]],
     ['He said "The answer is $42$[source](https://example.com)."', ["42"]],
@@ -114,6 +119,10 @@ test("a shell parameter right after a positional one stays text", () => {
     ["Run echo $1$@ to print both.", "$1$@"],
     ["Run echo $1$* to print both.", "$1$*"],
     ["Run echo $1$- to print both.", "$1$-"],
+    ["Run echo $1$? to print both.", "$1$?"],
+    ["Run echo $1$! to print both.", "$1$!"],
+    ["Run echo $1$[n] to print both.", "$1$[n]"],
+    ["Run echo $1$[1] to print both.", "$1$[1]"],
     ["Run echo $1$[n+1] to print both.", "$1$[n+1]"],
   ]) {
     const html = render(source);
@@ -166,8 +175,9 @@ test("a trailing numeric closer stays literal while streaming", () => {
 });
 
 test("many unterminated substitutions stay within the streaming budget", () => {
-  const source = "$1$(".repeat(51_200);
-  const started = performance.now();
-  preprocessLaTeX(source, true);
-  assert.ok(performance.now() - started < 250);
+  for (const source of ["$1$(".repeat(51_200), "$1$[".repeat(200_000)]) {
+    const started = performance.now();
+    preprocessLaTeX(source, true);
+    assert.ok(performance.now() - started < 250);
+  }
 });
