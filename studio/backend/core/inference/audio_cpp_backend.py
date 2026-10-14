@@ -37,9 +37,10 @@ from core.inference.audio_cpp_models import (
     CloneSpec,
     forget,
     option_matches,
+    filled_options,
     require_runnable,
     resolve,
-    validate_options,
+    workflow_options,
 )
 from core.inference.audio_cpp_server import (
     AudioCppRequestCancelledError,
@@ -143,11 +144,47 @@ _SPEAKER_LINE_RE = re.compile(r"^\s*Speaker\s*\d+\s*:", re.IGNORECASE | re.MULTI
 _MIN_SPEED, _MAX_SPEED = 0.5, 2.0
 
 
+def _primary_workflow(model: AudioCppModel) -> str:
+    workflows = list(model.workflows)
+    return "speak" if "speak" in workflows or not workflows else workflows[0]
+
+
+def options_by_workflow(model: AudioCppModel, primary: str) -> Optional[dict[str, list[dict]]]:
+    """Each workflow's options where they differ from ``audio_options`` (the primary workflow's).
+
+    Convert is always listed, as before this field covered other workflows.
+    """
+    base = workflow_options(model, primary)
+    out = {
+        name: [dict(option) for option in options]
+        for name in model.workflows
+        if (options := workflow_options(model, name)) != base
+        or (name == "convert" and model.convert is not None)
+    }
+    return out or None
+
+
+def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> AudioCppModel:
+    """``model`` resolved again from the files just downloaded.
+
+    Before the download its spec came from whichever GGUF header could be read, which in a repo of
+    several quantizations may be another file than the one served (MagpieTTS's ``orig`` names an
+    option ``speaker`` that its Q8_0 calls ``voice_id``). The options a request fills must be the
+    served file's.
+    """
+    forget(model.id)
+    fresh = resolve(model.id, model.variant.key, hf_token, network = False)
+    if fresh is None or fresh.unsupported or fresh.variant.key != model.variant.key:
+        return model
+    return fresh
+
+
 def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
     """What status reports for a loaded audio.cpp model, beyond the common audio fields."""
+    primary = _primary_workflow(model)
     return {
         "audio_family": model.family,
-        "audio_options": [dict(option) for option in model.options],
+        "audio_options": [dict(option) for option in workflow_options(model, primary)],
         "gguf_variant": model.variant.key,
         "audio_workflows": list(model.workflows),
         "audio_reference_text": model.clone.reference_text if model.clone else None,
@@ -155,11 +192,7 @@ def model_info_fields(model: AudioCppModel) -> dict[str, Any]:
         "audio_clone": clone_rules(model),
         "audio_edit": edit_rules(model),
         "audio_music": music_rules(model),
-        "audio_options_by_workflow": (
-            {"convert": [dict(option) for option in model.convert_options]}
-            if model.convert is not None
-            else None
-        ),
+        "audio_options_by_workflow": options_by_workflow(model, primary),
         "audio_workflow_tasks": audio_cpp_convert.workflow_tasks(model),
         "audio_convert": audio_cpp_convert.convert_caps(model),
         "audio_convert_rules": model.convert
@@ -202,8 +235,7 @@ def edit_rules(model: AudioCppModel) -> Optional[dict[str, Any]]:
 
 
 def edit_options(model: AudioCppModel) -> tuple[dict, ...]:
-    claims = set(model.edit.claims) if model.edit is not None else set()
-    return tuple(option for option in model.options if option["name"] not in claims)
+    return workflow_options(model, "edit")
 
 
 def edit_request_bodies(
@@ -354,7 +386,8 @@ class AudioCppBackend:
             raise RuntimeError(problem)
         self.loading_models.add(model_name)
         try:
-            self._ensure_downloaded(model, hf_token)
+            if self._ensure_downloaded(model, hf_token):
+                model = _reread_after_download(model, hf_token)
             self._session_overrides = {}
             self._status_patch = None
             self._start_server(model)
@@ -376,12 +409,14 @@ class AudioCppBackend:
         finally:
             self.loading_models.discard(model_name)
 
-    def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> None:
-        self._download_missing(model, hf_token)
+    def _ensure_downloaded(self, model: AudioCppModel, hf_token: Optional[str]) -> bool:
+        """Fetch what the model and its companions still lack; True when the model's own files were."""
+        fetched = self._download_missing(model, hf_token)
         for companion in model.companions:
             companion_model = _resolve_companion(model, companion, hf_token, network = True)
             if self._download_missing(companion_model, hf_token):
                 forget(companion.id)
+        return fetched
 
     @staticmethod
     def _download_missing(
@@ -494,7 +529,7 @@ class AudioCppBackend:
         if model.task == "sep":
             raise RuntimeError(f"{model.display_name} separates audio; open Separate.")
         if workflow == "music" and music is not None:
-            options = validate_options(model.options, audio_options)
+            options = filled_options(model, "music", audio_options)
             return self._run_music(
                 model,
                 music,
@@ -517,7 +552,9 @@ class AudioCppBackend:
             mode = str(convert.get("mode") or "speech")
             try:
                 served, options = audio_cpp_convert.served_model(
-                    model, mode, validate_options(model.convert_options, audio_options)
+                    model,
+                    mode,
+                    filled_options(model, "convert", audio_options),
                 )
                 request = audio_cpp_convert.convert_request(
                     model,
@@ -535,15 +572,13 @@ class AudioCppBackend:
             except audio_cpp_convert.ConvertRequestError as exc:
                 raise RuntimeError(str(exc)) from exc
         elif editing:
-            options = validate_options(edit_options(model), audio_options)
+            options = filled_options(model, "edit", audio_options)
             served = _served_for_edit(model)
         else:
             if cloning and model.clone is None:
                 raise RuntimeError(f"{model.display_name} cannot clone a voice.")
             served = model
-            options = validate_options(
-                model.clone_options if cloning else model.options, audio_options
-            )
+            options = filled_options(model, "clone" if cloning else "speak", audio_options)
         server = self._running_server(served, cancel_event)
         try:
             if converting:
