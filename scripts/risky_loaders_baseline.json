@@ -427,6 +427,14 @@
       "reason": "Iterates fixed packaging / pip._vendor.packaging module names."
     },
     {
+      "file": "studio/spark_pipeline.py",
+      "rule": "dynamic-import",
+      "sink": "import_module",
+      "digest": "ebe737f7f7773a19",
+      "count": 1,
+      "reason": "Imports transformers.models.<model_type>.modeling_<model_type> only for an identifier model_type, so it can only reach an installed transformers module."
+    },
+    {
       "file": "unsloth/__init__.py",
       "rule": "dynamic-import",
       "sink": "spec_from_file_location",
@@ -729,6 +737,14 @@
       "digest": "99bb2a156edb2dfc",
       "count": 1,
       "reason": "_TaskYamlLoader subclasses yaml.SafeLoader; it only adds a tag for lm-eval's !function references."
+    },
+    {
+      "file": "unsloth_cli/commands/spark.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "d9a9dae41f016590",
+      "count": 1,
+      "reason": "Loads studio/spark_merge.py from this checkout at a path fixed relative to the package, never a user or model path."
     },
     {
       "file": "unsloth_cli/commands/studio.py",

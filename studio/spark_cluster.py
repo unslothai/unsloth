@@ -954,20 +954,17 @@ def peer_llama_bundle_identity(
     """``llama_bundle_identity(root)`` as evaluated ON THE PEER."""
     if not peer_ip or not shutil.which("ssh"):
         return None
-    import base64
-
     source = _BUNDLE_PROBE.format(
         root = _peer_relative_path(Path(root) if root is not None else llama_bundle_dir()),
         libs = _RPC_LIB_NAMES,
         servers = _RPC_SERVER_NAMES,
     )
-    blob = base64.b64encode(source.encode()).decode()
     user = _ssh_user()
     try:
+        # The probe goes in on stdin: no quoting, nothing encoded in the command line.
         proc = subprocess.run(
             [
                 "ssh",
-                "-n",
                 "-o",
                 "BatchMode=yes",
                 "-o",
@@ -975,8 +972,9 @@ def peer_llama_bundle_identity(
                 "-o",
                 "ConnectTimeout=8",
                 f"{user}@{peer_ip}",
-                f"echo {blob} | base64 -d | python3 -",
+                "python3 -",
             ],
+            input = source,
             capture_output = True,
             text = True,
             timeout = timeout,
@@ -1557,16 +1555,13 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
     out["local"] = bool(inc) and osp.exists(osp.join(inc, "Python.h"))
     if peer_ip and shutil.which("ssh"):
         user = _ssh_user()
-        import base64
-
         probe = (
             "import sysconfig, os\n"
             "p = os.path.join(sysconfig.get_paths()['include'], 'Python.h')\n"
             "print('yes' if os.path.isfile(p) else 'no')\n"
         )
-        b64 = base64.b64encode(probe.encode()).decode()
         activate = venv_activate_sh()
-        remote = f"[ -f {activate} ] && . {activate}; " f"echo {b64} | base64 -d | python3 -"
+        remote = f"[ -f {activate} ] && . {activate}; python3 -"
         try:
             r = subprocess.run(
                 [
@@ -1578,6 +1573,7 @@ def python_dev_headers(peer_ip: Optional[str] = None) -> Dict[str, Any]:
                     f"{user}@{peer_ip}",
                     remote,
                 ],
+                input = probe,
                 capture_output = True,
                 text = True,
                 timeout = 25,
@@ -1677,13 +1673,10 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
         out["local"] = {"cuinit": code, "state": _classify(code, smi_ok)}
 
     if peer_ip and shutil.which("ssh"):
-        import base64
-
-        b64 = base64.b64encode(probe.encode()).decode()
         act = venv_activate_sh()
         cmd = (
-            f"[ -f {act} ] && . {act}; nvidia-smi -L >/dev/null 2>&1 && echo SMI_OK || echo SMI_BAD; "
-            f"echo {b64} | base64 -d | python3 -"
+            f"[ -f {act} ] && . {act}; "
+            "nvidia-smi -L </dev/null >/dev/null 2>&1 && echo SMI_OK || echo SMI_BAD; python3 -"
         )
         try:
             r = subprocess.run(
@@ -1696,6 +1689,7 @@ def cuda_health(peer_ip: Optional[str] = None) -> Dict[str, Any]:
                     f"{_ssh_user()}@{peer_ip}",
                     cmd,
                 ],
+                input = probe,
                 capture_output = True,
                 text = True,
                 timeout = 90,

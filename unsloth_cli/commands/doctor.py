@@ -128,14 +128,11 @@ def _activate_sh() -> str:
         return '"$HOME/.unsloth/studio/unsloth_studio/bin/activate"'
 
 
-def _probe_wrapper(source: str) -> str:
-    """The shell one-liner that runs the probe, identical on both nodes: a difference between the two
-    wrappers would itself show up as divergence and bury the real finding."""
-    import base64
-
-    blob = base64.b64encode(source.encode()).decode()
+def _probe_wrapper() -> str:
+    """The shell one-liner that runs the probe from stdin, identical on both nodes: a difference
+    between the two wrappers would itself show up as divergence and bury the real finding."""
     act = _activate_sh()
-    return f"[ -f {act} ] && . {act}; " f"echo {blob} | base64 -d | python3 -"
+    return f"[ -f {act} ] && . {act}; python3 -"
 
 
 def _extract(
@@ -168,7 +165,8 @@ def _run_probe_local(
     try:
         if shell:
             proc = subprocess.run(
-                [shell, "-c", _probe_wrapper(source)],
+                [shell, "-c", _probe_wrapper()],
+                input = source,
                 capture_output = True,
                 text = True,
                 timeout = timeout,
@@ -197,12 +195,11 @@ def _run_probe_peer(
         return None, "no ssh on this machine"
     # The same resolution every other SSH here uses.
     user = _ssh_login()
-    remote = _probe_wrapper(source)
+    remote = _probe_wrapper()
     try:
         proc = subprocess.run(
             [
                 "ssh",
-                "-n",
                 "-o",
                 "BatchMode=yes",
                 "-o",
@@ -212,6 +209,7 @@ def _run_probe_peer(
                 f"{user}@{peer_ip}",
                 remote,
             ],
+            input = source,
             capture_output = True,
             text = True,
             timeout = timeout,
