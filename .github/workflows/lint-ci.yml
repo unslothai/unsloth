@@ -260,7 +260,7 @@ jobs:
               python <<'PY'
               import ast, pathlib, sys
 
-              SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+              SKIP_PARTS = {".venv", "venv", ".lanes", "build", "dist", ".git",
                             "unsloth_compiled_cache", "node_modules",
                             "unsloth.egg-info"}
 
@@ -320,7 +320,7 @@ jobs:
                   "General Public License",         # GPL / LGPL / AGPL long form
               )
               # "vendor" is upstream third-party source: it carries its own licence.
-              SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+              SKIP_PARTS = {".venv", "venv", ".lanes", "build", "dist", ".git",
                             "unsloth_compiled_cache", "node_modules",
                             "unsloth.egg-info", "vendor"}
 
@@ -382,7 +382,7 @@ jobs:
               python <<'PY'
               import pathlib, sys, yaml
 
-              SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+              SKIP_PARTS = {".venv", "venv", ".lanes", "build", "dist", ".git",
                             "node_modules", "unsloth_compiled_cache",
                             "unsloth.egg-info"}
 
@@ -419,7 +419,7 @@ jobs:
               python <<'PY'
               import fnmatch, json, pathlib, sys
 
-              SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+              SKIP_PARTS = {".venv", "venv", ".lanes", "build", "dist", ".git",
                             "node_modules", "unsloth_compiled_cache",
                             "unsloth.egg-info"}
               SKIP_NAMES = {"package-lock.json", "bun.lock"}
