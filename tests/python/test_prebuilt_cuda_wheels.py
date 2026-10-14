@@ -124,7 +124,7 @@ class TestWorkflowAndResolverAgree:
         """win_amd64 torch 2.11: outside TORCH_VERSIONS, so the class above does not see it."""
         checked = 0
         for (platform, torch_mm), pythons in wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS.items():
-            built_torches = prebuilt_wheels._platform(platform, "torches") or ()
+            built_torches = prebuilt_wheels._platform_torches(platform)
             torch_version = next(v for v in built_torches if v.startswith(f"{torch_mm}."))
             assert torch_version not in prebuilt_wheels.TORCH_VERSIONS
             for python_version in prebuilt_wheels.PYTHON_VERSIONS:
@@ -150,7 +150,7 @@ class TestWorkflowAndResolverAgree:
         extra = {
             (platform, prebuilt_wheels.torch_minor(v))
             for platform in prebuilt_wheels.PLATFORMS
-            for v in prebuilt_wheels._platform(platform, "torches") or ()
+            for v in prebuilt_wheels._platform_torches(platform)
             if v not in prebuilt_wheels.TORCH_VERSIONS
         }
         assert extra == set(wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS)
