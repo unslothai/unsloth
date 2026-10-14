@@ -3370,6 +3370,12 @@ class SdCppDiffusionBackend:
                         # which re-resolves sd-cli and reads its real accelerator, rejected it as a
                         # different-accelerator replacement: the load reports success and then cannot generate.
                         fallback: Optional[SdCppEngine] = None
+                        cached = getattr(self._engine, "binary", None)
+                        if cached and _installed_accelerator_of(
+                            cached
+                        ) != self._resolved_accelerator(self._loading_card):
+                            # The failure just recorded can move the preferred build off a cached sd-cli.
+                            self._engine = None
                         try:
                             fallback = self._resolve_engine()
                             usable = fallback.version() is not None

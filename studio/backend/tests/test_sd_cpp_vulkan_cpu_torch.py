@@ -64,12 +64,12 @@ def _pinned_host(monkeypatch):
     _platform(monkeypatch, "linux", "x86_64")
     monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_VEGA))
     monkeypatch.setattr(r, "_vulkan_loader_loads", lambda: True)
-    monkeypatch.setattr(r, "_linux_render_node_accessible", lambda vendors: True)
+    monkeypatch.setattr(r, "_accessible_render_vendors", lambda vendors: set(vendors))
     import utils.hardware.amd as amd
 
     monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
     monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: True)
-    monkeypatch.setattr(r, "_linux_nvidia_pci_present", lambda: False)
+    monkeypatch.setattr(r, "_nvidia_adapter_present", lambda: False)
 
 
 @pytest.mark.parametrize(
@@ -162,7 +162,7 @@ def test_a_ggml_vulkan_mask_is_honoured_but_never_vouches_for_a_mixed_host(monke
 
 
 def test_an_nvidia_card_nvidia_smi_cannot_see_keeps_cpu(monkeypatch):
-    monkeypatch.setattr(r, "_linux_nvidia_pci_present", lambda: True)
+    monkeypatch.setattr(r, "_nvidia_adapter_present", lambda: True)
     assert r.image_install_accelerator("cpu") == "auto"
 
 
@@ -192,7 +192,7 @@ def test_only_a_driver_for_the_listed_cards_counts(monkeypatch, vendors, manifes
 
 
 def test_an_unmounted_render_node_keeps_cpu(monkeypatch):
-    monkeypatch.setattr(r, "_linux_render_node_accessible", lambda vendors: False)
+    monkeypatch.setattr(r, "_accessible_render_vendors", lambda vendors: set())
     assert r.image_install_accelerator("cpu") == "auto"
     _platform(monkeypatch, "win32", "AMD64")
     assert r.image_install_accelerator("cpu") == "vulkan"
@@ -333,10 +333,10 @@ def test_only_a_render_node_of_the_listed_vendor_counts(monkeypatch, tmp_path):
     monkeypatch.setattr(builtins, "open", _open)
     monkeypatch.setattr(r.os, "access", lambda node, mode: node in accessible)
     accessible.add("/dev/dri/renderD128")
-    assert r._linux_render_node_accessible({"amd"}) is False
+    assert r._accessible_render_vendors({"amd"}) == set()
     accessible.add("/dev/dri/renderD129")
-    assert r._linux_render_node_accessible({"amd"}) is True
-    assert r._linux_render_node_accessible({"intel"}) is False
+    assert r._accessible_render_vendors({"amd"}) == {"amd"}
+    assert r._accessible_render_vendors({"intel"}) == set()
 
 
 @pytest.mark.parametrize("var", ["VK_LOADER_DRIVERS_DISABLE", "VK_LOADER_DRIVERS_SELECT"])
@@ -349,3 +349,43 @@ def test_a_windows_driver_filter_the_walk_cannot_apply_keeps_cpu(monkeypatch, va
     assert r._hardware_vulkan_driver({"amd"}) is True
     monkeypatch.setenv(var, "*")
     assert r._hardware_vulkan_driver({"amd"}) is False
+
+
+def test_the_render_node_and_the_driver_must_share_a_vendor(monkeypatch):
+    # AMD + Arc: only the AMD node is mounted and only an Intel driver loads.
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_VEGA, _ARC_LINUX))
+    monkeypatch.setattr(r, "_accessible_render_vendors", lambda vendors: {"amd"} & set(vendors))
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: "intel" in vendors)
+    assert r.image_install_accelerator("cpu") == "auto"
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda vendors: "amd" in vendors)
+    assert r.image_install_accelerator("cpu") == "vulkan"
+
+
+@pytest.mark.parametrize(
+    "records,live,expected",
+    [
+        ({}, None, False),
+        (None, ["AMD Radeon RX 7900 XTX"], True),  # registry unreadable
+        ({1: {"name": "NVIDIA GeForce RTX 4090"}}, ["AMD Radeon RX 7900 XTX", "NVIDIA GeForce RTX 4090"], True),
+        # A stale record of a card that was removed.
+        ({1: {"name": "NVIDIA GeForce RTX 3060"}}, ["AMD Radeon RX 7900 XTX"], False),
+        ({1: {"name": "NVIDIA GeForce RTX 3060"}}, None, True),
+    ],
+)
+def test_windows_nvidia_without_nvidia_smi_is_found_in_the_adapter_registry(
+    monkeypatch, records, live, expected
+):
+    import utils.hardware.hardware as hw
+
+    monkeypatch.undo()
+    _platform(monkeypatch, "win32", "AMD64")
+    seen = []
+
+    def _records(vendor_id, distinguish_failure = False):
+        seen.append(vendor_id)
+        return records
+
+    monkeypatch.setattr(hw, "_windows_amd_adapter_records_by_luid", _records)
+    monkeypatch.setattr(hw, "_windows_live_adapter_names", lambda: live)
+    assert r._nvidia_adapter_present() is expected
+    assert seen == [0x10DE]

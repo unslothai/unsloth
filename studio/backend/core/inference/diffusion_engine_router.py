@@ -191,11 +191,12 @@ _MASKS_VULKAN_IGNORES = ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VI
 _RENDER_NODE_VENDORS = {"0x1002": "amd", "0x8086": "intel"}
 
 
-def _linux_render_node_accessible(vendors) -> bool:
-    """A container can list a card in sysfs without mounting its /dev/dri node, and Vulkan then
-    sees no device; only a node of one of ``vendors``, readable and writable, counts."""
+def _accessible_render_vendors(vendors) -> set:
+    """Which of ``vendors`` have a readable and writable /dev/dri render node. A container can list
+    a card in sysfs without mounting its node, and Vulkan then sees no device."""
     import glob
 
+    found = set()
     for node in glob.glob("/dev/dri/renderD*"):
         try:
             with open(
@@ -205,8 +206,8 @@ def _linux_render_node_accessible(vendors) -> bool:
         except OSError:
             continue
         if vendor in vendors and os.access(node, os.R_OK | os.W_OK):
-            return True
-    return False
+            found.add(vendor)
+    return found
 
 
 def _vulkan_gpu_for_cpu_torch() -> bool:
@@ -234,7 +235,7 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
         return False
     devices = [d for d in inventory.get("devices") or () if isinstance(d, dict)]
-    if any(d.get("vendor") == "nvidia" for d in devices) or _linux_nvidia_pci_present():
+    if any(d.get("vendor") == "nvidia" for d in devices) or _nvidia_adapter_present():
         return False
 
     def _renders(device: dict) -> bool:
@@ -253,8 +254,11 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     if not gpus or not all(_renders(d) for d in gpus):
         return False
     vendors = {d.get("vendor") for d in gpus}
-    if sys.platform != "win32" and not _linux_render_node_accessible(vendors):
-        return False
+    if sys.platform != "win32":
+        # The node and the driver must belong to the same vendor.
+        vendors = _accessible_render_vendors(vendors)
+        if not vendors:
+            return False
     return _hardware_vulkan_driver(vendors) and _vulkan_loader_loads()
 
 
@@ -285,10 +289,26 @@ def _hardware_vulkan_driver(vendors) -> bool:
         return False
 
 
-def _linux_nvidia_pci_present() -> bool:
-    """An NVIDIA card nvidia-smi cannot see (Nouveau, no proprietary driver) is still a Vulkan device."""
+def _nvidia_adapter_present() -> bool:
+    """An NVIDIA card nvidia-smi cannot see (Nouveau, no proprietary driver, no nvidia-smi) is still
+    a Vulkan device. Unanswerable counts as present."""
     if sys.platform == "win32":
-        return False
+        try:
+            from utils.hardware.hardware import (
+                _windows_amd_adapter_records_by_luid,
+                _windows_live_adapter_names,
+            )
+
+            records = _windows_amd_adapter_records_by_luid(0x10DE, distinguish_failure = True)
+            if records is None:
+                return True
+            if not records:
+                return False
+            # The registry outlives the hardware, so a record only counts if the live scan agrees.
+            live = _windows_live_adapter_names()
+            return live is None or any("nvidia" in name.lower() for name in live)
+        except Exception:  # noqa: BLE001
+            return True
     import glob
 
     for vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):

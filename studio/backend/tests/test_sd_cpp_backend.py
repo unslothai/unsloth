@@ -2720,3 +2720,52 @@ def test_a_rejected_concurrent_load_cannot_move_the_family_the_worker_validates_
     other.join(timeout = 5)
     seen["worker"] = backend._loading_family
     assert seen["worker"] is worker_family, "another thread's family reached this worker"
+
+
+def test_server_failure_drops_a_cached_sd_cli_of_the_failed_build(monkeypatch):
+    # An earlier one-shot load cached the Vulkan sd-cli; the Vulkan server now fails and the
+    # recorded failure moves the preferred build to CPU, so the fallback must not reuse the cache.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+
+    class _BadServer:
+        def __init__(self, binary):
+            pass
+
+        def start(self, *a, **k):
+            raise RuntimeError("ggml_vulkan: No devices found")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(bk, "SdCppServer", _BadServer)
+    fake = _FakeEngine()
+    fake.binary = "/vk/sd-cli"
+    _shared_setup_1(b, fake, monkeypatch)
+    monkeypatch.setattr(b, "_resolve_engine", SdCppDiffusionBackend._resolve_engine.__get__(b))
+    b._engine = fake
+    accelerators = {"/vk/sd-cli": "vulkan", "/cpu/sd-cli": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: accelerators.get(binary))
+    monkeypatch.setattr(b, "_resolved_accelerator", lambda card = None: "cpu")
+    asked = []
+
+    def _ensure(**kwargs):
+        asked.append(kwargs.get("accelerator"))
+        return "/cpu/sd-cli"
+
+    monkeypatch.setattr(bk, "ensure_sd_cpp_binary", _ensure)
+    monkeypatch.setattr(b, "_refuse_incapable_build", lambda *_a, **_k: None)
+
+    class _CpuEngine(_FakeEngine):
+        def __init__(self, binary):
+            super().__init__()
+            self.binary = binary
+
+    monkeypatch.setattr(bk, "SdCppEngine", _CpuEngine)
+    fam = detect_family("z-image")
+    b._load_token = 1
+    _shared_setup_2(b, fam)
+    assert asked == ["cpu"]
+    assert b._state is not None and b._state.mode == "oneshot"
+    assert b._state.sd_accelerator == "cpu"
