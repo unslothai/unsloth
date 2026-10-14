@@ -1064,7 +1064,6 @@ def _save_plan(path: Optional[str], key: str, plan: dict, timings: dict) -> None
         os.makedirs(os.path.dirname(path), exist_ok = True)
         try:
             from filelock import FileLock
-
             lock: Any = FileLock(f"{path}.lock", timeout = 60)
         except ImportError:
             lock = contextlib.nullcontext()
@@ -1089,7 +1088,8 @@ def _merge_and_write(path: str, key: str, plan: dict, timings: dict) -> None:
     data = {
         "key": key,
         "plan": {
-            f"{n},{k},{b}": (c if c == _CUBLAS else list(c)) for (n, k, b), c in sorted(plan.items())
+            f"{n},{k},{b}": (c if c == _CUBLAS else list(c))
+            for (n, k, b), c in sorted(plan.items())
         },
         "ms": timings,
     }

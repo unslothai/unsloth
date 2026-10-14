@@ -684,8 +684,10 @@ def begin(
         from .diffusion_int8_gemm import plan_identity
 
         ref, index = weakref.ref(transformer), torch.cuda.current_device()
-        ctx.int8_plan = lambda: plan_identity(ref(), index) if ref() is not None else ctx.model_fp.get(
-            "int8_gemm_cublas"
+        ctx.int8_plan = (
+            lambda: plan_identity(ref(), index)
+            if ref() is not None
+            else ctx.model_fp.get("int8_gemm_cublas")
         )
     except Exception:  # noqa: BLE001 - no CUDA / not weak-referenceable: keyed as begin() saw it
         pass
@@ -971,7 +973,10 @@ def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
         return False
     if _int8_plan_stale(ctx):
         ctx.int8_stale = True
-        _info(logger, f"compile-cache: int8 GEMM plan changed after begin; not saving under key {ctx.key}")
+        _info(
+            logger,
+            f"compile-cache: int8 GEMM plan changed after begin; not saving under key {ctx.key}",
+        )
         return False
     # Read BEFORE the artifacts are collected: anything registered from here on is not in `data`, and iterating the
     # live set while the request thread adds to it is a "set changed size during iteration" away from failing.

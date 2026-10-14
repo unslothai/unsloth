@@ -1218,7 +1218,9 @@ def test_latency_gate_concurrent_saves_keep_both_slots(monkeypatch, tmp_path):
         out = load(p, key)
         if not other:  # first reload: a second process saves in between our reload and replace
             other.append(
-                threading.Thread(target = g8._save_plan, args = (path, "k", {(128, 64, 0): g8._CUBLAS}, {}))
+                threading.Thread(
+                    target = g8._save_plan, args = (path, "k", {(128, 64, 0): g8._CUBLAS}, {})
+                )
             )
             other[0].start()
             other[0].join(0.5)
@@ -1238,7 +1240,9 @@ def _plan_cache_env(monkeypatch, tmp_path, mode):
     monkeypatch.setenv(cc._ENV_MODE, mode)
     monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "cc"))
     monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: (b"A", None), raising = False)
-    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", lambda data: object(), raising = False)
+    monkeypatch.setattr(
+        torch.compiler, "load_cache_artifacts", lambda data: object(), raising = False
+    )
     model = torch.nn.Sequential(_int8_linear(1024, 768, True, 2))
     kw = dict(family = "f", dtype = "bf16", quant = "int8", attention_backend = None, compile_kwargs = {})
 
@@ -1276,7 +1280,9 @@ def test_latency_gate_stale_plan_stops_further_saves(monkeypatch, tmp_path):
     assert not cc.save(ctx)
     checks, plan = [], ctx.int8_plan
     ctx.int8_plan = lambda: checks.append(1) or plan()
-    assert not cc.save_async(ctx) and not cc.save(ctx) and not checks  # nothing re-queued or re-checked
+    assert (
+        not cc.save_async(ctx) and not cc.save(ctx) and not checks
+    )  # nothing re-queued or re-checked
     cc.restore(ctx)
 
 
@@ -1331,7 +1337,9 @@ def test_latency_gate_cublas_slots_key_the_compile_cache(monkeypatch, tmp_path):
 def test_latency_gate_tiles_kill_switch_ignores_cached_shape_tiles(monkeypatch, tmp_path):
     default = g8._ARCH_CONFIG[(12, 0)]
     n, k = 4096, 8192  # deep-K rule
-    calls = _fake_tune_env(monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}})
+    calls = _fake_tune_env(
+        monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}}
+    )
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
     g8._DEVICE_CFG[0] = default
     g8._DEVICE_TILES[0] = g8._SHAPE_TILES[(12, 0)]  # probed while tiles were on
