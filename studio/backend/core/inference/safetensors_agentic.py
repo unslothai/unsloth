@@ -70,6 +70,7 @@ from core.inference.tool_loop_controller import (
     awaiting_approval_status,
     coerce_tool_arguments,
     restore_replayed_tool_results,
+    with_appended_text,
     status_for_tool,
     tool_call_limit_nudge,
     tool_event_provenance,
@@ -1879,10 +1880,13 @@ def run_safetensors_tool_loop(
                 last_reprompt_text = ""
         if _executed_tool_iters >= max_tool_iterations and not final_attempt_done:
             final_attempt_done = True
-            if over_cap:
+            # Ride a trailing user turn, as the GGUF loop does.
+            if over_cap or conversation[-1].get("role") == "user":
                 conversation[-1] = {
                     **conversation[-1],
-                    "content": f"{conversation[-1]['content']}\n\n{BUDGET_EXHAUSTED_NUDGE}",
+                    "content": with_appended_text(
+                        conversation[-1]["content"], f"\n\n{BUDGET_EXHAUSTED_NUDGE}"
+                    ),
                 }
             else:
                 conversation.append({"role": "user", "content": BUDGET_EXHAUSTED_NUDGE})
