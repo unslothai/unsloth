@@ -116,6 +116,7 @@ def settle(
     condition: str,
     *,
     timeout: int = 10000,
+    arg = None,
 ) -> None:
     """Give `condition` until `timeout` to hold, and do not fail here if it never does.
 
@@ -126,9 +127,43 @@ def settle(
     with the same message, so nothing is swallowed here.
     """
     try:
-        page.wait_for_function(condition, timeout = timeout)
+        page.wait_for_function(condition, arg = arg, timeout = timeout)
     except PlaywrightTimeout:
         pass
+
+
+def frames(page) -> None:
+    """Let the commit that just changed state reach layout and paint (two animation frames)."""
+    page.evaluate(
+        "() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))"
+    )
+
+
+# The counter is empty while a query is pending and reads `active/count` (`0/0` for no match)
+# once it has settled, so a non-empty counter is the bar's own "search done" signal.
+COUNTED = "() => !!window.__findSmoke.counter()"
+COUNTER_IS = "expected => window.__findSmoke.counter() === expected"
+SEARCH_HAS = "text => (document.querySelector('[role=\"search\"]')?.innerText ?? '').includes(text)"
+COUNTER_MOVED = "prev => { const c = window.__findSmoke.counter(); return !!c && c !== prev; }"
+
+
+def settled_counter(page) -> str | None:
+    """Wait for the typed query to settle and paint, then read its counter.
+
+    The first settled render can still show the previous query's results (the search runs in an
+    effect after it), so give that effect two more frames to land before reading."""
+    settle(page, COUNTED)
+    frames(page)
+    frames(page)
+    return counter(page)
+
+
+def step(page, key: str) -> None:
+    """Press a walk key and wait for the active match to move (every query here has many)."""
+    before = counter(page)
+    page.keyboard.press(key)
+    settle(page, COUNTER_MOVED, arg = before)
+    frames(page)
 
 
 def close_bar(page) -> None:
@@ -173,14 +208,14 @@ def check_chord(page, engine: str, mode: str, mod: str) -> None:
 def check_counting(page, engine: str, mode: str, mod: str) -> None:
     open_bar(page, mod)
     page.keyboard.type("unsloth")
-    page.wait_for_timeout(500)
-    shown = counter(page)
+    shown = settled_counter(page)
     check(engine, mode, "a query is counted", bool(shown), f"counter={shown!r}")
 
     # An off-route workspace is kept mounted under `inert`; its matches must not
     # be counted or walked to.
     page.evaluate("() => window.__findSmoke.setWorkspace('other')")
-    page.wait_for_timeout(700)
+    settle(page, COUNTER_MOVED, arg = shown)
+    frames(page)
     other = counter(page)
     check(
         engine,
@@ -190,7 +225,8 @@ def check_counting(page, engine: str, mode: str, mod: str) -> None:
         f"{shown!r} -> {other!r}",
     )
     page.evaluate("() => window.__findSmoke.setWorkspace('chat')")
-    page.wait_for_timeout(700)
+    settle(page, COUNTER_IS, arg = shown)
+    frames(page)
     check(
         engine,
         mode,
@@ -216,9 +252,19 @@ def check_close_preserves_position(page, engine: str, mode: str, mod: str) -> No
                 search_page.wait_for_function("() => !window.__findSmoke.counter()")
                 field.fill("unsloth")
                 search_page.wait_for_function("() => !!window.__findSmoke.counter()")
+                start = search_page.evaluate("() => window.__findSmoke.counter()")
                 for _ in range(10):
                     field.press("Enter")
-                search_page.wait_for_timeout(300)
+                # Wait for all ten steps to land: the active match ten places on, wrapping.
+                settle(
+                    search_page,
+                    """start => {
+                      const [a, n] = start.split('/').map(Number);
+                      return window.__findSmoke.counter() === `${((a - 1 + 10) % n) + 1}/${n}`;
+                    }""",
+                    arg = start,
+                )
+                frames(search_page)
                 before = search_page.evaluate("() => window.__findSmoke.scrollTop()")
                 if dismiss == "Escape":
                     close_bar(search_page)
@@ -250,11 +296,10 @@ def check_close_preserves_position(page, engine: str, mode: str, mod: str) -> No
 def check_walk(page, engine: str, mode: str, mod: str) -> None:
     open_bar(page, mod)
     page.keyboard.type("unsloth")
-    page.wait_for_timeout(500)
+    settled_counter(page)
     start = page.evaluate("() => window.__findSmoke.scrollTop()")
     for _ in range(6):
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(120)
+        step(page, "Enter")
     moved = page.evaluate("() => window.__findSmoke.scrollTop()")
     check(
         engine,
@@ -265,8 +310,7 @@ def check_walk(page, engine: str, mode: str, mod: str) -> None:
     )
 
     # Shift+Enter walks back.
-    page.keyboard.press("Shift+Enter")
-    page.wait_for_timeout(200)
+    step(page, "Shift+Enter")
     check(
         engine,
         mode,
@@ -280,14 +324,28 @@ def check_walk(page, engine: str, mode: str, mod: str) -> None:
 def check_streaming(page, engine: str, mode: str, mod: str) -> None:
     open_bar(page, mod)
     page.keyboard.type("unsloth")
-    page.wait_for_timeout(500)
+    settled_counter(page)
     for _ in range(4):
-        page.keyboard.press("Enter")
-        page.wait_for_timeout(120)
+        step(page, "Enter")
     before_scroll = page.evaluate("() => window.__findSmoke.scrollTop()")
     before_count = counter(page)
-    page.evaluate("() => window.__findSmoke.stream('a streamed unsloth reply', 5)")
-    page.wait_for_timeout(1600)
+    reply = "a streamed unsloth reply"
+    page.evaluate("text => window.__findSmoke.stream(text, 5)", reply)
+    # Done streaming, and the reindex that counts the new match has landed.
+    settle(
+        page,
+        """([text, prev]) => {
+          const rows = document.querySelectorAll('[data-streamed]');
+          const last = rows[rows.length - 1];
+          const c = window.__findSmoke.counter();
+          return last?.textContent === text && !!c && c !== prev;
+        }""",
+        arg = [reply, before_count],
+    )
+    # Observation window, not a readiness guess: one more reindex interval (300 ms) must pass
+    # without the reader being scrolled, since a later reindex is where a jump would come from.
+    page.wait_for_timeout(350)
+    frames(page)
     check(
         engine,
         mode,
@@ -300,7 +358,7 @@ def check_streaming(page, engine: str, mode: str, mod: str) -> None:
         mode,
         "a streamed reply does not move the reader",
         page.evaluate("() => window.__findSmoke.scrollTop()") == before_scroll,
-        f"scrollTop {before_scroll} -> " f"{page.evaluate('() => window.__findSmoke.scrollTop()')}",
+        f"scrollTop {before_scroll} -> {page.evaluate('() => window.__findSmoke.scrollTop()')}",
     )
     close_bar(page)
 
@@ -310,7 +368,7 @@ def check_paint_and_teardown(page, engine: str, mode: str, mod: str) -> None:
     has_api = page.evaluate("() => typeof CSS !== 'undefined' && !!CSS.highlights")
     open_bar(page, mod)
     page.keyboard.type("unsloth")
-    page.wait_for_timeout(500)
+    settled_counter(page)
 
     if has_api:
         painted = page.evaluate(
@@ -365,8 +423,13 @@ def check_paint_and_teardown(page, engine: str, mode: str, mod: str) -> None:
 def check_modal_gate(page, engine: str, mode: str, mod: str) -> None:
     """A modal backgrounds the scope, and the chord must go back to the browser."""
     page.evaluate("() => window.__findSmoke.setModal(true)")
-    page.wait_for_timeout(250)
+    settle(
+        page,
+        "() => document.querySelector('[data-find-scope]')?.getAttribute('aria-hidden') === 'true'",
+    )
     page.keyboard.press(f"{mod}+f")
+    # Observation window, not a readiness guess: the bar must NOT open, so give it the time an
+    # open would take (its chunk is already loaded by the earlier probes).
     page.wait_for_timeout(250)
     check(
         engine,
@@ -375,7 +438,7 @@ def check_modal_gate(page, engine: str, mode: str, mod: str) -> None:
         state(page).get("open") is False,
     )
     page.evaluate("() => window.__findSmoke.setModal(false)")
-    page.wait_for_timeout(250)
+    settle(page, "() => !document.querySelector('[data-find-scope]')?.hasAttribute('aria-hidden')")
     open_bar(page, mod)
     check(
         engine,
@@ -414,11 +477,10 @@ def check_hidden_text(page, engine: str, mode: str, mod: str) -> None:
       scope.appendChild(wrapper);
     }"""
     )
-    page.wait_for_timeout(500)
+    frames(page)
     open_bar(page, mod)
     page.keyboard.type("zqxjkvbrmp")
-    page.wait_for_timeout(700)
-    shown = counter(page)
+    shown = settled_counter(page)
     check(
         engine,
         mode,
@@ -461,15 +523,13 @@ def check_content_visibility_reveal(page, engine: str, mode: str, mod: str) -> N
         planted == 140,
         f"placeholder height={planted}",
     )
-    page.wait_for_timeout(600)
+    frames(page)
     open_bar(page, mod)
     # Inserted whole, the way a paste arrives, rather than typed. Typing hides this: every
     # keystroke reveals again, and those repeats do by accident what the fix does on purpose.
     # One change is what a paste, an Enter, or a click on the walk button each produce.
     page.keyboard.insert_text("zqxjcvneedle")
-    page.wait_for_timeout(1200)
-    where = page.evaluate(
-        """() => {
+    where_js = """() => {
       const p = [...document.querySelectorAll('#cv-probe p')]
         .find((n) => n.textContent.includes('zqxjcvneedle'));
       const r = p.getBoundingClientRect();
@@ -478,7 +538,10 @@ def check_content_visibility_reveal(page, engine: str, mode: str, mod: str) -> N
                real: Math.round(document.getElementById('cv-probe').getBoundingClientRect().height),
                inViewport: r.top >= 0 && r.bottom <= window.innerHeight };
     }"""
-    )
+    # Wait for exactly what is asserted below: the block rendered and its match on screen.
+    settle(page, f"() => {{ const w = ({where_js})(); return w.real > 1000 && w.inViewport; }}")
+    frames(page)
+    where = page.evaluate(where_js)
     check(
         engine,
         mode,
@@ -512,11 +575,12 @@ def check_spelling_variants(page, engine: str, mode: str, mod: str) -> None:
     }"""
     )
     check(engine, mode, "the planted text really is decomposed", planted is True)
-    page.wait_for_timeout(500)
+    frames(page)
     open_bar(page, mod)
     # Typed composed, against text written decomposed.
     page.keyboard.type("caf\u00e9 vbnmqz")
-    page.wait_for_timeout(700)
+    settle(page, COUNTER_IS, arg = "1/1")
+    frames(page)
     shown = counter(page)
     check(
         engine,
@@ -551,7 +615,8 @@ def check_typing_burst(page, engine: str, mode: str, mod: str) -> None:
     open_bar(page, mod)
     field = page.locator('[role="search"] input')
     field.fill("")
-    page.wait_for_timeout(150)
+    settle(page, COUNTER_IS, arg = "")
+    frames(page)
     page.evaluate(
         """() => {
       window.__findSmokePaints = 0;
@@ -573,9 +638,8 @@ def check_typing_burst(page, engine: str, mode: str, mod: str) -> None:
     )
     page.keyboard.type("doing", delay = 10)
     immediate = field.input_value()
-    page.wait_for_timeout(400)
+    shown = settled_counter(page)
     paints = page.evaluate("() => window.__findSmokePaints")
-    shown = counter(page)
     check(
         engine,
         mode,
@@ -604,16 +668,22 @@ def check_reverted_query_repaints(page, engine: str, mode: str, mod: str) -> Non
         "() => !!window.__findSmoke.counter()",
         timeout = 10000,
     )
-    page.wait_for_timeout(150)
+    frames(page)
     before = page.evaluate(
         """() => CSS.highlights.has('unsloth-find') &&
           CSS.highlights.has('unsloth-find-active')"""
     )
     field.press("End")
     field.type("x")
+    # Deliberate: the Backspace has to land inside the 100 ms settle window.
     page.wait_for_timeout(20)
     field.press("Backspace")
-    page.wait_for_timeout(250)
+    settle(
+        page,
+        """() => CSS.highlights.has('unsloth-find') && CSS.highlights.has('unsloth-find-active')
+          && !!window.__findSmoke.counter()""",
+    )
+    frames(page)
     after = page.evaluate(
         """() => ({
           painted: CSS.highlights.has('unsloth-find') &&
@@ -639,7 +709,7 @@ def check_pending_query_stays_unpainted(page, engine: str, mode: str, mod: str) 
     field = page.locator('[role="search"] input')
     field.fill("unsloth")
     page.wait_for_function("() => !!window.__findSmoke.counter()", timeout = 10000)
-    page.wait_for_timeout(150)
+    frames(page)
     field.press("End")
     field.type("x")
     page.evaluate(
@@ -669,7 +739,7 @@ def check_pending_query_stays_unpainted(page, engine: str, mode: str, mod: str) 
         and not pending["painted"],
         f"pending state={pending}",
     )
-    page.wait_for_timeout(150)
+    settled_counter(page)
     close_bar(page)
     page.evaluate("() => document.getElementById('pending-repaint-probe')?.remove()")
 
@@ -688,7 +758,7 @@ def check_katex_mutation_reindexes(page, engine: str, mode: str, mod: str) -> No
       scope.appendChild(host);
     }"""
     )
-    page.wait_for_timeout(500)
+    frames(page)
     open_bar(page, mod)
     page.locator('[role="search"] input').fill("mutablekatex")
     page.wait_for_function(
@@ -698,7 +768,8 @@ def check_katex_mutation_reindexes(page, engine: str, mode: str, mod: str) -> No
     page.evaluate(
         "() => { document.querySelector('#probe-katex-mutation .katex-html').textContent = 'changedkatex'; }"
     )
-    page.wait_for_timeout(900)
+    settle(page, COUNTER_IS, arg = "0/0")
+    frames(page)
     after = counter(page)
     check(
         engine,
@@ -723,18 +794,18 @@ def check_skip_attribute(page, engine: str, mode: str, mod: str) -> None:
       scope.appendChild(panel);
     }"""
     )
-    page.wait_for_timeout(500)
+    frames(page)
     open_bar(page, mod)
     page.keyboard.type("wqzlmxtvbn")
-    page.wait_for_timeout(700)
-    before = counter(page)
+    before = settled_counter(page)
     check(engine, mode, "the planted panel is counted", bool(before), f"{before!r}")
 
     # Adding the attribute is the direction that used to be filtered out of the
     # observer's own batch, leaving the region counted until something else
     # happened to mutate.
     page.evaluate("() => document.getElementById('probe-skip')?.setAttribute('data-find-skip', '')")
-    page.wait_for_timeout(900)
+    settle(page, COUNTER_MOVED, arg = before)
+    frames(page)
     after = counter(page)
     check(
         engine,
@@ -941,7 +1012,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
           }));
         }""",
     )
-    page.wait_for_timeout(500)
+    settle(page, SEARCH_HAS, arg = "1/8")
+    frames(page)
     check(
         engine,
         mode,
@@ -969,7 +1041,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         "() => window.__findSmoke.stream("
         "'definitely-no-such-match definitely-no-such-match', 1)",
     )
-    page.wait_for_timeout(1600)
+    settle(page, SEARCH_HAS, arg = "1/2")
+    frames(page)
     check(
         engine,
         mode,
@@ -979,7 +1052,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     )
     loaded = page.locator('[role="search"] input')
     loaded.fill("unsloth")
-    page.wait_for_timeout(500)
+    settle(page, SEARCH_HAS, arg = "1/28")
+    frames(page)
     check(
         engine,
         mode,
@@ -1003,7 +1077,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
         state = "detached",
         timeout = max(15000, ENTRY_DELAY_MS + 10000),
     )
-    page.wait_for_timeout(500)
+    settle(page, SEARCH_HAS, arg = "1/28")
+    frames(page)
     check(
         engine,
         mode,
@@ -1021,6 +1096,8 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     loading.wait_for(state = "visible", timeout = 5000)
     field = loading.locator("input")
     field.dispatch_event("compositionstart", {"data": "u"})
+    # Observation window, not a readiness guess: the composition has to hold the loading input
+    # mounted for the whole entry delay, so the wait spans it.
     page.wait_for_timeout(ENTRY_DELAY_MS + 500)
     check(
         engine,
@@ -1073,6 +1150,7 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
             "cancelable": True,
         },
     )
+    # Observation window: a composing Escape must NOT close the session.
     page.wait_for_timeout(100)
     check(
         engine,
@@ -1090,7 +1168,7 @@ def run_entry_chunk_delay(browser, engine: str) -> None:
     loading.wait_for(state = "visible", timeout = 5000)
     page.locator("[data-find-scope]").click(position = {"x": 20, "y": 200})
     page.keyboard.press("Escape")
-    page.wait_for_timeout(100)
+    settle(page, "() => !document.querySelector('[role=\"search\"]')")
     check(
         engine,
         mode,

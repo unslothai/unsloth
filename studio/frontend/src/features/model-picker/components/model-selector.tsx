@@ -110,6 +110,7 @@ interface ModelSelectorProps {
    *  every caller assumed until an image or video load started evicting the chat model. */
   loaded?: boolean;
   activeGgufVariant?: string | null;
+  activeVariantIsMlx?: boolean;
   activeModelConfig?: PerModelConfig | null;
   activeLoadedContextLength?: number | null;
   selectedConfig?: PerModelConfig | null;
@@ -733,6 +734,7 @@ export function ModelSelector({
   value,
   defaultValue,
   activeGgufVariant,
+  activeVariantIsMlx = false,
   activeModelConfig,
   activeLoadedContextLength,
   selectedConfig,
@@ -855,7 +857,9 @@ export function ModelSelector({
     const fallbackName = missingExternal?.modelName ?? modelDisplayName(selected);
     if (triggerGgufVariant) {
       // The variant is the quant, so it goes in the suffix.
-      const desc = `GGUF · ${triggerGgufVariant}`;
+      const isMlx =
+        activeVariantIsMlx && loadedGgufVariantOverride === undefined;
+      const desc = `${isMlx ? "MLX" : "GGUF"} · ${triggerGgufVariant}`;
       return found
         ? { ...found, description: undefined, descriptionSuffix: desc }
         : { id: selected, name: fallbackName, descriptionSuffix: desc };
@@ -881,6 +885,8 @@ export function ModelSelector({
     optionById,
     catalog,
     triggerGgufVariant,
+    activeVariantIsMlx,
+    loadedGgufVariantOverride,
     externalModels,
     externalConnections,
     t,
