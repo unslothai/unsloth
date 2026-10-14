@@ -1920,6 +1920,19 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def _controlnet_streams(state: Any) -> bool:
+    """Whether a ControlNet added at generate time streams from host memory instead of loading whole beside the base
+    model: under any offload policy, a calibrated placement (budgets only the base model), and a multi-GPU split
+    (reports "none", but its fit priced only the base pipeline, which one card would have offloaded)."""
+    from .diffusion_multigpu import is_split
+
+    return (
+        getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE
+        or bool(getattr(state, "calibrated_placement", False))
+        or is_split(getattr(state, "pipe", None))
+    )
+
+
 def _calibrated_activation(fam: Any, target: Any) -> Any:
     """Measured activations apply only where measured: NVIDIA with a sub-quadratic attention kernel."""
     if getattr(target, "backend", None) != "cuda" or getattr(target, "vendor", None) != "nvidia":
@@ -9912,9 +9925,7 @@ class DiffusionBackend:
             # Placement follows the base offload policy (resident base -> resident, offloaded -> group offload).
             # Calibrated tiers budget only the base model: ControlNet must stream, no resident fallback.
             calibrated = bool(getattr(state, "calibrated_placement", False))
-            if (getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE or calibrated) and (
-                _offload_controlnet_module(cn_model, state.device, logger)
-            ):
+            if _controlnet_streams(state) and _offload_controlnet_module(cn_model, state.device, logger):
                 pass
             elif calibrated:
                 del cn_model

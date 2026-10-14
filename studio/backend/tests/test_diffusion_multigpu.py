@@ -1254,3 +1254,21 @@ def test_root_hook_state_on_submodules_reaches_the_replica():
     out = loop(5)
     assert torch.equal(out, reference)
     assert router.stats["replica_calls"] == 4
+
+
+def test_runtime_controlnet_streams_beside_a_split_pipeline(monkeypatch):
+    # A split reports policy "none", but its fit priced only the base pipeline: a ControlNet added at generate time
+    # must stream as the single-card offload plan would have, not land whole on the primary.
+    import types as _types
+
+    from core.inference.diffusion import _controlnet_streams
+
+    class Pipe:
+        pass
+
+    pipe = Pipe()
+    state = _types.SimpleNamespace(pipe = pipe, offload_policy = "none", calibrated_placement = False)
+    assert _controlnet_streams(state) is False  # one card, resident: unchanged
+    mg._PLACEMENTS[pipe] = {"moved": ["text_encoder", "vae"]}
+    assert _controlnet_streams(state) is True
+    assert _controlnet_streams(_types.SimpleNamespace(pipe = Pipe(), offload_policy = "group")) is True

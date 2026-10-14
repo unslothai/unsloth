@@ -888,6 +888,16 @@ def apply_split_plan(
         return False
 
 
+def is_split(pipe: Any) -> bool:
+    """True when ``pipe``'s components were placed across cards by :func:`place_split`."""
+    if pipe is None:
+        return False
+    try:
+        return pipe in _PLACEMENTS
+    except TypeError:
+        return False
+
+
 def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     if pipe is None:
         return None
