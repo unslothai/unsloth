@@ -175,11 +175,12 @@ def _add_gguf_picks(
 
     A bare id means the quant a plain load takes, ranked by the ``preferred_quant`` the chat
     resolver and /v1/models already share, so one id cannot mean different weights per surface.
-    Root checkpoints are ranked alone when there are any: a plain local load resolves
-    non-recursively and always takes the root, so ranking a qualified ``distilled/...`` build
-    alongside them would let one id mean different weights here than in the picker.
+    Only the checkpoints ``default_gguf_scope`` names are ranked (the root ones when there are
+    any, or a curated repo's default subdirectory such as unsloth/LTX-2.5-GGUF's distilled/), so
+    one id cannot mean different weights here than in the picker.
     """
     from core.inference.openai_auto_download import preferred_quant
+    from hub.utils.gguf import default_gguf_scope
     from utils.models.model_config import list_local_gguf_variants
 
     if load_dir.is_file():
@@ -217,8 +218,8 @@ def _add_gguf_picks(
             [f"{key}:{quant}" for key in keys],
             MediaModelPick(keys[0], load_path, variant.filename, "gguf"),
         )
-    unqualified = [quant for quant in openable if "/" not in quant]
-    best = preferred_quant(unqualified or list(openable)) or next(iter(unqualified or openable))
+    scope = default_gguf_scope(list(openable), *keys, getattr(info, "id", None), str(on_disk))
+    best = preferred_quant(scope) or scope[0]
     _register(
         index,
         keys,

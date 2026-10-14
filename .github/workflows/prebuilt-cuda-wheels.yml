@@ -29,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       torch_versions:
-        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0)'
+        description: 'torch versions to build for, comma separated (2.13.0, 2.14.0; 2.10.0 and 2.11.0 build on win_amd64 only)'
         type: string
         default: '2.13.0,2.14.0'
       python_versions:

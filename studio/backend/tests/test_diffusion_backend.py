@@ -7238,6 +7238,7 @@ def test_diffusion_status_response_carries_resolved():
             "reason": "blackwell",
             "artifact": None,
             "replaced": None,
+            "steps": None,
         }
     }
     # Absent by default (nothing resolved / native engine).
@@ -7260,7 +7261,12 @@ def test_diffusion_status_response_carries_requested_precision():
     }
     resp = DiffusionStatusResponse(loaded = True, resolved = rec)
     assert resp.model_dump()["resolved"] == {
-        "transformer_quant": {**rec["transformer_quant"], "artifact": None, "replaced": None}
+        "transformer_quant": {
+            **rec["transformer_quant"],
+            "artifact": None,
+            "replaced": None,
+            "steps": None,
+        }
     }
 
 
@@ -13663,6 +13669,49 @@ def test_plan_memory_prices_cached_dense_shards_over_a_cached_precast(monkeypatc
     assert plan.estimates["model_dense_mib"] == 4350
 
 
+@pytest.mark.parametrize("exact", [True, False])
+def test_mps_prices_the_int8_encoder_over_cached_dense_shards(monkeypatch, tmp_path, exact):
+    # #11792: a 48 GB Mac with 27 GB free that loaded Qwen-Image-2.1 before still holds the dense encoder.
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import DeviceMemory, unified_memory_shortfall_message
+
+    snapshot = _base_snapshot_with_sizes(
+        tmp_path,
+        monkeypatch,
+        {
+            "text_encoder/model.safetensors": 16722,
+            "vae/diffusion_pytorch_model.safetensors": 650,
+        },
+    )
+    monkeypatch.setattr(
+        dmod,
+        "settled_snapshot_device_memory",
+        lambda t: DeviceMemory("mps", "mps", "unified_memory", 27 * 1024, 48 * 1024),
+    )
+    monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 8192)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_precast_text_encoder_mib",
+        staticmethod(lambda *a, **k: (8916, ("text_encoder",), exact)),
+    )
+    target = types.SimpleNamespace(device = "mps", backend = "mps", supports_model_cpu_offload = False)
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "qwen-image-2.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 4005,
+        base_local_dir = str(snapshot),
+        text_encoder_quant = "int8",
+    )
+    # The int8 file is fetched inside the load, after this check, so an uncached one is priced the same way.
+    assert plan.estimates["text_encoder_dense_mib"] == 8916
+    assert unified_memory_shortfall_message(plan) is None
+
+
 def test_cached_dense_shards_keep_the_24g_denoiser_resident(monkeypatch, tmp_path):
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import OFFLOAD_GROUP, DeviceMemory
@@ -13850,6 +13899,27 @@ def test_precast_text_encoder_mib_reads_the_cached_checkpoint(monkeypatch, tmp_p
         DiffusionBackend._precast_text_encoder_mib(fam, "Qwen/Qwen-Image-2.1", target, "none")
         is None
     )
+
+
+def test_precast_text_encoder_mib_prices_an_uncached_int8_encoder_on_mps(monkeypatch):
+    # The int8 file is fetched inside the load, after the unified-memory check, so it is uncached there (#11792).
+    import torch
+
+    from core.inference import diffusion_prequant as pq
+    from core.inference.diffusion_auto_policy import family_bf16_components_gb
+    from core.inference.diffusion_families import detect_family
+    from core.inference.diffusion_te_prequant import TE_INT8_CONVROT_BUDGET_SCALE
+
+    fam = detect_family("Qwen/Qwen-Image-2.1")
+    monkeypatch.setattr(pq, "prefer_cached_pickle_twins", lambda repo, names, **k: names)
+    monkeypatch.setattr(pq, "first_cached_as_resolved", lambda *a, **k: None)
+    target = types.SimpleNamespace(device = "mps", dtype = torch.bfloat16, backend = "mps")
+    mib, components, exact = DiffusionBackend._precast_text_encoder_mib(
+        fam, "Qwen/Qwen-Image-2.1", target, "int8"
+    )
+    dense_gb = family_bf16_components_gb(fam, "Qwen/Qwen-Image-2.1")[1]
+    assert (components, exact) == (("text_encoder",), False)
+    assert mib == int(dense_gb * 1000**3 * TE_INT8_CONVROT_BUDGET_SCALE) // (1024 * 1024)
 
 
 def test_precast_text_encoder_mib_prices_hidreams_standalone_fourth_encoder(monkeypatch, tmp_path):
