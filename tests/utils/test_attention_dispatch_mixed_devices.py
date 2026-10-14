@@ -285,3 +285,51 @@ def test_hf_fallback_reads_child_configs_before_rewriting_the_composite(monkeypa
     assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
     assert model.config._attn_implementation == "eager"
     assert encoder._attn_implementation == "eager"
+
+
+@pytest.mark.parametrize("current, expected", [(0, "flash_attention_2"), (1, "sdpa")])
+def test_bare_cuda_placement_reads_the_current_device(monkeypatch, current, expected):
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: current)
+    model = _Model({"": "cuda"})
+    model.layers = torch.nn.ModuleList([_Decoder()])
+    mu.fall_back_from_flash_attention_on_pre_ampere(model)
+    assert model.config._attn_implementation == expected
+
+
+def test_hierarchical_maps_follow_the_most_specific_entry(monkeypatch):
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    model = _Model({"": 1, "layers": 0})
+    model.layers = torch.nn.ModuleList([_Decoder()])
+    model.lm_head = torch.nn.Linear(2, 2)
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is False
+    assert model.config._attn_implementation == "flash_attention_2"
+    model.hf_device_map = {"": 1, "lm_head": 0}
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
+    assert model.config._attn_implementation == "sdpa"
+
+
+def test_hf_fallback_keeps_an_eager_only_tower_on_eager(monkeypatch):
+    # Donut shape: the root runs flash, its DonutSwin encoder was put on eager (no SDPA).
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    model = _Model({"a": 0, "b": 1}, model_type = "vision-encoder-decoder")
+    encoder = SimpleNamespace(_attn_implementation = "eager", model_type = "donut-swin")
+    model.config.sub_configs = {"encoder": None}
+    model.config.encoder = encoder
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
+    assert model.config._attn_implementation == "eager"
+    assert encoder._attn_implementation == "eager"
+
+
+def test_hf_fallback_reads_sdpa_support_of_every_tower(monkeypatch):
+    from transformers import PretrainedConfig, PreTrainedModel
+
+    class _Tower(PreTrainedModel):
+        config_class = PretrainedConfig
+        _supports_sdpa = False
+
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    model = _Model({"a": 0, "b": 1})
+    model.tower = _Tower(PretrainedConfig())
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
+    assert model.config._attn_implementation == "eager"

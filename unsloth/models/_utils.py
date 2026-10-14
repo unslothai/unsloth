@@ -1615,17 +1615,38 @@ def _set_attn_impl(config, impl):
     return impl
 
 
-def _holds_attention(model, name):
-    """Whether the device-map entry ``name`` is or sits inside an attention module, or covers one.
-    Unresolvable counts as yes."""
-    parts = name.split(".") if name else []
+def _cuda_index(placement):
+    """CUDA index of a device-map placement, or None for cpu / disk offload."""
+    if isinstance(placement, int):
+        return placement
     try:
-        module = model.get_submodule(name) if name else model
-        # A fine-grained map can place q_proj alone; its attention parent then runs there too.
-        ancestors = [model.get_submodule(".".join(parts[:i])) for i in range(1, len(parts))]
-    except Exception:
-        return True
-    return any("attention" in type(m).__name__.lower() for m in (*ancestors, *module.modules()))
+        device = torch.device(placement)
+    except (RuntimeError, TypeError):
+        return None
+    if device.type != "cuda":
+        return None
+    # A bare "cuda" means the current device, which a framework may have moved off device 0.
+    return torch.cuda.current_device() if device.index is None else device.index
+
+
+def _attention_placements(model, device_map):
+    """Device-map keys that run attention: each attention module's longest-prefix entry, plus entries inside
+    one (a fine-grained map can place q_proj alone). An unresolvable key counts."""
+    keys = sorted((k for k in device_map if isinstance(k, str)), key = len, reverse = True)
+    out = set()
+    for key in keys:
+        try:
+            model.get_submodule(key)
+        except Exception:
+            out.add(key)
+    for name, module in model.named_modules():
+        if not name or "attention" not in type(module).__name__.lower():
+            continue
+        owner = next((k for k in keys if k == "" or name == k or name.startswith(k + ".")), None)
+        if owner is not None:
+            out.add(owner)
+        out.update(k for k in keys if k.startswith(name + "."))
+    return out
 
 
 def _pre_ampere_cuda_devices(model):
@@ -1634,24 +1655,17 @@ def _pre_ampere_cuda_devices(model):
     device_map = getattr(model, "hf_device_map", None)
     if DEVICE_TYPE != "cuda" or not isinstance(device_map, dict):
         return []
-    indices = set()
-    for name, placement in device_map.items():
-        if isinstance(placement, int):
-            index = placement
-        else:
-            try:
-                device = torch.device(placement)
-            except (RuntimeError, TypeError):
-                continue  # "cpu" / "disk" offload
-            if device.type != "cuda":
-                continue
-            index = device.index or 0
-        if index not in indices and _holds_attention(model, name):
-            indices.add(index)
     try:
-        return sorted(i for i in indices if torch.cuda.get_device_capability(i)[0] < 8)
+        indices = {k: _cuda_index(v) for k, v in device_map.items()}
+        pre_ampere = {
+            i for i in set(indices.values()) if i is not None and torch.cuda.get_device_capability(i)[0] < 8
+        }
     except Exception:
         return []
+    if not pre_ampere:
+        return []  # same-generation hosts never walk the modules
+    attention = _attention_placements(model, device_map)
+    return sorted({indices[k] for k in attention if indices.get(k) in pre_ampere})
 
 
 def fall_back_from_flash_attention_on_pre_ampere(model):
@@ -1693,11 +1707,23 @@ def fall_back_from_flash_attention_on_pre_ampere(model):
         model_type = (_config_get(config, "model_type", "") or "").lower()
         # SDPA cannot apply an attention-logit softcap (Gemma 2), so those stay exact on eager.
         softcap = _config_get(config, "attn_logit_softcapping", None)
-        return not _is_sdpa_excluded(model_type) and not softcap
+        # A tower already on eager (no SDPA, e.g. DonutSwin) must keep it.
+        eager = _config_get(config, "_attn_implementation", None) == "eager"
+        return not _is_sdpa_excluded(model_type) and not softcap and not eager
 
+    try:
+        from transformers.modeling_utils import PreTrainedModel
+    except Exception:
+        PreTrainedModel = ()
+    towers_sdpa = all(
+        getattr(type(m), "_supports_sdpa", False) and not _declares_no_sdpa(type(m))
+        for m in model.modules()
+        if isinstance(m, PreTrainedModel)
+    )
     # One answer for the whole tree, decided before any write: a composite's setter recurses into
     # its children, so a parent rewritten to sdpa would carry a softcapped child with it.
-    changed = "sdpa" if class_sdpa and all(_sdpa_ok(c) for c in configs) else "eager"
+    ok = class_sdpa and towers_sdpa and all(_sdpa_ok(c) for c in configs)
+    changed = "sdpa" if ok else "eager"
     for config in flash:
         _write_attn_impl(config, changed)
     if changed:
