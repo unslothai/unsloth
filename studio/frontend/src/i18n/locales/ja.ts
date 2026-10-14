@@ -2555,14 +2555,20 @@ export const ja = {
       },
       menu: {
         title: "チャットメニュー",
-        description:
-          "項目をチャットの「+」サイドメニューに固定します。その他の項目は「More」に移動します。",
+        description: "チャットの＋メニューに項目を固定し、ドラッグして並べ替えます。その他は「その他」に入ります。",
+        deepResearch: "ディープリサーチ",
+        browserUse: "ブラウザ操作",
         chatWithFiles: "ファイルとチャット (RAG)",
         mcp: "MCP",
         skills: "スキル",
         savedPrompts: "保存済みプロンプト",
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
+        reset: "デフォルトに戻す",
+        addFiles: "写真とファイルを追加",
+        webSearch: "ウェブ検索",
+        tools: "ツール",
+        more: "その他",
       },
       pastedTextThreshold: "長い貼り付けを圧縮",
       pastedTextThresholdDescription:

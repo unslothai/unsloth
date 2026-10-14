@@ -2532,14 +2532,20 @@ export const zhCN = {
       },
       menu: {
         title: "聊天菜单",
-        description:
-          "将条目固定到聊天中的“+”侧边菜单，其他条目会移到“更多”中。",
+        description: "将项目固定到聊天的 + 菜单，并拖动以调整顺序。其余项目会移到“更多”中。",
+        deepResearch: "深度研究",
+        browserUse: "浏览器操作",
         chatWithFiles: "与文件聊天（RAG）",
         mcp: "MCP",
         skills: "技能",
         savedPrompts: "已保存的提示词",
         compareChat: "对比聊天",
         exportChat: "导出聊天",
+        reset: "恢复默认",
+        addFiles: "添加照片和文件",
+        webSearch: "网页搜索",
+        tools: "工具",
+        more: "更多",
       },
       pastedTextThreshold: "压缩长粘贴内容",
       pastedTextThresholdDescription:

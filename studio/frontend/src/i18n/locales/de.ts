@@ -2610,14 +2610,20 @@ export const de = {
       },
       menu: {
         title: "Chatmenü",
-        description:
-          "Elemente im seitlichen Plus-Menü des Chats anheften. Die übrigen werden unter „Mehr“ angezeigt.",
+        description: "Hefte Einträge an das +-Menü des Chats und ziehe sie, um die Reihenfolge zu ändern. Andere landen unter „Mehr“.",
+        deepResearch: "Tiefenrecherche",
+        browserUse: "Browsersteuerung",
         chatWithFiles: "Chat mit Dateien (RAG)",
         mcp: "MCP",
         skills: "Fähigkeiten",
         savedPrompts: "Gespeicherte Prompts",
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
+        reset: "Auf Standard zurücksetzen",
+        addFiles: "Fotos & Dateien hinzufügen",
+        webSearch: "Websuche",
+        tools: "Werkzeuge",
+        more: "Mehr",
       },
       pastedTextThreshold: "Lange Einfügungen verdichten",
       pastedTextThresholdDescription:

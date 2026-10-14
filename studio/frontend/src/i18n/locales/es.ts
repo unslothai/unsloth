@@ -2601,14 +2601,20 @@ export const es = {
       },
       menu: {
         title: "Menú del chat",
-        description:
-          "Fija elementos en el menú lateral «+» del chat. Los demás pasarán a «Más».",
+        description: "Fija elementos en el menú + del chat y arrástralos para reordenarlos. Los demás pasan a “Más”.",
+        deepResearch: "Investigación profunda",
+        browserUse: "Uso del navegador",
         chatWithFiles: "Chat con archivos (RAG)",
         mcp: "MCP",
         skills: "Habilidades",
         savedPrompts: "Prompts guardados",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
+        reset: "Restablecer valores predeterminados",
+        addFiles: "Añadir fotos y archivos",
+        webSearch: "Búsqueda web",
+        tools: "Herramientas",
+        more: "Más",
       },
       pastedTextThreshold: "Condensar pegados largos",
       pastedTextThresholdDescription:

@@ -30939,6 +30939,12 @@ async def produce_openai_chat_completions(
                     "route: a waveform admits no grammar, and transcription and audio-input "
                     "answers are decoded without one. Send the request to a text model.",
                 )
+        # Callable client tools set the format aside (_response_format_beside_tools), so nothing
+        # below applies, unless the request asks for Unsloth's own loop, which keeps the format.
+        if _response_format_constrains_decoding(payload) and (
+            _explicit_studio_tool_loop_requested(payload)
+            or not _tools_outrank_response_format(payload, payload.tools)
+        ):
             if not model_info.get("is_mlx"):
                 _raise_unsupported_openai_parameter(
                     "response_format",
@@ -34549,6 +34555,11 @@ async def produce_openai_chat_completions(
         and _sf_supports_tools
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
+    _sf_response_format = _response_format_beside_tools(
+        payload, payload.tools if _sf_client_tools else None
+    )
+    gen_kwargs["response_format"] = _sf_response_format
+    _sf_single_block = _sf_single_block and _sf_response_format is not None
     # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
     # markup never reached the prompt. Gating the healer on the caller's list instead would
     # promote a dropped tool with a clean NAME out of text-form output, handing the client a
@@ -34600,7 +34611,7 @@ async def produce_openai_chat_completions(
             payload.auto_heal_tool_calls,
             _sf_healing_tools,
             payload.tool_choice,
-            response_format = _extract_response_format(payload),
+            response_format = _sf_response_format,
         )
         if _sf_client_tools
         else None
@@ -35247,7 +35258,7 @@ async def produce_openai_chat_completions(
                         _finish = "tool_calls"
                     elif nudge_enabled(
                         payload.nudge_tool_calls,
-                        response_format = _extract_response_format(payload),
+                        response_format = _sf_response_format,
                     ):
                         _data = {
                             "choices": [
@@ -44892,6 +44903,21 @@ def _reject_unhonorable_response_format(payload) -> None:
         _raise_unsupported_openai_parameter("response_format", str(exc))
 
 
+def _tools_outrank_response_format(payload, tools) -> bool:
+    return bool(tools) and payload.tool_choice != "none"
+
+
+def _response_format_beside_tools(payload, tools):
+    """The request's ``response_format``, or None while ``tools`` can still be called:
+    decoding locked to the document would never emit the call."""
+    if _tools_outrank_response_format(payload, tools) and _response_format_constrains_decoding(
+        payload
+    ):
+        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
+        return None
+    return _extract_response_format(payload)
+
+
 def _build_openai_passthrough_body(
     payload,
     backend_ctx = None,
@@ -44924,10 +44950,9 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
-    response_format = _response_format_for_llama_server(_extract_response_format(payload))
-    if tools and tool_choice != "none" and _response_format_constrains_decoding(payload):
-        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
-        response_format = None
+    response_format = _response_format_for_llama_server(
+        _response_format_beside_tools(payload, tools)
+    )
     body = _build_passthrough_payload(
         messages,
         tools,
