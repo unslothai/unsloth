@@ -7993,6 +7993,7 @@ class DiffusionBackend:
                     if (
                         effective_speed in (SPEED_DEFAULT, SPEED_MAX)
                         # ROCm GGUF default compiles only the dequant: gate on that predicate, never the regional probe.
+                        # On max the dequant is the fallback when the regional compile is refused, so it keeps the cache.
                         and (
                             _gguf_dequant_compilable(
                                 True,
@@ -8004,6 +8005,16 @@ class DiffusionBackend:
                             and effective_speed == SPEED_DEFAULT
                             and getattr(target, "backend", None) == "rocm"
                             else compile_eligible(target, is_gguf = gguf_transformer, family = fam)
+                            or (
+                                gguf_transformer
+                                and getattr(target, "backend", None) == "rocm"
+                                and _gguf_dequant_compilable(
+                                    True,
+                                    getattr(target, "device", None) == "cuda",
+                                    bool(getattr(fam, "supports_torch_compile", True)),
+                                    target,
+                                )
+                            )
                         )
                         and not fp16_unet_offloaded(
                             target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE

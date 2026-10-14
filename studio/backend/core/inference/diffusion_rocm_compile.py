@@ -150,7 +150,10 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
         dev = torch.device("cuda", index)
         dtype = torch.bfloat16
         gen = torch.Generator(device = "cpu").manual_seed(0)
-        block = _Block().to(device = dev, dtype = dtype).eval()
+        # Forked: the parameter init must not advance the process CPU RNG a caller may have seeded.
+        with torch.random.fork_rng(devices = []):
+            block = _Block()
+        block = block.to(device = dev, dtype = dtype).eval()
         inductor_cfg = torch._inductor.config
         patches = {"memory_planning": False} if hasattr(inductor_cfg, "memory_planning") else {}
         compiled = torch.compile(block, dynamic = True, fullgraph = True)

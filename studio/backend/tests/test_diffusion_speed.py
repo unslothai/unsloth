@@ -2838,12 +2838,17 @@ def test_rocm_gguf_default_compile_cache_gate_uses_the_dequant_predicate():
             node = parents[node]
         if isinstance(node, ast.If) and "compile_cache.begin(" in ast.unparse(node.body[0]):
             gated.append((c, parents[c]))
-    assert len(gated) == 1
+    assert len(gated) == 2
     c, ifexp = gated[0]
     assert isinstance(ifexp, ast.IfExp) and ifexp.body is c
     test = ast.unparse(ifexp.test)
     assert "gguf_transformer" in test and "SPEED_DEFAULT" in test and "'rocm'" in test
-    assert all(k.arg != "probe" for k in ifexp.orelse.keywords)
+    # max: a refused regional compile falls back to the dequant, which keeps the cache context open.
+    assert isinstance(ifexp.orelse, ast.BoolOp) and isinstance(ifexp.orelse.op, ast.Or)
+    regional, fallback = ifexp.orelse.values
+    assert getattr(regional.func, "id", None) == "compile_eligible"
+    assert all(k.arg != "probe" for k in regional.keywords)
+    assert "'rocm'" in ast.unparse(fallback) and gated[1][0] in list(ast.walk(fallback))
 
 
 def test_rocm_probe_runs_on_wheels_without_a_hip_version(monkeypatch):
@@ -2956,3 +2961,14 @@ def test_direct_load_pipeline_marks_the_rocm_probe_load_boundary(monkeypatch, wh
     with pytest.raises(_Stop):
         backend.load_pipeline(repo_id = "x/y", _load_token = 7)
     assert resets == [1]
+
+
+
+def test_rocm_probe_leaves_the_process_rng_untouched():
+    from core.inference import diffusion_rocm_compile as rc
+
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(1234)
+    before = torch.random.get_rng_state().clone()
+    rc._probe(torch, 0)  # builds the block, then fails to reach a GPU on this host
+    assert torch.equal(torch.random.get_rng_state(), before)
