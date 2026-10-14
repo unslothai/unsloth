@@ -885,13 +885,59 @@ def install_compile_recorder() -> bool:
         return True
 
 
+_ROOT_HOOK_DICTS = (
+    "_forward_pre_hooks",
+    "_forward_pre_hooks_with_kwargs",
+    "_forward_hooks",
+    "_forward_hooks_with_kwargs",
+    "_forward_hooks_always_called",
+)
+
+
+def _portable(fn: Any, depth: int = 0) -> bool:
+    """True when a hook / forward override can be shared by a copy of its module: nothing it captures (closure cells,
+    bound ``self``, partial arguments) is a module or a CUDA tensor, which would keep pointing at the source card."""
+    torch = _torch()
+    if depth > 3:
+        return False
+    if isinstance(fn, torch.nn.Module) or (isinstance(fn, torch.Tensor) and fn.device.type != "cpu"):
+        return False
+    if isinstance(fn, (types.FunctionType, types.MethodType)):
+        owner = getattr(fn, "__self__", None)
+        if owner is not None and not _portable(owner, depth + 1):
+            return False
+        func = getattr(fn, "__func__", fn)
+        for cell in getattr(func, "__closure__", None) or ():
+            try:
+                value = cell.cell_contents
+            except ValueError:  # empty cell
+                continue
+            if isinstance(value, dict):
+                value = list(value.values())
+            items = value if isinstance(value, (list, tuple, set)) else (value,)
+            for item in items:
+                if callable(item) or isinstance(item, (torch.nn.Module, torch.Tensor)):
+                    if not _portable(item, depth + 1):
+                        return False
+        return True
+    partial_func = getattr(fn, "func", None)
+    if partial_func is not None and hasattr(fn, "args"):
+        return _portable(partial_func, depth + 1) and all(
+            _portable(a, depth + 1) for a in (*fn.args, *(getattr(fn, "keywords", None) or {}).values())
+        )
+    if callable(fn) and not isinstance(fn, type):
+        # a hook object: portable when none of its attributes is a module / CUDA tensor
+        state = getattr(fn, "__dict__", {})
+        return all(_portable(v, depth + 1) for v in state.values() if callable(v) or isinstance(v, torch.Tensor))
+    return True
+
+
 def _hooks_present(module: Any) -> Optional[str]:
-    """Name of the first submodule carrying a forward hook or an offload / cache hook registry, else None. A replica
-    cannot inherit such state faithfully (closures point at the source), so CFG-parallel declines."""
+    """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: an offload / cache
+    hook registry anywhere, or a forward hook / instance forward override below the root whose captured state points
+    at the source (deepcopy treats functions as atoms). The ROOT's torch forward hooks are fine: the source module's
+    ``__call__`` runs them around the router for every branch, and :func:`build_replica` strips them from the copy."""
     for name, sub in module.named_modules():
-        for attr in ("_forward_hooks", "_forward_pre_hooks"):
-            if getattr(sub, attr, None):
-                return f"{name or '<root>'}.{attr}"
         if getattr(sub, "_diffusers_hook", None) is not None:
             registry = sub._diffusers_hook
             hooks = getattr(registry, "hooks", None)
@@ -899,14 +945,16 @@ def _hooks_present(module: Any) -> Optional[str]:
                 return f"{name or '<root>'}._diffusers_hook"
         if getattr(sub, "_hf_hook", None) is not None:
             return f"{name or '<root>'}._hf_hook"
-        # An instance-level forward that is a plain function or closure would keep pointing at the source module once
-        # copied (deepcopy treats functions as atoms). Bound methods are rebound to the copy, the router is dropped.
+        if name:
+            for attr in ("_forward_hooks", "_forward_pre_hooks"):
+                for hook in (getattr(sub, attr, None) or {}).values():
+                    if not _portable(hook):
+                        return f"{name}.{attr}"
         override = sub.__dict__.get("forward")
-        if (
-            override is not None
-            and not isinstance(override, (types.MethodType, CfgParallelRouter))
-            and callable(override)
-        ):
+        if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
+            # bound methods are rebound to the copy, the router is dropped
+            continue
+        if callable(override) and not _portable(override):
             return f"{name or '<root>'}.forward (instance override)"
     return None
 
@@ -949,6 +997,11 @@ def build_replica(module: Any, device: Any) -> Any:
     for sub in replica.modules():
         for key in [k for k, v in sub.__dict__.items() if v is _DROP]:
             del sub.__dict__[key]
+    # The source's own __call__ runs its root hooks around every branch; the copy must not run them a second time.
+    for attr in _ROOT_HOOK_DICTS:
+        hooks = getattr(replica, attr, None)
+        if hooks is not None:
+            hooks.clear()
     compiled_subs = 0
     for (name, src), (_rname, dst) in zip(module.named_modules(), replica.named_modules()):
         # Plain tensor attributes (cached RoPE tables and the like) were deep-copied on the source card.

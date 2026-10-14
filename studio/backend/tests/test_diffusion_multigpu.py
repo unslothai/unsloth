@@ -614,20 +614,42 @@ def test_replica_failure_recomputes_on_the_primary():
     assert router.replica is None
 
 
-def test_replica_declined_when_the_denoiser_carries_hooks():
+def test_replica_declined_when_a_submodule_hook_captures_the_source():
     dit = _Dit()
-    dit.proj.register_forward_hook(lambda m, i, o: o)
+    source = dit.proj
+    dit.proj.register_forward_hook(lambda m, i, o: o + source.bias)  # closes over the source module
     router, replicas = _router(dit)
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert replicas == []
-    assert "hooks" in router.describe()["disabled_reason"]
+    assert "proj._forward_hooks" in router.describe()["disabled_reason"]
+
+
+def test_portable_hooks_and_root_hooks_are_accepted():
+    torch.manual_seed(0)
+    dit = _Dit()
+    scale = 0.5
+    dit.proj.register_forward_hook(lambda m, i, o: o * scale)  # captures only a float: shared safely
+    calls = []
+    dit.register_forward_pre_hook(lambda m, a: calls.append(1))  # root: runs on the source around every branch
+    assert mg._hooks_present(dit) is None
+    latents = torch.randn(2, 4)
+    reference = _cfg_loop(dit, latents.clone(), steps = 4)
+    n_ref = len(calls)
+    router, replicas = _router(dit)
+    out = _cfg_loop(dit, latents.clone(), steps = 4)
+    assert torch.equal(out, reference)
+    assert router.stats["replica_calls"] == 3
+    # the root hook ran exactly once per denoiser call, routed or not (stripped from the copy)
+    assert len(calls) == 2 * n_ref
+    assert not replicas[0]._forward_pre_hooks
 
 
 def test_closure_forward_override_is_declined_but_bound_methods_are_rebound():
     import types
 
     dit = _Dit()
-    dit.proj.forward = lambda x: x  # a closure would keep calling the source module
+    source = dit.proj
+    dit.proj.forward = lambda x: source.weight @ x  # a closure would keep reading the source module
     assert "instance override" in mg._hooks_present(dit)
     dit2 = _Dit()
     dit2.proj.forward = types.MethodType(lambda self, x: torch.nn.functional.linear(x, self.weight), dit2.proj)
@@ -702,7 +724,8 @@ def test_cfg_parallel_decline_reasons(monkeypatch):
     assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "group", selection = sel)
     hooked = Pipe()
     hooked.transformer = _Dit()
-    hooked.transformer.proj.register_forward_pre_hook(lambda m, a: None)
+    source = hooked.transformer.proj
+    hooked.transformer.proj.register_forward_pre_hook(lambda m, a: source)
     assert "hooked" in mg.cfg_parallel_decline(hooked, offload_policy = "group", selection = sel)
     assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = sel)
 
@@ -775,3 +798,10 @@ def test_with_load_selection_scopes_and_pops_the_ordinals():
     import inspect
 
     assert '"""body"""' in inspect.getsource(Backend._run_load)
+
+
+def test_portability_looks_inside_captured_containers():
+    holder = {"m": torch.nn.Linear(1, 1)}
+    assert not mg._portable(lambda m, a: holder)
+    plain = {"scale": 2.0}
+    assert mg._portable(lambda m, a: plain)
