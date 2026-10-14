@@ -3189,9 +3189,13 @@ class SdCppDiffusionBackend:
                 # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
                 if placed == "cpu":
                     return placed, ()
-                return placed, tuple(offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan)))
+                return placed, tuple(
+                    offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan))
+                )
 
-            device, offload = _placement(server_accelerator if mode == "server" else engine_accelerator)
+            device, offload = _placement(
+                server_accelerator if mode == "server" else engine_accelerator
+            )
             spawn_env = off_torch.child_env() if off_torch is not None else None
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
