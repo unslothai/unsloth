@@ -15,6 +15,8 @@ import {
 import { ChevronLeftIcon, ChevronRightIcon, PlusIcon, XIcon } from "lucide-react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  ArrowExpand01Icon,
+  ArrowShrink01Icon,
   AttachmentIcon,
   FileDatabaseIcon,
   FolderAttachmentIcon,
@@ -42,10 +44,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Tick02Icon } from "@/lib/tick-icon";
-import {
-  ChevronDownStandardIcon,
-  ChevronUpStandardIcon,
-} from "@/lib/chevron-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { cn } from "@/lib/utils";
@@ -557,7 +556,7 @@ function DocumentCard({
   if (compact) {
     return (
       <div ref={setSlot} className="flex shrink-0 items-center gap-1">
-        <div className="group/attachment-card relative">
+        <div className="group/attachment-card relative flex">
           {wrapDialog(
             <button
               {...buttonProps}
@@ -568,7 +567,6 @@ function DocumentCard({
                 canOpen && CARD_SURFACE,
                 canOpen && "cursor-pointer",
                 failed && "border-destructive/40 text-destructive",
-                removable && "pr-8",
               )}
             >
               {processing ? (
@@ -576,7 +574,16 @@ function DocumentCard({
               ) : (
                 <AttachmentKindIcon kind={kind} className="size-4 shrink-0" />
               )}
-              <span className="truncate">{doc.filename}</span>
+              <span
+                className={cn(
+                  "truncate",
+                  // The hover X sits on the name's end; fade the text out under it.
+                  removable &&
+                    "group-hover/attachment-card:[mask-image:linear-gradient(to_left,transparent_1.25rem,black_2.5rem)] group-focus-within/attachment-card:[mask-image:linear-gradient(to_left,transparent_1.25rem,black_2.5rem)]",
+                )}
+              >
+                {doc.filename}
+              </span>
               {processing && percent != null ? (
                 <span className="shrink-0 text-muted-foreground tabular-nums">{percent}%</span>
               ) : null}
@@ -837,7 +844,7 @@ function ChatFilesPanel({
               title={collapsed ? "Expand files" : "Collapse files"}
             >
               <HugeiconsIcon
-                icon={collapsed ? ChevronDownStandardIcon : ChevronUpStandardIcon}
+                icon={collapsed ? ArrowExpand01Icon : ArrowShrink01Icon}
                 strokeWidth={1.75}
                 className="size-4"
               />
