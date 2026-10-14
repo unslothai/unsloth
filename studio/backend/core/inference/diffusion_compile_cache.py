@@ -705,14 +705,15 @@ def _driver_version() -> Optional[str]:
     only fail at the first launch."""
     try:
         text = Path("/proc/driver/nvidia/version").read_text(encoding = "utf-8", errors = "replace")
-        match = re.search(r"Kernel Module\s+([0-9][0-9.]*)", text) or re.search(r"\s([0-9]{3,}\.[0-9.]+)\s", text)
+        match = re.search(r"Kernel Module\s+([0-9][0-9.]*)", text) or re.search(
+            r"\s([0-9]{3,}\.[0-9.]+)\s", text
+        )
         if match:
             return match.group(1)
     except OSError:
         pass
     try:
         import torch  # noqa: PLC0415
-
         get = getattr(torch._C, "_cuda_getDriverVersion", None)
         if get is not None and torch.cuda.is_available():
             return f"cuda_api_{int(get())}"
@@ -741,7 +742,6 @@ def _compile_knobs() -> dict[str, Any]:
     out: dict[str, Any] = {}
     try:
         from . import diffusion_compile_config as cc  # noqa: PLC0415
-
         for module, names in (
             ("torch._inductor.config", ("emulate_precision_casts", "dynamic_scale_rblock")),
         ):
@@ -758,11 +758,7 @@ def _compile_knobs() -> dict[str, Any]:
 
 
 def stage_fingerprint(
-    transformer: Any,
-    *,
-    dtype: Any,
-    quant: Any,
-    attention_backend: Any,
+    transformer: Any, *, dtype: Any, quant: Any, attention_backend: Any
 ) -> dict[str, Any]:
     """One compiled denoiser stage keyed by what decides its graph, never by the family NAME: class, repeated blocks,
     architecture config, dtype, quant layout, attention backend and the compile kwargs the regional compile REALLY
@@ -865,9 +861,7 @@ def begin_stages(
         model_fp = {
             "kind": "stages",
             "stages": [
-                stage_fingerprint(
-                    s, dtype = dtype, quant = quant, attention_backend = attention_backend
-                )
+                stage_fingerprint(s, dtype = dtype, quant = quant, attention_backend = attention_backend)
                 for s in compiled
             ],
             "knobs": _compile_knobs(),

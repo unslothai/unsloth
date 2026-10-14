@@ -25,7 +25,13 @@ class _Block(torch.nn.Module):
 class _DiT(torch.nn.Module):
     _repeated_blocks = ["_Block"]
 
-    def __init__(self, dim: int = 8, layers: int = 2, armed: bool = True, dynamic = True):
+    def __init__(
+        self,
+        dim: int = 8,
+        layers: int = 2,
+        armed: bool = True,
+        dynamic = True,
+    ):
         super().__init__()
         self.blocks = torch.nn.ModuleList(_Block(dim) for _ in range(layers))
         self.config = {"dim": dim, "num_layers": layers}
