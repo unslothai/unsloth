@@ -129,6 +129,11 @@ test("a document search lists its documents in the card, opening them in the att
   const kb = read("components/assistant-ui/tool-ui-knowledge-base.tsx");
   assert.match(kb, /documents\.map\(\(citation, i\) => \(\s*<CitationBadge/);
   assert.match(kb, /<LocalFileDialog/);
+  // Formats the viewer can't render still open, in Studio's browser, rather than going inert.
+  assert.match(
+    kb,
+    /if \(!isViewableSource\(filename\)\) \{[\s\S]*?openRagDocumentInBrowser\(documentId, filename\)/,
+  );
   assert.ok(!kb.includes("See Document Sources below"));
   const thread = read("components/assistant-ui/thread.tsx");
   assert.ok(!thread.includes("RagSourcesGroup"));

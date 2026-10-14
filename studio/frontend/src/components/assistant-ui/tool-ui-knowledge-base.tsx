@@ -29,6 +29,7 @@ import {
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
 import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
+import { openRagDocumentInBrowser } from "@/features/rag/lib/open-document";
 import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
 import {
   asViewerFile,
@@ -55,7 +56,7 @@ export function CitationBadge({
       ? `${citation.filename} · p.${citation.page}`
       : citation.filename;
   const { documentId, filename } = citation;
-  const clickable = Boolean(documentId) && isViewableSource(filename);
+  const clickable = Boolean(documentId);
 
   const badge = (
     <Badge
@@ -75,6 +76,18 @@ export function CitationBadge({
 
   if (!clickable || !documentId) {
     return <span className="inline-block">{badge}</span>;
+  }
+  // HTML, EPUB and other indexed formats the attachment viewer can't render open in Studio's browser.
+  if (!isViewableSource(filename)) {
+    return (
+      <button
+        type="button"
+        onClick={() => openRagDocumentInBrowser(documentId, filename)}
+        className="inline-block"
+      >
+        {badge}
+      </button>
+    );
   }
   // The attachment viewer, as the chat with files cards open their files.
   const load = async (): Promise<Blob> => {
