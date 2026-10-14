@@ -829,12 +829,18 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         info = _PLACEMENTS.get(pipe)
     except TypeError:
         info = None
-    cfg = _CFG_ROUTERS.get(pipe) if pipe is not None else None
-    if info is None and cfg is None:
+    cfg = _CFG_ROUTERS.get(pipe)
+    try:
+        declined = _CFG_DECLINES.get(pipe)
+    except TypeError:
+        declined = None
+    if info is None and cfg is None and declined is None:
         return None
     out: dict[str, Any] = dict(info or {})
     if cfg is not None:
         out["cfg_parallel"] = cfg.describe()
+    elif declined is not None:
+        out["cfg_parallel"] = {"armed": False, "declined": declined}
     return out
 
 
@@ -1215,6 +1221,8 @@ class CfgParallelRouter:
 
 
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()
+# Why CFG-parallel was not armed on a multi-card load, for status.
+_CFG_DECLINES: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
 
 
 def cfg_parallel_decline(pipe: Any, *, offload_policy: str, selection: Optional[MultiGpuSelection]) -> Optional[str]:
@@ -1280,8 +1288,11 @@ def install_cfg_parallel(pipe: Any, *, offload_policy: str, logger: Any = None) 
                         best,
                     )
                 return None
-    if logger is not None and selection is not None:
-        logger.info("diffusion.multigpu: CFG-parallel not armed (%s)", reason)
+    if selection is not None:
+        with contextlib.suppress(TypeError):
+            _CFG_DECLINES[pipe] = reason
+        if logger is not None:
+            logger.info("diffusion.multigpu: CFG-parallel not armed (%s)", reason)
     return reason
 
 

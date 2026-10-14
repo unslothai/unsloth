@@ -706,3 +706,17 @@ def test_cfg_parallel_decline_reasons(monkeypatch):
     assert "U-Net" in mg.cfg_parallel_decline(Unet(), offload_policy = "none", selection = sel)
     monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "0")
     assert mg.CFG_PARALLEL_ENV in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = sel)
+
+
+def test_status_reports_a_declined_cfg_parallel():
+    class Pipe:
+        transformer = _Dit()
+
+    pipe = Pipe()
+    with mg.selection_scope(mg.make_selection(0, [0, 1])):
+        reason = mg.install_cfg_parallel(pipe, offload_policy = "group")
+    assert "offloaded" in reason
+    assert mg.placement_status(pipe) == {"cfg_parallel": {"armed": False, "declined": reason}}
+    other = Pipe()
+    assert mg.install_cfg_parallel(other, offload_policy = "none") == "one card selected"
+    assert mg.placement_status(other) is None  # one card: nothing to report
