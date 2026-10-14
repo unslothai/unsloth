@@ -29,7 +29,6 @@ function move<T>(items: readonly T[], from: number, to: number): T[] {
   return next;
 }
 
-/** The "+" menu items, dragged by their grip (or moved with the arrow keys) into the menu's order. */
 export function ChatMenuOrderList({
   items,
 }: {

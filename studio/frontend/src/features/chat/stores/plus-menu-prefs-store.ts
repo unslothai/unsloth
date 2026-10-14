@@ -17,8 +17,7 @@ export type PlusMenuItemId =
   | "exportChat"
   | "projects";
 
-// Default order, for the pinned items at the top level and the ones under "More"; Settings > Chat
-// lets the user reorder it.
+// Default order; Settings > Chat lets the user reorder it.
 export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "deepResearch",
   "chatWithFiles",
@@ -67,7 +66,6 @@ export function normalizePlusMenuOrder(saved: unknown): PlusMenuItemId[] {
   return order;
 }
 
-/** The pinned items in the user's order, then the rest for "More" in the same order. */
 export function splitPlusMenuItems(
   order: readonly PlusMenuItemId[],
   pins: Record<PlusMenuItemId, boolean>,
