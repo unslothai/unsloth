@@ -266,9 +266,9 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     return _hardware_vulkan_driver(vendors) and _vulkan_loader_loads()
 
 
-# The ICD manifests that drive each vendor's cards (RADV, AMDVLK / Adrenalin, ANV); a software
-# rasteriser or another vendor's driver lists none of them.
-_VENDOR_ICD_NEEDLES = {"amd": ("radeon", "amd"), "intel": ("intel",)}
+# The ICD manifests that drive each vendor's cards (RADV as radeon_icd or radv_icd, AMDVLK /
+# Adrenalin, ANV); a software rasteriser or another vendor's driver lists none of them.
+_VENDOR_ICD_NEEDLES = {"amd": ("radeon", "radv", "amd"), "intel": ("intel",)}
 
 
 def _hardware_vulkan_driver(vendors) -> bool:

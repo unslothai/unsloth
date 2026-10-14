@@ -170,6 +170,8 @@ def test_an_nvidia_card_nvidia_smi_cannot_see_keeps_cpu(monkeypatch):
     "vendors,manifests,expected",
     [
         ({"amd"}, ["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"], True),
+        ({"amd"}, ["/usr/share/vulkan/icd.d/radv_icd.x86_64.json"], True),
+        ({"amd"}, ["/etc/vulkan/icd.d/amd_icd64.json"], True),
         ({"amd"}, ["/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"], False),
         # VK_ICD_FILENAMES picked another vendor's driver: it lists no AMD card.
         ({"amd"}, ["/etc/vulkan/icd.d/intel_icd.json"], False),
