@@ -4734,7 +4734,7 @@ export function ChatPage({
                 triggerDataTour="chat-model-selector"
                 contentDataTour="chat-model-selector-popover"
                 showCloudIndicator={isExternalModel}
-                className="max-w-[62vw] !pr-3 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
+                className="max-w-[62vw] !pr-2.5 md:max-w-none !h-[var(--studio-chat-control-height,34px)] max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!px-2 max-sm:group-has-[>[data-chat-model-notice]]/chat-model-controls:!gap-0"
               />
             )}
             {view.mode === "single" && (

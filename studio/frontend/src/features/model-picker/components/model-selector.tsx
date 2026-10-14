@@ -159,6 +159,15 @@ interface ModelSelectorProps {
 
 // Space before the description or suffix, drawn inside its box so it truncates away with the text.
 const GAP_BEFORE = "before:inline-block before:w-2 before:content-['']";
+// The name's font and line height, which the status icon's line below must match.
+const TITLE_TEXT = "font-heading text-ui-16 font-medium leading-tight";
+// The status icon centred on the name's capitals. Engines place the same text at different heights
+// in the same line box (WKWebView about 1.5px lower than Chromium), so centring boxes can't do it:
+// a line in the name's font holds an inline-block that sits on the baseline and is as tall as the
+// capitals, and the icon centres in that. 0.667em is Hellix's capitals; its `cap` metric is wrong.
+const CAP_LINE = `block shrink-0 whitespace-nowrap text-center ${TITLE_TEXT}`;
+const CAP_BOX = "relative inline-block h-[0.667em] align-baseline";
+const CAP_CENTRED = "absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2";
 
 function ModelSelectorTrigger({
   currentModel,
@@ -209,7 +218,9 @@ function ModelSelectorTrigger({
           // More left padding than right; the chevron is pulled close to the label so the trigger reads
           // balanced around the text. Height stays pinned to --studio-chat-control-height.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
-          size === "default" && "h-9 pl-4 pr-2 text-sm",
+          // Header rows: less room inside the hover wash (the single chat header sets its own right side).
+          size === "default" &&
+            (variant === "ghost" ? "h-9 pl-3 pr-2 text-sm" : "h-9 pl-4 pr-2 text-sm"),
           size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
           className,
         )}
@@ -230,21 +241,33 @@ function ModelSelectorTrigger({
                 onEject();
               }}
               // Hit area larger than the icon, with a hover circle; negative margin keeps the icon in place.
-              className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none"
+              className={cn(
+                "-mx-1 w-5 cursor-pointer rounded-full transition-colors hover:bg-[rgb(0_0_0_/_calc(0.1*var(--contrast-wash-gain,1)))] dark:hover:bg-[rgb(255_255_255_/_calc(0.1*var(--contrast-wash-gain,1)))] [@media(hover:none)]:pointer-events-none",
+                CAP_LINE,
+                triggerLabelClassName,
+              )}
             >
-              <HugeiconsIcon
-                icon={CheckmarkCircle02Icon}
-                strokeWidth={1.75}
-                className="size-3.5 text-emerald-500 group-hover/trigger:hidden"
-              />
-              <HugeiconsIcon
-                icon={RemoveCircleIcon}
-                strokeWidth={1.75}
-                className="hidden size-3.5 text-red-500 group-hover/trigger:block"
-              />
+              {"\u200b"}
+              <span className={cn(CAP_BOX, "w-3.5")}>
+                <HugeiconsIcon
+                  icon={CheckmarkCircle02Icon}
+                  strokeWidth={1.75}
+                  className={cn(CAP_CENTRED, "size-3.5 text-emerald-500 group-hover/trigger:hidden")}
+                />
+                <HugeiconsIcon
+                  icon={RemoveCircleIcon}
+                  strokeWidth={1.75}
+                  className={cn(CAP_CENTRED, "hidden size-3.5 text-red-500 group-hover/trigger:block")}
+                />
+              </span>
             </span>
           ) : (
-            <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+            <span aria-hidden={true} className={cn(CAP_LINE, triggerLabelClassName)}>
+              {"\u200b"}
+              <span className={cn(CAP_BOX, "w-2")}>
+                <span className={cn(CAP_CENTRED, "size-2 rounded-full bg-emerald-500")} />
+              </span>
+            </span>
           ))}
         {currentModel?.icon ? (
           <span className="flex shrink-0 items-center">
