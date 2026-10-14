@@ -450,6 +450,8 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         config["actual_model_repo_id"] = None
         config["model_snapshot_path"] = None
         config["model_revision"] = None
+        # Nothing is pinned, so an offline start's pin has nothing left to validate.
+        config["require_validated_model_snapshot"] = False
         return
     requested_pin = config.get("model_snapshot_path")
     require_validated_snapshot = bool(config.get("require_validated_model_snapshot"))
