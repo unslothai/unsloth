@@ -83,8 +83,19 @@ export const BUDGET = {
   // The KV cache, GPU memory limit and seed engine options (#13596) add 5.7 KB raw / 1.4 KB transfer
   // (6,573.5 -> 6,579.2 KB raw, 1,976.9 -> 1,978.3 KB transfer against abfe3142c, one machine and
   // build), inline in the eager chat and settings chunks like the other engine options; raised by that.
-  transferBytes: 2_026_500,
-  rawBytes: 6_743_000,
+  // Read aloud's token cap and length warning add 0.2 KB raw / 0.1 KB transfer to the eager chat chunk
+  // (6,739,816 -> 6,740,052 B raw, 2,021,725 -> 2,021,835 B transfer against af9d97837e, one machine
+  // and build), which took main over; raised by that.
+  // Seven merges since add 2.1 KB raw / 0.7 KB transfer (6,741,756 -> 6,743,873 B raw, 2,025,885 ->
+  // 2,026,588 B transfer from b44035a64 to cbf0f593d, one machine and build, Node 22), with the chunk count
+  // unchanged and no new dependency. The step that crossed is eval-loss early stopping patience (#13626,
+  // +806 B raw / +311 B transfer: its training field and strings); the maximized window layout fix in the
+  // app provider (#13647) 539 B raw, the + menu reorder (#13679, measured together with #13659) 711 B raw,
+  // and #13703 / #13700 the last 61 B. Raised by that growth so main's margin stays where it was.
+  // The chat menu's Compact conversation item adds 1.6 KB raw / 0.3 KB transfer to the eager chat chunk
+  // (6,741,807 -> 6,743,381 B raw, 2,021,316 -> 2,021,655 B transfer against 2a03c22812), raised by that.
+  transferBytes: 2_027_652,
+  rawBytes: 6_746_927,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

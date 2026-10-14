@@ -9,6 +9,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import sys
 import torch
 from unsloth_zoo.utils import Version
 from .utils import (
@@ -39,10 +40,35 @@ if not TRACE_LORA_FUNCTIONS:
     _apply = torch._dynamo.disable(_apply)
 
 
+# torchao's NVFP4 / MX QAT linears fake-quantize inside forward() with no quantizer children, so fused LoRA
+# would train unquantized. Read lazily from sys.modules so importing Unsloth never imports torchao.
+_FORWARD_FAKE_QUANT_LINEARS = None
+
+
+def _forward_fake_quant_linears():
+    global _FORWARD_FAKE_QUANT_LINEARS
+    if _FORWARD_FAKE_QUANT_LINEARS is None:
+        qat = sys.modules.get("torchao.prototype.qat")
+        if qat is None:
+            return ()
+        _FORWARD_FAKE_QUANT_LINEARS = tuple(
+            cls
+            for cls in (
+                getattr(qat, "NVFP4FakeQuantizedLinear", None),
+                getattr(qat, "MXFakeQuantizedLinear", None),
+            )
+            if isinstance(cls, type)
+        )
+    return _FORWARD_FAKE_QUANT_LINEARS
+
+
 def _has_activation_fake_quantizer(proj):
     # Fused LoRA skips per-layer activation fake quantizers; explicit children, as proj.modules() is slow per call.
+    forward_fake_quant_linears = _forward_fake_quant_linears()
     for module in (getattr(proj, "base_layer", proj), *proj.lora_A.values(), *proj.lora_B.values()):
-        if module._modules.get("activation_fake_quantizer") is not None:
+        if module._modules.get("activation_fake_quantizer") is not None or isinstance(
+            module, forward_fake_quant_linears
+        ):
             return True
     return False
 
