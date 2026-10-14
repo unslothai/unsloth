@@ -650,8 +650,9 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
     if device == "mps":
         # Apple Silicon shares one CPU/GPU pool, so offload is pointless. Every weight lands in a Metal buffer, and
         # Metal's recommended working set (two thirds of RAM on smaller Macs: 4.67 of 7 GiB on a macos-15 runner) is
-        # the share the GPU gets, while the rest stays with the OS. So the device is the working set, bounded by the
-        # RAM available right now.
+        # what Metal says the GPU can hold with good performance. It is not a hard limit: past it allocations still
+        # succeed and page (measured at twice the working set on that runner). So the device is the working set,
+        # bounded by the RAM available right now.
         total, free = _system_memory_mib()
         working_set, in_use = _metal_working_set_mib()
         if working_set is None:
@@ -1124,8 +1125,9 @@ def calibrated_image_activation(
 
 def _reserve_mib(memory_kind: str, base: int) -> int:
     if memory_kind == METAL_WORKING_SET:
-        # The OS already keeps the RAM outside the working set, so this only absorbs what other apps take while the
-        # weights load: the 15% Studio's llama.cpp (_APPLE_UNIFIED_MEMORY_FRACTION) and MLX budgets also hold back.
+        # The working set already sits well below RAM, so this only absorbs what other apps take while the weights
+        # load. llama.cpp (_APPLE_UNIFIED_MEMORY_FRACTION) keeps 15% of the smaller of available RAM and the working
+        # set; this takes 15% of the whole working set, so it holds back more when available RAM is the lower one.
         return int(base * 0.15)
     if memory_kind == "unified_memory":
         return max(2048, int(base * 0.20))  # OS + CPU share this pool

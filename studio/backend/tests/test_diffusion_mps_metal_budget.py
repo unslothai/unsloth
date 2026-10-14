@@ -66,7 +66,7 @@ def test_the_working_set_bounds_the_mps_reading(mac):
     memory = snapshot_device_memory(MPS)
     assert (memory.free_mib, memory.total_mib) == (WORKING_SET_MIB, WORKING_SET_MIB)
     assert memory.metal_working_set_mib == WORKING_SET_MIB
-    # 15% of the working set held back, as the llama.cpp and MLX Metal budgets do: 13.6 GiB, not 12.
+    # 15% of the working set held back: 13.6 GiB, not 12.
     assert dm._safe_device_budget_mib(memory) == WORKING_SET_MIB - int(WORKING_SET_MIB * 0.15)
 
 
