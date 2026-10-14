@@ -42,7 +42,15 @@ def _backend(*, server_parks):
     )
 
 
-def _admitted(backend, *, prompt = 3000, max_tokens = 512, chats = 4):
+def _admitted(
+    backend,
+    *,
+    prompt = 3000,
+    max_tokens = 512,
+    chats = 4,
+    pausable = True,
+    tool_loop = False,
+):
     async def run():
         reservations = []
         for _ in range(chats):
@@ -55,6 +63,8 @@ def _admitted(backend, *, prompt = 3000, max_tokens = 512, chats = 4):
                     max_completion_tokens = None,
                 ),
                 counted_prompt_tokens = prompt,
+                pausable = pausable,
+                tool_loop = tool_loop,
             )
             reservations.append(reservation)
         granted = sum(1 for r in reservations if r.lease_nowait() is not None)
@@ -66,9 +76,14 @@ def _admitted(backend, *, prompt = 3000, max_tokens = 512, chats = 4):
 
 
 @pytest.mark.parametrize("max_tokens", [None, 512, 8192])
-def test_a_parking_server_takes_every_chat_its_slots_can(max_tokens):
+@pytest.mark.parametrize("pausable", [True, False], ids = ["generator", "raw-relay"])
+@pytest.mark.parametrize("tool_loop", [False, True], ids = ["plain", "tool-loop"])
+def test_a_parking_server_takes_every_chat_its_slots_can(max_tokens, pausable, tool_loop):
+    """Every surface, raw relays included: the server parks whatever it serves."""
     preemption.note_server_parking(True)
-    assert _admitted(_backend(server_parks = True), max_tokens = max_tokens) == 4
+    backend = _backend(server_parks = True)
+    granted = _admitted(backend, max_tokens = max_tokens, pausable = pausable, tool_loop = tool_loop)
+    assert granted == 4
 
 
 def test_slots_still_bound_a_parking_server():
