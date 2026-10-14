@@ -398,7 +398,11 @@ def test_the_render_node_and_the_driver_must_share_a_vendor(monkeypatch):
     [
         ({}, None, False),
         (None, ["AMD Radeon RX 7900 XTX"], True),  # registry unreadable
-        ({1: {"name": "NVIDIA GeForce RTX 4090"}}, ["AMD Radeon RX 7900 XTX", "NVIDIA GeForce RTX 4090"], True),
+        (
+            {1: {"name": "NVIDIA GeForce RTX 4090"}},
+            ["AMD Radeon RX 7900 XTX", "NVIDIA GeForce RTX 4090"],
+            True,
+        ),
         # A stale record of a card that was removed.
         ({1: {"name": "NVIDIA GeForce RTX 3060"}}, ["AMD Radeon RX 7900 XTX"], False),
         ({1: {"name": "NVIDIA GeForce RTX 3060"}}, None, True),
