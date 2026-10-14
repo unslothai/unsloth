@@ -118,6 +118,16 @@ def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> int:
         return 0
 
 
+_DRAFTER_FLAGS = frozenset({"--model-draft", "-md", "--spec-draft-model"})
+_DRAFTER_ENV = ("LLAMA_ARG_SPEC_DRAFT_MODEL",)
+
+
+def _names_drafter(args: Sequence[str]) -> bool:
+    if any(str(a).split("=", 1)[0] in _DRAFTER_FLAGS for a in args):
+        return True
+    return any(os.environ.get(k) for k in _DRAFTER_ENV)
+
+
 def _normalized(args: Sequence[str]) -> List[str]:
     """Long option names with underscores spelled with hyphens, values untouched."""
     out = []
@@ -241,6 +251,7 @@ def _parse_node(text: str, *, managed: bool = False) -> Node:
     if raw.startswith("["):
         raise ClusterConfigError(f"IPv6 node addresses are not supported yet: {text!r}")
     host, sep, port_text = raw.partition(":")
+    host = host.lower().rstrip(".")  # DNS is case-insensitive; "a.local." is "a.local"
     if not host or not _HOST_RE.match(host):
         raise ClusterConfigError(f"not a host name or IPv4 address: {text!r}")
     port = RPC_PORT_DEFAULT
@@ -410,12 +421,14 @@ def plan_cluster(
             need_bytes = need,
         )
     if forced != "layer_split" and local and need + local_extra_bytes <= local_usable:
+        # The model's share per GPU, after the sidecar takes its room on the first.
+        model_budgets = [local_budgets[0] - local_extra_bytes] + local_budgets[1:]
         return ClusterPlan(
             "single",
             f"fits this machine ({(need + local_extra_bytes) / _GIB:.1f} GiB of "
             f"{local_usable / _GIB:.1f} GiB usable)",
             list(local),
-            [b / local_usable for b in local_budgets],
+            [b / sum(model_budgets) for b in model_budgets],
             need_bytes = need,
             usable_bytes = local_usable,
             extra_bytes = float(local_extra_bytes),
@@ -756,10 +769,16 @@ class ClusterServing:
             local is not None
             and not any(str(a).split("=", 1)[0] in _DRAFT_DEVICE_FLAGS for a in flags)
             and not os.environ.get("LLAMA_ARG_DEVICE_DRAFT")
-            and ss.llama_server_supports("--device-draft", binary)
         ):
-            # Unpinned, a drafter spreads over every device, workers included; it was charged here.
-            self.block += ["--device-draft", local.name]
+            if ss.llama_server_supports("--device-draft", binary):
+                # Unpinned, a drafter spreads over every device, workers included; it was charged
+                # here.
+                self.block += ["--device-draft", local.name]
+            elif _names_drafter(flags):
+                self.plan, self.block = None, []
+                self.topology = "single"
+                self.reason = "this llama-server cannot pin the drafter to this machine"
+                return request
         _remember_block(self.block)
         logger.info("cluster serving: layer split %s", " ".join(self.block))
         updates: Dict[str, Any] = {"llama_extra_args": effective + self.block}
@@ -899,6 +918,12 @@ class ClusterServing:
         return bool(self.workers) or (
             self._backend is not None and bool(getattr(self._backend, "is_loaded", False))
         )
+
+    def failed_while_retiring(self) -> None:
+        """A replacement after the cluster was turned off failed; forget the split if it was
+        already unloaded, keep it (and its workers) if it still serves."""
+        if not (self._backend is not None and getattr(self._backend, "is_loaded", False)):
+            self.forget_served()
 
     def forget_served(self) -> None:
         """A load that bypassed planning replaced the served split; its workers can stay."""

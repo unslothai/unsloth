@@ -1180,3 +1180,48 @@ def test_underscore_spellings_are_read_like_llama_cpp_reads_them(monkeypatch):
     monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, ctx, *a, **k: ctx * 2 * 2**20)
     run(ss.before_load(_request(llama_extra_args = ["--ctx_size", "16384"]), 4))
     assert ss.status()["topology"] == "layer_split"
+
+
+def test_a_named_drafter_that_cannot_be_pinned_keeps_the_load_local(monkeypatch, tmp_path):
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x")
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(
+        ss, "llama_server_supports", lambda flag, binary = None: flag != "--device-draft"
+    )
+    sizes = {str(drafter): 1 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 250 * GIB))
+    request = _request(llama_extra_args = ["--spec-draft-model", str(drafter)])
+    assert run(ss.before_load(request, 4)) is request
+    assert "cannot pin the drafter" in ss.status()["reason"]
+
+
+def test_a_failed_load_while_retiring_forgets_an_unloaded_split(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    cs.state().workers["10.0.0.2:50052"] = SimpleNamespace(alive = True, snapshot = lambda: {})
+    monkeypatch.delenv(cs.ENV_NODES)
+    monkeypatch.setattr(ss, "is_spark", lambda: False)
+    run(ss.before_load(_request(), 4))  # through the non-cluster path, retirement pending
+    backend.is_loaded = False
+    run(ss.load_failed())
+    assert ss.current_topology() != "layer_split"
+
+
+def test_host_names_are_deduplicated_case_insensitively():
+    with pytest.raises(cs.ClusterConfigError, match = "twice"):
+        cs.parse_nodes_env("gpu.local,GPU.local.")
+
+
+def test_a_local_fit_records_the_sidecar_on_the_first_gpu_within_its_budget():
+    devices = cs.parse_device_list(TWO_LOCAL, ["10.0.0.2:50052"])
+    plan = cs.plan_cluster(120 * GIB, 0, 20 * GIB, devices)
+    assert plan.topology == "single"
+    held = plan.resident()
+    for d in plan.devices:
+        assert held[d.key] <= cs.usable_bytes(d) + 1
