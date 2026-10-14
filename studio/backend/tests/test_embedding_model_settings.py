@@ -411,7 +411,8 @@ def test_a_fresh_read_sees_a_save_from_another_process(settings_store, monkeypat
     assert ems.get_rag_embedding_model() == "org/first"
     assert rag_config.effective_embedding_model(fresh = True) == "org/second"
     monkeypatch.setattr("storage.studio_db.get_app_settings", lambda keys: 1 / 0)
-    assert rag_config.effective_embedding_model(fresh = True) == "org/second"  # last known
+    with pytest.raises(ZeroDivisionError):  # an unconfirmed model never passes a fresh check
+        rag_config.effective_embedding_model(fresh = True)
 
 
 def test_the_per_identity_cache_is_bounded(settings_store, monkeypatch):

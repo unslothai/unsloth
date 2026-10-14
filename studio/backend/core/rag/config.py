@@ -184,11 +184,14 @@ def embedding_identity_matches(stored: str | None, current: str) -> bool:
 def effective_embedding_model(fresh: bool = False) -> str:
     """The embedding model actually in use: the persisted Settings override when
     one is stored, else ``EMBEDDING_MODEL`` (env/default). Read at call time so a
-    Settings change applies without a restart; ``fresh`` also skips the short cache."""
+    Settings change applies without a restart; ``fresh`` also skips the short cache and
+    raises rather than fall back."""
     try:
         from utils.embedding_model_settings import get_rag_embedding_model
         return get_rag_embedding_model(fresh = fresh)
     except Exception:  # noqa: BLE001 - settings store unavailable (tests, early boot)
+        if fresh:
+            raise
         return EMBEDDING_MODEL
 
 
