@@ -3458,7 +3458,7 @@ async def before_load(
             request,
             n_parallel,
             inherited_extra_args = inherited_extra_args,
-            confirm_teardown = confirm_teardown,
+            cancel_event = cancel_event,
         )
     if not enabled():
         return request

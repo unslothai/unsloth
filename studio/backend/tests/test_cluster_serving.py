@@ -105,7 +105,41 @@ def _devices():
 
 def test_a_model_that_fits_here_is_not_split():
     plan = cs.plan_cluster(40 * GIB, 4 * GIB, 0, _devices())
-    assert plan.topology == "single" and not plan.devices
+    assert plan.topology == "single" and [d.name for d in plan.devices] == ["CUDA0"]
+
+
+TWO_LOCAL = """Available devices:
+  RPC0: 10.0.0.2:50052 (122502 MiB, 118000 MiB free)
+  CUDA0: NVIDIA H100 (81559 MiB, 80000 MiB free)
+  CUDA1: NVIDIA H100 (81559 MiB, 80000 MiB free)
+  BLAS: Accelerate (0 MiB, 0 MiB free)
+"""
+
+
+def test_every_local_gpu_counts_and_sidecars_go_on_the_first():
+    devices = cs.parse_device_list(TWO_LOCAL, ["10.0.0.2:50052"])
+    assert [d.name for d in devices] == ["RPC0", "CUDA0", "CUDA1"]
+    # 120 GiB fits the two local cards together, so it is not sent over the wire.
+    plan = cs.plan_cluster(120 * GIB, 0, 0, devices)
+    assert plan.topology == "single" and [d.name for d in plan.devices] == ["CUDA0", "CUDA1"]
+    plan = cs.plan_cluster(220 * GIB, 0, 4 * GIB, devices)
+    assert plan.topology == "layer_split"
+    assert [d.name for d in plan.devices] == ["RPC0", "CUDA0", "CUDA1"]
+    usable = [cs.usable_bytes(d) for d in devices]
+    usable[1] -= 4 * GIB
+    for w, u in zip(plan.weights, usable):
+        assert w == pytest.approx(u / sum(usable))
+
+
+def test_an_endpoint_is_matched_whole_not_as_a_prefix_of_another():
+    endpoints = ["10.0.0.2:5005", "10.0.0.2:50052"]
+    listing = (
+        "  RPC0: 10.0.0.2:5005 (10 MiB, 9 MiB free)\n  RPC1: 10.0.0.2:50052 (10 MiB, 9 MiB free)\n"
+    )
+    assert [d.endpoint for d in cs.parse_device_list(listing, endpoints)] == endpoints
+    # A build whose description says more still maps by the whole endpoint.
+    listing = "  RPC0: RPC backend at 10.0.0.2:50052 (10 MiB, 9 MiB free)\n"
+    assert cs.parse_device_list(listing, endpoints)[0].endpoint == "10.0.0.2:50052"
 
 
 def test_a_large_model_is_split_by_usable_memory_with_this_machine_last():
@@ -203,8 +237,10 @@ def _cluster_env(
     seen = []
 
     def fake_list(binary, endpoints):
+        # llama.cpp lists only the endpoints it was given.
         seen.append((binary, list(endpoints)))
-        return cs.parse_device_list(listing, endpoints), ""
+        devices = cs.parse_device_list(listing, endpoints)
+        return [d for d in devices if not d.remote or d.endpoint in endpoints], ""
 
     monkeypatch.setattr(cs, "list_devices", fake_list)
 
@@ -338,7 +374,55 @@ def test_an_endpoint_with_no_device_is_reported(monkeypatch):
     assert out.llama_extra_args[1] == "10.0.0.2:50052"
 
 
-def test_managed_workers_are_started_over_ssh_and_a_forced_reload_asks_first(monkeypatch):
+def test_an_environment_projector_is_charged_to_this_machine(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"x")
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request  # 90 GiB fits here alone
+    sizes = {str(mmproj): 10 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(mmproj))
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+
+
+def test_a_cancelled_load_stops_preparing(monkeypatch):
+    _cluster_env(monkeypatch)
+    event = asyncio.Event()
+    event.set()
+    request = _request()
+    assert run(ss.before_load(request, 4, cancel_event = event)) is request
+    assert "cancelled" in ss.status()["reason"]
+
+
+def test_the_model_being_replaced_counts_as_freed(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    plan = cs.state().plan
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    # The probe now sees the served model's buffers as used.
+    held = plan.resident()
+    lines = []
+    for d in _devices():
+        free = d.free_bytes - held.get(d.key, 0)
+        lines.append(
+            f"  {d.name}: {d.description} ({d.total_bytes // MIB} MiB, {int(free) // MIB} MiB free)"
+        )
+    _cluster_env(monkeypatch, listing = "\n".join(lines) + "\n")
+    run(ss.before_load(_request(model_path = "/models/other.gguf"), 4))
+    assert ss.status()["topology"] == "layer_split"
+    # Once it is unloaded, nothing is added back.
+    backend.is_loaded = False
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(model_path = "/models/other.gguf"), 4))
+
+
+def test_managed_workers_are_started_over_ssh_and_kept_across_reloads(monkeypatch):
     _cluster_env(monkeypatch)
     monkeypatch.setenv(cs.ENV_NODES, "me@10.0.0.2,10.0.0.3,10.0.0.4")
     monkeypatch.setenv(cs.ENV_MANAGED, "1")
@@ -379,14 +463,22 @@ def test_managed_workers_are_started_over_ssh_and_a_forced_reload_asks_first(mon
     run(ss.before_load(_request(), 4))
     assert len(started) == 3, "running workers are reused"
 
-    def refuse():
-        raise RuntimeError("409 active generations")
-
-    with pytest.raises(RuntimeError):
-        run(ss.before_load(_request(force_reload = True), 4, confirm_teardown = refuse))
-    assert len(started) == 3, "a refused forced reload stops nothing"
-    run(ss.before_load(_request(force_reload = True), 4, confirm_teardown = lambda: None))
-    assert len(started) == 6
+    # A forced reload keeps them too: restarting one would drop the served model's buffers.
+    run(ss.before_load(_request(force_reload = True), 4))
+    assert len(started) == 3
+    # A node dropped from the config is retired once a load without it commits.
+    workers = dict(cs.state().workers)
+    monkeypatch.setenv(cs.ENV_NODES, "me@10.0.0.2")
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    monkeypatch.setenv(cs.ENV_NODES, "me@10.0.0.2")
+    out = run(ss.before_load(_request(), 4))
+    assert set(cs.state().workers) == set(workers), "nothing is stopped before the load commits"
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args)
+    )
+    run(ss.after_load(backend, 4))
+    assert list(cs.state().workers) == ["10.0.0.2:50052"]
+    assert not workers["10.0.0.3:50052"].alive and not workers["10.0.0.4:50052"].alive
     run(ss.shutdown())
     assert cs.state().workers == {}
 

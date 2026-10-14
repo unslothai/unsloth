@@ -79,10 +79,15 @@ class Device:
     total_bytes: int
     free_bytes: int
     endpoint: Optional[str] = None  # None: on this machine
+    index: int = 0  # among the devices behind one endpoint; RPC<k> renumbers with the --rpc list
 
     @property
     def remote(self) -> bool:
         return self.endpoint is not None
+
+    @property
+    def key(self) -> Tuple[str, str]:
+        return (self.endpoint, str(self.index)) if self.endpoint else ("", self.name)
 
 
 @dataclass
@@ -93,6 +98,15 @@ class ClusterPlan:
     weights: List[float] = field(default_factory = list)
     need_bytes: Optional[float] = None
     usable_bytes: Optional[float] = None
+    extra_bytes: float = 0.0
+
+    def resident(self) -> Dict[Tuple[str, str], float]:
+        """What this plan puts on each device, so a replacement load can count it as freed."""
+        out = {d.key: w * float(self.need_bytes or 0) for d, w in zip(self.devices, self.weights)}
+        local = next((d for d in self.devices if not d.remote), None)
+        if local is not None:
+            out[local.key] = out.get(local.key, 0.0) + self.extra_bytes
+        return out
 
     def snapshot(self) -> Dict[str, Any]:
         return {
@@ -204,8 +218,9 @@ def load_nodes() -> List[Node]:
 
 def parse_device_list(text: str, endpoints: Sequence[str]) -> List[Device]:
     """``llama-server --list-devices``. In the unslothai fork an RPC device's description is its
-    endpoint; upstream builds may say more, so an endpoint found anywhere in it counts."""
+    endpoint; upstream builds may say more, so a whole endpoint token inside it also counts."""
     devices = []
+    seen: Dict[str, int] = {}
     for line in (text or "").splitlines():
         m = _DEVICE_LINE.match(line)
         if not m:
@@ -213,9 +228,21 @@ def parse_device_list(text: str, endpoints: Sequence[str]) -> List[Device]:
         name, desc, total, free = m.group(1), m.group(2).strip(), int(m.group(3)), int(m.group(4))
         endpoint = None
         if name.startswith("RPC"):
-            endpoint = next((e for e in endpoints if e in desc), desc)
-        devices.append(Device(name, desc, total * _MIB, free * _MIB, endpoint))
+            endpoint = desc if desc in endpoints else _endpoint_in(desc, endpoints)
+        elif name.startswith("BLAS"):
+            continue  # a host-memory accelerator, not somewhere to put layers
+        index = seen.get(endpoint or "", 0)
+        seen[endpoint or ""] = index + 1
+        devices.append(Device(name, desc, total * _MIB, free * _MIB, endpoint, index))
     return devices
+
+
+def _endpoint_in(desc: str, endpoints: Sequence[str]) -> str:
+    # host:5005 must not claim host:50052, so the port may not run on into more digits.
+    for e in sorted(endpoints, key = len, reverse = True):
+        if re.search(rf"(?<![\w.]){re.escape(e)}(?!\d)", desc):
+            return e
+    return desc
 
 
 def list_devices(binary: str, endpoints: Sequence[str]) -> Tuple[List[Device], str]:
@@ -261,28 +288,32 @@ def plan_cluster(
     local = [d for d in devices if not d.remote]
     remote = [d for d in devices if d.remote]
     need = float(model_bytes) + float(kv_bytes or 0)
-    local_dev = local[0] if local else None
-    local_usable = usable_bytes(local_dev) if local_dev else 0.0
-    if forced != "layer_split" and local_dev and need + local_extra_bytes <= local_usable:
+    local_budgets = [usable_bytes(d) for d in local]
+    local_usable = sum(local_budgets)
+    if forced != "layer_split" and local and need + local_extra_bytes <= local_usable:
         return ClusterPlan(
             "single",
             f"fits this machine ({(need + local_extra_bytes) / _GIB:.1f} GiB of "
             f"{local_usable / _GIB:.1f} GiB usable)",
+            list(local),
+            [b / local_usable for b in local_budgets],
             need_bytes = need,
             usable_bytes = local_usable,
+            extra_bytes = float(local_extra_bytes),
         )
     if forced == "single":
         return ClusterPlan("single", f"forced by {ENV_TOPOLOGY}=single", need_bytes = need)
     if not remote:
         return ClusterPlan("single", "no remote device answered; serving on this machine")
     # Remote first, this machine last: llama.cpp puts the output layer on the last device, so the
-    # logits stay local and the wire carries only the hidden state.
-    ordered = remote + ([local_dev] if local_dev else [])
-    budgets = [usable_bytes(d) for d in remote]
-    if local_dev:
-        budgets.append(max(0.0, local_usable - local_extra_bytes))
+    # logits stay local and the wire carries only the hidden state. Sidecars load on the first
+    # local device.
+    ordered = remote + local
+    budgets = [usable_bytes(d) for d in remote] + local_budgets
+    if local:
+        budgets[len(remote)] = max(0.0, budgets[len(remote)] - local_extra_bytes)
     total = sum(budgets)
-    if local_dev is None and local_extra_bytes > 0:
+    if not local and local_extra_bytes > 0:
         return ClusterPlan(
             "refuse",
             "this machine has no accelerator to hold the projector / drafter the load names",
@@ -308,6 +339,7 @@ def plan_cluster(
         [w for _, w in keep],
         need_bytes = need,
         usable_bytes = total,
+        extra_bytes = float(local_extra_bytes),
     )
 
 
@@ -360,6 +392,18 @@ class ClusterServing:
         self.last_error: str = ""
         self._passthrough: bool = False
         self._pre_load: Optional[Tuple[str, str, Optional[ClusterPlan], List[str]]] = None
+        self._cancel_event: Any = None
+        # The backend serving the last committed plan; while it is loaded its buffers are still in
+        # the probe's "used", and the load being planned replaces it.
+        self._backend: Any = None
+        self._resident: Dict[Tuple[str, str], float] = {}
+
+    def _cancelled(self) -> bool:
+        event = self._cancel_event
+        try:
+            return bool(event is not None and event.is_set())
+        except Exception:
+            return False
 
     def refresh_nodes(self) -> List[Node]:
         try:
@@ -369,8 +413,12 @@ class ClusterServing:
             self.nodes, self.config_error = [], str(exc)
         return self.nodes
 
-    async def _ensure_workers(self, *, restart: bool) -> Optional[str]:
-        """Start (or restart) the managed nodes' rpc-servers. The error text, or None."""
+    async def _ensure_workers(self) -> Optional[str]:
+        """Start the managed nodes' rpc-servers that are not running. The error text, or None.
+
+        A live worker is kept across reloads, even forced ones: restarting it would drop the buffers
+        of the model still being served, and a later failure of this load could not bring them back.
+        """
         from core.inference import spark_serving as ss
 
         local_rpc = ss.rpc_server_binary()
@@ -378,8 +426,10 @@ class ClusterServing:
         for node in self.nodes:
             if not node.managed:
                 continue
+            if self._cancelled():
+                return "the load was cancelled"
             running = self.workers.get(node.endpoint)
-            if running is not None and running.alive and not restart:
+            if running is not None and running.alive:
                 continue
             if running is not None:
                 await running.stop()
@@ -417,10 +467,11 @@ class ClusterServing:
         n_parallel: int,
         *,
         inherited_extra_args: Optional[List[str]] = None,
-        confirm_teardown: Any = None,
+        cancel_event: Any = None,
     ) -> Any:
         from core.inference import spark_serving as ss
 
+        self._cancel_event = cancel_event
         self._passthrough = (
             bool(getattr(request, "alongside", False))
             or bool(getattr(request, "force_alongside", False))
@@ -440,12 +491,7 @@ class ClusterServing:
         if ss.argv_or_env_rpc(effective):
             self.topology, self.reason = "single", "the caller supplied --rpc; placement is theirs"
             return request
-        restart = bool(getattr(request, "force_reload", False)) and any(
-            w.alive for w in self.workers.values()
-        )
-        if restart and confirm_teardown is not None:
-            confirm_teardown()  # refuses (409) before a managed worker serving a model is stopped
-        failed = await self._ensure_workers(restart = restart)
+        failed = await self._ensure_workers()
         if failed:
             self.topology, self.reason, self.last_error = "single", failed, failed
             return request
@@ -463,6 +509,13 @@ class ClusterServing:
         devices, error = (
             await asyncio.to_thread(list_devices, binary, endpoints) if endpoints else ([], "")
         )
+        if self._cancelled():
+            self.topology, self.reason = "single", "the load was cancelled"
+            return request
+        if self._backend is not None and getattr(self._backend, "is_loaded", False):
+            # This load tears the current one down first, so what it holds counts as free.
+            for d in devices:
+                d.free_bytes = int(min(d.total_bytes, d.free_bytes + self._resident.get(d.key, 0)))
         missing = down + [e for e in endpoints if not any(d.endpoint == e for d in devices)]
         self.last_error = ""
         if missing:
@@ -500,6 +553,18 @@ class ClusterServing:
                 local_file, disable_vision = bool(getattr(request, "disable_vision", False))
             )
             sidecars += int(ss.gguf_size_bytes(projector) or 0) if projector else 0
+        # Files named through the environment (LLAMA_ARG_MMPROJ, a drafter) load all the same.
+        named_files = ss.launch_files_from(extras)
+        for path in ss.env_launch_files(dict(os.environ)):
+            if path in named_files:
+                continue
+            file_size = ss.gguf_size_bytes(path)
+            if file_size is None:
+                try:
+                    file_size = os.path.getsize(path)
+                except OSError:
+                    file_size = 0
+            sidecars += int(file_size)
         if size is None:
             size = await asyncio.to_thread(
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)
@@ -518,8 +583,21 @@ class ClusterServing:
     async def after_load(self, llama_backend: Any) -> None:
         if self._passthrough:
             self._passthrough = False
+            self._resident = {}  # whatever that load replaced is not ours to count as freed
             return
         self._pre_load = None
+        self._cancel_event = None
+        self._backend = llama_backend
+        self._resident = self.plan.resident() if self.plan is not None else {}
+        managed = {n.endpoint for n in self.nodes if n.managed}
+        for endpoint in [e for e in self.workers if e not in managed]:
+            # Dropped from the config (or made unmanaged); the load that just committed does not
+            # use it, so it can go now rather than at shutdown.
+            process = self.workers.pop(endpoint)
+            try:
+                await process.stop()
+            except Exception:
+                logger.warning("cluster serving: stopping %s failed", endpoint, exc_info = True)
         argv = [
             str(a) for a in (getattr(getattr(llama_backend, "_process", None), "args", None) or [])
         ]
@@ -535,6 +613,7 @@ class ClusterServing:
         if self._passthrough:
             self._passthrough = False
             return
+        self._cancel_event = None
         if self._pre_load is not None:
             self.topology, self.reason, self.plan, self.block = self._pre_load
             self._pre_load = None
@@ -547,6 +626,7 @@ class ClusterServing:
                 logger.warning("cluster serving: stopping %s failed", endpoint, exc_info = True)
         self.workers.clear()
         self.topology, self.block = "single", []
+        self._backend, self._resident = None, {}
 
     def status(self) -> Dict[str, Any]:
         if not self.nodes and not self.config_error:
