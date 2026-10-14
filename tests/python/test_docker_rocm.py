@@ -286,6 +286,15 @@ class TestRunShRocm:
         assert ws(rocm) == ["unsloth-workspace-rocm:/workspace"], rocm
         assert ws(cuda) == ["unsloth-workspace:/workspace"], cuda
 
+    def test_the_smoke_test_commands_skip_the_workspace_volume(self):
+        # a kept volume serves the first image's smoke test, not the one just built
+        for name in ("run.sh", "build.sh", "smoke_test_rocm.py"):
+            with open(os.path.join(_DOCKER, name), encoding = "utf-8") as f:
+                lines = [l for l in f if "run.sh --rocm python /workspace/smoke_test_rocm.py" in l]
+            assert lines, name
+            for line in lines:
+                assert "UNSLOTH_WORKSPACE_VOLUME= " in line, (name, line)
+
     def test_a_custom_image_is_kept(self, tmp_path):
         argv, _ = _run_sh(tmp_path, ["--rocm", "true"], extra_env = {"UNSLOTH_IMAGE": "me/rocm:dev"})
         image, _ = _image_and_cmd(argv)

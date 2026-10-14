@@ -26,7 +26,8 @@
 #
 # AMD hosts: a leading --rocm (or UNSLOTH_ROCM=1) runs the ROCm image and passes
 # the AMD device nodes instead of --gpus, which is NVIDIA-only.
-#   bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
+#   UNSLOTH_WORKSPACE_VOLUME= bash docker/run.sh --rocm python /workspace/smoke_test_rocm.py
+# (no /workspace volume: it would keep the first image's copy of the smoke test)
 #
 # Overridable env:
 #   UNSLOTH_IMAGE=unsloth/unsloth:latest    image and tag to pull/run
