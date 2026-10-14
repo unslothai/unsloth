@@ -3791,7 +3791,10 @@ def test_linux_no_rocm_route_declines_under_a_mask_or_override(env, linux_no_roc
 
 
 def test_linux_no_rocm_route_declines_beside_a_physical_nvidia_card(linux_no_rocm_env):
-    assert ilp._should_auto_vulkan_for_amd_linux(_linux_amd("gfx1010", has_physical_nvidia = True)) is False
+    assert (
+        ilp._should_auto_vulkan_for_amd_linux(_linux_amd("gfx1010", has_physical_nvidia = True))
+        is False
+    )
 
 
 def test_linux_no_rocm_route_needs_an_amd_vulkan_driver(linux_no_rocm_env, monkeypatch):
@@ -3844,7 +3847,12 @@ def test_linux_no_rocm_route_carries_no_rocm_fallback(linux_no_rocm_env):
 
 
 def _linux_rocm_and_vulkan_bundle():
-    def _artifact(kind, profile, gfx_target = None, mapped = ()):
+    def _artifact(
+        kind,
+        profile,
+        gfx_target = None,
+        mapped = (),
+    ):
         return ilp.PublishedLlamaArtifact(
             asset_name = f"app-release-{profile}",
             install_kind = kind,
@@ -3861,8 +3869,18 @@ def _linux_rocm_and_vulkan_bundle():
 
     # The shape of b11541-mix-2500203: no linux-rocm bundle maps RDNA 1 or Polaris.
     artifacts = [
-        _artifact("linux-rocm", "linux-rocm-gfx103X", "gfx103X", ["gfx1030", "gfx1031", "gfx1032", "gfx1034"]),
-        _artifact("linux-rocm", "linux-rocm-gfx110X", "gfx110X", ["gfx1100", "gfx1101", "gfx1102", "gfx1103"]),
+        _artifact(
+            "linux-rocm",
+            "linux-rocm-gfx103X",
+            "gfx103X",
+            ["gfx1030", "gfx1031", "gfx1032", "gfx1034"],
+        ),
+        _artifact(
+            "linux-rocm",
+            "linux-rocm-gfx110X",
+            "gfx110X",
+            ["gfx1100", "gfx1101", "gfx1102", "gfx1103"],
+        ),
         _artifact("linux-vulkan", "linux-vulkan-x64"),
         _artifact("linux-cpu", "linux-cpu-x64"),
     ]
