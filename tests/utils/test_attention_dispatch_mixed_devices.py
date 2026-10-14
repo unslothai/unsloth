@@ -27,7 +27,9 @@ def _table(
 ):
     monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", flash)
     monkeypatch.setattr(ad, "HAS_XFORMERS", xformers)
-    return ad._per_device_backends(capabilities, probe = probe)
+    monkeypatch.setattr(ad, "_xformers_runs_on_device", probe)
+    monkeypatch.setattr(ad, "_XFORMERS_PROBED", {})
+    return ad._per_device_backends(capabilities)
 
 
 @pytest.mark.parametrize(
@@ -70,10 +72,12 @@ def test_rtx50_beyond_device_0_is_probed_only_without_flash(monkeypatch):
         return False
 
     table = _table(monkeypatch, (AMPERE, RTX50), flash = False, probe = probe)
-    assert probed == ["cuda:1"]
+    assert probed == []  # lazy: import never touches another rank's card
     monkeypatch.setattr(ad, "_DEVICE_BACKENDS", table)
     assert ad._backend_for_device(ad.XFORMERS, _cuda(0), torch.bfloat16) == ad.XFORMERS
     assert ad._backend_for_device(ad.XFORMERS, _cuda(1), torch.bfloat16) == ad.SDPA
+    assert ad._backend_for_device(ad.XFORMERS, _cuda(1), torch.bfloat16) == ad.SDPA
+    assert probed == ["cuda:1"]  # probed once, on first dispatch there
 
     probed.clear()
     _table(monkeypatch, (AMPERE, RTX50), flash = True, probe = probe)
@@ -247,14 +251,23 @@ def test_hf_fallback_keeps_softcapped_models_on_eager(monkeypatch):
     assert model.config._attn_implementation == "eager"
 
 
-def test_same_class_secondary_cards_are_never_probed():
+def test_same_class_secondary_cards_are_never_probed(monkeypatch):
     calls = []
 
     def probe(device, supports_bf16 = None):
         calls.append(device)
         return True
 
-    assert ad._per_device_backends(((12, 0), (12, 0), (12, 0)), probe = probe) is None
+    assert _table(monkeypatch, ((12, 0), (12, 0), (12, 0)), flash = False, probe = probe) is None
+    assert calls == []
+
+
+def test_no_probe_inside_a_traced_region(monkeypatch):
+    calls = []
+    table = _table(monkeypatch, (AMPERE, RTX50), flash = False, probe = lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(ad, "_DEVICE_BACKENDS", table)
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    assert ad._backend_for_device(ad.XFORMERS, _cuda(1), torch.float16) == ad.SDPA
     assert calls == []
 
 

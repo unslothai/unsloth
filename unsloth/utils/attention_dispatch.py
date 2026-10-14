@@ -82,10 +82,10 @@ _XFORMERS_FP32_UNSUPPORTED = (
 )
 
 
-def _per_device_backends(capabilities, probe = _xformers_runs_on_device):
+def _per_device_backends(capabilities):
     """(flash runs, xformers runs, xformers rejects fp32, bf16 kernels) per CUDA device index, or None
-    when every device has device 0's capability class, so homogeneous hosts never consult the table."""
-    # Same capability class everywhere: device 0's verdicts hold, and no other card is probed.
+    when every device has device 0's capability class, so homogeneous hosts never consult the table.
+    xformers runs is None where it needs a probe on that card, taken on first dispatch there."""
     if len({(c[0] >= 8, c[0] >= 10, c[0] >= 12) for c in capabilities}) < 2:
         return None
     table = []
@@ -94,7 +94,7 @@ def _per_device_backends(capabilities, probe = _xformers_runs_on_device):
         xformers_ok = HAS_XFORMERS
         # Device 0 was probed above; xformers only serves another sm_120 card when flash cannot.
         if xformers_ok and index > 0 and not flash and capability[0] >= 12:
-            xformers_ok = probe(f"cuda:{index}", supports_bf16 = True)
+            xformers_ok = None
         table.append((flash, xformers_ok, capability[0] >= 10, capability[0] >= 8))
     if all(row == table[0] for row in table):
         return None
@@ -115,6 +115,18 @@ def _visible_capabilities():
 _DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
 
 
+# Lazy so import never opens a CUDA context on another rank's card (torchrun sees every GPU).
+_XFORMERS_PROBED: dict = {}
+
+
+def _xformers_runs_on(index: int) -> bool:
+    if index not in _XFORMERS_PROBED:
+        if torch.compiler.is_compiling():
+            return False  # never probe inside a traced region; SDPA is always valid
+        _XFORMERS_PROBED[index] = _xformers_runs_on_device(f"cuda:{index}", supports_bf16 = True)
+    return _XFORMERS_PROBED[index]
+
+
 def _backend_for_device(
     backend: str,
     device,
@@ -127,8 +139,13 @@ def _backend_for_device(
     if backend in (FLASH_DENSE, FLASH_VARLEN) and not flash:
         return SDPA
     # A bfloat16 model (chosen from device 0) has no xformers kernel on a pre-Ampere card.
-    if backend == XFORMERS and (not xformers_ok or (dtype == torch.bfloat16 and not bf16)):
-        return SDPA
+    if backend == XFORMERS:
+        if dtype == torch.bfloat16 and not bf16:
+            return SDPA
+        if xformers_ok is None:
+            xformers_ok = _xformers_runs_on(index)
+        if not xformers_ok:
+            return SDPA
     return backend
 
 
