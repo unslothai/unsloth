@@ -94,11 +94,19 @@ export const BUDGET = {
   // and #13703 / #13700 the last 61 B. Raised by that growth so main's margin stays where it was.
   // The chat menu's Compact conversation item adds 1.6 KB raw / 0.3 KB transfer to the eager chat chunk
   // (6,741,807 -> 6,743,381 B raw, 2,021,316 -> 2,021,655 B transfer against 2a03c22812), raised by that.
-  // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.1 KB raw / 0.3 KB
-  // transfer to the eager chat chunk (6,747,903 -> 6,749,039 B raw, 2,027,879 -> 2,028,217 B transfer
-  // against c174a7db5f, one machine and build), raised by that.
-  transferBytes: 2_027_990,
-  rawBytes: 6_748_063,
+  // Eleven frontend merges since add 4.6 KB raw / 1.2 KB transfer (6,745,911 -> 6,750,599 B raw, 2,027,285 ->
+  // 2,028,544 B transfer from 85b6414c68 to 8611f1846c, one machine and build, Node 24), with the chunk count
+  // unchanged at 95 and no new dependency. No single step crossed: the composer draft kept across chats
+  // (#13722) 2.1 KB raw / 0.5 KB transfer, the collapsed sidebar rail's Images and Audio entries (#13731)
+  // 2.1 KB raw / 0.4 KB transfer, and #13665, #13614, #13732, #13661, #13538 the rest (#13744's revert
+  // gave back 0.4 KB raw). Raised by that growth so main's margin stays where it was.
+  // Then the Audio API card in Settings (#12821) 2,019 B raw / 557 B transfer and #13630 132 B raw
+  // (6,750,599 -> 6,752,750 B raw, 2,028,544 -> 2,029,099 B transfer to dd56fb3572, same machine and build).
+  // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
+  // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
+  // against 97ed9415f7, one machine and build), raised by that.
+  transferBytes: 2_029_863,
+  rawBytes: 6_754_919,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
