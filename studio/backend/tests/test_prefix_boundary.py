@@ -66,7 +66,6 @@ def test_an_api_conversation_keeps_its_cut_while_it_grows(monkeypatch):
 
     # Without the memory every request moved the start (16 requests, 16 starts).
     assert len(set(starts)) <= 4
-    # And it only moves forward: each cut is a later prefix of the same history.
     assert [starts.index(s) for s in starts] == sorted(starts.index(s) for s in starts)
 
 
@@ -82,7 +81,6 @@ def test_a_conversation_sharing_only_the_opening_does_not_borrow_the_cut():
     messages = _transcript(40)
     _remember(messages, 20)
     other = _transcript(40)
-    # Same opening, a different turn where the cut fell.
     other[20] = {**other[20], "content": "a different turn"}
 
     assert prefix_boundary.recall(messages) == 20
@@ -160,7 +158,6 @@ def test_the_passthrough_sends_a_conversation_that_now_fits_whole():
     routes._remember_passthrough_cut(
         messages, _cut_body(messages, 30), "truncate_oldest", 30, SCOPE
     )
-    # A larger window loaded since: the remembered cut is not needed.
     later = {"model": "m", "messages": _transcript(41)}
 
     assert routes._replay_passthrough_cut(later, "truncate_oldest", 131072, SCOPE) == 0

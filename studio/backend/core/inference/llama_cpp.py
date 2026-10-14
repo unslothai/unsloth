@@ -377,12 +377,9 @@ def _fit_context(messages, **kwargs):
 
 
 def _fit_rolling_remembered(messages, kwargs):
-    """`fit_rolling_context`, with the cut remembered in memory when the caller has nowhere to save it.
+    """`fit_rolling_context`, remembering the cut in memory when the caller has no thread to save it on.
 
-    API clients and incognito chats keep no thread metadata, so the cut was recomputed from the growing
-    transcript every request and the prompt cache matched only the system prompt. A one-off request cuts
-    exactly as before; once the conversation comes back, its cut is replayed and the next one takes the
-    usual headroom bite, so requests in between only append.
+    A one-off request cuts as before; a returning one replays its cut and takes the usual headroom bite.
     """
     if kwargs.get("keeps_boundary") or int(kwargs.get("sticky_dropped") or 0) > 0:
         return fit_rolling_context(messages, **kwargs)

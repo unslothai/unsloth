@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Where a conversation with no saved thread was last cut, so the next request cuts in the same place.
-
-An API client resends its whole history every request and has no Studio thread to save the cut on, so
-the oldest kept turn moved almost every request and the prompt cache matched only the system prompt.
-Remembering the cut makes it an occasional event: requests in between only append.
-
-Process-local and in memory only: a restart forgets, which costs one recut.
+"""Where a conversation with no saved thread was last cut, so later requests cut in the same place and reuse
+the prompt cache. Process-local and in memory only: a restart costs one recut.
 """
 
 from __future__ import annotations
@@ -62,8 +57,7 @@ def recall(messages: list[dict], scope = None) -> int:
         _entries.move_to_end(key)
         _entries[key] = (dropped, span, anchor, now)
     _, turns = _split(messages)
-    # Everything up to the last removed turn, kept ones in between included: a conversation that only shares the
-    # opening (another user's, or this one edited) differs somewhere in it, so it never borrows another's cut.
+    # Up to the last removed turn: a conversation sharing only the opening (another user's, or edited) differs here.
     if span >= len(turns) or _digest(turns[:span]) != anchor:
         return 0
     return dropped
@@ -81,8 +75,7 @@ def remember(
     if key is None or not 0 < dropped < len(turns):
         return
     kept_ids = {id(message) for message in kept}
-    # By identity, as the evictor works. Protected turns can sit between removed ones, so the span ends at the
-    # dropped-th removed turn rather than at index ``dropped``.
+    # By identity, as the evictor works: kept protected turns can sit between removed ones.
     removed = [index for index, message in enumerate(turns) if id(message) not in kept_ids]
     span = removed[dropped - 1] + 1 if len(removed) >= dropped else dropped
     entry = (int(dropped), span, _digest(turns[:span]), time.monotonic())

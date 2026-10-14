@@ -1253,8 +1253,7 @@ def _apply_measured_overflow_truncation(body: dict, err_text: str, policy: str) 
 
 
 def _passthrough_cut_scope(llama_backend, body: dict) -> tuple:
-    # The loaded model, window and tool catalogue: a cut measured with another tokenizer, template or set of
-    # schemas does not carry over.
+    # A cut measured under another model, window or tool catalogue does not carry over.
     tools = sorted(
         str(((tool or {}).get("function") or {}).get("name")) for tool in body.get("tools") or []
     )
@@ -1269,9 +1268,7 @@ def _passthrough_cut_scope(llama_backend, body: dict) -> tuple:
 def _replay_passthrough_cut(
     body: dict, policy: Optional[str], context_length: Optional[int], scope
 ) -> int:
-    """Apply the cut this conversation took last request before sending, so the oldest kept turn
-    stays put (and the prompt cache with it) instead of moving on every overflow retry. Only while
-    the uncut request would still overflow: after a rollback or a larger window it is sent whole."""
+    """Apply this conversation's last cut before sending, while the uncut request would still overflow."""
     if policy != "truncate_oldest" or not context_length:
         return 0
     messages = body.get("messages") or []
@@ -45416,7 +45413,7 @@ async def _openai_passthrough_stream_admitted(
         _truncate_policy = _overflow_truncation_policy(payload)
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
         _uncut_messages = list(body.get("messages") or [])
-        # Hashing the history can mean megabytes of image data, so off the event loop.
+        # Off the event loop: the history can hold megabytes of images.
         _cut_scope = _passthrough_cut_scope(llama_backend, body)
         _truncated_messages = await asyncio.to_thread(
             _replay_passthrough_cut,
@@ -46346,7 +46343,7 @@ async def _openai_passthrough_non_streaming_upstream(
     _truncate_policy = _overflow_truncation_policy(payload)
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
     _uncut_messages = list(body.get("messages") or [])
-    # Hashing the history can mean megabytes of image data, so off the event loop.
+    # Off the event loop: the history can hold megabytes of images.
     _cut_scope = _passthrough_cut_scope(llama_backend, body)
     _truncated_messages = await asyncio.to_thread(
         _replay_passthrough_cut, body, _truncate_policy, llama_backend.context_length, _cut_scope
