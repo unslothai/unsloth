@@ -2118,6 +2118,7 @@ async def start_training(
             "dataset_streaming": request.dataset_streaming,
             "eval_split": request.eval_split,
             "eval_steps": request.eval_steps,
+            "early_stopping_patience": request.early_stopping_patience,
             "dataset_slice_start": request.dataset_slice_start,
             "dataset_slice_end": request.dataset_slice_end,
             "custom_format_mapping": request.custom_format_mapping,

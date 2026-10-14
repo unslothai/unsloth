@@ -267,7 +267,7 @@ function ReasoningContent({
 }: ComponentProps<typeof CollapsibleContent> & { streaming?: boolean }) {
   // Colour and size live on ReasoningText: the folded-round path skips this wrapper.
   const shared = cn(
-    "aui-reasoning-content relative overflow-hidden outline-none",
+    "aui-reasoning-content relative min-w-0 overflow-hidden supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip outline-none",
     "group/collapsible-content ease-out",
     "data-[state=closed]:pointer-events-none",
   );
@@ -590,7 +590,9 @@ function ReasoningTail({
           // The child rule stays on too: it is inert outside a flex box and toggling it restyles every row.
           cappable && "[&>*]:shrink-0",
           cappable && flexBox && "flex flex-col",
-          capped && "max-h-[min(18rem,40vh)] overflow-hidden",
+          // A mask paints only inside its box: bleed into the side padding so list markers survive.
+          capped &&
+            "-mx-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-h-[min(18rem,40vh)] overflow-hidden px-[calc(1.25rem*var(--ui-space-scale,1))] supports-[overflow:clip]:overflow-x-visible supports-[overflow:clip]:overflow-y-clip",
           capped && (streaming ? "justify-end" : "justify-start"),
           clipped &&
             (streaming
@@ -613,7 +615,8 @@ function ReasoningTail({
             aria-hidden={true}
             className={cn(
               "size-3.5 shrink-0 transition-transform duration-200 ease-out",
-              !expanded && "-rotate-90",
+              // Below the trace, so Collapse points up at what it folds away; -180, not 180, turns a quarter.
+              expanded ? "-rotate-180" : "-rotate-90",
             )}
           />
         </button>

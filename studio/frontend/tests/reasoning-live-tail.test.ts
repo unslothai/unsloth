@@ -66,7 +66,10 @@ test("the box clips at the top instead of scrolling, and Expand toggles without 
     reasoning.indexOf("function ReasoningTail("),
     reasoning.indexOf("// With the fold preference on"),
   );
-  assert.match(tail, /capped && "max-h-\[[^\]]+\] overflow-hidden"/);
+  assert.match(
+    tail,
+    /capped &&\s*"-mx-\[[^\]]+\] min-w-0 max-h-\[[^\]]+\] overflow-hidden px-\[[^\]]+\] supports-\[overflow:clip\]:overflow-x-visible supports-\[overflow:clip\]:overflow-y-clip"/,
+  );
   // Expand/Collapse on a finished box must not toggle the flex box or the child rule: either
   // restyles every row of the trace.
   assert.match(tail, /cappable && "\[&>\*\]:shrink-0"/);
@@ -136,14 +139,14 @@ test("a closing block keeps the cap it had while open", () => {
   assert.ok(open !== -1 && open < reasoning.indexOf("const cappedNow ="));
 });
 
-test("Expand thinking ends in the header's chevron: right while bounded, down once expanded", () => {
+test("Expand thinking ends in a chevron: right while bounded, up once expanded", () => {
   const tail = reasoning.slice(
     reasoning.indexOf("function ReasoningTail("),
     reasoning.indexOf("// With the fold preference on"),
   );
   assert.match(
     tail,
-    /\{expanded \? "Collapse thinking" : "Expand thinking"\}\s*<ChevronDownIcon[\s\S]*?!expanded && "-rotate-90"/,
+    /\{expanded \? "Collapse thinking" : "Expand thinking"\}\s*<ChevronDownIcon[\s\S]*?expanded \? "-rotate-180" : "-rotate-90"/,
   );
 });
 
