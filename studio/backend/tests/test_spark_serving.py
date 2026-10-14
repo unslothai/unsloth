@@ -4851,3 +4851,38 @@ def test_an_internal_load_reconciles_only_after_its_refusal_gates():
         "on_reload_confirmed(cancel = False)"
     )
     assert body.index("reconcile_internal_load()") > body.index("require_idle_other_accounts()")
+
+
+@pytest.mark.parametrize("planned, refused", [(True, False), (False, True)])
+def test_a_managed_account_is_not_refused_for_the_split_block_spark_serving_added(
+    monkeypatch, planned, refused
+):
+    """The --rpc the layer split appends is the planner's, not a path the account chose."""
+    import routes.inference as ri
+    from fastapi import HTTPException
+    from models.inference import LoadRequest
+
+    class Reached(Exception):
+        pass
+
+    def _past_the_check(*a, **k):
+        raise Reached()
+
+    monkeypatch.setattr(ri.account_access, "managed_account", lambda: True)
+    monkeypatch.setattr(ri.account_access, "require_model_access", lambda path: None)
+    monkeypatch.setattr(ri.account_access, "account_hf_token", lambda token: token)
+    monkeypatch.setattr(ri, "_owner_chosen_launch", lambda *a, **k: set())
+    monkeypatch.setattr(ri, "parse_reasoning_budget_override", _past_the_check)
+    block = ss.layer_split_extra_args("192.168.200.13", 50052)
+    request = LoadRequest(model_path = "unsloth/some-GGUF", llama_extra_args = ["--seed", "1"] + block)
+    with pytest.raises(HTTPException) as raised:
+        run(ri._load_model_impl(request, None, "someone", spark_planned = planned))
+    if refused:
+        assert raised.value.status_code == 403 and "--rpc" in str(raised.value.detail)
+    else:
+        # Past the owner-only check: the next step's sentinel surfaces as the load's own error.
+        chain, seen = raised.value, []
+        while chain is not None and len(seen) < 10:
+            seen.append(type(chain).__name__)
+            chain = chain.__cause__ or chain.__context__
+        assert raised.value.status_code != 403 and "Reached" in seen, seen
