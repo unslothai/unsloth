@@ -114,6 +114,50 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     assert "_unsloth_block_mode" not in cls().__dict__
 
 
+def test_band_verdict_reaches_traced_router(monkeypatch):
+    M = _load()
+    calls = []
+    fake = types.ModuleType("fake_banded_attention")
+
+    def _mask_is_plain_band(mask, S, w):
+        calls.append((S, w))
+        return S <= w  # stand-in verdict
+
+    fake._mask_is_plain_band = _mask_is_plain_band
+    monkeypatch.setitem(sys.modules, "fake_banded_attention", fake)
+    monkeypatch.setattr(M, "_BAND_MODULES", ("fake_banded_attention",))
+    M._band_hook()
+    assert fake._mask_is_plain_band is not _mask_is_plain_band
+
+    attn = torch.nn.Module()
+    attn.is_sliding, attn.sliding_window = True, 64
+    layer = torch.nn.Module()
+    layer.self_attn = attn
+    full = torch.nn.Module()
+    short, long = torch.zeros(1, 1, 32, 32), torch.zeros(1, 1, 96, 96)
+    M._precheck_band(layer, 32, (), {"attention_mask": short})
+    M._precheck_band(layer, 96, (long,), {})
+    other = torch.zeros(1, 1, 8, 8)
+    M._precheck_band(full, 8, (), {"attention_mask": other})  # no window: never scanned
+    assert calls == [(32, 64), (96, 64)]
+    assert (short._unsloth_block_band, long._unsloth_block_band, other._unsloth_block_band) == (
+        True,
+        False,
+        False,
+    )
+
+    # Traced inside a block, the router reads the stored verdict instead of scanning.
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    M._IN_BLOCK[0] = M._FULL
+    try:
+        assert fake._mask_is_plain_band(short, 32, 64) is True
+        assert fake._mask_is_plain_band(long, 96, 64) is False
+        assert fake._mask_is_plain_band(None, 96, 64) is True
+    finally:
+        M._IN_BLOCK[0] = M._OFF
+    assert len(calls) == 2
+
+
 def test_kill_switch(monkeypatch):
     M = _load()
     monkeypatch.setenv("UNSLOTH_BLOCK_COMPILE", "0")

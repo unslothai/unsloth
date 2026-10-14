@@ -328,10 +328,81 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_OP[0] = False
 
 
+# unsloth_zoo's Gemma-4 sliding-window router asks `_mask_is_plain_band` (a data-dependent scan)
+# whether the mask is a plain causal band before taking FlashAttention / is_causal SDPA; while
+# compiling it answers False, so inside a block every sliding layer fell back to masked
+# (mem-efficient) SDPA (Gemma-4 12B on A100: 3.5x the attention backward time). The block runs
+# the scan eagerly first; the traced call reads the verdict stored on the mask.
+_BAND_MODULES = (
+    "unsloth_zoo.temporary_patches.gemma4_banded_attention",
+    "unsloth_zoo.temporary_patches.gemma4_flash_sliding",
+    "unsloth_zoo.temporary_patches.muse_glimmer_banded_attention",
+)
+_BAND_CHECK = [None]
+
+
+def _band_hook():
+    for name in _BAND_MODULES:
+        module = sys.modules.get(name)
+        check = getattr(module, "_mask_is_plain_band", None)
+        if not callable(check) or getattr(check, "_unsloth_block_adapter", False):
+            continue
+        if _BAND_CHECK[0] is None:
+            _BAND_CHECK[0] = check
+
+        @functools.wraps(check, updated = ())
+        def _mask_is_plain_band(
+            mask,
+            S,
+            w,
+            *args,
+            _check = check,
+            **kwargs,
+        ):
+            if _IN_BLOCK[0] and torch.compiler.is_compiling():
+                return mask is None or getattr(mask, "_unsloth_block_band", False) is True
+            return _check(mask, S, w, *args, **kwargs)
+
+        _mask_is_plain_band._unsloth_block_adapter = True
+        setattr(module, "_mask_is_plain_band", _mask_is_plain_band)
+
+
+def _sliding_window(layer):
+    window = layer.__dict__.get("_unsloth_block_window", 0)
+    if window == 0:
+        window = None
+        for module in layer.modules():
+            if getattr(module, "is_sliding", False) and getattr(module, "sliding_window", None):
+                window = module.sliding_window
+                break
+        layer.__dict__["_unsloth_block_window"] = window
+    return window
+
+
+def _precheck_band(layer, seq_len, args, kwargs):
+    # Every 4D mask entering a block carries the verdict, so the traced read never misses (a
+    # missing attribute would recompile).
+    check = _BAND_CHECK[0]
+    if check is None:
+        return
+    window = _sliding_window(layer)
+    for obj in (*args, *kwargs.values()):
+        if isinstance(obj, torch.Tensor) and obj.dim() == 4 and not obj.requires_grad:
+            if window is not None:
+                try:
+                    obj._unsloth_block_band = bool(check(obj, seq_len, window))
+                except Exception:
+                    obj._unsloth_block_band = False
+            elif not hasattr(obj, "_unsloth_block_band"):
+                obj._unsloth_block_band = False
+
+
 # Mode of the block being traced: 0 none, _FULL, or _SPLIT (flex_attention left outside the
 # block). Read inside the trace, so dynamo guards on it.
 _IN_BLOCK = [0]
 _OFF, _FULL, _SPLIT = 0, 1, 2
+# UNSLOTH_BLOCK_FLEX=outside starts every layer with flex_attention outside its block.
+_FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
 
 
 def _flex_split_hook():
@@ -416,13 +487,14 @@ def _wrap(cls, compile_options):
 
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
-        mode = self.__dict__.get("_unsloth_block_mode", _FULL)
+        mode = self.__dict__.get("_unsloth_block_mode", _FIRST_MODE)
         if mode == _OFF or kwargs.get("past_key_values") is not None or not _enabled():
             return original(self, hidden_states, *args, **kwargs)
         if _GDN_OP[0] is None and hasattr(self, "linear_attn"):
             _prepare_gdn(self, hidden_states)
         if hidden_states.dim() == 3 and hidden_states.shape[1] > 1:
             _mark_seq_dynamic(hidden_states.shape[1], (hidden_states, args, kwargs))
+            _precheck_band(self, hidden_states.shape[1], args, kwargs)
         bit = 2 if torch.is_grad_enabled() else 1
         checked = self.__dict__.get("_unsloth_block_checked", 0)
         if checked & bit:
@@ -500,6 +572,7 @@ def patch_block_compile(model):
     for cls in inner:
         _rebind_class(cls)
     _flex_split_hook()
+    _band_hook()
     if any(type(m).__name__ == "Linear4bit" for m in model.modules()):
         _nf4_in_blocks()
     wrapped = []
