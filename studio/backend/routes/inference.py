@@ -30873,14 +30873,19 @@ async def produce_openai_chat_completions(
                     "route: a waveform admits no grammar, and transcription and audio-input "
                     "answers are decoded without one. Send the request to a text model.",
                 )
+        # Callable client tools set the format aside (_response_format_beside_tools), so nothing
+        # below applies, unless the request asks for Unsloth's own loop, which keeps the format.
+        if _response_format_constrains_decoding(payload) and (
+            _explicit_studio_tool_loop_requested(payload)
+            or not _tools_outrank_response_format(payload, payload.tools)
+        ):
             if not model_info.get("is_mlx"):
                 _raise_unsupported_openai_parameter(
                     "response_format",
                     "response_format needs a grammar engine, and the transformers backend "
                     "has none; load an MLX or GGUF model to use it.",
                 )
-            # With tools sent, the format yields to them (_response_format_beside_tools).
-            if payload.tool_choice not in (None, "auto", "none") and not payload.tools:
+            if payload.tool_choice not in (None, "auto", "none"):
                 _raise_unsupported_openai_parameter(
                     "tool_choice",
                     "response_format cannot be combined with a tool_choice that requires a "
@@ -44758,10 +44763,16 @@ def _reject_unhonorable_response_format(payload) -> None:
         _raise_unsupported_openai_parameter("response_format", str(exc))
 
 
+def _tools_outrank_response_format(payload, tools) -> bool:
+    return bool(tools) and payload.tool_choice != "none"
+
+
 def _response_format_beside_tools(payload, tools):
     """The request's ``response_format``, or None while ``tools`` can still be called:
     decoding locked to the document would never emit the call."""
-    if tools and payload.tool_choice != "none" and _response_format_constrains_decoding(payload):
+    if _tools_outrank_response_format(payload, tools) and _response_format_constrains_decoding(
+        payload
+    ):
         logger.warning("Ignoring response_format: callable tools cannot run under a schema")
         return None
     return _extract_response_format(payload)

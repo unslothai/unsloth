@@ -1667,6 +1667,52 @@ def test_a_forced_tool_choice_beside_a_response_format_needs_tools(monkeypatch, 
     assert not backend.calls
 
 
+@pytest.mark.parametrize("is_mlx", [False, True])
+def test_a_requested_tool_loop_keeps_the_format_refusals(monkeypatch, is_mlx):
+    from fastapi import HTTPException
+
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    backend.models["sf-model"]["is_mlx"] = is_mlx
+    payload = _request(
+        tools = [LOOKUP_TOOL],
+        enable_tools = True,
+        max_tool_calls_per_message = 0,
+        response_format = {"type": "json_schema"},
+        stream = False,
+    )
+    with pytest.raises(HTTPException) as exc:
+        _call(payload, monkeypatch, backend)
+    assert exc.value.status_code == 400
+    assert not backend.calls
+
+
+@pytest.mark.parametrize(
+    "is_mlx, fields",
+    [
+        (False, {"response_format": _RF_FORMAT}),
+        (True, {"response_format": {"type": "json_schema"}}),
+        (
+            True,
+            {
+                "response_format": _RF_FORMAT,
+                "continue_final_message": True,
+                "messages": [
+                    ChatMessage(role = "user", content = "hi"),
+                    ChatMessage(role = "assistant", content = "<tool_call>"),
+                ],
+            },
+        ),
+    ],
+    ids = ["transformers", "unhonorable_schema", "continuation"],
+)
+def test_callable_tools_lift_the_refusals_of_a_format_they_set_aside(monkeypatch, is_mlx, fields):
+    backend = _ScriptedBackend(_fixed(_CALL_XML))
+    backend.models["sf-model"]["is_mlx"] = is_mlx
+    reply = _call(_request(tools = [LOOKUP_TOOL], stream = False, **fields), monkeypatch, backend)
+    assert backend.calls[0]["response_format"] is None
+    assert _json_body(reply)["choices"][0]["finish_reason"] == "tool_calls"
+
+
 class _FittedToolLoopBackend(_ToolLoopBackend):
     def __init__(self, responder, **kwargs):
         super().__init__(responder, **kwargs)
