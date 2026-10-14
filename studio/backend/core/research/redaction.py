@@ -30,36 +30,6 @@ _PROMPT_DELIMITER_TAGS = re.compile(
 # importing prompts, and pinned by the hardening test.
 _REPORT_BOUNDARY_TAG = re.compile(r"<!--\s*UNSLOTH_FINAL_REPORT\s*-->")
 # RFC 9110 11.4: credentials = auth-scheme [ 1*SP ( token68 / #auth-param ) ].
-# Rich-text pastes carry no-break and thin spaces where a header has plain ones.
-_HSPACE = "[ \\t\u00a0\u2000-\u200a\u202f\u205f\u3000]"
-_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
-    r"[ \t]", _HSPACE
-)
-_QUERY_AUTHORIZATION = re.compile(
-    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])(?:[ \t]*(?:\r?\n[ \t]*)?\\?["'“‘]value\\?["'”’][ \t]*[:=])?|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`"'“‘]*
-    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
-    (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
-    (?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token
-    |[\w-]*(?:key|token|secret|password|credential|signature)|(?P=scheme))(?:[ \t]+|[ \t]*\r?\n[ \t]+)
-    (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
-    |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
-        r"[ \t]", _HSPACE
-    )
-)
-# Multi-value header maps: {"Authorization": ["Basic a", "Basic b"]}.
-_QUERY_AUTHORIZATION_ARRAY = re.compile(
-    r"""(?i)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?\s*(?:=>|[:=,])|\]?\s*(?:=>|[:=]))\s*\[(?P<members>[^\[\]]*)\]"""
-)
-_ARRAY_MEMBER = re.compile(r"""\\?"((?:[^"\\]|\\.)*?)\\?"|'([^']*)'|“([^”]*)”|‘([^’]*)’""")
-_AUTH_PARAM_PAIR = re.compile(
-    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,]+)""".replace(
-        r"[ \t]", _HSPACE
-    )
-)
-# Digest parameters that describe the challenge rather than prove identity.
-_PUBLIC_AUTH_PARAMS = frozenset(
-    {"algorithm", "charset", "domain", "nc", "qop", "realm", "stale", "uri", "userhash"}
-)
 # IANA HTTP Authentication Scheme Registry plus common vendor schemes; OAuth and Mutual are left
 # out because "OAuth 2.0" and "Mutual TLS" are far more often prose than a header.
 _REGISTERED_AUTH_SCHEMES = frozenset(
@@ -82,6 +52,39 @@ _REGISTERED_AUTH_SCHEMES = frozenset(
         "vapid",
     }
 )
+_SCHEME_ALTERNATION = "|".join(
+    sorted(map(re.escape, _REGISTERED_AUTH_SCHEMES), key = len, reverse = True)
+)
+# Rich-text pastes carry no-break and thin spaces where a header has plain ones.
+_HSPACE = "[ \\t\u00a0\u2000-\u200a\u202f\u205f\u3000]"
+_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
+    r"[ \t]", _HSPACE
+)
+_QUERY_AUTHORIZATION = re.compile(
+    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])(?:[ \t]*(?:\r?\n[ \t]*)?\\?["'“‘]value\\?["'”’][ \t]*[:=])?|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`"'“‘]*
+    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
+    (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
+    (?:{_SCHEME_ALTERNATION}
+    |[\w-]*(?:key|token|secret|password|credential|signature)|(?P=scheme))(?:[ \t]+|[ \t]*\r?\n[ \t]+)
+    (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’.;!?—–]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
+    |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
+        r"[ \t]", _HSPACE
+    )
+)
+# Multi-value header maps: {"Authorization": ["Basic a", "Basic b"]}.
+_QUERY_AUTHORIZATION_ARRAY = re.compile(
+    r"""(?i)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?\s*(?:=>|[:=,])|\]?\s*(?:=>|[:=]))\s*\[(?P<members>[^\[\]]*)\]"""
+)
+_ARRAY_MEMBER = re.compile(r"""\\?"((?:[^"\\]|\\.)*?)\\?"|'([^']*)'|“([^”]*)”|‘([^’]*)’""")
+_AUTH_PARAM_PAIR = re.compile(
+    r"""([\w!#$%&'*+.^`|~-]+)[ \t]*=[ \t]*(\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,]+)""".replace(
+        r"[ \t]", _HSPACE
+    )
+)
+# Digest parameters that describe the challenge rather than prove identity.
+_PUBLIC_AUTH_PARAMS = frozenset(
+    {"algorithm", "charset", "domain", "nc", "qop", "realm", "stale", "uri", "userhash"}
+)
 # Prose after "Authorization:" ("design patterns", "RBAC role=admin") is not a credential.
 _CREDENTIAL_SHAPE = re.compile(r"(?=.{4})(?:.*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{2})|.{16})")
 _AUTH_SECRET_PARAM_SUFFIXES = (
@@ -98,8 +101,7 @@ _REGISTERED_SCHEME_NAMES = frozenset(
     re.sub(r"[^a-z0-9]", "", name) for name in _REGISTERED_AUTH_SCHEMES
 )
 _COALESCED_MEMBER = re.compile(
-    r"\s*,\s*(?=(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token"
-    r"|[\w-]*(?:key|token|secret|password|credential|signature))\s"
+    rf"\s*,\s*(?=(?:{_SCHEME_ALTERNATION}|[\w-]*(?:key|token|secret|password|credential|signature))\s"
     r"|(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{2,})\s+[\w!#$%&'*+.^`|~-]+\s*=)",
     re.IGNORECASE,
 )

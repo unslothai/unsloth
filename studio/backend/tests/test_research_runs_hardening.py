@@ -310,6 +310,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: Hawk id="one", mac="firstsecret1", Hawk id="two", mac="supersecret2" why',
         "Authorization: Hawk abcdefghijklmnop, Hawk supersecret2 why",
         "Authorization: Basic firstsecret1==,\r\n Basic\r\n supersecret2== why",
+        'Authorization: Basic firstsecret1==, Hawk id="123", mac="supersecret2" why',
+        "Authorization: Basic firstsecret1=, Basic supersecret2==. server rejected it",
         'Authorization: Custom realm="api", custom response="supersecret2" why',
         "Authorization: Basic supersecret2== server echoed supersecret2 why",
         'Authorization: Basic "supersecret2" why',
