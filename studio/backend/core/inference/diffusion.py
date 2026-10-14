@@ -104,11 +104,9 @@ from .diffusion_device import (
 )
 from .diffusion_multigpu import (
     install_cfg_parallel,
-    make_selection,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
-    selection_scope,
-    uninstall_cfg_parallel,
+    with_load_selection,
 )
 from .diffusion_conditioning import (
     LocalizedEdit,
@@ -3608,15 +3606,10 @@ class DiffusionBackend:
         ).start()
         return self.status()
 
-    def _run_load(self, **kwargs: Any) -> None:
-        # The multi-GPU selection is visible to this load's planner and placement only (a context variable of this
-        # worker thread); one card or UNSLOTH_DIFFUSION_MULTIGPU=0 leaves it unset and every decision unchanged.
-        selection = make_selection(kwargs.get("gpu_ordinal"), kwargs.pop("_gpu_ordinals", None))
-        with selection_scope(selection):
-            self._run_load_body(**kwargs)
-
+    # The multi-GPU selection (begin_load's ``_gpu_ordinals``) is visible to this load's planner and placement only.
+    @with_load_selection
     @scoped_local_files_only
-    def _run_load_body(self, **kwargs: Any) -> None:
+    def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event

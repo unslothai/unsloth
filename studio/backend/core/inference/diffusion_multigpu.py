@@ -130,6 +130,21 @@ def selection_scope(selection: Optional[MultiGpuSelection]) -> Iterator[Optional
         _SELECTION.reset(token)
 
 
+def with_load_selection(run_load: Callable[..., Any]) -> Callable[..., Any]:
+    """Decorate a backend's ``_run_load(self, **kwargs)``: pop ``_gpu_ordinals`` (every selected card, from
+    begin_load) and run the load inside :func:`selection_scope` with ``gpu_ordinal`` as the primary. Without a
+    multi-card selection the load runs exactly as before."""
+    import functools
+
+    @functools.wraps(run_load)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        selection = make_selection(kwargs.get("gpu_ordinal"), kwargs.pop("_gpu_ordinals", None))
+        with selection_scope(selection):
+            return run_load(self, *args, **kwargs)
+
+    return wrapper
+
+
 def current_selection() -> Optional[MultiGpuSelection]:
     if multigpu_mode() == "off":
         return None
@@ -827,13 +842,10 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
         return None
     try:
         info = _PLACEMENTS.get(pipe)
-    except TypeError:
-        info = None
-    cfg = _CFG_ROUTERS.get(pipe)
-    try:
+        cfg = _CFG_ROUTERS.get(pipe)
         declined = _CFG_DECLINES.get(pipe)
-    except TypeError:
-        declined = None
+    except TypeError:  # not weak-referenceable: nothing can have been recorded for it
+        return None
     if info is None and cfg is None and declined is None:
         return None
     out: dict[str, Any] = dict(info or {})
@@ -1328,9 +1340,12 @@ def install_cfg_parallel(pipe: Any, *, offload_policy: str, logger: Any = None) 
                 router = CfgParallelRouter(
                     denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
                 )
+                try:
+                    _CFG_ROUTERS[pipe] = router
+                except TypeError:
+                    return "pipeline cannot be tracked (not weak-referenceable)"
                 denoiser.forward = router
                 denoiser._unsloth_cfg_router = router
-                _CFG_ROUTERS[pipe] = router
                 if logger is not None:
                     logger.info(
                         "diffusion.multigpu: CFG-parallel armed (replica on cuda:%s when guidance runs two branches)",
@@ -1346,7 +1361,10 @@ def install_cfg_parallel(pipe: Any, *, offload_policy: str, logger: Any = None) 
 
 
 def uninstall_cfg_parallel(pipe: Any) -> None:
-    router = _CFG_ROUTERS.pop(pipe, None) if pipe is not None else None
+    try:
+        router = _CFG_ROUTERS.pop(pipe, None) if pipe is not None else None
+    except TypeError:
+        return
     if router is None:
         return
     router.drop_replica()

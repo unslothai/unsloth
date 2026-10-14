@@ -747,3 +747,25 @@ def test_adapter_scale_changes_the_fingerprint():
     with_adapter = mg.weights_fingerprint(dit)
     dit.proj.scaling = {"default": 0.5}
     assert len({before, with_adapter, mg.weights_fingerprint(dit)}) == 3
+
+
+def test_with_load_selection_scopes_and_pops_the_ordinals():
+    seen = {}
+
+    class Backend:
+        @mg.with_load_selection
+        def _run_load(self, **kwargs):
+            """body"""
+            seen["kwargs"] = dict(kwargs)
+            seen["selection"] = mg.current_selection()
+
+    Backend()._run_load(gpu_ordinal = 1, _gpu_ordinals = [0, 1], repo_id = "x")
+    assert seen["kwargs"] == {"gpu_ordinal": 1, "repo_id": "x"}
+    assert seen["selection"] == mg.MultiGpuSelection(primary = 1, secondaries = (0,))
+    assert mg.current_selection() is None
+    Backend()._run_load(gpu_ordinal = 1, repo_id = "x")
+    assert seen["selection"] is None
+    # source inspection still reaches the body
+    import inspect
+
+    assert '"""body"""' in inspect.getsource(Backend._run_load)
