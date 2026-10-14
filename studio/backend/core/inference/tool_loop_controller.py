@@ -757,6 +757,14 @@ def is_tool_error(result: str) -> bool:
 TOOL_MODEL_SUFFIX_KEY = "studio_model_suffix"
 
 
+def with_appended_text(content, text: str):
+    """``content`` with ``text`` at the end. A part list (an image a tool returned may have joined
+    the turn) gets a text part; formatting it as a string ships the image as base64 prose."""
+    if isinstance(content, list):
+        return [*content, {"type": "text", "text": text}]
+    return f"{content}{text}"
+
+
 def restore_replayed_tool_results(messages: Sequence[Any]) -> list[Any]:
     """Replayed tool results as the model saw them (error nudge, folded feedback from
     ``extra_content``, no citation map), so the cached prefix holds. Idempotent."""

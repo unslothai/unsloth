@@ -157,7 +157,21 @@ def anthropic_messages_to_openai(
     preserve_thinking: bool = False,
     tool_result_images: bool = True,
 ) -> list[dict]:
-    """``tool_result_images=False`` turns tool images into text: rejecting would fail every resent turn."""
+    """Convert Anthropic messages + system to OpenAI-format message dicts.
+
+    User messages with ``image`` blocks are emitted as OpenAI multimodal
+    content arrays (``[{type: "text", ...}, {type: "image_url", ...}]``) so
+    they flow through llama-server's native vision pathway.
+
+    ``tool_result_images=False`` turns tool-result images into a text note for a
+    text-only model; clients resend history, so rejecting would fail every later turn.
+
+    ``preserve_thinking`` keeps replayed assistant ``thinking`` blocks as
+    ``reasoning_content`` on the converted message, so templates that render
+    historical reasoning (Qwen3.6-style ``preserve_thinking``) actually receive
+    it; otherwise only the current turn's thinking (after the last real query) is kept. ``redacted_thinking``
+    carries only ciphertext and is always dropped.
+    """
     result: list[dict] = []
 
     if system:
@@ -173,9 +187,26 @@ def anthropic_messages_to_openai(
             if parts:
                 result.append({"role": "system", "content": "\n".join(parts)})
 
-    for msg in messages:
+    # The current turn's thinking stays even with preservation off: templates render reasoning after
+    # the last real query (a user message that is not only tool results), as it was generated.
+    last_query = -1
+    for index, msg in enumerate(messages):
         role = msg["role"] if isinstance(msg, dict) else msg.role
         content = msg["content"] if isinstance(msg, dict) else msg.content
+        if role == "user" and (
+            isinstance(content, str)
+            or any(
+                (block.get("type") if isinstance(block, dict) else getattr(block, "type", None))
+                != "tool_result"
+                for block in content
+            )
+        ):
+            last_query = index
+
+    for index, msg in enumerate(messages):
+        role = msg["role"] if isinstance(msg, dict) else msg.role
+        content = msg["content"] if isinstance(msg, dict) else msg.content
+        keep_thinking = preserve_thinking or index > last_query
 
         if isinstance(content, str):
             result.append({"role": role, "content": content})
@@ -206,7 +237,7 @@ def anthropic_messages_to_openai(
                 btype = b.get("type", "")
                 if btype == "text":
                     text_parts.append(b["text"])
-                elif btype == "thinking" and preserve_thinking:
+                elif btype == "thinking" and keep_thinking:
                     t = b.get("thinking") or ""
                     if t:
                         thinking_parts.append(t)

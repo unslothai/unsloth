@@ -4256,6 +4256,83 @@ def patch_trl_disable_gradient_checkpointing():
     return
 
 
+def _spans_several_devices(model):
+    device_map = getattr(model, "hf_device_map", None)
+    return isinstance(device_map, dict) and len({str(d) for d in device_map.values()}) > 1
+
+
+def _first_tensor_device(args, kwargs):
+    for key in ("input_ids", "inputs_embeds", "attention_mask", "labels"):
+        value = kwargs.get(key)
+        if isinstance(value, torch.Tensor):
+            return value.device
+    for value in list(args) + list(kwargs.values()):
+        if isinstance(value, torch.Tensor):
+            return value.device
+    return None
+
+
+class _ApplyOnInputDevice:
+    # Triton launches on the current device, not the tensors': off it, TRL's chunked log-prob kernel returns inf.
+    _unsloth_device_patched = True
+
+    def __init__(self, function):
+        self.function = function
+
+    def apply(self, hidden, *args):
+        device = hidden.device
+        backend = getattr(torch, device.type, None) if device.type in ("cuda", "xpu") else None
+        if backend is None or device.index is None or device.index == backend.current_device():
+            return self.function.apply(hidden, *args)
+        with backend.device(device):
+            return self.function.apply(hidden, *args)
+
+
+def patch_trl_fused_lm_head_devices():
+    # TRL >= 1.15's fused head drops accelerate's io_same_device hook: on a split model log_probs stay on lm_head's card (#4030).
+    try:
+        import trl.trainer.utils as _tu
+    except ImportError:
+        return
+    original = getattr(_tu, "add_fused_lm_head", None)
+    if original is None or getattr(original, "_unsloth_device_patched", False):
+        return
+
+    @functools.wraps(original)
+    def add_fused_lm_head(model, *args, **kwargs):
+        result = original(model, *args, **kwargs)
+        if not _spans_several_devices(model):
+            return result
+        kernel = getattr(_tu, "_ChunkedLogProbFunction", None)
+        if kernel is not None and not getattr(kernel, "_unsloth_device_patched", False):
+            _tu._ChunkedLogProbFunction = _ApplyOnInputDevice(kernel)
+        fused_forward = model.forward
+
+        @functools.wraps(fused_forward)
+        def forward(*f_args, **f_kwargs):
+            outputs = fused_forward(*f_args, **f_kwargs)
+            if not f_kwargs.get("fused_lm_head", False):
+                return outputs
+            device = _first_tensor_device(f_args, f_kwargs)
+            if device is None:
+                return outputs
+            for key, value in outputs.items():
+                if isinstance(value, torch.Tensor) and value.device != device:
+                    outputs[key] = value.to(device)
+            return outputs
+
+        model.forward = forward
+        return result
+
+    add_fused_lm_head._unsloth_device_patched = True
+    _tu.add_fused_lm_head = add_fused_lm_head
+    for _mod_name, _mod in list(sys.modules.items()):
+        if _mod is None or not _mod_name.startswith("trl."):
+            continue
+        if getattr(_mod, "add_fused_lm_head", None) is original:
+            setattr(_mod, "add_fused_lm_head", add_fused_lm_head)
+
+
 def patch_trl_openenv():
     for function in RL_ADDITIONAL_FUNCTIONS["openenv"]:
         logger.info(f"Unsloth: Patching trl openenv with function: {function.__name__}")
@@ -4769,6 +4846,10 @@ def PatchFastRL(algorithm = None, FastLanguageModel = None):
         return
     # Install the disable_gradient_checkpointing noop BEFORE patch_trl_rl_trainers, which imports more trl.* submodules: anything imported after the sys.modules walk keeps the old binding.
     patch_trl_disable_gradient_checkpointing()
+    try:
+        patch_trl_fused_lm_head_devices()
+    except Exception as e:
+        logger.info(f"Unsloth: Could not patch trl add_fused_lm_head for split models: {e}")
     # Also before patch_trl_rl_trainers, so the generated trainers import the wrapped helpers.
     try:
         from ._trl_tool_templates import patch_trl_tool_chat_templates
