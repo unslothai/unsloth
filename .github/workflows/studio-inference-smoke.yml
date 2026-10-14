@@ -104,11 +104,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # Latest-only on a PR branch. On main this does less than it reads like: it stops
-  # a RUNNING main job being killed, but GitHub cancels any PENDING run in the group
-  # the moment a newer one is queued, so a merge burst still leaves only the tip.
-  # See studio-backend-ci.yml, which is grouped per commit on main for that reason.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
+  # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
+  # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -387,7 +386,9 @@ jobs:
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # Wait for it to actually exit (was a flat `sleep 2`); SIGKILL after 10 s.
+          for _ in $(seq 1 100); do kill -0 "${STUDIO_PID}" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "${STUDIO_PID}" 2>/dev/null || true
           ss -tln | grep ":${STUDIO_PORT}" || true
 
       - name: Upload logs
@@ -965,7 +966,9 @@ jobs:
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # Wait for it to actually exit (was a flat `sleep 2`); SIGKILL after 10 s.
+          for _ in $(seq 1 100); do kill -0 "${STUDIO_PID}" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "${STUDIO_PID}" 2>/dev/null || true
           ss -tln | grep ":${STUDIO_PORT}" || true
           # Capture backend + llama-server logs so a 500 has a server-side traceback.
           mkdir -p logs/server-logs
@@ -1267,7 +1270,9 @@ jobs:
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # Wait for it to actually exit (was a flat `sleep 2`); SIGKILL after 10 s.
+          for _ in $(seq 1 100); do kill -0 "${STUDIO_PID}" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "${STUDIO_PID}" 2>/dev/null || true
           ss -tln | grep ":${STUDIO_PORT}" || true
 
       - name: Upload logs

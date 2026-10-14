@@ -78,7 +78,7 @@ brew install --cask unsloth
 ```
 
 #### Winget (Windows):
-```bash
+```powershell
 winget install --id UnslothAI.Unsloth -e
 ```
 

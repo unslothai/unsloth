@@ -6,7 +6,7 @@
 from pathlib import Path, PureWindowsPath
 
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Optional, Literal, Dict, Any, Union
+from typing import Annotated, List, Optional, Literal, Dict, Any, Union
 
 
 def _validate_save_directory(value: str) -> str:
@@ -46,6 +46,11 @@ class LoadCheckpointRequest(BaseModel):
     load_in_4bit: bool = Field(
         True,
         description = "Whether to load the model in 4-bit quantization",
+    )
+    offload_layers: Union[Literal["auto"], Annotated[int, Field(ge = 0, le = 1024)]] = Field(
+        "auto",
+        description = "Decoder layers kept in host RAM and streamed to the GPU during export "
+        "(0 = off; 'auto' = only when a 4-bit load does not fit in GPU memory).",
     )
     trust_remote_code: bool = Field(
         False,
@@ -148,11 +153,22 @@ class DecisionExportInfo(BaseModel):
     )
 
 
+class DiffusionLmExportInfo(BaseModel):
+    """Export limits for a text-diffusion LM checkpoint (LLaDA, Dream, SDAR, DiffusionGemma, ...)."""
+
+    profile: str = Field(..., description = "Text-diffusion family of the checkpoint's base model")
+    disabled_methods: List[str] = Field(
+        default_factory = list, description = "Export methods this checkpoint cannot use"
+    )
+    reason: Optional[str] = Field(None, description = "Why those methods are unavailable")
+
+
 class ExportDecisionInfoResponse(BaseModel):
     """Decision-model export info for a checkpoint path; decision is None for any other model."""
 
     checkpoint_path: str
     decision: Optional[DecisionExportInfo] = None
+    diffusion_lm: Optional[DiffusionLmExportInfo] = None
 
 
 class ExportOperationResponse(BaseModel):

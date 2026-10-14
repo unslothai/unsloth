@@ -157,7 +157,10 @@ jobs:
             if "$@" > "$log" 2>&1; then return 0; fi
             echo "::warning::$* failed on $browser, retrying once"
             printf '\n=== first attempt failed, retrying ===\n\n' >> "$log"
-            if "$@" >> "$log" 2>&1; then
+            # The retry logs the browser process too (launch, stderr, exit), so a webkit
+            # target that closes twice leaves why in the artifact instead of only
+            # TargetClosedError. Seen on two unrelated PRs, not reproducible off the runner.
+            if DEBUG=pw:browser "$@" >> "$log" 2>&1; then
               echo "::notice::$* passed on $browser after one retry"
               return 0
             fi

@@ -3,6 +3,8 @@
 
 """Turning raw dataset cells into the text we are willing to train on."""
 
+import json
+import math
 from pathlib import Path
 
 # Feature ids tagging each column of a CSV read by `csv_as_text_kwargs`.
@@ -17,6 +19,16 @@ _NA_CELLS = frozenset(
 )
 
 
+def _finite(value):
+    if isinstance(value, dict):
+        return {key: _finite(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_finite(item) for item in value]
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 def cell_text(value):
     """The text to train on for a single Alpaca-style dataset cell.
 
@@ -25,7 +37,7 @@ def cell_text(value):
     arrives as 1.0. Untreated, the first trains the word None and the second
     raises on .strip(). NaN counts as blank too: Arrow normalises a blank
     numeric cell to null, but a dataset built straight from pandas need not have
-    passed through Arrow.
+    passed through Arrow. A dict or list cell trains as JSON, not its Python repr.
     """
     if value is None:
         return ""
@@ -39,6 +51,8 @@ def cell_text(value):
         return value
     if isinstance(value, float) and value != value:
         return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(_finite(value), ensure_ascii = False, default = str)
     return str(value)
 
 

@@ -314,6 +314,8 @@ export {
 } from "./utils/queued-chat-run-settings";
 export {
   PLUS_MENU_ORDER,
+  normalizePlusMenuOrder,
+  splitPlusMenuItems,
   usePlusMenuPrefsStore,
   type PlusMenuItemId,
 } from "./stores/plus-menu-prefs-store";
@@ -469,6 +471,7 @@ export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   reasoningTailCapped,
+  reasoningTailFlexBox,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
@@ -497,7 +500,10 @@ export {
   downloadChatExport,
 } from "./utils/export-chat-history";
 export {
-  clearNewChatDraft,
+  adoptLegacyDraft,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   readComposerDraft,

@@ -464,18 +464,39 @@ fp8_block_matmul = (
 )
 
 
+def _rocm_fp8e4nv_kernel_supported(device):
+    # AMD triton's supported_fp8_dtypes (third_party/amd/backend/compiler.py): no fp8e4nv before 3.3;
+    # 3.3 adds gfx940-942 / gfx950, 3.4 gfx942 / gfx950 / gfx12*, and 3.5+ lists it on every arch
+    # (software-emulated without OCP fp8 hardware; ran correctly on gfx1151 with triton 3.6).
+    try:
+        version = Version(triton.__version__).release[:2]
+        if version >= (3, 5):
+            return True
+        if version < (3, 3):
+            return False
+        arch = torch.cuda.get_device_properties(device).gcnArchName.split(":")[0].lower()
+    except Exception:
+        return False
+    if version >= (3, 4):
+        return arch in ("gfx942", "gfx950") or arch.startswith("gfx12")
+    return arch in ("gfx940", "gfx941", "gfx942", "gfx950")
+
+
 @functools.lru_cache(maxsize = None)
 def _fp8_device_lacks_kernel(device):
     # A device's capability cannot change, so look it up once. Tests that simulate another
     # card must call _fp8_device_lacks_kernel.cache_clear().
-    return torch.version.hip is None and torch.cuda.get_device_capability(device) < (8, 9)
+    if torch.version.hip is not None:
+        return not _rocm_fp8e4nv_kernel_supported(device)
+    return torch.cuda.get_device_capability(device) < (8, 9)
 
 
 def _fp8_kernel_unsupported(tensor, kernel_dtype = None):
     """True when triton here cannot compile this fp8 dtype, so kernels taking it must be avoided.
 
     triton adds fp8e4nv only from sm89 on, so compare the full (major, minor): sm89 (4090,
-    L40S, L4) does support it. ROCm lists fp8e4nv always and its capability is gfx-derived.
+    L40S, L4) does support it. ROCm's capability is gfx-derived, so it is gated on the gfx arch
+    and triton version instead (_rocm_fp8e4nv_kernel_supported).
 
     kernel_dtype is the fp8 dtype the kernel really handles. It defaults to the tensor's own,
     which is right for a dequant, but a forward must pass e4m3fn: act_quant emits e4m3fn

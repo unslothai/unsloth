@@ -2758,12 +2758,16 @@ def _state_key_named(key: str, wanted: str, folder: str) -> bool:
 
 
 def _scope_word_matches(word: str, scope: set[str], stem: str) -> bool:
-    """A scope word is one of ``scope``, or a compound (``v4-small``) whose every part is a word of the
-    file stem: its parts can all be folder words, which ``scope`` leaves out."""
+    """A scope word is one of ``scope``, or a compound (``v4-small``) whose parts run, in order, through
+    the file stem: its parts can all be folder words, which ``scope`` leaves out."""
     if word in scope:
         return True
     parts = [p for p in re.split(r"[-_.]+", word) if p]
-    return len(parts) > 1 and set(parts) <= set(re.split(r"[-_.]+", stem))
+    if len(parts) < 2:
+        return False
+    # In order and adjacent: `multilingual-ctc` must not name `multilingual-large-ctc`.
+    words = [w for w in re.split(r"[-_.]+", stem) if w]
+    return any(words[i : i + len(parts)] == parts for i in range(len(words) - len(parts) + 1))
 
 
 def _cached_variants_named(

@@ -200,7 +200,7 @@ on:
 # this workflow reads that entry rather than minting a second copy of the same
 # bytes against a cache budget measured 99.3% full.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:

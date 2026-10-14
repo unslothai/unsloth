@@ -49,6 +49,9 @@ export interface ListLorasResponse {
 export interface LoadModelRequest {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   model_path: string;
   /** Opaque client attempt ID used to cancel only this in-flight load. */
@@ -207,6 +210,8 @@ export interface GgufVariantsResponse {
   dependencies_resolved?: boolean;
   /** Native max context from GGUF metadata; present once a variant is downloaded. */
   context_length?: number | null;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 export function isMultimodalResponse(
@@ -231,6 +236,9 @@ export function isMultimodalResponse(
 export interface LoadModelResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   evicted?: string[];
@@ -359,6 +367,9 @@ export interface UnloadModelRequest {
 export interface InferenceStatusResponse {
   engine_parallelism?: "tensor" | "pipeline" | "data";
   engine_precision?: "auto" | "bf16" | "fp16" | "int4" | "int8" | "fp8";
+  engine_kv_cache_dtype?: "auto" | "fp8";
+  engine_seed?: number | null;
+  engine_gpu_memory_utilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
   is_mlx?: boolean;
   is_npu?: boolean;
