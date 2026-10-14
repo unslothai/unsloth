@@ -260,7 +260,7 @@ class EngineAdapter:
                 else []
             ),
             *(["--trust-remote-code"] if trust_remote_code else []),
-            # Prefix caching is on by default in both; this only makes usage say how many prompt tokens it reused.
+            # Prefix caching is on by default in both; this only reports its hits in usage.
             "--enable-prompt-tokens-details" if self.name == "vllm" else "--enable-cache-report",
             *self.extra_args,
             "--host",
