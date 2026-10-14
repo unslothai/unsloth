@@ -80,7 +80,8 @@ def test_rmsnorm_trainable_weight_gets_grad(path, gemma, dtype, rows, cols):
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("cols", [128, 384])
 def test_rmsnorm_trainable_weight_dx_matches_frozen(gemma, cols):
-    """Gemma's (W + 1) may contract differently in the row loop: a few elements 1 bf16 ulp apart."""
+    """The trainable row loop may contract differently (Gemma's (W + 1), and plain rows on Blackwell): at most
+    a bf16 ulp apart."""
     torch.manual_seed(3407)
     inputs = torch.randn(777, cols, device = "cuda", dtype = torch.bfloat16)
     weights = torch.rand(cols, device = "cuda", dtype = torch.bfloat16)
@@ -90,10 +91,7 @@ def test_rmsnorm_trainable_weight_dx_matches_frozen(gemma, cols):
     frozen = inputs.clone().requires_grad_()
     Fast_RMS_Layernorm.apply(frozen, weights, 1e-6, gemma).backward(grad.clone())
     dx, _ = _fast("eager", inputs, weights, grad, gemma)
-    if gemma:
-        torch.testing.assert_close(dx, frozen.grad)
-    else:
-        assert torch.equal(dx.view(torch.int16), frozen.grad.view(torch.int16))
+    torch.testing.assert_close(dx.float(), frozen.grad.float(), rtol = 2**-7, atol = 1e-6)
 
 
 @pytest.mark.parametrize("gemma", [False, True])
