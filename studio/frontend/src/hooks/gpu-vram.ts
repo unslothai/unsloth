@@ -17,6 +17,7 @@ export interface MemoryTotalDevice {
   /** `hardware.py` sets `shared_memory` only on Windows, so a Linux ROCm APU arrives
    *  as `unified_memory: true, shared_memory: false`. */
   unified_memory?: boolean;
+  no_torch_kernels?: boolean;
 }
 
 export interface GpuMemoryTotalsGb {
@@ -102,6 +103,16 @@ export function gpuMemoryTotalsGb(
     shared,
     total: roundToDevicePrecision(dedicated + shared),
   };
+}
+
+/** Total of the GPUs a run gets by default: an iGPU or a card torch cannot run counts
+ *  only when there is no discrete card beside it. Mirrors `defaultGpuIds`. */
+export function defaultGpuMemoryTotalGb(devices: MemoryTotalDevice[]): number {
+  const primary = devices.filter(
+    (device) =>
+      !sharesHostMemoryDevice(device) && device.no_torch_kernels !== true,
+  );
+  return gpuMemoryTotalsGb(primary.length ? primary : devices).total;
 }
 
 export function gpuSharedHostMemoryGb(devices: MemoryTotalDevice[]): number {

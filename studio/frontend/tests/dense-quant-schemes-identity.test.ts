@@ -49,6 +49,7 @@ function snapshot(
     memoryTotalGb: 24,
     memorySharedGb: 0,
     dedicatedMemoryTotalGb: 24,
+    defaultMemoryTotalGb: 24,
     maxDeviceMemoryGb: 24,
     loadDeviceMemoryGb: 24,
     loadDeviceSharedMemory: false,

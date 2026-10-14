@@ -24,6 +24,8 @@ export interface GpuDevice {
   unified_memory?: boolean;
   /** host-backed portion of the shared pool; the rest is reserved GPU memory. */
   shared_memory_host_backed_gb?: number | null;
+  /** ROCm: the installed PyTorch has no kernels for this GPU, so training skips it. */
+  no_torch_kernels?: boolean;
 }
 
 export interface SystemGpuInfo {

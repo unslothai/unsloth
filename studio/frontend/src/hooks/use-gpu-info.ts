@@ -12,12 +12,14 @@ import {
   type PinnableGpuContext,
   type ReconciledGpuSelection,
   type SystemGpuDevice,
+  defaultGpuIds,
   pickLoadDevice,
   pinnableGpuContext,
   reconcileGpuSelection,
   resolveGpuSelectionContext,
 } from "./gpu-selection";
 import {
+  defaultGpuMemoryTotalGb,
   gpuMemoryTotalsGb,
   gpuSharedHostMemoryGb,
   sharesHostMemory,
@@ -31,6 +33,7 @@ import {
 } from "./use-system";
 
 export {
+  defaultGpuIds,
   pinnableGpuContext,
   reconcileGpuSelection,
   type GpuIndexKind,
@@ -70,6 +73,9 @@ export interface GpuInfo {
   /** The same aggregate with shared-memory devices left out: the VRAM that is a pool
    *  BESIDE system RAM rather than a capped view of it. */
   dedicatedMemoryTotalGb: number;
+  /** VRAM of the GPUs a run gets by default: an iGPU or a card torch cannot run is left out
+   *  when a discrete card is present, as the GPU picker leaves it unticked. */
+  defaultMemoryTotalGb: number;
   /** Largest single device's VRAM. Image/video loads live on ONE device (no tensor split), so their fit math must use a single device, not the multi-GPU sum. */
   maxDeviceMemoryGb: number;
   /** VRAM of the device an image/video load actually lands on: the lowest visible ordinal, since resolve_diffusion_device_target() returns a bare "cuda" and torch places on the current device. On a heterogeneous host this is NOT maxDeviceMemoryGb, and sizing a pick against the larger card would recommend a checkpoint that OOMs the smaller one. */
@@ -107,6 +113,7 @@ const DEFAULT_GPU: GpuInfo = {
   memoryTotalGb: 0,
   memorySharedGb: 0,
   dedicatedMemoryTotalGb: 0,
+  defaultMemoryTotalGb: 0,
   maxDeviceMemoryGb: 0,
   loadDeviceMemoryGb: 0,
   loadDeviceSharedMemory: false,
@@ -171,6 +178,7 @@ function toGpuInfo(
     name: devices[0]?.name ?? "Unknown",
     memoryTotalGb: memoryTotals.total,
     dedicatedMemoryTotalGb: memoryTotals.dedicated,
+    defaultMemoryTotalGb: defaultGpuMemoryTotalGb(devices),
     memorySharedGb: memoryTotals.shared,
     maxDeviceMemoryGb: devices.reduce(
       (max, d) => Math.max(max, d.memory_total_gb ?? 0),
@@ -250,6 +258,7 @@ function toGpuDevices(
       sharedMemory: d.shared_memory === true,
       sharedMemoryHostBackedGb: d.shared_memory_host_backed_gb,
       unifiedMemory: d.unified_memory === true,
+      noTorchKernels: d.no_torch_kernels === true,
       // The XPU ban is about torch-xpu ordinals no applicator speaks, so /load
       // and /validate 400 them. A Vulkan ordinal is not one of those, so it
       // stays pickable even when this list arrives from an XPU host.
@@ -452,5 +461,7 @@ export function reconcileCachedGpuSelection(
     savedIndexKind,
     context.indexKind,
     context.ids,
+    // An untouched picker shows these ticked, so that is what /load sends. Diffusion takes one card.
+    forDiffusion ? null : defaultGpuIds(context.devices),
   );
 }
