@@ -304,6 +304,11 @@ const RewindChoices: FC<{
     if (dryRun.state === "error") {
       toast.error(t("rewind.checkFailed", { error: dryRun.message }));
     }
+    // Files changed since, but none can be put back: say so, or the rewind reads as a full restore.
+    const skipped = result ? result.conflicts.length + result.untracked.length : 0;
+    if (skipped > 0) {
+      toast.warning(t("rewind.filesNotRestored", { count: skipped }));
+    }
     void rewind("conversation");
   }, [conversationOnly]);
 

@@ -2764,6 +2764,7 @@ export const it = {
         working: "Elaborazione...",
         loadFailed: "Impossibile caricare gli elementi archiviati",
         loadMoreFailed: "Impossibile caricare altri elementi archiviati",
+        filesNotRestored: "{count} file modificati non possono essere ripristinati e restano come sono.",
         restoreFailed: "Impossibile ripristinare gli elementi selezionati",
         deleteFailed: "Impossibile eliminare gli elementi selezionati",
         projectsFailed: "Impossibile caricare i progetti archiviati",

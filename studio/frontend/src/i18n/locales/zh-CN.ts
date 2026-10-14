@@ -576,6 +576,7 @@ export const zhCN = {
     restoredMany: "已恢复 {count} 个文件",
     nothingRestored: "没有需要恢复的文件",
     skippedCount: "已跳过 {count} 个",
+    filesNotRestored: "{count} 个已更改的文件无法恢复，将保持原样。",
     restoreFailed: "无法恢复文件",
     undo: "撤销",
     undone: "已撤销文件恢复",

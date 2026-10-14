@@ -576,6 +576,7 @@ export const ko = {
     restoredMany: "파일 {count}개를 복원했습니다",
     nothingRestored: "복원할 파일이 없었습니다",
     skippedCount: "{count}개 건너뜀",
+    filesNotRestored: "변경된 파일 {count}개는 복원할 수 없어 그대로 유지됩니다.",
     restoreFailed: "파일을 복원하지 못했습니다",
     undo: "실행 취소",
     undone: "파일 복원을 취소했습니다",

@@ -577,6 +577,7 @@ export const ja = {
     restoredMany: "{count} 件のファイルを復元しました",
     nothingRestored: "復元が必要なファイルはありませんでした",
     skippedCount: "{count} 件をスキップしました",
+    filesNotRestored: "変更された {count} 個のファイルは復元できないため、そのまま残ります。",
     restoreFailed: "ファイルを復元できませんでした",
     undo: "元に戻す",
     undone: "ファイルの復元を元に戻しました",

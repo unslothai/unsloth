@@ -662,6 +662,7 @@ export const he = {
     restoredMany: "שוחזרו {count} קבצים",
     nothingRestored: "לא היו קבצים לשחזור",
     skippedCount: "{count} דולגו",
+    filesNotRestored: "לא ניתן לשחזר {count} קבצים ששונו, והם יישארו כפי שהם.",
     restoreFailed: "לא ניתן היה לשחזר את הקבצים",
     undo: "ביטול פעולה",
     undone: "שחזור הקבצים בוטל",

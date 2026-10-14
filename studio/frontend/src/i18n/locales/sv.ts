@@ -678,6 +678,7 @@ export const sv = {
     restoredMany: "Återställde {count} filer",
     nothingRestored: "Inga filer behövde återställas",
     skippedCount: "{count} överhoppade",
+    filesNotRestored: "{count} ändrade filer kan inte återställas och lämnas som de är.",
     restoreFailed: "Det gick inte att återställa filerna",
     undo: "Ångra",
     undone: "Filåterställningen ångrades",

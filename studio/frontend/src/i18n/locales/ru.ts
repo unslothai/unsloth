@@ -576,6 +576,7 @@ export const ru = {
     restoredMany: "Восстановлено файлов: {count}",
     nothingRestored: "Восстанавливать было нечего",
     skippedCount: "Пропущено: {count}",
+    filesNotRestored: "Изменённые файлы ({count}) нельзя восстановить, они останутся как есть.",
     restoreFailed: "Не удалось восстановить файлы",
     undo: "Отменить",
     undone: "Восстановление файлов отменено",

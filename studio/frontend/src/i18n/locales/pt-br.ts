@@ -576,6 +576,7 @@ export const ptBR = {
     restoredMany: "{count} arquivos restaurados",
     nothingRestored: "Nenhum arquivo precisou ser restaurado",
     skippedCount: "{count} ignorados",
+    filesNotRestored: "{count} arquivos alterados não podem ser restaurados e ficam como estão.",
     restoreFailed: "Não foi possível restaurar os arquivos",
     undo: "Desfazer",
     undone: "Restauração dos arquivos desfeita",

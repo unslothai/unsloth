@@ -628,6 +628,7 @@ export const en = {
     restoredMany: "Restored {count} files",
     nothingRestored: "No files needed restoring",
     skippedCount: "{count} skipped",
+    filesNotRestored: "{count} changed files can't be restored and stay as they are.",
     restoreFailed: "Could not restore files",
     undo: "Undo",
     undone: "File restore undone",

@@ -576,6 +576,7 @@ export const fr = {
     restoredMany: "{count} fichiers restaurés",
     nothingRestored: "Aucun fichier à restaurer",
     skippedCount: "{count} ignorés",
+    filesNotRestored: "{count} fichiers modifiés ne peuvent pas être restaurés et restent en l'état.",
     restoreFailed: "Impossible de restaurer les fichiers",
     undo: "Annuler",
     undone: "Restauration des fichiers annulée",

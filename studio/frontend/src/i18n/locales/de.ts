@@ -576,6 +576,7 @@ export const de = {
     restoredMany: "{count} Dateien wiederhergestellt",
     nothingRestored: "Keine Dateien mussten wiederhergestellt werden",
     skippedCount: "{count} übersprungen",
+    filesNotRestored: "{count} geänderte Dateien können nicht wiederhergestellt werden und bleiben unverändert.",
     restoreFailed: "Dateien konnten nicht wiederhergestellt werden",
     undo: "Rückgängig",
     undone: "Wiederherstellung der Dateien rückgängig gemacht",

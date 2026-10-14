@@ -576,6 +576,7 @@ export const ar = {
     restoredMany: "تمت استعادة {count} ملفات",
     nothingRestored: "لم تكن هناك ملفات تحتاج إلى استعادة",
     skippedCount: "تم تخطي {count}",
+    filesNotRestored: "لا يمكن استعادة {count} من الملفات المعدّلة وستبقى كما هي.",
     restoreFailed: "تعذرت استعادة الملفات",
     undo: "تراجع",
     undone: "تم التراجع عن استعادة الملفات",
