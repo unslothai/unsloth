@@ -84,6 +84,11 @@ TEXT_ENCODER_MIN_TRANSFORMERS = "5.10.1"
 # What the encoder worker holds on the card beyond its weights, on every plan tier: its CUDA context (~0.6 GB on
 # Hopper / Blackwell) plus allocator slack. The weights are the family table's text-encoder term.
 LTX25_WORKER_RESIDENT_GB = 1.0
+# int8 encoder is opt-in: LPIPS 0.310 vs bf16, above the 0.256 compile floor.
+LTX25_TE_QUANT_DEFAULT = "int8"
+LTX25_TE_QUANT_ENV = "UNSLOTH_LTX25_TE_INT8"
+# Measured int8 encoder weights (12,424 MiB vs 22,811 MiB bf16).
+LTX25_TE_INT8_GB = 13.1
 # The pack's latent_upsampler/ (995,743,320 bytes), part of the family table's companions; only two-stage loads hold it.
 LTX25_LATENT_UPSAMPLER_GB = 1.0
 
@@ -666,6 +671,44 @@ def encoder_resident_for_plan(plan: Any) -> bool:
     return policy == OFFLOAD_GROUP and not bool(getattr(plan, "stream_text_encoders", False))
 
 
+def ltx25_te_quant_scheme(text_encoder_quant: Optional[str]) -> Optional[str]:
+    """``"int8"`` or None (bf16); any other scheme raises ValueError (the worker has only the ConvRot INT8 build)."""
+    from .diffusion_precision import normalize_te_quant, te_quant_is_auto
+
+    if te_quant_is_auto(text_encoder_quant):
+        if (os.environ.get(LTX25_TE_QUANT_ENV) or "").strip().lower() in ("1", "true", "yes", "on"):
+            return LTX25_TE_QUANT_DEFAULT
+        return None
+    scheme = normalize_te_quant(text_encoder_quant)
+    if scheme is None or scheme == LTX25_TE_QUANT_DEFAULT:
+        return scheme
+    raise ValueError(
+        f"LTX-2.5's Gemma 4 text encoder runs int8 (ConvRot, as in ComfyUI's LTX-2.5 workflows) or bf16, not "
+        f"'{scheme}'. Pick int8 for int8, or leave it unset / Off for bf16."
+    )
+
+
+def ltx25_te_budget_scale(text_encoder_quant: Optional[str], bf16_gb: float) -> float:
+    try:
+        scheme = ltx25_te_quant_scheme(text_encoder_quant)
+    except ValueError:
+        return 1.0
+    if scheme == LTX25_TE_QUANT_DEFAULT and bf16_gb > 0:
+        return min(1.0, LTX25_TE_INT8_GB / float(bf16_gb))
+    return 1.0
+
+
+def ltx25_te_outcome(client: Any) -> Any:
+    from .diffusion_precision import TEQuantOutcome
+
+    scheme = (getattr(client, "config", None) or {}).get("te_quant")
+    if scheme:
+        return TEQuantOutcome(
+            scheme, "int8 ConvRot weight-only Gemma 4 encoder (ComfyUI's LTX-2.5 encoder)"
+        )
+    return TEQuantOutcome(None)
+
+
 def sidecar_missing_message(venv_dir: str) -> str:
     return (
         "LTX-2.5's text encoder is a Gemma 4 model (Gemma4UnifiedForConditionalGeneration) that needs transformers "
@@ -730,6 +773,7 @@ class Ltx25TextEncoderClient:
         cancel_event: Optional[threading.Event] = None,
         single_file: Optional[str] = None,
         budget_mib: Optional[int] = None,
+        te_quant: Optional[str] = None,
     ) -> None:
         self.config = {
             "repo": repo,
@@ -745,6 +789,7 @@ class Ltx25TextEncoderClient:
             "venv_dir": venv_dir,
             # The load's memory budget: a non-resident encoder onloads only into what the server leaves of it.
             "budget_mib": budget_mib,
+            "te_quant": te_quant,
         }
         self.cancel_event = cancel_event
         self._proc: Any = None
@@ -1023,6 +1068,7 @@ def start_text_encoder(
     dtype: str,
     resident: bool,
     budget_mib: Optional[int] = None,
+    te_quant: Optional[str] = None,
 ) -> Ltx25TextEncoderClient:
     """Check the sidecar (a named refusal before any weight is read), then spawn the encoder worker so the Gemma 4
     load overlaps the DiT load."""
@@ -1038,6 +1084,7 @@ def start_text_encoder(
         venv_dir = venv_dir,
         single_file = LTX25_SINGLE_TEXT_ENCODER if is_ltx25_single_file_base(repo) else None,
         budget_mib = budget_mib,
+        te_quant = te_quant,
     )
     client.start()
     return client

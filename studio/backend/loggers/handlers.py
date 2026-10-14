@@ -121,6 +121,9 @@ _QUIET_SUCCESS_PATHS = {
     "/api/inference/images/generate-progress",
     "/api/inference/video/generate-progress",
     "/api/llama/update-status",
+    # Engine status, re-read every 5s by the Hub while the vLLM GPU probe runs and by the open Settings engine list.
+    # The UI shows each answer, install jobs log their own progress, and a failed read (non-2xx) still logs.
+    "/api/engines",
     "/api/export/logs",
     "/api/export/status",
     # The Settings > Logs viewer polls are suppressed in _SELF_READ_PATHS below.

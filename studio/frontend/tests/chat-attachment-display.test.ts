@@ -101,6 +101,9 @@ test("composer cards wrap for two rows, then become one scrolling strip", () => 
   assert.equal(composerAttachmentsOverflow(7, 300, 105, 8), true);
   assert.equal(composerAttachmentsOverflow(0, 724, fifth, 8), false);
   assert.equal(composerAttachmentsOverflow(20, 724, 0, 8), false);
+  // In a chat the strip allows one row: a sixth card at a fifth of the width already scrolls.
+  assert.equal(composerAttachmentsOverflow(5, 724, fifth, 8, 1), false);
+  assert.equal(composerAttachmentsOverflow(6, 724, fifth, 8, 1), true);
   assert.match(
     ATTACHMENT,
     /const CARD_SLOT =\n\s*"shrink-0 w-\[calc\(\(100%_-_var\(--spacing\)\*8\)\/5\)\] min-w-\[calc\(7rem\*var\(--ui-space-scale,1\)\)\]";/,
@@ -135,7 +138,8 @@ test("the strip is laid out through the DOM, never through React state", () => {
   );
   assert.match(strip, /el\.dataset\.layout = next/);
   assert.doesNotMatch(strip, /useState/);
-  assert.match(strip, /\}, \[count\]\);/);
+  // maxRows flips once, when the first message lands; resizes still go through the observer.
+  assert.match(strip, /\}, \[count, maxRows\]\);/);
   assert.match(strip, /new ResizeObserver\(layout\)/);
 });
 
@@ -444,5 +448,26 @@ test("a card preview follows the text adapter before a binary document viewer", 
   assert.match(
     preview,
     /if \(binary && isTextAttachment\(file\.name, file\.type\)\) return \{ kind: "text" \};\n\s*if \(document\)/,
+  );
+});
+
+test("the main composer keeps attachments to one scrolling row once the chat has messages", async () => {
+  const attachment = await readSrcAsync(
+    "components/assistant-ui/attachment.tsx",
+  );
+  assert.match(
+    attachment,
+    /const maxRows = oneRowInChat && inChat \? 1 : COMPOSER_ATTACHMENT_MAX_ROWS;/,
+  );
+  assert.match(
+    attachment,
+    /useAuiState\(\(\{ thread \}\) => !thread\.isEmpty\)/,
+  );
+  const thread = await readSrcAsync("components/assistant-ui/thread.tsx");
+  assert.match(thread, /<ComposerAttachments oneRowInChat=\{true\} \/>/);
+  // The gap under the strip matches the one between the input and the controls.
+  assert.match(
+    attachment,
+    /aui-composer-attachment-cards mb-\[calc\(0\.5rem\*var\(--ui-space-scale,1\)\)\]/,
   );
 });
