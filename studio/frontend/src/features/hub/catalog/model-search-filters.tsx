@@ -94,7 +94,6 @@ export function ModelSearchFiltersControl({
         sideOffset={8}
         collisionPadding={12}
         onCloseAutoFocus={(event) => event.preventDefault()}
-        // The surface and radii of the Hub's other menus (HubOptionMenu).
         className="hub-menu-instant menu-soft-surface w-[calc(288px*var(--ui-space-scale,1))] max-w-[calc(100vw-1rem)] rounded-[18px] p-1.5 ring-0"
       >
         <div
@@ -181,7 +180,6 @@ export function ModelSearchFiltersControl({
                 </div>
               </fieldset>
             ))}
-            {/* The row style of the sort menu's "Only show models that fit". */}
             <button
               type="button"
               role="checkbox"

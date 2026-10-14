@@ -472,7 +472,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             onValueChange={onSortChange}
             ariaLabel="Sort models"
             className={cn(triggerBase, "w-[calc(128px*var(--ui-space-scale,1))]")}
-            // The sort icon the chat model picker's sort menus carry.
             triggerContent={
               <span className="flex items-center gap-1">
                 <HugeiconsIcon

@@ -82,7 +82,6 @@ export function HubOptionMenu<T extends string>({
     return index >= 0 ? index : 0;
   }, [options, isChecked]);
   const selected = options[selectedIndex];
-  // Several picked: the first one's label and how many more.
   const multiLabel =
     multiple && values.length > 1 ? (
       <>
