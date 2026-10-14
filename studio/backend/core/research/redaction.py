@@ -303,7 +303,7 @@ def _sanitize_public_query(query: str) -> str:
         values = sorted(exact, key = len, reverse = True)
         echo = "|".join(r"\s+".join(map(_escape_echo, value.split())) for value in values)
         query = re.sub(
-            rf"(?:(?<![\w.~+-])|(?<=%[0-9A-Fa-f]{{2}}))(?:{echo})(?![\w~+-]|\.[\w~+-])", " ", query
+            rf"(?:(?<![\w.~+-])|(?<=%[0-9A-Fa-f]{{2}}))(?:{echo})(?![\w~+-])", " ", query
         )
     query = " ".join(query.split()).strip(" ,;:-")[:500]
     if not any(character.isalnum() for character in query):

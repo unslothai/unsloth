@@ -347,6 +347,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: Custom token="abcdefghijkl\\/mnop" received="abcdefghijkl\\/mnop" why',
         "Authorization: ApiKey abcdefghijklmnop why",
         "Authorization: Basic YTpi request /debug/YTpi/status failed",
+        "Authorization: Basic YTpi request /debug/YTpi.json failed",
     ):
         cleaned = _sanitize_public_query(text)
         assert "abcdefghijklmnop" not in cleaned and "YTpi" not in cleaned, text
