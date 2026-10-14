@@ -910,11 +910,13 @@ def test_after_load_keeps_replicas_across_a_no_op_reload(cluster, monkeypatch, t
             assert router is not None and len(started) == 1
             await ss.after_load(backend, 16)
             assert ss.state().router is router and len(started) == 1
-            backend._port = fake.port  # same fake, but a new process identity
+            # A reload whose new llama-server landed on the same port is still a new process.
             backend._process = SimpleNamespace(args = list(backend._process.args))
-            ss.state().attached_port = fake.port + 1
             await ss.after_load(backend, 16)
             assert ss.state().router is not router and len(started) == 2
+            router = ss.state().router
+            await ss.after_load(backend, 16)
+            assert ss.state().router is router and len(started) == 2
         finally:
             await ss.shutdown()
             await fake.stop()
@@ -2573,6 +2575,26 @@ def test_an_uncached_repo_is_priced_with_its_local_sidecars(cluster, monkeypatch
         )
     )
     assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 1024
+
+
+def test_the_projector_studio_picks_up_itself_is_priced(cluster, monkeypatch, tmp_path):
+    """Regression: a projector found beside the GGUF is opened with no --mmproj in the args, so it
+    was missing from the plan's model size."""
+    write_fake_llama_server(cluster.bundle / "build" / "bin", _FAKE_HELP_WITH_FLAG)
+    _patch_remote(monkeypatch)
+    model = tmp_path / "model-Q4_K_M.gguf"
+    model.write_bytes(b"x" * 4096)
+    (tmp_path / "mmproj-F16.gguf").write_bytes(b"x" * 1024)
+    cluster.topology = "single"
+    run(ss.before_load(_FakeRequest(str(model)), 4))
+    assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 1024
+    explicit = tmp_path / "other-mmproj.bin"
+    explicit.write_bytes(b"x" * 512)
+    run(ss.before_load(_FakeRequest(str(model), llama_extra_args = ["--mmproj", str(explicit)]), 4))
+    assert cluster.planner_calls[-1]["model_bytes"] == 4096 + 512
+    monkeypatch.setattr(ss, "_projector_accepts_image", lambda path: True)
+    run(ss.before_load(_FakeRequest(str(model), disable_vision = True), 4))
+    assert cluster.planner_calls[-1]["model_bytes"] == 4096
 
 
 def test_a_hub_that_cannot_answer_leaves_the_old_sizeless_behaviour(cluster, monkeypatch, tmp_path):

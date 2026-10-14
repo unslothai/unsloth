@@ -1793,26 +1793,50 @@ def _from_hub_repo(model_file: Optional[str]) -> bool:
     return "snapshots" in parts and any(part.startswith("models--") for part in parts)
 
 
+def _snapshot_projector(model_file: Optional[str]) -> Optional[str]:
+    """The multimodal projector Studio would pick up beside ``model_file``, or None."""
+    if not model_file:
+        return None
+    try:
+        # NOT realpath: an HF cache snapshot is a directory of symlinks into blobs/, where the
+        # neighbours are content hashes and nothing ends in .gguf.
+        directory = osp.dirname(osp.abspath(str(model_file)))
+        found = sorted(
+            path
+            for path in glob.glob(osp.join(directory, "*.gguf"))
+            if "mmproj" in osp.basename(path).lower() and not osp.basename(path).startswith("._")
+        )
+    except OSError:
+        found = []
+    if not found:
+        return None
+    return next((f for f in found if f.lower().endswith("-f16.gguf")), found[0])
+
+
+def _projector_accepts_image(path: str) -> bool:
+    try:
+        from utils.models.gguf_metadata import mmproj_accepts_image  # type: ignore
+        return bool(mmproj_accepts_image(path))
+    except Exception as exc:
+        logger.info("spark serving: could not read the projector %s: %s", path, exc)
+        return False
+
+
+def auto_projector_file(
+    model_file: Optional[str], *, disable_vision: bool = False
+) -> Optional[str]:
+    """The projector the load will open without being named in the args, for sizing."""
+    on_disk = _snapshot_projector(model_file)
+    if on_disk and disable_vision and _projector_accepts_image(on_disk):
+        return None
+    return on_disk
+
+
 def projector_blocks_pipeline_groups(
     model_file: Optional[str], *, disable_vision: bool = False
 ) -> Optional[str]:
     """Why this load cannot have pipeline groups because of a multimodal projector, or None."""
-    on_disk = None
-    if model_file:
-        try:
-            # NOT realpath: an HF cache snapshot is a directory of symlinks into blobs/, where the
-            # neighbours are content hashes and nothing ends in .gguf.
-            directory = osp.dirname(osp.abspath(str(model_file)))
-            found = sorted(
-                path
-                for path in glob.glob(osp.join(directory, "*.gguf"))
-                if "mmproj" in osp.basename(path).lower()
-                and not osp.basename(path).startswith("._")
-            )
-        except OSError:
-            found = []
-        if found:
-            on_disk = next((f for f in found if f.lower().endswith("-f16.gguf")), found[0])
+    on_disk = _snapshot_projector(model_file)
     if not disable_vision:
         if on_disk:
             return (
@@ -1829,12 +1853,8 @@ def projector_blocks_pipeline_groups(
         return None
     if not on_disk:
         return None
-    try:
-        from utils.models.gguf_metadata import mmproj_accepts_image  # type: ignore
-        if mmproj_accepts_image(on_disk):
-            return None  # the Vision switch really does suppress this one
-    except Exception as exc:
-        logger.info("spark serving: could not read the projector %s: %s", on_disk, exc)
+    if _projector_accepts_image(on_disk):
+        return None  # the Vision switch really does suppress this one
     return (
         f"the projector {osp.basename(on_disk)} is not an image projector, so the load's "
         f"vision switch does not drop it"
@@ -2220,6 +2240,8 @@ class SparkServing:
         self.peer: Optional[str] = None
         self.attached_backend: Any = None
         self.attached_port: Optional[int] = None
+        # The llama-server process the replicas mirror: a reload can land on the same port.
+        self.attached_process: Any = None
         # The key files the peer replica was launched with and their bytes, and the remote binary
         # and port it runs on, see _sync_replica.
         self.peer_keys: Dict[str, bytes] = {}
@@ -2341,6 +2363,17 @@ class SparkServing:
                 else (inherited_extra_args or [])
             )
             sidecars, sidecars_unknown = sidecar_bytes(extras_for_sizing)
+            # Studio's own projector pick is resident too, though no arg names it.
+            _named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
+            if not any(str(a).split("=", 1)[0] in _named for a in extras_for_sizing) and not any(
+                os.environ.get(k) for k in _GROUPS_REFUSED_ENV
+            ):
+                projector = auto_projector_file(
+                    local_file, disable_vision = bool(getattr(request, "disable_vision", False))
+                )
+                projector_size = gguf_size_bytes(projector) if projector else None
+                if projector_size:
+                    sidecars += int(projector_size)
             for path in env_launch_files(dict(os.environ)):
                 if path in launch_files_from(extras_for_sizing):
                     continue  # already charged from argv; do not count it twice
@@ -2730,6 +2763,7 @@ class SparkServing:
                     await self.detach()
                 self.attached_backend = llama_backend
                 self.attached_port = port
+                self.attached_process = getattr(llama_backend, "_process", None)
                 self.topology = "layer_split"
                 if self.peer_process is None:
                     self.reason = "llama-server launched with a user-supplied --rpc"
@@ -2747,6 +2781,7 @@ class SparkServing:
                 and self.router is not None
                 and self.attached_backend is llama_backend
                 and self.attached_port == port
+                and self.attached_process is getattr(llama_backend, "_process", None)
             ):
                 return
             if self.router is not None or self.peer_process is not None:
@@ -2985,6 +3020,7 @@ class SparkServing:
         self.router = router
         self.attached_backend = llama_backend
         self.attached_port = int(port)
+        self.attached_process = getattr(llama_backend, "_process", None)
         self.topology = "replicas"
         self.reason = str(plan.get("reason", ""))
         self.relaunch_attempts = 0
@@ -3135,6 +3171,7 @@ class SparkServing:
             # Committed only once the replica is in step, so a failed key copy is retried next pass.
             if await self._sync_replica(backend):
                 self.attached_port = int(port)
+                self.attached_process = getattr(backend, "_process", None)
 
     async def _sync_replica(self, backend: Any) -> bool:
         """Bring the replica in line with a primary that was relaunched without a load request: a
@@ -3248,6 +3285,7 @@ class SparkServing:
                     logger.warning("spark serving: peer teardown failed", exc_info = True)
             self.attached_backend = None
             self.attached_port = None
+            self.attached_process = None
             self.peer_keys = {}
             self.replica_binary = self.replica_port = None
             self.pipeline_groups, self.pipeline_groups_reason = 0, None
