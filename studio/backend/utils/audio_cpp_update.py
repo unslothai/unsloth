@@ -144,11 +144,15 @@ def _update_size_bytes(
             bundle = renamed
     if bundle is None:
         accelerator = record.get("accelerator")
+        accelerator = accelerator if isinstance(accelerator, str) else "cpu"
+        # The installer's own constraints, so another repo's CUDA line maps onto the bundle it will pick.
         bundle = installer.resolve_release_asset(
             names,
             system = platform.system(),
             machine = platform.machine(),
-            accelerator = accelerator if isinstance(accelerator, str) else "cpu",
+            accelerator = accelerator,
+            driver_cuda = installer.nvidia_driver_cuda_version() if accelerator == "cuda" else None,
+            prefer_cuda_major = installer.torch_cuda_major(),
         )
     if bundle is None or bundle not in assets:
         return None

@@ -178,6 +178,32 @@ def test_the_cuda_runtime_zip_follows_the_current_torch(managed, monkeypatch, to
     assert size == (400_000_000 if torch_has_runtime else 700_000_000)
 
 
+def test_another_repos_cuda_bundle_is_sized_like_the_installer_picks(managed, monkeypatch):
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: "AMD64")
+    seen = {}
+    installer = aupd._installer()
+    real = installer.resolve_release_asset
+    monkeypatch.setattr(installer, "nvidia_driver_cuda_version", lambda: (12, 8))
+    monkeypatch.setattr(installer, "torch_cuda_major", lambda: 12)
+
+    def resolve(names, **kwargs):
+        seen.update(kwargs)
+        return real(names, **kwargs)
+
+    monkeypatch.setattr(installer, "resolve_release_asset", resolve)
+    _write_record(
+        managed.tree,
+        published_repo = "0xShug0/audio.cpp",
+        release_tag = "v0.9.0",
+        asset = "audio-v0.9.0-bin-windows-x64-cuda12.4.zip",
+        accelerator = "cuda",
+        accelerator_request = "cuda",
+    )
+    aupd.chained_phase_plan()
+    assert seen["driver_cuda"] == (12, 8) and seen["prefer_cuda_major"] == 12
+
+
 def test_unknown_assets_size_nothing_but_still_offer(managed):
     managed.state.assets = None
     plan = aupd.chained_phase_plan()
