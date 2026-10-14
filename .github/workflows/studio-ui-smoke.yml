@@ -484,7 +484,7 @@ jobs:
         # restored by re-runs of that same PR while still counting against the shared
         # budget, evicting the copy every PR can read.
         if: >-
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.apt-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -494,7 +494,7 @@ jobs:
 
       - name: Save the Playwright browser cache
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -1242,7 +1242,7 @@ jobs:
         # restored by re-runs of that same PR while still counting against the shared
         # budget, evicting the copy every PR can read.
         if: >-
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.apt-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -1252,7 +1252,7 @@ jobs:
 
       - name: Save the Playwright browser cache
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
