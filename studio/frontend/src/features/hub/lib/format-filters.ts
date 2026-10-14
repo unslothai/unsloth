@@ -97,8 +97,7 @@ export function matchesRecommended(
   return format !== null && checkpointQuantFormats.includes(format);
 }
 
-/** Hub tags that keep a listing to rows the format filter can show, or undefined when it shows
- *  non-GGUF rows too. Lets a Newest listing fill a page instead of dropping most of it. */
+/** Hub tags for a listing whose format filter only shows GGUF rows, else undefined. */
 export function listingTagsForFormat(
   formatFilter: FormatFilterValue,
   checkpointQuantFormats: readonly string[],
@@ -110,8 +109,7 @@ export function listingTagsForFormat(
 }
 const GGUF_LISTING_TAGS: readonly string[] = ["gguf"];
 
-/** Recommended's likes floor for iconless models only means something under a popularity sort:
- *  under Newest / Recently updated no fresh upload has likes yet, so it hid every non-Unsloth row. */
+/** Recommended's likes floor needs a popularity sort: under Newest no fresh upload has likes yet. */
 export function recommendedNeedsLikes(sort: string): boolean {
   return sort !== "createdAt" && sort !== "lastModified";
 }
