@@ -237,7 +237,7 @@
 
 	/* Slightly warm off white; every page (and the chat surface) shares it. */
 	--background: #fefefd;
-	--foreground-base: #000000;
+	--foreground-base: #0f1114;
 	--card-base: oklch(1 0 0);
 	--card-foreground-base: oklch(0.1281 0.0179 169.2764);
 	--popover-base: oklch(1 0 0);

@@ -56,7 +56,7 @@ type ColorThemeMeta = {
 
 export const COLOR_THEMES: Record<ColorThemeId, ColorThemeMeta> = {
   standard: {
-    light: { accent: "#17b88b", background: "#fefefd", foreground: "#000000" },
+    light: { accent: "#17b88b", background: "#fefefd", foreground: "#0f1114" },
     dark: { accent: "#17b88b", background: "#181818", foreground: "#fcfcfc" },
   },
   classic: {
