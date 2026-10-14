@@ -4597,14 +4597,20 @@ class VideoBackend:
     def _release_precommit_compile_cache(self, token: Optional[int]) -> None:
         """Release the compile-cache context of a load that died before its state commit. Token-scoped like
         ``_rollback_precommit_globals``."""
-        stored = getattr(self, "_precommit_compile_cache", None)
-        if stored is None:
+        pending = getattr(self, "_precommit_compile_caches", None)
+        if not pending:
             return
-        stored_token, ctx = stored
-        if token is not None and stored_token is not None and stored_token != token:
-            return
-        self._precommit_compile_cache = None
-        compile_cache.restore(ctx, logger = logger)
+        # One context per load token: two overlapping loads each keep their own, so the one that dies releases
+        # exactly its own.
+        ctx = pending.pop(token, None)
+        if ctx is not None:
+            compile_cache.restore(ctx, logger = logger)
+
+    def _commit_precommit_compile_cache(self, token: Optional[int]) -> None:
+        """The load committed its state, which now owns the context: forget it here without releasing it."""
+        pending = getattr(self, "_precommit_compile_caches", None)
+        if pending:
+            pending.pop(token, None)
 
     def _begin_stage_compile_cache(
         self,
@@ -4637,7 +4643,13 @@ class VideoBackend:
                 if compile_cache.cache_mode() == "off"
                 else "unavailable on this torch build"
             )
-        self._precommit_compile_cache = (token, ctx)
+        pending = getattr(self, "_precommit_compile_caches", None)
+        if pending is None:
+            pending = self._precommit_compile_caches = {}
+        displaced = pending.pop(token, None)
+        if displaced is not None and displaced is not ctx:
+            compile_cache.restore(displaced, logger = logger)
+        pending[token] = ctx
         return ctx, None
 
     # LTX-2.3 gets DiT/connectors/VAEs/vocoder from the checkpoint + extras, so only the 2.0 base scheduler / text
@@ -8305,7 +8317,7 @@ class VideoBackend:
                     compile_cache_ctx = compile_ctx,
                 )
                 self._precommit_globals = None
-                self._precommit_compile_cache = None
+                self._commit_precommit_compile_cache(_load_token)
                 pending_encoder = self._ltx25_pending_encoder
                 if (
                     ltx25_client is not None
@@ -9517,7 +9529,7 @@ class VideoBackend:
                 compile_cache_ctx = h3_compile_ctx,
             )
             self._precommit_globals = None
-            self._precommit_compile_cache = None
+            self._commit_precommit_compile_cache(_load_token)
         logger.info(
             "video.loaded: %s (%s, modular diffusers, speed=%s%s, transformer_quant=%s, "
             "text_encoder_quant=%s)",
