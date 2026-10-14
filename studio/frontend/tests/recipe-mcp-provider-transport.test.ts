@@ -14,8 +14,11 @@ const { importRecipePayload } = await import(
 const { buildRecipePayload } = await import(
   "../src/features/recipe-studio/utils/payload/build-payload.ts"
 );
+const { toApiProvider } = await import(
+  "../src/features/recipe-studio/dialogs/tool-profile/helpers.ts"
+);
 
-function rebuiltProviderType(providerType: string): unknown {
+function rebuiltProviderTypes(providerType: string): unknown[] {
   const recipe = {
     recipe: {
       model_providers: [
@@ -69,11 +72,21 @@ function rebuiltProviderType(providerType: string): unknown {
     unknown
   >[];
   assert.equal(providers.length, 1);
-  return providers[0].provider_type;
+  const toolConfig = Object.values(configs).find(
+    (config) => config.kind === "tool_config",
+  );
+  assert.ok(toolConfig?.kind === "tool_config");
+  return [
+    providers[0].provider_type,
+    toApiProvider(toolConfig.mcp_providers[0]).provider_type,
+  ];
 }
 
-test("an imported MCP provider keeps its transport in the run payload", () => {
+test("an imported MCP provider keeps its transport in the run payload and tool list", () => {
   for (const providerType of ["sse", "streamable_http"]) {
-    assert.equal(rebuiltProviderType(providerType), providerType);
+    assert.deepEqual(rebuiltProviderTypes(providerType), [
+      providerType,
+      providerType,
+    ]);
   }
 });
