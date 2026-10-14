@@ -1198,21 +1198,19 @@ def _decode_audio_bounded(audio: bytes, cancel_event = None):
         with _av_open(av, io.BytesIO(audio)) as container:
             if not container.streams.audio:
                 raise SttAudioDecodeError("Could not decode the audio.")
-            frames = iter(container.decode(audio = 0))
-            while True:
+            for packet in container.demux(audio = 0):
                 try:
-                    frame = next(frames)
-                except StopIteration:
-                    break
+                    frames = packet.decode()
                 except InvalidDataError:
                     continue
-                if cancel_event is not None and cancel_event.is_set():
-                    raise SttTranscriptionCancelledError("Transcription cancelled.")
-                frame.pts = None
-                fifo.write(frame)
-                if fifo.samples >= 500000:
-                    for resampled in resampler.resample(fifo.read()):
-                        write_frame(resampled)
+                for frame in frames:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise SttTranscriptionCancelledError("Transcription cancelled.")
+                    frame.pts = None
+                    fifo.write(frame)
+                    if fifo.samples >= 500000:
+                        for resampled in resampler.resample(fifo.read()):
+                            write_frame(resampled)
             if fifo.samples > 0:
                 for resampled in resampler.resample(fifo.read()):
                     write_frame(resampled)
