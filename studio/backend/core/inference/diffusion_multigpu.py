@@ -118,9 +118,25 @@ def make_selection(
     if primary is None or multigpu_mode() == "off":
         return None
     others = tuple(dict.fromkeys(int(o) for o in (ordinals or ()) if int(o) != int(primary)))
+    # The load dtype and the device-specific patches are resolved for the primary (bf16 only from Ampere, FP8 kernels
+    # from Ada): a card of a lower compute capability may not run them, so it takes no component.
+    need = _capability(int(primary))
+    if need is not None:
+        others = tuple(o for o in others if (_capability(o) or need) >= need)
     if not others:
         return None
     return MultiGpuSelection(primary = int(primary), secondaries = others)
+
+
+def _capability(ordinal: int) -> Optional[tuple[int, int]]:
+    """``(major, minor)`` CUDA compute capability of ``ordinal``, None when it cannot be read."""
+    try:
+        import torch
+
+        major, minor = torch.cuda.get_device_capability(int(ordinal))
+        return int(major), int(minor)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 @contextlib.contextmanager

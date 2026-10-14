@@ -1313,3 +1313,15 @@ def test_generate_guard_checks_the_vae_card(monkeypatch):
     seen.clear()
     assert D._guard_vae_card(pipe, target, {"device_memory": "card0-free"}, None, None) == (None, False)
     assert seen == []
+
+
+def test_secondary_of_lower_compute_capability_takes_no_component(monkeypatch):
+    caps = {0: (8, 9), 1: (7, 5), 2: (8, 9), 3: (9, 0)}
+    monkeypatch.setattr(mg, "_capability", lambda o: caps.get(int(o)))
+    # an Ada primary resolves bf16 / FP8 for itself: the Turing card is dropped, equal or newer cards stay
+    assert mg.make_selection(0, [0, 1, 2, 3]) == mg.MultiGpuSelection(primary = 0, secondaries = (2, 3))
+    assert mg.make_selection(0, [0, 1]) is None
+    # an older primary may use a newer secondary; an unreadable capability keeps today's behaviour
+    assert mg.make_selection(1, [1, 0]) == mg.MultiGpuSelection(primary = 1, secondaries = (0,))
+    assert mg.make_selection(0, [0, 7]) == mg.MultiGpuSelection(primary = 0, secondaries = (7,))
+
