@@ -1098,6 +1098,30 @@ def _read_preview_rows_from_multi_files(
     )
 
 
+def _require_own_seed_source(dataset_name: str) -> None:
+    """load_dataset also reads a local folder, its dataset card's data_files and any links in it, and a
+    check before the read cannot pin what the read opens. A managed account previews Hub ids only, as
+    the UI does; its own files go through /seed/inspect-upload."""
+    if not managed_account():
+        return
+    parts = dataset_name.split("/")
+    hub_id = len(parts) == 2 and all(
+        part not in {"", ".", ".."} and all(c.isalnum() or c in "-_." for c in part)
+        for part in parts
+    )
+    if hub_id:
+        # Only a well-formed id reaches the filesystem: a UNC name would start SMB auth on Windows.
+        try:
+            hub_id = not Path(dataset_name).expanduser().exists()
+        except (ValueError, RuntimeError, OSError):
+            hub_id = False
+    if not hub_id:
+        raise HTTPException(
+            status_code = 403,
+            detail = "dataset_name must be a Hugging Face repo id like org/repo",
+        )
+
+
 @router.post("/seed/inspect", response_model = SeedInspectResponse)
 def inspect_seed_dataset(
     payload: SeedInspectRequest, allow_ambient_token: bool = Depends(allow_ambient_hf_token)
@@ -1108,6 +1132,7 @@ def inspect_seed_dataset(
             status_code = 400,
             detail = "dataset_name must be a Hugging Face repo id like org/repo",
         )
+    _require_own_seed_source(dataset_name)
 
     split = _normalize_optional_text(payload.split) or DEFAULT_SPLIT
     subset = _normalize_optional_text(payload.subset)

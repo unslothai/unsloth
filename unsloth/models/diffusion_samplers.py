@@ -12,13 +12,17 @@ import math
 import torch
 import torch.nn.functional as F
 
+from .diffusion_infer import (
+    BlockHead,
+    DiffusionGenerationCancelled,
+    host_synced_moe,
+    inference_compile,
+    make_progress,
+    resolve_compile,
+)
 from .diffusion_profiles import resolve_diffusion_profile, unwrap_diffusion_model
 
 __all__ = ["DiffusionGenerationCancelled", "generate_text", "diffusion_profile_name"]
-
-
-class DiffusionGenerationCancelled(RuntimeError):
-    """Raised out of generate_text when stop_callback() returned True mid-generation."""
 
 
 _SAMPLERS = {}
@@ -164,55 +168,76 @@ def _llada_sample(
     eos_ids,
     remasking = "low_confidence",
     eos_early_stop = True,
+    progress = None,
+    compile_mode = None,
     **unused,
 ):
     """Semi-autoregressive low-confidence remasking (LLaDA generate.py, also LLaDA-MoE's model card):
-    blocks of `block_length` masks, a linear schedule unmasking the most confident predictions each step."""
+    blocks of `block_length` masks, a linear schedule unmasking the most confident predictions each step.
+
+    The backbone still sees the whole canvas (bidirectional), but only the active block is projected to the
+    vocabulary; everything outside it scored -inf in the reference, so the picks are the same."""
     block_length = int(block_length or 32)
     gen_length = _round_up(max_new_tokens, block_length)
     num_blocks = gen_length // block_length
     steps = _round_up(int(steps or gen_length), num_blocks)
     steps_per_block = steps // num_blocks
     batch, prompt_length = input_ids.shape
-    x = torch.full(
-        (batch, prompt_length + gen_length), mask_id, dtype = torch.long, device = input_ids.device
-    )
+    total_length = prompt_length + gen_length
+    x = torch.full((batch, total_length), mask_id, dtype = torch.long, device = input_ids.device)
     x[:, :prompt_length] = input_ids
-    for block in range(num_blocks):
-        start = prompt_length + block * block_length
-        end = start + block_length
-        remaining = (x[:, start:end] == mask_id).sum(dim = 1, keepdim = True)
-        schedule = remaining // steps_per_block + (
-            torch.arange(steps_per_block, device = x.device)[None, :] < remaining % steps_per_block
-        )
-        for step in range(steps_per_block):
-            mask_index = x == mask_id
-            logits = base(x).logits
-            if temperature > 0:
-                # Gumbel-max in float64: low precision noise hurts MDM generation quality (arXiv:2409.02908).
-                noisy = logits.to(torch.float64)
-                noisy = noisy.exp() / (-torch.log(torch.rand_like(noisy))) ** temperature
-            else:
-                noisy = logits
-            x0 = noisy.argmax(dim = -1)
-            if remasking == "low_confidence":
-                probs = F.softmax(logits, dim = -1)
-                x0_p = probs.gather(-1, x0.unsqueeze(-1)).squeeze(-1)
-            elif remasking == "random":
-                x0_p = torch.rand(x0.shape, device = x0.device)
-            else:
-                raise ValueError(f"Unsloth: unknown LLaDA remasking {remasking!r}.")
-            x0_p[:, end:] = -math.inf
-            x0 = torch.where(mask_index, x0, x)
-            confidence = torch.where(mask_index, x0_p, -math.inf)
-            transfer = torch.zeros_like(x0, dtype = torch.bool)
-            for row in range(batch):
-                _, index = torch.topk(confidence[row], k = int(schedule[row, step]))
-                transfer[row, index] = True
-            x[transfer] = x0[transfer]
-        if eos_early_stop and _contains_any(x[:, prompt_length:end], eos_ids):
-            # Later blocks never change earlier ones, so stopping here only drops text after the EOS.
-            return x[:, prompt_length:end]
+    head = BlockHead(
+        base,
+        cuda_graphs = compile_mode in ("reduce-overhead", "cudagraphs"),
+        graphs = compile_mode == "graphs" and not host_synced_moe(base),
+    )
+    # Each block starts fully masked, so the reference's per-row schedule is the same host-side list for every row.
+    base_count, extra = divmod(block_length, steps_per_block)
+    schedule = [base_count + (step < extra) for step in range(steps_per_block)]
+    with inference_compile(base, compile_mode):
+        for block in range(num_blocks):
+            start = prompt_length + block * block_length
+            end = start + block_length
+            for step in range(steps_per_block):
+                if progress is not None:
+                    progress.check()
+                window = x[:, start:end]
+                mask_index = window == mask_id
+                logits = head.logits(x, start, end)
+                if temperature > 0:
+                    # Gumbel-max in float64: low precision noise hurts MDM generation quality (arXiv:2409.02908).
+                    # Drawn for the active block only, not the [B, L, V] canvas, so a seed's samples differ from
+                    # the reference's while the distribution is the same.
+                    noisy = logits.to(torch.float64)
+                    noisy = noisy.exp() / (-torch.log(torch.rand_like(noisy))) ** temperature
+                else:
+                    noisy = logits
+                x0 = noisy.argmax(dim = -1)
+                if remasking == "low_confidence":
+                    x0_p = F.softmax(logits, dim = -1).gather(-1, x0.unsqueeze(-1)).squeeze(-1)
+                elif remasking == "random":
+                    # The reference draws over the whole canvas; slicing keeps its RNG stream (it is only [B, L]).
+                    x0_p = torch.rand((batch, total_length), device = x0.device)[:, start:end]
+                else:
+                    raise ValueError(f"Unsloth: unknown LLaDA remasking {remasking!r}.")
+                # Full-length row as in the reference, so topk sees identical input and breaks ties identically.
+                confidence = torch.full(
+                    (batch, total_length), -math.inf, dtype = x0_p.dtype, device = x.device
+                )
+                confidence[:, start:end] = torch.where(mask_index, x0_p, -math.inf)
+                transfer = torch.zeros_like(x, dtype = torch.bool)
+                for row in range(batch):
+                    transfer[row, torch.topk(confidence[row], k = schedule[step]).indices] = True
+                x[:, start:end] = torch.where(transfer[:, start:end] & mask_index, x0, window)
+                if progress is not None:
+                    progress.frame(block, step, steps_per_block, x[:, prompt_length:])
+            if progress is not None:
+                progress.frame(
+                    block, steps_per_block, steps_per_block, x[:, prompt_length:], force = True
+                )
+            if eos_early_stop and _contains_any(x[:, prompt_length:end], eos_ids):
+                # Later blocks never change earlier ones, so stopping here only drops text after the EOS.
+                return x[:, prompt_length:end]
     return x[:, prompt_length:]
 
 
@@ -315,15 +340,28 @@ def _sdar_sample(base, tokenizer, input_ids, attention_mask, *, steps, block_len
     """SDAR model card / generate.py defaults: block 4, steps = block length, threshold 0.85."""
     block_length = int(block_length or getattr(base.config, "block_size", None) or 4)
     kwargs.setdefault("confidence_threshold", 0.85)
-    return _block_sample(
+    import os
+
+    if os.environ.get("UNSLOTH_DIFFUSION_KV_CACHE", "1") == "0":
+        return _block_sample(
+            base,
+            tokenizer,
+            input_ids,
+            attention_mask,
+            steps = int(steps or block_length),
+            block_length = block_length,
+            mask_format = "bool",
+            **kwargs,
+        )
+    from .diffusion_infer_block import _CACHED_BLOCK_KWARGS, cached_block_sample
+
+    return cached_block_sample(
         base,
-        tokenizer,
         input_ids,
-        attention_mask,
+        family = "sdar",
         steps = int(steps or block_length),
         block_length = block_length,
-        mask_format = "bool",
-        **kwargs,
+        **{k: v for k, v in kwargs.items() if k in _CACHED_BLOCK_KWARGS},
     )
 
 
@@ -343,15 +381,34 @@ def _llada2_sample(
     """LLaDA2 model card defaults: block 32, steps 32, threshold 0.95. Its own generate builds a bfloat16 mask
     (fails on fp16 / fp32 weights) and samples even at temperature 0, so the shared block sampler runs instead."""
     kwargs.setdefault("confidence_threshold", threshold)
-    return _block_sample(
+    from .remote_moe_shims import prepare_remote_moe_for_inference
+
+    # Eval routing without a per-layer host sync (no-op once patched or for non-LLaDA2 MoE code).
+    prepare_remote_moe_for_inference(base)
+    import os
+
+    if os.environ.get("UNSLOTH_DIFFUSION_KV_CACHE", "1") == "0":
+        return _block_sample(
+            base,
+            tokenizer,
+            input_ids,
+            attention_mask,
+            steps = int(steps or 32),
+            block_length = int(block_length or 32),
+            mask_format = "additive",
+            **kwargs,
+        )
+    from .diffusion_infer_block import _CACHED_BLOCK_KWARGS, cached_block_sample
+
+    return cached_block_sample(
         base,
-        tokenizer,
         input_ids,
-        attention_mask,
+        family = "llada2",
         steps = int(steps or 32),
         block_length = int(block_length or 32),
-        mask_format = "additive",
-        **kwargs,
+        # generate_text's compile: "auto" / True replay the block forward from a CUDA Graph, False stays eager.
+        cuda_graphs = kwargs.get("compile_mode", "graphs") == "graphs",
+        **{k: v for k, v in kwargs.items() if k in _CACHED_BLOCK_KWARGS},
     )
 
 
@@ -375,21 +432,72 @@ def _dream_sample(
     **unused,
 ):
     """Dream's own diffusion_generate (model card: steps = max_new_tokens, alg "entropy", alg_temp 0)."""
+    from .diffusion_infer_block import _Frames
+    from .diffusion_infer_dream import dream_fast_sample, dream_fast_supported
+
     if top_p is None and temperature > 0:
         top_p = 0.95
+    steps = int(steps or max_new_tokens)
+    on_frame, check_stop = unused.get("on_frame"), unused.get("check_stop")
+    progress = unused.get("progress")
+    prompt_length = input_ids.shape[1]
+    fast_ran = False
+    # diffusion_generate reads eps and top_k from the model's generation_config: the fast path must too.
+    config = getattr(base, "generation_config", None)
+    eps = getattr(config, "eps", None) or 1e-3
+    if dream_fast_supported(
+        input_ids,
+        attention_mask,
+        mask_id,
+        temperature,
+        top_p,
+        getattr(config, "top_k", None),
+        alg,
+        alg_temp,
+    ):
+        out = dream_fast_sample(
+            base,
+            input_ids,
+            max_new_tokens = max_new_tokens,
+            steps = steps,
+            mask_id = mask_id,
+            alg = alg,
+            eps = eps,
+            on_frame = on_frame,
+            check_stop = check_stop,
+            progress = progress,
+        )
+        # None: the model proposed its own mask token, which changes the reference's schedule.
+        if out is not None:
+            return out[:, prompt_length:]
+        fast_ran = True
+    frames = _Frames(on_frame, check_stop, progress = progress)
+
+    def hook(step, x, logits):
+        if step is not None and fast_ran and step + 1 < steps:
+            # The fast pass already streamed steps 0..steps - 1: only the final canvas, so steps never go back.
+            if check_stop is not None:
+                check_stop()
+        elif step is not None:
+            frames.step(
+                x, prompt_length, x.shape[1], 0, step + 1, steps, mask_id, step + 1 == steps
+            )
+        return x
+
     out = base.diffusion_generate(
         input_ids,
         attention_mask = None if attention_mask is None else attention_mask.to(input_ids.device),
         max_new_tokens = max_new_tokens,
-        steps = int(steps or max_new_tokens),
+        steps = steps,
         temperature = temperature,
         top_p = top_p,
         alg = alg,
         alg_temp = alg_temp,
         output_history = False,
         return_dict_in_generate = True,
+        generation_tokens_hook_func = hook,
     )
-    return out.sequences[:, input_ids.shape[1] :]
+    return out.sequences[:, prompt_length:]
 
 
 @_register("nemotron_labs_diffusion")
@@ -411,15 +519,53 @@ def _nemotron_sample(
 ):
     """Nemotron-Labs-Diffusion's own generate: block diffusion with a causal context between blocks."""
     block_length = int(block_length or getattr(base.config, "block_size", None) or 32)
-    output_ids, _nfe = base.generate(
-        input_ids,
-        max_new_tokens = _round_up(max_new_tokens, block_length),
-        block_length = block_length,
-        threshold = threshold,
-        temperature = temperature,
-        eos_token_id = eos_ids[0] if eos_ids else None,
-    )
+    progress = unused.get("progress")
+    with _nemotron_frames(base, progress, block_length, int(max_new_tokens), mask_id):
+        output_ids, _nfe = base.generate(
+            input_ids,
+            max_new_tokens = _round_up(max_new_tokens, block_length),
+            block_length = block_length,
+            threshold = threshold,
+            temperature = temperature,
+            eos_token_id = eos_ids[0] if eos_ids else None,
+        )
     return output_ids[:, input_ids.shape[1] :]
+
+
+@contextlib.contextmanager
+def _nemotron_frames(base, progress, block_length, budget, mask_id):
+    """Canvas frames from Nemotron's own generate without touching its loop. It makes three kinds of forward:
+    the prompt prefill (no cache yet), a denoising step on the active block (cache, use_cache=False) and a
+    commit of the finished block (cache, use_cache=True). A pre-hook reads which one from the kwargs."""
+    if progress is None or progress.on_frame is None:
+        yield
+        return
+    committed, state = [], {"step": 0}
+
+    def canvas(block):
+        done = sum(part.shape[1] for part in committed) + block.shape[1]
+        pad = block.new_full((block.shape[0], max(budget - done, 0)), mask_id)
+        return torch.cat([*committed, block, pad], dim = 1)
+
+    def hook(module, args, kwargs):
+        ids = args[0] if args else kwargs.get("input_ids")
+        if kwargs.get("past_key_values") is None or ids is None or ids.shape[1] != block_length:
+            return None
+        if kwargs.get("use_cache"):
+            # The finished block: one block-end frame, then it joins the committed prefix.
+            progress.frame(len(committed), block_length, block_length, canvas(ids), force = True)
+            committed.append(ids.clone())
+            state["step"] = 0
+        else:
+            progress.frame(len(committed), state["step"], block_length, canvas(ids))
+            state["step"] += 1
+        return None
+
+    handle = base.register_forward_pre_hook(hook, with_kwargs = True)
+    try:
+        yield
+    finally:
+        handle.remove()
 
 
 @_register("diffusion_gemma")
@@ -509,12 +655,25 @@ def generate_text(
     temperature = 0.0,
     stop_callback = None,
     seed = None,
+    on_frame = None,
+    frame_interval_s = 0.1,
+    compile = "auto",
     **kwargs,
 ):
     """Decode one completion with the model family's diffusion sampler and return it as text (prompt
     removed, cut at the first EOS, special tokens skipped). stop_callback() is checked before every forward;
     returning True raises DiffusionGenerationCancelled. `steps` / `block_length` default to each family's
-    published settings; extra kwargs go to the family sampler (e.g. remasking, threshold, top_p, alg)."""
+    published settings; extra kwargs go to the family sampler (e.g. remasking, threshold, top_p, alg).
+
+    on_frame(frame) receives the canvas while it denoises: {"block", "step", "total", "tokens" (the generated
+    region, `max_new_tokens` ids, unresolved slots = "mask_id"), "mask_id"}, at most once per
+    `frame_interval_s` plus once per finished block, always on this thread and never after return. Every
+    family streams frames except DiffusionGemma (transformers' own generate) and the
+    UNSLOTH_DIFFUSION_KV_CACHE=0 block fallback; stop_callback works for all of them.
+    `compile`: "auto" (default; CUDA Graph replay of the unchanged forward where it is exact and faster: the
+    LLaDA backbone and LLaDA2's cached block), True / "graphs" (the same), False (eager). A torch.compile mode
+    such as "reduce-overhead" compiles the LLaDA / LLaDA-MoE decoder layers (fused kernels, so greedy output
+    can drift); the other families run their own fastest exact path and ignore it."""
     name = diffusion_profile_name(model)
     sampler = _SAMPLERS.get(name)
     if sampler is None:
@@ -535,22 +694,36 @@ def generate_text(
         if seed is not None
         else contextlib.nullcontext()
     )
-    with rng, _eval_mode(base), _restore_attention_modes(base), _cancellation(base, stop_callback):
-        if seed is not None:
-            torch.manual_seed(int(seed))
-        generated = sampler(
-            base,
-            tokenizer,
-            input_ids,
-            attention_mask,
-            max_new_tokens = int(max_new_tokens),
-            steps = steps,
-            block_length = block_length,
-            temperature = float(temperature or 0.0),
-            mask_id = mask_id,
-            eos_ids = eos_ids,
-            **kwargs,
-        )
+    progress = make_progress(
+        on_frame, stop_callback, frame_interval_s, mask_id, int(max_new_tokens)
+    )
+    try:
+        with (
+            rng,
+            _eval_mode(base),
+            _restore_attention_modes(base),
+            _cancellation(base, stop_callback),
+        ):
+            if seed is not None:
+                torch.manual_seed(int(seed))
+            generated = sampler(
+                base,
+                tokenizer,
+                input_ids,
+                attention_mask,
+                max_new_tokens = int(max_new_tokens),
+                steps = steps,
+                block_length = block_length,
+                temperature = float(temperature or 0.0),
+                mask_id = mask_id,
+                eos_ids = eos_ids,
+                progress = progress,
+                check_stop = progress.check,
+                compile_mode = resolve_compile(compile, device),
+                **kwargs,
+            )
+    finally:
+        progress.close()
     tokens = generated[0][: int(max_new_tokens)].tolist()
     for index, token in enumerate(tokens):
         if token in eos_ids:

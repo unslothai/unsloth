@@ -261,6 +261,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "train_split": values.get("train_split", "train"),
         "eval_split": values.get("eval_split"),
         "eval_steps": values.get("eval_steps", 0.00),
+        "early_stopping_patience": values.get("early_stopping_patience", 0),
         "dataset_streaming": values.get("dataset_streaming", False),
         "dataset_slice_start": values.get("dataset_slice_start"),
         "dataset_slice_end": values.get("dataset_slice_end"),

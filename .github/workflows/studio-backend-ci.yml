@@ -101,9 +101,17 @@ on:
       - '.github/workflows/security-audit.yml'
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a pending run
-  # before it starts. See the note below for what this is buying.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # One group per workflow, ref and event. On a PR branch a new push cancels the old run.
+  # On main cancel-in-progress is false, so a RUNNING run always finishes, and GitHub keeps
+  # one PENDING run per group, replaced by each newer push: a merge burst runs the commit
+  # already executing plus the tip, never a commit in between. That is the intended trade.
+  # A group per commit ran every workflow on every main commit (about 550 runner-minutes
+  # each at 100-160 commits a day), which is more than the org's runner pool supplies, so
+  # every queue grew for hours. Commits in the middle of a burst were tested as PRs, the
+  # tip's tree contains them, and a red tip is bisected with workflow_dispatch. The event
+  # keeps a nightly or a dispatch from being replaced by a push. The contract is enforced
+  # by tests/studio/test_main_runs_survive_merge_bursts.py.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
