@@ -47278,6 +47278,7 @@ async def load_diffusion_model_gated(
         )
         if pending_name == ENGINE_SD_CPP and vulkan_on_cpu_torch:
             needs_gpu = True
+
         # A GPU torch whose GPU builds have all failed here runs the managed CPU bundle: no claim.
         def _runs_cpu_rung() -> bool:
             try:
