@@ -3540,6 +3540,9 @@ export const zhCN = {
       evalSteps: "评估步数",
       evalStepsTooltip:
         "评估之间间隔占总训练步数的比例（0-1）。设为 0 则禁用评估。例如 0.01 = 每 1% 步评估一次。",
+      earlyStoppingPatience: "早停耐心值",
+      earlyStoppingPatienceTooltip:
+        "连续这么多次评估的评估损失都没有降低时停止训练，并保留最佳评估时的权重。需要开启评估（评估步数大于 0）。设为 0 则禁用。",
       seed: "随机种子",
       seedTooltip: "用于复现的随机种子。",
       offloadLayers: "卸载层",

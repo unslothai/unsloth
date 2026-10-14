@@ -3677,6 +3677,9 @@ export const es = {
       evalSteps: "Pasos entre evaluaciones",
       evalStepsTooltip:
         "Fracción del total de pasos de entrenamiento entre evaluaciones (0-1). Pon 0 para desactivar la evaluación. P. ej. 0.01 = evaluar cada 1 % de los pasos.",
+      earlyStoppingPatience: "Paciencia de parada temprana",
+      earlyStoppingPatienceTooltip:
+        "Detiene el entrenamiento tras este número de evaluaciones seguidas sin una pérdida de evaluación menor y conserva los pesos de la mejor evaluación. Requiere evaluación (pasos entre evaluaciones mayor que 0). 0 para desactivar.",
       seed: "Semilla",
       seedTooltip: "Semilla aleatoria para reproducibilidad.",
       offloadLayers: "Descargar capas",

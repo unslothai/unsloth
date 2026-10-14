@@ -3614,6 +3614,9 @@ export const ko = {
       evalSteps: "평가 스텝",
       evalStepsTooltip:
         "평가 사이의 간격을 전체 학습 스텝 수의 비율로 나타냅니다(0-1). 0으로 설정하면 평가가 비활성화됩니다. 예: 0.01 = 스텝의 1%마다 평가.",
+      earlyStoppingPatience: "조기 종료 인내 횟수",
+      earlyStoppingPatienceTooltip:
+        "평가 손실이 낮아지지 않는 평가가 이 횟수만큼 연속되면 학습을 중단하고 가장 좋았던 평가 시점의 가중치를 유지합니다. 평가가 필요합니다 (평가 스텝이 0보다 커야 함). 0이면 비활성화됩니다.",
       seed: "시드",
       seedTooltip: "재현성을 위한 랜덤 시드입니다.",
       offloadLayers: "레이어 오프로드",

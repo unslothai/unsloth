@@ -3729,6 +3729,9 @@ export const he = {
       evalSteps: "צעדי הערכה (Eval Steps)",
       evalStepsTooltip:
         "חלק מסך כל צעדי האימון בין הערכות (0-1). הגדר 0 כדי להשבית הערכה. לדוגמה 0.01 = הערכה בכל 1% מהצעדים.",
+      earlyStoppingPatience: "סבלנות לעצירה מוקדמת (Early Stopping)",
+      earlyStoppingPatienceTooltip:
+        "עוצר את האימון אחרי מספר כזה של הערכות ברצף בלי ירידה ב-eval loss, ושומר את המשקלים מההערכה הטובה ביותר. דורש הערכה (צעדי הערכה מעל 0). 0 לביטול.",
       seed: "גרעין אקראיות (Seed)",
       seedTooltip: "גרעין אקראי לשחזור מדויק של תוצאות.",
       offloadLayers: "העברת שכבות לזיכרון המערכת",

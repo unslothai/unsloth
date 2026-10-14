@@ -3685,6 +3685,9 @@ export const it = {
       evalSteps: "Step fra le valutazioni",
       evalStepsTooltip:
         "Frazione degli step totali fra due valutazioni (0-1). Imposta 0 per disattivare la valutazione. Per esempio 0,01 = valuta ogni 1% degli step.",
+      earlyStoppingPatience: "Pazienza early stopping",
+      earlyStoppingPatienceTooltip:
+        "Interrompe l'addestramento dopo questo numero di valutazioni consecutive senza una loss di valutazione più bassa e mantiene i pesi della valutazione migliore. Richiede la valutazione (step fra le valutazioni maggiore di 0). 0 per disattivare.",
       seed: "Seed",
       seedTooltip: "Seed casuale per la riproducibilità.",
       offloadLayers: "Scarica livelli",

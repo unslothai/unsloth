@@ -3692,6 +3692,9 @@ export const fr = {
       evalSteps: "Étapes d'évaluation",
       evalStepsTooltip:
         "Fraction du nombre total d'étapes d'entraînement entre les évaluations (0-1). Définissez 0 pour désactiver l'évaluation. Ex. 0,01 = évaluer tous les 1 % d'étapes.",
+      earlyStoppingPatience: "Patience d'arrêt anticipé",
+      earlyStoppingPatienceTooltip:
+        "Arrête l'entraînement après ce nombre d'évaluations consécutives sans perte d'évaluation plus basse, et conserve les poids de la meilleure évaluation. Nécessite l'évaluation (étapes d'évaluation supérieures à 0). 0 pour désactiver.",
       seed: "Graine",
       seedTooltip: "Graine aléatoire pour la reproductibilité.",
       offloadLayers: "Décharger des couches",
