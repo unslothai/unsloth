@@ -300,6 +300,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization:\u00a0Basic\u2009abcdefghijklmnop why",
         "Authorization: Digest response\u00a0=\u00a0abcdefghijklmnop why",
         'Authorization: ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="] why',
+        'headers.set("Authorization", ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="]) why',
+        "Authorization: [‘Basic qrstuvwxyzabcdef==’, ‘Basic abcdefghijklmnop==’] why",
         "Authorization: Digest response=abcdefghijklmnop; server echoed abcdefghijklmnop",
         'headers["Authorization"] = ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="] why',
         '{"Authorization": [\n    "Basic abcdefghijklmnop=="\n  ]} why',
