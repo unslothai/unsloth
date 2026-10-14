@@ -961,9 +961,66 @@ def toolchain_key(index: int) -> str:
             f"torch{torch.__version__}",
             f"triton{triton.__version__}",
             f"cuda{torch.version.cuda}",
+            f"driver{_driver_version()}",
             hashlib.sha1(src.encode("utf-8")).hexdigest()[:12],
         )
     )
+
+
+@lru_cache(maxsize = 1)
+def _driver_version() -> str:
+    """The NVIDIA driver build (NVML), else the CUDA driver API version: it compiles Triton's PTX, so timings move."""
+    import ctypes
+
+    for lib in ("libnvidia-ml.so.1", "nvml.dll"):
+        try:
+            nvml = ctypes.CDLL(lib)
+            if nvml.nvmlInit_v2() != 0:
+                continue
+            buf = ctypes.create_string_buffer(96)
+            ok = nvml.nvmlSystemGetDriverVersion(buf, 96) == 0
+            nvml.nvmlShutdown()
+            if ok:
+                return buf.value.decode()
+        except Exception:  # noqa: BLE001
+            continue
+    for lib in ("libcuda.so.1", "nvcuda.dll"):
+        try:
+            v = ctypes.c_int(0)
+            if ctypes.CDLL(lib).cuDriverGetVersion(ctypes.byref(v)) == 0:
+                return f"api{v.value}"
+        except Exception:  # noqa: BLE001
+            continue
+    return "unknown"
+
+
+def plan_identity(transformer: Any) -> Optional[str]:
+    """The cuBLAS slots the latency gate holds for this transformer's shapes on the current device, or None (all
+    fused / gate off). Those slots trace the stock graph instead of the op, so the compile cache keys on them. No
+    timing: the in-memory plan, else the stored file."""
+    try:
+        import hashlib
+
+        import torch
+
+        if int8_gemm_mode() == "off" or not autotune_enabled() or not torch.cuda.is_available():
+            return None
+        shapes = {
+            (int(m.out_features), int(m.in_features))
+            for m in transformer.modules()
+            if _eligible(m) is not None
+        }
+        if not shapes:
+            return None
+        index = torch.cuda.current_device()
+        key = toolchain_key(index) + ("" if tiles_enabled() else "|tiles0")
+        plan = {**_load_plan(_tune_path(key), key), **_DEVICE_PLAN.get(index, {})}
+        slots = sorted(s for s, c in plan.items() if c == _CUBLAS and s[:2] in shapes)
+        if not slots:
+            return None
+        return hashlib.sha1(repr(slots).encode("utf-8")).hexdigest()[:16]
+    except Exception:  # noqa: BLE001 - unreadable: keyed as all fused
+        return None
 
 
 def _tune_path(key: str) -> Optional[str]:
@@ -1005,6 +1062,15 @@ def _save_plan(path: Optional[str], key: str, plan: dict, timings: dict) -> None
         return
     try:
         os.makedirs(os.path.dirname(path), exist_ok = True)
+        # merge what another process stored since our load, so concurrent tunes do not drop each other's slots
+        plan = {**_load_plan(path, key), **plan}
+        try:
+            with open(path, encoding = "utf-8") as f:
+                old = json.load(f)
+            if old.get("key") == key:
+                timings = {**old.get("ms", {}), **timings}
+        except Exception:  # noqa: BLE001
+            pass
         data = {
             "key": key,
             "plan": {

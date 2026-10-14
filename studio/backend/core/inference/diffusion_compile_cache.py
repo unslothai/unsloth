@@ -501,6 +501,12 @@ def model_fingerprint(
     switches = graph_switches()
     if switches:
         fp["switches"] = switches
+    # The int8 latency gate's cuBLAS slots trace the stock graph in place of the fused op. Added only when present.
+    if transformer is not None:
+        from .diffusion_int8_gemm import plan_identity
+        int8_cublas = plan_identity(transformer)
+        if int8_cublas:
+            fp["int8_gemm_cublas"] = int8_cublas
     # Added only when armed, so other bundles keep their key.
     try:
         from .diffusion_dynamic_text import fingerprint as _dynamic_text_fp
