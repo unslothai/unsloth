@@ -81,7 +81,9 @@ BROWSER_NETWORK_JS = r"""
         const bodySize = (body) => typeof body === "string" ? body.length * 3
           : body instanceof Blob ? body.size
           : body instanceof ArrayBuffer || ArrayBuffer.isView(body) ? body.byteLength
-          : body instanceof FormData ? [...body.values()].reduce((total, value) => total + (typeof value === "string" ? value.length * 3 : value.size), 0)
+          // Multipart adds a boundary and headers per entry: 512 bytes each, plus names, is ample.
+          : body instanceof FormData ? [...body.entries()].reduce((total, [name, value]) => total + 512 + name.length * 3
+            + (typeof value === "string" ? value.length * 3 : value.size + (value.name?.length ?? 0) * 3), 0)
           : body instanceof URLSearchParams ? body.toString().length * 3
           : body instanceof Document ? (body.documentElement?.outerHTML?.length ?? 0) * 3
           : 0;
@@ -97,10 +99,29 @@ BROWSER_NETWORK_JS = r"""
             clone: { value: () => asFetched(clone.call(response), url, redirected, type) },
           });
         };
+        // The body of a copy, read only up to the relay's limit: undefined past it, so a large upload
+        // is never buffered whole before it goes to the browser.
+        const readCapped = async (request) => {
+          const reader = request.clone().body?.getReader();
+          if (!reader) return new ArrayBuffer(0);
+          const chunks = [];
+          let size = 0;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            size += value.byteLength;
+            if (size > MAX_RELAY_BODY) { reader.cancel().catch(() => {}); return undefined; }
+            chunks.push(value);
+          }
+          const bytes = new Uint8Array(size);
+          let at = 0;
+          for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.byteLength; }
+          return bytes.buffer;
+        };
         const relayFetch = async (request) => {
-          const body = bodiless(request.method) ? null : await request.clone().arrayBuffer();
+          const body = bodiless(request.method) ? null : await readCapped(request);
           // Past the relay's body limit a write stays the browser's, as before relaying existed.
-          if (body !== null && body.byteLength > MAX_RELAY_BODY) return nativeFetch(request);
+          if (body === undefined) return nativeFetch(request);
           const reply = await relay(
             { url: request.url, method: request.method, headers: [...request.headers], body, redirect: request.redirect, integrity: request.integrity },
             request.signal,

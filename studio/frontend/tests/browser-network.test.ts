@@ -330,6 +330,33 @@ test("a write past the panel's body limit stays the browser's, as before relayin
   form.send(new URLSearchParams({ q: "x".repeat(400 * 1024) }));
   assert.equal(t.posted.length, 0);
   assert.equal(form.calls.at(-1)?.[0], "send");
+  // Empty values, but each multipart entry carries a boundary and headers.
+  const fields = new FormData();
+  for (let i = 0; i < 3000; i++) fields.append("f" + i, "");
+  const multipart = new t.window.XMLHttpRequest() as PageXHR;
+  multipart.open("POST", "/upload");
+  multipart.send(fields);
+  assert.equal(t.posted.length, 0);
+  assert.equal(multipart.calls.at(-1)?.[0], "send");
+});
+
+test("an upload past the limit is read only up to it before going to the browser", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, () => true);
+  let pulled = 0;
+  const stream = new ReadableStream({
+    pull(controller) {
+      pulled++;
+      controller.enqueue(new Uint8Array(64 * 1024));
+      if (pulled >= 64) controller.close();
+    },
+  });
+  const write = t.window.fetch("/upload", { method: "POST", body: stream, duplex: "half" } as RequestInit);
+  for (let i = 0; i < 50 && t.native.length === 0; i++) await tick();
+  assert.equal(t.posted.length, 0);
+  assert.equal(t.native.length, 1);
+  assert.ok(pulled < 32, `read ${pulled} of 64 chunks`);
+  t.answer(0);
+  await write;
 });
 
 test("an XHR GET the browser can read loads the browser's answer, with no panel request", async () => {
