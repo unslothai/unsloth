@@ -35339,6 +35339,7 @@ class LlamaCppBackend:
         if not _is_signalable_pid(pid) or not hasattr(os, "getpgid"):
             return None
         from utils.process_lifetime import seconds_since_quit_signal
+
         elapsed = seconds_since_quit_signal()
         try:
             if elapsed is None or os.getpgid(pid) != os.getpgrp():
