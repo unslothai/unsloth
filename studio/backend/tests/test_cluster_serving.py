@@ -714,3 +714,39 @@ def test_dropping_the_cluster_on_a_spark_frees_its_workers_before_the_spark_spli
     monkeypatch.setattr(ss.SparkServing, "before_load", legacy_before_load)
     run(ss.before_load(_request(), 4))
     assert seen == [[1]], "the cluster's workers stop before the two-Spark path plans"
+
+
+def test_a_sidecar_larger_than_the_device_it_loads_on_is_refused():
+    devices = cs.parse_device_list(TWO_LOCAL, ["10.0.0.2:50052"])
+    plan = cs.plan_cluster(220 * GIB, 0, 80 * GIB, devices)
+    assert plan.topology == "refuse" and "CUDA0" in plan.reason
+
+
+def test_the_managed_override_applies_to_json_nodes(monkeypatch, tmp_path):
+    (tmp_path / "cluster.json").write_text(
+        json.dumps({"nodes": [{"host": "10.0.0.2"}, {"host": "10.0.0.3"}]}), encoding = "utf-8"
+    )
+    assert [n.managed for n in cs.load_nodes()] == [False, False]
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    assert [n.managed for n in cs.load_nodes()] == [True, True]
+
+
+def test_manual_gpu_memory_mode_is_left_to_the_caller(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    request = _request(gpu_memory_mode = "manual")
+    assert run(ss.before_load(request, 4)) is request
+    assert "manual" in ss.status()["reason"] and seen == []
+
+
+def test_a_load_that_bypassed_the_planner_clears_the_served_split(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    assert cs.state()._resident
+    run(ss.reconcile_internal_load())
+    state = cs.state()
+    assert state.topology == "single" and state.block == [] and state._resident == {}

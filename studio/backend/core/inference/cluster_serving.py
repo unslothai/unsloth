@@ -26,7 +26,7 @@ import logging
 import os
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
@@ -218,7 +218,10 @@ def load_nodes() -> List[Node]:
         data = json.loads(path.read_text(encoding = "utf-8"))
     except (OSError, ValueError) as exc:
         raise ClusterConfigError(f"{path} could not be read: {exc}") from exc
-    return parse_nodes_json(data)
+    nodes = parse_nodes_json(data)
+    if (os.environ.get(ENV_MANAGED) or "") == "1":
+        nodes = [replace(n, managed = True) for n in nodes]
+    return nodes
 
 
 def parse_device_list(text: str, endpoints: Sequence[str]) -> List[Device]:
@@ -316,7 +319,14 @@ def plan_cluster(
     ordered = remote + local
     budgets = [usable_bytes(d) for d in remote] + local_budgets
     if local:
-        budgets[len(remote)] = max(0.0, budgets[len(remote)] - local_extra_bytes)
+        if local_extra_bytes > budgets[len(remote)]:
+            return ClusterPlan(
+                "refuse",
+                f"the projector / drafter ({local_extra_bytes / _GIB:.1f} GiB) does not fit "
+                f"{local[0].name} ({budgets[len(remote)] / _GIB:.1f} GiB usable), where it loads",
+                need_bytes = need,
+            )
+        budgets[len(remote)] -= local_extra_bytes
     total = sum(budgets)
     if not local and local_extra_bytes > 0:
         return ClusterPlan(
@@ -509,6 +519,9 @@ class ClusterServing:
         if getattr(request, "gpu_ids", None):
             self.topology, self.reason = "single", "an explicit GPU selection replaces placement"
             return request
+        if str(getattr(request, "gpu_memory_mode", "auto") or "auto") == "manual":
+            self.topology, self.reason = "single", "gpu_memory_mode=manual owns placement"
+            return request
         if ss.argv_or_env_rpc(effective):
             self.topology, self.reason = "single", "the caller supplied --rpc; placement is theirs"
             return request
@@ -685,6 +698,12 @@ class ClusterServing:
         if self._pre_load is not None:
             self.topology, self.reason, self.plan, self.block = self._pre_load
             self._pre_load = None
+
+    def forget_served(self) -> None:
+        """A load that bypassed planning replaced the served split; its workers can stay."""
+        self.topology, self.reason = "single", "a load that bypassed the planner replaced the split"
+        self.plan, self.block = None, []
+        self._backend, self._resident = None, {}
 
     async def shutdown(self) -> None:
         for endpoint, process in list(self.workers.items()):

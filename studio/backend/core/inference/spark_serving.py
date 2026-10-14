@@ -3560,6 +3560,10 @@ async def load_failed() -> None:
 
 async def reconcile_internal_load() -> None:
     """Drop a two-node topology before a load that did not come through ``before_load``."""
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None:
+        cluster_serving._STATE.forget_served()
     if _STATE is None or _STATE.attached_backend is None and _STATE.peer_process is None:
         return
     logger.info("spark serving: serving on this node only for a load that bypassed the planner")
