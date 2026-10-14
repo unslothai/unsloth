@@ -160,7 +160,7 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
-    denoiser_quant_label,
+    learned_peak_label,
     applied_plan,
     release_resident_groups,
     resident_group_mib,
@@ -8221,7 +8221,7 @@ class DiffusionBackend:
                         # the learned-peak key: recorded at every completed render, read by later loads
                         pipe._unsloth_peak_identity = (
                             fam.name,
-                            denoiser_quant_label(pipe),
+                            learned_peak_label(pipe, attention_engaged or "native"),
                             effective_speed,
                         )
                     except Exception:  # noqa: BLE001 - recording is optional
@@ -8234,6 +8234,7 @@ class DiffusionBackend:
                             family = fam.name,
                             speed_mode = effective_speed,
                             logger = logger,
+                            attention = attention_engaged or "native",
                         )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
@@ -8245,6 +8246,7 @@ class DiffusionBackend:
                                 effective_speed,
                                 plan.estimates.get("measured_dense_transformer_mib"),
                                 plan.estimates.get("measured_compute_bytes"),
+                                plan.estimates.get("measured_learned_peak_mib"),
                             )
 
                     from .diffusion_qwenimage21_vision import configure_vision_attention
@@ -10374,6 +10376,18 @@ class DiffusionBackend:
             target = target,
         )
         object.__setattr__(state, "attention_backend", attention_engaged)
+        identity = getattr(state.pipe, "_unsloth_peak_identity", None)
+        if isinstance(identity, tuple) and len(identity) == 3:
+            # later renders record under the backend that now runs
+            quant = str(identity[1]).split("|attn:")[0]
+            try:
+                state.pipe._unsloth_peak_identity = (
+                    identity[0],
+                    f"{quant}|attn:{attention_engaged or 'native'}",
+                    identity[2],
+                )
+            except Exception:  # noqa: BLE001 - recording is optional
+                pass
         # Keep the badge in step with the state it describes: the top-level field moved, so leaving `resolved` on the
         # load-time value would make the panel report an attention backend that is no longer the one running.
         if isinstance(state.resolved, dict) and "attention_backend" in state.resolved:

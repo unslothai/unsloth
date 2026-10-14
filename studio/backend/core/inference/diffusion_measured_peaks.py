@@ -132,7 +132,7 @@ def _write(path: Path, data: dict) -> None:
     fd, tmp = tempfile.mkstemp(prefix = ".peaks.", dir = str(path.parent))
     try:
         with os.fdopen(fd, "w") as handle:
-            json.dump(data, handle, indent = 1, sort_keys = True)
+            json.dump(data, handle, indent = 1)  # insertion order is the eviction order
         os.replace(tmp, path)
     except BaseException:
         try:
@@ -155,7 +155,8 @@ def record(
     peak_mib: int,
     device_name: Optional[str] = None,
 ) -> bool:
-    """Keep the max peak seen for this key and bucket. Returns True when the stored value rose."""
+    """Keep the max peak seen for this key and bucket, scaled to the bucket's ceiling so a smaller render in the bucket
+    still answers a full-size one. Returns True when the stored value rose."""
     if not enabled() or peak_mib is None or int(peak_mib) <= 0 or not family:
         return False
     path = store_path()
@@ -163,12 +164,16 @@ def record(
         return False
     device_name = device_name or current_device_name()
     key = model_key(family, quant, speed_mode, frames, device_name)
-    bucket = str(resolution_bucket(width, height, batch_size))
+    bucket_pixels = resolution_bucket(width, height, batch_size)
+    bucket = str(bucket_pixels)
+    pixels = max(1, int(width or 1024)) * max(1, int(height or 1024)) * max(1, int(batch_size or 1))
+    peak_mib = int(math.ceil(int(peak_mib) * bucket_pixels / float(max(pixels, bucket_pixels // 2))))
     try:
         with _lock, _file_lock(path):
             data = _read(path, fresh = True)
             entries = data.setdefault("entries", {})
-            entry = entries.setdefault(key, {"peaks": {}})
+            entry = entries.pop(key, None) or {"peaks": {}}
+            entries[key] = entry  # most recently raised last: the cap evicts from the front
             peaks = entry.setdefault("peaks", {})
             old = int(peaks.get(bucket) or 0)
             if int(peak_mib) <= old:
@@ -234,7 +239,8 @@ def record_work(key: Any, work: int, peak_mib: int) -> bool:
         with _lock, _file_lock(path):
             data = _read(path, fresh = True)
             table = data.setdefault("work", {})
-            peaks = table.setdefault(repr(key), {})
+            peaks = table.pop(repr(key), None) or {}
+            table[repr(key)] = peaks
             old = int(peaks.get(str(int(work))) or 0)
             if int(peak_mib) <= old:
                 return False

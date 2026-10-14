@@ -2330,6 +2330,13 @@ def measured_image_runtime_mib(
     return int(-(-need // step) * step)
 
 
+def learned_peak_label(pipe: Any, attention: Optional[str] = None) -> str:
+    """``denoiser_quant_label`` plus the engaged attention backend: backends with different workspaces never share a
+    learned peak."""
+    quant = denoiser_quant_label(pipe)
+    return quant if attention is None else f"{quant}|attn:{attention}"
+
+
 def denoiser_quant_label(pipe: Any) -> str:
     """Stable label of the denoiser weights' format for the learned-peak key: torchao subclasses, GGUF, int8 / uint8
     packed, or the dense dtype."""
@@ -2490,6 +2497,7 @@ def refine_plan_from_loaded_weights(
     family: Optional[str],
     speed_mode: Optional[str],
     logger: Any = None,
+    attention: Optional[str] = None,
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
@@ -2522,7 +2530,7 @@ def refine_plan_from_loaded_weights(
         if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
             # measured on fp16 / fp32 cards only; bf16 cards can compile later
             return plan
-        quant = denoiser_quant_label(pipe)
+        quant = learned_peak_label(pipe, attention)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
         except Exception:  # noqa: BLE001 - a pipe refusing attributes only skips recording
@@ -2536,11 +2544,14 @@ def refine_plan_from_loaded_weights(
         )
         if headroom is None:
             return plan
+        from .diffusion_measured_peaks import lookup as learned_peak
+        learned = learned_peak(family = family, quant = quant, speed_mode = speed_mode)
         overhead = int(plan.estimates.get("base_overhead_mib") or DEFAULT_BASE_OVERHEAD_MIB)
         floor = headroom + overhead + other
         estimates = dict(plan.estimates)
         estimates.update(
             measured_runtime_headroom_mib = headroom,
+            measured_learned_peak_mib = learned,
             measured_dense_transformer_mib = dense_mib,
             measured_compute_bytes = compute_bytes,
             loaded_transformer_mib = dit,
@@ -3189,10 +3200,17 @@ def measured_request_extra_mib(
         dense_transformer_mib = dense_mib,
         compute_bytes = compute_bytes,
     )
-    # A seeded family keeps the seed here: a peak this session's renders recorded after the load only places the
-    # NEXT load, it must not stream resident groups for a request the same size as one that just completed. An
-    # unseeded family was placed from its learned peak, which is all there is to check against.
+    # A seeded family keeps the seed and the learned peak the load placed from: a peak this session's renders recorded
+    # after the load only places the NEXT load, it must not stream resident groups for a request the same size as one
+    # that just completed. An unseeded family was placed from its learned peak, which is all there is to check against.
     need = measured_image_runtime_mib(family, speed_mode, **sized)
+    learned = reserve[5] if len(reserve) > 5 else None
+    if need is not None and learned:
+        w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
+        h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
+        scale = max(1.0, (w * h * max(1, int(batch_size or 1))) / float(DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT))
+        step = _MEASURED_PEAK_ROUND_MIB
+        need = max(need, int(-(-(float(learned) * scale * _MEASURED_PEAK_MARGIN) // step) * step))
     if need is None and isinstance(identity, tuple) and len(identity) == 3:
         need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
     if need is None:

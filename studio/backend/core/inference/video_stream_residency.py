@@ -187,16 +187,30 @@ def _covering(peaks: dict, work: int) -> Optional[int]:
     return max(covering) if covering else None
 
 
+def _store_key(key: Any) -> Any:
+    """``key`` as persisted: the device in it is a process-local ordinal (``cuda:0``), so the GPU's name rides along
+    and workers with different ``CUDA_VISIBLE_DEVICES`` never share one card's peaks with another."""
+    if not isinstance(key, tuple) or len(key) != 5:
+        return key
+    try:
+        from .diffusion_measured_peaks import device_name
+        name = device_name(key[3]) if key[3] else None
+    except Exception:  # noqa: BLE001
+        name = None
+    return (key, name)
+
+
 def _key_peaks(key: Any) -> dict:
-    """This process's peaks for ``key``, seeded once from the persisted store (an earlier process's measurements)."""
-    peaks = _PEAKS.get(key)
-    if peaks is None:
-        try:
-            from .diffusion_measured_peaks import work_peaks
-            peaks = dict(work_peaks(key))
-        except Exception:  # noqa: BLE001 - no store: start empty
-            peaks = {}
-        _PEAKS[key] = peaks
+    """This process's peaks for ``key``, merged with the persisted store's (other processes' measurements) at every
+    read; the store's own mtime cache keeps that a stat when nothing changed."""
+    peaks = _PEAKS.setdefault(key, {})
+    try:
+        from .diffusion_measured_peaks import work_peaks
+        for work, extra in work_peaks(_store_key(key)).items():
+            if extra > peaks.get(work, 0):
+                peaks[work] = extra
+    except Exception:  # noqa: BLE001 - no store: this process's peaks only
+        pass
     return peaks
 
 
@@ -286,7 +300,7 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
 
                 # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of later processes
                 if failed_capture_count() == getattr(module, "_unsloth_video_failed_captures", 0):
-                    record_work(key, work, shared[work])
+                    record_work(_store_key(key), work, shared[work])
             except Exception:  # noqa: BLE001 - persistence is best-effort
                 pass
         _COUNTS["recorded"] += 1

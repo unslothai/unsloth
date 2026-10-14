@@ -536,3 +536,115 @@ def test_oom_after_partial_hooks_unwinds_and_replans(monkeypatch):
     assert policy == dm.OFFLOAD_GROUP
     assert dm.applied_plan(pipe, plan).estimates["setup_oom_retry"]
     assert calls[:2] == [a, b] and calls[2:4] == [a, b]  # unwound, then both DiTs streamed again
+
+
+# ---------------------------------------------------------------------------------------------------- review round 2
+
+
+def test_peak_is_scaled_to_its_bucket_ceiling(store):
+    kw = dict(family = "some-new-dit", quant = "torchao:Int8Tensor", speed_mode = "default")
+    # 1088x1024 lands in the 2 MP bucket; a 2 MP request must not get the ~1 MP peak back unchanged
+    mp.record(**kw, width = 1088, height = 1024, peak_mib = 1000)
+    assert mp.lookup(**kw, width = 1448, height = 1448) >= 1000 * 2 * 1024 * 1024 // (1088 * 1024)
+
+
+def test_request_guard_scales_the_learned_peak_the_load_placed_from(klein_pipe):
+    mp.record(
+        family = "flux.2-klein",
+        quant = "torchao:Int8Tensor",
+        speed_mode = "default",
+        width = 1024,
+        height = 1024,
+        peak_mib = 4000,
+    )
+    new = _refine(klein_pipe, _klein_flat_plan())
+    assert new.estimates["measured_runtime_headroom_mib"] == 4608
+    klein_pipe._unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default")
+    klein_pipe._unsloth_measured_reserve = (
+        4608,
+        "flux.2-klein",
+        "default",
+        None,
+        None,
+        new.estimates.get("measured_learned_peak_mib"),
+    )
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
+    # 2 MP: 2 x 4000 x 1.15 = 9200 -> 9216, not the 2 x 2645 seed
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1448, height = 1448) >= 9216 - 4608
+
+
+def test_learned_peaks_are_keyed_by_attention_backend(klein_pipe):
+    mp.record(
+        family = "some-new-dit",
+        quant = "torchao:Int8Tensor|attn:flash",
+        speed_mode = "default",
+        width = 1024,
+        height = 1024,
+        peak_mib = 2600,
+    )
+    plan = _klein_flat_plan()
+    flash = dm.refine_plan_from_loaded_weights(
+        klein_pipe, plan, family = "some-new-dit", speed_mode = "default", attention = "flash"
+    )
+    assert flash.estimates["measured_runtime_headroom_mib"] == 3072
+    assert klein_pipe._unsloth_peak_identity[1] == "torchao:Int8Tensor|attn:flash"
+    native = dm.refine_plan_from_loaded_weights(
+        klein_pipe, plan, family = "some-new-dit", speed_mode = "default", attention = "native"
+    )
+    assert native is plan  # a native-attention load never reuses the flash peak
+
+
+def test_load_passes_the_engaged_attention_backend_to_the_peak_identity():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert 'learned_peak_label(pipe, attention_engaged or "native")' in src
+    assert 'attention = attention_engaged or "native",' in src
+    assert 'plan.estimates.get("measured_learned_peak_mib"),' in src
+
+
+def test_video_peaks_merge_other_processes_updates(store, monkeypatch):
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    key = vsr.calibration_key("wan2.2-ti2v-5b", "Wan-AI/x", "group", "cuda:0", speed_mode = "default")
+    work = 1280 * 704 * 49
+    assert vsr.measured_extra_mib(key, work) is None  # this process caches the empty answer
+    assert mp.record_work(vsr._store_key(key), work, 3000)  # another process records
+    assert vsr.measured_extra_mib(key, work) == 3000
+
+
+def test_video_peaks_are_persisted_per_physical_gpu(store, monkeypatch):
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    key = vsr.calibration_key("wan2.2-ti2v-5b", "Wan-AI/x", "group", "cuda:0", speed_mode = "default")
+    work = 1280 * 704 * 49
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
+    module = types.SimpleNamespace(_unsloth_video_pending = None, _unsloth_video_calibration_key = key)
+    vsr._PEAKS[key] = {work: 3000}
+    module._unsloth_video_pending = (work, 0, "cuda:0")
+
+    class _Torch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def max_memory_allocated(dev):
+                return 3000 << 20
+
+    with monkeypatch.context() as m:
+        m.setitem(__import__("sys").modules, "torch", _Torch)
+        vsr.record_request_peak(types.SimpleNamespace(transformer = module))
+    stored = json.loads(store.read_text())["work"]
+    assert list(stored) == [repr((key, "NVIDIA L4"))]
+    vsr._PEAKS.clear()
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA H100")  # another worker's cuda:0
+    assert vsr.measured_extra_mib(key, work) is None
+
+
+def test_store_cap_evicts_the_oldest_entry_not_the_alphabetically_first(store, monkeypatch):
+    monkeypatch.setattr(mp, "_MAX_ENTRIES", 3)
+    for fam in ("m", "n", "o"):
+        mp.record(family = fam, quant = "q", speed_mode = "default", width = 1024, height = 1024, peak_mib = 100)
+    mp.record(family = "a", quant = "q", speed_mode = "default", width = 1024, height = 1024, peak_mib = 100)
+    entries = json.loads(store.read_text())["entries"]
+    assert [k.split("|")[0] for k in entries] == ["n", "o", "a"]
+    for fam in ("m", "n", "o"):
+        assert mp.record_work(("k", fam), 10, 100)
+    assert mp.record_work(("k", "a"), 10, 100)
+    assert list(json.loads(store.read_text())["work"]) == [repr(("k", f)) for f in ("n", "o", "a")]
