@@ -294,7 +294,7 @@ function LinkedFolderCard({
     return (
       <div
         title={title}
-        className={cn("unsloth-files-pill shrink-0 cursor-default", PILL, CARD_EDGE)}
+        className={cn("unsloth-files-item unsloth-files-pill shrink-0 cursor-default", PILL, CARD_EDGE)}
       >
         {indexing > 0 ? (
           <Spinner className="size-3.5 shrink-0" />
@@ -310,7 +310,7 @@ function LinkedFolderCard({
     );
   }
   return (
-    <div className={cn("relative", CARD_SLOT)}>
+    <div className={cn("unsloth-files-item relative", CARD_SLOT)}>
       <ProjectBadge />
       <div
         title={title}
@@ -560,7 +560,7 @@ function DocumentCard({
     );
   if (compact) {
     return (
-      <div ref={setSlot} className="unsloth-files-pill-item flex shrink-0 items-center gap-1">
+      <div ref={setSlot} className="unsloth-files-item unsloth-files-pill-item flex shrink-0 items-center gap-1">
         <div className="group/attachment-card relative flex min-w-0">
           {wrapDialog(
             <button
@@ -642,7 +642,7 @@ function DocumentCard({
     <div
       ref={setSlot}
       className={cn(
-        "group/attachment-card relative",
+        "unsloth-files-item group/attachment-card relative",
         CARD_SLOT,
       )}
     >
@@ -870,7 +870,7 @@ function ChatFilesPanel({
             // Over the strip's end, shown on hover or focus: it takes no room from the files.
             <button
               type="button"
-              className="unsloth-files-panel-action unsloth-files-panel-show-all"
+              className="unsloth-files-panel-show-all"
               aria-expanded={false}
               onClick={() => setShowAll(true)}
             >

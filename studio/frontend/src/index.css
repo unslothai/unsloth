@@ -6251,23 +6251,32 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel[data-collapsed="true"] {
 	@apply gap-2.5 pt-3 pb-3;
 }
-/* Solid, so it reads over the files it floats on. */
+/* Styled as an Unsloth dropdown surface, so it reads over the files it floats on. Hover lays a
+   wash over the solid fill rather than replacing it. Shown only while a file is hovered. */
 .unsloth-files-panel-show-all {
-	@apply pointer-events-none absolute top-1/2 right-0 z-10 -translate-y-1/2 opacity-0 shadow-sm transition-opacity;
-	background-color: #ffffff;
+	@apply pointer-events-none absolute top-1/2 right-0 z-10 inline-flex h-8 -translate-y-1/2 items-center rounded-full px-3.5 text-ui-13 text-popover-foreground opacity-0 transition-opacity;
+	background-color: var(--popover);
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 }
 .dark .unsloth-files-panel-show-all {
-	background-color: color-mix(in oklab, var(--foreground) 12%, var(--card));
-}
-.unsloth-files-panel-row:is(:hover, :focus-within) > .unsloth-files-panel-show-all,
-.unsloth-files-panel-show-all:focus-visible {
-	@apply pointer-events-auto opacity-100;
+	background-color: var(--card);
+	box-shadow: 0 4px 14px var(--background);
 }
 .unsloth-files-panel-show-all:hover {
-	background-color: color-mix(in oklab, var(--foreground) 6%, #ffffff);
+	background-image: linear-gradient(
+		rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))),
+		rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)))
+	);
 }
 .dark .unsloth-files-panel-show-all:hover {
-	background-color: color-mix(in oklab, var(--foreground) 16%, var(--card));
+	background-image: linear-gradient(
+		rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1))),
+		rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)))
+	);
+}
+.unsloth-files-panel-row:has(.unsloth-files-item:hover) > .unsloth-files-panel-show-all,
+.unsloth-files-panel-show-all:is(:hover, :focus-visible) {
+	@apply pointer-events-auto opacity-100;
 }
 @media (pointer: coarse) {
 	.unsloth-files-panel-show-all {
