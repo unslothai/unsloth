@@ -2453,26 +2453,31 @@ def _streamed_group_window_mib(pipe: Any) -> int:
             for group in _offload_groups(module):
                 if getattr(group, "_unsloth_resident", False):
                     continue
-                seen: set[int] = set()
-                nbytes = 0
-                for member in getattr(group, "modules", None) or ():
-                    for t in (*member.parameters(), *member.buffers()):
-                        if id(t) not in seen:
-                            seen.add(id(t))
-                            nbytes += sum(_storage_nbytes(t))
-                for t in (
-                    *(getattr(group, "parameters", None) or ()),
-                    *(getattr(group, "buffers", None) or ()),
-                ):
-                    if id(t) not in seen:
-                        seen.add(id(t))
-                        nbytes += sum(_storage_nbytes(t))
-                largest = max(largest, nbytes)
+                largest = max(largest, _group_nbytes(group))
         if largest <= 0:
             return -1
         return -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
     except Exception:  # noqa: BLE001
         return -1
+
+
+def _group_nbytes(group: Any) -> int:
+    """Storage bytes of one offload group's modules, parameters and buffers (shared tensors once)."""
+    seen: set[int] = set()
+    nbytes = 0
+    for member in getattr(group, "modules", None) or ():
+        for t in (*member.parameters(), *member.buffers()):
+            if id(t) not in seen:
+                seen.add(id(t))
+                nbytes += sum(_storage_nbytes(t))
+    for t in (
+        *(getattr(group, "parameters", None) or ()),
+        *(getattr(group, "buffers", None) or ()),
+    ):
+        if id(t) not in seen:
+            seen.add(id(t))
+            nbytes += sum(_storage_nbytes(t))
+    return nbytes
 
 
 def _streaming_state(module: Any) -> Optional[bool]:
@@ -2495,7 +2500,8 @@ def _streaming_state(module: Any) -> Optional[bool]:
 
 def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
     """MiB a load that streams the text encoders (leaf-level groups) holds in flight that a render with them resident
-    did not: ``depth + 1`` of the largest leaf of each resident encoder. None when an encoder's placement is unknown."""
+    did not: ``depth + 1`` of the largest leaf of each resident encoder, less the streamed leaves' window of a
+    partially resident one. None when an encoder's placement is unknown."""
     try:
         import torch
 
@@ -2508,8 +2514,9 @@ def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
             state = _streaming_state(module)
             if state is None:
                 return None
-            if state:
-                continue  # streamed during the render: its window is in the peak
+            groups = list(_offload_groups(module) or ()) if state else []
+            if state and not any(getattr(g, "_unsloth_resident", False) for g in groups):
+                continue  # fully streamed during the render: its whole window is in the peak
             largest = 0
             for sub in module.modules():
                 seen: set[int] = set()
@@ -2519,7 +2526,16 @@ def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
                         seen.add(id(t))
                         nbytes += sum(_storage_nbytes(t))
                 largest = max(largest, nbytes)
-            total += -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+            window = -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+            if state:
+                # some leaves resident: the peak holds the largest STREAMED leaf's window, a fully streamed encoder
+                # the largest of all; pad the difference
+                streamed = max(
+                    (_group_nbytes(g) for g in groups if not getattr(g, "_unsloth_resident", False)),
+                    default = 0,
+                )
+                window = max(0, window - -(-streamed * (prefetch_depth() + 1) // (1024 * 1024)))
+            total += window
         return total
     except Exception:  # noqa: BLE001
         return None
@@ -2547,7 +2563,7 @@ def denoiser_quant_label(pipe: Any) -> str:
         for dit in dits:
             classes |= _torchao_weight_classes(dit)
         if classes:
-            return "torchao:" + "+".join(sorted(classes))
+            return "torchao:" + "+".join(sorted(classes)) + _quant_variant_tag(dits)
         dtypes: set[str] = set()
         for dit in dits:
             for param in dit.parameters():
@@ -2558,10 +2574,29 @@ def denoiser_quant_label(pipe: Any) -> str:
                 elif param.is_floating_point():
                     dtypes.add(str(param.dtype).replace("torch.", ""))
         if "int8" in dtypes:
-            return "packed:int8"
+            return "packed:int8" + _quant_variant_tag(dits)
         return "dense:" + "+".join(sorted(dtypes)) if dtypes else "unknown"
     except Exception:  # noqa: BLE001
         return "unknown"
+
+
+def _quant_variant_tag(dits: list) -> str:
+    """``#`` plus a short digest of the denoisers' quant graph variant (``graph_variant``, the compile cache's key):
+    plain vs ConvRot, W8A8 vs weight-only, hosted vs runtime scales share a weight class but not their kernels or
+    workspaces. ``#unknown`` when it cannot be read (the label then neither reads nor records a peak)."""
+    try:
+        import hashlib
+        import json
+
+        from .diffusion_compile_cache import graph_variant
+
+        variants = [graph_variant(dit) for dit in dits]
+        if any(isinstance(v.get("weights"), str) for v in variants):
+            return "#unknown"
+        blob = json.dumps(variants, sort_keys = True, default = str)
+        return "#" + hashlib.sha256(blob.encode()).hexdigest()[:12]
+    except Exception:  # noqa: BLE001
+        return "#unknown"
 
 
 def _loaded_component_mib(pipe: Any) -> Optional[dict[str, tuple[int, str]]]:

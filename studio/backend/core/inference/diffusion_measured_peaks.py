@@ -300,10 +300,10 @@ def lookup(
 
 def identified(quant: Optional[str]) -> bool:
     """False when the label or a part of it could not be identified (empty, a bare ``unknown`` format,
-    ``name:unknown``): such a load neither reads nor records a learned peak and keeps the static estimate."""
+    ``name:unknown``, a ``#unknown`` quant variant): such a load neither reads nor records a learned peak and keeps the static estimate."""
     parts = str(quant or "").split("|")
     return bool(parts[0]) and not any(
-        part == "unknown" or part.endswith(":unknown") for part in parts
+        part == "unknown" or part.endswith((":unknown", "#unknown")) for part in parts
     )
 
 
@@ -319,7 +319,27 @@ def lookup_bucket(
     device: Optional[str] = None,
 ) -> Optional[tuple[int, int]]:
     """``lookup`` plus the pixels the peak covers and whether it scales squared: (peak MiB, bucket pixels,
-    quadratic), or None."""
+    quadratic), or None. A ``graphs:on`` label (a load placed before it knows whether placement keeps the whole-step
+    graph or records per block) reads the larger of the ``graphs:step`` and ``graphs:blocks`` peaks."""
+    if "graphs:on" in str(quant or "").split("|"):
+        found = [
+            lookup_bucket(
+                family = family,
+                quant = "|".join(
+                    f"graphs:{mode}" if part == "graphs:on" else part
+                    for part in str(quant).split("|")
+                ),
+                speed_mode = speed_mode,
+                width = width,
+                height = height,
+                batch_size = batch_size,
+                frames = frames,
+                device = device,
+            )
+            for mode in ("step", "blocks")
+        ]
+        found = [f for f in found if f is not None]
+        return max(found, key = lambda f: f[0]) if found else None
     if not enabled() or not family or not identified(quant):
         return None
     path = store_path()

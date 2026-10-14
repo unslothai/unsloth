@@ -2072,16 +2072,27 @@ def _live_peak_identity(state: Any) -> tuple:
 
 
 def _live_graph_mode(state: Any) -> str:
-    """``on`` while the load's CUDA graphs are armed and not dropped (``live_status``), else ``off``."""
+    """``step`` / ``blocks`` (``_engaged_graph_mode``) while the load's CUDA graphs are armed and not dropped
+    (``live_status``), else ``off``."""
     try:
         _, optims = cuda_graph.live_status(
             getattr(state, "resolved", None),
             getattr(state, "speed_optims", ()),
             getattr(state, "cuda_graphs", ()),
         )
-        return "on" if "cuda_graph" in optims else "off"
+        if "cuda_graph" not in optims:
+            return "off"
+        return _engaged_graph_mode(getattr(state, "pipe", None), {"cuda_graph": True})
     except Exception:  # noqa: BLE001
         return "unknown"
+
+
+def _engaged_graph_mode(pipe: Any, applied: Any) -> str:
+    """The graph implementation placement armed: whole-step and per-block graphs hold different statics, slot rings
+    and pools, so their peaks never share a key."""
+    if not (applied or {}).get("cuda_graph"):
+        return "off"
+    return "blocks" if getattr(pipe, "_unsloth_cuda_graph_mode", None) == "blocks" else "step"
 
 
 def _local_weights_digest(path: Any) -> Optional[str]:
@@ -8548,6 +8559,18 @@ class DiffusionBackend:
                             cache_engaged = bool(cache_graph_break),
                             speed_mode = effective_speed,
                             logger = logger,
+                        )
+                    identity = getattr(pipe, "_unsloth_peak_identity", None)
+                    if isinstance(identity, tuple) and len(identity) == 3 and "graphs:on" in str(
+                        identity[1]
+                    ).split("|"):
+                        # placed from the larger of both graph modes' peaks: renders record under the one that armed
+                        pipe._unsloth_peak_identity = (
+                            identity[0],
+                            with_label_part(
+                                identity[1], "graphs", _engaged_graph_mode(pipe, speed_applied)
+                            ),
+                            identity[2],
                         )
 
                     # Per-control provenance for status. cpu_offload=False is the unset default, so only True is

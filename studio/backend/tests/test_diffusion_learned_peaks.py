@@ -1912,9 +1912,7 @@ def test_unpersisted_image_sample_keeps_its_graphs_dirty(store, monkeypatch):
     monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
     monkeypatch.setattr(cg, "live_graph_count", lambda index: 4)
     monkeypatch.setattr(cg, "capture_generation", lambda index: 9)
-    pipe = types.SimpleNamespace(
-        _unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0
-    )
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0)
     state = types.SimpleNamespace(pipe = pipe, speed_mode = "default")
     monkeypatch.setattr(mp, "record", lambda **kw: False)  # the store is unavailable
     diffusion._record_peak_probe(state, _Probe(2400), width = 1024, height = 1024, batch_size = 1)
@@ -1925,9 +1923,7 @@ def test_unpersisted_image_sample_keeps_its_graphs_dirty(store, monkeypatch):
 
 
 def test_unknown_local_video_build_persists_nothing():
-    known = vsr.calibration_key(
-        "wan", "/models/wan", "group", "cuda:0", revision = "/models/wan@local:ab:cd"
-    )
+    known = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = "/models/wan@local:ab:cd")
     unknown = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = "unknown")
     unread = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = None)
     assert vsr._store_key(known) is not None
@@ -1959,9 +1955,73 @@ def test_learned_peak_label_carries_the_graph_mode(klein_pipe, monkeypatch):
     state = types.SimpleNamespace(resolved = None, speed_optims = ("compiled",), cuda_graphs = ())
     assert diffusion._live_graph_mode(state) == "off"
     state.speed_optims = ("compiled", "cuda_graph")
-    assert diffusion._live_graph_mode(state) == "on"
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
-        encoding = "utf-8"
-    )
+    assert diffusion._live_graph_mode(state) == "step"
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
     assert 'label = with_label_part(label, "graphs", _live_graph_mode(state))' in src
     assert "graphs = peak_graphs," in src
+
+
+# --------------------------------------------------------------------------------------------------- review round 16
+
+
+def test_whole_step_and_block_graphs_record_under_distinct_keys(store):
+    import core.inference.diffusion as diffusion
+
+    state = types.SimpleNamespace(
+        resolved = None,
+        speed_optims = ("compiled", "cuda_graph"),
+        cuda_graphs = (),
+        pipe = types.SimpleNamespace(_unsloth_cuda_graph_mode = "step"),
+    )
+    assert diffusion._live_graph_mode(state) == "step"
+    state.pipe._unsloth_cuda_graph_mode = "blocks"
+    assert diffusion._live_graph_mode(state) == "blocks"
+    assert diffusion._engaged_graph_mode(state.pipe, {"cuda_graph": False}) == "off"
+    # a load places before it knows the mode: it reads the larger of both modes' peaks
+    base = dict(family = "flux.2-klein", speed_mode = "default", width = 1024, height = 1024)
+    assert mp.record(**base, quant = "torchao:Int8Tensor|graphs:step", peak_mib = 3000)
+    assert mp.lookup(**base, quant = "torchao:Int8Tensor|graphs:on") == 3000
+    assert mp.record(**base, quant = "torchao:Int8Tensor|graphs:blocks", peak_mib = 4200)
+    assert mp.lookup(**base, quant = "torchao:Int8Tensor|graphs:on") == 4200
+    assert mp.lookup(**base, quant = "torchao:Int8Tensor|graphs:step") == 3000
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert '_engaged_graph_mode(pipe, speed_applied)' in src
+
+
+def test_torchao_variants_of_one_weight_class_do_not_share_a_label(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_compile_cache as cc
+
+    monkeypatch.setattr(dm, "_torchao_weight_classes", lambda module: {"Int8Tensor"})
+    pipe = types.SimpleNamespace(transformer = torch.nn.Linear(4, 4))
+    variant = {"weights": {"Linear/Int8Tensor": 1}}
+    monkeypatch.setattr(cc, "graph_variant", lambda dit: variant)
+    plain = dm.denoiser_quant_label(pipe)
+    assert plain.startswith("torchao:Int8Tensor#")
+    variant = {"weights": {"Linear/Int8Tensor/convrot256": 1}}
+    assert dm.denoiser_quant_label(pipe) != plain  # ConvRot: same class, other kernels
+    variant = {"weights": {"Linear/Int8Tensor/act_int8": 1}}
+    assert dm.denoiser_quant_label(pipe) != plain  # W8A8 vs weight-only
+    variant = {"weights": "unavailable: RuntimeError"}
+    assert not mp.identified(dm.denoiser_quant_label(pipe))  # unreadable: neither read nor recorded
+
+
+def test_partially_resident_text_encoder_pads_the_window_difference(monkeypatch):
+    torch = pytest.importorskip("torch")
+    import core.inference.diffusion_offload_prefetch as pf
+
+    monkeypatch.setattr(pf, "prefetch_depth", lambda: 1)
+    big, small = torch.nn.Linear(1024, 1024, bias = False), torch.nn.Linear(512, 512, bias = False)
+    te = torch.nn.Sequential(big, small)
+    groups = [
+        types.SimpleNamespace(_unsloth_resident = True, modules = [big], parameters = None, buffers = None),
+        types.SimpleNamespace(
+            _unsloth_resident = False, modules = [small], parameters = None, buffers = None
+        ),
+    ]
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: groups)
+    pipe = types.SimpleNamespace(components = {"text_encoder": te})
+    # largest leaf 4 MiB x 2 = 8 MiB when fully streamed; the render streamed only the 1 MiB leaf (2 MiB in flight)
+    assert dm._encoder_stream_window_mib(pipe) == 6
+    groups[0]._unsloth_resident = False  # fully streamed: already the baseline
+    assert dm._encoder_stream_window_mib(pipe) == 0
