@@ -366,7 +366,7 @@ function widthRemote(chatWidthSaved?: boolean, chatWidth?: string) {
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 5,
+    version: 6,
     chatWidthSaved,
     appearance: {
       ...remote.appearance,
@@ -437,7 +437,7 @@ function attachmentsRemote(saved: boolean | undefined, customization: Record<str
   const remote = remotePersonalization("auto");
   return {
     ...remote,
-    version: 5,
+    version: 6,
     chatWidthSaved: true,
     sentAttachmentsSaved: saved,
     appearance: {
