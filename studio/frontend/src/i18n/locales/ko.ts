@@ -3975,6 +3975,7 @@ export const ko = {
     discard: "버리기",
     mentions: "스킬",
     manage: "스킬 관리",
+    turnOff: "스킬 끄기",
     bulkActions: "스킬 작업",
     enableAll: "모두 사용",
     disableAll: "모두 사용 안 함",

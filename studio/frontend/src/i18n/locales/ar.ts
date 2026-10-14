@@ -3984,6 +3984,7 @@ export const ar = {
     discard: "تجاهل",
     mentions: "المهارات",
     manage: "إدارة المهارات",
+    turnOff: "إيقاف المهارات",
     bulkActions: "إجراءات المهارات",
     enableAll: "تفعيل الكل",
     disableAll: "تعطيل الكل",

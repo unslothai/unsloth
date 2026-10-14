@@ -4233,6 +4233,7 @@ export const sv = {
     discard: "Ignorera",
     mentions: "Färdigheter",
     manage: "Hantera färdigheter",
+    turnOff: "Stäng av färdigheter",
     bulkActions: "Färdighetsåtgärder",
     enableAll: "Aktivera alla",
     disableAll: "Inaktivera alla",
