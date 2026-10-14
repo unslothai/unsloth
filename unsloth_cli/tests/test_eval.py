@@ -405,12 +405,22 @@ def test_unsloth_backend_reports_missing_bitsandbytes(env, tmp_path, monkeypatch
 
 @pytest.mark.parametrize(
     "where, expected",
-    [("outputs", False), ("accounts/acct1/outputs", False), ("accounts/acct1/exports", True)],
+    [
+        ("outputs", False),
+        ("linked", False),
+        ("accounts/acct1/outputs", False),
+        ("accounts/acct1/exports", True),
+    ],
 )
 def test_full_finetune_in_any_account_outputs_loads_in_16bit(
     env, tmp_path, monkeypatch, where, expected
 ):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    if where == "linked":
+        (tmp_path / "disk").mkdir()
+        (tmp_path / "studio").mkdir()
+        (tmp_path / "studio" / "outputs").symlink_to(tmp_path / "disk", target_is_directory = True)
+        where = "outputs"
     run = tmp_path / "studio" / where / "run"
     run.mkdir(parents = True)
     (run / "config.json").write_text(json.dumps({"model_type": "llama"}))
