@@ -300,8 +300,8 @@ def test_full_finetune_is_sized_as_bf16_adamw(cluster) -> None:
     est = cluster.training_memory_estimate(
         40.0, 2, 8, 4, 512, hidden = 4096, layers = 32, vocab = 32000, retains_outputs = False
     )
-    # 20 GiB of bf16 weights per node, plus a gradient and two moments of the same size.
-    assert est["optimizer_full_gib"] == pytest.approx(60.0)
+    # 20 GiB of bf16 weights per node, plus a gradient, two moments and the foreach temporary.
+    assert est["optimizer_full_gib"] == pytest.approx(80.0)
 
 
 def test_a_tied_embedding_is_charged_to_both_endpoint_stages(cluster) -> None:
@@ -343,3 +343,33 @@ def test_stages_with_different_projection_sets_merge_into_their_union(tmp_path) 
     merge.merge(str(tmp_path), str(out))
     written = json.loads((out / "adapter_config.json").read_text(encoding = "utf-8"))
     assert written["target_modules"] == sorted({"q_proj", "o_proj", "in_proj_qkvz", "out_proj"})
+
+
+@pytest.mark.parametrize(
+    "attrs, factor",
+    [({"logit_scale": 0.0625}, 0.0625), ({"logits_scaling": 8.0}, 1 / 8.0), ({}, 1.0)],
+)
+def test_stage_logits_get_the_heads_own_transform(pipeline, attrs, factor) -> None:
+    torch = pytest.importorskip("torch")
+    from types import SimpleNamespace
+
+    logits = torch.full((1, 2, 3), 4.0)
+    out = pipeline._softcap_logits(SimpleNamespace(**attrs), logits)
+    assert torch.allclose(out, logits * factor)
+
+
+def test_a_model_directory_is_restaged_with_deletion(cluster, monkeypatch, tmp_path) -> None:
+    model = tmp_path / "ckpt"
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding = "utf-8")
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode = 0, stderr = "", stdout = "")
+
+    monkeypatch.setattr(cluster.subprocess, "run", fake_run)
+    cluster.stage_run_inputs(f"train.py --model {model}", "10.0.0.2", "me", "/home/me")
+    rsync = [c for c in calls if c and c[0] == "rsync"]
+    assert rsync and "--delete" in rsync[0]
