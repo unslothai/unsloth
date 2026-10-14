@@ -125,7 +125,10 @@ export function installPageAgent(): PageAgent {
   let scrolls = 0;
   addEventListener("scroll", () => scrolls++, { capture: true, passive: true });
   try {
-    new MutationObserver(() => {
+    new MutationObserver((records) => {
+      // The agent's cursor moving into a dialog is not the page changing.
+      const own = (n: Node) => n.nodeName === "UNSLOTH-AGENT-CURSOR";
+      if (records.every((r) => r.type === "childList" && [...r.addedNodes].every(own) && [...r.removedNodes].every(own))) return;
       lastMutation = performance.now();
     }).observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
   } catch {
@@ -1128,11 +1131,14 @@ export function installPageAgent(): PageAgent {
     // layer itself: a popover's ::backdrop could take the user's clicks.
     const layer = (): Element => {
       let top: Element | null = document.fullscreenElement;
-      try {
-        const open = document.querySelectorAll("dialog:modal, :popover-open");
-        if (open.length > 0) top = open[open.length - 1];
-      } catch {
-        // Selectors this engine doesn't know.
+      // Queried apart: one selector this engine doesn't know would void the other.
+      for (const selector of ["dialog:modal", ":popover-open"]) {
+        try {
+          const open = document.querySelectorAll(selector);
+          if (open.length > 0) top = open[open.length - 1];
+        } catch {
+          // Unknown selector.
+        }
       }
       return top && !/^(video|img|canvas|iframe|input|textarea|select)$/i.test(top.tagName) ? top : document.documentElement;
     };
