@@ -151,7 +151,7 @@ export function MachineSwitch({
             ) : null}
           </span>
           {value ? (
-            <span className="max-w-[9rem] truncate">@{value.name}</span>
+            <span className="max-w-[calc(9rem*var(--ui-space-scale,1))] truncate">@{value.name}</span>
           ) : null}
           <HugeiconsIcon
             icon={ChevronDownStandardIcon}
