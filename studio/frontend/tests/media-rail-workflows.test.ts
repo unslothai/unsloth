@@ -59,6 +59,8 @@ test("the rail flyout lists every workflow and greys out what the model cannot d
   assert.match(menu, /returnFocus\.current = true;\s+setKeyboardOpen\(true\);/);
   assert.match(menu, /else returnFocus\.current = false;/);
   assert.match(menu, /if \(!returnFocus\.current\) return;/);
+  // ArrowRight on an already-open hover preview moves focus into it.
+  assert.match(menu, /if \(hover\.open\) \{\s+contentRef\.current\s+\?\.querySelector<HTMLElement>\('\[role="menuitem"\]:not\(\[data-disabled\]\)'\)/);
 });
 
 test("a row with a flyout drops its label tooltip, every other row keeps it", () => {

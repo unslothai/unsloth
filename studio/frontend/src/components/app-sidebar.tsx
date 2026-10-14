@@ -1137,6 +1137,12 @@ function MediaRailFlyout<Id extends string>({
           event.preventDefault();
           returnFocus.current = true;
           setKeyboardOpen(true);
+          // An open hover preview never mounts again, so its open autofocus will not run.
+          if (hover.open) {
+            contentRef.current
+              ?.querySelector<HTMLElement>('[role="menuitem"]:not([data-disabled])')
+              ?.focus({ preventScroll: true });
+          }
         }}
       >
         {children}
