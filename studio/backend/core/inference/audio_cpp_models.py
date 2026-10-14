@@ -1239,6 +1239,8 @@ class AudioCppHeader:
     spec: Optional[dict] = field(default = None, hash = False, compare = False)
     # False when the read stopped before the header's end (a remote prefix): absent keys may lie beyond it.
     complete: bool = True
+    # The repo file it was read from, when known.
+    source: Optional[str] = field(default = None, compare = False)
 
     @property
     def is_audio_cpp(self) -> bool:
@@ -2352,6 +2354,7 @@ def _probe_header(
             header = read_remote_header(ref.repo_id, f.path, hf_token, size = f.size or None)
         if header is None:
             continue
+        header = replace(header, source = f.path)
         if not header.is_audio_cpp:
             return header
         if header.family:
@@ -2552,6 +2555,12 @@ def _resolve_uncached(
             + ", ".join(v.key for v in variants)
         )
         chosen = default
+    if header is not None and header.source and chosen.primary and chosen.primary != header.source:
+        # Quantizations of one model can embed different specs (MagpieTTS's orig names an option
+        # ``speaker`` that its Q8_0 calls ``voice_id``): options must come from the file served.
+        own = _probe_header(ref, [RepoFile(chosen.primary)], hf_token, network)
+        if own is not None and own.is_audio_cpp and own.family == family and own.spec:
+            embedded = own.spec
     model = AudioCppModel(
         id = ref.id,
         repo_id = ref.repo_id,

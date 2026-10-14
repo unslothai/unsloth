@@ -220,3 +220,33 @@ def test_a_load_that_downloads_fills_the_served_files_options(catalog_hub, monke
     else:
         # Nothing was fetched, so the files on disk did not change: the model is kept as given.
         assert "speaker" in filled
+
+
+def test_each_cached_quantization_offers_its_own_files_options(catalog_hub):
+    """With both MagpieTTS files cached, each variant's options come from the file it serves."""
+    q8 = SPECS[MAGPIE]["spec"]
+    orig = json.loads(json.dumps(q8))
+    for option in orig["options"]["request"]:
+        if option["name"] == "voice_id":
+            option["name"] = "speaker"
+    snap = _snapshot(catalog_hub)
+    folder = "MagpieTTS-Multilingual-357M-GGUF"
+    _put(
+        snap,
+        f"{folder}/magpie-tts-multilingual-357m-orig.gguf",
+        _gguf_bytes(family = "magpie_tts", spec = orig),
+    )
+    _put(
+        snap,
+        f"{folder}/magpie-tts-multilingual-357m-q8_0.gguf",
+        _gguf_bytes(family = "magpie_tts", spec = q8),
+    )
+    acm.forget()
+    served = acm.resolve(MAGPIE, network = False)
+    assert served.variant.key == "Q8_0"
+    filled = acm.filled_options(served, "speak", {})
+    assert "voice_id" in filled and "speaker" not in filled
+    assert "speaker" not in (served.request_keys or ())
+    acm.forget()
+    other = acm.resolve(MAGPIE, "orig", network = False)
+    assert "speaker" in acm.filled_options(other, "speak", {})
