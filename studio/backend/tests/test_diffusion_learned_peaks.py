@@ -410,3 +410,27 @@ def test_partial_residency_keeps_tied_weights_together():
     assert all(getattr(g, "_unsloth_resident", False) for g in tied)
     with torch.no_grad():
         te(torch.randint(0, 4096, (1, 4), device = dev))
+
+
+def test_video_peak_of_a_request_with_a_failed_capture_is_not_persisted(store, monkeypatch):
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    key = vsr.calibration_key("wan2.2-ti2v-5b", "Wan-AI/x", "streaming", "cuda:0")
+    work = 832 * 480 * 33
+
+    class _Torch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def max_memory_allocated(dev):
+                return 9000 << 20
+
+    module = types.SimpleNamespace(
+        _unsloth_video_pending = (work, 0, "cuda:0"),
+        _unsloth_video_calibration_key = key,
+        _unsloth_video_failed_captures = 0,
+    )
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 1)
+    monkeypatch.setitem(__import__("sys").modules, "torch", _Torch)
+    assert vsr.record_request_peak(types.SimpleNamespace(transformer = module)) == 9000
+    assert mp.work_peaks(key) == {}  # kept in this process only
