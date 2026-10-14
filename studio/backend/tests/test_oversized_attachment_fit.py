@@ -64,7 +64,6 @@ def test_an_attachment_too_big_for_the_window_keeps_its_start_and_names_the_copy
         "What does line 1000 say?\n" + note() + "<attachment name=notes.txt>\nline 1: "
     )
     assert "line 2000:" not in text
-    # The markup stays balanced, and the wrapper is not counted as lines of the file.
     assert text.count("<attachment name=") == text.count("</attachment>") == 1
     excerpt = text.split("<attachment name=notes.txt>\n", 1)[1].split("\n</attachment>", 1)[0]
     shown = len(excerpt.split("\n"))

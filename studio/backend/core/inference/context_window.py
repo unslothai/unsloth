@@ -932,14 +932,12 @@ def fit_rolling_context(
     }
 
 
-# The note `withSandboxAttachmentPaths` (frontend sandbox-attachments.ts) puts above an attachment's inlined text when
-# the python tool also holds a copy. Only these attachments can be cut: the rest of the file stays reachable.
+# withSandboxAttachmentPaths' note (sandbox-attachments.ts): only these attachments have a copy to point at.
 _SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
     r"\[(?P<name>[^\n]*?): its text is below, so answer from it\. For calculations, the python tool has the "
     r'file at path = (?P<path>"(?:[^"\\\n]|\\.)*")(?:;[^\n]*)?\]\n'
 )
-# The frontend wraps inlined text in a tag (attachment, pasted_text, document_annotations); the cut goes inside so
-# the markup stays balanced.
+# The frontend's wrapper tag (attachment, pasted_text, document_annotations); the cut goes inside it.
 _ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
 # Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
 _ATTACHMENT_FIT_MARGIN = 0.125
@@ -981,7 +979,6 @@ def _cut_attachment_bodies(text: str, keep_chars: int, *, excerpt: bool) -> str:
             continue
         total = inner.count("\n") + (0 if inner.endswith("\n") else 1)
         kept = inner[:keep_chars] if excerpt else ""
-        # Whole lines only, so the excerpt never ends mid-word for the model to complete.
         kept = kept[: kept.rindex("\n") + 1] if "\n" in kept else ""
         where = (
             f"The whole file is at path = {path} in the python tool's working directory, so read the part you "
@@ -1037,14 +1034,10 @@ def fit_oversized_attachments(
     max_tokens: Optional[int],
     count_tokens: Callable[[list[dict]], int],
 ) -> list[dict]:
-    """Cut sandbox-backed attachments too big for the window, keeping the copy's path.
+    """Cut sandbox-backed attachments too big for the window: the newest turn keeps the start, older turns the path.
 
-    Compaction keeps the newest turn whole, so such a file was refused outright; that turn now keeps
-    the start of it. In older turns, a file too big keeps only its path: dropped whole, the model lost
-    the file. Decided per message, so a turn renders the same on every later request.
-
-    Rewrites ``content`` in place: eviction and boundary bookkeeping match messages by identity, and
-    a copy of the newest turn read as evicted, archiving the whole file.
+    Decided per message, so a turn renders the same on every later request. Rewrites ``content`` in place:
+    eviction matches messages by identity, and a copy of the newest turn was archived as evicted.
     """
     if not context_length or context_length <= 1:
         return messages
