@@ -1272,6 +1272,40 @@ def _latent_arg(args: tuple, kwargs: dict) -> Any:
     return None
 
 
+_PLAIN_TYPES = (type(None), bool, int, float, str, bytes)
+
+
+def _holds_opaque_tensors(obj: Any, depth: int = 0) -> bool:
+    """True when ``obj`` carries tensors inside something other than a plain tuple / list / dict (a prefix-KV cache
+    object, a namedtuple, a value holder). The replica walker cannot move those to its card, and a mutable cache must
+    not be shared across the two threads, so such a branch stays on the primary."""
+    torch = _torch()
+    if isinstance(obj, (torch.Tensor, *_PLAIN_TYPES, torch.device, torch.dtype, torch.nn.Module)):
+        return False
+    if depth < 4 and isinstance(obj, tuple) and not hasattr(obj, "_fields"):
+        return any(_holds_opaque_tensors(v, depth + 1) for v in obj)
+    if depth < 4 and isinstance(obj, list):
+        return any(_holds_opaque_tensors(v, depth + 1) for v in obj)
+    if depth < 4 and isinstance(obj, dict):
+        return any(_holds_opaque_tensors(v, depth + 1) for v in obj.values())
+    if isinstance(obj, tuple):
+        values: Any = obj
+    else:
+        try:
+            values = vars(obj).values()
+        except TypeError:
+            return False
+    for value in values:
+        if isinstance(value, torch.Tensor) or (
+            isinstance(value, (list, tuple, dict)) and next(_iter_tensors(value), None) is not None
+        ):
+            return True
+        if not isinstance(value, (*_PLAIN_TYPES, list, tuple, dict)) and depth < 4:
+            if _holds_opaque_tensors(value, depth + 1):
+                return True
+    return False
+
+
 def _iter_tensors(obj: Any, depth: int = 0) -> Iterator[Any]:
     torch = _torch()
     if isinstance(obj, torch.Tensor):
@@ -1548,6 +1582,7 @@ class CfgParallelRouter:
             "replica_rebuilds": 0,
             "predicted_hits": 0,
             "predicted_misses": 0,
+            "opaque_primary_calls": 0,
         }
         # the previous step's odd call, classified against its primary call; the launched prediction
         self.template: Optional[tuple[Any, Any, dict]] = None
@@ -1612,7 +1647,16 @@ class CfgParallelRouter:
                 # it would wait for it on the source stream and serialise the two branches.
                 self._prefetch(args, kwargs)
                 self._launch_prediction(latent)
-        if self.branch % 2 == 1 and self.disabled_reason is None:
+        if (
+            self.branch % 2 == 1
+            and self.disabled_reason is None
+            and _holds_opaque_tensors((args, kwargs))
+        ):
+            # A cache object the replica cannot be handed: this branch runs on the primary, in turn.
+            self._drop_pending()
+            self.template = None
+            self.stats["opaque_primary_calls"] += 1
+        elif self.branch % 2 == 1 and self.disabled_reason is None:
             self.singles = 0
             if self.replica is None:
                 self.cfg_seen = True

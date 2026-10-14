@@ -1325,3 +1325,50 @@ def test_secondary_of_lower_compute_capability_takes_no_component(monkeypatch):
     assert mg.make_selection(1, [1, 0]) == mg.MultiGpuSelection(primary = 1, secondaries = (0,))
     assert mg.make_selection(0, [0, 7]) == mg.MultiGpuSelection(primary = 0, secondaries = (7,))
 
+
+class _Cache:
+    """A prefix-KV style cache: a value holder whose layer tensors the denoiser reads and writes."""
+
+    def __init__(self):
+        self.keys = [torch.ones(4)]
+        self.writers: list = []
+
+
+class _CacheDit(_Dit):
+    def forward(self, hidden_states, timestep, encoder_hidden_states, kv_cache = None, return_dict = False):
+        if kv_cache is not None:
+            kv_cache.writers.append(threading.current_thread())
+            hidden_states = hidden_states + kv_cache.keys[0]
+        return super().forward(hidden_states, timestep, encoder_hidden_states)
+
+
+def test_branch_with_a_cache_object_stays_on_the_primary():
+    torch.manual_seed(0)
+    dit = _CacheDit()
+    cond, uncond = torch.randn(3, 4), torch.randn(3, 4)
+
+    def loop(latents):
+        cache = _Cache()
+        for i in range(4):
+            t = torch.tensor(1.0 - i / 4)
+            outs = [
+                dit(hidden_states = latents, timestep = t, encoder_hidden_states = e, kv_cache = cache)[0]
+                for e in (cond, uncond)
+            ]
+            latents = latents - 0.1 * (outs[1] + 4.0 * (outs[0] - outs[1]))
+        return latents, cache
+
+    latents = torch.randn(2, 4)
+    reference, _ = loop(latents.clone())
+    router, replicas = _router(dit)
+    out, cache = loop(latents.clone())
+    assert torch.equal(out, reference)
+    # the mutable cache is never handed to the replica thread, and no replica is paid for
+    assert set(cache.writers) == {threading.current_thread()}
+    assert replicas == [] and router.stats["replica_calls"] == 0
+    assert router.stats["opaque_primary_calls"] == 4
+    assert router.describe()["disabled_reason"] is None
+    # plain containers still route to the replica
+    assert not mg._holds_opaque_tensors(((torch.ones(1),), {"a": [torch.ones(1)], "b": None}))
+    assert mg._holds_opaque_tensors({"kv_cache": _Cache()})
+
