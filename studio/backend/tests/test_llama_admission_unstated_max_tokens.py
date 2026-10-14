@@ -76,10 +76,7 @@ class TestTheDefaultChatNoLongerTakesTheWholeCache:
     def test_max_tokens_max_does_not_reserve_the_budget(self):
         cost = self._cost(_chat(max_tokens = self.BUDGET))
         assert cost < self.BUDGET, "Max Tokens = Max still reserves the whole cache"
-        # Its FAIR SHARE, not the flat allowance: charging less than the wire permits is
-        # what made the reservation unsafe. The property is unchanged, a default chat
-        # never reserves the cache and `capacity` of them still fit.
-        assert cost <= self.BUDGET // self.CAPACITY
+        assert cost <= _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS + 100
 
     def test_four_default_chats_fit_at_once(self):
         """The change, as the user sees it: four chats on Max have to fit together."""
@@ -202,12 +199,17 @@ class TestTheAllowanceFitsTheAdvertisedSlots:
             cost = self._cost(budget, 4)
             assert cost * 4 <= budget, f"{budget} cache admits only {budget // cost} of 4"
 
-    def test_the_charge_scales_with_the_cache(self):
+    def test_a_large_cache_is_unchanged(self):
+        """The clamp must bite only where the share is the tighter of the two. This is the
+        default, preemption off: the flat allowance, and no wire cap to cover."""
+        assert self._cost(32768, 4) == self._cost(262144, 4)
+
+    def test_the_charge_scales_with_the_cache(self, share_pricing):
         """A bigger cache buys a bigger share: the charge is the share itself, so it must
         scale or a large cache is priced as a small one. How MANY fit is asserted above.
 
-        This is the DEFAULT, with `UNSLOTH_LLAMA_ADMISSION_PREEMPT` unset: nothing can hand
-        the difference back, so the reservation has to cover what the wire is permitted.
+        Preemption on but nothing able to hand the difference back, so the reservation has to
+        cover what the wire is permitted.
         """
         assert self._cost(262144, 4) > self._cost(32768, 4)
         for budget in (32768, 262144):

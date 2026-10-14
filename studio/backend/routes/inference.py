@@ -2143,6 +2143,12 @@ def _openai_llama_preemption_will_apply(llama_backend, budget: Optional[int]) ->
     return preemption_eligible()
 
 
+def _openai_llama_admission_fair_share() -> bool:
+    """Whether the share pricing and the wire cap apply. Only with preemption on: off, admission
+    charges the flat allowance and leaves max_tokens alone, as it did before preemption existed."""
+    return preemption_enabled()
+
+
 def _openai_llama_admission_output_allowance(
     cap: Optional[int],
     *,
@@ -2151,13 +2157,27 @@ def _openai_llama_admission_output_allowance(
     context_window: Optional[int] = None,
     share: Optional[int] = None,
     preemption_active: bool = False,
+    fair_share: Optional[bool] = None,
 ) -> int:
     """Reserve output KV, treating caps at or above the per-request window as unstated.
 
-    A prompt too large for its share takes the flat allowance (less concurrency), not a one-token
-    reply. Only ``preemption_active`` charges less than the share: with no preemptor to take the
+    Without ``fair_share`` (default: ``_openai_llama_admission_fair_share()``) this is the flat
+    allowance capped by the share, what Studio charged before preemption existed. With it, a prompt
+    too large for its share takes the flat allowance (less concurrency), not a one-token reply.
+    Only ``preemption_active`` charges less than the share: with no preemptor to take the
     difference back, a small prompt would overrun the cache beside a large one."""
     window = context_window or budget
+    if fair_share is None:
+        fair_share = _openai_llama_admission_fair_share()
+    if not (fair_share or preemption_active):
+        if cap is not None and cap < window:
+            return cap
+        allowance = min(
+            _OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS, max(0, window - prompt_tokens)
+        )
+        if share is not None and share > prompt_tokens:
+            allowance = min(allowance, share - prompt_tokens)
+        return allowance
     stated = cap if (cap is not None and cap < window) else None
     if stated is not None and not preemption_active:
         # Nothing can pause this request, so its charge has to be the truth.
@@ -3547,6 +3567,10 @@ def _openai_llama_admission_enforced_max_tokens(
     request: a raw relay has no generator to resume from, so it keeps the share unless the
     server parks raw streams itself."""
     counted_given = prompt_tokens is not None
+    # Without preemption the reservation is the flat allowance and the wire carries the caller's
+    # max_tokens untouched.
+    if not _openai_llama_admission_fair_share():
+        return None
     if capacity is None:
         capacity = _openai_llama_admission_capacity(request, llama_backend)
     if capacity <= 1:
@@ -3608,7 +3632,7 @@ def _openai_llama_admission_retry_max_tokens(
     """Subtract retry prompt growth from the first attempt's allowance.
     Both attempts share one lease: zero skips the retry; None adds no admission bound.
     ``pausable`` as in ``_openai_llama_admission_enforced_max_tokens``."""
-    if admission_output_allowance is None:
+    if admission_output_allowance is None or not _openai_llama_admission_fair_share():
         return None
     capacity = _openai_llama_admission_capacity(request, llama_backend)
     if capacity <= 1:

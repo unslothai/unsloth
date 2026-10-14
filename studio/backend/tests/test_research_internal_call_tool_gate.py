@@ -255,8 +255,9 @@ def test_a_default_install_takes_no_preemption_path(monkeypatch, tool_loop):
     assert ": preempt-" not in response.text
 
 
-def test_a_default_install_is_charged_the_share(monkeypatch):
-    """The optimism is off, so the reservation is the plain fair-share arithmetic."""
+def test_a_default_install_is_charged_the_flat_allowance(monkeypatch):
+    """Preemption is off, so the reservation is what it was before preemption existed: the flat
+    allowance, capped by the share."""
     backend = _EligibleBackend()
     budget = inference_route._openai_llama_admission_budget(backend)
     share = budget // inference_route._openai_llama_admission_capacity(None, backend)
@@ -270,7 +271,11 @@ def test_a_default_install_is_charged_the_share(monkeypatch):
             context_window = budget,
             share = share,
             preemption_active = active,
-        ) == min(share - prompt, budget - prompt), f"prompt {prompt} is not charged its share"
+        ) == min(
+            inference_route._OPENAI_LLAMA_ADMISSION_UNSTATED_OUTPUT_TOKENS,
+            share - prompt,
+            budget - prompt,
+        ), f"prompt {prompt} is not charged the flat allowance"
     assert (
         inference_route._openai_llama_admission_output_allowance(
             5000,

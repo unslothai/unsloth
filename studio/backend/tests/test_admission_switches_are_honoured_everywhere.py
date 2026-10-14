@@ -449,7 +449,19 @@ class TestTheWireClampFollowsTheSwitches:
             is None
         )
 
-    def test_admission_on_and_preemption_off_still_clamps_to_a_share(self, monkeypatch):
+    def test_admission_on_and_preemption_off_sends_the_callers_own_cap(self, monkeypatch):
+        """Off is what Studio did before preemption existed: no admission cap on the wire."""
+        monkeypatch.setenv(PREEMPT_ENV, "0")
+        assert (
+            inf._openai_llama_admission_enforced_max_tokens(
+                _chat(), request = None, llama_backend = _backend()
+            )
+            is None
+        )
+
+    def test_with_nothing_to_reclaim_the_share_pricing_clamps_to_a_share(
+        self, monkeypatch, share_pricing
+    ):
         monkeypatch.setenv(PREEMPT_ENV, "0")
         backend = _backend()
         payload = _chat()

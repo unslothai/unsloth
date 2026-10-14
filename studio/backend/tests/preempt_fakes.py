@@ -356,3 +356,13 @@ def preemption_opted_in(monkeypatch):
     """Run this module as an install that opted in. Undone after every test."""
     monkeypatch.setenv(PREEMPT_ENV, "1")
     yield
+
+
+@pytest.fixture
+def share_pricing(monkeypatch):
+    """Price and cap the wire as an install with preemption on does, and nothing else: the share
+    pricing and the wire cap without the controller, signals and observers that come with it."""
+    import routes.inference as inference_route
+
+    monkeypatch.setattr(inference_route, "_openai_llama_admission_fair_share", lambda: True)
+    yield
