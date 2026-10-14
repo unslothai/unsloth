@@ -806,8 +806,6 @@ class TestAnthropicModels:
             AnthropicMessagesRequest(max_tokens = 50, messages = messages)
 
     def test_claude_environment_message_leaves_system_and_tools_identical_across_sessions(self):
-        # claude sends its per-session environment (working directory) as a system message after the first
-        # user turn; hoisted, it sat above the tool schemas and every new session re-read them.
         def converted(cwd):
             req = AnthropicMessagesRequest(
                 max_tokens = 50,
@@ -831,8 +829,6 @@ class TestAnthropicModels:
         assert "/work/a" in first[1]["content"] and "/work/b" in second[1]["content"]
 
     def test_per_round_system_reminders_only_append(self):
-        # A system message after each tool result (claude's token countdown) used to rewrite the system
-        # prefix every round; in place, each request extends the previous one.
         base = [
             {"role": "user", "content": "Read it."},
             {
@@ -871,8 +867,6 @@ class TestAnthropicModels:
         assert "800 tokens left" in after[-1]["content"]
 
     def test_a_reminder_after_a_tool_result_keeps_the_turn_and_its_thinking(self):
-        # As a text block the reminder would make the tool turn a new user query, and the current turn's
-        # thinking (kept since it follows the last real query) would be dropped.
         req = AnthropicMessagesRequest(
             max_tokens = 50,
             messages = [

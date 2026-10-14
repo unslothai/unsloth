@@ -4125,16 +4125,13 @@ def _as_blocks(content: Any) -> Optional[list]:
 
 
 def _with_user_note(message: dict, note: str, *, first: bool) -> Optional[dict]:
-    """A copy of a user turn with a text block added, or None when its content is malformed
-    (left as sent, so validation still rejects it)."""
+    """Copy of a user turn with a text block added; None for malformed content, left for validation to reject."""
     blocks = _as_blocks(message.get("content"))
     if blocks is None:
         return None
     block = {"type": "text", "text": note}
     if blocks and all(_block_type(b) == "tool_result" for b in blocks):
-        # A text block would make this turn a new user query: the converter and the templates
-        # then drop the reasoning before it. Inside the adjacent result it stays a tool turn; at
-        # its start, since an MCP image envelope has to stay at the end of the text.
+        # As a text block it would start a new user query (templates drop the reasoning before it); MCP image envelopes stay last.
         index = 0 if first else len(blocks) - 1
         result = blocks[index] if isinstance(blocks[index], dict) else blocks[index].model_dump()
         inner = result.get("content")
@@ -4347,7 +4344,6 @@ class AnthropicMessagesRequest(BaseModel):
         normalized_messages: list[Any] = []
         system_additions: list[str] = []
         retained_system = [_anthropic_content_to_system_text(data.get("system"))]
-        # Text after an assistant turn waits for the next user turn.
         pending: list[str] = []
         changed = False
 
@@ -4362,8 +4358,7 @@ class AnthropicMessagesRequest(BaseModel):
                 if previous is None or not text.strip():
                     system_additions.append(text)
                 elif isinstance(previous, dict) and previous.get("role") == "user":
-                    # Hoisting a later one would put it above the tools: claude's per-session
-                    # environment message then breaks the cache for every new session.
+                    # Hoisted, it renders above the tools: claude's per-session env message broke every new session's cache.
                     folded = _with_user_note(previous, _system_note(text), first = False)
                     if folded is None:
                         system_additions.append(text)
@@ -4385,7 +4380,7 @@ class AnthropicMessagesRequest(BaseModel):
         if not changed:
             return data
 
-        # Nothing follows a trailing assistant turn, a prefill to continue: a user turn would replace it.
+        # A trailing assistant turn is a prefill; a user turn after it would replace it.
         system_additions.extend(pending)
 
         normalized = dict(data)
