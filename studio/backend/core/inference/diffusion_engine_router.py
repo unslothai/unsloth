@@ -190,7 +190,6 @@ def _linux_render_node_accessible() -> bool:
     """A container can list a card in sysfs without mounting its /dev/dri node, and Vulkan then
     sees no device."""
     import glob
-
     return any(os.access(node, os.R_OK | os.W_OK) for node in glob.glob("/dev/dri/renderD*"))
 
 
@@ -206,7 +205,6 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return False
     try:
         from utils.hardware.hardware import _ze_affinity_mask
-
         if _ze_affinity_mask() is not None:
             return False
     except Exception:  # noqa: BLE001
@@ -241,7 +239,6 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return False
     try:
         from utils.hardware.amd import the_vulkan_loader_has_no_usable_driver
-
         if the_vulkan_loader_has_no_usable_driver():
             return False
     except Exception:  # noqa: BLE001
