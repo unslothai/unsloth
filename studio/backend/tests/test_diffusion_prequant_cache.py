@@ -510,3 +510,30 @@ def test_streaming_save_does_not_hold_the_state_dict_on_the_host(tmp_path):
     stream_mb = grow("stream")
     assert stream_mb < 64, stream_mb
     assert (tmp_path / "stream.st").stat().st_size > 384 * 2**20
+
+
+def test_full_pipeline_image_quantize_is_saved_to_the_cache(monkeypatch):
+    """A model_kind=pipeline load quantizes in its own loop (not _load_dense_quant_pipeline); it must save too."""
+    import inspect
+
+    from core.inference import diffusion as D
+
+    calls = []
+    monkeypatch.setattr(C, "save_runtime_quant", lambda t, fam, **kw: calls.append((t, fam, kw)) or "/x")
+    pipe = types.SimpleNamespace(transformer = object())
+    fam = types.SimpleNamespace(name = FAMILY)
+    save = D.DiffusionBackend._save_pipeline_quant_to_cache
+    assert save(pipe, fam, [("transformer", pipe.transformer)], loras = [], base = "b", source_base = "/src") == "/x"
+    assert calls and calls[0][0] is pipe.transformer and calls[0][2]["source_base"] == "/src"
+    calls.clear()
+    # Two denoisers (no lookup slot for the second), an active LoRA, or no family: nothing saved.
+    two = [("transformer", object()), ("transformer_2", object())]
+    assert save(pipe, fam, two, loras = [], base = "b", source_base = None) is None
+    assert save(pipe, fam, [("transformer", pipe.transformer)], loras = [("a", 1.0)], base = "b", source_base = None) is None
+    assert save(pipe, None, [("transformer", pipe.transformer)], loras = [], base = "b", source_base = None) is None
+    assert calls == []
+    # And the pipeline-kind quantize loop calls it once every denoiser engaged.
+    src = inspect.getsource(D.DiffusionBackend.load_pipeline)
+    engaged = src.index("if engaged and len(engaged) == len(denoisers):")
+    assert "_save_pipeline_quant_to_cache(" in src[engaged:engaged + 600]
+
