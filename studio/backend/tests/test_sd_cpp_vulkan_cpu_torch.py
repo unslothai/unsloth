@@ -8,6 +8,7 @@ renders on the card through Vulkan. Every hardware answer is stubbed."""
 
 from __future__ import annotations
 
+import io
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -63,7 +64,7 @@ def _pinned_host(monkeypatch):
     _platform(monkeypatch, "linux", "x86_64")
     monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_VEGA))
     monkeypatch.setattr(r, "_vulkan_loader_loads", lambda: True)
-    monkeypatch.setattr(r, "_linux_render_node_accessible", lambda: True)
+    monkeypatch.setattr(r, "_linux_render_node_accessible", lambda vendors: True)
     import utils.hardware.amd as amd
 
     monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
@@ -191,7 +192,7 @@ def test_only_a_driver_for_the_listed_cards_counts(monkeypatch, vendors, manifes
 
 
 def test_an_unmounted_render_node_keeps_cpu(monkeypatch):
-    monkeypatch.setattr(r, "_linux_render_node_accessible", lambda: False)
+    monkeypatch.setattr(r, "_linux_render_node_accessible", lambda vendors: False)
     assert r.image_install_accelerator("cpu") == "auto"
     _platform(monkeypatch, "win32", "AMD64")
     assert r.image_install_accelerator("cpu") == "vulkan"
@@ -311,3 +312,40 @@ def test_the_pinned_release_has_the_vulkan_bundle_it_routes_to(system, machine, 
         )
         == expected
     )
+
+
+def test_only_a_render_node_of_the_listed_vendor_counts(monkeypatch, tmp_path):
+    import builtins
+    import glob
+
+    monkeypatch.undo()  # the real helper, not the fixture's stub
+    vendors = {"renderD128": "0x1af4", "renderD129": "0x1002"}  # virtio, then AMD
+    real_open = builtins.open
+
+    def _open(path, *a, **k):
+        name = str(path).split("/")[-3] if str(path).startswith("/sys/class/drm/") else None
+        if name in vendors:
+            return io.StringIO(vendors[name] + "\n")
+        return real_open(path, *a, **k)
+
+    accessible = set()
+    monkeypatch.setattr(glob, "glob", lambda pattern: [f"/dev/dri/{n}" for n in vendors])
+    monkeypatch.setattr(builtins, "open", _open)
+    monkeypatch.setattr(r.os, "access", lambda node, mode: node in accessible)
+    accessible.add("/dev/dri/renderD128")
+    assert r._linux_render_node_accessible({"amd"}) is False
+    accessible.add("/dev/dri/renderD129")
+    assert r._linux_render_node_accessible({"amd"}) is True
+    assert r._linux_render_node_accessible({"intel"}) is False
+
+
+@pytest.mark.parametrize("var", ["VK_LOADER_DRIVERS_DISABLE", "VK_LOADER_DRIVERS_SELECT"])
+def test_a_windows_driver_filter_the_walk_cannot_apply_keeps_cpu(monkeypatch, var):
+    import utils.hardware.amd as amd
+
+    monkeypatch.undo()
+    _platform(monkeypatch, "win32", "AMD64")
+    monkeypatch.setattr(amd, "_vulkan_icd_manifest_paths", lambda: [])
+    assert r._hardware_vulkan_driver({"amd"}) is True
+    monkeypatch.setenv(var, "*")
+    assert r._hardware_vulkan_driver({"amd"}) is False

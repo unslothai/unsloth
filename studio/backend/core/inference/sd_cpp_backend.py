@@ -2140,6 +2140,14 @@ def sd_cpp_binary_runs_family(binary: Optional[str], fam: Any) -> bool:
     return binary_carries_marker(binary, getattr(fam, "sd_cpp_arch_marker", None))
 
 
+def managed_sd_cpp_accelerator() -> Optional[str]:
+    """The accelerator class of the managed sd-server (else sd-cli) install, or None."""
+    try:
+        return _installed_accelerator_of(find_sd_server_binary() or find_sd_cpp_binary())
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
     """The accelerator class recorded for the managed install ``binary`` belongs to.
 

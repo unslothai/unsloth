@@ -187,11 +187,26 @@ def _vulkan_loader_loads() -> bool:
 _MASKS_VULKAN_IGNORES = ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
 
 
-def _linux_render_node_accessible() -> bool:
+# PCI vendors of the cards this route renders on.
+_RENDER_NODE_VENDORS = {"0x1002": "amd", "0x8086": "intel"}
+
+
+def _linux_render_node_accessible(vendors) -> bool:
     """A container can list a card in sysfs without mounting its /dev/dri node, and Vulkan then
-    sees no device."""
+    sees no device; only a node of one of ``vendors``, readable and writable, counts."""
     import glob
-    return any(os.access(node, os.R_OK | os.W_OK) for node in glob.glob("/dev/dri/renderD*"))
+
+    for node in glob.glob("/dev/dri/renderD*"):
+        try:
+            with open(
+                f"/sys/class/drm/{os.path.basename(node)}/device/vendor", encoding = "utf-8"
+            ) as f:
+                vendor = _RENDER_NODE_VENDORS.get(f.read().strip().lower())
+        except OSError:
+            continue
+        if vendor in vendors and os.access(node, os.R_OK | os.W_OK):
+            return True
+    return False
 
 
 def _vulkan_gpu_for_cpu_torch() -> bool:
@@ -237,9 +252,9 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
     # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
     if not gpus or not all(_renders(d) for d in gpus):
         return False
-    if sys.platform != "win32" and not _linux_render_node_accessible():
-        return False
     vendors = {d.get("vendor") for d in gpus}
+    if sys.platform != "win32" and not _linux_render_node_accessible(vendors):
+        return False
     return _hardware_vulkan_driver(vendors) and _vulkan_loader_loads()
 
 
@@ -256,7 +271,11 @@ def _hardware_vulkan_driver(vendors) -> bool:
         from utils.hardware.amd import _loadable_icd_manifests, _vulkan_icd_manifest_paths
 
         if not _vulkan_icd_manifest_paths():
-            return sys.platform == "win32"
+            # A driver filter the walk cannot apply may leave the loader with none.
+            filtered = os.environ.get("VK_LOADER_DRIVERS_SELECT") or os.environ.get(
+                "VK_LOADER_DRIVERS_DISABLE"
+            )
+            return sys.platform == "win32" and not filtered
         needles = [n for vendor in vendors for n in _VENDOR_ICD_NEEDLES.get(vendor, ())]
         return any(
             any(needle in os.path.basename(str(path)).lower() for needle in needles)

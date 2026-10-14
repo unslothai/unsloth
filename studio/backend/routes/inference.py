@@ -46899,7 +46899,7 @@ async def load_diffusion_model_gated(
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.sd_cpp_args import forces_cpu_backend
-    from core.inference.sd_cpp_backend import preferred_accelerator
+    from core.inference.sd_cpp_backend import managed_sd_cpp_accelerator, preferred_accelerator
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -46982,11 +46982,13 @@ async def load_diffusion_model_gated(
             needs_gpu = True
         # So does the Vulkan sd.cpp build a CPU torch is routed to beside an AMD or Arc card,
         # unless that build has failed here and the ladder runs the CPU one instead.
+        # A retained managed Vulkan build also renders on the card, whatever this load requested.
         vulkan_on_cpu_torch = (
             device == "cpu"
             and off_torch is None
             and await asyncio.to_thread(
                 lambda: preferred_accelerator(image_install_accelerator("cpu"), None) == "vulkan"
+                or managed_sd_cpp_accelerator() == "vulkan"
             )
         )
         if pending_name == ENGINE_SD_CPP and vulkan_on_cpu_torch:
