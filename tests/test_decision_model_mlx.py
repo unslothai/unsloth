@@ -443,7 +443,6 @@ def test_the_images_of_a_row_reach_the_clef_trainer_and_predict(
         images = None,
         audio = None,
     ):
-        # A row without images is asked as before, with neither argument.
         seen.append([getattr(image, "size", image) for image in images] if images else audio)
         return {
             **real(pipeline, state, questions, max_length),

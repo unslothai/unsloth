@@ -1379,11 +1379,9 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
     zoo.ClefModel = SimpleNamespace(takes_images = True)
     assert not hears(tuned)
     zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
-    # No other runtime answers a request that carries clips.
     for runtime in ("pytorch", "llama.cpp"):
         with pytest.raises(laya_runtime.Unavailable, match = "Audio is served only by MLX"):
             laya_runtime.select(tuned, audio = [clip], preference = runtime)
-    # The clips reach the engine after the images.
     assert _put(client, enabled = True, model = served).status_code == 200
     clips = [clip, "data:audio/wav;base64,AQ=="]
     body = {"model": "default", "state": "s", "questions": questions, "audio": clips}

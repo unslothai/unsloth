@@ -148,7 +148,6 @@ def test_jsonl_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_pa
             json.dumps({"audio": {"path": "audio/a.wav"}, "text": "three"}),
             # Unmatched references are somebody else's contract: left alone.
             json.dumps({"audio": "https://example.com/c.wav", "text": "four"}),
-            # Several clips in one row, either shape.
             json.dumps({"audio": [{"path": "audio/a.wav"}, "audio/b.mp3"], "text": "five"}),
         ]
     )
