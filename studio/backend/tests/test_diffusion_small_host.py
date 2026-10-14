@@ -112,6 +112,44 @@ def test_refuses_before_loading_when_even_the_route_cannot_fit(monkeypatch):
     assert _decide(QWEN, dtype = torch.float32, total = 16 * 1024, available = 14000).refuse is None
 
 
+def test_prebuilt_single_file_bytes_decide_the_qwen_image_cases():
+    # 2026-10-14: a 17 GB bf16 encoder with a 4 GB pre-built GGUF DiT read as "fits" on a host with ~36 GB
+    # free and then ramped the server to ~45 GB commit; with the pre-built bytes and the source-view
+    # transient budgeted, the same host takes the route instead.
+    comps = {
+        "text_encoder": sh.StoredComponent("text_encoder", 16717, "bfloat16"),
+        "vae": sh.StoredComponent("vae", 335, "bfloat16"),
+    }
+    assert not _decide(comps, total = 47 * 1024, available = 36 * 1024).engaged
+    d = _decide(comps, total = 47 * 1024, available = 36 * 1024, prebuilt_host_mib = 4096)
+    assert d.engaged and d.refuse is None and d.prebuilt_host_mib == 4096
+    # even the route refuses when the checkpoint alone outgrows the host, and the message counts it
+    d = _decide(comps, total = 16 * 1024, available = 9000, prebuilt_host_mib = 12000)
+    assert d.engaged and d.refuse and "Not enough system RAM" in d.refuse
+    assert "14.7 GB" in d.refuse
+
+
+def test_host_ram_limit_env_caps_the_guard_view(monkeypatch):
+    monkeypatch.setattr(dm, "_host_ram_capacity_mib", lambda: 32000)
+    monkeypatch.setattr(dm, "_host_available_mib", lambda: 20000)
+    monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "6144")
+    assert sh.host_ram_mib() == (6144, 6144)
+    monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "90000")
+    assert sh.host_ram_mib() == (32000, 20000)
+    monkeypatch.setenv(sh.HOST_RAM_LIMIT_ENV, "not-a-number")
+    assert sh.host_ram_mib() == (32000, 20000)
+
+
+def test_available_host_mib_is_capped_by_the_windows_commit_headroom(monkeypatch):
+    monkeypatch.setattr(dm, "_available_system_memory_mib", lambda: 5000)
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: 3000)
+    assert dm._host_available_mib() == 3000
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: 9000)
+    assert dm._host_available_mib() == 5000
+    monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: None)
+    assert dm._host_available_mib() == 5000
+
+
 def test_lora_keeps_the_dense_load():
     d = _decide(FLUX1, lora_active = True)
     assert not d.engaged and d.refuse is None and "LoRA" in d.reason

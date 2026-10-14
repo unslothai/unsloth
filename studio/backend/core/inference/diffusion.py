@@ -7527,6 +7527,7 @@ class DiffusionBackend:
                                     target,
                                     dtype,
                                     lora_active = _has_active_lora(loras),
+                                    single_file_path = single_file_path,
                                 )
                                 if small_host is not None and small_host.engaged:
                                     pipe_kwargs["torch_dtype"] = small_host_torch_dtype_map(
@@ -9361,7 +9362,8 @@ class DiffusionBackend:
         return unified_memory_shortfall_message(plan, family = fam.name)
 
     def _small_host_decision(
-        self, source: Any, pipe_kwargs: dict, target: Any, dtype: Any, *, lora_active: bool
+        self, source: Any, pipe_kwargs: dict, target: Any, dtype: Any, *, lora_active: bool,
+        single_file_path: Optional[str] = None,
     ) -> Any:
         """Small-host decision for a pipeline load; raises its refusal, None without a local snapshot."""
         snapshot = resolve_snapshot_dir(source, hub_cache_dir())
@@ -9373,6 +9375,8 @@ class DiffusionBackend:
             # pre-built components (hosted fp8 encoder, prequant denoiser) are not loaded here
             if name not in pipe_kwargs
         }
+        # the pre-built single-file DiT (GGUF) already sits on the host before from_pretrained runs
+        prebuilt = file_size_mib(single_file_path) or 0
         total, available = host_ram_mib()
         decision = decide_small_host(
             comps,
@@ -9381,13 +9385,15 @@ class DiffusionBackend:
             host_total_mib = total,
             host_available_mib = available,
             lora_active = lora_active,
+            prebuilt_host_mib = prebuilt,
         )
         if decision.engaged or decision.refuse:
             logger.info(
-                "diffusion.small_host: engaged=%s (%s); stored-dtype components=%s",
+                "diffusion.small_host: engaged=%s (%s); stored-dtype components=%s; prebuilt=%d MiB",
                 decision.engaged,
                 decision.reason,
                 decision.storage_dtypes,
+                prebuilt,
             )
         if decision.refuse:
             raise RuntimeError(decision.refuse)

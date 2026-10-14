@@ -18,6 +18,9 @@ from typing import Any, Optional
 
 SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_SMALL_HOST"
 HOST_RAM_CHECK_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_CHECK"
+# test hook: cap the host RAM the diffusion guards see (total and available), the Windows counterpart of
+# the cgroup ceiling the Linux reading already honours
+HOST_RAM_LIMIT_ENV = "UNSLOTH_DIFFUSION_HOST_RAM_LIMIT_MIB"
 SMALL_HOST_ATTR = "_unsloth_small_host"
 
 _MIB = 1024 * 1024
@@ -26,6 +29,9 @@ _HOST_RESERVE_MIN_MIB = 3072
 _HOST_RESERVE_FRACTION = 0.10
 # fp16 T5 keeps ``wo`` in fp32 (``_keep_in_fp32_modules``): 9.5 GB stored, 11.0 GB loaded.
 _CONVERT_MARGIN = 1.15
+# A converting load holds the copy-on-write source view next to the converted copy, and Windows charges that
+# view to commit (#13432); measured qwen-image loads peaked near 2x the copy-only estimate.
+_TRANSIENT_MARGIN = 1.5
 _INT8_MIN_ELEMENTS = 1 << 22
 # DiT denoisers the route stores as int8; a UNet (mostly convs) converts dense like any other non-encoder component
 INT8_DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer")
@@ -144,9 +150,21 @@ def resolve_snapshot_dir(repo_or_dir: Any, cache_dir: Any = None) -> Optional[Pa
 
 
 def host_ram_mib() -> tuple[Optional[int], Optional[int]]:
-    """(total, available) host MiB, both capped by an enforcing cgroup."""
-    from .diffusion_memory import _available_system_memory_mib, _host_ram_capacity_mib
-    return _host_ram_capacity_mib(), _available_system_memory_mib()
+    """(total, available) host MiB, both capped by an enforcing cgroup; available additionally capped by the
+    Windows commit headroom (commit exhaustion is the #13432 failure mode, invisible to a physical reading)
+    and by the ``HOST_RAM_LIMIT_ENV`` test hook."""
+    from .diffusion_memory import _host_available_mib, _host_ram_capacity_mib
+
+    total = _host_ram_capacity_mib()
+    available = _host_available_mib()
+    try:
+        limit = int((os.environ.get(HOST_RAM_LIMIT_ENV) or "").strip())
+    except ValueError:
+        limit = 0
+    if limit > 0:
+        total = limit if total is None else min(total, limit)
+        available = limit if available is None else min(available, limit)
+    return total, available
 
 
 def host_reserve_mib(total_mib: Optional[int]) -> int:
@@ -171,6 +189,8 @@ class SmallHostDecision:
     total_mib: Optional[int] = None
     dense_host_mib: int = 0
     route_host_mib: int = 0
+    # pre-built single-file bytes (GGUF DiT) added to both routes' host need
+    prebuilt_host_mib: int = 0
     # component -> stored dtype it loads at (memory-mapped)
     storage_dtypes: dict[str, str] = field(default_factory = dict)
     refuse: Optional[str] = None
@@ -184,9 +204,11 @@ def decide_small_host(
     host_total_mib: Optional[int],
     host_available_mib: Optional[int],
     lora_active: bool = False,
+    prebuilt_host_mib: int = 0,
 ) -> SmallHostDecision:
     """Whether this pipeline load takes the small-host route. Only CUDA loads converting large bf16 components
-    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped."""
+    (fp16 / fp32 compute) change; same-dtype loads already stay memory-mapped. ``prebuilt_host_mib`` adds bytes
+    that sit on the host before ``from_pretrained`` runs (a single-file GGUF transformer) to both routes."""
     if small_host_disabled():
         return SmallHostDecision(False, f"{SMALL_HOST_ENV}=0")
     if str(device) != "cuda":
@@ -215,15 +237,21 @@ def decide_small_host(
         for n, c in converted.items()
     )
     reserve = host_reserve_mib(host_total_mib)
+    # A pre-built single-file DiT occupies the host in both routes (checkpoint dict plus dequant staging);
+    # the converting load additionally holds the copy-on-write source view next to the converted copy, which
+    # Windows charges to commit (#13432) — measured peaks ran near 2x the copy-only estimate.
+    prebuilt = max(0, int(prebuilt_host_mib or 0))
+    dense_need = int(dense * _TRANSIENT_MARGIN) + prebuilt
+    route_need = route + prebuilt
     storage = {name: comp.dtype for name, comp in converted.items()}
     forced = small_host_forced()
     if host_available_mib is None and not forced:
         return SmallHostDecision(False, "host RAM unreadable", dense_host_mib = dense)
-    fits = host_available_mib is not None and dense + reserve <= int(host_available_mib)
+    fits = host_available_mib is not None and dense_need + reserve <= int(host_available_mib)
     if fits and not forced:
         return SmallHostDecision(
             False,
-            f"dense {compute} load ({dense} MiB) fits {host_available_mib} MiB available host RAM",
+            f"dense {compute} load ({dense_need} MiB) fits {host_available_mib} MiB available host RAM",
             host_available_mib,
             host_total_mib,
             dense,
@@ -233,7 +261,7 @@ def decide_small_host(
         # the int8 denoiser cannot carry adapters
         return SmallHostDecision(
             False,
-            f"LoRA adapters need the dense denoiser (dense load ~{dense} MiB, {host_available_mib} MiB available)",
+            f"LoRA adapters need the dense denoiser (dense load ~{dense_need} MiB, {host_available_mib} MiB available)",
             host_available_mib,
             host_total_mib,
             dense,
@@ -242,18 +270,18 @@ def decide_small_host(
     refuse = None
     if (
         host_available_mib is not None
-        and route + reserve > int(host_available_mib)
+        and route_need + reserve > int(host_available_mib)
         and not host_ram_check_disabled()
     ):
-        refuse = _refusal(route, reserve, host_available_mib, "even the low-memory route")
+        refuse = _refusal(route_need, reserve, host_available_mib, "even the low-memory route")
     why = (
         f"{SMALL_HOST_ENV}=1"
         if forced and fits
-        else f"dense {compute} load needs ~{dense} MiB + {reserve} MiB reserve of host RAM, "
+        else f"dense {compute} load needs ~{dense_need} MiB + {reserve} MiB reserve of host RAM, "
         f"{host_available_mib} MiB available"
     )
     return SmallHostDecision(
-        True, why, host_available_mib, host_total_mib, dense, route, storage, refuse
+        True, why, host_available_mib, host_total_mib, dense, route, prebuilt, storage, refuse
     )
 
 
