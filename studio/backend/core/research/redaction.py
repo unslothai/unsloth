@@ -37,7 +37,8 @@ _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\
 )
 _QUERY_AUTHORIZATION = re.compile(
     rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])|\]?[ \t]*(?:=>|[:=]))(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
-    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)""".replace(
+    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
+    (?P<more>(?:[ \t]*,[ \t]*(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t]+[\w.~+/-]+(?::[\w.~+/-]+)*=*)*)""".replace(
         r"[ \t]", _HSPACE
     )
 )
@@ -228,7 +229,10 @@ def _authorization_values(match: re.Match) -> list[str]:
         for name, value in pairs
     ):
         # "dXNl...= server" also parses as a parameter; keep the padded token68 itself.
-        return values + [piece for piece in found.split() if re.fullmatch(r"[\w.~+/-]+=+", piece)]
+        padded = [piece for piece in found.split() if re.fullmatch(r"[\w.~+/-]+=+", piece)]
+        # Coalesced duplicates: "Basic a==, Basic b=".
+        coalesced = re.findall(r",\s*\S+\s+(\S+)", match["more"] or "")
+        return values + padded + coalesced
     return []
 
 
@@ -264,7 +268,8 @@ def _sanitize_public_query(query: str) -> str:
         for variant in {value, value.rstrip(_TOKEN_PUNCTUATION + ".!?")}:
             # A log may percent-encode the echo (dTo+ -> dTo%2B).
             exact.update({quote(variant, safe = ""), quote(variant), quote_plus(variant)})
-            exact.add(variant)
+            # JSON serializers may escape the solidus (a/b -> a\/b).
+            exact.update({variant, variant.replace("/", "\\/")})
             credentials.update(piece for piece in [variant, *variant.split()] if len(piece) >= 8)
     exact.discard("")
     plain = [token for token in plain if not any(piece in token for piece in credentials)]

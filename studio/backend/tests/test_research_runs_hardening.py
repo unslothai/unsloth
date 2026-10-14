@@ -292,6 +292,12 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization: Basic YTpi returned received%3DYTpi"
     )
     assert "dTo" not in _sanitize_public_query("Authorization: Basic dTo+ then received=dTo%2B why")
+    coalesced = "Authorization: Basic dXNlcjpwYXNzMQ==, Basic YWRtaW46cGFzczI= why"
+    assert "YWRtaW46cGFzczI" not in _sanitize_public_query(coalesced)
+    escaped_echo = (
+        r"Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQ/ got dXNlcm5hbWU6cGFzc3dvcmQ\/ why"
+    )
+    assert "dXNlcm5hbWU6cGFzc3dvcmQ" not in _sanitize_public_query(escaped_echo)
     padded = "Authorization: Basic dXNlcjpwYXNzd2Q= server echoed dXNlcjpwYXNzd2Q="
     assert "dXNlcjpwYXNzd2Q" not in _sanitize_public_query(padded)
     assert "Onh4" not in _sanitize_public_query(
