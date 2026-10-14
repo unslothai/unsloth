@@ -18579,8 +18579,14 @@ async def _load_model_impl(
         extra_llama_args: Optional[list[str]] = (
             None if request.llama_extra_args is None else extra_llama_args
         )
+        if spark_planned and extra_llama_args:
+            # The split block spark_serving appended (its --rpc) is ours, not the caller's path.
+            from core.inference.spark_serving import strip_layer_split_extra_args
+            _caller_args = strip_layer_split_extra_args(extra_llama_args)
+        else:
+            _caller_args = extra_llama_args
         _refuse_managed_custom_projector(
-            extra_llama_args, request.model_path, request._override_alias_id, request.gguf_variant
+            _caller_args, request.model_path, request._override_alias_id, request.gguf_variant
         )
 
         _reasoning_updates = {}
