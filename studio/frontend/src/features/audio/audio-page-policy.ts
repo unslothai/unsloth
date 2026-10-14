@@ -446,9 +446,8 @@ export function deleteCoversRememberedModel(
   return remembered === deleted || remembered.startsWith(`${deleted}/`);
 }
 
-/** Delete markers a settled listing newer than the delete has now been judged against. Each
- *  marker keeps its delete time; a listing counts only once every Hub cache fetch behind it was
- *  sent after that, since the local listing alone lands first with the old cache rows. */
+/** Delete markers spent by a settled listing whose Hub cache fetches were all sent after the
+ *  delete; the undebounced local listing lands first beside the old cache rows. */
 export function settledDeleteMarkers(
   markers: ReadonlyMap<string, number>,
   inventory: { settled: boolean; error: boolean; refreshStartedAt: number | null },
