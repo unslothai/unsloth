@@ -186,8 +186,18 @@ class BlockDiffusionProfile(DiffusionProfile):
         p = low + (high - low) * torch.rand(batch, device = clean.device)
         masked = (torch.rand(batch, length, device = clean.device) < p[:, None]) & maskable
         if self.defaults.get("ensure_masked", False):
-            # Rescue draw taken every step (fixed shape, no host sync); it only changes rows left empty.
+            # SDAR retries the joint (p, mask) draw up to ten times before forcing a token.
+            # Fixed-shape draws avoid host sync; only rows still empty accept each retry.
             empty = maskable.any(dim = 1) & ~masked.any(dim = 1)
+            for _ in range(9):
+                retry_p = low + (high - low) * torch.rand(batch, device = clean.device)
+                retry_masked = (
+                    torch.rand(batch, length, device = clean.device) < retry_p[:, None]
+                ) & maskable
+                p = torch.where(empty, retry_p, p)
+                masked = torch.where(empty[:, None], retry_masked, masked)
+                empty = empty & ~masked.any(dim = 1)
+            # Keep the final draw's p for the reference's exhausted-retry fallback.
             scores = torch.rand(batch, length, device = clean.device).masked_fill(~maskable, -1.0)
             pick = F.one_hot(scores.argmax(dim = 1), length).bool()
             masked = masked | (pick & empty[:, None])
