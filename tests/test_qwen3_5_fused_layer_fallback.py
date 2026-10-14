@@ -206,3 +206,31 @@ def test_opaque_fla_op_matches_fla_function():
         assert M._fla_ops(lambda: (q, k, v, g, beta)) is False
     finally:
         M._chunk_meta = orig
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "NF4 kernels need a GPU")
+def test_nf4_lora_projection_matches_peft():
+    bnb = pytest.importorskip("bitsandbytes")
+    peft = pytest.importorskip("peft")
+    M = pytest.importorskip("unsloth.models._qwen3_5_layer")
+    from unsloth.kernels import utils as K
+
+    if not K._USE_NF4_KERNELS:
+        pytest.skip("Unsloth NF4 Triton kernels unavailable")
+    torch.manual_seed(0)
+    lin = torch.nn.Linear(256, 512, bias = False)
+    q = bnb.nn.Linear4bit(256, 512, bias = False, compute_dtype = torch.float32, quant_type = "nf4")
+    q.weight = bnb.nn.Params4bit(lin.weight.data.clone(), requires_grad = False, quant_type = "nf4")
+    model = torch.nn.Sequential(q).cuda()
+    # peft's LoRA wrapper for bitsandbytes is also named Linear4bit: it must keep its adapter.
+    model = peft.get_peft_model(model, peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["0"]))
+    wrapped = model.base_model.model[0]
+    with torch.no_grad():
+        wrapped.lora_B["default"].weight.normal_(std = 0.05)
+    params = M._lora_params(wrapped)
+    assert params is not None and type(params[0]) is tuple and params[1] is not None
+    x = torch.randn(3, 7, 256, device = "cuda")
+    ref = wrapped(x)
+    out = torch.compile(M._linear, fullgraph = True)(x, params)
+    torch.testing.assert_close(out, ref, rtol = 1e-4, atol = 1e-4)
+    assert M._lora_params(model.base_model.model[0].base_layer)[1] is None

@@ -17,8 +17,8 @@ runs as an opaque custom op with its own backward (`unsloth::qwen3_5_gdn_chunk`)
 bit-equal to fla's autograd.Function on the first real layer before it is used.
 
 Weights are inputs, so one graph per region serves every layer. Training / no-cache path
-only, with plain nn.Linear or vanilla single-adapter LoRA projections; anything else
-(cache, packed batches, quantized or merged layers, DoRA, dropout) runs the stock forward.
+only, with plain nn.Linear / bitsandbytes NF4 bases or vanilla single-adapter LoRA projections;
+anything else (cache, packed batches, other quantized formats, merged layers, DoRA, dropout) runs the stock forward.
 """
 
 import sys
@@ -56,8 +56,24 @@ def _rmsnorm(x, weight, eps: float):
 
 
 def _linear(x, p):
-    """nn.Linear, or peft lora.Linear as unsloth's generated `Linear_peft_forward` computes it."""
+    """nn.Linear, or peft lora.Linear as unsloth's generated `Linear_peft_forward` computes it.
+    A tuple W is an NF4 weight, dequantized in-graph by unsloth's traceable Triton kernel."""
     W, A, B, scaling = p
+    if type(W) is tuple:
+        W = torch.ops.unsloth.dequantize_nf4(*W)
+        if A is None:
+            return F.linear(x.to(W.dtype), W)
+        # Linear4bit_peft_forward's lora_forward: the adapter runs in the base output's dtype.
+        result = F.linear(x.to(W.dtype), W)
+        xA = x.to(result.dtype) @ A.to(result.dtype).t()
+        shape = result.shape
+        return torch.addmm(
+            result.view(-1, shape[-1]),
+            xA.view(-1, xA.shape[-1]),
+            B.to(result.dtype).t(),
+            alpha = scaling,
+            beta = 1,
+        ).view(shape)
     if A is None:
         return F.linear(x, W)
     autocast = torch.is_autocast_enabled()
@@ -442,16 +458,53 @@ def _lora_params(m):
         if not m.disable_adapters and not m.merged and m.active_adapters == adapters:
             return params
     params = _lora_params_uncached(m)
-    if params is not None and type(m) is not nn.Linear:
+    if params is not None and type(m) is not nn.Linear and hasattr(m, "active_adapters"):
         m._unsloth_lora_params_cache = (params, list(m.active_adapters))
     return params
+
+
+def _is_bnb_4bit(m):
+    cls = type(m)
+    return cls.__name__ == "Linear4bit" and cls.__module__.startswith("bitsandbytes")
+
+
+def _nf4_spec(m):
+    """dequantize_nf4 op arguments for a bitsandbytes NF4 Linear4bit, else None."""
+    # peft's LoRA wrapper is also called Linear4bit: only bitsandbytes' own class is a base.
+    if not _is_bnb_4bit(m) or getattr(m, "bias", None) is not None:
+        return None
+    try:
+        from ..kernels import utils as K
+
+        if not K._USE_NF4_KERNELS:
+            return None
+        W = m.weight
+        qs = getattr(W, "quant_state", None)
+        if qs is None or type(qs) is list or K._quant_type(qs) != "nf4":
+            return None
+        absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = (
+            K._unpack_quant_state(qs)
+        )
+        return (W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, list(shape), dtype)
+    except Exception:
+        return None
+
+
+def _base_weight(base):
+    if type(base) is nn.Linear:
+        return base.weight if base.bias is None else None
+    return _nf4_spec(base)
 
 
 def _lora_params_uncached(m):
     if type(m) is nn.Linear:
         return None if m.bias is not None else (m.weight, None, None, 1.0)
+    if _is_bnb_4bit(m):
+        W = _nf4_spec(m)
+        return None if W is None else (W, None, None, 1.0)
     base = getattr(m, "base_layer", None)
-    if type(base) is not nn.Linear or base.bias is not None:
+    W = _base_weight(base)
+    if W is None:
         return None
     if getattr(m, "disable_adapters", False) or getattr(m, "merged", False):
         return None
@@ -468,7 +521,7 @@ def _lora_params_uncached(m):
         return None
     if type(m.lora_dropout[name]) is not nn.Identity:
         return None
-    return (base.weight, lora_A.weight, lora_B.weight, float(m.scaling[name]))
+    return (W, lora_A.weight, lora_B.weight, float(m.scaling[name]))
 
 
 def _block_type(layer):
