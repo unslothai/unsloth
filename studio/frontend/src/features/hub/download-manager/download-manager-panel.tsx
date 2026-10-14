@@ -189,13 +189,15 @@ function StatusLine({ job }: { job: ManagedDownload }) {
 
 function DownloadRow({
   jobKey,
-  starting,
+  pendingStart,
 }: {
   jobKey: string;
-  starting: boolean;
+  pendingStart?: PendingStart;
 }) {
   const job = useDownloadManagerStore((state) => state.jobs[jobKey]);
   if (!job) return null;
+  const starting = pendingStart !== undefined;
+  const subject = pendingStart ?? job;
   const active = job.state === "running" || job.state === "cancelling";
   const terminal =
     job.state === "complete" ||
@@ -205,7 +207,7 @@ function DownloadRow({
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
-        <RowTitle job={job} />
+        <RowTitle job={subject} />
         {job.state === "complete" && !starting && (
           <HugeiconsIcon
             icon={CheckmarkCircle02Icon}
@@ -248,7 +250,7 @@ function DownloadRow({
           </TooltipContent>
         </Tooltip>
       </div>
-      <RowDetail job={job} />
+      <RowDetail job={subject} />
       {active ? (
         <DownloadProgressBar
           progress={progress}
@@ -258,7 +260,7 @@ function DownloadRow({
           activity={job.activity}
         />
       ) : null}
-      {job.details?.length ? (
+      {!starting && job.details?.length ? (
         <details className="text-ui-11">
           <summary>Installation details</summary>
           <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-all">
@@ -300,7 +302,9 @@ export function DownloadManagerPanel({
   const pendingStarts = usePendingStarts((s) => s.starts);
   const pending = visiblePendingStarts(pendingStarts, jobs, queued);
   const unlistedStarts = pending.filter((start) => !(start.key in jobs));
-  const startingKeys = new Set(pending.map((start) => start.key));
+  const startingByKey = new Map(
+    pending.map((start) => [start.key, start] as const),
+  );
   const activeCount =
     useDownloadManagerStore(selectActiveJobCount) +
     queued.length +
@@ -376,7 +380,7 @@ export function DownloadManagerPanel({
               <DownloadRow
                 key={jobKey}
                 jobKey={jobKey}
-                starting={startingKeys.has(jobKey)}
+                pendingStart={startingByKey.get(jobKey)}
               />
             ))}
             {queued.map((entry, i) => <li key={`${entry.planId}:${i}`} className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">

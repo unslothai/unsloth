@@ -263,7 +263,7 @@ test("a restart inside a finished row's linger keeps that row and marks it start
   removeJob(key);
 });
 
-test("the panel derives a start's own row and a listed row's starting state from the same visible set", () => {
+test("the panel derives a start's own row and a listed row's starting state from the same visible set, and a reused row describes the pending start", () => {
   const panel = readSrc("features/hub/download-manager/download-manager-panel.tsx");
   assert.match(
     panel,
@@ -271,7 +271,11 @@ test("the panel derives a start's own row and a listed row's starting state from
   );
   assert.match(
     panel,
-    /const startingKeys = new Set\(pending\.map\(\(start\) => start\.key\)\)/,
+    /const startingByKey = new Map\(\s*pending\.map\(\(start\) => \[start\.key, start\] as const\),?\s*\)/,
   );
-  assert.match(panel, /starting=\{startingKeys\.has\(jobKey\)\}/);
+  assert.match(panel, /pendingStart=\{startingByKey\.get\(jobKey\)\}/);
+  assert.match(panel, /const subject = pendingStart \?\? job/);
+  assert.match(panel, /<RowTitle job=\{subject\} \/>/);
+  assert.match(panel, /<RowDetail job=\{subject\} \/>/);
+  assert.match(panel, /\{!starting && job\.details\?\.length \? \(/);
 });
