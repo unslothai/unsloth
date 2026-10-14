@@ -3060,6 +3060,26 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
     torch.cuda.synchronize(onload)
 
 
+def _unwind_group_offload(pipe: Any, snapshots: list, logger: Any = None) -> bool:
+    """Undo a partial ``_apply_group_offload``: group hooks, the prefetchers' torch hooks and attributes, deferred
+    pins. The weights stay where the hooks left them (host copies or the card); the caller's retry moves them."""
+    try:
+        from .diffusion_offload_prefetch import PREFETCHER_ATTR
+        from .diffusion_small_host import ENCODER_PREFETCH_ATTR
+
+        for module, before in snapshots:
+            _remove_group_offload_hooks(module)
+            _drop_module_forward_hooks_since(module, before)
+            for attr in (PREFETCHER_ATTR, ENCODER_PREFETCH_ATTR, "_unsloth_stream_state"):
+                module.__dict__.pop(attr, None)
+            _drop_deferred_pinning(pipe, module)
+        return bool(snapshots)
+    except Exception as exc:  # noqa: BLE001 - the original failure propagates
+        if logger is not None:
+            logger.warning("diffusion.memory: could not unwind partial group offload (%s)", exc)
+        return False
+
+
 def _is_text_encoder_module(pipe: Any, module: Any) -> bool:
     for name, component in (getattr(pipe, "components", {}) or {}).items():
         if component is module:
@@ -4309,6 +4329,8 @@ def _apply_group_offload(
     if not stream_transformer and not stream_text_encoders:
         return False
     installed = 0
+    # every component's torch forward hooks before this call: an OOM after hooks exist unwinds to this state
+    hook_snapshots: list = []
     try:
         import inspect
 
@@ -4317,6 +4339,11 @@ def _apply_group_offload(
 
         install_group_offload_buffer_restore()
         install_group_offload_hooks_eager()
+        hook_snapshots = [
+            (comp, _module_forward_hook_ids(comp))
+            for comp in (getattr(pipe, "components", {}) or {}).values()
+            if isinstance(comp, torch.nn.Module)
+        ]
 
         # A dual-DiT pipeline (Ideogram 4) carries a second denoiser as large as the first, so stream every DiT and keep
         # only smaller companions resident.
@@ -4491,6 +4518,10 @@ def _apply_group_offload(
                 module.to(onload)
         return True
     except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
+        if installed and _is_oom(exc) and _unwind_group_offload(pipe, hook_snapshots, logger):
+            # An OOM after some hooks exist (a later DiT, an encoder moved resident): every hook is gone again, so
+            # the caller's one lower-residency retry can run instead of the load failing.
+            installed = 0
         if installed:
             # An earlier streamed module already has hooks but a later one failed: the pipe is in a PARTIAL
             # group-offload state enable_model_cpu_offload rejects, so propagate the real failure instead of a

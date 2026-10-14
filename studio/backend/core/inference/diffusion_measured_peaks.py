@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Learned activation peaks: the real CUDA peak above the resident weights, recorded per
-(family, denoiser quant, speed tier, resolution bucket, frames) at a successful render and persisted under the
-Studio cache dir, so later loads of the same model place it from a measurement instead of the flat
+(family, denoiser quant, speed tier, resolution bucket, frames, GPU name) at a successful render and persisted under
+the Studio cache dir, so later loads of the same model place it from a measurement instead of the flat
 8192 MiB/MP estimate.
 
 The static tables in ``diffusion_memory`` stay the seed: a learned value only RAISES a seeded peak (a local
@@ -17,6 +17,7 @@ names the JSON file (default ``<studio cache>/diffusion_measured_peaks.json``).
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -39,12 +40,7 @@ _cache: dict[str, Any] = {"path": None, "mtime": None, "data": None}
 
 
 def enabled() -> bool:
-    return (os.environ.get(LEARNED_PEAKS_ENV) or "").strip().lower() not in (
-        "0",
-        "off",
-        "false",
-        "no",
-    )
+    return (os.environ.get(LEARNED_PEAKS_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
 def store_path() -> Optional[Path]:
@@ -61,11 +57,7 @@ def store_path() -> Optional[Path]:
         return None
 
 
-def resolution_bucket(
-    width: Optional[int],
-    height: Optional[int],
-    batch_size: int = 1,
-) -> int:
+def resolution_bucket(width: Optional[int], height: Optional[int], batch_size: int = 1) -> int:
     """Pixels of the power-of-two megapixel bucket covering ``width x height x batch`` (at least 1/4 MP)."""
     pixels = max(1, int(width or 1024)) * max(1, int(height or 1024)) * max(1, int(batch_size or 1))
     if pixels <= _MIN_BUCKET_PIXELS:
@@ -78,13 +70,17 @@ def model_key(
     quant: Optional[str],
     speed_mode: Optional[str],
     frames: int = 1,
+    device: Optional[str] = None,
 ) -> str:
+    """``device``: the GPU's name. Kernels and workspaces differ by card, so a heterogeneous host keeps one set of
+    peaks per card model instead of placing one GPU from another's measurement."""
     return "|".join(
         (
             str(family or "unknown").lower(),
             str(quant or "unknown"),
             str(speed_mode or "unknown"),
             f"f{max(1, int(frames or 1))}",
+            str(device or "unknown"),
         )
     )
 
@@ -93,25 +89,42 @@ def _empty() -> dict:
     return {"version": _VERSION, "entries": {}}
 
 
-def _read(path: Path) -> dict:
+def _read(path: Path, fresh: bool = False) -> dict:
     try:
         mtime = path.stat().st_mtime_ns
     except OSError:
         return _empty()
-    if _cache["path"] == str(path) and _cache["mtime"] == mtime and _cache["data"] is not None:
+    if not fresh and _cache["path"] == str(path) and _cache["mtime"] == mtime and _cache["data"] is not None:
         return _cache["data"]
     try:
         data = json.loads(path.read_text())
-        if (
-            not isinstance(data, dict)
-            or data.get("version") != _VERSION
-            or not isinstance(data.get("entries"), dict)
-        ):
+        if not isinstance(data, dict) or data.get("version") != _VERSION or not isinstance(data.get("entries"), dict):
             data = _empty()
     except Exception:  # noqa: BLE001 - a corrupt file is an empty store, never a failed load
         data = _empty()
     _cache.update(path = str(path), mtime = mtime, data = data)
     return data
+
+
+@contextlib.contextmanager
+def _file_lock(path: Path):
+    """Exclusive lock on ``<store>.lock`` across processes sharing the cache root (two Studio servers, a worker), so a
+    read / merge / replace cannot overwrite another process's higher peak. Advisory; held only for the merge."""
+    path.parent.mkdir(parents = True, exist_ok = True)
+    handle = open(str(path) + ".lock", "a+b")
+    try:
+        try:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        except ImportError:  # Windows
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        yield
+    finally:
+        handle.close()  # closing releases either lock
 
 
 def _write(path: Path, data: dict) -> None:
@@ -148,11 +161,12 @@ def record(
     path = store_path()
     if path is None:
         return False
-    key = model_key(family, quant, speed_mode, frames)
+    device_name = device_name or current_device_name()
+    key = model_key(family, quant, speed_mode, frames, device_name)
     bucket = str(resolution_bucket(width, height, batch_size))
     try:
-        with _lock:
-            data = _read(path)
+        with _lock, _file_lock(path):
+            data = _read(path, fresh = True)
             entries = data.setdefault("entries", {})
             entry = entries.setdefault(key, {"peaks": {}})
             peaks = entry.setdefault("peaks", {})
@@ -161,7 +175,7 @@ def record(
                 return False
             peaks[bucket] = int(peak_mib)
             if device_name:
-                entry["device"] = str(device_name)
+                entry["device"] = str(device_name)  # also in the key; kept for readers of the file
             if len(entries) > _MAX_ENTRIES:
                 for stale in list(entries)[: len(entries) - _MAX_ENTRIES]:
                     entries.pop(stale, None)
@@ -180,8 +194,10 @@ def lookup(
     height: Optional[int] = None,
     batch_size: int = 1,
     frames: int = 1,
+    device: Optional[str] = None,
 ) -> Optional[int]:
     """Learned peak MiB (no margin) for a request of this size, or None when nothing was recorded.
+    ``device`` (GPU name) defaults to the current CUDA device, the one the planner snapshots.
 
     The smallest recorded bucket at or above the request's bucket answers as is (an overestimate); with only smaller
     buckets recorded, the largest one is scaled linearly by pixel count."""
@@ -192,12 +208,9 @@ def lookup(
         return None
     try:
         with _lock:
-            entry = (_read(path).get("entries") or {}).get(
-                model_key(family, quant, speed_mode, frames)
-            )
-        peaks = {
-            int(k): int(v) for k, v in ((entry or {}).get("peaks") or {}).items() if int(v) > 0
-        }
+            key = model_key(family, quant, speed_mode, frames, device or current_device_name())
+            entry = (_read(path).get("entries") or {}).get(key)
+        peaks = {int(k): int(v) for k, v in ((entry or {}).get("peaks") or {}).items() if int(v) > 0}
     except Exception:  # noqa: BLE001
         return None
     if not peaks:
@@ -218,8 +231,8 @@ def record_work(key: Any, work: int, peak_mib: int) -> bool:
     if path is None:
         return False
     try:
-        with _lock:
-            data = _read(path)
+        with _lock, _file_lock(path):
+            data = _read(path, fresh = True)
             table = data.setdefault("work", {})
             peaks = table.setdefault(repr(key), {})
             old = int(peaks.get(str(int(work))) or 0)
@@ -276,6 +289,7 @@ class PeakProbe:
             return None
         try:
             import torch
+
             torch.cuda.synchronize(self.device)
             peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
         except Exception:  # noqa: BLE001
@@ -283,9 +297,22 @@ class PeakProbe:
         return -(-peak // (1024 * 1024)) if peak > 0 else None
 
 
+def current_device_name() -> Optional[str]:
+    """Name of the current CUDA device (None without CUDA); the planner's snapshot reads this device."""
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+    except Exception:  # noqa: BLE001
+        return None
+    return device_name("cuda")
+
+
 def device_name(device: Any) -> Optional[str]:
     try:
         import torch
+
         return str(torch.cuda.get_device_name(torch.device(device)))
     except Exception:  # noqa: BLE001
         return None

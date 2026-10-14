@@ -56,6 +56,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.delenv(dm.MEASURED_ACTIVATION_ENV, raising = False)
     monkeypatch.delenv(dm.PARTIAL_RESIDENT_ENV, raising = False)
     mp._cache.update(path = None, mtime = None, data = None)
+    monkeypatch.setattr(mp, "current_device_name", lambda: "NVIDIA L4", raising = False)  # the planner's card
     return path
 
 
@@ -67,12 +68,7 @@ def klein_pipe(monkeypatch, store):
     return types.SimpleNamespace()
 
 
-def _refine(
-    pipe,
-    plan,
-    family = "flux.2-klein",
-    speed = "default",
-):
+def _refine(pipe, plan, family = "flux.2-klein", speed = "default"):
     return dm.refine_plan_from_loaded_weights(pipe, plan, family = family, speed_mode = speed)
 
 
@@ -93,11 +89,7 @@ def test_family_missing_from_peak_table_is_seeded_from_phase_calibration(store):
 
 def test_klein_16gb_keeps_whole_dit_resident(klein_pipe):
     plan = _klein_flat_plan()
-    assert (
-        plan.offload_policy == dm.OFFLOAD_GROUP
-        and plan.stream_text_encoders
-        and plan.stream_transformer
-    )
+    assert plan.offload_policy == dm.OFFLOAD_GROUP and plan.stream_text_encoders and plan.stream_transformer
     assert plan.resident_transformer_mib is None
     new = _refine(klein_pipe, plan)
     assert new is not plan
@@ -120,14 +112,12 @@ def test_bucket_is_power_of_two_megapixels():
 def test_record_keeps_max_and_survives_a_fresh_process(store):
     kw = dict(family = "flux.2-klein", quant = "torchao:Int8Tensor", speed_mode = "default")
     assert mp.lookup(**kw) is None
-    assert mp.record(**kw, width = 1024, height = 1024, peak_mib = 2000, device_name = "L4")
+    assert mp.record(**kw, width = 1024, height = 1024, peak_mib = 2000, device_name = "NVIDIA L4")
     assert not mp.record(**kw, width = 1024, height = 1024, peak_mib = 1500)  # never lowered
     assert mp.record(**kw, width = 1024, height = 1024, peak_mib = 2600)
     mp._cache.update(path = None, mtime = None, data = None)  # what a new process sees
     data = json.loads(store.read_text())
-    assert data["entries"]["flux.2-klein|torchao:Int8Tensor|default|f1"]["peaks"] == {
-        "1048576": 2600
-    }
+    assert data["entries"]["flux.2-klein|torchao:Int8Tensor|default|f1|NVIDIA L4"]["peaks"] == {"1048576": 2600}
     assert mp.lookup(**kw, width = 1024, height = 1024) == 2600
     # a smaller request answers from the covering bucket, a larger one scales the largest linearly
     assert mp.lookup(**kw, width = 512, height = 512) == 2600
@@ -154,23 +144,17 @@ def test_learned_peak_raises_a_seed_but_never_lowers_it(store):
     assert seed == 3072
     kw = dict(family = "flux.2-klein", quant = "torchao:Int8Tensor", speed_mode = "default")
     mp.record(**kw, width = 1024, height = 1024, peak_mib = 1000)
-    assert (
-        dm.measured_image_runtime_mib("flux.2-klein", "default", quant = "torchao:Int8Tensor") == 3072
-    )
+    assert dm.measured_image_runtime_mib("flux.2-klein", "default", quant = "torchao:Int8Tensor") == 3072
     mp.record(**kw, width = 1024, height = 1024, peak_mib = 4000)
     # 4000 x 1.15 = 4600 -> 4608
-    assert (
-        dm.measured_image_runtime_mib("flux.2-klein", "default", quant = "torchao:Int8Tensor") == 4608
-    )
+    assert dm.measured_image_runtime_mib("flux.2-klein", "default", quant = "torchao:Int8Tensor") == 4608
     # without a quant label (callers that never measured) the seed alone answers
     assert dm.measured_image_runtime_mib("flux.2-klein", "default") == 3072
 
 
 def test_unseeded_family_is_placed_from_its_learned_peak_on_the_next_load(klein_pipe):
     plan = _klein_flat_plan()
-    assert (
-        _refine(klein_pipe, plan, family = "some-new-dit") is plan
-    )  # nothing measured yet: flat plan
+    assert _refine(klein_pipe, plan, family = "some-new-dit") is plan  # nothing measured yet: flat plan
     mp.record(
         family = "some-new-dit",
         quant = "torchao:Int8Tensor",
@@ -273,9 +257,7 @@ def test_transient_setup_oom_replans_once_at_lower_residency(monkeypatch):
     def fake_apply(pipe, device, logger, **kw):
         calls.append(kw)
         if len(calls) == 1:
-            dm._set_group_offload_failure(
-                pipe, _OOM("CUDA out of memory. Tried to allocate 20.00 MiB")
-            )
+            dm._set_group_offload_failure(pipe, _OOM("CUDA out of memory. Tried to allocate 20.00 MiB"))
             return False
         return True
 
@@ -338,11 +320,7 @@ def test_background_pinner_pins_gguf_host_copies():
 
 
 class _Probe:
-    def __init__(
-        self,
-        peak,
-        failed = 0,
-    ):
+    def __init__(self, peak, failed = 0):
         self.device = "cuda:0"
         self.failed_captures = failed
         self._peak = peak
@@ -356,26 +334,15 @@ def test_render_records_its_peak_unless_a_capture_failed(store, monkeypatch):
     import core.inference.diffusion_cuda_graph as cg
 
     monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
-    pipe = types.SimpleNamespace(
-        _unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default")
-    )
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default"))
     state = types.SimpleNamespace(pipe = pipe)
     kw = dict(family = "flux.2-klein", quant = "torchao:Int8Tensor", speed_mode = "default")
     monkeypatch.setattr(cg, "failed_capture_count", lambda: 1)
-    diffusion._record_peak_probe(
-        state, _Probe(5000, failed = 0), width = 1024, height = 1024, batch_size = 1
-    )
+    diffusion._record_peak_probe(state, _Probe(5000, failed = 0), width = 1024, height = 1024, batch_size = 1)
     assert mp.lookup(**kw) is None  # an absorbed capture OOM: the peak is the failed attempt's
-    diffusion._record_peak_probe(
-        state, _Probe(2400, failed = 1), width = 1024, height = 1024, batch_size = 1
-    )
+    diffusion._record_peak_probe(state, _Probe(2400, failed = 1), width = 1024, height = 1024, batch_size = 1)
     assert mp.lookup(**kw) == 2400
-    assert (
-        json.loads(store.read_text())["entries"]["flux.2-klein|torchao:Int8Tensor|default|f1"][
-            "device"
-        ]
-        == "NVIDIA L4"
-    )
+    assert json.loads(store.read_text())["entries"]["flux.2-klein|torchao:Int8Tensor|default|f1|NVIDIA L4"]["device"] == "NVIDIA L4"
 
 
 # ---------------------------------------------------------------------------------------------------- tied weights
@@ -474,11 +441,98 @@ def test_resident_dit_plan_clamps_encoder_room_and_says_so(klein_pipe):
     """L4 (22.5 GB): the flat plan already kept the DiT resident; the encoder room exceeded the encoders and the log
     read '0 MiB of the transformer and 10970 MiB of the 7673 MiB encoders'."""
     plan = _klein_flat_plan(budget_mib = 19500, total_mib = 23034)
-    assert (
-        plan.offload_policy == dm.OFFLOAD_GROUP
-        and not plan.stream_transformer
-        and plan.stream_text_encoders
-    )
+    assert plan.offload_policy == dm.OFFLOAD_GROUP and not plan.stream_transformer and plan.stream_text_encoders
     new = _refine(klein_pipe, plan)
     assert new.resident_text_encoder_mib == 7629
     assert "transformer is resident" in new.reasons[-1]
+
+
+# ---------------------------------------------------------------------------------------------------- review follow-ups
+
+
+def test_render_served_by_a_conditioning_cache_is_not_recorded(store, monkeypatch):
+    """A cache hit skips the text encoder: an unseeded family would place its next load from the smaller peak."""
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
+    stats = {"hits": 0, "misses": 1}
+    pipe = types.SimpleNamespace(
+        _unsloth_peak_identity = ("some-new-dit", "torchao:Int8Tensor", "default"), _unsloth_cond_cache_stats = stats
+    )
+    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0")
+    probe = _Probe(1800)
+    probe.conditioning_hits = diffusion._conditioning_cache_hits(pipe)
+    stats["hits"] += 1  # this render's prompt came from the cache
+    diffusion._record_peak_probe(state, probe, width = 1024, height = 1024, batch_size = 1)
+    kw = dict(family = "some-new-dit", quant = "torchao:Int8Tensor", speed_mode = "default")
+    assert mp.lookup(**kw) is None
+    probe = _Probe(2600)
+    probe.conditioning_hits = diffusion._conditioning_cache_hits(pipe)
+    diffusion._record_peak_probe(state, probe, width = 1024, height = 1024, batch_size = 1)
+    assert mp.lookup(**kw) == 2600
+
+
+def test_learned_peaks_are_kept_per_gpu_model(store):
+    kw = dict(family = "some-new-dit", quant = "torchao:Int8Tensor", speed_mode = "default", width = 1024, height = 1024)
+    mp.record(**kw, peak_mib = 2600, device_name = "NVIDIA L4")
+    assert mp.lookup(**kw, device = "NVIDIA L4") == 2600
+    assert mp.lookup(**kw, device = "NVIDIA GeForce RTX 4090") is None
+
+
+def test_peak_store_update_waits_for_another_process_lock(store):
+    """The read / merge / replace takes an interprocess lock, so a concurrent writer cannot replace a higher peak."""
+    fcntl = pytest.importorskip("fcntl")
+    import threading
+
+    store.parent.mkdir(parents = True, exist_ok = True)
+    kw = dict(family = "some-new-dit", quant = "q", speed_mode = "default", width = 1024, height = 1024)
+    done = threading.Event()
+    with open(str(store) + ".lock", "a+b") as other:  # a separate open file description, like another process
+        fcntl.flock(other.fileno(), fcntl.LOCK_EX)
+        worker = threading.Thread(target = lambda: (mp.record(**kw, peak_mib = 2000, device_name = "g"), done.set()))
+        worker.start()
+        assert not done.wait(0.5)  # blocked behind the other writer's lock
+        fcntl.flock(other.fileno(), fcntl.LOCK_UN)
+    worker.join(10)
+    assert done.is_set() and mp.lookup(**kw, device = "g") == 2000
+
+
+def test_oom_after_partial_hooks_unwinds_and_replans(monkeypatch):
+    """An OOM on the second DiT after the first had hooks used to re-raise past the lower-residency retry."""
+    torch = pytest.importorskip("torch")
+    hooks = pytest.importorskip("diffusers.hooks")
+    from diffusers.hooks.hooks import HookRegistry, ModelHook
+
+    calls = []
+    marker = "_test_group_marker"
+
+    def fake_apply(module, **kw):
+        calls.append(module)
+        if module is pipe.transformer_2 and calls.count(module) == 1:
+            raise _OOM("CUDA out of memory. Tried to allocate 64.00 MiB")
+        HookRegistry.check_if_exists_or_initialize(module).register_hook(ModelHook(), marker)
+
+    monkeypatch.setattr(hooks, "apply_group_offloading", fake_apply)
+    monkeypatch.setattr(dm, "install_group_offload_buffer_restore", lambda: None)
+    monkeypatch.setattr(dm, "install_group_offload_hooks_eager", lambda: None)
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    real_remove = dm._remove_group_offload_hooks
+
+    def remove(module):
+        real_remove(module)
+        registry = getattr(module, "_diffusers_hook", None)
+        if registry is not None and registry.get_hook(marker) is not None:
+            registry.remove_hook(marker, recurse = True)
+
+    monkeypatch.setattr(dm, "_remove_group_offload_hooks", remove)
+    a, b, te = torch.nn.Linear(4, 4), torch.nn.Linear(4, 4), torch.nn.Linear(4, 4)
+    pipe = types.SimpleNamespace(
+        transformer = a, transformer_2 = b, components = {"transformer": a, "transformer_2": b, "text_encoder": te}
+    )
+    plan = dm.replace(_resident_dit_plan(), stream_transformer = True, stream_text_encoders = False)
+    policy, _ = dm.apply_memory_plan(pipe, plan, device = "cpu")
+    assert policy == dm.OFFLOAD_GROUP
+    assert dm.applied_plan(pipe, plan).estimates["setup_oom_retry"]
+    assert calls[:2] == [a, b] and calls[2:4] == [a, b]  # unwound, then both DiTs streamed again

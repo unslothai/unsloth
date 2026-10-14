@@ -1976,9 +1976,26 @@ def _start_peak_probe(state: Any) -> Any:
         if probe.device is None:
             return None
         probe.failed_captures = cuda_graph.failed_capture_count()
+        probe.conditioning_hits = _conditioning_cache_hits(pipe)
         return probe
     except Exception:  # noqa: BLE001 - measurement only
         return None
+
+
+def _conditioning_cache_hits(pipe: Any) -> int:
+    """Encodes served from the in-memory prompt cache or the persistent conditioning cache so far: a render with a
+    hit skipped the text-encoder phase, so its peak covers only part of what a new prompt needs."""
+    hits = 0
+    try:
+        cache = prompt_cache.cache_for(pipe)
+        if cache is not None:
+            hits += int(cache.stats.get("hits", 0))
+        stats = getattr(pipe, "_unsloth_cond_cache_stats", None)
+        if isinstance(stats, dict):
+            hits += int(stats.get("hits", 0))
+    except Exception:  # noqa: BLE001 - measurement only
+        pass
+    return hits
 
 
 def _record_peak_probe(
@@ -1996,6 +2013,10 @@ def _record_peak_probe(
             return
         if cuda_graph.failed_capture_count() != getattr(probe, "failed_captures", 0):
             # a capture failed (an absorbed OOM): the peak is the failed attempt's, not the render's need
+            return
+        if _conditioning_cache_hits(state.pipe) != getattr(probe, "conditioning_hits", 0):
+            # a cached prompt skipped the text encoder: the peak misses that phase, and an unseeded family places
+            # its next load from this value alone
             return
         family, quant, speed_mode = identity
         if record(
