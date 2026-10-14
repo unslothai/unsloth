@@ -35,14 +35,14 @@ _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\
     r"[ \t]", _HSPACE
 )
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*[:=,]|\]?[ \t]*[:=])(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
+    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])|\]?[ \t]*(?:=>|[:=]))(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
     (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)""".replace(
         r"[ \t]", _HSPACE
     )
 )
 # Multi-value header maps: {"Authorization": ["Basic a", "Basic b"]}.
 _QUERY_AUTHORIZATION_ARRAY = re.compile(
-    r"""(?i)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?\s*[:=,]|\]?\s*[:=])\s*\[(?P<members>[^\[\]]*)\]"""
+    r"""(?i)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?\s*(?:=>|[:=,])|\]?\s*(?:=>|[:=]))\s*\[(?P<members>[^\[\]]*)\]"""
 )
 _ARRAY_MEMBER = re.compile(r"""\\?"((?:[^"\\]|\\.)*?)\\?"|'([^']*)'|“([^”]*)”|‘([^’]*)’""")
 _AUTH_PARAM_PAIR = re.compile(
@@ -266,7 +266,9 @@ def _sanitize_public_query(query: str) -> str:
         # Echoes of identified values, also inside fields like received=YTpi or {"received":"a b"}.
         values = sorted(exact, key = len, reverse = True)
         echo = "|".join(r"\s+".join(map(re.escape, value.split())) for value in values)
-        query = re.sub(rf"(?<![\w.~+-])(?:{echo})(?![\w~+-]|\.[\w~+-])", " ", query)
+        query = re.sub(
+            rf"(?:(?<![\w.~+-])|(?<=%[0-9A-Fa-f]{{2}}))(?:{echo})(?![\w~+-]|\.[\w~+-])", " ", query
+        )
     query = " ".join(query.split()).strip(" ,;:-")[:500]
     if not any(character.isalnum() for character in query):
         raise ValueError("Research query contained only private or credential-like data")

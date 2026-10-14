@@ -288,6 +288,9 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: Basic YTpi response {"received":"YTpi"}'
     )
     assert "YTpi" not in _sanitize_public_query("Authorization: Basic YTpi returned received=YTpi")
+    assert "YTpi" not in _sanitize_public_query(
+        "Authorization: Basic YTpi returned received%3DYTpi"
+    )
     assert _sanitize_public_query("Authorization: design patterns") == "patterns"
     assert _sanitize_public_query("Authorization: RBAC role=admin") == "role=admin"
     for text in (
@@ -302,6 +305,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="] why',
         'headers.set("Authorization", ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="]) why',
         "Authorization: [‘Basic qrstuvwxyzabcdef==’, ‘Basic abcdefghijklmnop==’] why",
+        "['Authorization' => 'Basic abcdefghijklmnop=='] why",
         "Authorization: Digest response=abcdefghijklmnop; server echoed abcdefghijklmnop",
         'headers["Authorization"] = ["Basic qrstuvwxyzabcdef==", "Basic abcdefghijklmnop=="] why',
         '{"Authorization": [\n    "Basic abcdefghijklmnop=="\n  ]} why',
