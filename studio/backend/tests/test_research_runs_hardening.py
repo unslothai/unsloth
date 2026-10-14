@@ -302,6 +302,12 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
             f"Authorization: Bearer {wrapped} why"
         )
     custom = "Authorization: Basic firstsecret1==, ApiKey supersecret why"
+    for text in (
+        "Authorization: Basic firstsecret1==,\r\n Basic supersecret2== why",
+        "Authorization: Basic firstsecret1==, SCRAM-SHA-256 data=supersecret2 why",
+        'Authorization: Basic "supersecret2" why',
+    ):
+        assert "supersecret2" not in _sanitize_public_query(text), text
     assert "supersecret" not in _sanitize_public_query(custom)
     serialized = '{"Authorization":"Basic firstsecret1==, Basic secondsecret2=="} why'
     assert "secondsecret2" not in _sanitize_public_query(serialized)

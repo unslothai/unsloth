@@ -36,11 +36,13 @@ _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\
     r"[ \t]", _HSPACE
 )
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`]*
+    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`"'“‘]*
     (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
-    (?P<more>(?:[ \t]*,[ \t]*(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token
+    (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
+    (?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token
     |[\w-]*(?:key|token|secret|password|credential))[ \t]+
-    (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
+    (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
+    |(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}})[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
         r"[ \t]", _HSPACE
     )
 )
@@ -78,7 +80,8 @@ _REGISTERED_SCHEME_NAMES = frozenset(
 )
 _COALESCED_MEMBER = re.compile(
     r"\s*,\s*(?=(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token"
-    r"|[\w-]*(?:key|token|secret|password|credential))\s)",
+    r"|[\w-]*(?:key|token|secret|password|credential))\s"
+    r"|(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{2,})\s+[\w!#$%&'*+.^`|~-]+\s*=)",
     re.IGNORECASE,
 )
 _TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
