@@ -367,6 +367,7 @@ def test_only_a_render_node_of_the_listed_vendor_counts(monkeypatch, tmp_path):
     assert r._accessible_render_vendors({"amd", "intel"}) == {"amd", "intel"}
     # A virtio-gpu (Venus) node beside the card: unpinned sd.cpp could pick it.
     vendors["renderD130"] = "0x1af4"
+    assert r._accessible_render_vendors({"amd"}) == {"amd"}  # not openable here
     accessible.add("/dev/dri/renderD130")
     assert r._accessible_render_vendors({"amd"}) == set()
     del vendors["renderD130"]

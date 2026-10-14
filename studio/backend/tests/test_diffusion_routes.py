@@ -1435,6 +1435,21 @@ def test_cpu_torch_diffusers_fallback_after_a_vulkan_prediction_skips_arbiter(cl
     assert acquired == []
 
 
+def test_cpu_torch_vulkan_route_on_a_retained_cpu_bundle_skips_arbiter(client, monkeypatch):
+    # The Vulkan install failed after selection and the usable CPU bundle was kept.
+    import core.inference.diffusion_engine_router as router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    backend = diffusion_module.get_diffusion_backend()
+    acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cpu")
+    monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "vulkan")
+    monkeypatch.setattr(sd_backend, "sd_cpp_binaries_all_cpu", lambda: True)
+    resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    assert resp.status_code == 200
+    assert acquired == []
+
+
 def test_gpu_torch_load_on_the_cpu_rung_skips_arbiter(client, monkeypatch):
     # ROCm and Vulkan both recorded unrunnable: the managed CPU bundle runs, so no GPU is taken.
     import core.inference.diffusion_engine_router as router
