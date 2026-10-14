@@ -24,7 +24,7 @@ const button: ElementInfo = {
 let sequence = 0;
 type Result = { ok: boolean; error?: string; text?: string };
 
-function fixture(info: ElementInfo = button, onDescribe?: () => void) {
+function fixture(info: ElementInfo = button, onDescribe?: () => void, allowQuestions = false) {
   const key = `full-access-${++sequence}`;
   useBrowserStore.setState({ tabs: [], activeTabId: null });
   useBrowserStore.getState().openUrl(url, { newTab: true });
@@ -57,7 +57,7 @@ function fixture(info: ElementInfo = button, onDescribe?: () => void) {
   const unsubscribeQuestion = useBrowserAgentStore.subscribe((state) => {
     if (!state.question) return;
     questions.push(state.question.ask);
-    answerQuestion(state.question.id, false);
+    answerQuestion(state.question.id, allowQuestions);
   });
   async function act(patch: Partial<BrowserAction>, bypassPermissions?: boolean) {
     const context: ActionContext & { bypassPermissions?: boolean } = {
@@ -110,6 +110,45 @@ test("Full access does not persist into a later action's permission context", as
   assert.equal((await f.act({ op: "click" }, true)).ok, true);
   assert.equal((await f.act({ op: "click" }, false)).ok, false);
   assert.deepEqual(f.questions, ["click"]);
+});
+
+test("a site opened under Full access needs approval again after leaving Full access", async (t) => {
+  const f = fixture();
+  t.after(f.unsubscribe);
+  const other = "https://new.example.org/";
+  assert.equal((await f.act({ op: "navigate", url: other }, true)).ok, true);
+  assert.equal((await f.act({ op: "navigate", url: `${other}another-page` }, false)).ok, false);
+  assert.deepEqual(f.questions, ["open"]);
+});
+
+test("a Full access arrival does not approve later reads of that site", async (t) => {
+  const f = fixture();
+  t.after(f.unsubscribe);
+  assert.equal((await f.act({ op: "navigate", url: "https://new.example.org/" }, true)).ok, true);
+  assert.equal((await f.act({ op: "snapshot" }, false)).ok, false);
+  assert.deepEqual(f.questions, ["open"]);
+});
+
+for (const op of ["click", "drag"] as const) {
+  test(`a bypassed unlabelled ${op} is not cached as user approval`, async (t) => {
+    const f = fixture({ ...button, role: "element", name: "", tag: "canvas" });
+    t.after(f.unsubscribe);
+    const action = { op, x: 20, y: 20, toX: 30, toY: 30 };
+    assert.equal((await f.act(action, true)).ok, true);
+    assert.equal((await f.act(action, false)).ok, false);
+    assert.deepEqual(f.questions, ["pointer"]);
+  });
+}
+
+test("entering Full access preserves approvals the user actually granted", async (t) => {
+  const f = fixture(button, undefined, true);
+  t.after(f.unsubscribe);
+  const approved = "https://approved.example.org/";
+  assert.equal((await f.act({ op: "navigate", url: approved }, false)).ok, true);
+  assert.deepEqual(f.questions, ["open"]);
+  assert.equal((await f.act({ op: "navigate", url: "https://full-only.example.org/" }, true)).ok, true);
+  assert.equal((await f.act({ op: "navigate", url: approved }, false)).ok, true);
+  assert.deepEqual(f.questions, ["open"]);
 });
 
 test("Full access preserves website policy and explicit browsing blocks", async (t) => {
@@ -166,6 +205,11 @@ test("a browser action payload cannot grant itself Full access", () => {
   assert.ok(action);
   assert.equal("bypassPermissions" in action, false);
   assert.equal("bypass_permissions" in action, false);
+});
+
+test("script settings disclose that Full access skips script approval", async () => {
+  const { en } = await import("../src/i18n/locales/en.ts");
+  assert.match(en.browser.agentSettings.scriptsDescription, /Full access/);
 });
 
 test("the chat adapter forwards its captured Full access flag to the browser action context", () => {

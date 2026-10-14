@@ -59,7 +59,7 @@ export const it = {
       alwaysAllow: "Consenti sempre",
       never: "Mai",
       scripts: "Esegui script",
-      scriptsDescription: "Scegli se i modelli possono eseguire script nelle pagine. Ogni script ti viene mostrato prima dell’esecuzione",
+      scriptsDescription: "Scegli se i modelli possono eseguire script nelle pagine. Ogni script viene mostrato per l’approvazione, tranne in modalità Full access",
       askEveryTime: "Chiedi ogni volta",
       permissionsTitle: "Autorizzazioni dell'agente",
       permissionsDescription: "Scegli i valori predefiniti e aggiungi eccezioni per siti specifici. I campi di password e pagamento non vengono mai compilati, qualunque cosa indichino queste impostazioni.",

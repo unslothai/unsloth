@@ -60,7 +60,7 @@ export const zhCN = {
       alwaysAllow: "始终允许",
       never: "从不",
       scripts: "运行脚本",
-      scriptsDescription: "选择模型是否可以在页面上运行脚本。每个脚本运行前都会先向你显示",
+      scriptsDescription: "选择模型是否可以在页面上运行脚本。除 Full access 模式外，每个脚本都会先显示供你批准",
       askEveryTime: "每次都询问",
       permissionsTitle: "代理权限",
       permissionsDescription: "选择默认设置，并为特定网站添加例外。无论这里如何设置，都不会填写密码和支付信息字段。",

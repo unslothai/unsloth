@@ -60,7 +60,7 @@ export const fr = {
       alwaysAllow: "Toujours autoriser",
       never: "Jamais",
       scripts: "Exécuter des scripts",
-      scriptsDescription: "Choisissez si les modèles peuvent exécuter des scripts sur les pages. Chaque script vous est montré avant de s’exécuter",
+      scriptsDescription: "Choisissez si les modèles peuvent exécuter des scripts sur les pages. Chaque script est affiché pour approbation, sauf en mode Full access",
       askEveryTime: "Demander à chaque fois",
       permissionsTitle: "Autorisations de l'agent",
       permissionsDescription: "Choisissez les valeurs par défaut et ajoutez des exceptions pour certains sites. Les champs de mot de passe et de paiement ne sont jamais remplis, quels que soient ces réglages.",

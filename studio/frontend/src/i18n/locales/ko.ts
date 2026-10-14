@@ -60,7 +60,7 @@ export const ko = {
       alwaysAllow: "항상 허용",
       never: "허용 안 함",
       scripts: "스크립트 실행",
-      scriptsDescription: "모델이 페이지에서 스크립트를 실행할 수 있는지 선택합니다. 각 스크립트는 실행 전에 표시됩니다",
+      scriptsDescription: "모델이 페이지에서 스크립트를 실행할 수 있는지 선택합니다. Full access를 제외하면 각 스크립트가 승인을 위해 표시됩니다",
       askEveryTime: "매번 묻기",
       permissionsTitle: "에이전트 권한",
       permissionsDescription: "기본값을 선택하고 특정 사이트에 대한 예외를 추가합니다. 비밀번호와 결제 정보 입력란은 이 설정과 관계없이 채우지 않습니다.",

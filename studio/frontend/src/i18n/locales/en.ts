@@ -57,7 +57,7 @@ export const en = {
       alwaysAllow: "Always allow",
       never: "Never",
       scripts: "Run scripts",
-      scriptsDescription: "Choose whether models can run scripts on pages. You see each script before it runs",
+      scriptsDescription: "Choose whether models can run scripts on pages. Each script is shown for approval, except in Full access",
       askEveryTime: "Ask every time",
       permissionsTitle: "Agent permissions",
       permissionsDescription: "Choose defaults and add exceptions for specific sites. Password and payment fields are never filled, whatever these say.",

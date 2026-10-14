@@ -60,7 +60,7 @@ export const de = {
       alwaysAllow: "Immer erlauben",
       never: "Nie",
       scripts: "Skripte ausführen",
-      scriptsDescription: "Lege fest, ob Modelle Skripte auf Seiten ausführen dürfen. Jedes Skript wird dir vorher angezeigt",
+      scriptsDescription: "Lege fest, ob Modelle Skripte auf Seiten ausführen dürfen. Jedes Skript wird zur Bestätigung angezeigt, außer bei Full access",
       askEveryTime: "Jedes Mal fragen",
       permissionsTitle: "Agent-Berechtigungen",
       permissionsDescription: "Lege Standardwerte fest und füge Ausnahmen für bestimmte Websites hinzu. Passwort- und Zahlungsfelder werden nie ausgefüllt, egal was hier steht.",

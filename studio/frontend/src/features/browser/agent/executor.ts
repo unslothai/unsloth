@@ -141,7 +141,8 @@ function record(op: string, url: string): void {
   }
 }
 
-function admit(url: string, gate: Gate): void {
+function admit(url: string, gate: Gate, context: ActionContext): void {
+  if (context.bypassPermissions === true) return;
   const host = hostOfUrl(url);
   if (!host) return;
   reachedHosts.add(host);
@@ -508,7 +509,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     const gate = gateNavigation(url, navigationContext(action, context));
     const refused = await pass(gate, context);
     if (refused) return { ok: false, error: refused };
-    admit(url, gate);
+    admit(url, gate, context);
     const since = Date.now();
     const tab = await open(url, signal);
     if (!tab) return { ok: false, error: "the browser tab closed." };
@@ -548,7 +549,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
           : gateNavigation(destination, navigationContext(action, context));
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
-      admit(destination, gate);
+      admit(destination, gate, context);
     } else if (nativeMove) {
       // History from before this chat, or from the user browsing in the tab: where it leads is unknown.
       const where = action.op === "back" ? "the previous page" : "the next page";
@@ -662,7 +663,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     if (refused) return { ok: false, error: refused };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  if (opaque) opaqueHosts.add(opaque.host);
+  if (opaque && context.bypassPermissions !== true) opaqueHosts.add(opaque.host);
   // A point's control can be relabelled or rewired around the same leaf while the user decides.
   if (point && gates.some((gate) => gate.kind === "ask")) {
     if (!(await unchanged(ready, point, described.hit ?? "", JSON.stringify(info)))) {
@@ -670,8 +671,8 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
     }
     if (signal?.aborted) return { ok: false, error: STOPPED };
   }
-  if (formGate) admit(formAction, formGate);
-  if (linkGate) admit(info.href, linkGate);
+  if (formGate) admit(formAction, formGate, context);
+  if (linkGate) admit(info.href, linkGate, context);
 
   // Before the action goes out, after any question: a request its handler starts at once is the action's too.
   const since = Date.now();
@@ -690,7 +691,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       const gate = gateNavigation(clicked.navigate, navigationContext(action, context));
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
-      admit(clicked.navigate, gate);
+      admit(clicked.navigate, gate, context);
       const sent = Date.now();
       useBrowserStore.getState().navigate(ready.id, { url: clicked.navigate, from: here }, { replace: false });
       const loaded = await waitForLoad(ready.id, signal);
@@ -813,7 +814,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
       asked ||= gate.kind === "ask";
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: refused };
-      if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
+      if (gate.kind === "ask" && gate.ask === "pointer" && context.bypassPermissions !== true) opaqueHosts.add(gate.host);
     }
     hits.push(described.hit ?? "");
     sigs.push(described.sig ?? "");
@@ -868,7 +869,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Acti
       if (!gate) continue;
       const refused = await pass(gate, context);
       if (refused) return cancel(refused);
-      if (gate.kind === "ask" && gate.ask === "pointer") opaqueHosts.add(gate.host);
+      if (gate.kind === "ask" && gate.ask === "pointer" && context.bypassPermissions !== true) opaqueHosts.add(gate.host);
     }
     const again = await pageCall(tab, { op: "describe", ref: "", ...end }).catch(() => null);
     if (!sameTab() || again?.doc !== doc) return left(again?.doc);
@@ -977,9 +978,9 @@ async function arrive(
       const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: requested });
       const refused = await pass(gate, context);
       if (refused) return { ok: false, error: `The page went to ${host}. ${refused}` };
-      admit(url, gate);
+      admit(url, gate, context);
     }
-    if (host) reachedHosts.add(host);
+    if (host && context.bypassPermissions !== true) reachedHosts.add(host);
     record(action.op, url);
   }
   return observeLoaded(tab, since, note, context.signal);
@@ -997,7 +998,7 @@ async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Act
   const gate = gateNavigation(url, { ...navigationContext(action, context), currentUrl: "" });
   const refused = await pass(gate, context);
   if (refused) return `The page is on ${host}. ${refused}`;
-  admit(url, gate);
+  admit(url, gate, context);
   return null;
 }
 
