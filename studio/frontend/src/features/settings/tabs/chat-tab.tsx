@@ -809,18 +809,20 @@ export function ChatTab() {
       </SettingsSection>
 
 
-      <SettingsSection title={t("settings.chat.groups.menu.title")}>
-        <p className="pb-1 text-xs text-muted-foreground">
-          {t("settings.chat.menu.description")}
-        </p>
-        <ChatMenuOrderList
+      <SettingsSection
+        title={t("settings.chat.groups.menu.title")}
+        description={t("settings.chat.menu.description")}
+      >
+        <div className="pt-3">
+          <ChatMenuOrderList
           items={Object.fromEntries(
             PLUS_MENU_SETTINGS.map((item) => [
               item.id,
               { label: t(item.labelKey), icon: item.icon },
             ]),
           ) as Record<PlusMenuItemId, { label: string; icon: ReactNode }>}
-        />
+          />
+        </div>
         <div className="flex justify-end pt-1">
           <Button variant="ghost" size="sm" onClick={resetPlusMenu}>
             {t("settings.chat.menu.reset")}

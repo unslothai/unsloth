@@ -2580,8 +2580,11 @@ export const ar = {
         savedPrompts: "الموجّهات المحفوظة",
         compareChat: "مقارنة المحادثات",
         exportChat: "تصدير المحادثة",
-        reorder: "نقل {item}",
         reset: "إعادة التعيين إلى الافتراضي",
+        addFiles: "إضافة صور وملفات",
+        webSearch: "بحث الويب",
+        tools: "الأدوات",
+        more: "المزيد",
       },
       pastedTextThreshold: "ضغط النصوص الملصقة الطويلة",
       pastedTextThresholdDescription:

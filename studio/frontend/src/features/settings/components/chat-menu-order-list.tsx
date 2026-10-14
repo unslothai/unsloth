@@ -3,216 +3,141 @@
 
 import { Switch } from "@/components/ui/switch";
 import { type PlusMenuItemId, usePlusMenuPrefsStore } from "@/features/chat";
-import {
-  flipShifts,
-  insertionIndex,
-  ownsDrag,
-} from "@/features/chat/prompt-storage/reorder";
 import { useT } from "@/i18n";
-import { cn } from "@/lib/utils";
-import { GripVerticalIcon } from "lucide-react";
 import {
-  type ReactNode,
-  type PointerEvent as ReactPointerEvent,
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-} from "react";
-import { SettingsRow } from "./settings-row";
+  AttachmentIcon,
+  CodeIcon,
+  DragDropVerticalIcon,
+  InternetIcon,
+  MoreHorizontalIcon,
+} from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import { Reorder, useDragControls } from "motion/react";
+import type { ReactNode } from "react";
 
-function move<T>(items: readonly T[], from: number, to: number): T[] {
-  const next = [...items];
-  const [item] = next.splice(from, 1);
-  next.splice(to, 0, item);
-  return next;
+type ItemMeta = { label: string; icon: ReactNode };
+
+// Same row as the Profile menu customizer (sidebar-menu-customizer.tsx).
+function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {
+  return (
+    <div className="flex h-9 items-center gap-2.5 rounded-lg px-2 text-muted-foreground/70">
+      <span className="size-4" aria-hidden="true" />
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
+      <span className="text-ui-13">{label}</span>
+    </div>
+  );
 }
 
-export function ChatMenuOrderList({
-  items,
+function MovableRow({
+  id,
+  meta,
+  index,
+  order,
 }: {
-  items: Record<PlusMenuItemId, { label: string; icon: ReactNode }>;
+  id: PlusMenuItemId;
+  meta: ItemMeta;
+  index: number;
+  order: PlusMenuItemId[];
 }) {
   const t = useT();
-  const order = usePlusMenuPrefsStore((s) => s.order);
-  const pins = usePlusMenuPrefsStore((s) => s.pins);
-  const setOrder = usePlusMenuPrefsStore((s) => s.setOrder);
+  const controls = useDragControls();
+  const pinned = usePlusMenuPrefsStore((s) => s.pins[id]);
   const togglePin = usePlusMenuPrefsStore((s) => s.togglePin);
-  const [dragging, setDragging] = useState<PlusMenuItemId | null>(null);
-
-  const containerRef = useRef<HTMLDivElement>(null);
-  const rowRefs = useRef(new Map<PlusMenuItemId, HTMLDivElement>());
-  const pointerIdRef = useRef<number | null>(null);
-  const pointerYRef = useRef(0);
-  const orderRef = useRef(order);
-  const firstOffsets = useRef(new Map<string, number>());
-  const reorderTick = useRef(0);
-  const animatedTick = useRef(0);
-
-  useLayoutEffect(() => {
-    orderRef.current = order;
-  });
-
-  const measureOffsets = useCallback(() => {
-    const offsets = new Map<string, number>();
-    rowRefs.current.forEach((el, id) => offsets.set(id, el.offsetTop));
-    return offsets;
-  }, []);
-
-  // FLIP, as in the saved-prompt list: each moved row starts where it was and slides into place.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: runs after each reorder commits.
-  useLayoutEffect(() => {
-    if (reorderTick.current === animatedTick.current) return;
-    animatedTick.current = reorderTick.current;
-    flipShifts(firstOffsets.current, measureOffsets()).forEach((dy, id) => {
-      const el = rowRefs.current.get(id as PlusMenuItemId);
-      if (!el) return;
-      el.style.transition = "none";
-      el.style.transform = `translateY(${dy}px)`;
-      requestAnimationFrame(() => {
-        el.style.transition = "transform 180ms cubic-bezier(0.2, 0, 0, 1)";
-        el.style.transform = "";
-      });
-    });
-  }, [order, measureOffsets]);
-
-  const applyOrder = useCallback(
-    (from: number, to: number) => {
-      if (from === to) return;
-      firstOffsets.current = measureOffsets();
-      reorderTick.current += 1;
-      const next = move(orderRef.current, from, to);
-      // Ahead of the commit, so the next pointer move hit-tests the new order.
-      orderRef.current = next;
-      setOrder(next);
-    },
-    [measureOffsets, setOrder],
-  );
-
-  const onGripPointerDown = (
-    id: PlusMenuItemId,
-    event: ReactPointerEvent<HTMLButtonElement>,
-  ) => {
-    if (event.button !== 0 || !event.isPrimary || pointerIdRef.current !== null)
-      return;
-    // No pointer capture: the reorder moves the row's node, which would release it mid-drag.
-    event.preventDefault();
-    pointerIdRef.current = event.pointerId;
-    pointerYRef.current = event.clientY;
-    setDragging(id);
-  };
-
-  useEffect(() => {
-    if (!dragging) return;
-    const container = containerRef.current;
-    if (!container) return;
-    const evaluate = () => {
-      const current = orderRef.current;
-      const from = current.indexOf(dragging);
-      if (from < 0) return;
-      // Layout offsets ignore the FLIP transforms still running on neighbouring rows.
-      const localY =
-        pointerYRef.current - container.getBoundingClientRect().top;
-      const boxes = current.map((id) => {
-        const el = rowRefs.current.get(id);
-        return el ? { top: el.offsetTop, height: el.offsetHeight } : undefined;
-      });
-      applyOrder(from, insertionIndex(boxes, from, localY));
-    };
-    const end = () => {
-      pointerIdRef.current = null;
-      setDragging(null);
-    };
-    const onMove = (event: PointerEvent) => {
-      if (!ownsDrag(pointerIdRef.current, event.pointerId)) return;
-      // A release outside the window sends no pointerup.
-      if (event.buttons === 0) {
-        end();
-        return;
-      }
-      pointerYRef.current = event.clientY;
-      evaluate();
-    };
-    const onUp = (event: PointerEvent) => {
-      if (ownsDrag(pointerIdRef.current, event.pointerId)) end();
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
-    window.addEventListener("blur", end);
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
-      window.removeEventListener("blur", end);
-    };
-  }, [dragging, applyOrder]);
-
+  const setOrder = usePlusMenuPrefsStore((s) => s.setOrder);
   return (
-    // `relative`: the offsetParent the hit-test measures against.
-    <div
-      ref={containerRef}
-      data-testid="chat-menu-order"
-      className={cn("relative flex flex-col", dragging && "select-none")}
+    <Reorder.Item
+      value={id}
+      data-menu-item={id}
+      dragListener={false}
+      dragControls={controls}
+      layout="position"
+      whileDrag={{
+        backgroundColor: "var(--popover)",
+        boxShadow: "0 4px 16px rgb(0 0 0 / 0.18)",
+        zIndex: 10,
+      }}
+      className="relative flex h-9 items-center gap-2.5 rounded-lg px-2"
     >
-      {order.map((id, index) => {
-        const item = items[id];
-        return (
-          <div
+      <button
+        type="button"
+        aria-label={t("settings.appearance.sidebarMenu.dragToReorder")}
+        onPointerDown={(e) => {
+          e.preventDefault();
+          controls.start(e);
+        }}
+        // Arrow keys move the row too, since a pointer drag has no keyboard path.
+        onKeyDown={(e) => {
+          const to =
+            index + (e.key === "ArrowUp" ? -1 : e.key === "ArrowDown" ? 1 : 0);
+          if (to === index || to < 0 || to >= order.length) {
+            return;
+          }
+          e.preventDefault();
+          const next = [...order];
+          next.splice(to, 0, ...next.splice(index, 1));
+          setOrder(next);
+        }}
+        className="flex size-4 shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground active:cursor-grabbing"
+      >
+        <HugeiconsIcon
+          icon={DragDropVerticalIcon}
+          strokeWidth={1.75}
+          className="size-4"
+        />
+      </button>
+      <span className="flex size-4 items-center justify-center text-foreground/80 [&_svg]:size-4">
+        {meta.icon}
+      </span>
+      <span className="text-ui-13 text-foreground">{meta.label}</span>
+      <Switch
+        className="ml-auto"
+        aria-label={meta.label}
+        checked={pinned}
+        onCheckedChange={() => togglePin(id)}
+      />
+    </Reorder.Item>
+  );
+}
+
+/** The "+" menu's movable items between its fixed ones, laid out as the menu shows them. */
+export function ChatMenuOrderList({
+  items,
+}: { items: Record<PlusMenuItemId, ItemMeta> }) {
+  const t = useT();
+  const order = usePlusMenuPrefsStore((s) => s.order);
+  const setOrder = usePlusMenuPrefsStore((s) => s.setOrder);
+  return (
+    <div
+      data-testid="chat-menu-order"
+      className="flex flex-col rounded-xl border border-border/70 p-1.5"
+    >
+      <FixedRow
+        icon={AttachmentIcon}
+        label={t("settings.chat.menu.addFiles")}
+      />
+      <FixedRow icon={InternetIcon} label={t("settings.chat.menu.webSearch")} />
+      <FixedRow icon={CodeIcon} label={t("settings.chat.menu.tools")} />
+      <div className="mx-2 my-1 border-t border-border/70" />
+      <Reorder.Group
+        axis="y"
+        values={order}
+        onReorder={(ids: PlusMenuItemId[]) => setOrder(ids)}
+        className="flex flex-col"
+      >
+        {order.map((id, index) => (
+          <MovableRow
             key={id}
-            data-menu-item={id}
-            ref={(el) => {
-              if (el) rowRefs.current.set(id, el);
-              else rowRefs.current.delete(id);
-            }}
-            className={cn(
-              "relative rounded-[12px] bg-transparent",
-              dragging === id && "z-10 bg-muted shadow-sm",
-            )}
-          >
-            <SettingsRow
-              label={item.label}
-              icon={
-                <span className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    aria-label={t("settings.chat.menu.reorder", {
-                      item: item.label,
-                    })}
-                    onPointerDown={(event) => onGripPointerDown(id, event)}
-                    onKeyDown={(event) => {
-                      const delta =
-                        event.key === "ArrowUp"
-                          ? -1
-                          : event.key === "ArrowDown"
-                            ? 1
-                            : 0;
-                      if (delta === 0) return;
-                      event.preventDefault();
-                      const to = index + delta;
-                      if (to >= 0 && to < order.length) applyOrder(index, to);
-                    }}
-                    className={cn(
-                      "-ml-1 flex touch-none items-center rounded text-muted-foreground outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring",
-                      dragging === id ? "cursor-grabbing" : "cursor-grab",
-                    )}
-                  >
-                    <GripVerticalIcon className="size-4" />
-                  </button>
-                  {item.icon}
-                </span>
-              }
-            >
-              <Switch
-                aria-label={item.label}
-                checked={pins[id]}
-                onCheckedChange={() => togglePin(id)}
-              />
-            </SettingsRow>
-          </div>
-        );
-      })}
+            id={id}
+            meta={items[id]}
+            index={index}
+            order={order}
+          />
+        ))}
+      </Reorder.Group>
+      <FixedRow
+        icon={MoreHorizontalIcon}
+        label={t("settings.chat.menu.more")}
+      />
     </div>
   );
 }

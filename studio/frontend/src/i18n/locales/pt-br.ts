@@ -2597,8 +2597,11 @@ export const ptBR = {
         savedPrompts: "Prompts salvos",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
-        reorder: "Mover {item}",
         reset: "Restaurar padrão",
+        addFiles: "Adicionar fotos e arquivos",
+        webSearch: "Pesquisa na web",
+        tools: "Ferramentas",
+        more: "Mais",
       },
       pastedTextThreshold: "Condensar colagens longas",
       pastedTextThresholdDescription:

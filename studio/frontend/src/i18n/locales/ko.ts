@@ -2573,8 +2573,11 @@ export const ko = {
         savedPrompts: "저장된 프롬프트",
         compareChat: "채팅 비교",
         exportChat: "채팅 내보내기",
-        reorder: "{item} 이동",
         reset: "기본값으로 재설정",
+        addFiles: "사진 및 파일 추가",
+        webSearch: "웹 검색",
+        tools: "도구",
+        more: "더보기",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
       pastedTextThresholdDescription:

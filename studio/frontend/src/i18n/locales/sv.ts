@@ -2776,8 +2776,11 @@ export const sv = {
         savedPrompts: "Sparade uppmaningar",
         compareChat: "Jämför chatt",
         exportChat: "Exportera chatt",
-        reorder: "Flytta {item}",
         reset: "Återställ standard",
+        addFiles: "Lägg till foton och filer",
+        webSearch: "Webbsökning",
+        tools: "Verktyg",
+        more: "Mer",
       },
       pastedTextThreshold: "Kondensera långa inklistringar",
       pastedTextThresholdDescription:

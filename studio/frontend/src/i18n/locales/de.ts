@@ -2619,8 +2619,11 @@ export const de = {
         savedPrompts: "Gespeicherte Prompts",
         compareChat: "Chats vergleichen",
         exportChat: "Chat exportieren",
-        reorder: "{item} verschieben",
         reset: "Auf Standard zurücksetzen",
+        addFiles: "Fotos & Dateien hinzufügen",
+        webSearch: "Websuche",
+        tools: "Werkzeuge",
+        more: "Mehr",
       },
       pastedTextThreshold: "Lange Einfügungen verdichten",
       pastedTextThresholdDescription:

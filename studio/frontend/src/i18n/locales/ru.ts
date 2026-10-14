@@ -2593,8 +2593,11 @@ export const ru = {
         savedPrompts: "Сохранённые промпты",
         compareChat: "Сравнить чаты",
         exportChat: "Экспортировать чат",
-        reorder: "Переместить: {item}",
         reset: "Сбросить по умолчанию",
+        addFiles: "Добавить фото и файлы",
+        webSearch: "Веб-поиск",
+        tools: "Инструменты",
+        more: "Ещё",
       },
       pastedTextThreshold: "Сворачивать длинные вставки",
       pastedTextThresholdDescription:

@@ -2610,8 +2610,11 @@ export const es = {
         savedPrompts: "Prompts guardados",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
-        reorder: "Mover {item}",
         reset: "Restablecer valores predeterminados",
+        addFiles: "Añadir fotos y archivos",
+        webSearch: "Búsqueda web",
+        tools: "Herramientas",
+        more: "Más",
       },
       pastedTextThreshold: "Condensar pegados largos",
       pastedTextThresholdDescription:

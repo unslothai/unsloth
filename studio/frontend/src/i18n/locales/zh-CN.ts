@@ -2541,8 +2541,11 @@ export const zhCN = {
         savedPrompts: "已保存的提示词",
         compareChat: "对比聊天",
         exportChat: "导出聊天",
-        reorder: "移动 {item}",
         reset: "恢复默认",
+        addFiles: "添加照片和文件",
+        webSearch: "网页搜索",
+        tools: "工具",
+        more: "更多",
       },
       pastedTextThreshold: "压缩长粘贴内容",
       pastedTextThresholdDescription:

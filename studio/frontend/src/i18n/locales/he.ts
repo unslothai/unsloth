@@ -2694,8 +2694,11 @@ export const he = {
         savedPrompts: "פרומפטים שמורים",
         compareChat: "השוואת צ'אט",
         exportChat: "ייצוא צ'אט",
-        reorder: "הזזת {item}",
         reset: "איפוס לברירת המחדל",
+        addFiles: "הוספת תמונות וקבצים",
+        webSearch: "חיפוש באינטרנט",
+        tools: "כלים",
+        more: "עוד",
       },
       pastedTextThreshold: "כווץ טקסט מודבק ארוך",
       pastedTextThresholdDescription:

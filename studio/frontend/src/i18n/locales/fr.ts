@@ -2616,8 +2616,11 @@ export const fr = {
         savedPrompts: "Invites enregistrées",
         compareChat: "Comparer le chat",
         exportChat: "Exporter le chat",
-        reorder: "Déplacer {item}",
         reset: "Rétablir par défaut",
+        addFiles: "Ajouter photos et fichiers",
+        webSearch: "Recherche web",
+        tools: "Outils",
+        more: "Plus",
       },
       pastedTextThreshold: "Condenser les collages longs",
       pastedTextThresholdDescription:

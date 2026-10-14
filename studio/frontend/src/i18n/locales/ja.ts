@@ -2564,8 +2564,11 @@ export const ja = {
         savedPrompts: "保存済みプロンプト",
         compareChat: "チャットを比較",
         exportChat: "チャットをエクスポート",
-        reorder: "{item}を移動",
         reset: "デフォルトに戻す",
+        addFiles: "写真とファイルを追加",
+        webSearch: "ウェブ検索",
+        tools: "ツール",
+        more: "その他",
       },
       pastedTextThreshold: "長い貼り付けを圧縮",
       pastedTextThresholdDescription:
