@@ -1081,6 +1081,27 @@ def _is_left_padded(attention_mask):
     return not bool(attention_mask[:, 0].all())
 
 
+class Gemma2AttentionMaskConverter(AttentionMaskConverter):
+    """Gemma2's window counts the current key as well as the preceding keys."""
+
+    @staticmethod
+    def _make_causal_mask(
+        input_ids_shape,
+        dtype,
+        device,
+        past_key_values_length = 0,
+        sliding_window = None,
+    ):
+        # The legacy converter counts preceding keys; its static helper also accepts zero for a one-key window.
+        return AttentionMaskConverter._make_causal_mask(
+            input_ids_shape,
+            dtype,
+            device,
+            past_key_values_length = past_key_values_length,
+            sliding_window = sliding_window - 1 if sliding_window is not None else None,
+        )
+
+
 # Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -1297,7 +1318,7 @@ def LlamaModel_fast_forward(
             if attention_mask.dim() == 2:
                 # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
                 key_value_length = past_key_values_length + seq_length
-                dynamic_SWA_mask = AttentionMaskConverter(
+                dynamic_SWA_mask = Gemma2AttentionMaskConverter(
                     is_causal = True, sliding_window = self.config.sliding_window
                 ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
                 dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
@@ -1318,7 +1339,7 @@ def LlamaModel_fast_forward(
                 n = self.max_seq_length
                 # masked_fill makes things slower.
                 self.SWA_mask = (
-                    AttentionMaskConverter(
+                    Gemma2AttentionMaskConverter(
                         is_causal = True,
                         sliding_window = self.config.sliding_window,
                     )
