@@ -14,6 +14,7 @@ from __future__ import annotations
 import difflib
 import ipaddress
 import re
+from urllib.parse import quote, quote_plus
 
 
 # Any occurrence inside untrusted evidence is escaped so gathered content cannot close a prompt block early.
@@ -223,8 +224,10 @@ def _authorization_values(match: re.Match) -> list[str]:
 
 def _array_values(match: re.Match) -> list[str]:
     values = []
-    for groups in _ARRAY_MEMBER.findall(match["members"]):
-        member = _QUERY_AUTHORIZATION.match("Authorization: " + "".join(groups))
+    members = ["".join(groups) for groups in _ARRAY_MEMBER.findall(match["members"])]
+    # Unquoted lists, as Java/Spring prints them: {Authorization=[Basic a, Basic b]}.
+    for text in members or [member.strip() for member in match["members"].split(",")]:
+        member = _QUERY_AUTHORIZATION.match("Authorization: " + text)
         if member:
             values += _authorization_values(member)
     return values
@@ -249,6 +252,8 @@ def _sanitize_public_query(query: str) -> str:
     ]
     for value in found:
         for variant in {value, value.rstrip(_TOKEN_PUNCTUATION + ".!?")}:
+            # A log may percent-encode the echo (dTo+ -> dTo%2B).
+            exact.update({quote(variant, safe = ""), quote(variant), quote_plus(variant)})
             exact.add(variant)
             credentials.update(piece for piece in [variant, *variant.split()] if len(piece) >= 8)
     exact.discard("")
