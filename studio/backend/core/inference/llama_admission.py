@@ -670,12 +670,14 @@ class LlamaAdmissionLease:
         allow_yield: bool = True,
         progress: Optional[Callable[[], object]] = None,
         gen_id: Optional[str] = None,
+        stall_clock: bool = True,
     ) -> bool:
         """Re-state this lease's cost, waiting for room rather than running over it.
 
         ``progress`` is a second opinion on whether the pool is moving: this ledger only changes at
         round boundaries, so a lease waiting behind a leader decoding at full rate sees ``committed``
         sit still and decides the pool is stuck. Any change resets the stall clock.
+        ``stall_clock = False`` keeps the plain wall-clock ``timeout_s`` instead.
 
         ``recost`` declines when the cache is full and the caller carries on at its old figure, so
         the next round sends a bigger prompt than the pool was told about, and enough of those is
@@ -745,14 +747,15 @@ class LlamaAdmissionLease:
                     return self._give_up_repark(queue, held, cancelled = True)
                 if deadline is not None:
                     now = time.monotonic()
-                    current = queue.committed_now()
-                    if current < last_committed:
-                        deadline = now + patience
-                    last_committed = current
-                    current_progress = self._read_progress(progress)
-                    if current_progress != last_progress:
-                        deadline = now + patience
-                        last_progress = current_progress
+                    if stall_clock:
+                        current = queue.committed_now()
+                        if current < last_committed:
+                            deadline = now + patience
+                        last_committed = current
+                        current_progress = self._read_progress(progress)
+                        if current_progress != last_progress:
+                            deadline = now + patience
+                            last_progress = current_progress
                     if now >= deadline or (hard_deadline is not None and now >= hard_deadline):
                         _log.warning(
                             "llama admission recost-gave-up: gen_id=%s want=%s held=%s after=%.1fs "

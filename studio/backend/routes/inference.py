@@ -3934,6 +3934,59 @@ async def _openai_llama_admission_reserve_async(
     )
 
 
+def _openai_llama_admission_recost_without_preemption(
+    lease,
+    conversation,
+    *,
+    llama_backend,
+    payload,
+    output_tokens: Optional[int],
+    cancel_event,
+    injected_tools,
+    count_prepared_prompt: bool,
+    cache_is_empty: bool,
+    budget: int,
+    capacity: int,
+    vision: bool,
+) -> None:
+    """The round re-cost as it ran before preemption: charge the conversation, wait for room on a
+    wall clock where yielding is safe, and carry on at the old figure when the ledger declines."""
+    if count_prepared_prompt:
+        prompt_tokens, _exact = _count_gguf_admission_prompt_detail(
+            llama_backend, payload, conversation, injected_tools, cancel_event = cancel_event
+        )
+        if cancel_event is not None and cancel_event.is_set():
+            raise LlamaAdmissionCancelled("stopped while the round was being counted")
+    else:
+        prompt_tokens = _openai_llama_admission_wire_prompt_tokens(
+            conversation,
+            image_tokens = _openai_llama_admission_image_tokens(llama_backend),
+            injected_tools = injected_tools,
+            markup = _openai_llama_admission_markup(llama_backend),
+            vision = vision,
+        ) + _openai_llama_admission_transport_tokens(
+            payload, message_video_clips = _conversation_video_clips(conversation)
+        )
+    share = max(1, budget // max(1, capacity))
+    output_tokens = _openai_llama_admission_output_allowance(
+        output_tokens,
+        budget = budget,
+        prompt_tokens = prompt_tokens,
+        context_window = _openai_llama_admission_context_window(llama_backend),
+        share = share,
+        fair_share = False,
+    )
+    want = max(1, min(budget, max(share, prompt_tokens + max(0, output_tokens))))
+    lease.recost_waiting(
+        want,
+        cancel_event = cancel_event,
+        allow_yield = cache_is_empty or _openai_llama_admission_can_yield(llama_backend),
+        stall_clock = False,
+    )
+    if cancel_event is not None and cancel_event.is_set():
+        raise LlamaAdmissionCancelled("stopped while waiting for cache room")
+
+
 def _openai_llama_admission_recost(
     reservation,
     conversation,
@@ -3977,6 +4030,22 @@ def _openai_llama_admission_recost(
             return None
         capacity = _openai_llama_admission_capacity(request, llama_backend)
         vision = bool(getattr(llama_backend, "is_vision", False))
+        if not _openai_llama_admission_fair_share():
+            _openai_llama_admission_recost_without_preemption(
+                lease,
+                conversation,
+                llama_backend = llama_backend,
+                payload = payload,
+                output_tokens = output_tokens,
+                cancel_event = cancel_event,
+                injected_tools = injected_tools,
+                count_prepared_prompt = count_prepared_prompt,
+                cache_is_empty = cache_is_empty,
+                budget = budget,
+                capacity = capacity,
+                vision = vision,
+            )
+            return None
         prompt_exact = False
         if count_prepared_prompt:
             prompt_tokens, prompt_exact = _count_gguf_admission_prompt_detail(

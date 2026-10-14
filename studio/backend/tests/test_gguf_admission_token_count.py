@@ -612,8 +612,11 @@ def test_cancel_during_stream_admission_exits_tracker(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_an_exactly_counted_round_is_bounded_by_its_count_not_the_estimate(monkeypatch):
-    """With the prompt counted by the tokenizer, the wire bound drops the estimate margin."""
+def test_an_exactly_counted_round_is_bounded_by_its_count_not_the_estimate(
+    monkeypatch, share_pricing
+):
+    """With the prompt counted by the tokenizer, the wire bound drops the estimate margin. The
+    bound exists only with preemption on."""
     seen = {}
     real = inference._openai_llama_admission_enforced_max_tokens
 
