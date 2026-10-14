@@ -47,13 +47,27 @@ def test_win_amd64_resolves_every_kernel_to_our_release(torch_mm):
     assert kernel_install.MAMBA_SSM.wheel_url(e) == f"{OURS}mamba_ssm-2.3.2.post1{suffix}"
 
 
+@pytest.mark.parametrize("python_tag", ["cp311", "cp312", "cp313"])
+def test_win_amd64_torch_211_resolves_to_our_release(python_tag):
+    # Existing installs keep torch 2.11 on their own minor; upstream's torch2.10 reuse has no Windows asset.
+    e = env(torch_mm = "2.11", python_tag = python_tag, abi_tag = python_tag)
+    suffix = f"+cu13torch2.11cxx11abiTRUE-{python_tag}-{python_tag}-win_amd64.whl"
+    assert wheel_utils.flash_attn_wheel_url(e) == f"{OURS}flash_attn-2.8.4{suffix}"
+    assert kernel_install.CAUSAL_CONV1D.wheel_url(e) == f"{OURS}causal_conv1d-1.7.0{suffix}"
+    assert kernel_install.MAMBA_SSM.wheel_url(e) == f"{OURS}mamba_ssm-2.3.2.post1{suffix}"
+    # torch 2.11 is win_amd64 only.
+    assert wheel_utils.flash_attn_wheel_url(env(torch_mm = "2.11", platform_tag = "win_arm64")) is None
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"python_tag": "cp312", "abi_tag": "cp312"},  # only cp313 is published for Windows
+        {"python_tag": "cp312", "abi_tag": "cp312"},  # 2.13 / 2.14 publish cp313 only
         {"abi_tag": "cp313t"},  # a free-threaded build cannot load the GIL wheel
         {"cxx11abi": "FALSE"},  # not what the Windows cu130 torch reports
-        {"torch_mm": "2.11"},  # Windows default today; no wheel, and no upstream fallback
+        {"torch_mm": "2.12"},  # no wheel, and no upstream fallback
+        {"torch_mm": "2.11", "python_tag": "cp314", "abi_tag": "cp314"},
+        {"torch_mm": "2.11", "abi_tag": "cp313t"},
         {"torch_mm": "2.10"},
         {"cuda_major": "12"},
         {"cuda_major": ""},
@@ -271,7 +285,7 @@ def test_cli_resolves_windows_kernels():
         "-cp313-cp313-win_amd64.whl"
     )
     assert kernel_install.resolve_wheel_url("mamba_ssm", e).endswith("-cp313-cp313-win_amd64.whl")
-    assert kernel_install.resolve_wheel_url("flash_attn", env(torch_mm = "2.11")) is None
+    assert kernel_install.resolve_wheel_url("flash_attn", env(torch_mm = "2.12")) is None
     assert (
         kernel_install.resolve_wheel_url("flash_attn", env(platform_tag = "macosx_14_0_arm64"))
         is None

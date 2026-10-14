@@ -57,14 +57,75 @@ env:
   HOLD_MAX_MINUTES: '240'
 
 jobs:
-  # Independent floor: re-enables allowlisted workflows in disabled_manually longer than
-  # MAX_DISABLED_MINUTES, using updated_at (undocumented; renaming a workflow resets it).
-  # It cannot tell who disabled a workflow, and never touches disabled_inactivity/disabled_fork.
+  # ---------------------------------------------------------------------------
+  # The guard runs on its own schedule and depends on no other job. That is the
+  # whole point: it is the one path that does not need the release, the
+  # dispatch, or the sweep job to have behaved.
+  #
+  # It is worth being precise about what it is guarding against, because the
+  # obvious worry turns out to be the wrong one. GitHub re-evaluates job `if:`
+  # conditions when a run is cancelled, and a job whose condition is
+  # `always()` is explicitly NOT cancelled -- only POST .../force-cancel
+  # bypasses that. So a release really can carry its own `if: always()` resume
+  # job and have it survive being cancelled. What is *not* documented is
+  # whether such a job still starts when it never got a runner in the first
+  # place; the reports of `needs`-dependent `always()` jobs stranded at
+  # "waiting for a runner" are exactly the case a paused CI repo creates.
+  #
+  # So the release-side resume is the fast path and this is the floor under it.
+  # It reads the current state of each workflow from the API and re-enables
+  # anything sitting in disabled_manually longer than MAX_DISABLED_MINUTES.
+  # There is no state file to lose, no issue to reconcile and no lease to
+  # renew: the disabled workflow *is* the state, and `updated_at` is the
+  # timestamp. What bounds the worst case is a number in this file rather than
+  # whether some other repository behaved.
+  #
+  # Three limits on that floor. All are real, none is fixable here, and they
+  # are the reason `pause` is not the default.
+  #
+  # It needs a runner. This job asks for a hosted runner out of the same
+  # account-wide pool the sweeper exists to relieve, so under the saturation
+  # this file is written for, it can still queue. The true bound is
+  # MAX_DISABLED_MINUTES plus that wait. Both jobs here ask for
+  # ubuntu-24.04-arm rather than ubuntu-24.04: on 2026-10-13/14 the x64
+  # ubuntu labels had a median queue of over four hours while the arm label
+  # started jobs in a median 1.3 minutes, and these jobs need only gh, jq and
+  # coreutils, all on the arm image. That is a measured scheduling behaviour,
+  # not a reserved pool, so still read the limit as intent rather than a
+  # guarantee, and do not start a `pause` nobody is watching.
+  #
+  # It cannot tell who disabled a workflow. `disabled_manually` records no
+  # actor, so while CI_PREEMPT_ENABLED is 'true' the guard will also re-enable
+  # an allowlisted workflow a human disabled by hand. If one has to stay down,
+  # take it out of .github/ci-preempt.json first. Persisting "the sweeper
+  # disabled these ids" instead would put back exactly the failure this design
+  # removes: the pause job can die between the disable call and the write, and
+  # then the state says nothing was disabled while the workflows are. When the
+  # variable is not 'true' the guard reports and touches nothing, which is what
+  # keeps this file inert on merge, so resume BEFORE clearing the variable.
+  #
+  # And the timestamp it runs on is behaviour, not contract. `updated_at` is
+  # undocumented: the Workflow schema gives it a type and no description, and
+  # GitHub never says what moves it. Measured, it moves on disable and on
+  # enable, stays put when the workflow file's body is edited and when the
+  # workflow runs, and moves again when the workflow's `name:` changes -- so
+  # renaming a paused workflow restarts its clock and lengthens the outage.
+  # The `disabled_manually` test is deliberate for the same reason: GitHub
+  # auto-disables scheduled workflows in public repos after 60 days of
+  # inactivity and in forks, and those arrive as `disabled_inactivity` and
+  # `disabled_fork`, which this loop must never switch back on.
+  # ---------------------------------------------------------------------------
   guard:
     name: Re-enable anything left disabled
-    # Complement of the sweep job's condition, so a dispatch does not also start the guard.
+    # The complement of the condition on `sweep` below, so each trigger starts
+    # only the job it asked for. Without it every ci-pause dispatch also took a
+    # second runner out of the pool the sweep in the same run is
+    # trying to free, and ran an enable loop on the one event that is asking for
+    # the opposite. The floor under a pause is the cron, not this job appearing
+    # on unrelated triggers; a manual restore is `mode=resume`, which enables the
+    # whole allowlist rather than only what is past the cutoff.
     if: ${{ github.event_name == 'schedule' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
@@ -143,7 +204,7 @@ jobs:
   sweep:
     name: Free capacity
     if: ${{ github.event_name != 'schedule' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:

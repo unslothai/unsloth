@@ -33,8 +33,8 @@ permissions:
   contents: read
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a main run; superseded PR pushes are cancelled.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # Superseded PR pushes are cancelled; on main a running run finishes and a burst runs the tip (see studio-backend-ci.yml).
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

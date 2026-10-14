@@ -40,7 +40,13 @@ permissions:
 jobs:
   prune:
     name: Prune superseded caches
-    runs-on: ubuntu-latest
+    # Not ubuntu-latest: that label's queue is what merge bursts fill, and on 2026-10-13/14 this
+    # sweep waited 0.6 to 3.5 hours for it (one run took 6h15m end to end) while CodeQL kept
+    # writing overlay bases, so the budget it guards ran out between sweeps. The arm label
+    # started jobs in a median 1.3 minutes over the same window. The sweep is API-only (gh,
+    # GNU date/awk/sed/sort), all present on the arm image. The account-wide job cap still
+    # applies; this only stops the sweep waiting behind hundreds of ubuntu-latest jobs.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     permissions:
       actions: write

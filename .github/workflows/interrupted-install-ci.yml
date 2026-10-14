@@ -64,8 +64,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # The event and main's sha are in the group so schedule, push and merge bursts never cancel each other.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # The event is in the group so a scheduled run and a push to main, which share a ref,
+  # cannot replace each other. On main a merge burst runs the executing commit plus the
+  # tip (see studio-backend-ci.yml). On a PR branch the group is the ref, so a new push
+  # cancels the run for the previous one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

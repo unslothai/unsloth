@@ -78,10 +78,19 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a pending run.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
-  # GitHub cancels PENDING runs in a group regardless; cancel-in-progress only governs
-  # executing ones.
+  # Per workflow, ref and event: a merge burst runs the executing commit plus the tip.
+  # See studio-backend-ci.yml for the trade, and the note below.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  # On a PR branch: latest-only, which is what cancel-in-progress buys.
+  #
+  # On main it buys less than it looks like. GitHub cancels any PENDING run in a
+  # concurrency group as soon as a newer one is queued, and cancel-in-progress
+  # governs only runs that are already EXECUTING ("any existing pending job or
+  # workflow in the same concurrency group will be canceled", workflow-syntax docs).
+  # So a burst of merges leaves only the tip's run alive: on 2026-08-17 four merges
+  # in 37 minutes cancelled three consecutive main runs of this workflow and none
+  # completed. Detection survives on the tip, since the tree is cumulative;
+  # per-commit attribution does not.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
