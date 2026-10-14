@@ -342,3 +342,71 @@ def test_render_records_its_peak_unless_a_capture_failed(store, monkeypatch):
     diffusion._record_peak_probe(state, _Probe(2400, failed = 1), width = 1024, height = 1024, batch_size = 1)
     assert mp.lookup(**kw) == 2400
     assert json.loads(store.read_text())["entries"]["flux.2-klein|torchao:Int8Tensor|default|f1"]["device"] == "NVIDIA L4"
+
+
+# ---------------------------------------------------------------------------------------------------- tied weights
+
+
+def test_tied_group_closures():
+    shared, a, b, c = object(), object(), object(), object()
+    g1 = types.SimpleNamespace(t = [shared, a])
+    g2 = types.SimpleNamespace(t = [b])
+    g3 = types.SimpleNamespace(t = [c, shared])
+    closures = dm._tied_group_closures([g1, g2, g3], lambda g: g.t)
+    assert closures[id(g1)] == [g1, g3] and closures[id(g3)] == [g1, g3]
+    assert id(g2) not in closures
+
+
+def _tied_tiny_encoder(torch):
+    """A Qwen3-style leaf: an embedding and an LM head sharing one weight (FLUX.2-klein's text encoder ties them)."""
+
+    class Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = torch.nn.Embedding(4096, 128)
+            self.mid = torch.nn.Linear(128, 128)
+            self.head = torch.nn.Linear(128, 4096, bias = False)
+            self.head.weight = self.embed.weight
+
+        def forward(self, ids):
+            return self.head(self.mid(self.embed(ids)))
+
+    return Tiny().to(torch.bfloat16)
+
+
+def test_partial_residency_keeps_tied_weights_together():
+    """Base: the embedding group went resident while the tied head streamed; the head's offload pointed the shared
+    weight back at the host and the next encode failed (index on cuda, weight on cpu)."""
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA and diffusers group offloading")
+    from diffusers.hooks import apply_group_offloading
+
+    te = _tied_tiny_encoder(torch)
+    dev = torch.device("cuda")
+    apply_group_offloading(
+        te,
+        onload_device = dev,
+        offload_device = torch.device("cpu"),
+        offload_type = "leaf_level",
+        use_stream = True,
+        non_blocking = True,
+        record_stream = True,
+    )
+    # 1 MiB: room for the 1 MiB shared weight once, not for the embedding and the head counted apart
+    dm._keep_groups_resident(te, 1, dev)
+    groups = dm._offload_groups(te)
+    tied = [g for g in groups if te.embed in g.modules or te.head in g.modules]
+    assert len(tied) == 2
+    assert len({bool(getattr(g, "_unsloth_resident", False)) for g in tied}) == 1
+    for n in (7, 11, 5):
+        with torch.no_grad():
+            te(torch.randint(0, 4096, (1, n), device = dev))
+    restore = dm.release_resident_groups(types.SimpleNamespace(components = {"text_encoder": te}), 1)
+    assert not any(getattr(g, "_unsloth_resident", False) for g in tied)
+    with torch.no_grad():
+        te(torch.randint(0, 4096, (1, 9), device = dev))
+    restore()
+    assert all(getattr(g, "_unsloth_resident", False) for g in tied)
+    with torch.no_grad():
+        te(torch.randint(0, 4096, (1, 4), device = dev))

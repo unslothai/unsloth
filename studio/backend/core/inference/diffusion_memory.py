@@ -2712,35 +2712,57 @@ def _keep_groups_resident(
             module._unsloth_resident_device = onload
         except AttributeError:
             pass
+        # Tied weights (an LM head sharing the embedding, as in Qwen3 text encoders) sit in two groups. A resident
+        # group next to a streamed partner breaks: the partner's offload points the shared tensor back at its host
+        # copy and the resident group's no-op onload never brings it back. Such groups go resident together or not.
+        tied = _tied_group_closures(ordered, _tensors)
+        done: set = set()
         for group in ordered:
             if getattr(group, "offload_to_disk_path", None):
                 break
-            tensors = _tensors(group)
+            if id(group) in done:
+                continue
+            closure = tied.get(id(group)) or [group]
+            done.update(id(g) for g in closure)
+            unique: dict = {}
+            for member in closure:
+                for t in _tensors(member):
+                    unique.setdefault(id(t), t)
+            tensors = list(unique.values())
             need = sum(sum(_storage_nbytes(t)) for t in tensors)
-            if getattr(group, "_unsloth_resident", False):
+            if all(getattr(g, "_unsloth_resident", False) for g in closure):
                 left -= need
                 continue
-            if need > left or (only is not None and id(group) not in only):
+            if (
+                need > left
+                or any(getattr(g, "offload_to_disk_path", None) for g in closure)
+                or (only is not None and any(id(g) not in only for g in closure))
+            ):
                 # too large (a later, smaller group may still fit), or another release's group
                 continue
-            cpu = getattr(group, "cpu_param_dict", None) or {}
-            for t in tensors:
-                if _placed_on(t, onload.type, is_torchao):
+            for member in closure:
+                cpu = getattr(member, "cpu_param_dict", None) or {}
+                for t in _tensors(member):
+                    if _placed_on(t, onload.type, is_torchao):
+                        continue
+                    moved = cpu.get(t, t).to(onload)
+                    if is_torchao(t):
+                        go._swap_torchao_tensor(t, moved)
+                    else:
+                        t.data = moved
+            for i, member in enumerate(closure):
+                if getattr(member, "_unsloth_resident", False):
                     continue
-                moved = cpu.get(t, t).to(onload)
-                if is_torchao(t):
-                    go._swap_torchao_tensor(t, moved)
-                else:
-                    t.data = moved
-            # host copies stay: release_resident_groups streams the group again for an oversized request
-            group._unsloth_streamed_hooks = (
-                group.__dict__.get("onload_"),
-                group.__dict__.get("offload_"),
-            )
-            group.onload_ = _resident_onload(getattr(group, "stream", None))
-            group.offload_ = noop
-            group._unsloth_resident = True
-            group._unsloth_resident_bytes = need
+                # host copies stay: release_resident_groups streams the group again for an oversized request
+                member._unsloth_streamed_hooks = (
+                    member.__dict__.get("onload_"),
+                    member.__dict__.get("offload_"),
+                )
+                member.onload_ = _resident_onload(getattr(member, "stream", None))
+                member.offload_ = noop
+                member._unsloth_resident = True
+                member._unsloth_resident_bytes = need if i == 0 else 0
+                member._unsloth_tied_groups = [g for g in closure if g is not member]
             left -= need
             kept += need
         state["streamed"] = _streamed_group_count(ordered)
@@ -2761,6 +2783,31 @@ def _keep_groups_resident(
         if logger is not None:
             logger.warning("diffusion.memory: partial residency skipped (%s)", exc)
         return 0
+
+
+def _tied_group_closures(groups: list, tensors_of: Callable[[Any], list]) -> dict:
+    """id(group) -> every group that shares a tensor with it, transitively (only for groups that share any)."""
+    owners: dict[int, list] = {}
+    for group in groups:
+        for t in tensors_of(group):
+            owners.setdefault(id(t), []).append(group)
+    closures: dict = {}
+    for group in groups:
+        if id(group) in closures:
+            continue
+        stack, seen = [group], {id(group): group}
+        while stack:
+            current = stack.pop()
+            for t in tensors_of(current):
+                for other in owners.get(id(t), ()):
+                    if id(other) not in seen:
+                        seen[id(other)] = other
+                        stack.append(other)
+        if len(seen) > 1:
+            members = [g for g in groups if id(g) in seen]
+            for g in members:
+                closures[id(g)] = members
+    return closures
 
 
 def _bump_placement_epoch() -> None:
@@ -2827,9 +2874,13 @@ def release_resident_groups(
                 state = getattr(module, "_unsloth_stream_state", None)
                 if isinstance(state, dict):
                     state["streamed"] = 1
-                _release_group(group)
-                streamed.add(id(group))
-                left -= int(getattr(group, "_unsloth_resident_bytes", 0))
+                # tied partners stream together (a resident partner would keep reading the host copy)
+                for member in [group, *(getattr(group, "_unsloth_tied_groups", None) or [])]:
+                    if not getattr(member, "_unsloth_resident", False):
+                        continue
+                    _release_group(member)
+                    streamed.add(id(member))
+                    left -= int(getattr(member, "_unsloth_resident_bytes", 0))
                 if module not in released:
                     released.append(module)
         if not released:
