@@ -8,7 +8,6 @@ import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
-  clearNewChatDraft,
   getInferenceStatus,
   isExternalModelId,
   isSpeechOnlyStatus,
@@ -1579,7 +1578,6 @@ export function ModelsPage() {
   // A new chat opens with the model's run settings, where Load starts it.
   const openRunSettingsInChat = useCallback(
     (request: ModelConfigHandoffRequest) => {
-      clearNewChatDraft();
       const chatRuntime = useChatRuntimeStore.getState();
       chatRuntime.setActiveThreadId(null);
       chatRuntime.setActiveProjectId(null);

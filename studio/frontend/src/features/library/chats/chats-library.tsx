@@ -28,7 +28,6 @@ import {
   type SidebarCustomSection,
   type SidebarItem,
   archiveChatItems,
-  clearNewChatDraft,
   compareModelDisplayName,
   deleteChatItems,
   deleteChatProject,
@@ -613,7 +612,6 @@ export function ChatsLibrary({
   /** Files the new chat on its first send; the sidebar watches for the mark set here. */
   const newChatInSection = (sectionId: string) => {
     const nonce = crypto.randomUUID();
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(null);
@@ -625,7 +623,6 @@ export function ChatsLibrary({
   };
 
   const newChatIn = (id: string | null) => {
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(id);
