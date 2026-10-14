@@ -102,11 +102,15 @@ export const BUDGET = {
   // gave back 0.4 KB raw). Raised by that growth so main's margin stays where it was.
   // Then the Audio API card in Settings (#12821) 2,019 B raw / 557 B transfer and #13630 132 B raw
   // (6,750,599 -> 6,752,750 B raw, 2,028,544 -> 2,029,099 B transfer to dd56fb3572, same machine and build).
+  // Numbers wrapped tightly in dollars render as math (#13649): the shell-context checks that keep
+  // `$1$?`-style shell text literal add 6,984 B raw / 2,836 B transfer to the eager chat chunk
+  // (6,753,387 -> 6,760,371 B raw, 2,029,398 -> 2,032,234 B transfer against eba7641835, one machine
+  // and build, chunk count unchanged at 95), raised by that.
   // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
   // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
-  // against 97ed9415f7, one machine and build), raised by that.
-  transferBytes: 2_029_863,
-  rawBytes: 6_754_919,
+  // against 97ed9415f7, before #13649, one machine and build), raised by that.
+  transferBytes: 2_032_699,
+  rawBytes: 6_761_903,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
