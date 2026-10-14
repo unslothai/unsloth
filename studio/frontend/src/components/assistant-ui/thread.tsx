@@ -3909,25 +3909,24 @@ const Composer: FC<{
   const canQueueAttachmentPrompt =
     hasAttachments && !attachmentsAreQueueableText && composerAcceptsQueueing;
 
-  // mirror each thread's draft to localStorage and restore it on mount
-  const draftThreadId = referenceThreadId;
-  const draftKey = draftThreadId ? composerDraftKey(draftThreadId) : null;
+  // One draft shared by every chat, mirrored to localStorage and restored
+  // whenever the chat on screen changes, so the last thing typed follows the user.
+  const draftScope = referenceThreadId;
+  const draftKey = composerDraftKey();
   // unsent pasted File objects need a separate slot because they exist only in memory
-  const pasteDraftKey = draftThreadId
-    ? composerPasteDraftKey(draftThreadId)
-    : null;
-  const lastDraftKeyRef = useRef(draftKey);
-  // save only after this key's paste restore finishes to avoid premature clearing
-  const restoredPasteKeyRef = useRef<string | null>(null);
+  const pasteDraftKey = composerPasteDraftKey();
+  const lastDraftScopeRef = useRef(draftScope);
+  // save only after this chat's paste restore finishes to avoid premature clearing
+  const restoredPasteScopeRef = useRef<string | null | undefined>(undefined);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // draftScope re-runs the restore on every chat switch, though the key stays the same.
   useEffect(() => {
-    const draft = draftKey ? (readComposerDraft(draftKey) ?? "") : "";
+    const draft = readComposerDraft(draftKey) ?? "";
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     // A save that raced the send still holds the sent text, so restoring it
-    // would undo the clear. Keyed on the sending thread, so another thread's
-    // identical draft still restores. Clear rather than return early, which
-    // would leave the previous thread's text on screen under this one.
+    // would undo the clear. Clear rather than return early, which would leave
+    // the previous thread's text on screen under this one.
     if (sentTextGuardBlocksDraft(justSentRef.current, draft, draftKey)) {
       // Written inline rather than via clearStoredDraft, which is declared
       // below this effect. Cancel the pending save too, or it rewrites the key.
@@ -3935,16 +3934,15 @@ const Composer: FC<{
         clearTimeout(draftSaveTimerRef.current);
         draftSaveTimerRef.current = null;
       }
-      if (draftKey) writeComposerDraft(draftKey, "");
+      writeComposerDraft(draftKey, "");
       composer.setText("");
       return;
     }
     composer.setText(draft);
-  }, [draftKey, aui]);
+  }, [draftScope, draftKey, aui]);
   // The saved-prompt menu and the prompt storage dialog fill the composer
-  // directly, bypassing the guard. Text appearing while the sending thread is
-  // on screen was put there deliberately, so retire; the draftKey check keeps
-  // another thread's restored draft from doing the same. Read live, or a
+  // directly, bypassing the guard. Text appearing after the send was put there
+  // deliberately, so retire. Read live, or a
   // pending render retires it on stale text. Must stay after the restore
   // above, which clears the raced draft this would otherwise retire on.
   useEffect(() => {
@@ -3959,28 +3957,30 @@ const Composer: FC<{
   useEffect(() => {
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
-    if (restoredPasteKeyRef.current === pasteDraftKey) return;
-    // The composer outlives a thread switch, so restore only into an empty one
-    // rather than mixing this thread's draft with whatever the last one left.
-    // Changing attachments re-runs this effect, which is how the retry happens.
-    if (composer.getState().attachments.length > 0) return;
-    const stored = pasteDraftKey ? readPasteDraft(pasteDraftKey) : [];
-    if (stored.length === 0) {
-      restoredPasteKeyRef.current = pasteDraftKey;
+    if (restoredPasteScopeRef.current === draftScope) return;
+    // The composer can outlive a thread switch, still holding the shared
+    // draft's pastes: adopt them rather than adding them a second time.
+    if (composer.getState().attachments.length > 0) {
+      restoredPasteScopeRef.current = draftScope;
       return;
     }
-    // Claim the key only once the attachments are in, so the save effect
+    const stored = readPasteDraft(pasteDraftKey);
+    if (stored.length === 0) {
+      restoredPasteScopeRef.current = draftScope;
+      return;
+    }
+    // Claim the chat only once the attachments are in, so the save effect
     // cannot write an empty composer over the draft still being restored.
     void Promise.all(
       stored.map((text) => composer.addAttachment(createPastedTextFile(text))),
     ).finally(() => {
-      restoredPasteKeyRef.current = pasteDraftKey;
+      restoredPasteScopeRef.current = draftScope;
     });
-  }, [pasteDraftKey, composerAttachmentSignature, aui]);
+  }, [draftScope, pasteDraftKey, composerAttachmentSignature, aui]);
   // Keyed on the paste identities, never their bodies, so typing beside a
   // megabyte paste does not rewrite it to localStorage every 300ms.
   useEffect(() => {
-    if (!pasteDraftKey || restoredPasteKeyRef.current !== pasteDraftKey) return;
+    if (restoredPasteScopeRef.current !== draftScope) return;
     const pastes = aui
       .composer()
       .getState()
@@ -3989,26 +3989,21 @@ const Composer: FC<{
         return text === undefined ? [] : [text];
       });
     writePasteDraft(pasteDraftKey, pastes);
-  }, [composerAttachmentSignature, pasteDraftKey, aui]);
+  }, [composerAttachmentSignature, draftScope, pasteDraftKey, aui]);
   useEffect(() => {
-    // After a thread switch composerText can still hold the previous
-    // thread's text; skip that cycle so it isn't saved under the new key.
-    if (lastDraftKeyRef.current !== draftKey) {
-      lastDraftKeyRef.current = draftKey;
-      return;
-    }
-    if (!draftKey) {
+    // After a thread switch composerText can still hold what was on screen
+    // before the restore; skip that cycle so it can't overwrite the draft.
+    if (lastDraftScopeRef.current !== draftScope) {
+      lastDraftScopeRef.current = draftScope;
       return;
     }
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
-  }, [composerText, draftKey]);
-  const pasteDraftKeyRef = useRef(pasteDraftKey);
+  }, [composerText, draftScope, draftKey]);
   useEffect(() => {
     draftKeyRef.current = draftKey;
-    pasteDraftKeyRef.current = pasteDraftKey;
-  }, [draftKey, pasteDraftKey]);
+  }, [draftKey]);
   // Call wherever the composer is emptied because its text left as a message.
   const armJustSent = useCallback((...texts: string[]) => {
     justSentRef.current = armSentTextGuard(
@@ -4025,14 +4020,8 @@ const Composer: FC<{
       clearTimeout(draftSaveTimerRef.current);
       draftSaveTimerRef.current = null;
     }
-    const key = draftKeyRef.current;
-    if (key) {
-      writeComposerDraft(key, "");
-    }
-    const pasteKey = pasteDraftKeyRef.current;
-    if (pasteKey) {
-      writePasteDraft(pasteKey, []);
-    }
+    writeComposerDraft(composerDraftKey(), "");
+    writePasteDraft(composerPasteDraftKey(), []);
   }, []);
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and

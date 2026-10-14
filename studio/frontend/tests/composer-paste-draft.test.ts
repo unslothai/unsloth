@@ -37,7 +37,7 @@ test.beforeEach(() => {
 });
 
 test("an unsent paste survives a reload", () => {
-  const key = composerPasteDraftKey("t1");
+  const key = composerPasteDraftKey();
   const paste = `Deploy log\n${"line\n".repeat(500)}`;
 
   writePasteDraft(key, [paste]);
@@ -53,27 +53,37 @@ test("an unsent paste survives a reload", () => {
 test("the paste slot is separate from the text draft", () => {
   // Typing must never rewrite a paste that can run to megabytes, so the two
   // live under different keys.
-  assert.notEqual(composerDraftKey("t1"), composerPasteDraftKey("t1"));
-  assert.notEqual(composerPasteDraftKey("t1"), composerPasteDraftKey("t2"));
+  assert.notEqual(composerDraftKey(), composerPasteDraftKey());
+});
 
-  writeComposerDraft(composerDraftKey("t1"), "typed");
-  writePasteDraft(composerPasteDraftKey("t1"), ["pasted"]);
+test("deleting a chat drops its old per-chat draft but keeps the shared one", () => {
+  writeComposerDraft(composerDraftKey(), "typed");
+  writePasteDraft(composerPasteDraftKey(), ["pasted"]);
+  store.set("chat-draft:t1", "old");
+  store.set("chat-draft-pastes:t1", '["old"]');
   clearComposerDraft("t1");
-  assert.equal(readComposerDraft(composerDraftKey("t1")), null);
-  assert.deepEqual(readPasteDraft(composerPasteDraftKey("t1")), []);
+  assert.equal(store.has("chat-draft:t1"), false);
+  assert.equal(store.has("chat-draft-pastes:t1"), false);
+  assert.equal(readComposerDraft(composerDraftKey()), "typed");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey()), ["pasted"]);
+});
+
+test("the shared draft keeps the prefix the account switch clears", () => {
+  assert.ok(composerDraftKey().startsWith("chat-draft"));
+  assert.ok(composerPasteDraftKey().startsWith("chat-draft"));
 });
 
 test("a paste too big for the quota does not cost the typed draft", () => {
-  writeComposerDraft(composerDraftKey("t1"), "typed");
+  writeComposerDraft(composerDraftKey(), "typed");
   failWrites = true;
 
-  writePasteDraft(composerPasteDraftKey("t1"), ["x".repeat(64)]);
-  assert.equal(readComposerDraft(composerDraftKey("t1")), "typed");
-  assert.deepEqual(readPasteDraft(composerPasteDraftKey("t1")), []);
+  writePasteDraft(composerPasteDraftKey(), ["x".repeat(64)]);
+  assert.equal(readComposerDraft(composerDraftKey()), "typed");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey()), []);
 });
 
 test("a corrupt paste slot reads as empty rather than throwing", () => {
-  const key = composerPasteDraftKey("t1");
+  const key = composerPasteDraftKey();
   for (const raw of ["not json", '{"text":"a"}', "[1,2]", ""]) {
     store.set(key, raw);
     assert.deepEqual(readPasteDraft(key), []);

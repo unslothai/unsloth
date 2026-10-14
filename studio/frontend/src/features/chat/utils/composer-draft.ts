@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Per-thread composer drafts persisted in localStorage. New (unsaved) chats share the
-// NEW_CHAT_DRAFT_ID slot; callers clear it when a fresh chat starts so one new chat's draft
-// never bleeds into the next.
-const DRAFT_PREFIX = "chat-draft:";
-const PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
-const NEW_CHAT_DRAFT_ID = "__new__";
+// One composer draft shared by every chat, persisted in localStorage, so whatever was typed last
+// follows the user to any chat, new or saved, and across reloads and tabs. The account switch
+// clears it with the other chat-draft keys (account-transition.ts).
+const DRAFT_KEY = "chat-draft:latest";
+const PASTE_DRAFT_KEY = "chat-draft-pastes:latest";
+// Drafts used to be kept per chat under these prefixes; only deleting a chat still touches them.
+const LEGACY_DRAFT_PREFIX = "chat-draft:";
+const LEGACY_PASTE_DRAFT_PREFIX = "chat-draft-pastes:";
 
-export function composerDraftKey(threadId: string | null | undefined): string {
-  return `${DRAFT_PREFIX}${threadId ?? NEW_CHAT_DRAFT_ID}`;
+export function composerDraftKey(): string {
+  return DRAFT_KEY;
 }
 
 // Pasted attachments live in their own slot rather than inside the text draft, so typing never
 // rewrites a paste that can run to megabytes.
-export function composerPasteDraftKey(
-  threadId: string | null | undefined,
-): string {
-  return `${PASTE_DRAFT_PREFIX}${threadId ?? NEW_CHAT_DRAFT_ID}`;
+export function composerPasteDraftKey(): string {
+  return PASTE_DRAFT_KEY;
 }
 
 // The names are not stored: a pasted file is named from its own text, so recreating it reproduces the name it had.
@@ -71,16 +71,12 @@ export function writeComposerDraft(key: string, text: string): void {
   }
 }
 
-export function clearComposerDraft(threadId: string | null | undefined): void {
+// Removes a deleted chat's leftover per-chat draft. Never the shared draft, which belongs to no chat.
+export function clearComposerDraft(threadId: string): void {
   try {
-    window.localStorage.removeItem(composerDraftKey(threadId));
-    window.localStorage.removeItem(composerPasteDraftKey(threadId));
+    window.localStorage.removeItem(`${LEGACY_DRAFT_PREFIX}${threadId}`);
+    window.localStorage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${threadId}`);
   } catch {
     // ignore
   }
-}
-
-// Drop the shared new-chat draft so a freshly started chat opens empty.
-export function clearNewChatDraft(): void {
-  clearComposerDraft(null);
 }

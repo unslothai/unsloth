@@ -499,7 +499,6 @@ export {
   downloadChatExport,
 } from "./utils/export-chat-history";
 export {
-  clearNewChatDraft,
   composerDraftKey,
   composerPasteDraftKey,
   readComposerDraft,
