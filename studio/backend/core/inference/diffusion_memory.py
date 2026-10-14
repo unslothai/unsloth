@@ -2331,17 +2331,61 @@ def measured_image_runtime_mib(
 
 
 def learned_peak_label(
-    pipe: Any, attention: Optional[str] = None, model: Optional[str] = None, vae: Optional[str] = None
+    pipe: Any,
+    attention: Optional[str] = None,
+    model: Optional[str] = None,
+    vae: Optional[str] = None,
+    te: Optional[str] = None,
 ) -> str:
-    """``denoiser_quant_label`` plus the loaded model (variants of one family differ in size), the VAE savers (an
-    untiled decode peaks far above a tiled one) and the engaged attention backend (backends with different
-    workspaces): none shares a learned peak."""
+    """``denoiser_quant_label`` plus the loaded model (variants of one family differ in size), the text encoders'
+    precision (a dense streamed encoder peaks above a quantised one), the VAE savers (an untiled decode peaks far
+    above a tiled one) and the engaged attention backend (backends with different workspaces): none shares a learned
+    peak. The VAE savers and the backend can change after the load; ``with_label_part`` rewrites them."""
     label = denoiser_quant_label(pipe)
-    if model is not None:
-        label = f"{label}|model:{model}"
-    if vae is not None:
-        label = f"{label}|vae:{vae}"
-    return label if attention is None else f"{label}|attn:{attention}"
+    for name, value in (("model", model), ("te", te), ("vae", vae), ("attn", attention)):
+        if value is not None:
+            label = f"{label}|{name}:{value}"
+    return label
+
+
+def with_label_part(label: str, name: str, value: str) -> str:
+    """``label`` with its ``name:`` part replaced by ``value`` (unchanged when it has no such part)."""
+    return "|".join(
+        f"{name}:{value}" if part.startswith(f"{name}:") else part for part in str(label).split("|")
+    )
+
+
+def planned_vae_saver_tag(pipe: Any, plan: Any) -> str:
+    """The VAE savers ``plan`` asks for that this pipeline can engage (what ``apply_memory_plan`` will turn on)."""
+    vae = getattr(pipe, "vae", None)
+
+    def can(pipe_method: str, vae_method: str) -> bool:
+        return callable(getattr(pipe, pipe_method, None)) or callable(getattr(vae, vae_method, None))
+
+    return vae_saver_tag(
+        getattr(plan, "vae_tiling", False) and can("enable_vae_tiling", "enable_tiling"),
+        getattr(plan, "vae_slicing", False) and can("enable_vae_slicing", "enable_slicing"),
+    )
+
+
+def live_vae_saver_tag(pipe: Any) -> str:
+    """The VAE savers in force right now."""
+    vae = getattr(pipe, "vae", None)
+    return vae_saver_tag(getattr(vae, "use_tiling", False), getattr(vae, "use_slicing", False))
+
+
+def stream_window_pad_mib(pipe: Any) -> int:
+    """MiB a learned peak measured with no denoiser group streaming adds to reach the streamed baseline (the prefetch
+    window a streamed placement holds above its start allocation), so every placement reads one conservative scale."""
+    for name, module in (getattr(pipe, "components", {}) or {}).items():
+        if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
+            continue
+        try:
+            if any(not getattr(g, "_unsloth_resident", False) for g in _offload_groups(module) or ()):
+                return 0
+        except Exception:  # noqa: BLE001
+            continue
+    return max(0, _stream_window_mib(pipe))
 
 
 def vae_saver_tag(tiling: Any, slicing: Any) -> str:
@@ -2512,6 +2556,7 @@ def refine_plan_from_loaded_weights(
     attention: Optional[str] = None,
     model: Optional[str] = None,
     vae: Optional[str] = None,
+    te: Optional[str] = None,
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
@@ -2544,7 +2589,7 @@ def refine_plan_from_loaded_weights(
         if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
             # measured on fp16 / fp32 cards only; bf16 cards can compile later
             return plan
-        quant = learned_peak_label(pipe, attention, model, vae)
+        quant = learned_peak_label(pipe, attention, model, vae, te)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
         except Exception:  # noqa: BLE001 - a pipe refusing attributes only skips recording
@@ -3083,7 +3128,8 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
             go._swap_torchao_tensor(t, moved)
         else:
             t.data = t.data.to(onload)
-    torch.cuda.synchronize(onload)
+    if onload.type == "cuda":
+        torch.cuda.synchronize(onload)
 
 
 def _unwind_group_offload(pipe: Any, snapshots: list, logger: Any = None) -> bool:
@@ -3393,7 +3439,7 @@ def _retry_group_offload_lower(
                 "transformer_2",
                 "unconditional_transformer",
             ) or name.startswith("text_encoder"):
-                comp.to("cpu")
+                _return_module_tensors(comp, torch.device("cpu"))
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()

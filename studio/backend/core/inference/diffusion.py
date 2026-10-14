@@ -161,7 +161,10 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     learned_peak_label,
-    vae_saver_tag,
+    live_vae_saver_tag,
+    planned_vae_saver_tag,
+    stream_window_pad_mib,
+    with_label_part,
     applied_plan,
     release_resident_groups,
     resident_group_mib,
@@ -1972,27 +1975,48 @@ def _start_peak_probe(state: Any) -> Any:
     try:
         from .diffusion_measured_peaks import PeakProbe, enabled
 
-        keyed = str(identity[1]).split("|vae:")
-        if len(keyed) > 1:
-            vae = getattr(pipe, "vae", None)
-            savers = keyed[1].split("|")[0].split("+")
-            if any(
-                bool(getattr(vae, flag, False)) and name not in savers
-                for name, flag in (("tiled", "use_tiling"), ("sliced", "use_slicing"))
-            ):
-                # this request engaged a VAE saver the load's key lacks: its decode peak understates the key's
-                return None
-
+        if _live_peak_label(state) != str(identity[1]):
+            # this render runs a state the key does not name (a VAE saver the guard engaged for it, another
+            # attention backend): its peak belongs to no key
+            return None
         if not enabled():
             return None
         probe = PeakProbe(getattr(state, "device", None))
         if probe.device is None:
             return None
+        probe.window_pad = stream_window_pad_mib(pipe)
         probe.failed_captures = cuda_graph.failed_capture_count()
         probe.conditioning_hits = _conditioning_cache_hits(pipe)
         return probe
     except Exception:  # noqa: BLE001 - measurement only
         return None
+
+
+def _live_peak_label(state: Any) -> str:
+    """The load's learned-peak label with the parts that can change after the load (VAE savers, attention backend)
+    read from the live pipeline."""
+    pipe = getattr(state, "pipe", None)
+    label = str(getattr(pipe, "_unsloth_peak_identity", ("", ""))[1])
+    label = with_label_part(label, "vae", live_vae_saver_tag(pipe))
+    return with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
+
+
+def _refresh_learned_reserve(pipe: Any) -> None:
+    """After the peak identity moved (a VAE saver that did not engage, a deferred attention switch), let the request
+    guard size from the new key's learned peak when it exceeds the one the placement reserved."""
+    identity = getattr(pipe, "_unsloth_peak_identity", None)
+    reserve = getattr(pipe, "_unsloth_measured_reserve", None)
+    if not reserve or not isinstance(identity, tuple) or len(identity) != 3:
+        return
+    try:
+        from .diffusion_measured_peaks import lookup_bucket
+
+        found = lookup_bucket(family = identity[0], quant = identity[1], speed_mode = identity[2])
+        reserve = tuple(reserve) + (None,) * max(0, 7 - len(reserve))
+        if found is not None and found[0] > int(reserve[5] or 0):
+            pipe._unsloth_measured_reserve = (*reserve[:5], found[0], found[1])
+    except Exception:  # noqa: BLE001 - the load-time reserve stands
+        pass
 
 
 def _conditioning_cache_hits(pipe: Any) -> int:
@@ -2012,7 +2036,13 @@ def _conditioning_cache_hits(pipe: Any) -> int:
 
 
 def _record_peak_probe(
-    state: Any, probe: Any, *, width: Optional[int], height: Optional[int], batch_size: int
+    state: Any,
+    probe: Any,
+    *,
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int,
+    target: Any = None,
 ) -> None:
     """Persist a completed render's peak above its starting allocation under the load's peak identity."""
     if probe is None or not width or not height:
@@ -2032,6 +2062,7 @@ def _record_peak_probe(
             # its next load from this value alone
             return
         family, quant, speed_mode = identity
+        peak += int(getattr(probe, "window_pad", 0) or 0)
         if record(
             family = family,
             quant = quant,
@@ -2041,6 +2072,8 @@ def _record_peak_probe(
             batch_size = batch_size,
             peak_mib = peak,
             device_name = device_name(probe.device),
+            quadratic = target is not None
+            and _quadratic_attention(target, getattr(state, "attention_backend", None), state.pipe),
         ):
             logger.info(
                 "diffusion.memory: learned activation peak %d MiB recorded for %s / %s / %s at %dx%d x%d",
@@ -8231,15 +8264,14 @@ class DiffusionBackend:
                         )
                     plan = refined_plan
                     peak_model = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
-                    peak_vae = vae_saver_tag(
-                        getattr(plan, "vae_tiling", False), getattr(plan, "vae_slicing", False)
-                    )
+                    peak_vae = planned_vae_saver_tag(pipe, plan)
+                    peak_te = str(te_quant or "dense")
                     try:
                         # the learned-peak key: recorded at every completed render, read by later loads
                         pipe._unsloth_peak_identity = (
                             fam.name,
                             learned_peak_label(
-                                pipe, attention_engaged or "native", peak_model, peak_vae
+                                pipe, attention_engaged or "native", peak_model, peak_vae, peak_te
                             ),
                             effective_speed,
                         )
@@ -8256,6 +8288,7 @@ class DiffusionBackend:
                             attention = attention_engaged or "native",
                             model = peak_model,
                             vae = peak_vae,
+                            te = peak_te,
                         )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (
@@ -8317,6 +8350,13 @@ class DiffusionBackend:
                     )
                     # a transient OOM during setup may have re-planned to lower residency
                     plan = applied_plan(pipe, plan)
+                    identity = getattr(pipe, "_unsloth_peak_identity", None)
+                    if isinstance(identity, tuple) and len(identity) == 3:
+                        # a saver the plan asked for may not have engaged: key the renders by what did
+                        live_vae = with_label_part(identity[1], "vae", live_vae_saver_tag(pipe))
+                        if live_vae != identity[1]:
+                            pipe._unsloth_peak_identity = (identity[0], live_vae, identity[2])
+                            _refresh_learned_reserve(pipe)
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
@@ -10401,15 +10441,15 @@ class DiffusionBackend:
         identity = getattr(state.pipe, "_unsloth_peak_identity", None)
         if isinstance(identity, tuple) and len(identity) == 3:
             # later renders record under the backend that now runs
-            quant = str(identity[1]).split("|attn:")[0]
             try:
                 state.pipe._unsloth_peak_identity = (
                     identity[0],
-                    f"{quant}|attn:{attention_engaged or 'native'}",
+                    with_label_part(identity[1], "attn", attention_engaged or "native"),
                     identity[2],
                 )
             except Exception:  # noqa: BLE001 - recording is optional
                 pass
+            _refresh_learned_reserve(state.pipe)
         # Keep the badge in step with the state it describes: the top-level field moved, so leaving `resolved` on the
         # load-time value would make the panel report an attention backend that is no longer the one running.
         if isinstance(state.resolved, dict) and "attention_backend" in state.resolved:
@@ -10981,7 +11021,7 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
-                guard_width = guard_height = None
+                guard_width = guard_height = guard_target = None
                 guard_batch = 1
 
                 try:
@@ -11390,6 +11430,7 @@ class DiffusionBackend:
                     width = guard_width,
                     height = guard_height,
                     batch_size = max(chunk_shapes or [1]),
+                    target = guard_target,
                 )
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))

@@ -171,9 +171,11 @@ def record(
     frames: int = 1,
     peak_mib: int,
     device_name: Optional[str] = None,
+    quadratic: bool = False,
 ) -> bool:
     """Keep the max peak seen for this key and bucket, scaled to the bucket's ceiling so a smaller render in the bucket
-    still answers a full-size one. Returns True when the stored value rose."""
+    still answers a full-size one (squared with ``quadratic``: SDPA math attention grows with pixels squared, and the
+    key's entry keeps scaling that way). Returns True when the stored value rose."""
     if not enabled() or peak_mib is None or int(peak_mib) <= 0 or not family:
         return False
     path = store_path()
@@ -185,7 +187,10 @@ def record(
     bucket = str(bucket_pixels)
     pixels = max(1, int(width or 1024)) * max(1, int(height or 1024)) * max(1, int(batch_size or 1))
     peak_mib = int(
-        math.ceil(int(peak_mib) * bucket_pixels / float(max(pixels, bucket_pixels // 2)))
+        math.ceil(
+            int(peak_mib)
+            * (bucket_pixels / float(max(pixels, bucket_pixels // 2))) ** (2 if quadratic else 1)
+        )
     )
     try:
         with _lock, _file_lock(path):
@@ -198,6 +203,8 @@ def record(
             if int(peak_mib) <= old:
                 return False
             peaks[bucket] = int(peak_mib)
+            if quadratic:
+                entry["quadratic"] = True
             if device_name:
                 entry["device"] = str(device_name)  # also in the key; kept for readers of the file
             if len(entries) > _MAX_ENTRIES:
@@ -271,7 +278,8 @@ def lookup_bucket(
     if above:
         return peaks[min(above)], min(above)
     largest = max(peaks)
-    return int(math.ceil(peaks[largest] * want / float(largest))), want
+    power = 2 if (entry or {}).get("quadratic") else 1
+    return int(math.ceil(peaks[largest] * (want / float(largest)) ** power)), want
 
 
 def record_work(key: Any, work: int, peak_mib: int) -> bool:

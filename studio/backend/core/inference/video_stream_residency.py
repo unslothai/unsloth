@@ -254,14 +254,7 @@ def arm_request(
         module._unsloth_video_calibration_key = key
         if not rearm:
             return True
-        if dev.index is None:
-            dev = torch.device("cuda", torch.cuda.current_device())
-        from .diffusion_measured_peaks import close_window, open_window
-
-        stale = getattr(module, "_unsloth_video_window", None)
-        if stale is not None:
-            close_window(stale[0], stale[1])
-        module._unsloth_video_window = (dev, open_window(dev))
+        dev = _open_window(module, dev)
         torch.cuda.reset_peak_memory_stats(dev)
         work = int(width) * int(height) * int(frames)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
@@ -269,6 +262,22 @@ def arm_request(
         return True
     except Exception:  # noqa: BLE001 -- an unarmed request keeps the estimate
         return False
+
+
+def _open_window(module: Any, dev: Any) -> Any:
+    """Register this request's peak measurement on its card (``diffusion_measured_peaks.open_window``), replacing a
+    stale one; returns the indexed device."""
+    import torch
+
+    from .diffusion_measured_peaks import close_window, open_window
+
+    if dev.index is None:
+        dev = torch.device("cuda", torch.cuda.current_device())
+    stale = getattr(module, "_unsloth_video_window", None)
+    if stale is not None:
+        close_window(stale[0], stale[1])
+    module._unsloth_video_window = (dev, open_window(dev))
+    return dev
 
 
 def _failed_captures() -> int:
@@ -392,6 +401,7 @@ def fit_for_request(
             _keep_groups_resident(module, room, dev, logger)
             promoted = max(0, resident_mib(module) - after_release)
         kept = resident_mib(module)
+        dev = _open_window(module, dev)
         torch.cuda.reset_peak_memory_stats(dev)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
         module._unsloth_video_failed_captures = _failed_captures()
