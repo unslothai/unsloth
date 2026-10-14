@@ -96,11 +96,12 @@ def test_rocm_unaskable_check_is_native_and_not_cached(monkeypatch):
     assert att._ROCM_FLASH_PROBE_CACHE == {}
 
 
-def test_rocm_auto_unchanged(monkeypatch):
+def test_rocm_auto_is_a_timed_candidate_not_flash(monkeypatch):
     calls = _rocm(monkeypatch)
-    assert select_attention_backend(_target(), "auto", speed_active = True) is None
+    assert select_attention_backend(_target(), "auto", speed_active = True) == att.ROCM_FLASH_CANDIDATE
+    # an explicit `off` stays native without asking anything (the bit-identical reference path)
     assert select_attention_backend(_target(), "auto", speed_active = False) is None
-    assert calls == []
+    assert calls == [("cuda:0", "torch.bfloat16")]
 
 
 @pytest.mark.parametrize("alias", ["flash3", "flash4", "sage", "cudnn", "xformers"])
@@ -242,52 +243,55 @@ def test_cudnn_head_dim_probe_still_answers_fp32_at_bf16(monkeypatch):
     assert seen == [torch.bfloat16]
 
 
-# ``auto`` -> flash for FLUX.2-klein on ROCm gfx11 (measured on gfx1151); every other family and arch unchanged.
+# ``auto`` on ROCm: a candidate resolved by a whole-block timing probe at the model's attention geometry, for every
+# family and arch alike (no model or arch table); kill switch UNSLOTH_DIFFUSION_ROCM_FLASH.
 
 
 def _klein():
     return types.SimpleNamespace(name = "flux.2-klein")
 
 
-def _arch(monkeypatch, arch = "gfx1151"):
-    monkeypatch.setattr(att, "_rocm_gfx_arch", lambda target: arch)
-
-
-def test_rocm_auto_flash_for_klein_on_gfx11(monkeypatch):
-    calls = _rocm(monkeypatch)
-    _arch(monkeypatch)
-    assert (
-        select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) == "flash"
-    )
-    assert (
-        select_attention_backend(_target(), None, speed_active = True, family = "flux.2-klein")
-        == "flash"
-    )
-    # unset speed (ROCm resolves it to `off`): the default path, so flash too
-    assert (
-        select_attention_backend(
-            _target(), "auto", speed_active = False, family = _klein(), speed_unset = True
-        )
-        == "flash"
-    )
-    # an explicit `off` stays native (the bit-identical reference path)
-    assert select_attention_backend(_target(), "auto", speed_active = False, family = _klein()) is None
-    assert calls == [("cuda:0", "torch.bfloat16")]
-
-
-@pytest.mark.parametrize("family", ["flux.1", "flux.2", "z-image", "qwen-image", "sdxl", None])
-def test_rocm_auto_stays_native_for_unmeasured_families(monkeypatch, family):
-    calls = _rocm(monkeypatch)
-    _arch(monkeypatch)
+@pytest.mark.parametrize("family", ["flux.2-klein", "flux.1", "z-image", "qwen-image", None])
+def test_rocm_auto_candidate_for_every_family(monkeypatch, family):
+    _rocm(monkeypatch)
     fam = None if family is None else types.SimpleNamespace(name = family)
-    assert select_attention_backend(_target(), "auto", speed_active = True, family = fam) is None
+    assert select_attention_backend(_target(), "auto", speed_active = True, family = fam) == att.ROCM_FLASH_CANDIDATE
     assert (
-        select_attention_backend(
-            _target(), "auto", speed_active = False, family = fam, speed_unset = True
-        )
-        is None
+        select_attention_backend(_target(), None, speed_active = False, family = fam, speed_unset = True)
+        == att.ROCM_FLASH_CANDIDATE
     )
+    assert select_attention_backend(_target(), "auto", speed_active = False, family = fam) is None
+
+
+def test_rocm_auto_without_flash_attn_is_silent(monkeypatch):
+    calls = _rocm(monkeypatch, flash_attn = False)
+    logged = []
+    monkeypatch.setattr(
+        att, "_module_logger", lambda: types.SimpleNamespace(warning = lambda *a: logged.append(a))
+    )
+    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
+    assert calls == [] and logged == []
+
+
+def test_rocm_auto_failed_probe_stays_native(monkeypatch):
+    _rocm(monkeypatch, probe = False)
+    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
+
+
+def test_rocm_auto_explicit_native_wins(monkeypatch):
+    calls = _rocm(monkeypatch)
+    for alias in ("native", "sdpa"):
+        assert select_attention_backend(_target(), alias, speed_active = True, family = _klein()) is None
     assert calls == []
+
+
+def test_rocm_kill_switch_zero_keeps_auto_native(monkeypatch):
+    calls = _rocm(monkeypatch)
+    monkeypatch.setenv(att.ROCM_FLASH_ENV, "0")
+    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
+    assert calls == []
+    # an explicit request is still honored
+    assert select_attention_backend(_target(), "flash", speed_active = True) == "flash"
 
 
 def test_rocm_gfx_arch_reads_the_selected_card(monkeypatch):
@@ -306,39 +310,102 @@ def test_rocm_gfx_arch_reads_the_selected_card(monkeypatch):
     assert asked == [1]
 
 
-@pytest.mark.parametrize("arch", ["gfx942", "gfx90a", "gfx1201", "gfx1030", ""])
-def test_rocm_auto_klein_flash_gfx11_only(monkeypatch, arch):
-    calls = _rocm(monkeypatch)
-    _arch(monkeypatch, arch)
-    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
-    assert calls == []
+def _pipe_with_attention(hidden = 3072, heads = 24, head_dim = 128, n = 3):
+    set_to = []
+    mods = [
+        types.SimpleNamespace(heads = heads, to_q = types.SimpleNamespace(in_features = hidden, out_features = heads * head_dim))
+        for _ in range(n)
+    ]
+    dit = types.SimpleNamespace(set_attention_backend = set_to.append, modules = lambda: iter(mods))
+    return types.SimpleNamespace(transformer = dit), set_to
 
 
-def test_rocm_auto_klein_without_flash_attn_is_silent(monkeypatch, caplog):
-    calls = _rocm(monkeypatch, flash_attn = False)
-    _arch(monkeypatch)
-    logged = []
-    monkeypatch.setattr(
-        att, "_module_logger", lambda: types.SimpleNamespace(warning = lambda *a: logged.append(a))
-    )
-    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
-    assert calls == [] and logged == []
+def _apply_env(monkeypatch):
+    monkeypatch.setattr(att, "_active_attention_backend", lambda: att.ATTN_NATIVE)
+    monkeypatch.setattr(att, "warn_if_sdpa_math_only", lambda *a, **k: False)
+    monkeypatch.setattr(att, "_configure_native_attention", lambda *a, **k: None)
+    monkeypatch.setattr(att, "ROCM_FLASH_ADMISSIONS", {})
 
 
-def test_rocm_auto_klein_failed_probe_stays_native(monkeypatch):
-    _rocm(monkeypatch, probe = False)
-    _arch(monkeypatch)
-    assert select_attention_backend(_target(), "auto", speed_active = True, family = _klein()) is None
+@pytest.mark.parametrize(
+    "flash_ms, rel, engaged",
+    [(70.0, 1e-3, "flash"), (78.0, 1e-3, None), (90.0, 1e-3, None), (60.0, 0.5, None)],
+)
+def test_apply_resolves_candidate_by_block_timing(monkeypatch, flash_ms, rel, engaged):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    timed = []
+
+    def fake_time(device, dtype, hidden, heads, head_dim):
+        timed.append((device, hidden, heads, head_dim))
+        return {"native_ms": 80.0, "flash_ms": flash_ms, "rel_l1": rel, "finite": True, "tokens": 4096}
+
+    monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
+    pipe, set_to = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == engaged
+    assert timed == [("cuda:0", 3072, 24, 128)]
+    assert set_to == (["flash"] if engaged else [])
+    # cached per (device, dtype, geometry): a second load does not time again
+    pipe2, _ = _pipe_with_attention()
+    att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target())
+    assert len(timed) == 1
+    rec = next(iter(att.ROCM_FLASH_ADMISSIONS.values()))
+    assert rec["admitted"] is (engaged == "flash") and rec["geometry"] == {"hidden": 3072, "heads": 24, "head_dim": 128}
 
 
-def test_rocm_auto_klein_explicit_native_wins(monkeypatch):
-    calls = _rocm(monkeypatch)
-    _arch(monkeypatch)
-    for alias in ("native", "sdpa"):
-        assert (
-            select_attention_backend(_target(), alias, speed_active = True, family = _klein()) is None
-        )
-    assert calls == []
+def test_apply_candidate_kill_switch_one_skips_timing(monkeypatch):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setenv(att.ROCM_FLASH_ENV, "1")
+    monkeypatch.setattr(att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("timed under =1"))
+    pipe, set_to = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
+
+
+def test_apply_candidate_probe_error_is_native_and_retried(monkeypatch):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    n = []
+
+    def boom(*a, **k):
+        n.append(1)
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(att, "_time_rocm_flash_block", boom)
+    pipe, set_to = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+    assert len(n) == 2 and set_to == []
+
+
+def test_apply_candidate_without_geometry_is_native(monkeypatch):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("no geometry, nothing to time"))
+    set_to = []
+    dit = types.SimpleNamespace(set_attention_backend = set_to.append, modules = lambda: iter(()))
+    pipe = types.SimpleNamespace(transformer = dit)
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+
+
+def test_candidate_never_pip_installs(monkeypatch):
+    assert att._ensure_backend_package(att.ROCM_FLASH_CANDIDATE) is None
+
+
+def test_block_timer_runs_on_cpu_shapes(monkeypatch):
+    torch = pytest.importorskip("torch")
+    fa = types.ModuleType("flash_attn")
+
+    def flash_attn_func(q, k, v):
+        return torch.nn.functional.scaled_dot_product_attention(
+            q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
+        ).transpose(1, 2)
+
+    fa.flash_attn_func = flash_attn_func
+    monkeypatch.setitem(sys.modules, "flash_attn", fa)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *a, **k: None)
+    rec = att._time_rocm_flash_block("cpu", torch.bfloat16, 64, 4, 16, tokens = 32)
+    assert rec["finite"] and rec["rel_l1"] == 0.0 and rec["native_ms"] > 0 and rec["flash_ms"] > 0
 
 
 def test_nvidia_auto_klein_unchanged(monkeypatch):
