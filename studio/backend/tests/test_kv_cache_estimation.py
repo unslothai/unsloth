@@ -1234,6 +1234,36 @@ class TestSparseAttentionIndexerCache:
             78 * cells * 576 * 2 + expected_layers * cells * 128 * 2
         )
 
+    def test_a_scalar_indexer_field_is_broadcast_like_get_key_or_arr(self):
+        # llama.cpp reads both keys with get_key_or_arr: one value covers every layer.
+        glm = {
+            "block_count": 79,
+            "nextn_predict_layers": 1,
+            "context_length": 1048576,
+            "attention.head_count_kv": 1,
+            "attention.key_length": 576,
+            "attention.value_length": 512,
+            "attention.kv_lora_rank": 512,
+            "attention.indexer.key_length": 128,
+        }
+        for value in (0, 1):
+            scalar = _backend_from_gguf("glm-dsa", {**glm, "attention.indexer.types": value})
+            array = _backend_from_gguf(
+                "glm-dsa", {**glm, "attention.indexer.types": [bool(value)] * 78}
+            )
+            assert scalar._estimate_kv_cache_bytes(4096, "f16") == (
+                array._estimate_kv_cache_bytes(4096, "f16")
+            )
+        for value in (0, 4):
+            scalar = self._qwen38(**{"attention.compress_ratios": value})
+            array = self._qwen38(**{"attention.compress_ratios": [value] * 48})
+            assert scalar._estimate_kv_cache_bytes(8192, None) == (
+                array._estimate_kv_cache_bytes(8192, None)
+            )
+            assert scalar._indexer_kv_layer_bytes(48, 2.0, 2.0) == (
+                array._indexer_kv_layer_bytes(48, 2.0, 2.0)
+            )
+
     def test_glm_5_2_default_layout(self):
         on = [i for i in range(80) if lc._glm_5_2_default_indexer_full(i)]
         assert on[:5] == [0, 1, 2, 6, 10] and on[-1] == 74 and len(on) == 21

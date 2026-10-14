@@ -20321,6 +20321,12 @@ class LlamaCppBackend:
                     (i + 1) % sliding_window_pattern_period != 0 for i in range(self._n_layers)
                 ]
 
+            # get_key_or_arr: a scalar indexer type / compress ratio applies to every layer.
+            if isinstance(self._indexer_types, int):
+                self._indexer_types = [bool(self._indexer_types)] * int(self._n_layers or 0)
+            if isinstance(self._compress_ratios, int):
+                self._compress_ratios = [self._compress_ratios] * int(self._n_layers or 0)
+
             # Otherwise hand off to the resolver (cache / bootstrap / transformers / HF). Diffusion models
             # skip it: they do not use Unsloth's SWA pattern and the resolver can raise for them.
             if (
