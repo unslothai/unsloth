@@ -82,6 +82,8 @@ BROWSER_NETWORK_JS = r"""
           : body instanceof Blob ? body.size
           : body instanceof ArrayBuffer || ArrayBuffer.isView(body) ? body.byteLength
           : body instanceof FormData ? [...body.values()].reduce((total, value) => total + (typeof value === "string" ? value.length * 3 : value.size), 0)
+          : body instanceof URLSearchParams ? body.toString().length * 3
+          : body instanceof Document ? (body.documentElement?.outerHTML?.length ?? 0) * 3
           : 0;
         const withoutHash = (url) => url.split("#")[0];
         // What a fetched response has and a constructed one lacks, kept through clone(): "basic" on

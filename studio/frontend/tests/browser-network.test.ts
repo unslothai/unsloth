@@ -325,6 +325,11 @@ test("a write past the panel's body limit stays the browser's, as before relayin
   xhr.send(new Blob([big]));
   assert.equal(t.posted.length, 0);
   assert.equal(xhr.calls.at(-1)?.[0], "send");
+  const form = new t.window.XMLHttpRequest() as PageXHR;
+  form.open("POST", "/upload");
+  form.send(new URLSearchParams({ q: "x".repeat(400 * 1024) }));
+  assert.equal(t.posted.length, 0);
+  assert.equal(form.calls.at(-1)?.[0], "send");
 });
 
 test("an XHR GET the browser can read loads the browser's answer, with no panel request", async () => {
