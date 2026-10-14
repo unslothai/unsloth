@@ -48,7 +48,6 @@ WSL_HINT = "WSL2: open http://localhost:"
 
 @pytest.mark.parametrize("mode,wsl", [("nat", True), (None, False)])
 def test_wsl_hint_replaces_the_private_address_note(capsys, monkeypatch, mode, wsl):
-    # Under WSL NAT the private address is WSL's own, so "reachable on this network" would be wrong.
     import lan_access
     import run
     from utils.paths import file_manager
@@ -111,8 +110,7 @@ def test_startup_output_wsl_hint_skipped_in_container(capsys, monkeypatch):
 
 
 def test_wsl_hint_check_skips_container_import_off_wsl(capsys, monkeypatch):
-    # Every wildcard bind runs the WSL check, so off WSL it must not need the container probe's module
-    # (a stubbed utils.paths in tests/studio/install has none).
+    # tests/studio/install stubs utils.paths without file_manager.
     import lan_access
     import run
 

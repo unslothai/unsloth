@@ -10,11 +10,25 @@
   ],
   "entries": [
     {
+      "file": "studio/backend/core/inference/diffusion_autoopt/patches.py",
+      "sink": "compile",
+      "digest": "5ae0e330a5c3c7ad",
+      "count": 1,
+      "reason": "splice_function: compiles an AST parsed from the library function's own inspect.getsource, edited only by exact-once literal needle replacements, checked to be one function whose globals all resolve"
+    },
+    {
+      "file": "studio/backend/core/inference/diffusion_autoopt/patches.py",
+      "sink": "exec",
+      "digest": "1c33653a1d0bca74",
+      "count": 1,
+      "reason": "splice_function: executes the code object compiled on the line above into a copy of the original function's globals; never sees user or model input"
+    },
+    {
       "file": "studio/backend/core/inference/diffusion_capture_safe.py",
       "sink": "compile",
-      "digest": "05c1d218ea0c8e6d",
+      "digest": "1f39880672dc563b",
       "count": 1,
-      "reason": "Rebuilds the installed diffusers HunyuanImage forward from its own inspect.getsource with one fixed block swapped; the source is the imported library's code, not user or network input."
+      "reason": "Rebuilds the installed diffusers HunyuanImage / HunyuanVideo 1.5 forward from its own inspect.getsource with fixed blocks swapped (compiled with dont_inherit so this module's future import does not leak in); the source is the imported library's code, not user or network input."
     },
     {
       "file": "studio/backend/core/inference/diffusion_capture_safe.py",

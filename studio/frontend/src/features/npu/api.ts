@@ -8,6 +8,9 @@ import { readSseJsonEvents } from "@/lib/sse-json-events";
 /** Model paths the backend loads onto the NPU (`lemonade:<Lemonade model id>`). */
 export const NPU_MODEL_PREFIX = "lemonade:";
 
+/** Keep in sync with npu_backend.py's DEFAULT_CONTEXT_LENGTH. */
+export const NPU_DEFAULT_CONTEXT_LENGTH = 8192;
+
 export function isNpuModelId(
   value: string | null | undefined,
 ): value is string {
@@ -40,6 +43,8 @@ export interface NpuStatus {
   loaded_model: string | null;
   context_length: number | null;
   loading_model: string | null;
+  /** Installed runtime versions; absent from servers that predate them. */
+  versions?: { lemonade: string | null; fastflowlm: string | null };
 }
 
 export interface NpuModel {

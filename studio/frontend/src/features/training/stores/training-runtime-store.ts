@@ -92,6 +92,7 @@ const initialState: TrainingRuntimeState = {
   rlMetricHistory: [],
   resetGeneration: 0,
   stopRequested: false,
+  configureRequest: 0,
   selectedHistoryRunId: null,
   currentRunViewActive: false,
 };
@@ -314,6 +315,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       set((state) => ({
         ...initialState,
         hasHydrated: state.hasHydrated,
+        configureRequest: state.configureRequest,
         lossHistory: [],
         lrHistory: [],
         gradNormHistory: [],

@@ -3,6 +3,7 @@
 
 import { isExternalModelId, useChatRuntimeStore } from "@/features/chat";
 import { usePlatformStore } from "@/config/env";
+import { isNpuModelId } from "@/features/npu";
 import { useMemo } from "react";
 import {
   type PerModelConfig,
@@ -22,6 +23,13 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const engine = useChatRuntimeStore((s) => s.params.engine ?? "auto");
   const engineParallelism = useChatRuntimeStore((s) => s.params.engineParallelism ?? "tensor");
   const enginePrecision = useChatRuntimeStore((s) => s.params.enginePrecision ?? "auto");
+  const engineKvCacheDtype = useChatRuntimeStore(
+    (s) => s.params.engineKvCacheDtype ?? "auto",
+  );
+  const engineSeed = useChatRuntimeStore((s) => s.params.engineSeed ?? null);
+  const engineGpuMemoryUtilization = useChatRuntimeStore(
+    (s) => s.params.engineGpuMemoryUtilization ?? null,
+  );
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -31,6 +39,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const customContextLength = useChatRuntimeStore((s) => s.customContextLength);
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const mlxKvQuant = useChatRuntimeStore((s) => s.mlxKvQuant);
+  const mlxInt8Prefill = useChatRuntimeStore((s) => s.mlxInt8Prefill);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
@@ -54,7 +63,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const loadMode = useChatRuntimeStore((s) => s.loadMode);
   const ctxCheckpoints = useChatRuntimeStore((s) => s.ctxCheckpoints);
   const cacheRam = useChatRuntimeStore((s) => s.cacheRam);
-  const llamaCppConfig = useChatRuntimeStore((s) => s.loadedLlamaCppConfig);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const disableVision = useChatRuntimeStore((s) => s.disableVision);
   const chatTemplateOverride = useChatRuntimeStore(
@@ -89,6 +97,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   // Off-backend this stays null, or the model compares unequal to its own defaults
   // over a field it cannot show.
   const effectiveMlxKvQuant = isMlx ? (mlxKvQuant ?? null) : null;
+  const effectiveMlxInt8Prefill = isMlx && mlxInt8Prefill;
 
   const config = useMemo<PerModelConfig | null>(() => {
     if (!checkpoint || isExternalModelId(checkpoint)) {
@@ -98,14 +107,14 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       engine,
       enginePrecision,
       engineParallelism,
-      llamaCppConfig: isGguf ? llamaCppConfig ?? undefined : undefined,
       customContextLength: customContextLength ?? null,
       // A self-sizing backend carries no pin here, exactly as the GGUF path does: this
       // is the runtime's resolved length, and reading it back as the user's choice would
       // pin every reload to whatever the first load happened to get.
-      maxSeqLength: isGguf || isMlx ? null : maxSeqLength,
+      maxSeqLength: isGguf || isMlx || isNpuModelId(checkpoint) ? null : maxSeqLength,
       kvCacheDtype: kvCacheDtype ?? null,
       mlxKvQuant: effectiveMlxKvQuant,
+      mlxInt8Prefill: effectiveMlxInt8Prefill,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
@@ -123,7 +132,14 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     };
     if (!isGguf) {
       return engine === "vllm" || engine === "sglang"
-        ? { ...base, selectedGpuIds, selectedGpuIndexKind }
+        ? {
+            ...base,
+            engineKvCacheDtype,
+            engineSeed,
+            engineGpuMemoryUtilization,
+            selectedGpuIds,
+            selectedGpuIndexKind,
+          }
         : base;
     }
     return {
@@ -147,9 +163,13 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     engine,
     enginePrecision,
     engineParallelism,
+    engineKvCacheDtype,
+    engineSeed,
+    engineGpuMemoryUtilization,
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,
+    effectiveMlxInt8Prefill,
     speculativeType,
     specDraftNMax,
     nParallel,
@@ -161,7 +181,6 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     loadMode,
     ctxCheckpoints,
     cacheRam,
-    llamaCppConfig,
     tensorParallel,
     disableVision,
     chatTemplateOverride,

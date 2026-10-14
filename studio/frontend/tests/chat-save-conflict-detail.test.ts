@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { loadWithStubs } from "./helpers/module-stubs.ts";
+import { skillLoadCardEvent } from "../src/features/chat/api/skill-load-event.ts";
 
 type Module = {
   saveChatMessage: (
@@ -47,6 +48,11 @@ function harness(response: ReturnType<typeof jsonResponse>) {
   const module = loadWithStubs<Module>(
     new URL("../src/features/chat/api/chat-api.ts", import.meta.url),
     {
+      "./skill-load-event": { skillLoadCardEvent },
+      "./thread-read-cache.ts": loadWithStubs(
+        new URL("../src/features/chat/api/thread-read-cache.ts", import.meta.url),
+        {},
+      ),
       "@/features/auth": {
         authFetch: async (url: string, init?: RequestInit) => {
           requests.push({ url, init });

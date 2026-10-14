@@ -17,15 +17,23 @@ from typing import Any
 
 from ..jsonable import to_jsonable, to_preview_jsonable_row
 from .constants import EVENT_JOB_COMPLETED, EVENT_JOB_ERROR, EVENT_JOB_STARTED
-from ..service import build_config_builder, create_data_designer, install_public_egress_guard
+from ..service import (
+    build_config_builder,
+    create_data_designer,
+    _unify_cell_types,
+    install_public_egress_guard,
+    write_parquet_with_unified_types,
+)
 from utils.paths.lazy import LazyPath
 from utils.paths import ensure_dir, recipe_datasets_root
 
-# Fresh spawned interpreter: re-apply main.py's OS-trust-store injection.
+# Fresh spawned interpreter: re-apply main.py's process-wide network injections.
 from utils.native_tls import activate_native_tls
+from utils.happy_eyeballs import activate_happy_eyeballs
 from utils.paths.path_utils import drop_appledouble_metadata
 
 activate_native_tls()
+activate_happy_eyeballs()
 
 _ARTIFACT_ROOT = LazyPath(recipe_datasets_root)
 _RE_GITHUB_CURSOR = re.compile(r"\bcursor=[^\s,]+")
@@ -179,6 +187,7 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         else:
             results = designer.create(builder, num_records = rows, dataset_name = dataset_name)
             analysis = to_jsonable(results.load_analysis().model_dump(mode = "json"))
+            _unify_batch_schemas(results.artifact_storage.base_dataset_path)
             if merge_batches:
                 _merge_batches_to_single_parquet(results.artifact_storage.base_dataset_path)
             artifact_path = str(results.artifact_storage.base_dataset_path)
@@ -202,6 +211,89 @@ def run_job_process(*, event_queue, recipe: dict[str, Any], run: dict[str, Any])
         )
 
 
+def _unify_batch_schemas(base_dataset_path: Path) -> None:
+    """Give every batch file one schema. Each batch infers its own, so a field stored as JSON text in one
+    batch and as an object in another (or float vs int, all-null vs text) left a folder that training
+    could not load as one dataset."""
+    parquet_dir = base_dataset_path / "parquet-files"
+    parquet_files = drop_appledouble_metadata(sorted(parquet_dir.glob("*.parquet")))
+    if len(parquet_files) <= 1:
+        return
+
+    import pyarrow
+    import pyarrow.parquet as pyarrow_parquet
+
+    schemas = [pyarrow_parquet.read_schema(path).remove_metadata() for path in parquet_files]
+    if all(schema.equals(schemas[0]) for schema in schemas[1:]):
+        return
+
+    staged = [path.with_name(path.name + ".unifying") for path in parquet_files]
+    try:
+        names = list(dict.fromkeys(name for schema in schemas for name in schema.names))
+        # Only differing columns change. Arrow-promotable ones are cast per file while writing; struct vs text
+        # needs every row at once (which fields turn into JSON text depends on all of them), so only those are held.
+        targets: dict[str, Any] = {}
+        rebuilt: dict[str, list[Any]] = {}
+        for name in names:
+            fields = [schema.field(name) for schema in schemas if name in schema.names]
+            if len(fields) == len(schemas) and all(f.type == fields[0].type for f in fields):
+                continue
+            try:
+                targets[name] = (
+                    pyarrow.unify_schemas(
+                        [pyarrow.schema([field]) for field in fields],
+                        promote_options = "permissive",
+                    )
+                    .field(name)
+                    .type
+                )
+                continue
+            except (pyarrow.ArrowInvalid, pyarrow.ArrowTypeError, pyarrow.ArrowNotImplementedError):
+                pass
+            columns = [
+                pyarrow_parquet.read_table(path, columns = [name]).column(name)
+                if name in schema.names
+                else pyarrow.nulls(pyarrow_parquet.read_metadata(path).num_rows)
+                for path, schema in zip(parquet_files, schemas)
+            ]
+            values = _unify_cell_types([v for column in columns for v in column.to_pylist()])
+            merged = pyarrow.array(values, from_pandas = True)
+            del values
+            rebuilt[name], offset = [], 0
+            for column in columns:
+                rebuilt[name].append(merged.slice(offset, len(column)))
+                offset += len(column)
+        for index, (path, target_path) in enumerate(zip(parquet_files, staged)):
+            table = pyarrow_parquet.read_table(path)
+            for name in names:
+                if name in rebuilt:
+                    column = rebuilt[name][index]
+                elif name in targets:
+                    column = (
+                        table.column(name)
+                        if name in table.column_names
+                        else pyarrow.nulls(table.num_rows)
+                    ).cast(targets[name])
+                else:
+                    continue
+                if name in table.column_names:
+                    table = table.set_column(table.column_names.index(name), name, column)
+                else:
+                    table = table.append_column(name, column)
+            pyarrow_parquet.write_table(
+                table.select(names).replace_schema_metadata(None), target_path
+            )
+    except Exception as exc:
+        for path in staged:
+            path.unlink(missing_ok = True)
+        logging.getLogger("data_designer.unsloth").warning(
+            "Batch files kept their own column types: %s", exc
+        )
+        return
+    for path, final in zip(staged, parquet_files):
+        path.replace(final)
+
+
 def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
     parquet_dir = base_dataset_path / "parquet-files"
     # Counted, so a companion would make a single-batch job take the merge path and rewrite a dataset that needed none.
@@ -215,10 +307,21 @@ def _merge_batches_to_single_parquet(base_dataset_path: Path) -> None:
         return
 
     dataframe = read_parquet_dataset(parquet_dir)
+    # Written beside the shards first: a failed write must not take the generated batches with it.
+    staged_file = base_dataset_path / "batch_00000.parquet.merging"
+    try:
+        write_parquet_with_unified_types(
+            dataframe,
+            staged_file,
+            lambda frame: frame.to_parquet(staged_file, index = False),
+        )
+    except BaseException:
+        staged_file.unlink(missing_ok = True)
+        raise
     shutil.rmtree(parquet_dir)
     parquet_dir.mkdir(parents = True, exist_ok = True)
     merged_file = parquet_dir / "batch_00000.parquet"
-    dataframe.to_parquet(merged_file, index = False)
+    staged_file.replace(merged_file)
     _rewrite_merged_metadata(
         base_dataset_path = base_dataset_path,
         parquet_file = merged_file,

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Detect when a diffusion pipeline leaves its denoise loop and enters the decoder."""
+"""Detect when a diffusion pipeline enters its denoise loop, and when it leaves it for the decoder."""
 
 from __future__ import annotations
 
@@ -59,3 +59,40 @@ def decode_phase(
                     del owner.decode
             except Exception:  # noqa: BLE001 -- cleanup is best-effort
                 pass
+
+
+@contextlib.contextmanager
+def denoise_phase(pipe: Any, on_denoise: Any):
+    """Call ``on_denoise`` once when the loop is entered: every diffusers pipeline opens
+    ``self.progress_bar`` right after the prompt encode and latent setup. A HOST position."""
+    original = getattr(pipe, "progress_bar", None)
+    if not callable(original):
+        yield
+        return
+    fired = {"done": False}
+    had_own = "progress_bar" in getattr(pipe, "__dict__", {})
+
+    def _progress_bar(*args: Any, **kwargs: Any) -> Any:
+        if not fired["done"]:
+            fired["done"] = True
+            try:
+                on_denoise()
+            except Exception:  # noqa: BLE001 -- a phase label must never fail a render
+                pass
+        return original(*args, **kwargs)
+
+    try:
+        pipe.progress_bar = _progress_bar
+    except Exception:  # noqa: BLE001 -- a pipe that refuses assignment keeps the step-callback fallback
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            if had_own:
+                pipe.progress_bar = original
+            else:
+                del pipe.progress_bar
+        except Exception:  # noqa: BLE001 -- cleanup is best-effort
+            pass

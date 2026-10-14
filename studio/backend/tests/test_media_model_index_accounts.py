@@ -12,6 +12,7 @@ import core.inference.media_model_index as index
 import routes.models as models_route
 from auth import policy
 from storage import studio_db
+from utils import hf_cache_settings
 from utils.account_context import OWNER, AccountContext, run_as
 
 ALICE = AccountContext("a" * 32, "alice")
@@ -21,6 +22,11 @@ BOB = AccountContext("b" * 32, "bob")
 @pytest.fixture
 def home(monkeypatch, tmp_path):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    # The scan also walks every known HF cache home: a host HF_HOME and the platform default
+    # ($XDG_CACHE_HOME or ~/.cache), which the suite-wide empty hub cache does not cover. On a
+    # machine with image models downloaded, they would be listed beside the private ones.
+    monkeypatch.delitem(hf_cache_settings._EXPLICIT_CACHE_ENV, "HF_HOME", raising = False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
     monkeypatch.setattr(policy, "installation_is_multi_user", lambda: True)
     monkeypatch.setattr(models_route, "_local_model_task", lambda info: mas.IMAGE_TASK)
     mas.invalidate_index()

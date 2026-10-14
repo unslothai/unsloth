@@ -38,7 +38,7 @@ import {
   useSidebarWidth,
 } from "@/hooks/use-sidebar-width"
 import { HugeiconsIcon } from "@hugeicons/react"
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
+import { LayoutAlignLeftIcon, PanelLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
@@ -60,13 +60,6 @@ type SidebarContextProps = {
   /** The unpinned sidebar is held out over the content, from the window edge. */
   peeking: boolean
   setPeeking: (value: boolean) => void
-  width: number
-  /** Browser interface scale: the sidebar renders at width * widthScale. */
-  widthScale: number
-  storedWidth: number
-  maxWidth: number
-  setWidth: (value: number) => void
-  resetWidth: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -105,11 +98,7 @@ function SidebarProvider({
   const [openMobile, setOpenMobile] = React.useState(false)
   const {
     width,
-    max: maxWidth,
     scale: widthScale,
-    stored: storedWidth,
-    setWidth,
-    resetWidth,
   } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
@@ -203,14 +192,8 @@ function SidebarProvider({
       togglePinned,
       peeking,
       setPeeking,
-      width,
-      widthScale,
-      storedWidth,
-      maxWidth,
-      setWidth,
-      resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking, width, widthScale, storedWidth, maxWidth, setWidth, resetWidth]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, peeking, setPeeking]
   )
 
   return (
@@ -297,8 +280,9 @@ function Sidebar({
   collapsible?: "offcanvas" | "icon" | "none"
   collapseToZero?: boolean
 }) {
-  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking, width, widthScale } =
+  const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned, peeking, setPeeking } =
     useSidebar()
+  const { width, scale: widthScale } = useSidebarWidth()
   // Only a sidebar that collapses to nothing has an edge to be held out from.
   const holdsOut = hasPinMode && !pinned && collapseToZero
   const heldOut = holdsOut && peeking
@@ -481,8 +465,15 @@ function SidebarResizeHandle({
   className?: string
   side?: "left" | "right"
 }) {
-  const { open, toggleSidebar, width, widthScale, storedWidth, maxWidth, setWidth, resetWidth } =
-    useSidebar()
+  const { open, toggleSidebar } = useSidebar()
+  const {
+    width,
+    scale: widthScale,
+    stored: storedWidth,
+    max: maxWidth,
+    setWidth,
+    resetWidth,
+  } = useSidebarWidth()
   const ref = React.useRef<HTMLDivElement>(null)
   const t = useT()
 
@@ -541,7 +532,7 @@ function SidebarTrigger({
   onClick,
   ...props
 }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { toggleSidebar, isMobile, open, openMobile } = useSidebar()
 
   return (
     <Button
@@ -556,7 +547,11 @@ function SidebarTrigger({
       }}
       {...props}
     >
-      <HugeiconsIcon icon={LayoutAlignLeftIcon} strokeWidth={1.75} className="size-icon" />
+      <HugeiconsIcon
+        icon={(isMobile ? openMobile : open) ? PanelLeftIcon : LayoutAlignLeftIcon}
+        strokeWidth={1.75}
+        className="size-icon"
+      />
       <span className="sr-only">Toggle Sidebar</span>
     </Button>
   )

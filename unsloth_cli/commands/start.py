@@ -88,6 +88,55 @@ _SUBAGENT_DESCRIPTION = (
     "Local coding subagent powered by Unsloth for debugging, implementation, and codebase "
     "research. Use when the user asks to spawn an Unsloth or local agent."
 )
+_AUTO_ROUTE_DESCRIPTION = (
+    "Local coding subagent powered by Unsloth. In this session it is the only way to reach "
+    "files and the shell: {blocked}. "
+    "Give it the complete task in one message (codebase search, reading or summarizing files, "
+    "running tests or commands, mechanical edits with a clear spec) and review its result "
+    "before answering. Keep talking with the user and planning and design decisions to "
+    "yourself."
+)
+_SUBAGENT_AUTO_ROUTE_DESCRIPTION = _AUTO_ROUTE_DESCRIPTION.format(
+    blocked = (
+        "your own Read, Grep, Glob, Bash, PowerShell, Monitor, NotebookRead and Agent calls "
+        "are blocked"
+    )
+)
+# Without tools of its own the parent cannot check a small model's answer except by asking for the evidence.
+_AUTO_ROUTE_VERIFY = (
+    " It is a small local model and can be wrong: ask it for the raw command output behind an "
+    "answer you rely on, such as a search that found nothing or an edit, and say so if you "
+    "cannot confirm it."
+)
+_AUTO_ROUTE_CHECK = (
+    _AUTO_ROUTE_VERIFY + " If it fails, tell the user plainly; you cannot do the step yourself."
+)
+_OPENCODE_AUTO_ROUTE_DESCRIPTION = (
+    _AUTO_ROUTE_DESCRIPTION.format(
+        blocked = "your own read, grep, glob, list, lsp, bash and edit tools are blocked"
+    )
+    + _AUTO_ROUTE_VERIFY
+    + " If it fails, do that step with your own read and bash if they work, or else tell the "
+    "user plainly that it was not done."
+)
+_OPENCODE_PLAN_SUBAGENT_NAME = "unsloth-plan"
+_OPENCODE_AUTO_ROUTE_PLAN_DESCRIPTION = (
+    "Read-only local coding subagent powered by Unsloth for planning and codebase research. "
+    "In plan mode it is the only way to read files: your own read, grep, glob, list, lsp and "
+    "bash tools are blocked. Give it the complete question in one message."
+)
+_OPENCODE_HIDDEN_TOOLS = ("grep", "glob", "list", "lsp")
+# OpenCode's free tier refuses a request without read or bash, so on V1 the route plugin blocks their calls instead of a permission rule removing them.
+_OPENCODE_ROUTED_TOOLS = ("read", "bash")
+_OPENCODE_ROUTE_PLUGIN = "unsloth-auto-route.js"
+_SUBAGENT_AUTO_ROUTE_INSTRUCTIONS = (
+    "Files and the shell in this session are reachable only through the unsloth_agent tool; "
+    "your own Read, Grep, Glob, Bash, PowerShell, Monitor, NotebookRead and Agent calls are "
+    "blocked by a hook. Give the "
+    "tool the complete task in one message, with the paths and commands it needs, and review "
+    "its result before answering. Keep talking with the user and planning and design "
+    "decisions to yourself. In plan mode call unsloth_plan_agent instead."
+)
 _SUBAGENT_INSTRUCTIONS = (
     "You are a local coding subagent powered by Unsloth. Complete the assigned task directly, "
     "use the available tools when useful, verify your work, and return a concise result to the "
@@ -104,6 +153,9 @@ _SUBAGENT_PLAN_INSTRUCTIONS = (
 )
 _CLAUDE_SUBAGENT_MCP_MODULE = "unsloth_cli.claude_subagent_mcp"
 _CLAUDE_SUBAGENT_SETTINGS_ENV = "UNSLOTH_CLAUDE_SUBAGENT_SETTINGS"
+_CLAUDE_SUBAGENT_AUTO_ROUTE_ENV = "UNSLOTH_CLAUDE_SUBAGENT_AUTO_ROUTE"
+_CLAUDE_SUBAGENT_FALLBACK_ENV = "UNSLOTH_CLAUDE_SUBAGENT_FALLBACK"
+_CLAUDE_ROUTE_FALLBACK_FILE = "local-agent-failed"
 _CLAUDE_SUBAGENT_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_agent"
 _CLAUDE_SUBAGENT_PLAN_TOOL = "mcp__plugin_unsloth-local-agent_unsloth__unsloth_plan_agent"
 _CODEX_SUBAGENT_MCP_MODULE = "unsloth_cli.codex_subagent_mcp"
@@ -123,6 +175,21 @@ _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS = (
     "result, call wait, or use a built-in subagent before calling the tool. Use built-in "
     "subagents for other delegation requests."
 )
+_CODEX_AUTO_ROUTE_TOOL_DESCRIPTION = (
+    _AUTO_ROUTE_DESCRIPTION.format(blocked = "your own shell is disabled") + _AUTO_ROUTE_CHECK
+)
+_CODEX_AUTO_ROUTE_INSTRUCTIONS = (
+    "Your own shell is disabled in this session, so files and commands are reachable only "
+    "through the spawn_local_agent MCP tool. Call it without being asked for codebase search, "
+    "reading or summarizing files, running tests or commands, and mechanical edits, with the "
+    "complete task in one message, and review its result before answering. Keep talking with "
+    "the user and planning and design decisions to yourself." + _AUTO_ROUTE_CHECK
+)
+_CODEX_AUTO_ROUTE_FLAGS = [
+    arg
+    for feature in ("shell_tool", "multi_agent", "view_image")
+    for arg in ("-c", f"features.{feature}=false")
+]
 _PI_SUBAGENT_EXTENSION = Path(__file__).parent.parent / "pi_subagent.ts"
 _PI_USER_RESOURCE_DIRS = ("extensions", "skills", "prompts", "themes", "npm", "git")
 _PI_USER_RESOURCE_SETTINGS = ("packages", "extensions", "skills", "prompts", "themes")
@@ -132,7 +199,19 @@ _PI_USER_RESOURCES_MANIFEST = ".unsloth-user-resources.json"
 _OPENCODE_PROVIDER = "unsloth-studio"
 # OpenCode sends min(limit.output, this) as max_tokens unless the env var below raises it.
 _OPENCODE_OUTPUT_TOKEN_MAX = 32_000
+_CLAUDE_COMPACT_OUTPUT_RESERVE = 20_000
 _OPENCODE_OUTPUT_TOKEN_MAX_ENV = "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"
+_VIBE_PROVIDER = "unsloth-studio"
+_VIBE_MODEL_ALIAS = "unsloth"
+_VIBE_ENV_KEY = "UNSLOTH_API_KEY"
+# Both installers put binaries in ~/.local/bin; Vibe's exits 1 and uv's leaves the shell PATH stale when it is missing.
+_VIBE_POSIX_INSTALL_HINT = (
+    'curl -LsSf https://mistral.ai/vibe/install.sh | PATH="$HOME/.local/bin:$PATH" bash'
+)
+_VIBE_WINDOWS_INSTALL_HINT = (
+    "irm https://astral.sh/uv/install.ps1 | iex; "
+    '$env:Path = "$HOME\\.local\\bin;$env:Path"; uv tool install mistral-vibe'
+)
 _PROVIDER_HEADER = f"[model_providers.{_CODEX_PROFILE}]"
 _PASSTHROUGH = {"allow_extra_args": True, "ignore_unknown_options": True}
 
@@ -384,6 +463,34 @@ _AS_SUBAGENT_OPTION = typer.Option(
     rich_help_panel = _PANEL_SESSION,
     help = "Keep the coding agent's current model and add Unsloth as a local subagent.",
 )
+_AUTO_ROUTE_OPTION = typer.Option(
+    False,
+    "--auto-route",
+    rich_help_panel = _PANEL_SESSION,
+    help = "Keep the agent's current model and let it hand routine, self-contained work to a "
+    "local Unsloth subagent without being asked.",
+)
+_APP_OPTION = typer.Option(
+    False,
+    "--app",
+    rich_help_panel = _PANEL_SESSION,
+    help = (
+        "Add Unsloth to the agent's desktop app instead of starting the CLI: writes the "
+        "provider and its own API key into your config (backed up first) and leaves your "
+        "default model alone, so you pick Unsloth in the app's model picker. Re-run after "
+        "loading another model."
+    ),
+)
+_CODEX_APP_OPTION = typer.Option(
+    False,
+    "--app",
+    rich_help_panel = _PANEL_SESSION,
+    help = (
+        "Switch the Codex desktop app to Unsloth instead of starting the CLI, open it, and "
+        "switch it back when this command exits or Unsloth stops (the app only offers one "
+        "provider's models at a time)."
+    ),
+)
 
 # Per-agent CLI flag for "run tools without prompting". OpenCode (native --auto is command-scoped, handled below) and OpenClaw (config-only) are absent from this prefix map.
 _YOLO_COMMAND_FLAGS = {
@@ -392,6 +499,7 @@ _YOLO_COMMAND_FLAGS = {
     "hermes": ["--yolo"],
     # Pi never prompts per tool call; its only approval gate is project trust, so -a (trust project resources) is the closest "do not ask me" equivalent.
     "pi": ["--approve"],
+    "vibe": ["--auto-approve"],
 }
 
 
@@ -418,20 +526,7 @@ _OPENCODE_GLOBAL_VALUE_OPTIONS = frozenset(
 _OPENCODE_NATIVE_AUTO_MIN_VERSION = (1, 17, 12)
 
 
-def _opencode_command() -> tuple[str, bool]:
-    resolved_v2 = _which_with_install_dirs("opencode2")
-    if resolved_v2:
-        return resolved_v2, True
-    return "opencode", False
-
-
-def _opencode_supports_native_auto(command: str = "opencode") -> bool:
-    if Path(command).stem.lower() == "opencode2":
-        return True
-    executable = _which_with_install_dirs(command)
-    if executable is None:
-        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
-        return True
+def _opencode_version(executable: str) -> Optional[tuple[int, int, int]]:
     try:
         output = subprocess.check_output(
             [executable, "--version"],
@@ -443,11 +538,30 @@ def _opencode_supports_native_auto(command: str = "opencode") -> bool:
             env = _probe_env(),
         )
     except Exception:
-        return False
+        return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
-    return bool(match) and tuple(int(part) for part in match.groups()) >= (
-        _OPENCODE_NATIVE_AUTO_MIN_VERSION
-    )
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _opencode_command() -> tuple[str, bool]:
+    resolved_v2 = _which_with_install_dirs("opencode2")
+    if resolved_v2:
+        return resolved_v2, True
+    # Distro packages (Arch extra, opencode-beta) ship V2 as plain `opencode`, which rejects V1's --model flag.
+    resolved = _which_with_install_dirs("opencode")
+    version = _opencode_version(resolved) if resolved else None
+    return "opencode", bool(version) and version[0] >= 2
+
+
+def _opencode_supports_native_auto(command: str = "opencode") -> bool:
+    if Path(command).stem.lower() == "opencode2":
+        return True
+    executable = _which_with_install_dirs(command)
+    if executable is None:
+        # No local binary: a --no-launch recipe may run elsewhere, and _run installs the current release on launch, so either way assume native --auto is available.
+        return True
+    version = _opencode_version(executable)
+    return bool(version) and version >= _OPENCODE_NATIVE_AUTO_MIN_VERSION
 
 
 def _opencode_subcommand(args: list[str]) -> tuple[Optional[str], Optional[int]]:
@@ -523,6 +637,10 @@ def _opencode_v2_standalone_args(args: list[str]) -> list[str]:
 
 def _hermes_install_hint() -> str:
     return _HERMES_WINDOWS_INSTALL_HINT if os.name == "nt" else _HERMES_POSIX_INSTALL_HINT
+
+
+def _vibe_install_hint() -> str:
+    return _VIBE_WINDOWS_INSTALL_HINT if os.name == "nt" else _VIBE_POSIX_INSTALL_HINT
 
 
 def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
@@ -786,6 +904,16 @@ def _display_model_spec(model: str, variant: Optional[str]) -> str:
     return f"{repo}:{selected_variant}" if selected_variant else model
 
 
+def _model_status(
+    base: str,
+    key: str,
+    model_id: Optional[str] = None,
+) -> dict:
+    # Studio serving several models answers for the one serving model_id; an older one ignores it.
+    query = f"?{urlencode({'model': model_id})}" if model_id else ""
+    return _http_json("GET", f"{base}/api/inference/status{query}", key)
+
+
 def _subagent_model_id(
     base: str,
     key: str,
@@ -799,7 +927,7 @@ def _subagent_model_id(
     variant = requested_variant or inline_variant
     if not variant:
         try:
-            status = _http_json("GET", f"{base}/api/inference/status", key)
+            status = _model_status(base, key, model_id)
         except Exception:
             status = {}
             typer.echo(
@@ -831,6 +959,12 @@ def _reject_as_subagent(agent: str, args: list) -> None:
     # Reject early, or the flag reaches the agent binary after Unsloth loaded the model.
     if any(arg == "--as-subagent" or arg.startswith("--as-subagent=") for arg in args):
         _fail(f"--as-subagent is not supported for {agent}.")
+    _reject_auto_route(agent, args)
+
+
+def _reject_auto_route(agent: str, args: list) -> None:
+    if any(arg == "--auto-route" or arg.startswith("--auto-route=") for arg in args):
+        _fail(f"--auto-route is not supported for {agent}.")
 
 
 def _http_error_detail(exc: urllib.error.HTTPError) -> str:
@@ -1901,10 +2035,14 @@ def _model_id_matches(
     return str(actual).casefold() == str(requested).casefold()
 
 
-def _inference_status(base: str, key: str) -> dict:
+def _inference_status(
+    base: str,
+    key: str,
+    model_id: Optional[str] = None,
+) -> dict:
     """Runtime state of the resident model. {} means "cannot prove anything" (older server), never "nothing is set"."""
     try:
-        return _http_json("GET", f"{base}/api/inference/status", key)
+        return _model_status(base, key, model_id)
     except Exception:
         return {}
 
@@ -2099,23 +2237,21 @@ def _resolve_model(
         requested, attach_public_id = _resident_load_target(models, status_snapshot, allow_casefold)
         inferred_differs = _load_settings_differ(status_snapshot, load, overrides)
         # preload_check deliberately survives: it is the only gate before the load evicts the shared model (_require_gguf_for_codex runs after _connect returns). An older server answers this listing from the full catalog, which also carries cached-but-unloaded entries (loaded == False); matching one would skip /api/inference/load and leave the agent pointed at a model that is not resident, so only attach to an entry that is actually loaded.
-    match = (
-        None
-        if requested and load_has_overrides
-        else next(
-            (
-                m
-                for m in models
-                if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
-                and m.get("loaded") is not False
-            ),
-            None,
-        )
+    loaded_match = next(
+        (
+            m
+            for m in models
+            if _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+            and m.get("loaded") is not False
+        ),
+        None,
     )
+    match = None if requested and load_has_overrides else loaded_match
     if requested and match is None:
         load_requested = True
         # Only here is an evicting load certain: the gate must not reject a request the resident model already satisfies (a path-loaded GGUF shown as a bare basename can collide with a non-GGUF unsloth/<name>).
-        active = next((m for m in models if m.get("loaded") is not False), None)
+        # A load of a model already served replaces it in its own slot, which may not be the primary.
+        active = loaded_match or next((m for m in models if m.get("loaded") is not False), None)
         # On the inferred path the target came from status, so catalog order can name a different entry (a speech sidecar listed first). Using it would make the survivor probe below report the wrong model as still serving.
         if attach_public_id is not None:
             active = next(
@@ -2148,7 +2284,7 @@ def _resolve_model(
             # The loaded listing shows only the basename, so confirm a path request against the identifier the server loaded, else /new/foo.gguf reads as resident because /old/foo.gguf is.
             if resident_serves_request and _is_model_path(requested):
                 try:
-                    status = _http_json("GET", f"{base}/api/inference/status", key)
+                    status = _model_status(base, key, requested)
                 except Exception:
                     status = {}
                 loaded_paths = {
@@ -2163,7 +2299,7 @@ def _resolve_model(
                 )
             if resident_serves_request and load.gguf_variant:
                 try:
-                    status = _http_json("GET", f"{base}/api/inference/status", key)
+                    status = _model_status(base, key, requested)
                 except Exception:
                     status = {}
                 resident_variant = status.get("gguf_variant") if status.get("is_gguf") else None
@@ -2203,7 +2339,7 @@ def _resolve_model(
         elif active_id and load.gguf_variant:
             # Same repo id but an explicit quant still replaces the resident weights; the loaded listing does not carry a variant for every resident model, so ask the status endpoint.
             try:
-                status = _http_json("GET", f"{base}/api/inference/status", key)
+                status = _model_status(base, key, active_id)
             except Exception:
                 status = {}
             resident = status.get("gguf_variant") if status.get("is_gguf") else None
@@ -2212,6 +2348,19 @@ def _resolve_model(
                     f"Switching the Unsloth server from {active_id}:{resident} "
                     f"to {requested}:{load.gguf_variant}."
                 )
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
+            elif loaded_match is not None and _load_settings_differ(status, load, overrides):
+                typer.echo(f"Applying new load settings to {active_id}.")
+                typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
+        elif active_id and loaded_match is not None:
+            try:
+                status = _model_status(base, key, active_id)
+            except Exception:
+                status = {}
+            if _load_settings_differ(status, load, overrides):
+                typer.echo(f"Applying new load settings to {active_id}.")
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
         elif not active_id and _inference_status(base, key).get("yours") is False:
@@ -2247,6 +2396,14 @@ def _resolve_model(
             resident_variant = status_snapshot.get("gguf_variant")
             if resident_variant and not str(requested).lower().endswith(".gguf"):
                 payload["gguf_variant"] = resident_variant
+        elif loaded_match is not None and not str(requested).lower().endswith(".gguf"):
+            # Same for a named model already served, read from the slot serving it.
+            try:
+                status = _model_status(base, key, loaded_match["id"])
+            except Exception:
+                status = {}
+            if status.get("is_gguf") and status.get("gguf_variant"):
+                payload["gguf_variant"] = status["gguf_variant"]
         if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
         if "load_in_4bit" in overrides:
@@ -2422,7 +2579,7 @@ _QUANT_LABEL_RE = re.compile(
     r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
     r"|P?TQ[0-9]+_[0-9]+"
     r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_[0-9]+(?:_G[0-9]+)?"
+    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
     r"|Q[0-9]+_K"
     r"|BF16|F16|F32)"
     r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
@@ -2884,7 +3041,7 @@ def _attach_gguf_check(
 def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: str) -> None:
     # Only a definite "no" rejects: the callers wrap this in `except BaseException: _shutdown_auto_served()`, so guessing kills a server that may have just loaded a GGUF.
     try:
-        status = _http_json("GET", f"{base}/api/inference/status", key)
+        status = _model_status(base, key, model_id)
     except urllib.error.HTTPError:
         # Not evidence: get_status 500s from its own probes with a GGUF resident.
         return
@@ -3021,33 +3178,50 @@ def _claude_local_env(
         env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = str(int(window))
         env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(int(window))
         env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = "90"
+        # claude reserves min(max output, 20k) + 13k before compacting, so its 32k default output leaves a 32k window nothing; above 20k the cap gains no room.
+        output = opencode_output_limit(int(window))
+        if output < _CLAUDE_COMPACT_OUTPUT_RESERVE:
+            env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(output)
     if extra_body:
         env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(extra_body)
     return env
 
 
-def _merge_codex_config(existing: str, base: str) -> str:
-    chunks = re.split(r"(?m)^(?=\[)", existing)  # preamble, then one chunk per table
-    if not re.search(r"(?m)^\s*oss_provider\s*=", chunks[0]):
-        if chunks[0] and not chunks[0].endswith("\n"):
-            chunks[0] += "\n"
-        chunks[0] += f'oss_provider = "{_CODEX_PROFILE}"\n'
-    # Drop the provider table and any stale [model_providers.unsloth_api.*] subtables.
-    stale = (_PROVIDER_HEADER, _PROVIDER_HEADER[:-1] + ".")
-    text = "".join(c for c in chunks if not c.startswith(stale))
-    if not text.endswith("\n"):
-        text += "\n"
-    if not text.endswith("\n\n"):
-        text += "\n"
-    return text + (
+def _codex_provider_table(base: str, key: Optional[str] = None) -> str:
+    # The desktop app gets no shell env, so it needs the key itself rather than env_key.
+    auth = (
+        f"experimental_bearer_token = {json.dumps(key)}" if key else f'env_key = "{_CODEX_ENV_KEY}"'
+    )
+    return (
         f"{_PROVIDER_HEADER}\n"
         'name = "Unsloth Studio"\n'
         f"base_url = {json.dumps(base + '/v1')}\n"
-        f'env_key = "{_CODEX_ENV_KEY}"\n'
+        f"{auth}\n"
         'wire_api = "responses"\n'
         "requires_openai_auth = false\n"
         f"stream_idle_timeout_ms = {_CODEX_STREAM_IDLE_TIMEOUT_MS}\n"
     )
+
+
+_CODEX_PROVIDER_TABLES = (_PROVIDER_HEADER, _PROVIDER_HEADER[:-1] + ".")
+
+
+def _merge_codex_config(
+    existing: str,
+    base: str,
+    key: Optional[str] = None,
+) -> str:
+    chunks = re.split(r"(?m)^(?=\[)", existing)  # preamble, then one chunk per table
+    if key is None and not re.search(r"(?m)^\s*oss_provider\s*=", chunks[0]):
+        if chunks[0] and not chunks[0].endswith("\n"):
+            chunks[0] += "\n"
+        chunks[0] += f'oss_provider = "{_CODEX_PROFILE}"\n'
+    text = "".join(c for c in chunks if not c.startswith(_CODEX_PROVIDER_TABLES))
+    if not text.endswith("\n"):
+        text += "\n"
+    if not text.endswith("\n\n"):
+        text += "\n"
+    return text + _codex_provider_table(base, key)
 
 
 # Keep custom-model behavior aligned with Codex's own unknown-model fallback. This Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
@@ -3103,7 +3277,7 @@ def _codex_supports_patch_line_endings() -> bool:
     return version is not None and version >= _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION
 
 
-def _codex_model_catalog(model: dict) -> dict:
+def _codex_model_catalog(model: dict, visibility: str = "none") -> dict:
     """Return conservative metadata for an Unsloth model unknown to Codex's built-in catalog."""
     model_id = model["id"]
     window = model.get("context_length") or model.get("max_context_length")
@@ -3113,7 +3287,7 @@ def _codex_model_catalog(model: dict) -> dict:
         "description": "Model served by Unsloth Studio",
         "supported_reasoning_levels": [],
         "shell_type": "default",
-        "visibility": "none",
+        "visibility": visibility,
         "supported_in_api": True,
         "priority": 99,
         "availability_nux": None,
@@ -3188,6 +3362,7 @@ def write_codex_subagent_bridge(
     *,
     yolo: bool,
     reasoning_effort: Optional[str] = None,
+    auto_route: bool = False,
 ) -> Path:
     """Write private config for an explicit local Codex child launched through MCP."""
     child_home = home / "child"
@@ -3199,12 +3374,13 @@ def write_codex_subagent_bridge(
             "api_key": key,
             "codex_home": str(child_home),
             "bypass_permissions": yolo,
+            **({"auto_route": True} if auto_route else {}),
         },
     )
     return path
 
 
-def _wsl_windows_user_profile(executable: str) -> Path:
+def _wsl_windows_user_profile(executable: str, app: str = "Codex") -> Path:
     """Return the Windows user profile as a path accessible from WSL."""
     profile = os.environ.get("USERPROFILE", "").strip()
     if not profile:
@@ -3220,13 +3396,13 @@ def _wsl_windows_user_profile(executable: str) -> Path:
             ).strip()
         except UnicodeDecodeError as exc:
             _fail(
-                f"Could not read the Windows user profile for Codex ({exc}); "
+                f"Could not read the Windows user profile for {app} ({exc}); "
                 "set USERPROFILE in the WSL environment, for example through WSLENV."
             )
         except (OSError, subprocess.CalledProcessError) as exc:
-            _fail(f"Could not find the Windows user profile for Codex: {exc}")
+            _fail(f"Could not find the Windows user profile for {app}: {exc}")
     if not profile or profile == "%USERPROFILE%":
-        _fail("Could not find the Windows user profile for Codex.")
+        _fail(f"Could not find the Windows user profile for {app}.")
     if profile.startswith("/"):
         return Path(profile)
     try:
@@ -3320,7 +3496,7 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
     return result.returncode == 0
 
 
-def write_codex_parent_overlay(overlay: Path) -> Path:
+def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
     """Add local-agent routing without replacing the cloud parent's configuration."""
     overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
 
@@ -3407,6 +3583,8 @@ def write_codex_parent_overlay(overlay: Path) -> Path:
     if other.is_file() or other.is_symlink():
         other.unlink()
     routing = _CODEX_SUBAGENT_ROUTING_INSTRUCTIONS
+    if auto_route:
+        routing = f"{routing}\n\n{_CODEX_AUTO_ROUTE_INSTRUCTIONS}"
     combined = f"{inherited}\n\n{routing}\n" if inherited else f"{routing}\n"
     _write_private_text(overlay / instruction_name, combined)
     return overlay
@@ -3417,11 +3595,49 @@ def _agent_config_path(path: Path, command: list) -> str:
     return _wsl_windows_path(path) if _wsl_windows_executable(command) else str(path)
 
 
+_OPENCODE_ROUTE_PLUGIN_SCRIPT = """\
+const LOCAL = new Set(%(local)s);
+const ROUTED = new Set(%(routed)s);
+const HIDDEN = new Set(["title", "summary", "compaction"]);
+const agents = new Map();
+// Set when a local run fails, so the parent can do that step itself until the next local run succeeds.
+let failed = false;
+
+export const UnslothAutoRoute = async () => ({
+  "chat.params": async ({ sessionID, agent }) => {
+    if (!HIDDEN.has(agent)) agents.set(sessionID, agent);
+  },
+  event: async ({ event }) => {
+    const { sessionID, error } = event.properties ?? {};
+    if (event.type === "session.error" && LOCAL.has(agents.get(sessionID)) && error?.name !== "MessageAbortedError") failed = true;
+  },
+  "tool.execute.after": async ({ tool, args }) => {
+    if (tool === "task" && LOCAL.has(args?.subagent_type)) failed = false;
+  },
+  "tool.execute.before": async ({ tool, sessionID }) => {
+    const agent = agents.get(sessionID);
+    if (failed || !ROUTED.has(tool) || LOCAL.has(agent)) return;
+    throw new Error(
+      "Blocked by Unsloth --auto-route: files and the shell are only reachable through the local " +
+        "agent. Hand the complete task to the @" + (agent === "plan" ? %(plan)s : %(build)s) +
+        " subagent with the task tool instead.",
+    );
+  },
+});
+""" % {
+    "local": json.dumps([_SUBAGENT_NAME, _OPENCODE_PLAN_SUBAGENT_NAME]),
+    "routed": json.dumps(list(_OPENCODE_ROUTED_TOOLS)),
+    "plan": json.dumps(_OPENCODE_PLAN_SUBAGENT_NAME),
+    "build": json.dumps(_SUBAGENT_NAME),
+}
+
+
 def _opencode_subagent_inline_config(
     path: Path,
     permission: dict,
     command: str = "opencode",
     v2: bool = False,
+    auto_route: bool = False,
 ) -> dict:
     """Keep the local provider visible without hiding the parent's allowed providers."""
     inline: dict = {}
@@ -3509,6 +3725,42 @@ def _opencode_subagent_inline_config(
         )
     if permission:
         inline["permission"] = permission
+    plugin = path.parent / _OPENCODE_ROUTE_PLUGIN
+    if auto_route and not v2:
+        _write_private_text(plugin, _OPENCODE_ROUTE_PLUGIN_SCRIPT)
+        # OpenCode adds each layer's plugins to the others', so only an inherited inline list needs keeping.
+        plugins = inline.get("plugin")
+        inline["plugin"] = [
+            *(plugins if isinstance(plugins, list) else []),
+            _agent_config_path(plugin, [command]),
+        ]
+    else:
+        # A persisted session dir may still hold the plugin from an earlier --auto-route run.
+        plugin.unlink(missing_ok = True)
+    if auto_route:
+        # The V2 CLI has no tool hooks, so there read and bash fall back to permission rules.
+        denied = _OPENCODE_HIDDEN_TOOLS + (_OPENCODE_ROUTED_TOOLS if v2 else ())
+        permission = {
+            **dict.fromkeys((*denied, "edit"), "deny"),
+            "task": {"*": "deny", _SUBAGENT_NAME: "allow"},
+        }
+        # Plan keeps its own edit rules (it may write only its plan file) and reaches the read-only agent.
+        plan_permission = {
+            **dict.fromkeys(denied, "deny"),
+            "task": {"*": "deny", _OPENCODE_PLAN_SUBAGENT_NAME: "allow"},
+        }
+        # An agent's own permission outranks the global one, so restrict by name every agent a user can be in (an @mention skips the task rule).
+        agents = _subdict(inline, "agent")
+        configured = effective.get("agent")
+        names = {
+            "build",
+            "general",
+            "explore",
+            *(configured if isinstance(configured, dict) else ()),
+        }
+        for name in names - {"plan", _SUBAGENT_NAME, _OPENCODE_PLAN_SUBAGENT_NAME}:
+            _subdict(_subdict(agents, name), "permission").update(permission)
+        _subdict(_subdict(agents, "plan"), "permission").update(plan_permission)
     return inline
 
 
@@ -3536,6 +3788,39 @@ if mode == "plan":
     }}))
 sys.exit(0)
 '''
+
+_CLAUDE_ROUTE_GATE_SCRIPT = """\
+import json, os, sys
+
+# The local agent server leaves this file after a failed run, so the parent can do that step itself.
+if os.path.exists(os.path.join(os.path.dirname(__file__), "local-agent-failed")):
+    sys.exit(0)
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": (
+        "Blocked by Unsloth --auto-route: files and the shell are only reachable through "
+        "the local agent. Call the unsloth_agent tool with the complete task instead."
+    ),
+}}))
+sys.exit(0)
+"""
+# PowerShell is the shell on Windows without Git Bash, Monitor runs commands too, and Agent (Task before Claude Code 2) would hand the same work to a cloud subagent.
+_CLAUDE_ROUTE_GATE_MATCHER = "Read|Grep|Glob|Bash|PowerShell|Monitor|NotebookRead|Agent|Task"
+
+
+def _claude_hook(gate: Path) -> dict:
+    return {
+        "type": "command",
+        # Run through runpy rather than handing the path to the interpreter: a missing gate is then an ordinary traceback (exit 1, fails open) instead of exit 2, which Claude treats as a blocking error and would deny the tool in every mode. The path is base64'd because this string goes through a shell: a temp root holding $(..) or a backtick expands under sh, %VAR% under cmd, and the gate then silently fails open. base64's alphabet has no metacharacter in either.
+        "command": (
+            f'"{sys.executable}" -c '
+            f'"import base64,runpy; runpy.run_path('
+            f"base64.b64decode('{_b64_path(gate)}').decode())\""
+        ),
+        # A hook with no timeout stalls the parent for as long as it hangs; measured unbounded past 400s.
+        "timeout": 10,
+    }
 
 
 def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
@@ -3576,6 +3861,10 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
                 *([_CLAUDE_SUBAGENT_SETTINGS_ENV] if base and key and model_id else []),
             ),
         )
+    auto_route = server_env.get(_CLAUDE_SUBAGENT_AUTO_ROUTE_ENV) == "1"
+    fallback = plugin / "hooks" / _CLAUDE_ROUTE_FALLBACK_FILE
+    if auto_route and command != "wsl.exe":
+        mcp_env[_CLAUDE_SUBAGENT_FALLBACK_ENV] = str(fallback)
     _write_private_json(
         plugin / ".claude-plugin" / "plugin.json",
         {
@@ -3600,43 +3889,35 @@ def write_claude_subagent_plugin(path: Path, server_env: dict) -> Path:
     )
     # Claude already refuses the editing tool in plan mode, since it advertises readOnlyHint false. This PreToolUse hook replaces that dead end with a reason naming the read-only tool to call instead. Skipped under the WSL bridge, where the gate is a Linux path but the hook would run beside the Windows claude.
     gate = plugin / "hooks" / "plan_gate.py"
+    route_gate = plugin / "hooks" / "route_gate.py"
+    # A persisted plugin dir may still hold gates, or a failure left by an earlier session.
+    fallback.unlink(missing_ok = True)
+    if command == "wsl.exe" or not auto_route:
+        route_gate.unlink(missing_ok = True)
     if command == "wsl.exe":
-        # A persisted plugin dir may still hold a gate from an earlier non-WSL run.
         for stale in (gate, plugin / "hooks" / "hooks.json"):
             stale.unlink(missing_ok = True)
     else:
         _write_private_text(gate, _CLAUDE_PLAN_GATE_SCRIPT)
-        _write_private_json(
-            plugin / "hooks" / "hooks.json",
-            {
-                "hooks": {
-                    "PreToolUse": [
-                        {
-                            "matcher": _CLAUDE_SUBAGENT_TOOL,
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    # Run through runpy rather than handing the path to the interpreter: a missing gate is then an ordinary traceback (exit 1, fails open) instead of exit 2, which Claude treats as a blocking error and would deny the tool in every mode. The path is base64'd because this string goes through a shell: a temp root holding $(..) or a backtick expands under sh, %VAR% under cmd, and the gate then silently fails open. base64's alphabet has no metacharacter in either.
-                                    "command": (
-                                        f'"{sys.executable}" -c '
-                                        f'"import base64,runpy; runpy.run_path('
-                                        f"base64.b64decode('{_b64_path(gate)}').decode())\""
-                                    ),
-                                    # A hook with no timeout stalls the parent for as long as it hangs; measured unbounded past 400s.
-                                    "timeout": 10,
-                                }
-                            ],
-                        }
-                    ]
-                }
-            },
-        )
+        entries = [{"matcher": _CLAUDE_SUBAGENT_TOOL, "hooks": [_claude_hook(gate)]}]
+        if auto_route:
+            _write_private_text(route_gate, _CLAUDE_ROUTE_GATE_SCRIPT)
+            entries.append(
+                {"matcher": _CLAUDE_ROUTE_GATE_MATCHER, "hooks": [_claude_hook(route_gate)]}
+            )
+        _write_private_json(plugin / "hooks" / "hooks.json", {"hooks": {"PreToolUse": entries}})
     skill = plugin / "skills" / "local-agent" / "SKILL.md"
     skill.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    when = (
+        "Use it for routine, self-contained work (codebase search, reading files, running "
+        "tests or commands, mechanical edits) without being asked, and whenever the user asks "
+        "for an Unsloth or local agent."
+        if auto_route
+        else "Use when the user asks to spawn an Unsloth agent or local agent."
+    )
     skill.write_text(
         "---\n"
-        "description: Delegate a task to the local agent powered by Unsloth. Use when the "
-        "user asks to spawn an Unsloth agent or local agent.\n"
+        f"description: Delegate a task to the local agent powered by Unsloth. {when}\n"
         "---\n\n"
         "Call the Unsloth local agent tool once with the complete task. In plan mode, call "
         "the read-only Unsloth plan agent instead. Return its result to the user without "
@@ -4364,7 +4645,7 @@ def _connect(
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
         )
-        status = _inference_status(base, key) if model else {}
+        status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.
         if status.get("memory_warning") and any(
             _model_id_matches(
@@ -4634,6 +4915,43 @@ def _studio_embedding_model(base: str, key: str) -> Optional[str]:
     return name.strip()
 
 
+def _openclaw_provider(
+    base: str,
+    key: str,
+    model: dict,
+    max_tokens: Optional[int] = None,
+) -> dict:
+    # Unsloth is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
+    provider_model = {"id": model["id"], "name": model["id"]}
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        provider_model["contextWindow"] = window
+        # Unset, OpenClaw caps every reply at 8192 (DEFAULT_MODEL_MAX_TOKENS) whatever the window.
+        provider_model["maxTokens"] = _agent_output_limit(window, max_tokens)
+    elif max_tokens:
+        provider_model["maxTokens"] = max_tokens
+    return {
+        "baseUrl": f"{base}/v1",
+        "apiKey": key,
+        "api": "openai-completions",
+        "models": [provider_model],
+    }
+
+
+def _openclaw_doctor_command(path: Path, *, windows: bool) -> str:
+    """`openclaw doctor --fix` against Unsloth's managed config, in the user's shell syntax."""
+    env = {"OPENCLAW_CONFIG_PATH": str(path), "OPENCLAW_STATE_DIR": str(path.parent)}
+    if windows:
+        sets = "; ".join(
+            f'$env:{name} = "{value.replace("`", "``").replace(chr(34), "`" + chr(34)).replace("$", "`$")}"'
+            for name, value in env.items()
+        )
+        return f"{sets}; openclaw doctor --fix"
+    inline = " ".join(f"{name}={shlex.quote(value)}" for name, value in env.items())
+    return f"{inline} openclaw doctor --fix"
+
+
 def write_openclaw_config(
     base: str,
     key: str,
@@ -4643,6 +4961,7 @@ def write_openclaw_config(
     workspace_path: Optional[str] = None,
     embedding_model: Optional[str] = None,
     request_body: Optional[dict] = None,
+    max_tokens: Optional[int] = None,
 ) -> None:
     config = _read_json_object(path)
     if config is None:
@@ -4653,19 +4972,9 @@ def write_openclaw_config(
         )
         return
     before = json.dumps(config, sort_keys = True)
-    # Unsloth is a generic OpenAI-compatible /v1 endpoint (the vLLM/LM Studio path).
-    provider_model = {"id": model["id"], "name": model["id"]}
-    window = model.get("context_length") or model.get("max_context_length")
-    if window:
-        provider_model["contextWindow"] = int(window)
     models = _subdict(config, "models")
     models.setdefault("mode", "merge")
-    _subdict(models, "providers")["unsloth"] = {
-        "baseUrl": f"{base}/v1",
-        "apiKey": key,
-        "api": "openai-completions",
-        "models": [provider_model],
-    }
+    _subdict(models, "providers")["unsloth"] = _openclaw_provider(base, key, model, max_tokens)
     # Memory search is on by default and defaults to openai, so a local session reaches OpenAI unless this block is written.
     search = _subdict(_subdict(config, "memory"), "search")
     if embedding_model:
@@ -4703,12 +5012,24 @@ def write_openclaw_config(
         workspace_path = str(workspace)
     defaults["workspace"] = workspace_path
     # Per-agent paths override agents.defaults.workspace and OPENCLAW_STATE_DIR. This config is itself an isolated Unsloth copy, so remove stale explicit paths and let OpenClaw resolve every listed agent beneath the managed defaults/state directory.
+    # OpenClaw 2026.10.1 keys agents by id under agents.entries; older configs carry an agents.list array.
     agent_list = agents.get("list")
+    agent_entries = agents.get("entries")
+    listed = list(agent_list) if isinstance(agent_list, list) else []
+    if isinstance(agent_entries, dict):
+        listed += list(agent_entries.values())
+    for agent_config in listed:
+        if isinstance(agent_config, dict):
+            agent_config.pop("workspace", None)
+            agent_config.pop("agentDir", None)
     if isinstance(agent_list, list):
-        for agent_config in agent_list:
-            if isinstance(agent_config, dict):
-                agent_config.pop("workspace", None)
-                agent_config.pop("agentDir", None)
+        # 2026.10.1 rejects agents.list. Converting it (id normalization, ownership, channel bindings,
+        # workspace pins) is OpenClaw's own migration, so point at it rather than half-reimplement it.
+        typer.echo(
+            f"Note: {path} still has the legacy agents.list, which OpenClaw 2026.10.1+ rejects. "
+            f"Migrate it with: {_openclaw_doctor_command(path, windows = os.name == 'nt')}",
+            err = True,
+        )
     # Unauthenticated loopback gateway: without auth.mode=none the client will not open the websocket. The daemon must still be started separately (`openclaw gateway`).
     gateway = _subdict(config, "gateway")
     gateway.setdefault("mode", "local")
@@ -4813,6 +5134,38 @@ def _opencode_output_env(model: dict, max_tokens: Optional[int]) -> dict:
     return {_OPENCODE_OUTPUT_TOKEN_MAX_ENV: str(max(output, ceiling))}
 
 
+def _opencode_provider(
+    base: str,
+    key: str,
+    model: dict,
+    max_tokens: Optional[int] = None,
+    request_body: Optional[dict] = None,
+) -> dict:
+    model_entry = {"name": model["id"]}
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        output = opencode_output_limit(window, max_tokens)
+        # Without a limit OpenCode assumes context 0 and never compacts. Without input it compacts at context - output and ignores compaction.reserved.
+        model_entry["limit"] = {"context": window, "input": window, "output": output}
+    provider_options = {"baseURL": f"{base}/v1", "apiKey": key}
+    if request_body:
+        # OpenCode 1.x sends model options, reading the effort only as reasoningEffort; 2.x sends only the provider body.
+        model_entry["options"] = {
+            "reasoningEffort" if name == "reasoning_effort" else name: value
+            for name, value in request_body.items()
+        }
+        if "temperature" in request_body:
+            model_entry["temperature"] = True
+        provider_options["body"] = request_body
+    return {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Unsloth Studio",
+        "options": provider_options,
+        "models": {model["id"]: model_entry},
+    }
+
+
 def write_opencode_config(
     base: str,
     key: str,
@@ -4833,32 +5186,15 @@ def write_opencode_config(
         return {}
     before = json.dumps(config, sort_keys = True)
     config.setdefault("$schema", "https://opencode.ai/config.json")
-    # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
-    model_entry = {"name": model["id"]}
     window = model.get("context_length") or model.get("max_context_length")
     reserved = None
     if window:
         window = int(window)
-        output = opencode_output_limit(window, max_tokens)
-        reserved = opencode_compaction_reserved(window, output)
-        # Without a limit OpenCode assumes context 0 and never compacts. Without input it compacts at context - output and ignores compaction.reserved.
-        model_entry["limit"] = {"context": window, "input": window, "output": output}
-    provider_options = {"baseURL": f"{base}/v1", "apiKey": key}
-    if request_body:
-        # OpenCode 1.x sends model options, reading the effort only as reasoningEffort; 2.x sends only the provider body.
-        model_entry["options"] = {
-            "reasoningEffort" if name == "reasoning_effort" else name: value
-            for name, value in request_body.items()
-        }
-        if "temperature" in request_body:
-            model_entry["temperature"] = True
-        provider_options["body"] = request_body
-    _subdict(config, "provider")[_OPENCODE_PROVIDER] = {
-        "npm": "@ai-sdk/openai-compatible",
-        "name": "Unsloth Studio",
-        "options": provider_options,
-        "models": {model["id"]: model_entry},
-    }
+        reserved = opencode_compaction_reserved(window, opencode_output_limit(window, max_tokens))
+    # Keep the provider definition in this private session file. The launch path adjusts effective provider filters in the higher-priority inline overlay.
+    _subdict(config, "provider")[_OPENCODE_PROVIDER] = _opencode_provider(
+        base, key, model, max_tokens, request_body
+    )
     # Normal mode pins this as the session model. Subagent mode leaves the user's main/small models alone and exposes the local model to @unsloth and /models.
     opencode_model = f"{_OPENCODE_PROVIDER}/{model['id']}"
     if as_subagent:
@@ -4915,6 +5251,44 @@ def write_opencode_config(
     return session_permission
 
 
+def _set_hermes_provider(
+    config: dict,
+    base: str,
+    model: dict,
+    request_body: Optional[dict] = None,
+) -> None:
+    # Hermes only reads the key for a NAMED custom provider (a bare `provider: custom` ignores it), so register it under providers.*.
+    _subdict(config, "model").update(
+        provider = f"custom:{_HERMES_PROVIDER}",
+        default = model["id"],
+        api_mode = "openai",
+    )
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        window = int(window)
+        # Hermes auto-detects context from GET /v1/models, but OpenAI's schema has no context field, so it can fall back to a 256k default that overflows a small local model. Pin the real window (top-level model.context_length is the highest-priority override) and compact at 90% of it (Hermes defaults to 50%).
+        if window >= _HERMES_MIN_CONTEXT:
+            _subdict(config, "model")["context_length"] = window
+            if config["model"].get("ollama_num_ctx") == _HERMES_MIN_CONTEXT:
+                del config["model"]["ollama_num_ctx"]
+            _subdict(config, "compression").update(enabled = True, threshold = 0.9)
+        else:
+            # Below Hermes' 64,000-token floor it refuses to initialize, so claim the floor and shrink the threshold so compaction still fires at 90% of the REAL window (the threshold is a fraction of the claimed context_length). The auxiliary override keeps the same floor check from rejecting the compression model mid-session.
+            _subdict(config, "model")["context_length"] = _HERMES_MIN_CONTEXT
+            # Current Hermes refuses a local server below its floor unless ollama_num_ctx claims it; context_length alone no longer passes.
+            _subdict(config, "model")["ollama_num_ctx"] = _HERMES_MIN_CONTEXT
+            threshold = round(0.9 * window / _HERMES_MIN_CONTEXT, 4)
+            _subdict(config, "compression").update(enabled = True, threshold = threshold)
+            auxiliary = _subdict(_subdict(config, "auxiliary"), "compression")
+            auxiliary["context_length"] = _HERMES_MIN_CONTEXT
+    _subdict(config, "providers")[_HERMES_PROVIDER] = {
+        "base_url": f"{base}/v1",
+        "api_mode": "openai",
+        "key_env": _HERMES_ENV_KEY,
+        **({"extra_body": request_body} if request_body else {}),
+    }
+
+
 def write_hermes_config(
     base: str,
     model: dict,
@@ -4944,37 +5318,49 @@ def write_hermes_config(
                 err = True,
             )
             return
-    # Hermes only reads the key for a NAMED custom provider (a bare `provider: custom` ignores it), so register it under providers.*.
-    _subdict(config, "model").update(
-        provider = f"custom:{_HERMES_PROVIDER}",
-        default = model["id"],
-        api_mode = "openai",
-    )
-    window = model.get("context_length") or model.get("max_context_length")
-    if window:
-        window = int(window)
-        # Hermes auto-detects context from GET /v1/models, but OpenAI's schema has no context field, so it can fall back to a 256k default that overflows a small local model. Pin the real window (top-level model.context_length is the highest-priority override) and compact at 90% of it (Hermes defaults to 50%).
-        if window >= _HERMES_MIN_CONTEXT:
-            _subdict(config, "model")["context_length"] = window
-            _subdict(config, "compression").update(enabled = True, threshold = 0.9)
-        else:
-            # Below Hermes' 64,000-token floor it refuses to initialize, so claim the floor and shrink the threshold so compaction still fires at 90% of the REAL window (the threshold is a fraction of the claimed context_length). The auxiliary override keeps the same floor check from rejecting the compression model mid-session.
-            _subdict(config, "model")["context_length"] = _HERMES_MIN_CONTEXT
-            threshold = round(0.9 * window / _HERMES_MIN_CONTEXT, 4)
-            _subdict(config, "compression").update(enabled = True, threshold = threshold)
-            auxiliary = _subdict(_subdict(config, "auxiliary"), "compression")
-            auxiliary["context_length"] = _HERMES_MIN_CONTEXT
-    _subdict(config, "providers")[_HERMES_PROVIDER] = {
-        "base_url": f"{base}/v1",
-        "api_mode": "openai",
-        "key_env": _HERMES_ENV_KEY,
-        **({"extra_body": request_body} if request_body else {}),
-    }
+    _set_hermes_provider(config, base, model, request_body)
     text = yaml.safe_dump(config, sort_keys = False)
     if not path.exists() or path.read_text(encoding = "utf-8") != text:
         path.parent.mkdir(parents = True, exist_ok = True)
         path.write_text(text, encoding = "utf-8")
         typer.echo(f"Updated {path}")
+
+
+def _vibe_env(
+    base: str,
+    model: dict,
+    request_body: Optional[dict] = None,
+) -> dict:
+    """Vibe settings as VIBE_* env vars: that layer outranks user and project config.toml, so
+    nothing is written to the user's Vibe config."""
+    entry = {"name": model["id"], "provider": _VIBE_PROVIDER, "alias": _VIBE_MODEL_ALIAS}
+    # Vibe sends its own temperature (0.2 by default) with every request.
+    temperature = (request_body or {}).get("temperature")
+    if temperature is not None:
+        entry["temperature"] = float(temperature)
+    window = model.get("context_length") or model.get("max_context_length")
+    if window:
+        # Vibe compacts at 200k tokens by default, past most local windows.
+        entry["auto_compact_threshold"] = max(1, int(int(window) * 0.9))
+    provider = {
+        "name": _VIBE_PROVIDER,
+        "api_base": f"{base}/v1",
+        "api_key_env_var": _VIBE_ENV_KEY,
+        "api_style": "openai",
+        "backend": "generic",
+    }
+    return {
+        "VIBE_PROVIDERS": json.dumps([provider]),
+        "VIBE_MODELS": json.dumps([entry]),
+        "VIBE_ACTIVE_MODEL": _VIBE_MODEL_ALIAS,
+        # Only this model: an inherited allowlist or a resumed cloud session would otherwise
+        # select a hosted model. An escaped `re:` pattern matches the id exactly.
+        "VIBE_ALLOWED_MODELS": json.dumps(["re:" + re.escape(model["id"])]),
+        "VIBE_ENABLE_TELEMETRY": "false",
+        "VIBE_ENABLE_UPDATE_CHECKS": "false",
+        "VIBE_ENABLE_AUTO_UPDATE": "false",
+        "VIBE_ENABLE_NOTIFICATIONS": "false",
+    }
 
 
 def write_pi_config(
@@ -5359,6 +5745,820 @@ def write_dsh_patch(
         typer.echo(f"Updated {path}")
 
 
+class _AppTarget(NamedTuple):
+    agent: str
+    label: str
+    path: Path
+    updates: object = None
+
+
+def _app_state_path(agent: str, path: Optional[Path] = None) -> Path:
+    # One state per settings file, so another profile or config dir keeps its own backup and key.
+    name = (
+        agent if path is None else f"{agent}-{hashlib.sha256(str(path).encode()).hexdigest()[:12]}"
+    )
+    return _agents_config_root() / "app" / f"{name}.json"
+
+
+def _read_app_file(path: Path) -> Optional[str]:
+    if path.is_symlink():
+        _fail(
+            f"{path} is a symlink, so Unsloth won't rewrite it. Replace the link with a "
+            "plain file and re-run, or add the Unsloth provider there yourself."
+        )
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    with open(fd, encoding = "utf-8", newline = "") as handle:
+        return handle.read()
+
+
+def _app_file_mode(path: Path) -> Optional[int]:
+    try:
+        return path.stat().st_mode & 0o777
+    except FileNotFoundError:
+        return None
+
+
+def _write_app_file(path: Path, text: str) -> None:
+    # Never world-readable, even briefly, and the rename replaces a planted symlink instead of following it.
+    path.parent.mkdir(parents = True, exist_ok = True, mode = 0o700)
+    fd, temp = tempfile.mkstemp(prefix = f".{path.name}.", dir = path.parent)
+    try:
+        with open(fd, "w", encoding = "utf-8", newline = "") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp)
+        raise
+
+
+_JSONC_COMMENT = re.compile(r'("(?:\\.|[^"\\])*")|//[^\n]*|/\*.*?\*/', re.S)
+_JSONC_TRAILING_COMMA = re.compile(r'("(?:\\.|[^"\\])*")|,(?=\s*[\]}])')
+
+
+def _load_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
+    if text is None or not text.strip():
+        return {}
+    if path.suffix == ".toml":
+        try:
+            import tomllib  # novermin
+        except ImportError:
+            try:
+                import tomli as tomllib
+            except ImportError:
+                return None
+        data = tomllib.loads(text)
+    elif path.suffix == ".yaml":
+        import yaml
+        data = yaml.safe_load(text)
+    else:
+        # OpenCode reads JSONC and OpenClaw JSON5, so accept comments and trailing commas in either.
+        text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
+        data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
+    if not isinstance(data, dict):
+        raise ValueError("not a settings object")
+    return data
+
+
+def _parse_app_config(path: Path, text: Optional[str]) -> Optional[dict]:
+    try:
+        return _load_app_config(path, text)
+    except Exception:
+        _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
+
+
+def _set_app_values(text: Optional[str], path: Path, updates: list) -> Optional[str]:
+    config = _parse_app_config(path, text)
+    before = json.dumps(config, sort_keys = True)
+    for keys, value in updates:
+        parent = config
+        for depth, key in enumerate(keys[:-1]):
+            if parent.get(key) is None:
+                parent[key] = {}
+            elif not isinstance(parent[key], dict):
+                _fail(
+                    f"{'.'.join(keys[: depth + 1])} in {path} isn't a table, so it was left as is."
+                )
+            parent = parent[key]
+        parent[keys[-1]] = value
+    if json.dumps(config, sort_keys = True) == before:
+        return text
+    if path.suffix != ".yaml":
+        return json.dumps(config, indent = 2, ensure_ascii = False) + "\n"
+    import yaml
+
+    # Rewrite only the touched top-level blocks so the rest of the file keeps its comments.
+    candidate = text or ""
+    for top in dict.fromkeys(keys[0] for keys, _ in updates):
+        block = yaml.safe_dump({top: config[top]}, sort_keys = False, allow_unicode = True)
+        match = re.search(rf"(?m)^{re.escape(top)}:[^\n]*\n(?:[ \t]+[^\n]*\n)*", candidate)
+        if match:
+            candidate = candidate[: match.start()] + block + candidate[match.end() :]
+        else:
+            candidate += ("\n" if candidate and not candidate.endswith("\n") else "") + block
+    with contextlib.suppress(Exception):
+        if _load_app_config(path, candidate) == config:
+            return candidate
+    return yaml.safe_dump(config, sort_keys = False, allow_unicode = True)
+
+
+def _set_toml_key(text: str, name: str, line: str) -> tuple:
+    chunks = re.split(r"(?m)^(?=\[)", text)
+    match = re.search(rf"(?m)^[ \t]*{name}[ \t]*=[^\r\n]*", chunks[0])
+    if match is None:
+        return f"{line}\n{text}", None
+    chunks[0] = chunks[0][: match.start()] + line + chunks[0][match.end() :]
+    return "".join(chunks), match.group(0)
+
+
+def _unset_toml_key(text: str, name: str, line: str, previous: Optional[str]) -> Optional[str]:
+    chunks = re.split(r"(?m)^(?=\[)", text)
+    match = re.search(rf"(?m)^[ \t]*{name}[ \t]*=([^\r\n]*)(\r?\n)?", chunks[0])
+    if match is None or match.group(0).strip() != line:
+        return None
+    restored = "" if previous is None else previous + (match.group(2) or "")
+    chunks[0] = chunks[0][: match.start()] + restored + chunks[0][match.end() :]
+    return "".join(chunks)
+
+
+def _same_app_config(path: Path, text: str, other: str) -> bool:
+    if text.strip() == other.strip():
+        return True
+    try:
+        parsed = _load_app_config(path, text)
+        return parsed is not None and parsed == _load_app_config(path, other)
+    except Exception:
+        return False
+
+
+def _revoke_app_key(base: str, key_id: object) -> bool:
+    if not is_loopback_url(base) or not verify_studio_identity(base):
+        return False
+    token = _studio_token()
+    if token is None:
+        return False
+    try:
+        _http_json("DELETE", f"{base}/api/auth/api-keys/{int(key_id)}", token)
+    except urllib.error.HTTPError as exc:
+        return exc.code == 404
+    except (urllib.error.URLError, TimeoutError, ValueError):
+        return False
+    return True
+
+
+def _app_api_key(target: _AppTarget, base: str, explicit: Optional[str], state: dict) -> tuple:
+    if explicit:
+        return explicit, None
+    previous = state.get("key")
+    if (
+        previous
+        and state.get("key_id") is not None
+        and state.get("base") == base
+        and _key_accepted(base, previous)
+    ):
+        return previous, state["key_id"]
+    token = _studio_token() if verify_studio_identity(base) else None
+    if token is None:
+        _fail(
+            f"Couldn't create an API key for the {target.label} automatically. Create one "
+            "in Unsloth → Settings → API and pass it with --api-key."
+        )
+    answer = _http_json(
+        "POST",
+        f"{base}/api/auth/api-keys",
+        token,
+        {"name": target.label},
+        error = "Couldn't create an API key",
+    )
+    return answer["key"], answer["api_key"]["id"]
+
+
+def _open_app_config(
+    target: _AppTarget,
+    base: str,
+    explicit_key: Optional[str],
+    parse = _parse_app_config,
+) -> tuple:
+    if not is_loopback_url(base) and not explicit_key:
+        _fail(
+            f"{base} isn't on this machine. --app saves the key in your {target.label} "
+            "config, so pass the key for that server with --api-key."
+        )
+    state_path = _app_state_path(target.agent, None if target.agent == "codex" else target.path)
+    state = _read_json_object(state_path) or {}
+    if state.get("path") != str(target.path):
+        state = {}
+    text = _read_app_file(target.path)
+    parse(target.path, text)
+    key, key_id = _app_api_key(target, base, explicit_key, state)
+    return state_path, state, text, key, key_id
+
+
+def _save_app_config(
+    target: _AppTarget,
+    state_path: Path,
+    state: dict,
+    new_state: dict,
+    text: Optional[str],
+    new_text: str,
+) -> None:
+    new_state["backup"] = state.get("backup")
+    if text is not None and not state:
+        backup = target.path.with_name(target.path.name + ".unsloth-backup")
+        _write_app_file(backup, text)
+        new_state["backup"] = str(backup)
+        typer.echo(f"Backed up {target.path} to {backup}")
+    _write_private_json(state_path, new_state)
+    if new_text != text:
+        _write_app_file(target.path, new_text)
+        typer.echo(f"Updated {target.path}")
+    if state.get("key_id") is not None and state.get("key") != new_state["key"]:
+        _revoke_app_key(state["base"], state["key_id"])
+
+
+def _app_server_notice(base: str) -> None:
+    if _keep_auto_served():
+        typer.echo(f"Unsloth Studio is still running at {base}; the app needs it running.")
+        typer.echo("Stop it with: unsloth studio stop")
+
+
+def _revoke_new_app_key(base: str, key_id: object, state: dict) -> None:
+    # A key minted for a setup that then failed would otherwise stay live and unreachable.
+    if key_id is not None and key_id != state.get("key_id"):
+        _revoke_app_key(base, key_id)
+
+
+def _add_app_provider(
+    target: _AppTarget, base: str, explicit_key: Optional[str], entry: dict
+) -> None:
+    state, key_id = {}, None
+    try:
+        state_path, state, text, key, key_id = _open_app_config(target, base, explicit_key)
+        new_text = _set_app_values(
+            text, target.path, target.updates(text, target.path, base, key, entry)
+        )
+        new_state = {"path": str(target.path), "base": base, "key": key, "key_id": key_id}
+        _save_app_config(target, state_path, state, new_state, text, new_text)
+    except BaseException:
+        _revoke_new_app_key(base, key_id, state)
+        _shutdown_auto_served()
+        raise
+    typer.echo(
+        f"Added {entry['id']} from Unsloth at {base} to the {target.label}. Your default "
+        "model is unchanged: pick Unsloth in the app's model picker (restart the app if it "
+        "is open)."
+    )
+    if key_id is not None:
+        typer.echo(
+            f"It uses its own API key, '{target.label}', which you can revoke in "
+            "Unsloth → Settings → API."
+        )
+    typer.echo(f"After loading another model, re-run: unsloth start {target.agent} --app")
+    _app_server_notice(base)
+
+
+_CODEX_APP_CATALOG = "unsloth-model-catalog.json"
+
+
+def _codex_app_lines(model_id: str) -> dict:
+    return {
+        "model_provider": f'model_provider = "{_CODEX_PROFILE}"',
+        "model": f"model = {json.dumps(model_id)}",
+        "model_catalog_json": f"model_catalog_json = {json.dumps(_CODEX_APP_CATALOG)}",
+    }
+
+
+def _codex_app_build(text: Optional[str], base: str, key: str, entry: dict, previous) -> tuple:
+    previous = dict(previous or {})
+    tables = [
+        c for c in re.split(r"(?m)^(?=\[)", text or "") if c.startswith(_CODEX_PROVIDER_TABLES)
+    ]
+    previous.setdefault("table", "".join(tables) or None)
+    merged = _merge_codex_config(text or "", base, key)
+    for name, line in _codex_app_lines(entry["id"]).items():
+        merged, old = _set_toml_key(merged, name, line)
+        previous.setdefault(name, old)
+    return merged, previous
+
+
+def _codex_app_restore(text: str, state: dict) -> tuple:
+    skipped = []
+    chunks = re.split(r"(?m)^(?=\[)", text)
+    ours = _codex_provider_table(state["base"], state["key"]).strip()
+
+    def is_ours(chunk: str) -> bool:
+        # An editor on Windows may have rewritten the file with CRLF line endings.
+        return chunk.replace("\r\n", "\n").strip() == ours
+
+    if any(is_ours(chunk) for chunk in chunks):
+        table = state["previous"].get("table") or ""
+        text = "".join(table if is_ours(chunk) else chunk for chunk in chunks)
+    else:
+        skipped.append(_PROVIDER_HEADER)
+    for name, line in _codex_app_lines(state["model"]).items():
+        restored = _unset_toml_key(text, name, line, state["previous"].get(name))
+        if restored is None:
+            skipped.append(name)
+        else:
+            text = restored
+    return text, skipped
+
+
+def _codex_app_target() -> _AppTarget:
+    # The desktop app is opened from the Dock or Start menu, so it never sees CODEX_HOME.
+    path = _codex_source_home(ignore_configured = True) / "config.toml"
+    return _AppTarget("codex", "Codex app", path)
+
+
+_CODEX_APP_HEALTH_INTERVAL_S = 5.0
+_CODEX_APP_HEALTH_MISSES = 3
+
+
+def _codex_app_owner() -> dict:
+    try:
+        import psutil
+    except ImportError:
+        return {"pid": os.getpid(), "started": None}
+    return {"pid": os.getpid(), "started": psutil.Process().create_time()}
+
+
+def _codex_app_owner_alive(owner: object) -> bool:
+    try:
+        pid = int(owner["pid"])
+        if owner["started"] is None:
+            # psutil is optional, so fall back to the PID alone.
+            from unsloth_cli.commands.studio import _pid_alive
+            return _pid_alive(pid)
+        import psutil
+
+        return abs(psutil.Process(pid).create_time() - float(owner["started"])) < 1.0
+    except Exception:
+        return False
+
+
+def _switch_codex_app_back(state_path: Path, state: dict) -> list:
+    path = Path(state["path"])
+    text = _read_app_file(path)
+    skipped = []
+    if text is not None:
+        new_text, skipped = _codex_app_restore(text, state)
+        backup = Path(state["backup"]) if state.get("backup") else None
+        original = _read_app_file(backup) if backup else None
+        if original is not None and _same_app_config(path, new_text, original):
+            new_text = original
+        if state.get("created") and _same_app_config(path, new_text, ""):
+            path.unlink()
+        elif new_text != text:
+            _write_app_file(path, new_text)
+        if original is not None and new_text == original:
+            if state.get("mode") is not None:
+                os.chmod(path, state["mode"])
+            backup.unlink(missing_ok = True)
+    if "model_catalog_json" not in skipped:
+        path.with_name(_CODEX_APP_CATALOG).unlink(missing_ok = True)
+    revoked = state.get("key_id") is None or _revoke_app_key(state.get("base", ""), state["key_id"])
+    state_path.unlink(missing_ok = True)
+    notes = [
+        f"Left {name} in {path} as is: it changed while Codex was on Unsloth." for name in skipped
+    ]
+    if not revoked:
+        notes.append(
+            "Couldn't reach Unsloth to revoke the app's key; delete 'Codex app' in "
+            "Unsloth → Settings → API."
+        )
+    return notes
+
+
+def _recover_codex_app() -> Optional[dict]:
+    state_path = _app_state_path("codex")
+    state = _read_json_object(state_path) or {}
+    if not state.get("path"):
+        return None
+    if _codex_app_owner_alive(state.get("owner")):
+        return state
+    notes = _switch_codex_app_back(state_path, state)
+    typer.echo(
+        "Switched the Codex app back from an earlier `unsloth start codex --app` that did not "
+        "exit cleanly."
+    )
+    for note in notes:
+        typer.echo(note)
+    return None
+
+
+def _open_codex_app() -> None:
+    if sys.platform == "darwin":
+        with contextlib.suppress(OSError):
+            if (
+                subprocess.run(["open", "-b", "com.openai.codex"], capture_output = True).returncode
+                == 0
+            ):
+                return
+    typer.echo("Open the Codex app now.")
+
+
+def _hold_codex_app(base: str) -> None:
+    def stop(signum, frame):
+        raise KeyboardInterrupt
+
+    previous = {}
+    for name in ("SIGTERM", "SIGHUP"):
+        if hasattr(signal, name):
+            previous[getattr(signal, name)] = signal.signal(getattr(signal, name), stop)
+    try:
+        misses = 0
+        while misses < _CODEX_APP_HEALTH_MISSES:
+            time.sleep(_CODEX_APP_HEALTH_INTERVAL_S)
+            misses = 0 if _studio_healthy(base) else misses + 1
+        typer.echo(f"Unsloth at {base} stopped answering.")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
+def _codex_app_session(base: str, explicit_key: Optional[str], entry: dict) -> None:
+    target = _codex_app_target()
+    catalog = target.path.with_name(_CODEX_APP_CATALOG)
+    state, key_id = {}, None
+    try:
+        state_path, state, text, key, key_id = _open_app_config(target, base, explicit_key)
+        new_text, previous = _codex_app_build(text, base, key, entry, None)
+        _parse_app_config(target.path, new_text)
+        # The Codex app lists only the active provider's catalog, so this is what makes the model pickable.
+        _write_app_file(catalog, json.dumps(_codex_model_catalog(entry, "list"), indent = 2) + "\n")
+        new_state = {
+            "path": str(target.path),
+            "base": base,
+            "model": entry["id"],
+            "key": key,
+            "key_id": key_id,
+            "owner": _codex_app_owner(),
+            "created": text is None,
+            "mode": _app_file_mode(target.path),
+            "previous": previous,
+        }
+        _save_app_config(target, state_path, {}, new_state, text, new_text)
+    except BaseException:
+        _revoke_new_app_key(base, key_id, state)
+        _shutdown_auto_served()
+        raise
+    try:
+        _open_codex_app()
+        typer.echo(
+            f"The Codex app is on {entry['id']} from Unsloth at {base} until this command exits "
+            "(Ctrl+C). If the app was already open, quit and reopen it: it reads the model list "
+            "only at startup."
+        )
+        _hold_codex_app(base)
+    finally:
+        # A second Ctrl+C must not cut the switch back short.
+        previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            notes = _switch_codex_app_back(state_path, new_state)
+            _shutdown_auto_served()
+            # After SIGHUP the terminal may be gone; the switch back has already happened.
+            with contextlib.suppress(OSError):
+                typer.echo("Switched the Codex app back; restart it if a window is still open.")
+                for note in notes:
+                    typer.echo(note)
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint)
+
+
+def _check_app_flags(
+    requested: bool,
+    args: list,
+    as_subagent: bool = False,
+) -> None:
+    if requested and (args or as_subagent):
+        _fail("--app sets up the desktop app, so it takes no agent arguments or --as-subagent.")
+
+
+def _opencode_app_target(
+    max_tokens: Optional[int] = None, request_body: Optional[dict] = None
+) -> _AppTarget:
+    # OpenCode Desktop imports the login shell env; it merges config.json, opencode.json, opencode.jsonc, last wins.
+    root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "opencode"
+    names = ("opencode.jsonc", "opencode.json", "config.json")
+    path = next((root / n for n in names if os.path.lexists(root / n)), root / "opencode.json")
+
+    def updates(text, path, base, key, entry):
+        provider = _opencode_provider(base, key, entry, max_tokens, request_body)
+        changes = [(("provider", _OPENCODE_PROVIDER), provider)]
+        config = _parse_app_config(path, text) or {}
+        enabled = config.get("enabled_providers")
+        if isinstance(enabled, list) and _OPENCODE_PROVIDER not in enabled:
+            changes.append((("enabled_providers",), [*enabled, _OPENCODE_PROVIDER]))
+        # disabled_providers wins over enabled_providers.
+        disabled = config.get("disabled_providers")
+        if isinstance(disabled, list) and _OPENCODE_PROVIDER in disabled:
+            changes.append(
+                (("disabled_providers",), [p for p in disabled if p != _OPENCODE_PROVIDER])
+            )
+        return changes
+
+    return _AppTarget("opencode", "OpenCode app", path, updates)
+
+
+def _openclaw_app_updates(
+    text,
+    path,
+    base,
+    key,
+    entry,
+    max_tokens = None,
+) -> list:
+    config = _parse_app_config(path, text) or {}
+    agents = config.get("agents")
+    defaults = agents.get("defaults") if isinstance(agents, dict) else None
+    defaults = defaults if isinstance(defaults, dict) else {}
+    ref = f"unsloth/{entry['id']}"
+    changes = [
+        (("models", "providers", "unsloth"), _openclaw_provider(base, key, entry, max_tokens))
+    ]
+    # The picker only offers allowlisted models once an allowlist exists; never create one.
+    policy = defaults.get("modelPolicy")
+    allowed = policy.get("allow") if isinstance(policy, dict) else None
+    meta = config.get("meta")
+    migrations = meta.get("migrations") if isinstance(meta, dict) else None
+    migrated = isinstance(migrations, dict) and migrations.get("modelPolicyAllowlist")
+    # An empty allow list or models map allows every model, so adding the ref would restrict it.
+    if isinstance(allowed, list):
+        if allowed and ref not in allowed:
+            changes.append((("agents", "defaults", "modelPolicy", "allow"), [*allowed, ref]))
+    elif policy is None and not migrated and isinstance(defaults.get("models"), dict):
+        if defaults["models"] and ref not in defaults["models"]:
+            changes.append((("agents", "defaults", "models", ref), {}))
+    return changes
+
+
+def _openclaw_app_target(max_tokens: Optional[int] = None) -> _AppTarget:
+    path = Path.home() / ".openclaw" / "openclaw.json"
+    updates = functools.partial(_openclaw_app_updates, max_tokens = max_tokens)
+    return _AppTarget("openclaw", "OpenClaw app", path, updates)
+
+
+def _hermes_app_target(request_body: Optional[dict] = None) -> _AppTarget:
+    # Hermes Desktop follows the sticky active profile.
+    home = Path.home() / ".hermes"
+    if sys.platform == "win32":
+        # Hermes' Windows default home (hermes_constants._get_platform_default_hermes_home).
+        local = os.environ.get("LOCALAPPDATA", "").strip()
+        home = (Path(local) if local else Path.home() / "AppData" / "Local") / "hermes"
+    try:
+        profile = (home / "active_profile").read_text(encoding = "utf-8").strip()
+    except OSError:
+        profile = ""
+    path = home / "config.yaml"
+    if profile != "default" and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*", profile):
+        path = home / "profiles" / profile / "config.yaml"
+
+    def updates(text, path, base, key, entry):
+        settings: dict = {}
+        _set_hermes_provider(settings, base, entry, request_body)
+        provider = settings["providers"][_HERMES_PROVIDER]
+        del provider["key_env"]
+        provider["api_key"] = key
+        window = entry.get("context_length") or entry.get("max_context_length")
+        if window:
+            # model.context_length only covers the default model, so a picked one reads its window here.
+            context = max(int(window), _HERMES_MIN_CONTEXT)
+            provider["models"] = {entry["id"]: {"context_length": context}}
+        return [(("providers", _HERMES_PROVIDER), provider)]
+
+    return _AppTarget("hermes", "Hermes app", path, updates)
+
+
+_VSCODE_GROUP = "Unsloth"
+_VSCODE_DEFAULT_CONTEXT = 32768
+# Copilot's Agent prompt (instructions + tool schemas) does not fit in a smaller window.
+_VSCODE_AGENT_MIN_CONTEXT = 32768
+
+
+def _vscode_models_path() -> Path:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA", "").strip()
+        root = Path(appdata) if appdata else Path.home() / "AppData" / "Roaming"
+    elif sys.platform == "darwin":
+        root = Path.home() / "Library" / "Application Support"
+    else:
+        root = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        code = _wsl_windows_executable(["code"])
+        if code and not any((root / app / "User").is_dir() for app in ("Code", "Code - Insiders")):
+            # Under WSL, Windows VS Code reads its own user dir, not the distro's.
+            root = _wsl_windows_user_profile(code, "VS Code") / "AppData" / "Roaming"
+    app = "Code"
+    if not (root / "Code" / "User").is_dir() and (root / "Code - Insiders" / "User").is_dir():
+        app = "Code - Insiders"
+    return root / app / "User" / "chatLanguageModels.json"
+
+
+def _vscode_groups(path: Path, text: Optional[str]) -> list:
+    if text is None or not text.strip():
+        return []
+    try:
+        text = _JSONC_COMMENT.sub(lambda m: m.group(1) or "", text)
+        data = json.loads(_JSONC_TRAILING_COMMA.sub(lambda m: m.group(1) or "", text))
+    except ValueError:
+        data = None
+    if not isinstance(data, list):
+        _fail(f"Couldn't parse {path}, so it was left as is. Fix it and re-run.")
+    return data
+
+
+def _is_unsloth_vscode_group(group: object) -> bool:
+    return (
+        isinstance(group, dict)
+        and group.get("vendor") == "customendpoint"
+        and group.get("name") == _VSCODE_GROUP
+    )
+
+
+def _vscode_models_text(
+    text: Optional[str],
+    path: Path,
+    base: str,
+    key: str,
+    entry: dict,
+    max_tokens: Optional[int] = None,
+    tool_calling: bool = True,
+    vision: bool = False,
+    replaced: frozenset = frozenset(),
+    thinking: bool = False,
+) -> Optional[str]:
+    groups = _vscode_groups(path, text)
+    window = int(
+        entry.get("context_length") or entry.get("max_context_length") or _VSCODE_DEFAULT_CONTEXT
+    )
+    output = _agent_output_limit(window, max_tokens)
+    model = {
+        "id": entry["id"],
+        "name": entry["id"],
+        "url": f"{base}/v1/chat/completions",
+        "apiType": "chat-completions",
+        # Agent mode lists only tool-calling models; Studio rejects tools for the rest.
+        "toolCalling": tool_calling,
+        "vision": vision,
+        # Without it VS Code drops reasoning_content when it replays an agent tool round.
+        "thinking": thinking,
+        "contextWindow": window,
+        "maxInputTokens": window - output,
+        "maxOutputTokens": output,
+        # A raw apiKey is read as a secret-storage reference and dropped, so the key rides here.
+        "requestHeaders": {"Authorization": f"Bearer {key}"},
+    }
+    index = next((i for i, g in enumerate(groups) if _is_unsloth_vscode_group(g)), None)
+    updated = list(groups)
+    if index is None:
+        updated.append({"name": _VSCODE_GROUP, "vendor": "customendpoint", "models": [model]})
+    else:
+        # Replace only the models this command wrote; the rest of the group is the user's.
+        group = dict(groups[index])
+        drop = replaced | {entry["id"]}
+        kept = [
+            m
+            for m in group.get("models") or []
+            if not (isinstance(m, dict) and m.get("id") in drop)
+        ]
+        group["models"] = [*kept, model]
+        updated[index] = group
+    if updated == groups:
+        return text
+    return json.dumps(updated, indent = 2, ensure_ascii = False) + "\n"
+
+
+def _vscode_capabilities(base: str, key: str, entry: dict) -> tuple:
+    # Scoped to the slot serving this model; an older server ignores the query and answers for the primary.
+    try:
+        query = urlencode({"model": entry["id"]})
+        status = _http_json("GET", f"{base}/api/inference/status?{query}", key)
+    except Exception:
+        status = {}
+    resident = any(
+        _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
+        for status_id in (status.get("active_model"), status.get("model_identifier"))
+        if status_id
+    )
+    if not resident:
+        # Only a status about this model can vouch for it; an older server reports nothing.
+        return True, False, False
+    return (
+        status.get("supports_tools") is not False,
+        status.get("is_vision") is True,
+        status.get("supports_reasoning") is True,
+    )
+
+
+def _vscode_over_ssh(path: Path) -> bool:
+    if sys.platform in ("win32", "darwin") or path.parent.is_dir():
+        return False
+    remote = ("SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "REMOTE_CONTAINERS", "CODESPACES")
+    return any(os.environ.get(name) for name in remote)
+
+
+def _add_vscode_provider(
+    base: str,
+    explicit_key: Optional[str],
+    entry: dict,
+    max_tokens: Optional[int] = None,
+    tool_calling: bool = True,
+    vision: bool = False,
+    thinking: bool = False,
+) -> None:
+    target = _AppTarget("vscode", "VS Code", _vscode_models_path())
+    state, key_id = {}, None
+    try:
+        state_path, state, text, key, key_id = _open_app_config(
+            target, base, explicit_key, _vscode_groups
+        )
+        remote = _vscode_over_ssh(target.path)
+        new_text = _vscode_models_text(
+            None if remote else text,
+            target.path,
+            base,
+            key,
+            entry,
+            max_tokens,
+            tool_calling,
+            vision,
+            frozenset(state.get("models") or ()),
+            thinking,
+        )
+        new_state = {
+            "path": str(target.path),
+            "base": base,
+            "key": key,
+            "key_id": key_id,
+            "models": [entry["id"]],
+        }
+        if remote:
+            # Keep the key in state so a re-run reuses it; a file here would never be read.
+            _save_app_config(target, state_path, state, new_state, None, None)
+        else:
+            _save_app_config(target, state_path, state, new_state, text, new_text)
+    except BaseException:
+        _revoke_new_app_key(base, key_id, state)
+        _shutdown_auto_served()
+        raise
+    if remote:
+        url = urlparse(base)
+        port = url.port or (443 if url.scheme == "https" else 80)
+        reach = (
+            f"forward port {port} to the same port on your machine (for example: "
+            f"ssh -L {port}:127.0.0.1:{port} <this host>)"
+            if is_loopback_url(base)
+            else f"make sure your machine can reach {base}"
+        )
+        typer.echo(
+            "This is a remote session (SSH or a container) with no VS Code user dir here, so "
+            "nothing was written. VS Code does not list these models in remote windows yet "
+            f"(microsoft/vscode#332085), so {reach}. Then, in a local VS Code window, run "
+            "Chat: Manage Language Models, open chatLanguageModels.json and add:"
+        )
+        typer.echo(json.dumps(json.loads(new_text)[0], indent = 2, ensure_ascii = False))
+        _app_server_notice(base)
+        return
+    typer.echo(
+        f"Added {entry['id']} from Unsloth at {base} to VS Code. In the Copilot Chat model "
+        f"picker, pick it under {_VSCODE_GROUP} (Manage Models if it is hidden; run "
+        "Developer: Reload Window if VS Code is open). Needs the GitHub Copilot Chat "
+        "extension; no Copilot plan is required."
+    )
+    if os.environ.get("WSL_DISTRO_NAME") and target.path.parts[:2] == ("/", "mnt"):
+        typer.echo(
+            "Use it from a local VS Code window: VS Code does not list these models in remote "
+            "(WSL, SSH, container) windows yet (microsoft/vscode#332085)."
+        )
+    if not tool_calling:
+        typer.echo(
+            f"{entry['id']} has no tool-calling chat template, so it is offered in Ask mode, "
+            "not Agent mode."
+        )
+    window = entry.get("context_length") or entry.get("max_context_length")
+    if tool_calling and window and int(window) < _VSCODE_AGENT_MIN_CONTEXT:
+        typer.echo(
+            f"Warning: {entry['id']} is loaded with {int(window):,} tokens of context, too few "
+            "for Copilot's Agent mode, which sends about 20,000 tokens of instructions before "
+            "your message. Load it with --context-length "
+            f"{_VSCODE_AGENT_MIN_CONTEXT} and re-run unsloth start vscode.",
+            err = True,
+        )
+    if key_id is not None:
+        typer.echo(
+            f"It uses its own API key, '{target.label}', which you can revoke in "
+            "Unsloth → Settings → API."
+        )
+    typer.echo("After loading another model, re-run: unsloth start vscode")
+    _app_server_notice(base)
+
+
 @start_app.command("claude", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
 def claude(
     ctx: typer.Context,
@@ -5385,10 +6585,15 @@ def claude(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
+    auto_route: bool = _AUTO_ROUTE_OPTION,
 ):
     """Point Claude Code at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    # The route gate is a hook the Windows claude cannot run from WSL, so its own tools would stay on.
+    if auto_route and _wsl_windows_executable(["claude"]):
+        _fail("--auto-route needs claude installed inside WSL, not the Windows claude.")
+    as_subagent = as_subagent or auto_route
     install_hint = (
         "irm https://claude.ai/install.ps1 | iex"
         if os.name == "nt"
@@ -5443,6 +6648,8 @@ def claude(
             server_env["UNSLOTH_CLAUDE_SUBAGENT_CONTEXT_WINDOW"] = str(int(window))
         if server_options.request_body():
             server_env["CLAUDE_CODE_EXTRA_BODY"] = json.dumps(server_options.request_body())
+        if auto_route:
+            server_env[_CLAUDE_SUBAGENT_AUTO_ROUTE_ENV] = "1"
         with _session_config("claude-subagent", launch, persist = persist) as config:
             plugin = write_claude_subagent_plugin(config, server_env)
             command = [
@@ -5456,7 +6663,11 @@ def claude(
             ]
             typer.echo(
                 "Unsloth is available as a local agent. "
-                "Ask Claude to spawn an Unsloth or local agent."
+                + (
+                    "Claude hands routine work to it on its own."
+                    if auto_route
+                    else "Ask Claude to spawn an Unsloth or local agent."
+                )
             )
             _run(
                 base,
@@ -5515,14 +6726,24 @@ def codex(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
+    auto_route: bool = _AUTO_ROUTE_OPTION,
+    app: bool = _CODEX_APP_OPTION,
 ):
     """Point OpenAI Codex at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    as_subagent = as_subagent or auto_route
+    _check_app_flags(app, ctx.args, as_subagent)
+    running = _recover_codex_app()
+    if app and running is not None:
+        _fail(
+            "The Codex app is already on Unsloth for another `unsloth start codex --app` "
+            f"(PID {running['owner']['pid']}). Stop that one first."
+        )
     install_hint = _npm_install_hint("@openai/codex")
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
-    _require_agent_for_launch("codex", install_hint, launch)
+    _require_agent_for_launch("codex", install_hint, launch and not app)
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
         codex_effort = None
@@ -5538,7 +6759,8 @@ def codex(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
-        carried = _REASONING_FIELDS if codex_effort else frozenset(),
+        # The app reads no per-launch flags, so the server applies them.
+        carried = _REASONING_FIELDS if codex_effort and not app else frozenset(),
     )
     base, key, entry = _connect(
         api_key,
@@ -5557,6 +6779,8 @@ def codex(
     except BaseException:
         _shutdown_auto_served()
         raise
+    if app:
+        return _codex_app_session(base, api_key, entry)
     if as_subagent:
         subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
         subagent_model = {**entry, "id": subagent_id}
@@ -5568,17 +6792,23 @@ def codex(
                 home,
                 yolo = yolo,
                 reasoning_effort = codex_effort,
+                auto_route = auto_route,
             )
-            parent_home = write_codex_parent_overlay(home / "parent")
+            parent_home = write_codex_parent_overlay(home / "parent", auto_route = auto_route)
             command = [
                 "codex",
                 *_codex_subagent_flags(bridge_config),
+                *(_CODEX_AUTO_ROUTE_FLAGS if auto_route else []),
                 *_yolo_command_flags("codex", yolo),
                 *ctx.args,
             ]
             typer.echo(
                 "Unsloth is available as a local agent. "
-                "Ask Codex to spawn an Unsloth or local agent."
+                + (
+                    "Codex hands routine work to it on its own."
+                    if auto_route
+                    else "Ask Codex to spawn an Unsloth or local agent."
+                )
             )
             _run(
                 base,
@@ -5619,6 +6849,7 @@ def openclaw(
     launch: bool = _LAUNCH_OPTION,
     gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
     max_seq_length: int = _CONTEXT_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
     load_in_4bit: bool = _LOAD_4BIT_OPTION,
     tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
     gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
@@ -5636,17 +6867,19 @@ def openclaw(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    app: bool = _APP_OPTION,
 ):
     """Point OpenClaw at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("openclaw", ctx.args)
+    _check_app_flags(app, ctx.args)
     install_hint = (
         "iwr -useb https://openclaw.ai/install.ps1 | iex"
         if os.name == "nt"
         else "curl -fsSL https://openclaw.ai/install.sh | bash"
     )
-    _require_agent_for_launch("openclaw", install_hint, launch)
+    _require_agent_for_launch("openclaw", install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -5659,7 +6892,7 @@ def openclaw(
         min_p = min_p,
         repetition_penalty = repetition_penalty,
         presence_penalty = presence_penalty,
-        carried = _ALL_REQUEST_FIELDS,
+        carried = frozenset() if app else _ALL_REQUEST_FIELDS,
     )
     base, key, entry = _connect(
         api_key,
@@ -5671,6 +6904,8 @@ def openclaw(
         launch = launch,
         server_options = server_options,
     )
+    if app:
+        return _add_app_provider(_openclaw_app_target(max_tokens), base, api_key, entry)
     openclaw_args = list(ctx.args)
     # Default a bare `unsloth start openclaw` to the local TUI. Anything the caller passes through is forwarded verbatim so OpenClaw parses it under its own grammar (openclaw [global-flags] <command> [options]): an explicit subcommand, a global flag that must precede the command such as --profile/--dev, or a tui option. We cannot reinterpret those safely because a leading "--flag value" is ambiguous between a global (`--profile test`) and a tui option (`--message hi`), and prepending `tui --local` would break the global form, so only the empty case is defaulted.
     if not openclaw_args:
@@ -5688,6 +6923,7 @@ def openclaw(
             workspace_path = "${OPENCLAW_WORKSPACE_DIR}",
             embedding_model = _studio_embedding_model(base, key),
             request_body = server_options.request_body(),
+            max_tokens = max_tokens,
         )
         # Scope both config and state so OpenClaw never touches the user's ~/.openclaw.
         # Off, else OpenClaw re-imports any provider key it cannot see from a login shell.
@@ -5735,13 +6971,17 @@ def opencode(
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
     as_subagent: bool = _AS_SUBAGENT_OPTION,
+    auto_route: bool = _AUTO_ROUTE_OPTION,
+    app: bool = _APP_OPTION,
 ):
     """Point OpenCode at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    as_subagent = as_subagent or auto_route
+    _check_app_flags(app, ctx.args, as_subagent)
     command_name, opencode_v2 = _opencode_command()
     install_hint = _npm_install_hint("@opencode-ai/cli@beta" if opencode_v2 else "opencode-ai")
-    _require_agent_for_launch(command_name, install_hint, launch)
+    _require_agent_for_launch(command_name, install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -5766,6 +7006,9 @@ def opencode(
         launch = launch,
         server_options = server_options,
     )
+    if app:
+        target = _opencode_app_target(max_tokens, server_options.request_body())
+        return _add_app_provider(target, base, api_key, entry)
     if opencode_v2:
         typer.echo(
             f"OpenCode V2 provider policies must allow '{_OPENCODE_PROVIDER}'.",
@@ -5776,7 +7019,9 @@ def opencode(
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
         route_native_auto = (
-            yolo and _opencode_supports_native_auto(command_name) and (launch or bool(ctx.args))
+            yolo
+            and (opencode_v2 or _opencode_supports_native_auto(command_name))
+            and (launch or bool(ctx.args))
         )
         opencode_args = list(ctx.args)
         if opencode_v2:
@@ -5806,16 +7051,32 @@ def opencode(
                 session_permission,
                 command = command_name,
                 v2 = opencode_v2,
+                auto_route = auto_route,
             )
             # A project opencode.json outranks the session file and could field-merge its own agent.unsloth over ours. Pin ours in the inline overlay so it wins.
-            inline_config.setdefault("agent", {})[_SUBAGENT_NAME] = {
-                "description": _SUBAGENT_DESCRIPTION,
+            agents = inline_config.setdefault("agent", {})
+            agents[_SUBAGENT_NAME] = {
+                "description": (
+                    _OPENCODE_AUTO_ROUTE_DESCRIPTION if auto_route else _SUBAGENT_DESCRIPTION
+                ),
                 "mode": "subagent",
                 "model": f"{_OPENCODE_PROVIDER}/{subagent_model['id']}",
                 "prompt": _SUBAGENT_INSTRUCTIONS,
             }
+            if auto_route:
+                # A task subagent does not inherit the parent agent's rules, so both keep their tools.
+                agents[_OPENCODE_PLAN_SUBAGENT_NAME] = {
+                    "description": _OPENCODE_AUTO_ROUTE_PLAN_DESCRIPTION,
+                    "mode": "subagent",
+                    "model": f"{_OPENCODE_PROVIDER}/{subagent_model['id']}",
+                    "prompt": _SUBAGENT_PLAN_INSTRUCTIONS,
+                    "permission": {"edit": "deny", "bash": "deny"},
+                }
             env["OPENCODE_CONFIG_CONTENT"] = json.dumps(inline_config)
-            typer.echo("Unsloth is available as @unsloth and in /models.")
+            typer.echo(
+                "Unsloth is available as @unsloth and in /models."
+                + (" OpenCode hands routine work to it on its own." if auto_route else "")
+            )
             _run(
                 base,
                 subagent_model,
@@ -5828,7 +7089,7 @@ def opencode(
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
     # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag. Only add --model for an interactive bare launch, as a convenience so the TUI opens on our model: it is omitted for passthrough, where inserting it before a subcommand can be misparsed, and for --no-launch, where the printed command is consumed by drivers that append a subcommand such as `run <prompt>` and a leading --model would land before it. Those paths rely on the inline pin instead.
     native_auto = False
-    route_native_auto = yolo and _opencode_supports_native_auto(command_name)
+    route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
         opencode_args = list(ctx.args)
         if opencode_v2:
@@ -5907,15 +7168,17 @@ def hermes(
     serve: bool = _SERVE_OPTION,
     yolo: bool = _YOLO_OPTION,
     persist: bool = _PERSIST_OPTION,
+    app: bool = _APP_OPTION,
 ):
     """Point Hermes (Nous Research) at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     _reject_as_subagent("hermes", ctx.args)
+    _check_app_flags(app, ctx.args)
     native_args = [*_yolo_command_flags("hermes", yolo), *ctx.args]
     command = ["hermes", *_hermes_resume_oneshot_args(native_args)]
     install_hint = _hermes_install_hint()
-    _require_agent_for_launch("hermes", install_hint, launch)
+    _require_agent_for_launch("hermes", install_hint, launch and not app)
     server_options = ServerOptions(
         enable_tools = enable_tools,
         tool_call_healing = tool_call_healing,
@@ -5940,6 +7203,19 @@ def hermes(
         launch = launch,
         server_options = server_options,
     )
+    if app:
+        target = _hermes_app_target(server_options.request_body())
+        _add_app_provider(target, base, api_key, entry)
+        window = entry.get("context_length") or entry.get("max_context_length")
+        if window and int(window) < _HERMES_MIN_CONTEXT:
+            # The app's compaction settings are global, so they can't be scaled to this model.
+            typer.echo(
+                f"Warning: {entry['id']} serves {int(window):,} tokens, below Hermes' "
+                f"{_HERMES_MIN_CONTEXT:,} floor, so long chats in the app can overflow before "
+                f"Hermes compacts. Load it with --max-seq-length {_HERMES_MIN_CONTEXT} to avoid this.",
+                err = True,
+            )
+        return
     with _session_config("hermes", launch, persist = persist) as home:
         # HERMES_HOME relocates hermes' whole home dir (config.yaml, sessions, state) like CODEX_HOME, so the user's ~/.hermes is left untouched for the session.
         write_hermes_config(base, entry, home / "config.yaml", server_options.request_body())
@@ -5978,6 +7254,7 @@ def pi(
     """Point Pi (coding agent) at the running Unsloth server and start it."""
     # Route a leading `org/name` positional to --model; forward the rest to the agent.
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_auto_route("pi", ctx.args)
     install_hint = _npm_install_hint(
         "@earendil-works/pi-coding-agent",
         ignore_scripts = True,
@@ -6161,3 +7438,138 @@ def dsh(
             ),
         }
         _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+@start_app.command("vibe", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def vibe(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    serve: bool = _SERVE_OPTION,
+    yolo: bool = _YOLO_OPTION,
+    persist: bool = _PERSIST_OPTION,
+):
+    """Point Mistral Vibe at the running Unsloth server and start it."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    _reject_as_subagent("vibe", ctx.args)
+    install_hint = _vibe_install_hint()
+    _require_agent_for_launch("vibe", install_hint, launch)
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+        carried = frozenset({"temperature"}),
+    )
+    base, key, entry = _connect(
+        api_key,
+        model,
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
+        serve = serve,
+        launch = launch,
+        server_options = server_options,
+    )
+    command = ["vibe", *_yolo_command_flags("vibe", yolo), *ctx.args]
+    # Like claude, Vibe keeps its own home (~/.vibe: instructions, hooks, trust, agents,
+    # sessions); the env layer pins the Unsloth provider and model above its config files.
+    request_body = server_options.request_body()
+    if "temperature" not in request_body:
+        # Vibe always sends a temperature, which the server honours over the model's
+        # recommended one, so pass the recommendation along explicitly.
+        status = _inference_status(base, key, entry["id"])
+        recommended = (status.get("inference") or {}).get("temperature")
+        if recommended is not None and any(
+            _model_id_matches(entry["id"], status_id, allow_casefold = is_loopback_url(base))
+            for status_id in (status.get("active_model"), status.get("model_identifier"))
+            if status_id
+        ):
+            request_body = {**request_body, "temperature": recommended}
+    env = {_VIBE_ENV_KEY: key, **_vibe_env(base, entry, request_body)}
+    _run(base, entry, env, command, launch = launch, install_hint = install_hint)
+
+
+_VSCODE_LAUNCH_OPTION = typer.Option(True, "--launch/--no-launch", hidden = True)
+
+
+@start_app.command("vscode", cls = _PassthroughCommand, context_settings = _PASSTHROUGH)
+def vscode(
+    ctx: typer.Context,
+    model: Optional[str] = _MODEL_OPTION,
+    api_key: Optional[str] = _KEY_OPTION,
+    launch: bool = _VSCODE_LAUNCH_OPTION,
+    gguf_variant: Optional[str] = _GGUF_VARIANT_OPTION,
+    max_seq_length: int = _CONTEXT_OPTION,
+    load_in_4bit: bool = _LOAD_4BIT_OPTION,
+    tensor_parallel: bool = _TENSOR_PARALLEL_OPTION,
+    gpu_memory_mode: Optional[Literal["auto", "manual"]] = _GPU_MEMORY_MODE_OPTION,
+    enable_tools: Optional[bool] = _ENABLE_TOOLS_OPTION,
+    tool_call_healing: Optional[bool] = _TOOL_CALL_HEALING_OPTION,
+    tool_call_nudging: Optional[bool] = _TOOL_CALL_NUDGING_OPTION,
+    reasoning: Optional[Literal["on", "off", "auto"]] = _REASONING_OPTION,
+    reasoning_effort: Optional[str] = _REASONING_EFFORT_OPTION,
+    temperature: Optional[float] = _TEMPERATURE_OPTION,
+    top_p: Optional[float] = _TOP_P_OPTION,
+    top_k: Optional[int] = _TOP_K_OPTION,
+    min_p: Optional[float] = _MIN_P_OPTION,
+    repetition_penalty: Optional[float] = _REPETITION_PENALTY_OPTION,
+    presence_penalty: Optional[float] = _PRESENCE_PENALTY_OPTION,
+    max_tokens: Optional[int] = _MAX_TOKENS_OPTION,
+    serve: bool = _SERVE_OPTION,
+):
+    """Add the model Unsloth is serving to VS Code's Copilot Chat model picker."""
+    model, ctx.args[:] = _consume_positional_model(model, ctx.args)
+    if ctx.args:
+        _fail("unsloth start vscode only edits VS Code's settings, so it takes no extra arguments.")
+    server_options = ServerOptions(
+        enable_tools = enable_tools,
+        tool_call_healing = tool_call_healing,
+        tool_call_nudging = tool_call_nudging,
+        reasoning = reasoning,
+        reasoning_effort = reasoning_effort,
+        temperature = temperature,
+        top_p = top_p,
+        top_k = top_k,
+        min_p = min_p,
+        repetition_penalty = repetition_penalty,
+        presence_penalty = presence_penalty,
+    )
+    base, key, entry = _connect(
+        api_key,
+        model,
+        _load_options(
+            ctx, gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode
+        ),
+        serve = serve,
+        launch = launch,
+        server_options = server_options,
+    )
+    tool_calling, vision, thinking = _vscode_capabilities(base, key, entry)
+    # Remote: the key _connect accepted. Local: never an explicit key it rejected for a fresh server.
+    explicit = key if not is_loopback_url(base) else api_key if key == api_key else None
+    _add_vscode_provider(base, explicit, entry, max_tokens, tool_calling, vision, thinking)

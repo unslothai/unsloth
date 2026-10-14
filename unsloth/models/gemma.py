@@ -10,7 +10,7 @@
 # limitations under the License.
 
 from .llama import *
-from .llama import _get_rope_theta
+from .llama import _get_rope_theta, _LazyDeviceScratch
 from ._utils import __version__
 from ._utils import move_to_device, per_layer_device, embedding_applies_scale
 from unsloth_zoo.utils import _get_dtype, Version
@@ -157,13 +157,10 @@ def GemmaModel_fast_forward_inference(
     attention_mask = None,
     **kwargs,
 ):
-    out_weights = tuple(
-        torch.empty_like(
-            self.model.layers[0].input_layernorm.weight,
-            dtype = torch.float32,
-            device = torch.device(x),
-        )
-        for x in range(DEVICE_COUNT)
+    norm_weight = self.model.layers[0].input_layernorm.weight
+    out_weights = _LazyDeviceScratch(
+        DEVICE_COUNT,
+        lambda device: torch.empty_like(norm_weight, dtype = torch.float32, device = device),
     )
     input_ids = input_ids[:, : self.max_seq_length]
     hidden_states = self.model.embed_tokens(input_ids)
@@ -190,7 +187,10 @@ def GemmaModel_fast_forward_inference(
     rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
     next_decoder_cache = []
+    block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
     for idx, decoder_layer in enumerate(self.model.layers):
+        if block_swap is not None:
+            block_swap.enter(idx)
         layer_device, device_index = per_layer_device(decoder_layer)
         hidden_states, position_ids = move_to_device(layer_device, hidden_states, position_ids)
         if attention_mask is not None:
@@ -220,6 +220,8 @@ def GemmaModel_fast_forward_inference(
         hidden_states = fast_geglu_inference(decoder_layer.mlp, hidden_states)
         hidden_states += residual
 
+        if block_swap is not None:
+            block_swap.leave(idx)
         next_decoder_cache.append(present_key_value)
     hidden_states = fast_rms_layernorm_inference_gemma(
         self.model.norm, hidden_states, out_weights[device_index]

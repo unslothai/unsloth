@@ -24,7 +24,8 @@ test("row forks retain the visible branch across settings settlement", async () 
   for (const open of [true, false]) {
     let visible = open;
     const unregister = liveThreadHead.registerLiveThreadView({
-      threadListItem: () => ({ getState: () => ({ remoteId: visible ? "source" : "other" }) }),
+      threads: () => ({ getState: () => ({ mainThreadId: "main" }) }),
+      threadListItem: () => ({ getState: () => ({ id: "main", remoteId: visible ? "source" : "other" }) }),
       thread: () => ({ getState: () => ({ messages: [{ id: "root" }, { id: "older-reply" }] }) }),
     });
     const calls: string[] = [];
@@ -103,11 +104,11 @@ test("a chat row reserves one gutter, whatever its state", () => {
   );
 });
 
-// Renaming from the menu is two clicks and a read; the title is right there.
-test("double-clicking a chat title renames it in place", () => {
+// Renaming from the menu is two clicks and a read; a double-click on the title is one gesture.
+test("double-clicking a chat title opens the Rename chat dialog", () => {
   assert.match(
     APP_SIDEBAR,
-    /onDoubleClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);\n\s*event\.stopPropagation\(\);\n\s*openRenameChat\(item, true, list\?\.scope\);\n\s*\}\}/,
+    /onDoubleClick=\{\(event\) => \{\n\s*event\.preventDefault\(\);\n\s*event\.stopPropagation\(\);\n\s*openRenameChat\(item\);\n\s*\}\}/,
   );
 });
 

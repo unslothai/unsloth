@@ -475,7 +475,7 @@ test("multi-user policy survives document reloads and revalidates only multi-use
   assert.equal(requests, 1);
 });
 
-test("creating an account hides full access in peer tabs without a status request", (t) => {
+test("creating an account restricts the legacy full-access hint in peer tabs", (t) => {
   environment(t);
   globalThis.fetch = async () => {
     assert.fail("storage synchronization must not fetch status");
@@ -517,7 +517,7 @@ test("creating an account hides full access in peer tabs without a status reques
   assert.equal(handlers.size, 0);
 });
 
-test("a deactivated account keeps full access hidden while the form is back in single mode", async (t) => {
+test("a deactivated account keeps the legacy hint restricted in single mode", async (t) => {
   environment(t);
   window.localStorage.setItem("unsloth_chat_permission_mode", "full");
   const api = client();
@@ -559,7 +559,7 @@ test("a deactivated account keeps full access hidden while the form is back in s
   assert.equal(api.getFullAccessAllowed(), false);
 });
 
-test("a deactivated account hides full access in peer tabs without changing the login form", (t) => {
+test("a deactivated account restricts the legacy hint in peer tabs without changing the login form", (t) => {
   environment(t);
   const handlers = new Set<(event: Partial<StorageEvent>) => void>();
   window.addEventListener = ((

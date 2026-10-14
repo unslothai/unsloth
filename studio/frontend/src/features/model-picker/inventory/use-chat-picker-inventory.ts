@@ -16,7 +16,10 @@ import {
   useHubInventory,
 } from "@/features/hub";
 import { useMemo } from "react";
-import { allowedHiddenModelIdMatches } from "../components/model-selector/audio-picker-policy";
+import {
+  allowedHiddenModelIdMatches,
+  umbrellaFolderRowAllowed,
+} from "../components/model-selector/audio-picker-policy";
 import {
   type FamilyOverrideArtifactKind,
   taskOpaqueArtifactSupportsFamilyOverride,
@@ -24,6 +27,7 @@ import {
 
 const PICKER_LOCAL_SOURCES: ReadonlySet<LocalSource> = new Set([
   "lmstudio",
+  "omlx",
   "models_dir",
   "ollama",
   "hermes",
@@ -53,6 +57,7 @@ function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
     partial_resumable: row.partialResumable,
     task: row.task ?? null,
     audio_type: row.audioType ?? null,
+    audio_workflows: row.audioWorkflows ?? null,
     has_variant_state: row.hasVariantState ?? false,
   };
 }
@@ -117,6 +122,7 @@ export function useChatPickerInventory(
     kind: "models",
     enabled: options.enabled,
     includeLocal: true,
+    includeUmbrellaFolders: true,
   });
 
   const cachedGguf = useMemo(
@@ -126,6 +132,7 @@ export function useChatPickerInventory(
           (row) =>
             row.modelFormat === "gguf" &&
             isListableCachedRow(row) &&
+            umbrellaFolderRowAllowed(row, options.allowedHiddenModelIds) &&
             (!isHiddenModelId(row.repoId) ||
               allowedHiddenModelIdMatches(
                 options.allowedHiddenModelIds,

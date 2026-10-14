@@ -78,8 +78,7 @@ def test_the_refresh_caches_the_prequant_verdict(monkeypatch, supported):
 @pytest.mark.parametrize("loaded", [True, False])
 def test_a_cold_warm_resolves_it_once_a_load_has_loaded_the_stack(monkeypatch, loaded):
     """UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1 skips the warm refresh; a later load must still publish the bit."""
-    names = ("torch", "diffusers", "torchao", "core.inference.video")
-    for name in names:
+    for name in _STREAMING_MODULES:
         if loaded:
             monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
         else:
@@ -90,6 +89,46 @@ def test_a_cold_warm_resolves_it_once_a_load_has_loaded_the_stack(monkeypatch, l
     namespace["_refresh_quantised_streaming_capability"] = lambda: calls.append(1) or True
     assert namespace["_quantised_streaming"]() is loaded
     assert calls == ([1] if loaded else [])
+
+
+def test_an_image_load_alone_resolves_it(monkeypatch):
+    """An early image load makes the post-warm probe stand down and never loads core.inference.video,
+    so requiring it kept the streamed tier hidden for the rest of the process."""
+    for name in _STREAMING_MODULES:
+        monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
+    monkeypatch.delitem(sys.modules, "core.inference.video", raising = False)
+    namespace: dict = {"_quantised_streaming_capability": None, "sys": sys}
+    exec(_src("_quantised_streaming"), namespace)  # noqa: S102
+    namespace["_refresh_quantised_streaming_capability"] = lambda: True
+    assert namespace["_quantised_streaming"]() is True
+
+
+_STREAMING_MODULES = (
+    "torch",
+    "torchao",
+    "diffusers",
+    "diffusers.hooks",
+    "diffusers.hooks.group_offloading",
+)
+
+
+@pytest.mark.parametrize("half_built", _STREAMING_MODULES)
+def test_the_poll_waits_until_a_loads_import_has_finished(monkeypatch, half_built):
+    """Probing while a load still imports diffusers failed that load ("Failed to import
+    diffusers.loaders.peft"), so a module still initialising defers the refresh."""
+    for name in _STREAMING_MODULES:
+        module = types.ModuleType(name)
+        module.__spec__ = types.SimpleNamespace(_initializing = name == half_built)
+        monkeypatch.setitem(sys.modules, name, module)
+    calls: list = []
+    namespace: dict = {"_quantised_streaming_capability": None, "sys": sys}
+    exec(_src("_quantised_streaming"), namespace)  # noqa: S102
+    namespace["_refresh_quantised_streaming_capability"] = lambda: calls.append(1) or True
+    assert namespace["_quantised_streaming"]() is False
+    assert calls == []
+    sys.modules[half_built].__spec__._initializing = False
+    assert namespace["_quantised_streaming"]() is True
+    assert calls == [1]
 
 
 def test_a_mixed_host_offers_the_tier_only_when_every_card_qualifies(monkeypatch):

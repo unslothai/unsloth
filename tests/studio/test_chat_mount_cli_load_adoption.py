@@ -318,6 +318,7 @@ def _run(script_body: str) -> dict:
             ggufContextLength: null,
             models: [],
             loras: [],
+            loadedModels: [],
             ...over,
           };
         }
