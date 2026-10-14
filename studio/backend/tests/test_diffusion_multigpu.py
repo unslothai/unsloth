@@ -888,7 +888,10 @@ def test_portability_looks_inside_captured_containers():
     holder = {"m": torch.nn.Linear(1, 1)}
     assert not mg._portable(lambda m, a: holder)
     plain = {"scale": 2.0}
-    assert mg._portable(lambda m, a: plain)
+    # even scalar-only containers are shared mutable state between the source and the replica
+    assert not mg._portable(lambda m, a: plain)
+    frozen = ("scale", 2.0)
+    assert mg._portable(lambda m, a: frozen)
 
 
 class _BlockDit(torch.nn.Module):
@@ -1068,3 +1071,18 @@ def test_post_load_split_keeps_the_original_plan_as_fallback(monkeypatch):
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         refined = mg.refine_plan_for_multigpu(object(), plan)
     assert refined.fallback_plan is plan
+
+
+def test_hook_with_a_mutable_closure_counter_is_declined():
+    # The two branches run concurrently, and deepcopy keeps the hook function (and its closure) shared.
+    dit = _Dit()
+    counter = [0]
+
+    def count(module, args):
+        counter[0] += 1
+
+    dit.proj.register_forward_pre_hook(count)
+    assert "proj._forward_pre_hooks" in mg._hooks_present(dit)
+    router, replicas = _router(dit)
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    assert replicas == [] and "hooks" in router.describe()["disabled_reason"]

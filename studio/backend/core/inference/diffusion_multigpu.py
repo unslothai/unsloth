@@ -986,6 +986,23 @@ def _registry_kind(sub: Any) -> str:
     return "offload" if set(hooks) <= _OFFLOAD_REGISTRY_HOOKS else "other"
 
 
+def _immutable_capture(value: Any, depth: int) -> bool:
+    """A closure cell a replica may share with its source. deepcopy keeps a function (and so its closure) as the same
+    object, and the two branches call it concurrently, so only values nobody can mutate qualify: scalars, strings,
+    dtypes / devices, tuples / frozensets of those, and plain functions whose own captures qualify. A list, dict, set,
+    tensor, bound method or arbitrary object (a counter, a cache) would be shared state."""
+    torch = _torch()
+    if depth > 3:
+        return False
+    if isinstance(value, (str, bytes, int, float, complex, bool, type(None), torch.dtype, torch.device, type)):
+        return True
+    if isinstance(value, (tuple, frozenset)):
+        return all(_immutable_capture(v, depth + 1) for v in value)
+    if isinstance(value, types.FunctionType):
+        return _portable(value, depth)
+    return False
+
+
 def _portable(fn: Any, depth: int = 0) -> bool:
     """True when a hook / forward override can be shared by a copy of its module: nothing it captures (closure cells,
     bound ``self``, partial arguments, the attributes of a captured object) is a module or a CUDA tensor, which would
@@ -1016,7 +1033,7 @@ def _portable(fn: Any, depth: int = 0) -> bool:
                 value = cell.cell_contents
             except ValueError:  # empty cell
                 continue
-            if not _portable(value, depth + 1):
+            if not _immutable_capture(value, depth + 1):
                 return False
         return True
     partial_func = getattr(fn, "func", None)
