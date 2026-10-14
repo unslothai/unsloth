@@ -929,6 +929,68 @@ def test_docx_keeps_multilevel_list_numbers(tmp_path):
     )
 
 
+def test_docx_list_numbers_count_placeholders_and_survive_huge_starts(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    numbering = document.part.numbering_part.element
+    for num_id, start in ((91, "1"), (92, "9" * 4300)):
+        numbering.append(
+            parse_xml(
+                f'<w:abstractNum {_DOCX_XMLNS} w:abstractNumId="{num_id}"><w:lvl w:ilvl="0">'
+                f'<w:start w:val="{start}"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/>'
+                "</w:lvl></w:abstractNum>"
+            )
+        )
+        numbering.append(
+            parse_xml(f'<w:num {_DOCX_XMLNS} w:numId="{num_id}"><w:abstractNumId w:val="{num_id}"/></w:num>')
+        )
+
+    def item(num_id, text):
+        return f'<w:p><w:pPr><w:numPr><w:numId w:val="{num_id}"/></w:numPr></w:pPr>{_r(text)}</w:p>'
+
+    placeholder = (
+        "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr>"
+        f"<w:sdtContent>{item(91, 'Click here')}</w:sdtContent></w:sdt>"
+    )
+    body = item(91, "First") + placeholder + item(91, "Third") + item(92, "Big") + item(92, "Bigger")
+    section = document.element.body[-1]
+    for element in list(parse_xml(f"<w:body {_DOCX_XMLNS}>{body}</w:body>")):
+        section.addprevious(element)
+    path = tmp_path / "placeholder.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text.splitlines()[:2] == ["1. First", "3. Third"]
+    assert text.splitlines()[-1].endswith(" Bigger")
+
+
+def test_docx_with_unreadable_numbering_still_parses(tmp_path):
+    import zipfile
+
+    document, docx, parsers = _shared_setup_1()
+    document.add_paragraph("Hello body")
+    for clause in ("Rent", "Pets"):
+        document.add_paragraph(clause, style = "List Number")
+    source = tmp_path / "source.docx"
+    document.save(str(source))
+    path = tmp_path / "broken.docx"
+    with zipfile.ZipFile(source) as src, zipfile.ZipFile(path, "w") as dst:
+        for info in src.infolist():
+            data = src.read(info)
+            if info.filename == "word/numbering.xml":
+                data = b"<w:numbering broken"
+            elif info.filename == "[Content_Types].xml":
+                data = data.replace(
+                    b"application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml",
+                    b"application/octet-stream",
+                )
+            dst.writestr(info, data)
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "Hello body\nRent\nPets"
+
+
 def _parse_html(tmp_path, body):
     from core.rag import parsers
 
@@ -971,6 +1033,22 @@ def test_html_ordered_lists_keep_their_numbers(tmp_path):
     assert text == (
         "1. Unplug\n2. Wait\nNote\n4. Plug in\na. Left\ne. Right\n3. Three\n2. Two\n1. One"
     )
+
+
+def test_html_list_numbers_stay_in_their_cell(tmp_path):
+    text = _parse_html(
+        tmp_path, '<table><tr><td><ol><li><img src="x"></td><td>B</td></tr></table>'
+    )
+    assert text == "1. | B"
+
+
+def test_html_unclosed_lists_parse_in_linear_time(tmp_path):
+    import time
+
+    started = time.perf_counter()
+    text = _parse_html(tmp_path, "<ol>" * 20000 + "x" + "</p>" * 20000)
+    assert text == "x"
+    assert time.perf_counter() - started < 3
 
 
 def test_html_table_rows_keep_their_columns(tmp_path):

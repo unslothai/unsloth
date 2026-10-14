@@ -116,6 +116,7 @@ class _Stripper(HTMLParser):
         self._span_budget = span_budget
         self._deep = 0
         self._lists: list[tuple[str, dict | None, list]] = []
+        self._open_lists: dict[str, int] = {}
         self.labels: list[str] = []
         self.nonce = secrets.token_hex(4)
         self._label: str | None = None
@@ -124,6 +125,8 @@ class _Stripper(HTMLParser):
         return bool(self._tables) and not self._skip and not self._deep
 
     def _end_cell(self) -> None:
+        if self.out is not self._tables[-1].sink:
+            self._emit_label()
         self._flush()
         self.out = self._tables[-1].sink
 
@@ -201,6 +204,7 @@ class _Stripper(HTMLParser):
 
     def _end_list(self) -> str:
         tag, attrs, items = self._lists.pop()
+        self._open_lists[tag] -= 1
         if attrs is not None:
             backwards = "reversed" in attrs
             number = _html_int(attrs.get("start"))
@@ -262,6 +266,7 @@ class _Stripper(HTMLParser):
                 self._emit_label()
             if tag in _HTML_LIST_TAGS:
                 self._lists.append((tag, dict(attrs) if tag == "ol" else None, []))
+                self._open_lists[tag] = self._open_lists.get(tag, 0) + 1
             elif tag == "li" and self._lists and self._lists[-1][1] is not None:
                 attrs = dict(attrs)
                 item = (len(self.labels), _html_int(attrs.get("value")), attrs.get("type"))
@@ -299,7 +304,7 @@ class _Stripper(HTMLParser):
                 self._deep -= 1
             if tag in _HTML_PRE_TAGS and self._pre:
                 self._pre -= 1
-            if any(entry[0] == tag for entry in self._lists):
+            if self._open_lists.get(tag):
                 self._emit_label()
                 while self._end_list() != tag:
                     pass
@@ -891,7 +896,7 @@ def _docx_paragraph_text(paragraph) -> str:
 
 def _docx_int(value) -> int:
     try:
-        return int(value or 0)
+        return max(-(10**18), min(int(value or 0), 10**18))
     except ValueError:
         return 0
 
@@ -909,7 +914,9 @@ def _docx_number_lists(document) -> None:
             ),
             None,
         )
-        return None if part is None else parse_xml(part.blob)
+        if part is None:
+            return None
+        return part.element if hasattr(part, "element") else parse_xml(part.blob)
 
     def val(node, name):
         child = None if node is None else node.find(_W + name)
@@ -1053,6 +1060,9 @@ def _docx_number_lists(document) -> None:
     budget = 1 << 20
     for p in body.iter(_W + "p"):
         if _docx_inside(p, body, hidden):
+            # Word still counts a numbered paragraph that only holds placeholder text.
+            if not any(node.tag in hidden for node in p.iterancestors()):
+                label(p.find(_W + "pPr"))
             continue
         p_pr = p.find(_W + "pPr")
         value = label(p_pr)
@@ -1149,7 +1159,10 @@ def _docx(path: str) -> list[Page]:
     document = _open_word(path)
     lines: list[str] = []
     _docx_unwrap_table_controls(document.element.body)
-    _docx_number_lists(document)
+    try:
+        _docx_number_lists(document)
+    except Exception as exc:
+        logger.warning("Could not number lists in %s: %s", os.path.basename(path), exc)
     label_notes = _docx_mark_notes(document)
     # Walk body content in document order: paragraphs alone drop tables entirely.
     for block in _docx_blocks(document.element.body, document):
