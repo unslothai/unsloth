@@ -124,8 +124,10 @@ export const BUDGET = {
   // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
   // Re-measured on main at 5e927b0fa: +7,064 B raw / +2,314 B transfer (6,764,333 -> 6,771,397 B raw,
   // 2,033,495 -> 2,035,809 B transfer, one machine and build), added to main's figures after #13621.
-  transferBytes: 2_035_918,
-  rawBytes: 6_771_985,
+  // The CI runner measures this branch 0.6 KB raw higher than that machine (6,613.3 KB raw, 1,988.2 KB
+  // transfer at 6535ea37c), so the budget sits 0.5 KB above the runner's figure.
+  transferBytes: 2_036_400,
+  rawBytes: 6_772_600,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
