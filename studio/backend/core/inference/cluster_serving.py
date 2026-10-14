@@ -568,6 +568,10 @@ class ClusterServing:
             self.topology, self.reason = "single", f"the caller set {placed}; placement is theirs"
             return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, effective, ss)
+        forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
+        if forced == "single":
+            self.topology, self.reason = "single", f"forced by {ENV_TOPOLOGY}=single"
+            return request
         if model_bytes is None:
             # Not a GGUF this can size (safetensors, diffusion, an unknown repo): nothing to split,
             # so no worker is started for it.
@@ -623,11 +627,12 @@ class ClusterServing:
             if failed:
                 self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
-        forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         plan = plan_cluster(model_bytes, kv_bytes, local_extra, devices, forced = forced)
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
+            # The route refuses before any load starts, so no after_load / load_failed follows.
+            self._pre_load, self.in_flight = None, False
             self.last_error = plan.reason
             raise ss.SparkLoadDoesNotFit(plan.reason)
         self.topology, self.reason = plan.topology, plan.reason

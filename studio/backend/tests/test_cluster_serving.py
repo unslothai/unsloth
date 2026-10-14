@@ -900,3 +900,26 @@ def test_no_worker_is_started_for_a_model_that_is_not_a_sizable_gguf(monkeypatch
     request = _request(model_path = "org/some-safetensors-model")
     assert run(ss.before_load(request, 4)) is request
     assert started == []
+
+
+def test_a_refused_plan_leaves_nothing_in_flight(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 900 * GIB)
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 4))
+    assert cs.state().in_flight is False and cs.state()._pre_load is None
+
+
+def test_forced_single_starts_and_probes_nothing(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_TOPOLOGY, "single")
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    started = []
+
+    async def fake_ssh(target, remote, **kw):
+        started.append(target)
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert started == [] and seen == []
