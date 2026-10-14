@@ -55,46 +55,54 @@ function startsLikeVariable(text: string, at: number): boolean {
 }
 
 const MAX_SHELL_EXPANSION_SPAN = 4096;
-const MAX_SHELL_QUOTE_CONTEXT = 256;
+const SHELL_QUOTE_CONTEXT_CANDIDATE_RE = /\$(?:["'!?]|\[)/;
 
-function shellQuoteAt(text: string, at: number): number {
-  const lineStart = text.lastIndexOf("\n", at - 1) + 1;
-  const start = Math.max(lineStart, at - MAX_SHELL_QUOTE_CONTEXT);
+function findShellQuoteStates(text: string): Map<number, number> {
+  const states = new Map<number, number>();
   let quote = 0;
-  for (let index = start; index < at; index++) {
+  for (let index = 0; index < text.length; index++) {
     const char = text.charCodeAt(index);
+    if (char === 36) states.set(index, quote);
     if (char === 92 && quote !== 39) {
       index++;
     } else if (quote === 0 && (char === 34 || char === 39)) {
+      if (char === 39 && isWordChar(text.charCodeAt(index - 1))) {
+        continue;
+      }
       quote = char;
     } else if (char === quote) {
       quote = 0;
     }
   }
-  return quote;
+  return states;
+}
+
+function startsLegacyArithmetic(
+  text: string,
+  at: number,
+  quote: number,
+): boolean {
+  if (quote !== 0) return true;
+  const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
+  const close = text.indexOf("]", at + 1);
+  if (close === -1 || close >= limit || text[at + 1] === "^") return false;
+  if (text[close + 1] === "(") return false;
+  return /[+\-*/%<>&|=~?:()]/.test(text.slice(at + 1, close));
 }
 
 /** valid Bash expansion starts after `$`, disambiguated from prose punctuation and closing quotes. */
 function startsShellExpansion(
   text: string,
   at: number,
-  numericOffset: number,
+  quote: number,
 ): boolean {
   if (at >= text.length) return false;
   const char = text.charCodeAt(at);
-  if (char === 34 || char === 39) {
-    return shellQuoteAt(text, numericOffset) !== char;
-  }
-  if ("*@#?-!".includes(text[at])) {
-    return shellQuoteAt(text, numericOffset) !== 0;
-  }
-  return (
-    isWordChar(char) ||
-    char === 123 ||
-    char === 40 ||
-    char === 91 ||
-    char === 36
-  );
+  if (char === 34 || char === 39) return quote !== char;
+  if (char === 33 || char === 63) return quote !== 0;
+  if (char === 91) return startsLegacyArithmetic(text, at, quote);
+  if (char === 42 || char === 64 || char === 35 || char === 45) return true;
+  return isWordChar(char) || char === 123 || char === 40 || char === 36;
 }
 
 function numericShellParameterStart(text: string, at: number): number {
@@ -630,6 +638,7 @@ function hasInlineMathCloser(
   content: string,
   offset: number,
   mathRegions: Array<[number, number]>,
+  shellQuoteStates: Map<number, number>,
   isStreaming: boolean,
 ): boolean {
   const maxSpan = 200;
@@ -652,7 +661,10 @@ function hasInlineMathCloser(
     const body = content.slice(offset + 1, i);
     if (BARE_NUMBER_RE.test(body)) {
       if (isStreaming && i + 1 === content.length) return false;
-      if (!startsShellExpansion(content, i + 1, offset)) return true;
+      if (
+        !startsShellExpansion(content, i + 1, shellQuoteStates.get(offset) ?? 0)
+      )
+        return true;
     }
     if (offset >= 2) {
       const op = content[offset - 1];
@@ -822,6 +834,9 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
       : [],
   );
   const rawTextRegions = findRawTextRegions(text);
+  const shellQuoteStates = SHELL_QUOTE_CONTEXT_CANDIDATE_RE.test(text)
+    ? findShellQuoteStates(text)
+    : new Map<number, number>();
   const inCode = regionCursor(codeRegions);
   const inLink = regionCursor(linkRegions);
   const inMath = regionCursor(mathRegions);
@@ -849,7 +864,13 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     const currency = digit >= 0 && digit <= 9 && CURRENCY_REGEX.test(text);
     if (
       currency &&
-      !hasInlineMathCloser(text, offset, mathRegions, isStreaming)
+      !hasInlineMathCloser(
+        text,
+        offset,
+        mathRegions,
+        shellQuoteStates,
+        isStreaming,
+      )
     ) {
       return "\\$";
     }
@@ -904,7 +925,11 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     const numericOffset = numericShellParameterStart(text, offset);
     if (
       numericOffset !== -1 &&
-      startsShellExpansion(text, offset + 1, numericOffset) &&
+      startsShellExpansion(
+        text,
+        offset + 1,
+        shellQuoteStates.get(numericOffset) ?? 0,
+      ) &&
       !inCode(offset) &&
       !inLink(offset) &&
       !inMath(offset) &&

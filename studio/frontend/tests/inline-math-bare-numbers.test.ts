@@ -50,6 +50,10 @@ test("numbers written as inline maths render as maths", () => {
     ["The answer is $42$", ["42"]],
     ["The answer is $42$!", ["42"]],
     ["Is it $3$?", ["3"]],
+    ["It's $3$!", ["3"]],
+    ["Users' answer is $3$!", ["3"]],
+    ["The answer is $42$[source](https://example.com).", ["42"]],
+    ["The answer is $42$[^1].\n\n[^1]: Source.", ["42"]],
     ["Step 2: $8$ times $2$ is $16$.", ["8", "2", "16"]],
     [
       "Janet has $16$ eggs. She eats $3$ and bakes with $4$, so $16 - 3 - 4 = 9$ remain.",
@@ -103,6 +107,11 @@ test("a shell parameter right after a positional one stays text", () => {
     ['Run echo "$1$[n + 1]" to print both.', "$1$[n + 1]"],
     [`Run echo "$1$'value'" to print both.`, `$1$'value'`],
     [`Run echo '$1$"localized"' to print both.`, `$1$"localized"`],
+    ["Run echo $1$# to print both.", "$1$#"],
+    ["Run echo $1$@ to print both.", "$1$@"],
+    ["Run echo $1$* to print both.", "$1$*"],
+    ["Run echo $1$- to print both.", "$1$-"],
+    ["Run echo $1$[n+1] to print both.", "$1$[n+1]"],
   ]) {
     const html = render(source);
     assert.deepEqual(renderedMath(html), [], source);
@@ -135,6 +144,17 @@ test("a closing shell-word quote does not consume later Markdown", () => {
   const html = render(source);
   assert.deepEqual(renderedMath(html), ["1"]);
   assert.match(html, /data-streamdown="strong">then<\/span>/);
+});
+
+test("shell quote state carries across long and multiline words", () => {
+  for (const source of [
+    `echo "${"x".repeat(512)}$1$?"`,
+    `echo "first line\n${"x".repeat(512)}$1$?"`,
+  ]) {
+    const html = render(source);
+    assert.deepEqual(renderedMath(html), [], source);
+    assert.ok(visibleText(html).includes("$1$?"), source);
+  }
 });
 
 test("a trailing numeric closer stays literal while streaming", () => {
