@@ -14,7 +14,10 @@ test("a citation chip's page reaches the PDF view in the browser and the attachm
   assert.match(readSrc("features/browser/file-view.tsx"), /<DocumentView[^>]*pageTarget=\{pageTarget \?\? undefined\}/);
   assert.match(readSrc("components/assistant-ui/attachment-document-dialog.tsx"), /<DocumentView[^>]*pageTarget=\{pageTarget\}/);
   assert.match(readSrc("components/file-viewer/document-view.tsx"), /<PdfView[^>]*pageTarget=\{pageTarget\}/);
-  assert.match(readSrc("components/file-viewer/pdf-view.tsx"), /virtualizer\.scrollToIndex\(/);
+  const pdfView = readSrc("components/file-viewer/pdf-view.tsx");
+  assert.match(pdfView, /virtualizer\.scrollToIndex\([^;]*;\s*onApplied\?\.\(target\)/);
+  // Input while the document loads keeps the target: only one already shown is let go.
+  assert.match(pdfView, /if \(applied\.current === pending\) setPending\(undefined\)/);
 });
 
 test("thread cards and Sources chips carry no page, so they open at the first", () => {

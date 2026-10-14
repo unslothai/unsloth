@@ -167,6 +167,7 @@ function PdfPages({
   aspect,
   scrollElement,
   target,
+  onApplied,
 }: {
   pdf: PdfDocument;
   pages: number;
@@ -174,6 +175,7 @@ function PdfPages({
   aspect: number;
   scrollElement: HTMLElement | null;
   target?: PageTarget;
+  onApplied?: (target: PageTarget) => void;
 }) {
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
@@ -185,8 +187,10 @@ function PdfPages({
     overscan: 2,
   });
   useEffect(() => {
-    if (target) virtualizer.scrollToIndex(Math.max(0, Math.min(target.page, pages) - 1), { align: "start" });
-  }, [target, pages, virtualizer]);
+    if (!target) return;
+    virtualizer.scrollToIndex(Math.max(0, Math.min(target.page, pages) - 1), { align: "start" });
+    onApplied?.(target);
+  }, [target, pages, virtualizer, onApplied]);
   return (
     <div className="relative mx-auto" style={{ width, height: virtualizer.getTotalSize() }}>
       {virtualizer.getVirtualItems().map((item) => (
@@ -255,14 +259,23 @@ export default function PdfView({
   const slot = useParseSlot(firstPageOnly, file);
   const pdfWorker = usePdfWorker(slot.ready && failed !== file);
   const options = useMemo(() => (pdfWorker ? { ...PDF_OPTIONS, worker: pdfWorker.worker } : null), [pdfWorker]);
-  // Held until the reader scrolls, so the remounts as the width and page size settle land on it too.
+  // Held until the reader scrolls after it was shown, so the remounts as the width and page size
+  // settle land on it too, and input while the document loads doesn't drop it.
   const [pending, setPending] = useState(pageTarget);
+  const applied = useRef<PageTarget | undefined>(undefined);
+  const onApplied = useCallback((target: PageTarget) => {
+    applied.current = target;
+  }, []);
   const [asked, setAsked] = useState(pageTarget);
   if (pageTarget !== asked) {
     setAsked(pageTarget);
     setPending(pageTarget);
   }
-  const release = pending ? () => setPending(undefined) : undefined;
+  const release = pending
+    ? () => {
+        if (applied.current === pending) setPending(undefined);
+      }
+    : undefined;
 
   if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
@@ -305,6 +318,7 @@ export default function PdfView({
             aspect={aspect}
             scrollElement={container}
             target={firstPageOnly ? undefined : pending}
+            onApplied={onApplied}
           />
         )}
         {available > 0 && pdf && !firstPageOnly && pages > MAX_PDF_PAGES && (

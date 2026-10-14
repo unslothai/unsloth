@@ -62,6 +62,20 @@ test("a cited page reaches the browser's file view", async () => {
   assert.deepEqual(opened, [{ name: "handbook.pdf", size: LIMIT, page: 3 }]);
 });
 
+test("two quick clicks on one document open the later one, whichever download finishes first", async () => {
+  toasts.length = 0;
+  opened.length = 0;
+  const delays = [40, 5];
+  globalThis.fetch = (async () => {
+    await new Promise((resolve) => setTimeout(resolve, delays.shift()));
+    return { ok: true, headers: new Headers(), blob: async () => new Blob([new Uint8Array(LIMIT)]) };
+  }) as unknown as typeof fetch;
+  openRagDocumentInBrowser("doc-1", "handbook.pdf", 3);
+  openRagDocumentInBrowser("doc-1", "handbook.pdf", 5);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(opened, [{ name: "handbook.pdf", size: LIMIT, page: 5 }]);
+});
+
 test("past the limit the body is never buffered and the file is offered outside Studio", async () => {
   toasts.length = 0;
   opened.length = 0;
