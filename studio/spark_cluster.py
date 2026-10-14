@@ -1914,10 +1914,19 @@ def peer_destination(path: str) -> str:
 _VENV_MARKERS = ("bin/activate", "bin/activate.csh", "bin/activate.fish", "pyvenv.cfg")
 
 
+def _sh_home_path(path: str) -> str:
+    """``path`` quoted for the shell, with a leading ``$HOME`` left to expand on the peer."""
+    if path == "$HOME":
+        return '"$HOME"'
+    if path.startswith("$HOME/"):
+        return '"$HOME"/' + shlex.quote(path[len("$HOME/") :])
+    return shlex.quote(path)
+
+
 def venv_relocate_script(old_prefix: str, new_prefix: str) -> str:
     """Shell that repairs a venv copied to a different absolute path."""
     old = shlex.quote(old_prefix.rstrip("/"))
-    new = shlex.quote(new_prefix.rstrip("/"))
+    new = _sh_home_path(new_prefix.rstrip("/"))
     files = " ".join(shlex.quote(m) for m in _VENV_MARKERS)
     return (
         "set -eu\n"
@@ -5106,7 +5115,12 @@ def run_pipeline(plan: Dict[str, Any], log_peer: str = "/tmp/unsloth_pp_stage1.l
         shutil.rmtree(osp.join(osp.expanduser(local_save), "stage1"), ignore_errors = True)
     # Not `exec`: the status has to be recorded after the stage exits, and a group leader is already
     # what `setsid` gives us, so the negative kill still takes the children.
-    inner = f"[ -f {activate} ] && . {activate}; {env}; {node1}; " f"echo $? > {_PEER_STAGE_RC}"
+    # Without the venv, rank 1 would run whatever torch the peer's PATH has.
+    inner = (
+        f"if [ -f {activate} ] && . {activate}; then {env}; {node1}; echo $? > {_PEER_STAGE_RC}; "
+        f"else echo 'the Unsloth venv on this node could not be activated; run "
+        f"`unsloth spark provision` first' >&2; echo 97 > {_PEER_STAGE_RC}; fi"
+    )
     remote = (
         f'cd "$HOME" && rm -f {_PEER_STAGE_RC} {_PEER_STAGE_PID}; '
         f"setsid nohup bash -c {shlex.quote(inner)} "

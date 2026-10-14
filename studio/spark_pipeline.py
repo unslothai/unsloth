@@ -161,23 +161,37 @@ def has_conditional_experts(config) -> bool:
     return False
 
 
+# Gated-delta linear attention in Qwen3-Next / Qwen3.5 hybrids, as unsloth/models/decision.py
+# targets them: their layers also carry the Llama MLP names, so these must be added, not inferred.
+LORA_TARGETS_HYBRID_ATTENTION = ("in_proj_qkvz", "in_proj_qkv", "in_proj_z", "out_proj")
+# Phi-3 fuses q/k/v and gate/up while keeping the Llama o_proj / down_proj names.
+LORA_TARGETS_FUSED = ("qkv_proj", "gate_up_proj")
+
+
 def lora_target_modules(model) -> List[str]:
     """The projection names to attach LoRA to, read off THIS model's decoder layers."""
     import torch.nn as nn
 
+    projections = (nn.Linear,)
+    try:
+        from transformers.pytorch_utils import Conv1D  # GPT-2's c_attn / c_proj / c_fc
+        projections += (Conv1D,)
+    except Exception:
+        pass
     _, layers = find_layers(model)
     names = set()
     for layer in layers:
         for name, mod in layer.named_modules():
-            if isinstance(mod, nn.Linear):
+            if isinstance(mod, projections):
                 names.add(name.rsplit(".", 1)[-1])
     keep = [n for n in LORA_TARGETS_LLAMA if n in names]
     if keep:
-        return keep
+        extra = LORA_TARGETS_FUSED + LORA_TARGETS_HYBRID_ATTENTION
+        return keep + [n for n in extra if n in names]
     if names:
         return sorted(names)
     raise RuntimeError(
-        "no nn.Linear modules were found inside this model's decoder layers, so there is "
+        "no linear projections were found inside this model's decoder layers, so there is "
         "nothing for LoRA to attach to. Train with --full-finetune, or use a model whose "
         "layers hold ordinary linear projections."
     )
@@ -297,6 +311,19 @@ def torch_pp_plan(
         )
     if microbatches < 1:
         raise RuntimeError(f"--microbatches must be >= 1 (got {microbatches})")
+    # Upstream's own constructor checks, here so they fail before a model is loaded.
+    if class_name in ("GPipe", "1F1B") and microbatches < num_stages:
+        raise RuntimeError(
+            f"--schedule {schedule} needs --microbatches >= the number of stages "
+            f"({microbatches} < {num_stages}); torch >= 2.9 refuses fewer."
+        )
+    if class_name in ("Interleaved1F1B", "InterleavedZeroBubble"):
+        rounds = max(1, microbatches // world)
+        if microbatches % rounds:
+            raise RuntimeError(
+                f"--schedule {schedule} needs --microbatches to be a multiple of "
+                f"{rounds} (microbatches // ranks); got {microbatches}."
+            )
 
     mapping = stage_to_rank_map(world, num_stages, style)
     layers_of = {i: stage_layers(n_layers, i, num_stages) for i in range(num_stages)}
@@ -1458,6 +1485,9 @@ def build_torch_schedule(
         # Merged logits are `batch x seq x vocab` in fp32, tens of GiB on the loss rank for a tensor
         # nobody reads.
         step_kw["return_outputs"] = False
+    else:
+        # torch <= 2.9 always merges them in step(); the result is discarded, so skip the copy.
+        schedule._merge_outputs = lambda output_chunks: None
 
     def scale_grads_after_step():
         """Upstream's `PipelineStage.scale_grads` for the versions that do not have it."""
@@ -2189,7 +2219,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             f"(currently {args.microbatches})."
         )
 
-    # Fewer microbatches than stages never fills the pipeline: correct, just wasteful.
+    # Fewer microbatches than stages never fills the pipeline: correct, just wasteful (the torch
+    # backend has already refused it for the schedules upstream rejects).
     if args.microbatches < world:
         log(
             f"WARNING: --microbatches ({args.microbatches}) is below the pipeline depth "
