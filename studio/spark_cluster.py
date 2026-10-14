@@ -3810,6 +3810,17 @@ def model_dimensions(target: str) -> Optional[Dict[str, int]]:
     return {"layers": layers, "hidden": hidden, "vocab": vocab}
 
 
+def _pipeline_retains_outputs() -> bool:
+    """Whether this torch's pipeline step keeps all last-stage outputs (no ``return_outputs``)."""
+    try:
+        import inspect
+
+        from torch.distributed.pipelining.schedules import PipelineScheduleSingle
+        return "return_outputs" not in inspect.signature(PipelineScheduleSingle.step).parameters
+    except Exception:
+        return True
+
+
 def training_memory_estimate(
     size_gib: float,
     world: int,
@@ -3821,8 +3832,11 @@ def training_memory_estimate(
     layers: int,
     vocab: int,
     checkpointed: bool = True,
+    retains_outputs: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Per-node memory for a layer-split training step, before it is attempted."""
+    if retains_outputs is None:
+        retains_outputs = _pipeline_retains_outputs()
     weights = size_gib / world
     optimizer_full = weights * 6.0
     optimizer_lora = weights * 0.02
@@ -3834,6 +3848,9 @@ def training_memory_estimate(
     if not checkpointed:
         activations *= 4.0  # attention + MLP intermediates kept for the backward pass
     logits_gib = (mb_rows * seq * vocab * 4 / 2**30) * live_microbatches * 2
+    if retains_outputs:
+        # torch <= 2.9 keeps every microbatch's bf16 logits on the last stage until step() ends.
+        logits_gib += mb_rows * seq * vocab * 2 / 2**30 * microbatches
     activations_last_stage = activations + logits_gib
     budget = SPARK_USABLE_GIB - 6.0  # driver, CUDA context, fragmentation
     worst_activations = max(activations, activations_last_stage)
