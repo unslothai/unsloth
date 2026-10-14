@@ -13,7 +13,7 @@ import { callNative, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, currentEntry, useBrowserStore } from "../store";
-import { askUser, setActiveAction, useBrowserAgentStore } from "./agent-store";
+import { type Answer, askUser, setActiveAction, useBrowserAgentStore } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
@@ -105,6 +105,7 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
 const knownHosts = new Set<string>();
 const reachedHosts = new Set<string>();
 const opaqueHosts = new Set<string>();
+const alwaysAllowed = new Set<string>();
 let pageLinks = new Set<string>();
 let scope: string | undefined;
 // Where the agent's own moves in this chat landed: a native view's Back or Forward doesn't say where
@@ -117,6 +118,7 @@ function enterScope(next: string | undefined): void {
   knownHosts.clear();
   reachedHosts.clear();
   opaqueHosts.clear();
+  alwaysAllowed.clear();
   pageLinks = new Set();
   trail = [];
   at = -1;
@@ -417,11 +419,15 @@ const DECLINED: Record<Question["ask"], string> = {
   pointer: "clicking where the page doesn't say what is there",
 };
 
-/** Questions show in the panel's agent bar, so the panel has to be on screen to ask. */
-function askInPanel(question: Question, signal?: AbortSignal): Promise<boolean> {
+/** Questions show in the panel's agent bar, so the panel has to be on screen to ask. A script is asked every time. */
+async function askInPanel(question: Question, signal?: AbortSignal): Promise<Answer> {
+  const key = `${question.ask}\n${question.host}`;
+  if (question.ask !== "script" && alwaysAllowed.has(key)) return "always";
   const store = useBrowserStore.getState();
   if (!store.open) store.openPanel();
-  return askUser(question, signal);
+  const answer = await askUser(question, signal);
+  if (answer === "always" && question.ask !== "script") alwaysAllowed.add(key);
+  return answer;
 }
 
 async function observe(tab: BrowserTab, context: ActionContext, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {

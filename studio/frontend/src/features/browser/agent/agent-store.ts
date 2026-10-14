@@ -17,6 +17,8 @@ import {
 } from "./permissions";
 
 export type AgentPrompt = Question & { id: number };
+/** `always`: allowed, and not asked again for this kind of action on this site in this chat. */
+export type Answer = false | "once" | "always";
 
 type BrowserAgentState = {
   /** The composer's Browser tool: offer the model the browser tools. */
@@ -91,18 +93,18 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
   ),
 );
 
-const answers = new Map<number, (allow: boolean) => void>();
+const answers = new Map<number, (answer: Answer) => void>();
 let nextQuestion = 1;
 
 /** Ask the user in the agent bar; false when they decline or the run ends first. */
-export function askUser(question: Question, signal?: AbortSignal): Promise<boolean> {
+export function askUser(question: Question, signal?: AbortSignal): Promise<Answer> {
   return new Promise((resolve) => {
     const id = nextQuestion++;
-    const finish = (allow: boolean) => {
+    const finish = (answer: Answer) => {
       answers.delete(id);
       signal?.removeEventListener("abort", onAbort);
       if (useBrowserAgentStore.getState().question?.id === id) useBrowserAgentStore.setState({ question: null });
-      resolve(allow);
+      resolve(answer);
     };
     const onAbort = () => finish(false);
     if (signal?.aborted) {
@@ -118,8 +120,8 @@ export function askUser(question: Question, signal?: AbortSignal): Promise<boole
   });
 }
 
-export function answerQuestion(id: number, allow: boolean): void {
-  answers.get(id)?.(allow);
+export function answerQuestion(id: number, allow: boolean, always = false): void {
+  answers.get(id)?.(allow && (always ? "always" : "once"));
 }
 
 const DOWNLOAD_STRICTNESS: Record<DownloadsRule, number> = { allow: 0, ask: 1, block: 2 };
