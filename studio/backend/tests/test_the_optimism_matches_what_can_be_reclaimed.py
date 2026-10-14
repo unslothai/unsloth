@@ -292,8 +292,13 @@ class TestAdmissionReadsTheCacheAfresh:
 
         async def _drive():
             started = asyncio.get_event_loop().time()
-            await inference_route._refresh_residency_before_planning_async(controller)
-            return asyncio.get_event_loop().time() - started
+            try:
+                await inference_route._refresh_residency_before_planning_async(controller)
+                return asyncio.get_event_loop().time() - started
+            finally:
+                # Released before asyncio.run joins the default executor, whose thread
+                # is still in the probe; after it, the join waits out its 300 s timeout.
+                released.set()
 
         try:
             waited = asyncio.run(_drive())
