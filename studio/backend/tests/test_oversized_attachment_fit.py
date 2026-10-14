@@ -209,3 +209,19 @@ def test_a_long_paste_is_cut_inside_its_own_wrapper():
     assert text.count("<pasted_text name=") == text.count("</pasted_text>") == 1
     excerpt = text.split("bytes=110000>\n", 1)[1].split("\n</pasted_text>", 1)[0]
     assert f"only its first {len(excerpt.split(chr(10)))} of 2000 lines are above" in text
+
+
+def test_document_annotations_are_cut_inside_their_wrapper():
+    wrapped = f'<document_annotations file="notes.pdf">\n{LINES}\n</document_annotations>'
+    text = _fit(_messages(body = wrapped))[-1]["content"]
+
+    assert text.count("<document_annotations") == text.count("</document_annotations>") == 1
+
+
+def test_a_file_that_fits_the_budget_is_not_trimmed_by_the_margin():
+    # Between 87.5% and 100% of the prompt budget (1536): fits as sent.
+    lines = "".join(f"row {i:04d} ok\n" for i in range(1, 450)).rstrip("\n")
+    messages = _messages(body = attachment(lines))
+    assert 0.875 * 1536 < count(messages) <= 1536
+
+    assert _fit(copy.deepcopy(messages)) == messages

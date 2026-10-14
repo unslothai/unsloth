@@ -938,8 +938,9 @@ _SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
     r"\[(?P<name>[^\n]*?): its text is below, so answer from it\. For calculations, the python tool has the "
     r'file at path = (?P<path>"(?:[^"\\\n]|\\.)*")(?:;[^\n]*)?\]\n'
 )
-# attachmentContentText (pasted-text.ts) wraps a file or a paste; the cut goes inside so the markup stays balanced.
-_ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>attachment|pasted_text) name=[^\n]*>\n")
+# The frontend wraps inlined text in a tag (attachment, pasted_text, document_annotations); the cut goes inside so
+# the markup stays balanced.
+_ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>[A-Za-z_][\w-]*)(?:\s[^\n]*)?>\n")
 # Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
 _ATTACHMENT_FIT_MARGIN = 0.125
 
@@ -1052,8 +1053,10 @@ def fit_oversized_attachments(
     ]
     if not attached:
         return messages
-    target = int(prompt_budget(context_length, max_tokens) * (1 - _ATTACHMENT_FIT_MARGIN))
-    if count_tokens(messages) <= target:
+    budget = prompt_budget(context_length, max_tokens)
+    # The margin sizes a cut; it never decides one, or a file that fits would lose its end.
+    target = int(budget * (1 - _ATTACHMENT_FIT_MARGIN))
+    if count_tokens(messages) <= budget:
         return messages
     latest = max(index for index, message in enumerate(messages) if message.get("role") == "user")
     base = [message for message in messages if message.get("role") == "system"]
@@ -1062,11 +1065,11 @@ def fit_oversized_attachments(
         excerpt = index == latest
         longest = _attachment_body_chars(message)
 
-        def fits(keep_chars: int) -> bool:
+        def fits(keep_chars: int, limit: int = target) -> bool:
             content = _cut_content(message["content"], keep_chars, excerpt = excerpt)
-            return count_tokens([*base, {**message, "content": content}]) <= target
+            return count_tokens([*base, {**message, "content": content}]) <= limit
 
-        if fits(longest) or (excerpt and not fits(0)):
+        if fits(longest, budget) or (excerpt and not fits(0)):
             continue
         low, high = 0, longest
         while high - low > 64:
