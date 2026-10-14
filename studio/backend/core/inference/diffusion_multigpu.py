@@ -2156,10 +2156,17 @@ def install_cfg_parallel(
     CFG-batch (both branches through one forward, each streamed block uploaded once). Returns the CFG-parallel decline
     reason or None when it was armed. ``headroom_mib`` = the plan's denoise headroom (the batched call's extra need)."""
     reason = _install_cfg_parallel_only(pipe, offload_policy = offload_policy, logger = logger)
-    if reason is not None and multigpu_mode() != "off":
-        batch_reason = install_cfg_batch(
-            pipe, offload_policy = offload_policy, headroom_mib = headroom_mib, logger = logger
-        )
+    if (
+        reason is not None
+        and multigpu_mode() != "off"
+        and (offload_policy not in (None, "none") or cfg_batch_mode() == "force")
+    ):
+        try:
+            batch_reason = install_cfg_batch(
+                pipe, offload_policy = offload_policy, headroom_mib = headroom_mib, logger = logger
+            )
+        except Exception as exc:  # noqa: BLE001 - an optional lever never fails a load
+            batch_reason = f"{type(exc).__name__}: {exc}"
         if batch_reason is not None and logger is not None:
             logger.info("diffusion.multigpu: CFG-batch not armed (%s)", batch_reason)
     return reason
