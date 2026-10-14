@@ -524,6 +524,74 @@ def add_chunks(
     _remember_vec_rowids(conn, document_id, vec_rowids)
 
 
+def replace_document_vectors(
+    conn: sqlite3.Connection,
+    document_id: str,
+    stale_model: str | None,
+    chunk_ids: list[str],
+    vectors,
+    identity: str,
+    model_name: str,
+) -> bool:
+    """Swap a document's vectors in place and stamp ``identity``, keeping its id and chunk ids.
+
+    Writes only while the row is still the one that was encoded: present, still under
+    ``stale_model``, with the same chunks, and ``model_name`` still the configured model. A delete,
+    a re-upload, another re-embed or a model switch in between wins, and False is returned."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT scope, embedding_model FROM documents WHERE id=?", (document_id,)
+        ).fetchone()
+        current = [
+            r["id"]
+            for r in conn.execute(
+                "SELECT id FROM chunks WHERE document_id=? ORDER BY chunk_index", (document_id,)
+            )
+        ]
+        if (
+            row is None
+            or row["embedding_model"] != stale_model
+            or current != list(chunk_ids)
+            or len(vectors) != len(current)
+            or not current
+            # Under the write lock and uncached, so a switch in any process that has written since is
+            # seen: superseded vectors at another width would drop every row the new model wrote.
+            or config.effective_embedding_model(fresh = True) != model_name
+        ):
+            conn.rollback()
+            return False
+        scope = row["scope"]
+        rag_db.ensure_vec(conn, len(vectors[0]))
+        # One partition scan for the document's rows ('; sorts right after ':'), then delete by rowid.
+        stale_rowids = [
+            r["rowid"]
+            for r in conn.execute(
+                "SELECT rowid FROM chunks_vec WHERE scope=? AND chunk_id > ? AND chunk_id < ?",
+                (scope, f"{document_id}:", f"{document_id};"),
+            )
+        ]
+        for start in range(0, len(stale_rowids), _ID_BATCH):
+            batch = stale_rowids[start : start + _ID_BATCH]
+            conn.execute(
+                f"DELETE FROM chunks_vec WHERE rowid IN ({','.join('?' * len(batch))})", batch
+            )
+        rowids = [
+            conn.execute(
+                "INSERT INTO chunks_vec(scope, chunk_id, embedding) VALUES(?,?,?)",
+                (scope, chunk_id, _f32(vector)),
+            ).lastrowid
+            for chunk_id, vector in zip(current, vectors)
+        ]
+        conn.execute("UPDATE documents SET embedding_model=? WHERE id=?", (identity, document_id))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    _remember_vec_rowids(conn, document_id, rowids)
+    return True
+
+
 def delete_document(
     conn: sqlite3.Connection,
     document_id: str,

@@ -404,6 +404,14 @@ def test_pinning_a_model_memoizes_what_was_resolved_for_it(settings_store, monke
     assert ems.get_stored_backend("org/embedder-a") == "llama-server"
 
 
+def test_a_fresh_read_sees_a_save_from_another_process(settings_store):
+    ems.set_rag_embedding_model("org/first")
+    assert ems.get_rag_embedding_model() == "org/first"
+    settings_store[ems.EMBEDDING_MODEL_SETTING_KEY] = "org/second"  # no invalidation here
+    assert ems.get_rag_embedding_model() == "org/first"
+    assert rag_config.effective_embedding_model(fresh = True) == "org/second"
+
+
 def test_the_per_identity_cache_is_bounded(settings_store, monkeypatch):
     ems._cached.clear()
     ems._generation.clear()

@@ -253,8 +253,11 @@ def _get_stored_state() -> _StoredState:
     return value
 
 
-def get_rag_embedding_model() -> str:
-    """Effective embedding model: persisted override, else env/default."""
+def get_rag_embedding_model(fresh: bool = False) -> str:
+    """Effective embedding model: persisted override, else env/default. ``fresh`` skips the cache,
+    for a check that must see another process's save."""
+    if fresh:
+        _invalidate_cache()
     stored = _get_stored_state()
     model = stored[0] or default_embedding_model()
     # Reading this is how a job pins its model, so record the resolution here: the memo protects a pinned job only if it was populated before another model's save takes the stored record.
