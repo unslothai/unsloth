@@ -487,3 +487,89 @@ def test_ssh_takes_a_nodes_own_login_and_keeps_the_spark_one(monkeypatch):
     monkeypatch.setattr(ss, "_ssh_user", lambda: "studio")
     assert ss.ssh_argv("10.0.0.2", "true")[-2] == "studio@10.0.0.2"
     assert ss.ssh_argv("me@10.0.0.2", "true")[-2] == "me@10.0.0.2"
+
+
+def test_caller_placement_after_a_split_leaves_no_plan_to_count_as_resident(monkeypatch):
+    _cluster_env(monkeypatch)
+    run(ss.before_load(_request(), 4))
+    assert cs.state().plan.topology == "layer_split"
+    run(ss.before_load(_request(gpu_ids = [0]), 4))
+    assert cs.state().plan is None and cs.state().block == []
+    run(ss.after_load(SimpleNamespace(_process = SimpleNamespace(args = []), is_loaded = True), 4))
+    assert cs.state()._resident == {}
+
+
+def test_an_alongside_load_keeps_the_primarys_residency(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    held = dict(cs.state()._resident)
+    assert held
+    run(ss.before_load(_request(alongside = True), 4))
+    run(ss.after_load(SimpleNamespace(), 4))
+    assert cs.state()._resident == held
+    run(ss.before_load(_request(engine = "llama.cpp"), 4))
+    run(ss.after_load(SimpleNamespace(), 4))
+    assert cs.state()._resident == {}
+
+
+def test_an_environment_projector_replaces_the_automatic_one(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 80 * GIB)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"x")
+    sizes = {str(mmproj): 5 * GIB, "/models/auto-mmproj.gguf": 15 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 80 * GIB))
+    monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: "/models/auto-mmproj.gguf")
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(mmproj))
+    request = _request()
+    # 80 + 5 fits here; charging the automatic 15 as well would not.
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+
+
+def test_an_rpc_device_tied_to_no_worker_is_not_planned_with(monkeypatch):
+    listing = LISTING.replace("RPC1: 10.0.0.3:50052", "RPC1: some other build")
+    _cluster_env(monkeypatch, listing = listing)
+    monkeypatch.setattr(
+        cs,
+        "list_devices",
+        lambda binary, endpoints: (cs.parse_device_list(listing, endpoints), ""),
+    )
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert "could not tell which worker" in ss.status()["reason"]
+
+
+def test_an_uncached_hub_model_reserves_room_for_its_kv(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 85 * GIB)
+    run(ss.before_load(_request(max_seq_length = 131072), 4))
+    # 85 GiB of weights alone fits here; with the KV it might not, so it is split.
+    assert ss.status()["topology"] == "layer_split"
+    run(ss.before_load(_request(max_seq_length = 0), 4))
+    assert ss.status()["topology"] == "single"
+
+
+def test_removing_the_config_retires_the_workers_once_a_load_commits(monkeypatch):
+    stopped = []
+
+    class Worker:
+        alive = True
+
+        async def stop(self, timeout = 10.0):
+            stopped.append(1)
+
+    cs.state().workers["10.0.0.2:50052"] = Worker()
+    monkeypatch.setattr(ss, "is_spark", lambda: False)
+    run(ss.before_load(_request(alongside = True), 4))
+    run(ss.after_load(SimpleNamespace(), 4))
+    assert stopped == [], "an alongside load does not replace the model the workers serve"
+    run(ss.before_load(_request(), 4))
+    assert stopped == [], "nothing stops before the load commits"
+    run(ss.after_load(SimpleNamespace(), 4))
+    assert stopped == [1] and cs.state().workers == {}

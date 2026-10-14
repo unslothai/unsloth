@@ -3460,6 +3460,11 @@ async def before_load(
             inherited_extra_args = inherited_extra_args,
             cancel_event = cancel_event,
         )
+    if cluster_serving._STATE is not None and cluster_serving._STATE.workers:
+        # The cluster config is gone; its workers go once a load that replaces the model commits.
+        cluster_serving._STATE.retire_on_commit = not (
+            getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
+        )
     if not enabled():
         return request
     st = state()
@@ -3495,6 +3500,8 @@ async def after_load(
     if cluster_serving._STATE is not None and cluster_serving.configured():
         await cluster_serving._STATE.after_load(llama_backend)
         return False
+    if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
+        await cluster_serving._STATE.shutdown()
     if not enabled():
         return False
     st = state()

@@ -47,6 +47,9 @@ LAYER_ROUNDING_MARGIN = 0.05
 LIST_DEVICES_TIMEOUT_S = 60.0
 WORKER_START_TIMEOUT_S = 60.0
 REACH_TIMEOUT_S = 3.0
+# A Hub GGUF not downloaded yet has no header to price its KV from; reserve this share of the
+# weights for it rather than none.
+KV_UNKNOWN_FRACTION = 0.2
 
 _DEVICE_LINE = re.compile(r"^\s+(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]*$")
@@ -391,6 +394,9 @@ class ClusterServing:
         self.workers: Dict[str, Any] = {}  # endpoint -> spark_serving.PeerProcess
         self.last_error: str = ""
         self._passthrough: bool = False
+        self._alongside: bool = False
+        # Set when the config went away while workers run: the next committed load stops them.
+        self.retire_on_commit: bool = False
         self._pre_load: Optional[Tuple[str, str, Optional[ClusterPlan], List[str]]] = None
         self._cancel_event: Any = None
         # The backend serving the last committed plan; while it is loaded its buffers are still in
@@ -453,7 +459,11 @@ class ClusterServing:
             )
             await process.start()
             if not await ss.wait_for_own_port(
-                process, node.host, node.rpc_port, WORKER_START_TIMEOUT_S
+                process,
+                node.host,
+                node.rpc_port,
+                WORKER_START_TIMEOUT_S,
+                cancelled = self._cancelled,
             ):
                 tail = list(process.tail)[-3:]
                 await process.stop()
@@ -472,14 +482,17 @@ class ClusterServing:
         from core.inference import spark_serving as ss
 
         self._cancel_event = cancel_event
-        self._passthrough = (
-            bool(getattr(request, "alongside", False))
-            or bool(getattr(request, "force_alongside", False))
-            or str(getattr(request, "engine", "auto") or "auto") != "auto"
+        self._alongside = bool(getattr(request, "alongside", False)) or bool(
+            getattr(request, "force_alongside", False)
+        )
+        self._passthrough = self._alongside or (
+            str(getattr(request, "engine", "auto") or "auto") != "auto"
         )
         if self._passthrough:
             return request
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
+        # Every return below that does not plan leaves no plan behind for after_load to record.
+        self.plan, self.block = None, []
         if not self.refresh_nodes():
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
             return request
@@ -516,6 +529,12 @@ class ClusterServing:
             # This load tears the current one down first, so what it holds counts as free.
             for d in devices:
                 d.free_bytes = int(min(d.total_bytes, d.free_bytes + self._resident.get(d.key, 0)))
+        stray = [d.description for d in devices if d.remote and d.endpoint not in endpoints]
+        if stray:
+            # RPC<k> cannot be tied to an --rpc entry, so no --device list built from it is safe.
+            self.topology, self.reason = "single", f"could not tell which worker {stray[0]!r} is"
+            self.last_error = self.reason
+            return request
         missing = down + [e for e in endpoints if not any(d.endpoint == e for d in devices)]
         self.last_error = ""
         if missing:
@@ -527,7 +546,8 @@ class ClusterServing:
         plan = plan_cluster(model_bytes, kv_bytes, local_extra, devices, forced = forced)
         self.plan = plan
         if plan.topology == "refuse":
-            self.topology, self.reason = self._pre_load[0], self._pre_load[1]
+            self.topology, self.reason, self.plan, self.block = self._pre_load
+            self.last_error = plan.reason
             raise ss.SparkLoadDoesNotFit(plan.reason)
         self.topology, self.reason = plan.topology, plan.reason
         if plan.topology != "layer_split":
@@ -548,7 +568,9 @@ class ClusterServing:
         size = ss.gguf_size_bytes(local_file)
         sidecars, _unknown = ss.sidecar_bytes(extras)
         named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
-        if not any(str(a).split("=", 1)[0] in named for a in extras):
+        if not any(str(a).split("=", 1)[0] in named for a in extras) and not any(
+            os.environ.get(k) for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
+        ):
             projector = ss.auto_projector_file(
                 local_file, disable_vision = bool(getattr(request, "disable_vision", False))
             )
@@ -578,12 +600,15 @@ class ClusterServing:
                 )
                 or 0.0
             )
+        elif ctx and size:
+            kv = KV_UNKNOWN_FRACTION * float(size)
         return (None if size is None else float(size)), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:
         if self._passthrough:
             self._passthrough = False
-            self._resident = {}  # whatever that load replaced is not ours to count as freed
+            if not self._alongside:
+                self._resident = {}  # an engine load replaced the primary; that was not ours
             return
         self._pre_load = None
         self._cancel_event = None
@@ -608,6 +633,7 @@ class ClusterServing:
         ):
             self.topology = "single"
             self.reason = "llama-server launched without the planned split"
+            self._resident = {}
 
     async def load_failed(self) -> None:
         if self._passthrough:
@@ -625,6 +651,7 @@ class ClusterServing:
             except Exception:
                 logger.warning("cluster serving: stopping %s failed", endpoint, exc_info = True)
         self.workers.clear()
+        self.retire_on_commit = False
         self.topology, self.block = "single", []
         self._backend, self._resident = None, {}
 
