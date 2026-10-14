@@ -707,7 +707,9 @@ def build_sd_cpp_server_command(
     # De-dup speed flags against offload (may already include --diffusion-fa).
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
-    cmd += [f for f in native_speed_flags(native_speed, backend_args, accelerator) if f not in offload]
+    cmd += [
+        f for f in native_speed_flags(native_speed, backend_args, accelerator) if f not in offload
+    ]
     cmd += placement
     if verbose:
         cmd += ["-v"]

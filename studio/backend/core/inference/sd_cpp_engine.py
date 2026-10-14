@@ -304,10 +304,10 @@ def binary_accelerator(binary: Optional[str]) -> Optional[str]:
         return None
     try:
         from core.inference import sd_cpp_backend  # noqa: PLC0415 - the backend imports this module
-
-        return sd_cpp_backend._installed_accelerator_of(binary) or sd_cpp_backend.sd_cpp_listed_device(
-            binary, probe = False
-        )[0]
+        return (
+            sd_cpp_backend._installed_accelerator_of(binary)
+            or sd_cpp_backend.sd_cpp_listed_device(binary, probe = False)[0]
+        )
     except Exception:  # noqa: BLE001 - unknown keeps the default speed flags
         return None
 
