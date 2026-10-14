@@ -197,7 +197,7 @@ def get_stored_embedding_model() -> str | None:
     return _get_stored_state()[0]
 
 
-def _get_stored_state() -> _StoredState:
+def _get_stored_state(fresh: bool = False) -> _StoredState:
     """Read the override and its resolved artifact association as one snapshot.
 
     The resolution is one JSON value so its model/repo/backend can never be
@@ -208,7 +208,8 @@ def _get_stored_state() -> _StoredState:
     now = time.monotonic()
     with _lock:
         cached = _cached.get(key)
-        if cached is not None and now - cached[0] < _CACHE_TTL_S:
+        # `fresh` skips the cached value but keeps it for the failure fallback below.
+        if cached is not None and now - cached[0] < _CACHE_TTL_S and not fresh:
             return cached[1]
         gen = _generation.get(key, 0)
     try:
@@ -256,9 +257,7 @@ def _get_stored_state() -> _StoredState:
 def get_rag_embedding_model(fresh: bool = False) -> str:
     """Effective embedding model: persisted override, else env/default. ``fresh`` skips the cache,
     for a check that must see another process's save."""
-    if fresh:
-        _invalidate_cache()
-    stored = _get_stored_state()
+    stored = _get_stored_state(fresh)
     model = stored[0] or default_embedding_model()
     # Reading this is how a job pins its model, so record the resolution here: the memo protects a pinned job only if it was populated before another model's save takes the stored record.
     if stored[1] == model:
