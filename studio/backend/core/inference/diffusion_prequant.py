@@ -2343,6 +2343,13 @@ def load_prequantized_transformer(
         )
         if path is None:
             return None
+        if source.kind == "path":
+            # A Studio cache entry is checked against the payload digest recorded when it was written: its manifest
+            # size check passes same-size corruption, which can still deserialize into altered weights.
+            from .diffusion_prequant_cache import path_in_cache, verify_entry
+            if path_in_cache(path) and not verify_entry(path, logger):
+                _LAST_FAILURE.text = "ValueError: local pre-quant cache entry failed its payload digest"
+                return None
 
         # A ComfyUI-format file rebuilds into the same torchao weights as Studio's own checkpoint of this scheme.
         from .diffusion_comfy_quant import load_comfy_prequant, scan_comfy_quant

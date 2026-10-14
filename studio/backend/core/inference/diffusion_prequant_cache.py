@@ -61,6 +61,9 @@ POLICY_VERSION = 1
 FILE_NAME = "model.safetensors"
 MANIFEST_NAME = "manifest.json"
 LAST_USED_NAME = "last_used"
+# sha256 of the artifact, recorded with the stat it was last checked against (save, or the first load after a change).
+VERIFIED_NAME = "verified"
+_HASH_CHUNK = 16 << 20
 _TEMP_SUFFIX = ".tmp"
 _TOMBSTONE_SUFFIX = ".evicting"
 # A key used this recently is never evicted: another process may be loading from it.
@@ -453,6 +456,62 @@ def lookup(
         return None
 
 
+def _stat_stamp(path: Path) -> Optional[list]:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return [st.st_size, st.st_mtime_ns, st.st_ino, st.st_ctime_ns]
+
+
+def _record_verified(kdir: Path, sha: str) -> None:
+    stamp = _stat_stamp(kdir / FILE_NAME)
+    if stamp is None:
+        return
+    try:
+        _atomic_bytes(kdir / VERIFIED_NAME, json.dumps({"sha256": sha, "stat": stamp}).encode("utf-8"))
+    except OSError:
+        pass
+
+
+def verify_entry(path: Any, logger: Any = None, cancel_check: Optional[Any] = None) -> bool:
+    """Whether the cached artifact at ``path`` still hashes to the sha256 its manifest recorded. The manifest's size
+    check alone passes same-size corruption, which can still deserialize. A file unchanged (size, mtime, inode, ctime)
+    since its last check is not hashed again. A manifest without a digest fails. Never raises."""
+    try:
+        artifact = Path(os.path.realpath(str(path)))
+        kdir = artifact.parent
+        manifest = json.loads((kdir / MANIFEST_NAME).read_text(encoding = "utf-8"))
+        expected = manifest.get("sha256") if isinstance(manifest, dict) else None
+        if not isinstance(expected, str) or len(expected) != 64:
+            _log(logger, "warning", f"entry {kdir.name} records no payload digest")
+            return False
+        stamp = _stat_stamp(artifact)
+        try:
+            seen = json.loads((kdir / VERIFIED_NAME).read_text(encoding = "utf-8"))
+            if seen.get("sha256") == expected and seen.get("stat") == stamp and stamp is not None:
+                return True
+        except Exception:  # noqa: BLE001 - no / torn marker: hash it
+            pass
+        digest = hashlib.sha256()
+        with open(artifact, "rb") as fh:
+            while True:
+                if cancel_check is not None:
+                    cancel_check()
+                chunk = fh.read(_HASH_CHUNK)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        if digest.hexdigest() != expected:
+            _log(logger, "warning", f"entry {kdir.name} failed its payload digest (corrupt or modified)")
+            return False
+        _record_verified(kdir, expected)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        _log(logger, "warning", f"entry check failed: {type(exc).__name__}: {exc}")
+        return False
+
+
 def note_rejected(path: Any, logger: Any = None) -> None:
     """Called when the loader could not use the cached artifact at ``path``; the save after its dense fallback then
     replaces the entry rather than skipping it as already cached. Never raises."""
@@ -579,6 +638,7 @@ def write_streaming_safetensors(
     tensors: dict,
     metadata: Optional[dict] = None,
     cancel_check: Optional[Any] = None,
+    hasher: Optional[Any] = None,
 ) -> int:
     """Write ``tensors`` (any device) to ``path`` as safetensors, holding one tensor at a time on the host.
 
@@ -605,9 +665,14 @@ def write_streaming_safetensors(
         offset += size
     blob = json.dumps(header, separators = (",", ":")).encode("utf-8")
     blob += b" " * ((8 - len(blob) % 8) % 8)
+    def put(data: Any) -> None:
+        fh.write(data)
+        if hasher is not None:
+            hasher.update(data)  # every byte written, header included, so the digest covers each tensor
+
     with open(path, "wb") as fh:
-        fh.write(struct.pack("<Q", len(blob)))
-        fh.write(blob)
+        put(struct.pack("<Q", len(blob)))
+        put(blob)
         for _name, tensor in order:
             if cancel_check is not None:
                 cancel_check()  # raises for a cancelled / superseded load; the caller removes the temp file
@@ -615,7 +680,7 @@ def write_streaming_safetensors(
                 continue
             flat = tensor.detach().contiguous().reshape(-1).view(torch.uint8)
             host = flat.cpu() if flat.device.type != "cpu" else flat
-            fh.write(memoryview(host.numpy()))
+            put(memoryview(host.numpy()))
             del host, flat
         fh.flush()
         os.fsync(fh.fileno())
@@ -834,11 +899,6 @@ def save_runtime_quant(
             from .diffusion_transformer_quant import FP8_GRANULARITY
             metadata["fp8_granularity"] = FP8_GRANULARITY
         metadata.update(_rotation(transformer, info))
-        # The payload checksum the hosted builds carry (scripts/build_prequant_checkpoint.py): the manifest only checks
-        # the file size, so same-size corruption must fail _verify_packed_fingerprint and fall back to dense.
-        from .diffusion_prequant import canonical_weight_fingerprint
-        cancel_check()
-        metadata["fingerprint"] = canonical_weight_fingerprint(state_dict)
         header[UNSLOTH_FORMAT_KEY] = prequant_format_for(metadata)
         header[UNSLOTH_METADATA_KEY] = json.dumps(metadata, default = str)
 
@@ -847,7 +907,12 @@ def save_runtime_quant(
         fd, tmp = tempfile.mkstemp(dir = str(kdir), prefix = f".{FILE_NAME}.", suffix = _TEMP_SUFFIX)
         os.close(fd)
         try:
-            size = write_streaming_safetensors(tmp, flat, header, cancel_check = cancel_check)
+            # sha256 of every byte, taken from the host copies the writer already makes (no second pass, and
+            # cancellable with it); load_prequantized_transformer checks it before reading the artifact.
+            hasher = hashlib.sha256()
+            size = write_streaming_safetensors(
+                tmp, flat, header, cancel_check = cancel_check, hasher = hasher
+            )
             del flat, state_dict
             os.replace(tmp, kdir / FILE_NAME)
             tmp = None
@@ -857,7 +922,15 @@ def save_runtime_quant(
                     os.unlink(tmp)
                 except OSError:
                     pass
-        manifest = {"key": key, "bytes": size, "created": time.time(), "parts": parts}
+        sha = hasher.hexdigest()
+        _record_verified(kdir, sha)
+        manifest = {
+            "key": key,
+            "bytes": size,
+            "sha256": sha,
+            "created": time.time(),
+            "parts": parts,
+        }
         _atomic_bytes(
             kdir / MANIFEST_NAME, json.dumps(manifest, indent = 1, default = str).encode("utf-8")
         )

@@ -758,24 +758,46 @@ def _flip_payload_byte(path: str, tensor_suffix: str) -> None:
         fh.write(bytes([byte[0] ^ 0x5A]))
 
 
-def test_a_cached_artifact_records_a_payload_fingerprint_that_catches_same_size_corruption(env, tmp_path, scheme):
-    if not (_SCHEME and _SCHEME[1]):
-        pytest.skip("needs a really quantized build (the fingerprint covers quantized weights)")
-    from core.inference.diffusion_prequant import PrequantSource, _read_prequant_for, _verify_packed_fingerprint
+@pytest.mark.parametrize("victim", ["to_q._weight_qdata|to_q.weight", "norm.bias", "unsloth_root::pad_token"])
+def test_same_size_corruption_of_any_tensor_fails_the_payload_digest(env, tmp_path, scheme, monkeypatch, victim):
+    """Quantized weights, plain tensors the filter left alone and root-level parameters alike: a flipped byte anywhere
+    in the artifact refuses it before its tensors are read."""
+    from core.inference import diffusion_prequant as P
 
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)
     path = C.save_runtime_quant(model, _fam(base), base_repo = str(base))
-    meta = json.loads(json.loads(C.read_header_bytes(path)[8:])["__metadata__"][PS.UNSLOTH_METADATA_KEY])
-    assert (meta.get("fingerprint") or {}).get("count", 0) > 0
-    ckpt = _read_prequant_for(path, "cpu", None)
-    assert _verify_packed_fingerprint(ckpt["state_dict"], ckpt.get("metadata") or {})
-
-    # torchao's flat layout: blocks.0.to_q._weight_qdata (>= 0.15) or blocks.0.to_q.weight (older).
+    assert C.verify_entry(path)
     names = json.loads(C.read_header_bytes(path)[8:])
-    _flip_payload_byte(path, "to_q._weight_qdata" if any(k.endswith("_weight_qdata") for k in names) else "to_q.weight")
-    ckpt = _read_prequant_for(path, "cpu", None)
-    assert not _verify_packed_fingerprint(ckpt["state_dict"], ckpt.get("metadata") or {})
+    suffix = next(v for v in victim.split("|") if any(k.endswith(v) for k in names))
+    _flip_payload_byte(path, suffix)
+    assert not C.verify_entry(path)
+
+    reads = []
+    monkeypatch.setattr(P, "_read_prequant_for", lambda *a, **k: reads.append(a) or {})
+    source = P.PrequantSource(kind = "path", location = path, filename = None)
+    assert P.load_prequantized_transformer(
+        Tiny, str(base), source, device = "cpu", dtype = torch.bfloat16, scheme = scheme
+    ) is None
+    assert reads == []
+
+
+def test_the_save_takes_no_uncancellable_pass_over_the_weights(env, tmp_path, scheme, monkeypatch):
+    """The payload digest is taken inside the cancellable writer: no whole-model fingerprint pass before it."""
+    from core.inference import diffusion_prequant as P
+
+    def boom(*_a, **_k):
+        raise AssertionError("whole-model fingerprint pass outside the writer")
+
+    monkeypatch.setattr(P, "canonical_weight_fingerprint", boom)
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    path = C.save_runtime_quant(model, _fam(base), base_repo = str(base))
+    assert path is not None
+    manifest = json.loads((Path(path).parent / C.MANIFEST_NAME).read_text())
+    import hashlib
+
+    assert manifest["sha256"] == hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def test_the_rejected_artifact_is_reclaimed_before_measuring_room_for_its_replacement(env, tmp_path, scheme, monkeypatch):
