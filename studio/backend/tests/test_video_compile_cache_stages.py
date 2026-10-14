@@ -355,3 +355,16 @@ def test_gguf_quant_type_keys_the_stage(monkeypatch):
 
     assert _key([gguf_dit(12)]) == _key([gguf_dit(12)])
     assert _key([gguf_dit(12)]) != _key([gguf_dit(14)])
+
+
+def test_a_failed_or_cancelled_render_dirties_the_bundle():
+    """Graphs a raising render compiled survive in memory; the retry reuses them without compiling."""
+    import inspect
+
+    from core.inference import video as V
+
+    src = inspect.getsource(V.VideoBackend.generate)
+    # The render's finally block: from the fallback settle to the success-only tail that starts at _finish_denoise().
+    finally_at = src.index("settle_compile_fallback(state, pipe, logger)")
+    block = src[finally_at:src.index("_finish_denoise()", finally_at)]
+    assert "mark_recompiled(compile_ctx)" in block and "not bg_eager" in block

@@ -10817,6 +10817,15 @@ class VideoBackend:
                     if previewer is not None:
                         previewer.finish()
                     settle_compile_fallback(state, pipe, logger)
+                    # Graphs compiled by a render that then raised or was cancelled live on in memory: a retry reuses
+                    # them without compiling, so the success path below would never see the count grow. Dirty the
+                    # bundle now (not for a render the background compile forced eager).
+                    if compile_ctx is not None and not bg_eager:
+                        try:
+                            if fresh_compile_count() > graphs_before:
+                                compile_cache.mark_recompiled(compile_ctx)
+                        except Exception:  # noqa: BLE001 - bookkeeping must not mask the render's own error
+                            pass
                     if static_skip:
                         logger.debug(
                             "video.step_skip: %s", static_skip_stats(_skip_pipe(state, pipe))
