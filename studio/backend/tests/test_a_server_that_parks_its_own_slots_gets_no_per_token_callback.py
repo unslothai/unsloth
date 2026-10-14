@@ -153,7 +153,14 @@ def _sent_payload(monkeypatch, **kwargs):
     payloads = []
 
     @contextlib.contextmanager
-    def fake_stream(_client, _url, payload, _cancel, headers = None, first_token_deadline = None):
+    def fake_stream(
+        _client,
+        _url,
+        payload,
+        _cancel,
+        headers = None,
+        first_token_deadline = None,
+    ):
         payloads.append(copy.deepcopy(payload))
         chunks = [_sse({"content": "hi"}), "data: [DONE]\n"]
         yield type("FakeResponse", (), {"status_code": 200, "chunks": chunks})()
@@ -166,9 +173,7 @@ def _sent_payload(monkeypatch, **kwargs):
     )
     monkeypatch.setattr(backend, "_maybe_recover_from_mtp_crash", lambda *_a, **_k: False)
     list(
-        backend.generate_chat_completion(
-            messages = [{"role": "user", "content": "hello"}], **kwargs
-        )
+        backend.generate_chat_completion(messages = [{"role": "user", "content": "hello"}], **kwargs)
     )
     return payloads[0]
 

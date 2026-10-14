@@ -513,9 +513,7 @@ class TestWhenNothingWillReclaim:
         )
         assert enforced == 4096 - prompt - _RESERVE
 
-    def test_the_switch_off_leaves_the_wire_alone_and_charges_the_flat_allowance(
-        self, monkeypatch
-    ):
+    def test_the_switch_off_leaves_the_wire_alone_and_charges_the_flat_allowance(self, monkeypatch):
         """Off is what Studio did before preemption: the caller's max_tokens on the wire and the
         flat allowance on the ledger, which four of fit."""
         monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_PREEMPT", "0")

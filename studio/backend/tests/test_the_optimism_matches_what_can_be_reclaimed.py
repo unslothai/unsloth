@@ -299,7 +299,11 @@ class TestAdmissionReadsTheCacheAfresh:
             waited = asyncio.run(_drive())
         finally:
             released.set()
-        assert inference_route._ARM_RESIDENCY_READ_S <= waited < inference_route._ARM_RESIDENCY_READ_S + 1.0
+        assert (
+            inference_route._ARM_RESIDENCY_READ_S
+            <= waited
+            < inference_route._ARM_RESIDENCY_READ_S + 1.0
+        )
 
     def test_off_the_loop_it_simply_reads(self):
         controller = _controller("http://arm-sync.test")

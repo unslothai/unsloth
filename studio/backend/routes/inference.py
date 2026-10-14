@@ -3235,7 +3235,12 @@ async def _openai_llama_count_raw_holder_async(*, gen_id: str, **kwargs) -> None
         logger.debug("could not count the raw holder", exc_info = True)
 
 
-def _plan_for_unpausable_holder(controller, gen_id: str, *, refresh: bool = True) -> None:
+def _plan_for_unpausable_holder(
+    controller,
+    gen_id: str,
+    *,
+    refresh: bool = True,
+) -> None:
     """Make room for a holder that cannot be paused, before its request goes upstream."""
     if refresh:
         _refresh_residency_before_planning(controller)
@@ -3414,7 +3419,13 @@ async def _refresh_residency_before_planning_async(controller) -> None:
         pass
 
 
-def _openai_llama_preemption_arm(*, gen_id: str, signal, loop = None, **kwargs):
+def _openai_llama_preemption_arm(
+    *,
+    gen_id: str,
+    signal,
+    loop = None,
+    **kwargs,
+):
     """Enrol a generation with the preemptor, and pause whoever must make room. Returns the policy
     the stream calls back on, or None when preemption cannot apply, as before preemption existed.
     For a caller off the event loop; one on it awaits ``_openai_llama_preemption_arm_async``."""
@@ -3425,7 +3436,13 @@ def _openai_llama_preemption_arm(*, gen_id: str, signal, loop = None, **kwargs):
     return _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
 
 
-async def _openai_llama_preemption_arm_async(*, gen_id: str, signal, loop = None, **kwargs):
+async def _openai_llama_preemption_arm_async(
+    *,
+    gen_id: str,
+    signal,
+    loop = None,
+    **kwargs,
+):
     """``_openai_llama_preemption_arm`` with the cache read awaited in a worker, so arming one chat
     does not hold the event loop for every other request."""
     controller = _openai_llama_preemption_enrol(gen_id = gen_id, signal = signal, **kwargs)
@@ -3514,7 +3531,13 @@ def _openai_llama_preemption_enrol(
     return controller
 
 
-def _openai_llama_preemption_plan(controller, *, gen_id: str, signal, loop = None):
+def _openai_llama_preemption_plan(
+    controller,
+    *,
+    gen_id: str,
+    signal,
+    loop = None,
+):
     """Pause whoever must make room for an enrolled generation; returns its policy."""
     charged = 0
     participant = controller.participant(gen_id)
