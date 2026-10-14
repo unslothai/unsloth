@@ -873,7 +873,7 @@ let threadSettingsWriteThreadId: string | null = null;
 // leaves in the store by the time the debounce fires.
 let threadSettingsWriteSnapshot: ThreadScopedSettings | null = null;
 
-/** Where a thread-scoped key's live value is: sampling under `params`, the rest fields. */
+/** Where a thread-scoped key's value is: sampling under `params`, the rest fields. */
 function readThreadScopedValue(
   state: ChatRuntimeStore,
   key: ThreadScopedSettingKey,
@@ -1022,12 +1022,27 @@ function isClampedPillKey(key: string): key is ClampedPillKey {
 
 function pillOnRecord(key: ClampedPillKey): boolean | undefined {
   const held = heldThreadScopedParamValue(key);
+  if (typeof held === "boolean" || pendingSnapshotReadsLive(key)) {
+    const live = useChatRuntimeStore.getState();
+    if (!live.modelLoading && !isPillClampedOff(live, key)) return live[key];
+  }
   if (typeof held === "boolean") return held;
   const stored = activeThreadScopedSettings?.[key];
   if (typeof stored === "boolean") return stored;
   return threadScopedSettingsThreadId !== null
     ? globalThreadScopedDefaults?.[key]
     : undefined;
+}
+
+function pendingSnapshotReadsLive(key: ClampedPillKey): boolean {
+  return (
+    threadSettingsWriteSnapshot === null &&
+    threadSettingsWriteThreadId !== null &&
+    threadSettingsWriteThreadId === threadScopedSettingsThreadId &&
+    (explicitlyEditedThreadFields.has(key) ||
+      !constraintSuppressedThreadFields.has(key) ||
+      typeof activeThreadScopedSettings?.[key] !== "boolean")
+  );
 }
 
 function pillPreference(key: ClampedPillKey): boolean {
@@ -3370,6 +3385,8 @@ function noteModelDefaultsBeforeHydration(
   }
 }
 
+/** Whether the checkpoint is an external model that cannot run deep research, as the composer
+ *  rules it. */
 function externalCheckpointRefusesDeepResearch(
   checkpoint: string | null | undefined,
 ): boolean {

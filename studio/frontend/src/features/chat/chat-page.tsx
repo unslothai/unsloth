@@ -3984,8 +3984,6 @@ export function ChatPage({
             supports_preserve_thinking: providerSupportsPreserveThinking(selectedProvider?.providerType),
           }),
           supportsTools: supportsStudioToolsHere,
-          deepResearchEnabled: resolveToolsEnabledOnLoad(supportsStudioToolsHere)
-            .deepResearchEnabled,
           supportsBuiltinWebSearch,
           supportsBuiltinCodeExecution,
           supportsBuiltinImageGeneration,

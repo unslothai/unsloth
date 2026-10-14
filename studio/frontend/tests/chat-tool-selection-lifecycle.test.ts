@@ -24,13 +24,16 @@ const runtimeUrl = new URL(
 ).href;
 const THREAD = "tool-selection-chat";
 const MODEL = "unsloth/tool-capable-model";
-const TOOL_KEYS = [
+const LOCAL_TOOL_KEYS = [
   "toolsEnabled",
   "codeToolsEnabled",
-  "imageToolsEnabled",
-  "webFetchToolsEnabled",
   "mcpEnabledForChat",
   "ragEnabled",
+] as const;
+const TOOL_KEYS = [
+  ...LOCAL_TOOL_KEYS,
+  "imageToolsEnabled",
+  "webFetchToolsEnabled",
 ] as const;
 
 async function boot(t: TestContext, hydrate = true): Promise<RuntimeModule> {
@@ -112,7 +115,7 @@ for (const scope of ["defaults", "chat", "pending chat"] as const) {
           supportsTools: true,
           ...runtime.resolveToolsEnabledOnLoad(true),
         });
-        for (const key of TOOL_KEYS) {
+        for (const key of LOCAL_TOOL_KEYS) {
           assert.equal(store.getState()[key], expected[key], key);
         }
         assert.deepEqual(runtime.resolveToolsEnabledOnLoad(false), {
@@ -471,6 +474,30 @@ test("an unresolved external provider preserves Research until its capabilities 
   assert.equal(store.getState().deepResearchEnabled, true);
 });
 
+test("a temporary chat keeps Research off when another tab stores it on", async (t) => {
+  const runtime = await boot(t);
+  const store = runtime.useChatRuntimeStore;
+  useExternalProvidersStore.getState().setProviders([{
+    id: "codex",
+    providerType: "openai_codex",
+    name: "Codex fixture",
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    models: ["gpt-5.4"],
+    createdAt: 0,
+    updatedAt: 0,
+  }]);
+  setProviderModelCapabilities("openai_codex", {
+    "gpt-5.4": { studio_tools: true },
+  });
+  store.getState().setIncognito(true);
+  storage.set("unsloth_chat_deep_research_enabled", "true");
+  assert.equal(runtime.resolveToolsEnabledOnLoad(true).deepResearchEnabled, false);
+  store.getState().setCheckpoint("external::codex::gpt-5.4", null);
+  assert.equal(store.getState().deepResearchEnabled, false);
+  store.getState().clearCheckpoint();
+  assert.equal(store.getState().deepResearchEnabled, false);
+});
+
 test("Kimi keeps Search off and Thinking on when a chat opens without stored pills", async (t) => {
   const runtime = await boot(t);
   const store = runtime.useChatRuntimeStore;
@@ -641,6 +668,44 @@ for (const leave of [false, true]) {
     }
     assert.equal(threadRows.rows.get(THREAD)?.toolsEnabled, false);
     assert.equal(threadRows.rows.get(THREAD)?.reasoningEnabled, true);
+  });
+}
+
+for (const saved of [false, true]) {
+  test(`Kimi's Thinking click after ${saved ? "a saved" : "an unsaved"} Search click leaves Search ${saved ? "on" : "off"} for the next model`, async (t) => {
+    const runtime = await boot(t);
+    const store = runtime.useChatRuntimeStore;
+    useExternalProvidersStore.getState().setProviders([{
+      id: "kimi",
+      providerType: "kimi",
+      name: "Kimi fixture",
+      baseUrl: "https://api.moonshot.ai/v1",
+      models: ["kimi-k2.5"],
+      createdAt: 0,
+      updatedAt: 0,
+    }]);
+    store.getState().setCheckpoint("external::kimi::kimi-k2.5", null);
+    store.setState({
+      supportsTools: false,
+      supportsBuiltinWebSearch: true,
+      toolsEnabled: false,
+      reasoningEnabled: true,
+    });
+    store.getState().setActiveThreadId(THREAD);
+    store.getState().applyThreadScopedSettings(THREAD, {
+      toolsEnabled: false,
+      reasoningEnabled: true,
+    });
+    store.getState().setToolsEnabled(true);
+    store.getState().setReasoningEnabled(false, { persist: false });
+    if (saved) await runtime.awaitThreadScopedSettingsWrite(THREAD);
+    store.getState().setReasoningEnabled(true);
+    store.getState().setToolsEnabled(false, { persist: false });
+    assert.equal(runtime.threadScopedOverride("toolsEnabled"), saved);
+    store.getState().clearCheckpoint();
+    assert.equal(store.getState().toolsEnabled, saved);
+    await runtime.awaitThreadScopedSettingsWrite(THREAD);
+    assert.equal(threadRows.rows.get(THREAD)?.toolsEnabled, saved);
   });
 }
 
