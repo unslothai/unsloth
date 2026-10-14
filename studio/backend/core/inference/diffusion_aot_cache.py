@@ -70,3 +70,64 @@ def install(logger: Any = None) -> bool:
         if logger is not None:
             logger.debug("diffusion.aot_cache: not installed (%s: %s)", type(exc).__name__, exc)
         return False
+
+
+# ------------------------------------------------------------------------------------- libdevice pin (restart hits)
+# Under ``emulate_precision_casts`` (which every Studio regional compile sets), torch switches Triton from its bundled
+# libdevice to the CUDA toolkit's copy, for eager-matching numerics, but only LAZILY: inside the first Triton kernel
+# COMPILE of the process (torch._inductor.runtime.compile_tasks._set_triton_libdevice_path). Since torch records
+# ``extern_libs_key`` (the libdevice file hash) on every FX graph cache entry and checks it on lookup, the entry a
+# compile wrote carries the toolkit's hash while a fresh process looks it up BEFORE any kernel compile, still on the
+# bundled file: a silent ``guard_miss``, so every restart recompiled every graph (and the AOTAutograd entry pointing at
+# it missed too), persistent inductor dir and Mega-cache bundle notwithstanding. Measured on Wan2.2-TI2V-5B (torch
+# 2.14.1, Triton 3.8, A100 and B200): ``fxgraph_cache_miss`` on every restart, with identical FX / AOT keys.
+#
+# Pinning the path up front, with torch's own resolver, makes the lookup see what the save saw. It changes nothing a
+# compile would not have changed anyway (torch sets the same knob and env var at the first kernel compile and never
+# resets them), so the kernels and the output are the ones a cold compile produces.
+# UNSLOTH_DIFFUSION_PIN_LIBDEVICE=0 disables it.
+_LIBDEVICE_ENV = "UNSLOTH_DIFFUSION_PIN_LIBDEVICE"
+
+
+def pin_libdevice_enabled() -> bool:
+    raw = (os.environ.get(_LIBDEVICE_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def pin_triton_libdevice(logger: Any = None) -> Any:
+    """Resolve Triton's libdevice now, exactly as torch would at the first kernel compile. Returns the pinned path, or
+    None when disabled or when this torch / Triton build has nothing to pin (no extern_libs cache check, no lazy
+    resolver, no CUDA). Never raises. Call only when emulate_precision_casts (or use_pytorch_libdevice) is on: that is
+    the condition under which torch makes the switch."""
+    if not pin_libdevice_enabled():
+        return None
+    try:
+        import warnings
+
+        import torch
+
+        if getattr(torch.version, "cuda", None) is None:
+            return None
+        # Probe the capability, not the version: only builds that key cache entries on extern libs can miss on it.
+        if not callable(getattr(getattr(torch.utils, "_triton", None), "_extern_libs_key", None)):
+            return None
+        from torch._inductor.runtime import compile_tasks
+
+        resolve = getattr(compile_tasks, "_set_triton_libdevice_path_impl", None)
+        if not callable(resolve):
+            return None
+        from triton import knobs
+
+        before = knobs.nvidia.libdevice_path
+        with warnings.catch_warnings():
+            # The CUDA_HOME-missing warning is torch's to give at compile time; the bundled file is then consistent.
+            warnings.simplefilter("ignore")
+            resolve()
+        after = knobs.nvidia.libdevice_path
+        if logger is not None and after != before:
+            logger.info("diffusion.aot_cache: Triton libdevice pinned before the first compile (%s)", after)
+        return after
+    except Exception as exc:  # noqa: BLE001 - optimisation only
+        if logger is not None:
+            logger.debug("diffusion.aot_cache: libdevice not pinned (%s: %s)", type(exc).__name__, exc)
+        return None
