@@ -106,6 +106,7 @@ function mapToViewData(
       detail.config?.training_type,
       detail.config?.load_in_4bit,
     ),
+    isDecision: detail.config?.is_decision === true,
     lossHistory,
     lrHistory,
     gradNormHistory,
@@ -230,6 +231,7 @@ export function HistoricalTrainingView({
         </div>
       )}
       <ProgressSection
+        runId={runId}
         data={viewData}
         isHistorical={true}
         configOverride={configOverride}

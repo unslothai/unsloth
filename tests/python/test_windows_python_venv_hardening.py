@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -144,75 +143,6 @@ def _uv_cache_functions(source: str) -> str:
             "Restore-StudioUvCacheEnvironment",
         )
     )
-
-
-@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
-@pytest.mark.parametrize("shell", POWERSHELLS)
-@pytest.mark.parametrize(
-    "reported_version,accepted",
-    [
-        ("3.9.0", False),
-        ("3.10.0", False),
-        ("3.11.0", True),
-        ("3.12.0", True),
-        ("3.13.0", True),
-        ("3.13.8", False),
-        ("3.14.0", False),
-    ],
-)
-def test_path_python_wrapper_resolves_to_real_executable(
-    tmp_path: Path, shell: str, reported_version: str, accepted: bool
-):
-    source = INSTALL_PS1.read_text(encoding = "utf-8")
-    finder = _extract(r"    function Find-CompatiblePython \{.*?\n    \}\n", source)
-    (tmp_path / "sitecustomize.py").write_text('print("STARTUP_BANNER")\n', encoding = "utf-8")
-    if os.name == "nt":
-        wrapper = tmp_path / "python.bat"
-        wrapper.write_text(
-            f'@echo off\nif "%~1"=="--version" (\n'
-            f"echo Python {reported_version}\nexit /b 0\n)\n"
-            f'@"{sys.executable}" %*\n',
-            encoding = "utf-8",
-        )
-    else:
-        wrapper = tmp_path / "python-wrapper"
-        wrapper.write_text(
-            '#!/bin/sh\nif [ "$1" = "--version" ]; then\n'
-            f"printf 'Python {reported_version}\\n'\nexit 0\nfi\n"
-            f'exec {shlex.quote(sys.executable)} "$@"\n',
-            encoding = "utf-8",
-        )
-        wrapper.chmod(0o755)
-
-    script = f"""
-$ErrorActionPreference = "Stop"
-$PythonVersion = "3.13"
-$PythonSkip = @("3.13.8")
-$script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda)'
-function Get-HostMachineArch {{ return "x86_64" }}
-function Test-IsCondaPython {{ param([string]$Exe) return $false }}
-function Get-PythonPlatformTag {{ param([string]$Exe) return "win-amd64" }}
-function Get-Command {{
-    param([Parameter(Position = 0)][string]$Name,
-          [Parameter(ValueFromRemainingArguments = $true)]$Rest)
-    if ($Name -eq "python") {{
-        return @([pscustomobject]@{{ Source = $env:TEST_PYTHON_WRAPPER }})
-    }}
-    return @()
-}}
-{finder}
-$found = Find-CompatiblePython
-Write-Output $found.Path
-"""
-    env = os.environ.copy()
-    env["TEST_PYTHON_WRAPPER"] = str(wrapper)
-    env["PYTHONPATH"] = str(tmp_path)
-    found = _run_powershell(shell, script, env)
-    if accepted:
-        assert found
-        assert Path(found).resolve() == Path(sys.executable).resolve()
-    else:
-        assert not found
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")

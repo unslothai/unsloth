@@ -290,6 +290,8 @@ def test_direct_fetch_rechecks_every_redirect_before_dns(monkeypatch):
 
 
 def _search_with_raising_ddgs(monkeypatch, exc: Exception) -> str:
+    monkeypatch.setattr(tools, "_wikipedia_search", lambda *args: [])
+
     class FakeDDGS:
         def __init__(self, **_kwargs):
             pass

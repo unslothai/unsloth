@@ -73,6 +73,16 @@ def test_thread_rag_source_keeps_its_shape():
     assert payload.model_dump(exclude_unset = True) == {"ragSource": {"type": "thread"}}
 
 
+def test_research_mcp_sources_round_trip_and_clear():
+    sources = [{"serverId": "notes", "tool": "search_notes"}]
+    payload = ChatSettingsPayload.model_validate({"researchMcpSources": sources})
+    assert payload.model_dump(exclude_unset = True) == {"researchMcpSources": sources}
+    cleared = ChatSettingsPayload.model_validate({"researchMcpSources": []})
+    assert _deep_merge_settings(
+        payload.model_dump(exclude_unset = True), cleared.model_dump(exclude_unset = True)
+    ) == {"researchMcpSources": []}
+
+
 def test_rag_source_replaces_rather_than_merges():
     """A thread pick over a stored kb pick must not keep kbId.
 
@@ -131,6 +141,12 @@ def test_unset_fields_stay_out_of_the_merge():
     assert payload.model_dump(exclude_unset = True) == {"ragTopK": 5}
 
 
+@pytest.mark.parametrize("level", ["high", "low"])
+def test_sandbox_level_survives_the_payload(level):
+    payload = ChatSettingsPayload.model_validate({"sandboxLevel": level})
+    assert payload.model_dump(exclude_unset = True) == {"sandboxLevel": level}
+
+
 def test_max_tool_calls_off_survives_the_payload():
     payload = ChatSettingsPayload.model_validate({"maxToolCallsPerMessage": 0})
     assert payload.model_dump(exclude_unset = True) == {"maxToolCallsPerMessage": 0}
@@ -141,6 +157,7 @@ def test_max_tool_calls_off_survives_the_payload():
     [
         # Full access disables the sandbox, so it is re-accepted each session.
         {"permissionMode": "full"},
+        {"sandboxLevel": "medium"},
         {"ragTopK": 0},
         {"ragTopK": 51},
         {"ragAutoInjectMinScore": 2},

@@ -4,19 +4,17 @@
 // Name and MIME type only: the bytes can be megabytes and this runs on every tile and row.
 
 import {
-  AudioWave01Icon,
   Doc01Icon,
   FileEmpty02Icon,
   FlimSlateIcon,
   Image02Icon,
-  InternetIcon,
   Pdf01Icon,
   Presentation01Icon,
   SourceCodeIcon,
   Zip02Icon,
 } from "@hugeicons/core-free-icons";
 // Relative so the node tests can load this file.
-import { SheetIcon } from "../../../lib/hugeicons-derived.ts";
+import { AiSpeechIcon, SheetIcon } from "../../../lib/hugeicons-derived.ts";
 
 export type AttachmentFileKind =
   | "image"
@@ -41,14 +39,14 @@ register("image", "png jpg jpeg gif webp avif bmp svg heic heif tif tiff ico");
 register("pdf", "pdf");
 register(
   "audio",
-  "mp3 mp2 wav m4a ogg oga opus flac aac aiff aif aifc caf wma amr",
+  "mp3 mp2 wav m4a m4b ogg oga opus flac aac aiff aif aifc caf wma amr weba mka",
 );
 register("video", "mp4 m4v mov mkv avi webm 3gp 3g2 mpg mpeg wmv");
 register("word", "doc docx docm dot dotx dotm odt ott rtf gdoc");
-register("document", "pages epub");
-register("spreadsheet", "csv tsv xls xlsx xlsm ods numbers");
-register("presentation", "ppt pptx odp key");
-register("web", "html htm xhtml mhtml");
+register("document", "pages epub msg eml");
+register("spreadsheet", "csv tsv xls xlsx xlsm xltx xltm ods ots numbers");
+register("presentation", "ppt pptx pptm ppsx ppsm potx potm odp otp key");
+register("web", "html htm xhtml xht mht mhtml");
 register(
   "code",
   "py pyi ipynb js mjs cjs ts mts cts tsx jsx json jsonl c h cc cpp cxx hpp cs java kt kts go rs rb php swift scala sh bash zsh fish ps1 bat cmd css scss sass less sql yaml yml toml ini cfg conf xml r lua dart vue svelte gradle cmake proto graphql gql pl hs ex exs erl clj zig nim jl m mm",
@@ -103,13 +101,13 @@ export function attachmentFileKind(
 export const ATTACHMENT_KIND_ICONS = {
   image: Image02Icon,
   pdf: Pdf01Icon,
-  audio: AudioWave01Icon,
+  audio: AiSpeechIcon,
   video: FlimSlateIcon,
   word: Doc01Icon,
   document: FileEmpty02Icon,
   spreadsheet: SheetIcon,
   presentation: Presentation01Icon,
-  web: InternetIcon,
+  web: SourceCodeIcon,
   code: SourceCodeIcon,
   text: FileEmpty02Icon,
   archive: Zip02Icon,
@@ -121,16 +119,16 @@ export const ATTACHMENT_KIND_ICON_CLASS: Record<AttachmentFileKind, string> = {
   pdf: "text-red-500",
   audio: "text-violet-500",
   video: "text-pink-400 scale-90",
-  // Google Docs' blue, close to Word's lighter blue.
+  // Google Docs' blue, close to Word's lighter blue. Only docs are blue.
   word: "text-[#4285F4]",
-  document: "text-blue-500",
+  document: "text-foreground",
   spreadsheet: "text-emerald-500",
   presentation: "text-orange-500",
   web: "text-foreground",
-  code: "text-blue-500",
-  text: "text-blue-500",
+  code: "text-foreground",
+  text: "text-foreground",
   archive: "text-amber-500",
-  file: "text-muted-foreground",
+  file: "text-foreground",
 };
 
 const KIND_LABELS: Record<Exclude<AttachmentFileKind, "file">, string> = {

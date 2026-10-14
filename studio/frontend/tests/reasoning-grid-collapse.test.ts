@@ -76,8 +76,9 @@ test("the animating child carries min-height:0 and overflow:hidden", () => {
 test("the collapse is a grid-template-rows transition between 0fr and 1fr", () => {
   const code = codeOf(UNMEASURED);
   assert.ok(code.includes("transition-[grid-template-rows]"));
-  assert.ok(code.includes('"grid-rows-[1fr]"'));
-  assert.ok(code.includes('"grid-rows-[0fr]"'));
+  // minmax(0, ...) on both ends: a bare `1fr` row goes stale in WebKit when the pane narrows.
+  assert.ok(code.includes('"grid-rows-[minmax(0,1fr)]"'));
+  assert.ok(code.includes('"grid-rows-[minmax(0,0fr)]"'));
   // The closed state must switch the display utility, not lean on the `hidden` attribute: the UA
   // sheet's `[hidden] { display: none }` loses to the author-level `display: grid`.
   assert.ok(code.includes('present ? "grid" : "hidden"'));

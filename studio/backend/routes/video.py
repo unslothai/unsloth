@@ -162,7 +162,7 @@ async def video_download_plan(
             update = {"hf_token": account_access.account_hf_token(request.hf_token)}
         )
     await _refuse_disabled_nvfp4_checkpoint(request)
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
     from core.inference.video import (
         assert_video_precision_available,
         get_video_backend,
@@ -174,7 +174,15 @@ async def video_download_plan(
     try:
         kind = resolve_video_model_kind(request.gguf_filename, request.model_kind)
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_video_model_kind(split[1], None)
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
@@ -321,7 +329,7 @@ async def load_video_model_gated(
         for ref in (request.model_path, request.base_repo)
         if ref and _repo_is_in_the_hub_cache(ref) is not True
     ]
-    from core.inference.diffusion import resolve_local_single_file
+    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
     from core.inference.diffusion_device import (
         resolve_diffusion_device_target,
         resolve_selected_cuda_ordinal,
@@ -349,7 +357,15 @@ async def load_video_model_gated(
         # A local On-Device pick can be a bare single-file .safetensors dir the picker starts as a pipeline; if it holds
         # exactly one checkpoint, load it as single_file. Mirrors images.
         if kind == "pipeline" and not request.gguf_filename:
-            sole = await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            split = await asyncio.to_thread(split_local_checkpoint_path, request.model_path)
+            if split is not None:
+                request.model_path, request.gguf_filename = split
+                kind = resolve_video_model_kind(split[1], None)
+            sole = (
+                None
+                if split is not None
+                else await asyncio.to_thread(resolve_local_single_file, request.model_path)
+            )
             if sole is not None:
                 request.gguf_filename = sole
                 kind = resolve_video_model_kind(sole, None)
@@ -442,6 +458,7 @@ async def load_video_model_gated(
 
         # begin_load signals whatever generation is running, so guard on every device.
         require_no_foreign_generations()
+        from core.inference.sd_cpp_args import forces_cpu_backend
         from core.inference.video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
@@ -450,7 +467,16 @@ async def load_video_model_gated(
             if getattr(images, "runs_off_torch_device", False) is True:
                 # No arbiter owner evicts it, yet it holds the one managed sd.cpp tree H3 installs into.
                 await asyncio.to_thread(images.unload)
-        if device != "cpu":
+        # sd.cpp runs a paravirtual Mac GPU on the CPU backend: take no VIDEO claim, but keep any existing one until the
+        # worker tears the old model down and releases it.
+        forced_cpu = (
+            is_h3_native(fam, kind)
+            and device == "mps"
+            and await asyncio.to_thread(forces_cpu_backend, device)
+        )
+        if forced_cpu:
+            status_dict = await asyncio.to_thread(_begin_load)
+        elif device != "cpu":
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts VIDEO
             # before the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps
             # the same span.
@@ -600,7 +626,11 @@ async def generate_video(
         resident pipeline and a multi-minute load. The same rules, applied to the target's family
         and MiniMax-H3 partition, both of which the pick already determines."""
         from core.inference.media_model_index import expected_partition
-        from core.inference.video import _detect_load_family, resolve_video_model_kind
+        from core.inference.video import (
+            _detect_load_family,
+            assert_first_frame_pipeline_available,
+            resolve_video_model_kind,
+        )
         from core.inference.video_minimax_h3 import is_h3_native
         from core.inference.video_families import (
             validate_video_flow_controls,
@@ -615,8 +645,13 @@ async def generate_video(
         validate_video_request_shape(fam, request.width, request.height, request.num_frames)
         h3_task = expected_partition(pick)
         validate_video_keyframe_conditioning(
-            fam, h3_task, has_keyframes = bool(request.first_frame or request.last_frame)
+            fam,
+            h3_task,
+            has_keyframes = bool(request.first_frame or request.last_frame),
+            has_last_frame = bool(request.last_frame),
         )
+        if request.first_frame:
+            assert_first_frame_pipeline_available(fam)
         # the engine is only knowable up front where the pick decides it, as an h3 gguf does
         kind = resolve_video_model_kind(pick.gguf_filename, pick.model_kind)
         engine = "sd_cpp" if is_h3_native(fam, kind) else None
@@ -669,6 +704,7 @@ async def generate_video(
         reference_image_size = request.reference_image_size,
         flow_shift = request.flow_shift,
         audio_flow_shift = request.audio_flow_shift,
+        live_preview = request.live_preview,
     )
     # Authorize the exact resident token from generation_snapshot and pin it to the reservation,
     # so a load committing in the gap cannot render another account's weights here; on a mismatch,
@@ -1677,7 +1713,7 @@ async def _create_openai_video(
 
     def _refuse_unservable_request(pick) -> None:
         from core.inference.media_model_index import expected_partition
-        from core.inference.video import _detect_load_family
+        from core.inference.video import _detect_load_family, assert_first_frame_pipeline_available
         from core.inference.video_families import (
             validate_video_keyframe_conditioning,
             validate_video_reference_conditioning,
@@ -1709,6 +1745,8 @@ async def _create_openai_video(
         validate_video_keyframe_conditioning(
             fam, h3_task, has_keyframes = reference is not None and not ref2va
         )
+        if reference is not None and not ref2va:
+            assert_first_frame_pipeline_available(fam)
         validate_video_reference_conditioning(
             fam,
             h3_task,

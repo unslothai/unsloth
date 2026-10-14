@@ -255,7 +255,6 @@ export function liftCopy(
   copy.tabIndex = -1;
   const element = document.createElement("div");
   element.setAttribute("aria-hidden", "true");
-  // A picture, not controls.
   element.inert = true;
   element.className = className;
   element.append(copy);

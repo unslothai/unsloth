@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
-from real_accelerator import has_real_cuda
+from real_accelerator import has_real_cuda, has_real_accelerator
 
 import unsloth  # noqa: F401
 from unsloth.models.modelopt_fp8 import (
@@ -24,6 +24,9 @@ from unsloth.models.modelopt_fp8 import (
     pop_modelopt_key_mapping,
 )
 from unsloth.models.loader_utils import check_and_disable_bitsandbytes_loading
+
+xpu_available = hasattr(torch, "xpu") and torch.xpu.is_available()
+dev = "cuda" if has_real_cuda() else "xpu" if xpu_available else "cpu"
 
 
 def _sarvam_quant(**overrides):
@@ -435,9 +438,9 @@ def _write_tiny_modelopt_llama(path):
 def test_tiny_modelopt_llama_round_trip(tmp_path, dequantize):
     from transformers import AutoConfig, AutoModelForCausalLM, FineGrainedFP8Config
 
-    if torch.cuda.get_device_capability()[0] < 9 and not dequantize:
+    if dev == "cuda" and torch.cuda.get_device_capability()[0] < 9 and not dequantize:
         pytest.skip("fp8 matmul needs sm_89+")
-    reference = _write_tiny_modelopt_llama(str(tmp_path)).cuda()
+    reference = _write_tiny_modelopt_llama(str(tmp_path)).to(dev)
     config = AutoConfig.from_pretrained(str(tmp_path))
     plan = arm_modelopt_fp8_loading(config, verbose = False)
     kwargs = {}
@@ -445,7 +448,7 @@ def test_tiny_modelopt_llama_round_trip(tmp_path, dequantize):
     extra = {"dequantize": True} if dequantize else {}
     kwargs["quantization_config"] = FineGrainedFP8Config.from_dict(dict(plan), **extra)
     model = AutoModelForCausalLM.from_pretrained(
-        str(tmp_path), config = config, dtype = torch.bfloat16, device_map = "cuda", **kwargs
+        str(tmp_path), config = config, dtype = torch.bfloat16, device_map = dev, **kwargs
     )
     q_proj = model.model.layers[0].self_attn.q_proj
     if dequantize:
@@ -454,7 +457,7 @@ def test_tiny_modelopt_llama_round_trip(tmp_path, dequantize):
     else:
         assert q_proj.weight.dtype == torch.float8_e4m3fn
         assert float(q_proj.activation_scale) == pytest.approx(0.02)
-    x = torch.randint(0, 512, (2, 32), device = "cuda")
+    x = torch.randint(0, 512, (2, 32), device = dev)
     with torch.no_grad():
         got = model(x).logits.float()
         want = reference(x).logits.float()
@@ -479,7 +482,7 @@ def test_rewrite_follows_who_loads_the_weights():
     assert "AUTO_QUANTIZATION_CONFIG_MAPPING[quant_method]" not in vision_source
 
 
-@pytest.mark.skipif(not has_real_cuda(), reason = "FastModel loads need an accelerator")
+@pytest.mark.skipif(not has_real_accelerator(), reason = "FastModel loads need an accelerator")
 def test_a_declined_modelopt_format_still_refuses_to_load_in_process(tmp_path):
     """Subprocess: FastModel compiles and rebinds the Llama classes process-wide before it refuses."""
     import subprocess
@@ -515,7 +518,9 @@ else:
 
 
 @needs_per_tensor_fp8
-@pytest.mark.skipif(not has_real_cuda(), reason = "FastLanguageModel loads need an accelerator")
+@pytest.mark.skipif(
+    not has_real_accelerator(), reason = "FastLanguageModel loads need an accelerator"
+)
 def test_fast_llama_checks_fp8_hardware_on_the_rewritten_config(tmp_path):
     """Subprocess: FastLanguageModel patches the Llama classes process-wide."""
     import subprocess
@@ -544,9 +549,12 @@ def test_config_branch_moves_rope_extension_onto_the_config():
     import inspect
     from unsloth.models import llama
 
+    import re
+
     source = inspect.getsource(llama.FastLlamaModel.from_pretrained)
-    branch = source.split("if user_config is not None or _modelopt_rewritten", 1)[1]
-    branch = branch.split("AutoModelForCausalLM.from_pretrained(", 1)[0]
+    # The condition may wrap over several lines once it grows.
+    start = re.search(r"if \(?\s*user_config is not None\s+or _modelopt_rewritten", source)
+    branch = source[start.end() :].split("AutoModelForCausalLM.from_pretrained(", 1)[0]
     assert 'kwargs.pop("rope_scaling", None)' in branch
 
 
@@ -646,7 +654,7 @@ def test_tiny_modelopt_llama_loads_a_classification_head(tmp_path):
     from transformers import AutoConfig, AutoModelForSequenceClassification
     from unsloth.models.modelopt_fp8 import keep_task_heads_unquantized
 
-    if torch.cuda.get_device_capability()[0] < 9:
+    if dev == "cuda" and torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("fp8 matmul needs sm_89+")
     _write_tiny_modelopt_llama(str(tmp_path))
     config = AutoConfig.from_pretrained(str(tmp_path), num_labels = 2, pad_token_id = 0)
@@ -655,13 +663,13 @@ def test_tiny_modelopt_llama_loads_a_classification_head(tmp_path):
     kwargs = {}
     pop_modelopt_key_mapping(config, kwargs)
     model = AutoModelForSequenceClassification.from_pretrained(
-        str(tmp_path), config = config, dtype = torch.bfloat16, device_map = "cuda", **kwargs
+        str(tmp_path), config = config, dtype = torch.bfloat16, device_map = dev, **kwargs
     )
     assert type(model.score) is nn.Linear
     assert model.score.weight.dtype == torch.bfloat16
     assert model.model.layers[0].self_attn.q_proj.weight.dtype == torch.float8_e4m3fn
-    x = torch.randint(1, 512, (2, 16), device = "cuda")
-    out = model(x, labels = torch.tensor([0, 1], device = "cuda"))
+    x = torch.randint(1, 512, (2, 16), device = dev)
+    out = model(x, labels = torch.tensor([0, 1], device = dev))
     out.loss.backward()
     assert torch.isfinite(out.loss)
     assert model.score.weight.grad is not None and model.score.weight.grad.abs().sum() > 0
@@ -684,7 +692,7 @@ def test_both_loaders_hand_the_planner_the_rewritten_plan():
 
 @needs_per_tensor_fp8
 @pytest.mark.skipif(
-    not has_real_cuda(), reason = "transformers dequantizes fp8 to bf16 without an accelerator"
+    not has_real_accelerator(), reason = "transformers dequantizes fp8 to bf16 without an accelerator"
 )
 def test_the_planner_sizes_a_modelopt_checkpoint_from_the_rewritten_plan(tmp_path):
     from transformers import AutoConfig, LlamaConfig
@@ -846,7 +854,7 @@ def test_merged_save_detects_a_rewritten_modelopt_checkpoint_as_fp8(tmp_path, mo
 
 
 @needs_per_tensor_fp8
-@pytest.mark.skipif(not has_real_cuda(), reason = "FastLanguageModel loads need an accelerator")
+@pytest.mark.skipif(not has_real_cuda(), reason = "FastLanguageModel loads need CUDA")
 def test_merged_16bit_save_of_a_modelopt_lora_reloads_without_unsloth(tmp_path):
     """Subprocess: FastLanguageModel patches the Llama classes process-wide."""
     import subprocess
@@ -855,7 +863,7 @@ def test_merged_16bit_save_of_a_modelopt_lora_reloads_without_unsloth(tmp_path):
     from tokenizers import Tokenizer, models, pre_tokenizers
     from transformers import PreTrainedTokenizerFast
 
-    if torch.cuda.get_device_capability()[0] < 9:
+    if dev == "cuda" and torch.cuda.get_device_capability()[0] < 9:
         pytest.skip("fp8 matmul needs sm_89+")
     ckpt, merged = tmp_path / "ckpt", tmp_path / "merged"
     ckpt.mkdir()
@@ -876,7 +884,7 @@ with torch.no_grad():
     for name, p in model.named_parameters():
         if "lora_B" in name:
             p.normal_(0, 0.02)
-x = torch.randint(0, 512, (2, 32), device = "cuda")
+x = torch.randint(0, 512, (2, 32), device = {dev!r})
 model.eval()
 with torch.no_grad():
     lora = model.base_model.model.model.layers[0].self_attn.q_proj
@@ -893,11 +901,11 @@ model.save_pretrained_merged({str(merged)!r}, tok, save_method = "merged_16bit")
 import sys, torch
 from transformers import AutoModelForCausalLM
 x, want, expected = torch.load({str(tmp_path / "want.pt")!r})
-model = AutoModelForCausalLM.from_pretrained({str(merged)!r}, dtype = torch.bfloat16).cuda()
+model = AutoModelForCausalLM.from_pretrained({str(merged)!r}, dtype = torch.bfloat16).to({dev!r})
 assert "unsloth" not in sys.modules
 q = model.model.layers[0].self_attn.q_proj.weight
 with torch.no_grad():
-    got = model(x.cuda()).logits.float().cpu()
+    got = model(x.to({dev!r})).logits.float().cpu()
 w_rel = float((q.float().cpu() - expected).norm() / expected.norm())
 print("CHECK", q.dtype, w_rel, float((got - want).norm() / want.norm()))
 """

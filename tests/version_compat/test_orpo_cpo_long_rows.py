@@ -88,6 +88,8 @@ def _tokenize_row(trainer, patched):
             assert new != src, "row cap anchor not found in this TRL tokenize_row"
         src = new
     ns = dict(vars(module))
+    # TRL 1.15+ warns through accelerate's logger, which needs a PartialState this harness never builds.
+    ns["logger"] = SimpleNamespace(warning_once = lambda *a, **k: None, warning = lambda *a, **k: None)
     exec(src, ns)
     exec(textwrap.dedent(methods["build_tokenized_answer"]), ns)
     fake = SimpleNamespace(
@@ -154,3 +156,11 @@ def test_unpatched_trl_row_overflows(name):
     prompt, chosen, rejected = LONG_ROWS["long_prompt"]
     out = _tokenize_row(trainer, False)({"prompt": prompt, "chosen": chosen, "rejected": rejected})
     assert len(out["chosen_input_ids"]) > 32
+
+
+@pytest.mark.parametrize("name", ["orpo", "cpo"])
+def test_the_row_cap_anchors_on_this_trl(name):
+    src = textwrap.dedent(_trainer(name)[1]["tokenize_row"])
+    if "max_prompt_length" in src:
+        pytest.skip("this TRL truncates the prompt itself")
+    assert "_unsloth_ul" in _row_cap()("tokenize_row", src)

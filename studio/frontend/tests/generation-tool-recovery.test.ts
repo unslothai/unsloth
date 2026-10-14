@@ -23,6 +23,10 @@ const { createGenerationToolRecovery } = await import(
 const { RUN_CHECKPOINT_INTERVAL_MS } = await import(
   "../src/features/chat/utils/run-checkpoint-scheduler.ts"
 );
+const {
+  providerCompactionConnectionKey,
+  providerCompactionReplayToolCallCount,
+} = await import("../src/features/chat/utils/provider-compaction.ts");
 
 const start = (id = "call_0") => ({
   type: "tool_start",
@@ -50,6 +54,76 @@ test("replay adds new cards and applies their results", () => {
     pending.result,
     undefined,
     "published snapshots must not be mutated",
+  );
+});
+
+test("recovery keeps provider compaction at its tool-call boundary", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(
+    {
+      type: "tool_start",
+      tool_call_id: "hosted_0",
+      tool_name: "web_search",
+      arguments: { _server_tool: true },
+    },
+    0,
+    1,
+  );
+  replay(
+    { type: "tool_end", tool_call_id: "hosted_0", result: "hosted" },
+    0,
+    2,
+  );
+  replay(start(), 12, 3);
+  replay(end(), 20, 4);
+
+  assert.deepEqual(
+    replay(
+      {
+        _toolEvent: {
+          type: "compaction_block",
+          content: "Earlier conversation summary",
+          encrypted_content: "opaque-compaction",
+        },
+      },
+      20,
+      5,
+    ),
+    {
+      providerCompaction: {
+        type: "compaction",
+        content: "Earlier conversation summary",
+        encrypted_content: "opaque-compaction",
+      },
+      providerCompactionAfterToolCalls: 1,
+    },
+  );
+});
+
+test("provider compaction boundaries match replayable call serialization", () => {
+  assert.equal(
+    providerCompactionReplayToolCallCount([
+      {
+        type: "tool-call",
+        toolName: "studio_load_skill",
+        result: "loaded",
+      },
+      {
+        type: "tool-call",
+        toolName: "web_search",
+        args: { _server_tool: true },
+        result: "hosted",
+      },
+      {
+        type: "tool-call",
+        toolName: "web_search",
+        args: { google: { native_part: { functionCall: {} } } },
+      },
+      { type: "tool-call", toolName: "edit_file" },
+      { type: "tool-call", toolName: "edit_file", result: "ok" },
+    ]),
+    2,
   );
 });
 
@@ -160,6 +234,33 @@ test("sandbox results retain files, images and the run's session", () => {
     images: ["plot.png"],
     sessionId: "saved-session",
   });
+});
+
+test("an edit_file result is wrapped only when it created a file", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start("a"), 0, 1);
+  replay(
+    {
+      ...end("a"),
+      result: 'Created index.html (2 lines)\n__FILES__:[{"name":"index.html","size":12}]',
+    },
+    0,
+    2,
+    "saved-session",
+  );
+  replay(start("b"), 0, 3);
+  replay({ ...end("b"), result: "Edited index.html (1 replacement)" }, 0, 4, "saved-session");
+  assert.deepEqual((carried[0].part as Record<string, unknown>).result, {
+    text: "Created index.html (2 lines)",
+    files: [{ name: "index.html", size: 12 }],
+    images: [],
+    sessionId: "saved-session",
+  });
+  assert.equal(
+    (carried[1].part as Record<string, unknown>).result,
+    "Edited index.html (1 replacement)",
+  );
 });
 
 test("MCP image results remain structured and malformed envelopes remain readable", () => {
@@ -397,7 +498,15 @@ async function recoverRun(
     assistantMessageId: "msg",
     status: options.stallBefore ? "running" : "completed",
     lastEventSeq: options.stallBefore ?? payloads.length,
-    requestPayload: { model: "test", session_id: "saved-session" },
+    requestPayload: {
+      model: "claude-test",
+      provider_id: "provider-a",
+      provider_type: "anthropic",
+      provider_base_url: "https://api.anthropic.com/v1",
+      provider_api_type: "chat_completions",
+      external_model: "claude-test",
+      session_id: "saved-session",
+    },
     createdAt: 1,
     startedAt: 1,
     completedAt: 100,
@@ -406,6 +515,7 @@ async function recoverRun(
     ...recovery,
     ...parser,
     createGenerationToolRecovery,
+    providerCompactionConnectionKey,
     RUN_CHECKPOINT_INTERVAL_MS,
     generationRecoveries,
     useChatRuntimeStore: { getState: () => runtime },
@@ -502,6 +612,41 @@ test("the recovery scheduler persists later tool events between reasoning groups
       .filter((part) => part.type === "reasoning")
       .map((part) => part.text),
     ["before", "after"],
+  );
+});
+
+test("the recovery scheduler persists provider compaction metadata", async () => {
+  const { snapshots } = await recoverRun(
+    [],
+    [
+      start(),
+      end(),
+      {
+        _toolEvent: {
+          type: "compaction_block",
+          content: "Earlier conversation summary",
+          encrypted_content: "opaque-compaction",
+        },
+      },
+      { choices: [{ delta: { content: "done" } }] },
+    ],
+  );
+  const metadata = snapshots.at(-1)?.metadata;
+  assert.deepEqual(metadata?.providerCompaction, {
+    type: "compaction",
+    content: "Earlier conversation summary",
+    encrypted_content: "opaque-compaction",
+  });
+  assert.equal(metadata?.providerCompactionAfterToolCalls, 1);
+  assert.equal(metadata?.providerCompactionProviderType, "anthropic");
+  assert.equal(metadata?.providerCompactionModelId, "claude-test");
+  assert.equal(
+    metadata?.providerCompactionConnectionKey,
+    providerCompactionConnectionKey(
+      "provider-a",
+      "https://api.anthropic.com/v1",
+      "chat_completions",
+    ),
   );
 });
 
@@ -1409,4 +1554,22 @@ test("each rebuild yields its own source objects", () => {
   assert.notEqual(first, second);
   assert.equal(second.title, "Docs");
   assert.deepEqual(second.metadata, { description: "only" });
+});
+
+test("recovery keeps a model note on the finished card it targets", () => {
+  const carried: Carried[] = [];
+  const replay = createGenerationToolRecovery(carried, "run").apply;
+  replay(start(), 12, 1);
+  replay(end(), 20, 2);
+  const note = {
+    type: "tool_model_note",
+    tool_call_id: "call_0",
+    suffix: "\n\nbudget",
+  };
+  replay({ _toolEvent: note }, 20, 3);
+  replay(note, 20, 3);
+  const part = carried[0].part as Record<string, unknown>;
+  assert.equal(carried.length, 1);
+  assert.equal(part.result, "ok");
+  assert.deepEqual(part.provenance, { model_suffix: "\n\nbudget" });
 });

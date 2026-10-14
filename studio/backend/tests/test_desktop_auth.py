@@ -829,6 +829,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     accounts_module.router = APIRouter()
     library_module = ModuleType("routes.library")
     library_module.router = APIRouter()
+    sandbox_capability_module = ModuleType("routes.sandbox_capability")
+    sandbox_capability_module.router = APIRouter()
     systemone_module = ModuleType("routes.systemone")
     systemone_module.router = APIRouter()
     # main.py mounts the Decisions MCP app from these at import.
@@ -863,6 +865,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.profile_stats", profile_stats_module)
     monkeypatch.setitem(sys.modules, "routes.accounts", accounts_module)
     monkeypatch.setitem(sys.modules, "routes.library", library_module)
+    monkeypatch.setitem(sys.modules, "routes.sandbox_capability", sandbox_capability_module)
     monkeypatch.setitem(sys.modules, "routes.systemone", systemone_module)
 
     import studio.backend.main as backend_main

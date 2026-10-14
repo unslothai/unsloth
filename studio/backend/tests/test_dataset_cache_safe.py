@@ -32,6 +32,36 @@ def _install_fake_datasets(monkeypatch, load_dataset):
     monkeypatch.setattr("loggers.config.quiet_third_party_progress_bars", lambda: None)
 
 
+_UNSET = object()
+
+
+@pytest.fixture(autouse = True)
+def _restore_process_symlink_state():
+    """_disable_hf_symlinks_for_process changes the env var and Hub's live flag for the whole worker.
+
+    A test that calls it without patching both first left HF_HUB_DISABLE_SYMLINKS=1 and
+    constants.HF_HUB_DISABLE_SYMLINKS=True behind, so every later test in that xdist worker cached
+    regular files instead of symlinks (test_gguf_header_delta's blob layout failed on CI that way).
+    `monkeypatch.delenv(..., raising = False)` on an unset variable records nothing to undo, so
+    restore all three pieces here whatever the test did.
+    """
+    from huggingface_hub import constants, file_download
+
+    env = os.environ.get("HF_HUB_DISABLE_SYMLINKS", _UNSET)
+    flag = vars(constants).get("HF_HUB_DISABLE_SYMLINKS", _UNSET)
+    support = file_download._are_symlinks_supported_in_dir
+    yield
+    if env is _UNSET:
+        os.environ.pop("HF_HUB_DISABLE_SYMLINKS", None)
+    else:
+        os.environ["HF_HUB_DISABLE_SYMLINKS"] = env
+    if flag is _UNSET:
+        vars(constants).pop("HF_HUB_DISABLE_SYMLINKS", None)
+    else:
+        constants.HF_HUB_DISABLE_SYMLINKS = flag
+    file_download._are_symlinks_supported_in_dir = support
+
+
 def _isolate_hub_symlink_state(monkeypatch):
     """Keep _disable_hf_symlinks_for_process from leaking into other tests."""
     from huggingface_hub import constants, file_download

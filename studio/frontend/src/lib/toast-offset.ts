@@ -7,7 +7,9 @@ const HEADER_TOP_OFFSET = 52;
 const DESKTOP_TITLEBAR_HEIGHT = 34;
 
 export const CHAT_SETTINGS_INSET_VAR = "--studio-chat-settings-inset";
-// Only the widest card scales with --ui-space-scale; the download panel and rail gutters do not.
+// the desktop browser panel sets this while its native page spans the toast area and adjacent settings
+export const BROWSER_PAGE_INSET_VAR = "--studio-browser-page-inset";
+// only the widest card scales with --ui-space-scale; the download panel and rail gutters stay fixed
 const CORNER_CARD_MAX_WIDTH = 448;
 const DOWNLOAD_PANEL_WIDTH = 400;
 const CORNER_CARD_GUTTERS = 44;
@@ -66,7 +68,52 @@ export function insetPastChatSettings(offset: ToastOffset): {
 } {
   return {
     top: offset.top,
-    right: `calc(${offset.right}px + var(${CHAT_SETTINGS_INSET_VAR}, 0px))`,
+    right: `calc(${offset.right}px + max(var(${CHAT_SETTINGS_INSET_VAR}, 0px), var(${BROWSER_PAGE_INSET_VAR}, 0px)))`,
+  };
+}
+
+type InsetStyle = Pick<
+  CSSStyleDeclaration,
+  "setProperty" | "removeProperty" | "getPropertyValue"
+>;
+
+const insetScopes = new Set<HTMLElement>();
+const insetValues = new Map<string, string>();
+
+function removeCornerInset(name: string): string {
+  const previous = insetValues.get(name) ?? "";
+  insetValues.delete(name);
+  for (const scope of insetScopes) scope.style.removeProperty(name);
+  return previous;
+}
+
+function setCornerInset(name: string, value: string | null): void {
+  if (!value) {
+    removeCornerInset(name);
+    return;
+  }
+  insetValues.set(name, value);
+  for (const scope of insetScopes) scope.style.setProperty(name, value);
+}
+
+export const cornerInsets: { style: InsetStyle } = {
+  style: {
+    setProperty: setCornerInset,
+    removeProperty: removeCornerInset,
+    getPropertyValue: (name: string) => insetValues.get(name) ?? "",
+  },
+};
+
+export function cornerInsetScope(
+  element: HTMLElement | null,
+): (() => void) | undefined {
+  if (!element) return undefined;
+  insetScopes.add(element);
+  for (const [name, value] of insetValues) {
+    element.style.setProperty(name, value);
+  }
+  return () => {
+    insetScopes.delete(element);
   };
 }
 

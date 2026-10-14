@@ -4,6 +4,7 @@
 """audio.cpp GGUFs: recognising them by header, resolving ids and variants, their files in the HF
 cache, and the worker backend's request shaping."""
 
+import asyncio
 import base64
 import io
 import json
@@ -70,6 +71,7 @@ def hub(tmp_path, monkeypatch):
     monkeypatch.setattr(acm, "_hub_cache", lambda: root)
     monkeypatch.setattr(audio_cpp_files, "_hub_cache", lambda: root)
     monkeypatch.setattr(acm, "runtime_spec", lambda family: None)
+    monkeypatch.setattr(acm, "runtime_knows_family", lambda family: None)
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
     acm.forget()
     with acm._resolve_lock:
@@ -314,7 +316,11 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
     for family, tasks, task, server in (
         ("new_tts", ["tts", "clone"], "tts", "tts"),
         ("new_music", ["music"], "music", "gen"),
-        ("new_sep", ["sep"], "", ""),
+        ("new_clone_music", ["clone", "music"], "music", "gen"),
+        ("new_clone_asr", ["clone", "asr"], "asr", "asr"),
+        ("new_clone_only", ["clone"], "tts", "clon"),
+        ("new_sep", ["sep"], "sep", "sep"),
+        ("new_vad", ["vad"], "", ""),
     ):
         repo = f"someone/{family}-GGUF"
         _put(_snapshot(hub, repo), "m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
@@ -322,15 +328,161 @@ def test_an_unknown_family_follows_its_spec_tasks_or_is_refused(hub):
         assert (model.task, model.server_task) == (task, server)
         assert (model.unsupported is None) == bool(task)
     sep = acm.resolve("someone/new_sep-GGUF", network = False)
-    assert "Source separation" in sep.unsupported
+    assert list(sep.workflows) == ["separate"] and sep.separation is not None
+    acm.require_runnable(sep, "tts")
+    vad = acm.resolve("someone/new_vad-GGUF", network = False)
+    assert "Voice activity detection" in vad.unsupported
+    clone_only = acm.resolve("someone/new_clone_only-GGUF", network = False)
+    assert list(clone_only.workflows) == ["clone"] and clone_only.clone.reference_text == "optional"
+
+
+def test_unsupported_task_tokens_are_refused_by_a_readable_name(hub):
+    for family, tasks, message in (
+        ("smart_turn", ["turn"], "Turn detection models are not supported in Studio yet."),
+        ("new_svc", ["svc"], "Singing voice conversion models are not supported in Studio yet."),
+        ("new_s2s", ["s2s"], "Speech-to-speech models are not supported in Studio yet."),
+        ("new_odd", ["odd_task"], "Studio does not support the 'odd_task' task yet."),
+    ):
+        repo = f"someone/{family}-GGUF"
+        _put(_snapshot(hub, repo), "m-q8_0.gguf", _gguf_bytes(family = family, spec = {"tasks": tasks}))
+        assert acm.resolve(repo, network = False).unsupported == message
+
+
+_REAL_RUNTIME_KNOWS_FAMILY = acm.runtime_knows_family
+
+
+def _fake_runtime(
+    monkeypatch,
+    tmp_path,
+    *,
+    tag = None,
+    specs = None,
+):
+    """An installed audiocpp_server with a prebuilt install record for ``tag``, and a
+    ``model_specs/`` folder beside it when ``specs`` is given."""
+    from core.inference import audio_cpp_server
+
+    root = tmp_path / "audio.cpp"
+    root.mkdir(parents = True)
+    binary = root / "audiocpp_server"
+    binary.write_bytes(b"\x7fELF")
+    if tag is not None:
+        (root / audio_cpp_server.INSTALL_RECORD).write_text(json.dumps({"release_tag": tag}))
+    if specs is not None:
+        (root / "model_specs").mkdir()
+        for name in specs:
+            (root / "model_specs" / f"{name}.json").write_text(json.dumps({"family": name}))
+    monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: str(binary))
+    return binary
+
+
+def test_the_spec_family_list_matches_the_pinned_runtime():
+    import importlib.util
+
+    from core.inference.audio_cpp_spec_families import (
+        AUDIO_CPP_SPEC_FAMILIES,
+        AUDIO_CPP_SPEC_FAMILIES_TAG,
+    )
+
+    installer = Path(__file__).resolve().parents[2] / "install_audio_cpp_prebuilt.py"
+    spec = importlib.util.spec_from_file_location("_audio_cpp_installer", installer)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert AUDIO_CPP_SPEC_FAMILIES_TAG == module.DEFAULT_TAG
+    for family in ("crisperwhisper", "index_echo", "audio_flamingo", "kugelaudio", "smart_turn"):
+        assert family not in AUDIO_CPP_SPEC_FAMILIES
+    for family in ("samsone", "gigaam_asr", "maya1"):
+        assert family in AUDIO_CPP_SPEC_FAMILIES
+    assert set(acm.FAMILIES) - AUDIO_CPP_SPEC_FAMILIES == {"marblenet_vad", "silero_vad"}
+
+
+def test_runtime_knows_a_family_from_its_specs_or_the_pinned_list(monkeypatch, tmp_path):
+    from core.inference import audio_cpp_server
+    from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
+
+    monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: None)
+    assert acm.runtime_knows_family("samsone") is None
+    _fake_runtime(monkeypatch, tmp_path / "pinned", tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
+    assert acm.runtime_knows_family("samsone") is True
+    assert acm.runtime_knows_family("crisperwhisper") is False
+    _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
+    assert acm.runtime_knows_family("crisperwhisper") is None
+    _fake_runtime(monkeypatch, tmp_path / "custom")
+    assert acm.runtime_knows_family("crisperwhisper") is None
+    _fake_runtime(
+        monkeypatch, tmp_path / "specs", tag = AUDIO_CPP_SPEC_FAMILIES_TAG, specs = ("crisperwhisper",)
+    )
+    assert acm.runtime_knows_family("crisperwhisper") is True
+    assert acm.runtime_knows_family("samsone") is False
+
+
+def test_a_spec_fallback_family_the_runtime_lacks_is_refused(hub, monkeypatch, tmp_path):
+    from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
+
+    # The hub fixture leaves the runtime out of reach; this test installs one.
+    monkeypatch.setattr(acm, "runtime_knows_family", _REAL_RUNTIME_KNOWS_FAMILY)
+    _fake_runtime(monkeypatch, tmp_path, tag = AUDIO_CPP_SPEC_FAMILIES_TAG)
+    for family, folder, tasks in (
+        ("gigaam_asr", "GigaAM-v3-GGUF", ["asr"]),
+        ("crisperwhisper", "CrisperWhisper2.0-GGUF", ["asr"]),
+        ("kugelaudio", "KugelAudio-0-Open-GGUF", ["tts"]),
+    ):
+        _put(
+            _snapshot(hub),
+            f"{folder}/m-q8_0.gguf",
+            _gguf_bytes(family = family, spec = {"tasks": tasks}),
+        )
+    gigaam = acm.resolve(f"{AUDIO_CPP_REPO}/GigaAM-v3-GGUF", network = False)
+    assert (gigaam.task, gigaam.unsupported) == ("asr", None)
+    crisper = acm.resolve(f"{AUDIO_CPP_REPO}/CrisperWhisper2.0-GGUF", network = False)
+    assert crisper.task == "" and crisper.workflows == {}
+    assert crisper.unsupported == (
+        "CrisperWhisper2.0-GGUF needs a newer audio runtime than the one installed."
+    )
+    kugel = acm.resolve(f"{AUDIO_CPP_REPO}/KugelAudio-0-Open-GGUF", network = False)
+    assert "needs a newer audio runtime" in kugel.unsupported
+    assert acm.family_policy("silero_vad").unsupported.startswith("Voice activity detection")
+    assert acm.family_policy("kokoro_tts").task == "tts"
+    assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).unsupported == (
+        "crisperwhisper needs a newer audio runtime than the one installed."
+    )
+    _fake_runtime(monkeypatch, tmp_path / "newer", tag = "v9.9.9-unsloth.1")
+    assert acm.family_policy("crisperwhisper", {"tasks": ["asr"]}).task == "asr"
 
 
 def test_known_task_families_are_refused_with_a_reason(hub):
-    _put(_snapshot(hub), "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
-    model = acm.resolve(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF", network = False)
-    assert "Source separation" in model.unsupported
+    _put(
+        _snapshot(hub),
+        "Sortformer-Diar-GGUF/sortformer-diar-q8_0.gguf",
+        _gguf_bytes(family = "sortformer_diar"),
+    )
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/Sortformer-Diar-GGUF", network = False)
+    assert "Speaker diarization" in model.unsupported
     with pytest.raises(acm.AudioCppModelError):
         acm.require_runnable(model, "tts")
+
+
+@pytest.mark.parametrize(
+    "folder, family",
+    [
+        ("HTDemucs-GGUF", "htdemucs"),
+        ("HTDemucs-6stems-GGUF", "htdemucs_6stems"),
+        ("BS-RoFormer-ep368-GGUF", "bs_roformer"),
+        ("Mel-Band-RoFormer-GGUF", "mel_band_roformer"),
+    ],
+)
+def test_separation_families_resolve_runnable(hub, folder, family):
+    _put(_snapshot(hub), f"{folder}/{folder.lower()}-q8_0.gguf", _gguf_bytes(family = family))
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    assert (model.family, model.task, model.server_task) == (family, "sep", "sep")
+    assert model.unsupported is None and model.options == ()
+    assert (model.audio_type, model.hub_task) == ("audiocpp_sep", "audio-to-audio")
+    assert model.workflows == {"separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",))}
+    assert model.separation == acm.FAMILIES[family].separation
+    acm.require_runnable(model, "tts")
+    with pytest.raises(acm.AudioCppModelError, match = "not a speech-to-text model"):
+        acm.require_runnable(model, "asr")
+    assert acm.family_from_names([folder]) == family
 
 
 def test_qwen3_tts_package_kind_comes_from_its_name(hub):
@@ -352,7 +504,159 @@ def test_qwen3_tts_package_kind_comes_from_its_name(hub):
         voice["default"] == "vivian" and len(voice["values"]) == 9 and "uncle_fu" in voice["values"]
     )
     assert not any(o["name"] == "voice" for o in design.options)
-    assert "reference voice" in base.unsupported
+    assert base.unsupported is None and list(base.workflows) == ["clone"]
+    assert base.clone.reference_text == "required" and base.clone.language_names
+    assert [o["name"] for o in base.clone.tool_options] == ["x_vector_only_mode"]
+    assert list(custom.workflows) == ["speak"] and list(design.workflows) == ["speak"]
+
+
+# family -> (server task, speaks, reference_text), from the audio.cpp sources.
+_CLONE_TABLE = {
+    "chatterbox": ("clon", False, "unused"),
+    "f5_tts": ("tts", False, "required"),
+    "index_tts2": ("tts", False, "unused"),
+    "cosyvoice3": ("tts", False, "required"),
+    "voxcpm2": ("tts", True, "optional"),
+    "fish_audio": ("tts", True, "required"),
+    "echo_tts": ("clon", False, "unused"),
+    "confucius4_tts": ("clon", False, "unused"),
+    "fireredtts3": ("tts", False, "optional"),
+    "firered_audio": ("tts", False, "optional"),
+    "vevo2": ("tts", False, "unused"),
+    "miotts": ("tts", False, "unused"),
+    "breeze_tts": ("tts", True, "required"),
+    "omnivoice": ("tts", True, "required"),
+    "voxcpm1": ("tts", True, "required"),
+    "dots_tts": ("tts", True, "optional"),
+    "higgs_audio_tts": ("tts", True, "optional"),
+    "moss_tts_local": ("tts", True, "unused"),
+    "moss_tts_nano": ("tts", True, "unused"),
+    "irodori_tts": ("tts", True, "unused"),
+    "pocket_tts": ("tts", True, "unused"),
+}
+
+
+# family -> (load task, mode -> server task, target, source rate)
+_CONVERT_TABLE = {
+    "rvc": ("vc", {"speech": "vc"}, "builtin", 16000),
+    "seed_vc": ("vc", {"speech": "vc", "singing": "svc"}, "audio", 44100),
+    "meanvc2": ("vc", {"speech": "vc"}, "audio", 16000),
+    "chatterbox": ("clon", {"speech": "vc"}, "audio", 16000),
+    "vevo2": ("tts", {"speech": "vc", "singing": "svc"}, "audio", 24000),
+    "tone_color_vc": ("vc", {"speech": "vc"}, "audio", 22050),
+}
+
+
+def test_every_task_family_binds_its_workflows():
+    workflow_for = {"tts": "speak", "music": "music", "asr": "transcribe", "sep": "separate"}
+    endpoint_for = {
+        "speak": "speech",
+        "music": "tasks",
+        "transcribe": "transcriptions",
+        "separate": "tasks",
+    }
+    for family in acm.FAMILIES.values():
+        # Edit is checked by its own table below.
+        bindings = {k: v for k, v in family.workflows.items() if k != "edit"}
+        if not family.task:
+            assert bindings == {}, family.family
+            continue
+        if family.convert is not None:
+            load_task, modes, target, source_rate = _CONVERT_TABLE[family.family]
+            assert family.default_server_task == load_task, family.family
+            assert family.convert.server_tasks == modes, family.family
+            assert family.convert.target == target, family.family
+            convert = bindings["convert"]
+            assert (convert.endpoint, convert.server_task, family.convert.source_rate) == (
+                "tasks",
+                modes["speech"],
+                source_rate,
+            ), family.family
+            assert convert.inputs == ("source", "target", "source_text")
+            if family.clone is None:
+                assert list(bindings) == ["convert"], family.family
+                continue
+        if family.clone is not None:
+            server_task, speaks, reference_text = _CLONE_TABLE[family.family]
+            expected = (["speak"] if speaks else []) + ["clone"]
+            if family.convert is not None:
+                expected.append("convert")
+            assert list(bindings) == expected, family.family
+            assert family.default_server_task == server_task, family.family
+            assert family.clone.reference_text == reference_text, family.family
+            clone = bindings["clone"]
+            assert (clone.endpoint, clone.server_task) == ("speech", server_task)
+            continue
+        assert family.family not in _CLONE_TABLE
+        ((workflow, binding),) = bindings.items()
+        assert workflow == workflow_for[family.task], family.family
+        assert binding.endpoint == endpoint_for[workflow]
+        assert binding.server_task == family.default_server_task
+    assert set(_CLONE_TABLE) == {f.family for f in acm.FAMILIES.values() if f.clone is not None}
+    assert set(_CONVERT_TABLE) == {f.family for f in acm.FAMILIES.values() if f.convert is not None}
+    # Chatterbox-Turbo is its own family and still speaks.
+    assert list(acm.FAMILIES["chatterbox_turbo"].workflows) == ["speak"]
+    assert acm.FAMILIES["chatterbox_turbo"].default_server_task == "tts"
+    assert acm.family_from_names(["Chatterbox-Turbo-GGUF", "chatterbox-turbo-q8_0.gguf"]) == (
+        "chatterbox_turbo"
+    )
+    base = acm.family_policy("fireredtts3", names = ["FireRedTTS3-Base-GGUF"])
+    assert base.default_server_task == "clon" and list(base.workflows) == ["clone"]
+    (codec,) = acm.FAMILIES["miotts"].companions
+    assert codec.id == f"{AUDIO_CPP_REPO}/MioCodec-25Hz-44.1kHz-v2-GGUF"
+    assert (codec.variant, codec.session_option) == ("Q8_0", "miotts.codec_model_path")
+    assert "pick MioTTS" in acm.family_policy("miocodec").unsupported
+    assert acm.FAMILIES["kokoro_tts"].workflows["speak"].server_task == "tts"
+    assert acm.FAMILIES["moss_voicegen"].workflows["speak"].server_task == "vdes"
+    assert acm.FAMILIES["ace_step"].workflows["music"] == acm.WorkflowBinding(
+        "gen", "tasks", None, ("text", "lyrics", "duration_seconds")
+    )
+    assert acm.FAMILIES["moonshine_asr"].workflows["transcribe"].inputs == ("audio",)
+    design = acm.family_policy("qwen3_tts", names = ["Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"])
+    assert design.workflows["speak"].server_task == "vdes"
+    assert acm.family_policy("htdemucs").workflows == {
+        "separate": acm.WorkflowBinding("sep", "tasks", None, ("audio",))
+    }
+
+
+def test_edit_families_bind_the_edit_workflow():
+    edit_names = ["DotTTS-Edit-GGUF", "dots-tts-edit-q8_0.gguf"]
+    dots_edit = acm.family_policy("dots_tts", names = edit_names)
+    binding = dots_edit.workflows["edit"]
+    assert list(dots_edit.workflows) == ["speak", "clone", "edit"]
+    assert (binding.server_task, binding.endpoint) == ("tts", "tasks")
+    for names in (["DotTTS-MF-GGUF"], ["DotTTS-SOAR-GGUF"], []):
+        assert list(acm.family_policy("dots_tts", names = names).workflows) == [
+            "speak",
+            "clone",
+        ], names
+    vevo2, firered = acm.FAMILIES["vevo2"], acm.FAMILIES["firered_audio"]
+    assert list(firered.workflows) == ["clone", "edit"]
+    # Vevo2 also converts a voice.
+    assert list(vevo2.workflows) == ["clone", "edit", "convert"]
+    # Vevo2 edits in an s2s session though it loads as tts.
+    assert vevo2.default_server_task == "tts"
+    assert (vevo2.workflows["edit"].server_task, vevo2.workflows["edit"].route) == (
+        "s2s",
+        "editing",
+    )
+    assert firered.workflows["edit"].server_task == "tts"
+    assert {n for n, f in acm.FAMILIES.items() if f.edit is not None} == {"vevo2", "firered_audio"}
+    assert acm.family_policy("auk").unsupported
+    for family in (dots_edit, vevo2, firered):
+        hash(family)
+
+
+def test_a_resolved_model_carries_its_workflow_binding(hub):
+    snap = _snapshot(hub)
+    folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
+    _put(snap, f"{folder}/{folder.lower()}-q8_0.gguf", _gguf_bytes(family = "qwen3_tts"))
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False)
+    assert list(model.workflows) == ["speak"] and model.workflows["speak"].server_task == "vdes"
+    _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
+    assert list(acm.resolve(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF", network = False).workflows) == [
+        "separate"
+    ]
 
 
 def test_sub_folders_and_same_quant_files_become_named_variants(hub):
@@ -375,6 +679,94 @@ def test_sub_folders_and_same_quant_files_become_named_variants(hub):
     assert acm.resolve(
         f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF/tiny", network = False
     ).variant.key == ("tiny/Q8_0")
+
+
+def _keys(folder, *names):
+    files = [RepoFile(f"{folder}/{name}", 1) for name in names]
+    return [v.key for v in sorted(acm._single_file_variants(files, folder), key = acm._variant_rank)]
+
+
+def test_umbrella_folders_key_and_rank_their_models_by_the_published_names():
+    # Q8_0_V2 is the Q8_0 export and FP32 is F32: both outrank the bigger or unranked files.
+    assert _keys(
+        "Qwen3-TTS-12Hz-1.7B-Base-GGUF",
+        "qwen3-tts-12hz-1.7b-base-bf16.gguf",
+        "qwen3-tts-12hz-1.7b-base-orig.gguf",
+        "qwen3-tts-12hz-1.7b-base-q8_0_v2.gguf",
+    ) == ["Q8_0_V2", "BF16", "orig"]
+    assert _keys(
+        "MeanVC2-GGUF", "meanvc2-120ms-40ms-q4_k.gguf", "meanvc2-120ms-40ms-fp32.gguf"
+    ) == ["FP32", "Q4_K"]
+    # Six models in one folder: an F32 row is named like its F16 sibling.
+    gigaam = [
+        f"gigaam-{name}-f16.gguf"
+        for name in (
+            "multilingual-ctc",
+            "multilingual-large-ctc",
+            "v3-ctc",
+            "v3-e2e-ctc",
+            "v3-e2e-rnnt",
+            "v3-rnnt",
+        )
+    ]
+    assert _keys(
+        "GigaAM-ASR-GGUF",
+        *gigaam,
+        "gigaam-multilingual-ctc-f32.gguf",
+        "gigaam-multilingual-large-ctc-f32.gguf",
+    ) == [
+        "multilingual-ctc/F16",
+        "multilingual-large-ctc/F16",
+        "v3-ctc/F16",
+        "v3-e2e-ctc/F16",
+        "v3-e2e-rnnt/F16",
+        "v3-rnnt/F16",
+        "multilingual-ctc/F32",
+        "multilingual-large-ctc/F32",
+    ]
+    # A dotted version stays one word, and the model with one quant is named too.
+    assert _keys(
+        "Irodori-TTS-v4-Small-GGUF",
+        "irodori-tts-v4-small-f16.gguf",
+        "irodori-tts-v4.1-anime-q8_0.gguf",
+        "irodori-tts-v4-small-q8_0.gguf",
+    ) == ["v4-small/Q8_0", "v4.1-anime/Q8_0", "v4-small/F16"]
+
+
+def test_umbrella_keys_saved_settings_name_stay_the_same():
+    assert _keys(
+        "Moonshine-Streaming-GGUF",
+        "moonshine-streaming-tiny-q8_0.gguf",
+        "moonshine-streaming-medium-q8_0.gguf",
+        "moonshine-streaming-small-q8_0.gguf",
+    ) == ["tiny/Q8_0", "medium/Q8_0", "small/Q8_0"]
+    assert _keys(
+        "Niagara-ASR-GGUF", "niagara-19m-batch.en-f32.gguf", "niagara-38m-batch.en-f32.gguf"
+    ) == ["19m/F32", "38m/F32"]
+    assert _keys(
+        "Samsone-GGUF",
+        *(
+            f"samsone-{size}-{quant}.gguf"
+            for size in ("99m", "134m", "356m")
+            for quant in ("q8_0", "bf16")
+        ),
+    ) == ["134m/Q8_0", "356m/Q8_0", "99m/Q8_0", "134m/BF16", "356m/BF16", "99m/BF16"]
+    assert _keys("UniverSR-GGUF", "universr-audio-orig.gguf", "universr-speech-orig.gguf") == [
+        "audio/orig",
+        "speech/orig",
+    ]
+    assert _keys(
+        "ACE-Step1.5-GGUF",
+        "turbo/ace-step-1.5-turbo-q8_0.gguf",
+        "turbo/ace-step-1.5-turbo-bf16.gguf",
+        "base/ace-step-1.5-base-q8_0.gguf",
+    ) == ["turbo/Q8_0", "turbo/BF16", "base/Q8_0"]
+    assert _keys(
+        "PocketTTS-GGUF",
+        "english/pocket-tts-english-q8_0.gguf",
+        "english/pocket-tts-english-bf16.gguf",
+        "german/pocket-tts-german-q8_0.gguf",
+    ) == ["english/Q8_0", "english/BF16", "german/Q8_0"]
 
 
 def _minimax(root, *, quant = "q4_0"):
@@ -468,6 +860,313 @@ def test_voice_embeddings_ride_with_the_gguf_they_sit_beside():
     assert english.download_size_bytes == 15
 
 
+GIGAAM_FILES = (
+    *(
+        f"gigaam-{name}-f16.gguf"
+        for name in (
+            "multilingual-ctc",
+            "multilingual-large-ctc",
+            "v3-ctc",
+            "v3-e2e-ctc",
+            "v3-e2e-rnnt",
+            "v3-rnnt",
+        )
+    ),
+    "gigaam-multilingual-ctc-f32.gguf",
+    "gigaam-multilingual-large-ctc-f32.gguf",
+)
+GIGAAM_SPEC = {"family": "gigaam_asr", "tasks": ["asr"]}
+
+
+@pytest.mark.parametrize(
+    "folder, spec, published, cached",
+    [
+        ("GigaAM-ASR-GGUF", GIGAAM_SPEC, GIGAAM_FILES, GIGAAM_FILES[2:3]),
+        ("GigaAM-ASR-GGUF", GIGAAM_SPEC, GIGAAM_FILES, (GIGAAM_FILES[0], GIGAAM_FILES[1])),
+        (
+            "Irodori-TTS-v4-Small-GGUF",
+            {"family": "irodori_tts", "tasks": ["tts"]},
+            (
+                "irodori-tts-v4-small-f16.gguf",
+                "irodori-tts-v4.1-anime-q8_0.gguf",
+                "irodori-tts-v4-small-q8_0.gguf",
+            ),
+            ("irodori-tts-v4-small-q8_0.gguf", "irodori-tts-v4.1-anime-q8_0.gguf"),
+        ),
+    ],
+)
+def test_a_hub_variant_key_loads_its_file_from_a_partial_cache(
+    hub, folder, spec, published, cached
+):
+    # STT loads and offline loads list only the cache, where the downloaded files alone name the rows.
+    online = acm._single_file_variants(
+        [RepoFile(f"{folder}/{name}", 1) for name in published], folder
+    )
+    snap = _snapshot(hub)
+    for name in cached:
+        _put(snap, f"{folder}/{name}", _gguf_bytes(family = spec["family"], spec = spec))
+    for name in cached:
+        key = next(v.key for v in online if v.primary == f"{folder}/{name}")
+        acm.forget()
+        model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", key, network = False)
+        assert model.unsupported is None, key
+        assert model.variant.primary == f"{folder}/{name}"
+        assert model.variant.key == key
+
+
+def test_the_folder_name_never_names_a_variant(hub):
+    # Irodori-TTS-v4-Small-GGUF carries the words of v4-small: with only the anime model cached,
+    # v4-small/Q8_0 is missing, not the anime file under that name.
+    folder = "Irodori-TTS-v4-Small-GGUF"
+    spec = {"family": "irodori_tts", "tasks": ["tts"]}
+    _put(
+        _snapshot(hub),
+        f"{folder}/irodori-tts-v4.1-anime-q8_0.gguf",
+        _gguf_bytes(family = "irodori_tts", spec = spec),
+    )
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4-small/Q8_0", network = False)
+    assert "not found" in model.unsupported
+    anime = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", "v4.1-anime/Q8_0", network = False)
+    assert anime.unsupported is None and anime.variant.key == "v4.1-anime/Q8_0"
+
+
+MIOCODEC_Q8 = "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-q8_0.gguf"
+
+
+def test_miotts_downloads_its_codec_with_every_variant():
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+
+    def sib(name):
+        return SimpleNamespace(rfilename = name, size = 5, lfs = {"sha256": name})
+
+    names = [
+        "MioTTS-1.7B-GGUF/miotts-1.7b-q8_0.gguf",
+        "MioTTS-1.7B-GGUF/miotts-1.7b-bf16.gguf",
+        MIOCODEC_Q8,
+        "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-f16.gguf",
+        "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf",
+    ]
+    assert acm.companion_files(names[1], names) == (MIOCODEC_Q8,)
+    assert acm.companion_files(names[4], names) == ()
+    plans = build_gguf_variant_plans([sib(n) for n in names])
+    bf16 = plan_for_variant(plans, "MioTTS-1.7B-GGUF/miotts-1.7b-bf16")
+    assert set(bf16.target_filenames) == {names[1], MIOCODEC_Q8}
+    assert bf16.main_filenames == frozenset({names[1]}) and bf16.download_size_bytes == 10
+    kokoro = plan_for_variant(plans, "Kokoro-82M-GGUF/kokoro-82m-q8_0")
+    assert kokoro.target_filenames == (names[4],)
+
+
+def test_every_umbrella_row_downloads_what_it_lists_and_what_it_prices(hub, monkeypatch):
+    from hub.utils.gguf import gguf_variant_key
+    from hub.utils.gguf_plan import build_gguf_variant_plans, plan_for_variant
+
+    names = [
+        "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf",
+        "Kokoro-82M-GGUF/README.md",
+        "PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf",
+        "PocketTTS-GGUF/english/pocket-tts-english-bf16.gguf",
+        "PocketTTS-GGUF/english/embeddings/alba.safetensors",
+        "PocketTTS-GGUF/english/embeddings/anna.safetensors",
+        "PocketTTS-GGUF/german/pocket-tts-german-q8_0.gguf",
+        "PocketTTS-GGUF/german/embeddings/karl.safetensors",
+        "MioTTS-1.7B-GGUF/miotts-1.7b-q8_0.gguf",
+        "MioTTS-1.7B-GGUF/miotts-1.7b-bf16.gguf",
+        MIOCODEC_Q8,
+        "MioCodec-25Hz-44.1kHz-v2-GGUF/miocodec-25hz-44khz-v2-f16.gguf",
+        *(f"Moonshine-Streaming-GGUF/{n}" for n in CROWDED_FOLDERS["Moonshine-Streaming-GGUF"]),
+    ]
+    _online(monkeypatch, *names, size = 5)
+    plans = build_gguf_variant_plans(
+        [SimpleNamespace(rfilename = n, size = 5, lfs = {"sha256": n}) for n in names]
+    )
+    for folder in (
+        "Kokoro-82M-GGUF",
+        "PocketTTS-GGUF",
+        "MioTTS-1.7B-GGUF",
+        "Moonshine-Streaming-GGUF",
+    ):
+        rows = _rows(f"{AUDIO_CPP_REPO}/{folder}")
+        model = acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = True)
+        companions = [acm.resolve(c.id, c.variant, network = True) for c in model.companions]
+        companion_files = {f.path for c in companions for f in c.variant.files}
+        for variant in model.variants:
+            plan = plan_for_variant(plans, gguf_variant_key(variant.primary))
+            need = {f.path for f in variant.files} | companion_files
+            assert need <= set(plan.target_filenames), variant.key
+            assert plan.download_size_bytes == rows[variant.key].download_size_bytes, variant.key
+
+
+def test_miotts_lists_as_downloaded_only_with_its_codec(hub):
+    from hub.services.models import gguf_variants as gv
+
+    snap = _snapshot(hub)
+    _put(snap, "MioTTS-1.7B-GGUF/miotts-1.7b-q8_0.gguf", _gguf_bytes(family = "miotts"))
+
+    def answer():
+        acm.forget()
+        result = asyncio.run(
+            gv._audio_cpp_variants_answer(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF", None, True)
+        )
+        return result.response.variants[0]
+
+    row = answer()
+    assert row.quant == "Q8_0" and not row.downloaded
+    # The model file without its codec is a download to finish or remove, not a fresh row.
+    assert row.partial
+    codec = _put(snap, MIOCODEC_Q8, _gguf_bytes(family = "miocodec"))
+    row = answer()
+    assert row.downloaded and not row.partial
+    assert row.download_size_bytes == row.size_bytes + codec.stat().st_size
+
+
+def _online(
+    monkeypatch,
+    *published,
+    size = 7,
+):
+    """The Hub listing: what the cache holds plus ``published`` names not downloaded yet."""
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setattr(acm, "_listing_cache", {})
+    monkeypatch.setattr(acm, "_probe_header", lambda *a, **k: None)
+    calls = []
+
+    def listing(repo_id, folder, token):
+        calls.append((repo_id, folder))
+        files = {f.path: f for f in acm._cached_listing(repo_id, folder)}
+        for name in published:
+            if name.startswith(f"{folder}/" if folder else "") and name not in files:
+                files[name] = RepoFile(name, size)
+        return sorted(files.values(), key = lambda f: f.path)
+
+    monkeypatch.setattr(acm, "_hub_listing", listing)
+    return calls
+
+
+def _cancelled(
+    hub,
+    repo,
+    key,
+    paths,
+    size = 7,
+):
+    """A cancelled download of ``key``: its manifest, marker and ``.incomplete`` blobs, nothing linked."""
+    import hashlib
+
+    from hub.utils import download_manifest
+    from hub.utils.download_manifest import ExpectedFile
+
+    blobs = hub / ("models--" + repo.replace("/", "--")) / "blobs"
+    blobs.mkdir(parents = True, exist_ok = True)
+    expected = []
+    for path in paths:
+        sha = hashlib.sha256(path.encode()).hexdigest()
+        (blobs / f"{sha}.incomplete").write_bytes(b"x" * 3)
+        expected.append(ExpectedFile(path = path, size = size, sha256 = sha))
+    assert download_manifest.write_manifest("model", repo, key, expected, "http")
+    download_manifest.write_cancel_marker("model", repo, key, "http")
+
+
+def _rows(repo_id, offline = False):
+    from hub.services.models import gguf_variants as gv
+
+    acm.forget()
+    result = asyncio.run(gv._audio_cpp_variants_answer(repo_id, None, offline))
+    return {row.quant: row for row in result.response.variants}
+
+
+def test_a_cancelled_umbrella_quant_lists_as_partial_and_its_siblings_do_not(hub, monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    folder = "Samsone-GGUF"
+    names = [
+        f"{folder}/samsone-{s}-{q}.gguf" for s in ("99m", "134m", "356m") for q in ("q8_0", "bf16")
+    ]
+    _online(monkeypatch, *names)
+    _put(_snapshot(hub), names[0], _gguf_bytes(family = "samsone"))
+    key = f"{folder}/samsone-356m-bf16"
+    _cancelled(hub, AUDIO_CPP_REPO, key, [f"{key}.gguf"])
+    rows = _rows(f"{AUDIO_CPP_REPO}/{folder}")
+    assert sorted(rows) == sorted(
+        ["99m/Q8_0", "99m/BF16", "134m/Q8_0", "134m/BF16", "356m/Q8_0", "356m/BF16"]
+    )
+    cancelled = rows["356m/BF16"]
+    assert cancelled.partial and not cancelled.downloaded
+    assert cancelled.partial_transport == "http"
+    assert cancelled.download_remaining_bytes is not None
+    assert rows["99m/Q8_0"].downloaded and not rows["99m/Q8_0"].partial
+    assert not any(rows[k].partial for k in ("99m/BF16", "134m/Q8_0", "134m/BF16", "356m/Q8_0"))
+    assert not any(rows[k].partial_transport for k in rows if k != "356m/BF16")
+
+
+def test_miotts_rows_are_partial_only_for_the_variant_whose_codec_is_missing(hub, monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    _online(
+        monkeypatch,
+        "MioTTS-1.7B-GGUF/miotts-1.7b-q8_0.gguf",
+        "MioTTS-1.7B-GGUF/miotts-1.7b-bf16.gguf",
+        MIOCODEC_Q8,
+    )
+    snap = _snapshot(hub)
+    _put(snap, "MioTTS-1.7B-GGUF/miotts-1.7b-q8_0.gguf", _gguf_bytes(family = "miotts"))
+    rows = _rows(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF")
+    assert rows["Q8_0"].partial and not rows["Q8_0"].downloaded
+    assert not rows["BF16"].partial
+    # No download state: priced from the missing codec, not the whole checkpoint.
+    assert rows["Q8_0"].download_remaining_bytes == 7
+    # Offline the codec cannot be resolved: its size is unknown, so no remainder rather than 0.
+    offline = _rows(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF", offline = True)
+    assert offline["Q8_0"].partial
+    assert offline["Q8_0"].download_remaining_bytes != 0
+    _put(snap, MIOCODEC_Q8, b"x" * 7)
+    rows = _rows(f"{AUDIO_CPP_REPO}/MioTTS-1.7B-GGUF")
+    assert rows["Q8_0"].downloaded and not rows["Q8_0"].partial
+    # The shared codec on disk does not make a variant nobody started partial.
+    assert not rows["BF16"].partial and not rows["BF16"].downloaded
+
+
+def test_a_package_mix_with_some_of_its_files_lists_as_partial(hub, monkeypatch):
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    repo = "audio-cpp/MiniMax-Music3-GGUF"
+    q8 = ("language_model_q8_0.gguf", "transformer_q8_0.gguf")
+    bf16 = ("language_model_bf16.gguf", "rvq_depth_decoder_bf16.gguf", "transformer_bf16.gguf")
+    _online(monkeypatch, *q8, *bf16)
+    snap = _minimax(hub)
+    rows = _rows(repo)
+    assert rows["Q4_0"].downloaded and not rows["Q4_0"].partial
+    # Configs and shared components on disk name no one mix.
+    assert not rows["Q8_0"].partial and not rows["BF16"].partial
+    _put(snap, q8[0], b"x" * 7)
+    _cancelled(hub, repo, "BF16", list(bf16))
+    rows = _rows(repo)
+    assert rows["Q8_0"].partial and not rows["Q8_0"].downloaded
+    assert rows["BF16"].partial and rows["BF16"].partial_transport == "http"
+    assert rows["Q4_0"].downloaded and not rows["Q4_0"].partial
+
+
+def test_a_partial_package_mix_prices_every_missing_component(hub, monkeypatch):
+    import hashlib
+
+    from utils import hf_cache_settings
+
+    monkeypatch.setenv("HF_HUB_CACHE", str(hub))
+    paths = hf_cache_settings.HuggingFaceCachePaths(hub.parent, hub, hub.parent / "xet", "studio")
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    repo = "audio-cpp/MiniMax-Music3-GGUF"
+    bf16 = ("language_model_bf16.gguf", "rvq_depth_decoder_bf16.gguf", "transformer_bf16.gguf")
+    _online(monkeypatch, *bf16)
+    snap = _minimax(hub)
+    _cancelled(hub, repo, "BF16", list(bf16))
+    # The language model finished; the other two components hold 3-byte resumable partials.
+    blobs = hub / ("models--" + repo.replace("/", "--")) / "blobs"
+    sha = hashlib.sha256(bf16[0].encode()).hexdigest()
+    (blobs / f"{sha}.incomplete").unlink()
+    (blobs / sha).write_bytes(b"x" * 7)
+    _put(snap, bf16[0], b"x" * 7)
+    row = _rows(repo)["BF16"]
+    assert row.partial and not row.downloaded
+    # Every component counts, and bytes a resume reuses are credited: 21 - 7 - 3 - 3.
+    assert row.download_remaining_bytes == 8
+
+
 def test_download_target_maps_a_folder_row_onto_the_planner_key(hub):
     _kokoro(hub)
     assert acm.download_target(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", "Q8_0") == (
@@ -544,12 +1243,12 @@ def test_windows_refuses_a_model_path_the_server_cannot_open(hub, monkeypatch):
 def test_an_unsupported_model_is_a_runtime_problem(hub):
     from core.inference import audio_cpp_server as srv
     refused = _model(
-        "HTDemucs-GGUF",
-        "htdemucs",
+        "Silero-VAD-GGUF",
+        "silero_vad",
         "",
-        unsupported = "Source separation models are not supported in Studio yet.",
+        unsupported = "Voice activity detection models are not supported in Studio yet.",
     )
-    assert "Source separation" in srv.model_runtime_problem(refused, "x")
+    assert "Voice activity detection" in srv.model_runtime_problem(refused, "x")
 
 
 def test_files_split_across_snapshots_are_found_in_the_one_that_holds_them(hub):
@@ -718,6 +1417,26 @@ def test_materialize_refuses_a_repo_file_name_that_climbs_out_of_the_farm(
     with pytest.raises(AudioCppUnavailableError, match = "Refusing"):
         audio_cpp_files.materialize(model, hub_cache = hub)
     assert not victim.exists()
+
+
+def test_v1_models_lists_speech_and_separation_models_with_their_workflows(hub, monkeypatch):
+    from core.inference import audio_cpp_server
+    from routes import inference as ri
+
+    snap = _kokoro(hub)
+    _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
+    assert {m.id: m.task for m in acm.downloaded_models()}[
+        f"{AUDIO_CPP_REPO}/HTDemucs-GGUF"
+    ] == "sep"
+    monkeypatch.setattr(audio_cpp_server, "find_audio_cpp_server_binary", lambda: "audiocpp_server")
+    monkeypatch.setattr(audio_cpp_server, "model_runtime_problem", lambda model, binary = None: None)
+    listed = {o["id"]: o for o in ri._audio_cpp_speech_model_objects(0)}
+    kokoro = listed[f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
+    assert kokoro["task"] == "text-to-speech" and "speak" in kokoro["audio_workflows"]
+    # /v1/audio/speech cannot serve it, so it is not text-to-speech; /v1/audio/run loads it by name.
+    demucs = listed[f"{AUDIO_CPP_REPO}/HTDemucs-GGUF"]
+    assert demucs["task"] == "audio-to-audio" and demucs["audio_workflows"] == ["separate"]
+    assert len(listed) == 2
 
 
 def test_downloaded_models_are_found_by_header(hub):
@@ -909,7 +1628,7 @@ def test_yue2_takes_the_description_as_its_required_style():
     assert request["options"] == {
         "style": "rock, male vocal",
         "lyrics": "[chorus] oh",
-        "semantic_max_tokens": 2048,
+        "semantic_max_tokens": 3072,
         "semantic_min_tokens": 200,
     }
     with pytest.raises(RuntimeError, match = "style"):
@@ -1010,6 +1729,9 @@ def test_model_config_answers_umbrella_ids_without_the_hub(hub, monkeypatch):
     # A dictation model is not a main-slot model.
     with pytest.raises(ValueError, match = "speech-to-text"):
         model_config.ModelConfig.from_identifier("audiocpp-canary-180m-flash")
+    _put(snap, "HTDemucs-GGUF/htdemucs-q8_0.gguf", _gguf_bytes(family = "htdemucs"))
+    sep = model_config.ModelConfig.from_identifier(f"{AUDIO_CPP_REPO}/HTDemucs-GGUF")
+    assert sep.is_audio and sep.audio_type == "audiocpp_sep" and sep.audio_cpp.task == "sep"
 
 
 def test_model_config_routes_a_hub_repo_by_its_gguf_header(hub, monkeypatch):
@@ -1078,6 +1800,8 @@ def test_audio_cpp_ggufs_are_classified_off_chat(hub):
     assert cc._gguf_path_audio_type(music) == "audiocpp_music"
     assert cc._gguf_path_task(asr) == "automatic-speech-recognition"
     assert cc._gguf_path_task(sep) == "audio-to-audio"
+    assert cc._gguf_path_audio_type(sep) == "audiocpp_sep"
+    assert cc._gguf_path_audio_workflows(sep) == ["separate"]
     # Architecture alone (a remote prefix): the family comes from the names.
     assert cc._arch_to_task("audiocpp", ("audio-cpp/MiniMax-Music3-GGUF",)) == "text-to-audio"
     assert cc._arch_to_audio_type("audiocpp", ("Kokoro-82M-GGUF",)) == "audiocpp_tts"
@@ -1348,6 +2072,325 @@ def test_umbrella_download_jobs_report_under_their_folder_row(hub):
     assert acm.folder_row_for_download("audio-cpp/Yue2-3B-GGUF", "q8_0") is None
 
 
+CROWDED_FOLDERS = {
+    "Moonshine-Streaming-GGUF": tuple(
+        f"moonshine-streaming-{size}-q8_0.gguf" for size in ("tiny", "small", "medium")
+    ),
+    "Samsone-GGUF": tuple(
+        f"samsone-{size}-{quant}.gguf"
+        for size in ("99m", "134m", "356m")
+        for quant in ("q8_0", "bf16")
+    ),
+    "Niagara-ASR-GGUF": ("niagara-19m-batch.en-f32.gguf", "niagara-38m-batch.en-f32.gguf"),
+    "PulseVAD-GGUF": ("pulsevad-2.1k-f32.gguf", "pulsevad-81k-f32.gguf"),
+    "UniverSR-GGUF": ("universr-audio-orig.gguf", "universr-speech-orig.gguf"),
+    "Irodori-TTS-v4-Small-GGUF": (
+        "irodori-tts-v4-small-f16.gguf",
+        "irodori-tts-v4-small-q8_0.gguf",
+        "irodori-tts-v4.1-anime-q8_0.gguf",
+    ),
+}
+
+
+@pytest.fixture(autouse = True)
+def _no_started_jobs(monkeypatch):
+    monkeypatch.setattr(acm, "_job_rows", {})
+
+
+@pytest.mark.parametrize("folder", sorted(CROWDED_FOLDERS))
+def test_an_umbrella_job_in_flight_reports_its_own_row_in_a_crowded_folder(
+    hub, monkeypatch, folder
+):
+    from hub.utils.gguf import gguf_variant_key
+
+    # Nothing of the folder is cached yet: the file in flight is only an .incomplete blob.
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    rows = _rows(row)
+    assert len(rows) == len(CROWDED_FOLDERS[folder])
+    for quant, listed in rows.items():
+        target = acm.download_target(row, quant)
+        assert target == (AUDIO_CPP_REPO, gguf_variant_key(listed.filename))
+        assert acm.folder_row_for_download(*target) == (row, quant)
+
+
+def test_a_bare_quant_start_records_the_row_key_it_resolved_to(hub, monkeypatch):
+    folder = "Moonshine-Streaming-GGUF"
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    target = acm.download_target(row, "Q8_0")
+    assert target == (AUDIO_CPP_REPO, f"{folder}/moonshine-streaming-tiny-q8_0")
+    assert acm.folder_row_for_download(*target) == (row, "tiny/Q8_0")
+
+
+def test_a_started_job_reports_its_row_without_touching_the_hub(hub, monkeypatch):
+    folder = "Moonshine-Streaming-GGUF"
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    target = acm.download_target(row, "small/Q8_0")
+    calls = []
+
+    def refused(*args, **_kw):
+        calls.append(args)
+        raise OSError("Hub unreachable")
+
+    monkeypatch.setattr(acm, "_hub_listing", refused)
+    monkeypatch.setattr(acm, "_probe_header", refused)
+    monkeypatch.setattr(acm, "_listing_cache", {})
+    acm.forget()
+    assert acm.folder_row_for_download(*target) == (row, "small/Q8_0")
+    assert acm.folder_row_for_download(AUDIO_CPP_REPO, target[1].upper()) == (row, "small/Q8_0")
+    assert calls == []
+
+
+def _restarted_offline(monkeypatch):
+    """A new backend process: no in-memory records, no Hub, nothing of the folder cached."""
+
+    def refused(*_args, **_kw):
+        raise OSError("Hub unreachable")
+
+    monkeypatch.setattr(acm, "_job_rows", {})
+    monkeypatch.setattr(acm, "_hub_listing", refused)
+    monkeypatch.setattr(acm, "_listing_cache", {})
+    acm.forget()
+
+
+@pytest.mark.parametrize("folder", sorted(CROWDED_FOLDERS))
+def test_a_restarted_backend_still_names_a_crowded_folder_job_by_row(hub, monkeypatch, folder):
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    targets = {quant: acm.download_target(row, quant) for quant in _rows(row)}
+    _restarted_offline(monkeypatch)
+    for quant, target in targets.items():
+        assert acm.folder_row_for_download(*target) == (row, quant)
+
+
+def test_a_damaged_saved_record_falls_back_to_the_path(hub, monkeypatch):
+    folder = "Moonshine-Streaming-GGUF"
+    key = f"{folder}/moonshine-streaming-small-q8_0"
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    path = acm._job_row_path(key, create = True)
+    for text in (
+        "{not json",
+        "[]",
+        json.dumps({key: [row, "small/Q8_0"]}),
+        json.dumps([f"{folder}/moonshine-streaming-tiny-q8_0", row, "small/Q8_0"]),
+        json.dumps([key, f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", "small/Q8_0"]),
+        json.dumps([key, row, ""]),
+        "[" * 100_000,
+    ):
+        path.write_text(text, encoding = "utf-8")
+        _restarted_offline(monkeypatch)
+        assert acm.folder_row_for_download(AUDIO_CPP_REPO, key) == (row, "Q8_0")
+
+
+def test_backends_saving_rows_at_once_keep_each_others(hub, monkeypatch):
+    # Each record is its own file: a writer never rewrites a map another backend just changed.
+    folder = "Samsone-GGUF"
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    quants = sorted(_rows(row))
+    real = acm._saved_job_row
+    stale = {}
+
+    def read_before_any_write(key):
+        # Every writer looks before any other has saved, as two processes racing would.
+        return stale.setdefault(key.lower(), real(key))
+
+    monkeypatch.setattr(acm, "_saved_job_row", read_before_any_write)
+    targets = {quant: acm.download_target(row, quant) for quant in quants}
+    monkeypatch.setattr(acm, "_saved_job_row", real)
+    _restarted_offline(monkeypatch)
+    for quant, target in targets.items():
+        assert acm._saved_job_row(target[1]) == (row, quant)
+        assert acm.folder_row_for_download(*target) == (row, quant)
+
+
+def test_only_a_finished_job_drops_its_saved_record(hub, monkeypatch):
+    import logging
+
+    from core.inference import local_model_resolver
+    from hub.services import download_lifecycle
+
+    folder = "Moonshine-Streaming-GGUF"
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    row = f"{AUDIO_CPP_REPO}/{folder}"
+    small = acm.download_target(row, "small/Q8_0")
+    tiny = acm.download_target(row, "tiny/Q8_0")
+    assert acm._saved_job_row(small[1]) == (row, "small/Q8_0")
+    assert acm._saved_job_row(tiny[1]) == (row, "tiny/Q8_0")
+    monkeypatch.setattr(local_model_resolver, "note_downloaded", lambda *a: None)
+    monkeypatch.setattr(local_model_resolver, "invalidate_index", lambda **k: None)
+    monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
+    monkeypatch.setattr(download_lifecycle.account_access, "record_model_grant", lambda *a: None)
+    monkeypatch.setattr(
+        download_lifecycle.download_manifest, "clear_cancel_marker", lambda *a, **k: None
+    )
+
+    def end(key, rc, cancelled):
+        registry = SimpleNamespace(
+            cancel_requested = lambda _key: cancelled,
+            drop_process = lambda *a: True,
+            get_job_metadata = lambda _key: None,
+            set_job = lambda *a: None,
+            update_job_transport = lambda *a: None,
+        )
+        return download_lifecycle.finalize_worker_exit(
+            registry,
+            f"{AUDIO_CPP_REPO}::{key}",
+            SimpleNamespace(stderr = io.BytesIO(), wait = lambda: rc),
+            hf_token = None,
+            label = AUDIO_CPP_REPO,
+            log_prefix = "Download",
+            logger = logging.getLogger(__name__),
+            repo_type = "model",
+            repo_id = AUDIO_CPP_REPO,
+        )
+
+    # Still right, and another backend may be downloading the same key.
+    assert end(small[1], 1, True) != "complete"
+    assert end(small[1], 1, False) != "complete"
+    assert acm._saved_job_row(small[1]) == (row, "small/Q8_0")
+    assert end(tiny[1], 0, False) == "complete"
+    assert acm._saved_job_row(tiny[1]) is None
+    assert acm._saved_job_row(small[1]) == (row, "small/Q8_0")
+    # The status poll that learns of the completion resolves the target again: it must not save it back.
+    from hub.services.models import downloads
+
+    assert asyncio.run(downloads._audio_cpp_target(row, "tiny/Q8_0")) == tiny
+    assert acm._saved_job_row(tiny[1]) is None
+    # This process keeps its own copy, and a new download of the key records it again.
+    assert acm.folder_row_for_download(*tiny) == (row, "tiny/Q8_0")
+    acm.download_target(row, "tiny/Q8_0")
+    assert acm._saved_job_row(tiny[1]) == (row, "tiny/Q8_0")
+
+
+def test_folder_rows_without_crowding_keep_their_keys(hub, monkeypatch):
+    _online(
+        monkeypatch,
+        "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf",
+        "PocketTTS-GGUF/english/pocket-tts-english-q8_0.gguf",
+        "PocketTTS-GGUF/english/pocket-tts-english-bf16.gguf",
+        "PocketTTS-GGUF/english/embeddings/alba.safetensors",
+    )
+    for row, quant in (("Kokoro-82M-GGUF", "Q8_0"), ("PocketTTS-GGUF", "english/Q8_0")):
+        row = f"{AUDIO_CPP_REPO}/{row}"
+        target = acm.download_target(row, quant)
+        assert acm.folder_row_for_download(*target) == (row, quant)
+
+
+def test_an_unrecorded_job_falls_back_to_the_cache_then_the_planner_path(hub, monkeypatch):
+    # A job this process did not start (a restart mid-download) is named the way it was before.
+    calls = _online(monkeypatch)
+    small = "Moonshine-Streaming-GGUF/moonshine-streaming-small-q8_0"
+    pocket = "PocketTTS-GGUF/english/pocket-tts-english-q8_0"
+    moonshine = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    for offline in ("1", "0"):
+        monkeypatch.setenv("HF_HUB_OFFLINE", offline)
+        acm.forget()
+        assert acm.folder_row_for_download(AUDIO_CPP_REPO, pocket) == (
+            f"{AUDIO_CPP_REPO}/PocketTTS-GGUF",
+            "english/Q8_0",
+        )
+        # Without the folder's listing the size word is unknown: the path names only the quant.
+        assert acm.folder_row_for_download(AUDIO_CPP_REPO, small) == (moonshine, "Q8_0")
+    assert calls == []
+    snap = _snapshot(hub)
+    moon = _gguf_bytes(family = "moonshine_asr")
+    _put(snap, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf", moon)
+    _put(snap, f"{small}.gguf", moon)
+    acm.forget()
+    assert acm.folder_row_for_download(AUDIO_CPP_REPO, small) == (moonshine, "small/Q8_0")
+    assert calls == []
+
+
+def test_an_offline_status_read_does_not_rename_a_started_job(hub, monkeypatch):
+    # Status polls also go through download_target; offline, a lone cached tiny lists as bare Q8_0.
+    snap = _snapshot(hub)
+    moon = _gguf_bytes(family = "moonshine_asr")
+    _put(snap, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf", moon)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    acm.forget()
+    target = acm.download_target(f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF", "Q8_0")
+    assert target is not None
+    assert acm._job_rows == {}
+
+
+def test_a_failed_hub_listing_does_not_record_a_cached_guess(hub, monkeypatch):
+    # Online, but the listing call fails: resolve falls back to the cache, where only tiny is.
+    snap = _snapshot(hub)
+    moon = _gguf_bytes(family = "moonshine_asr")
+    _put(snap, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf", moon)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setattr(acm, "_listing_cache", {})
+
+    def refused(*_args, **_kw):
+        raise OSError("Hub unreachable")
+
+    monkeypatch.setattr(acm, "_hub_listing", refused)
+    acm.forget()
+    row = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    assert acm.resolve(row, "small/Q8_0").from_hub is False
+    acm.download_target(row, "small/Q8_0")
+    assert acm._job_rows == {}
+
+
+def test_a_folder_of_an_unknown_family_still_records_its_row(hub, monkeypatch):
+    _online(monkeypatch, "Mystery-GGUF/mystery-q8_0.gguf")
+    row = f"{AUDIO_CPP_REPO}/Mystery-GGUF"
+    assert acm.resolve(row, "Q8_0").unsupported
+    target = acm.download_target(row, "Q8_0")
+    assert target == (AUDIO_CPP_REPO, "Mystery-GGUF/mystery-q8_0")
+    assert acm._job_rows == {(AUDIO_CPP_REPO.lower(), "mystery-gguf/mystery-q8_0"): (row, "Q8_0")}
+
+
+def test_a_finished_download_clears_a_remembered_cache_miss(hub, monkeypatch):
+    import logging
+
+    from hub.services import download_lifecycle
+
+    # The aligner's capabilities read is cache-only and remembers a miss; its download ends in between.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+    row = f"{AUDIO_CPP_REPO}/Qwen3-ForcedAligner-0.6B-GGUF"
+    acm.forget()
+    assert acm.resolve(row, "Q8_0", network = False) is None
+    _put(
+        _snapshot(hub),
+        "Qwen3-ForcedAligner-0.6B-GGUF/qwen3-forcedaligner-0.6b-q8_0.gguf",
+        _gguf_bytes(family = "qwen3_asr"),
+    )
+    assert acm.resolve(row, "Q8_0", network = False) is None
+    from core.inference import local_model_resolver
+
+    monkeypatch.setattr(local_model_resolver, "note_downloaded", lambda *a: None)
+    monkeypatch.setattr(local_model_resolver, "invalidate_index", lambda **k: None)
+    monkeypatch.setattr(local_model_resolver, "warm_index_soon", lambda: None)
+    monkeypatch.setattr(download_lifecycle.account_access, "record_model_grant", lambda *a: None)
+    monkeypatch.setattr(
+        download_lifecycle.download_manifest, "clear_cancel_marker", lambda *a, **k: None
+    )
+    registry = SimpleNamespace(
+        cancel_requested = lambda key: False,
+        drop_process = lambda *a: True,
+        get_job_metadata = lambda key: None,
+        set_job = lambda *a: None,
+        update_job_transport = lambda *a: None,
+    )
+    state = download_lifecycle.finalize_worker_exit(
+        registry,
+        f"{AUDIO_CPP_REPO}::",
+        SimpleNamespace(stderr = io.BytesIO(), wait = lambda: 0),
+        hf_token = None,
+        label = AUDIO_CPP_REPO,
+        log_prefix = "Download",
+        logger = logging.getLogger(__name__),
+        repo_type = "model",
+        repo_id = AUDIO_CPP_REPO,
+    )
+    assert state == "complete"
+    assert acm.resolve(row, "Q8_0", network = False) is not None
+
+
 def test_active_downloads_name_umbrella_jobs_by_row(hub, monkeypatch):
     import asyncio
 
@@ -1371,6 +2414,24 @@ def test_active_downloads_name_umbrella_jobs_by_row(hub, monkeypatch):
     ]
     only = asyncio.run(downloads.get_active_downloads_response(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"))
     assert [r.repo_id for r in only.downloads] == [f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF"]
+
+
+def test_active_downloads_name_a_first_moonshine_download_by_its_row(hub, monkeypatch):
+    from hub.schemas.downloads import ActiveDownload
+    from hub.services.models import downloads
+
+    folder = "Moonshine-Streaming-GGUF"
+    _online(monkeypatch, *(f"{folder}/{name}" for name in CROWDED_FOLDERS[folder]))
+    repo, key = acm.download_target(f"{AUDIO_CPP_REPO}/{folder}", "small/Q8_0")
+    job = ActiveDownload.model_construct(repo_id = repo, variant = key, state = "downloading")
+    monkeypatch.setattr(downloads.download_lifecycle, "active_download_refs", lambda *a, **k: [job])
+    monkeypatch.setattr(
+        downloads, "resolve_cached_repo_id_case", lambda repo_id, repo_type: repo_id
+    )
+    rows = asyncio.run(downloads.get_active_downloads_response(f"{AUDIO_CPP_REPO}/{folder}"))
+    assert [(r.repo_id, r.variant) for r in rows.downloads] == [
+        (f"{AUDIO_CPP_REPO}/{folder}", "small/Q8_0")
+    ]
 
 
 def test_stt_requests_carry_their_variant_in_the_model_id():
@@ -1467,7 +2528,7 @@ def test_package_mixes_show_only_the_studio_option_list():
         "semantic_top_k",
     ]
     # Other families still follow the runtime's spec.
-    assert [o["name"] for o in acm.option_schema(acm.FAMILIES["ace_step"], runtime, None)] == [
+    assert [o["name"] for o in acm.option_schema(acm.FAMILIES["heartmula"], runtime, None)] == [
         "cot",
         "abc_temperature",
         "semantic_penalty_window",
@@ -1550,10 +2611,22 @@ def test_stt_takes_the_variant_keys_gguf_variants_lists_even_from_a_partial_cach
     assert s.resolve_audio_cpp_stt_model(f"{folder}:small/Q8_0").variant.key == "small/Q8_0"
     assert s.resolve_audio_cpp_stt_model(f"{folder}:small").variant.key == "small/Q8_0"
     assert s.is_model_downloaded(f"{folder}:small/Q8_0")
-    # A variant that is not on disk is still refused rather than swapped for another.
+    # variants missing from disk are refused instead of replaced by another variant.
     tiny = acm.resolve(folder, "tiny/Q8_0", network = False)
     assert "not found" in tiny.unsupported
-    # A file stem is a spelling of its own row, not a new scope.
+    # dictation treats this as a download opportunity, not a bad model id.
+    from core.inference.stt_sidecar import SttModelIdError, SttModelNotDownloadedError
+
+    with pytest.raises(SttModelNotDownloadedError, match = r"\(tiny/Q8_0\) is not downloaded"):
+        s.resolve_audio_cpp_stt_model(f"{folder}:tiny/Q8_0")
+    with pytest.raises(SttModelNotDownloadedError):
+        s.resolve_audio_cpp_stt_model(folder, "tiny/Q8_0")
+    assert not s.is_model_downloaded(f"{folder}:tiny/Q8_0")
+    # another task's folder remains invalid regardless of quant.
+    _kokoro(hub)
+    with pytest.raises(SttModelIdError):
+        s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF:Q8_0")
+    # a file stem names its existing row rather than a new scope.
     stem = acm.resolve(folder, "moonshine-streaming-small-q8_0", network = False)
     assert stem.variant.key == "Q8_0" and stem.unsupported is None
 
@@ -1562,11 +2635,13 @@ def test_yue2_length_follows_the_requested_duration():
     b, srv = _backend_with(_speech_model("yue2"), MUSIC_REPLY)
     b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 125)
     options = srv.calls[0][1]["request"]["options"]
-    # 5 s at 25 frames per second, with the default 200-frame floor lowered to fit.
-    assert options["semantic_max_tokens"] == 125 and options["semantic_min_tokens"] == 125
+    # 5 s at 25 frames per second, with the 200-frame default lowered to fit; the cap is 1.5x.
+    assert options["semantic_max_tokens"] == 188 and options["semantic_min_tokens"] == 125
     b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 1500)
     options = srv.calls[1][1]["request"]["options"]
-    assert options["semantic_max_tokens"] == 1500 and options["semantic_min_tokens"] == 200
+    assert options["semantic_max_tokens"] == 2250 and options["semantic_min_tokens"] == 200
+    b.generate_audio_response("[chorus] oh", instructions = "rock", max_new_tokens = 6000)
+    assert srv.calls[2][1]["request"]["options"]["semantic_max_tokens"] == 9000
 
 
 def test_music_requests_missing_a_required_field_are_a_400_message():
@@ -1597,8 +2672,8 @@ def test_a_variantless_stt_id_keeps_the_loaded_variant_and_an_explicit_one_switc
     started = []
 
     class _Server:
-        def __init__(self, model):
-            self.model, self.backend = model, "cpu"
+        def __init__(self, model, backend):
+            self.model, self.backend = model, backend
 
         def alive(self):
             return True
@@ -1608,7 +2683,7 @@ def test_a_variantless_stt_id_keeps_the_loaded_variant_and_an_explicit_one_switc
 
     def start(model, path, **kwargs):
         started.append(model.variant.key)
-        return _Server(model)
+        return _Server(model, "cpu" if kwargs.get("force_cpu") else "cuda")
 
     monkeypatch.setattr(s, "ensure_engine_available", lambda: "audiocpp_server")
     monkeypatch.setattr(s.AudioCppServer, "start", start)
@@ -1856,3 +2931,147 @@ def test_missing_files_are_counted_in_the_snapshot_downloads_land_in(hub):
     _put(main, gguf.path, b"GGUF")
     _put(main, voice.path, b"v")
     assert audio_cpp_files.missing_files(model, hub_cache = hub) == []
+
+
+def test_required_inputs_come_from_the_raw_spec(hub):
+    snap = _snapshot(hub)
+    maya_spec = {
+        "family": "maya1",
+        "tasks": ["tts"],
+        "options": {
+            "request": [
+                {"name": "instruct", "type": "string", "required": True},
+                {"name": "temperature", "type": "float"},
+            ]
+        },
+    }
+    _put(snap, "Maya1-GGUF/maya1-q8_0.gguf", _gguf_bytes(family = "maya1", spec = maya_spec))
+    maya = acm.resolve(f"{AUDIO_CPP_REPO}/Maya1-GGUF", network = False)
+    # instruct travels as the request's description, not as an option.
+    assert maya.required_inputs == ("instruct",)
+    assert [o["name"] for o in maya.options] == ["temperature"]
+    # A voice-design package fills instruct itself.
+    folder = "Qwen3-TTS-12Hz-1.7B-VoiceDesign-GGUF"
+    design_spec = {**maya_spec, "family": "qwen3_tts"}
+    _put(snap, f"{folder}/m-q8_0.gguf", _gguf_bytes(family = "qwen3_tts", spec = design_spec))
+    assert acm.resolve(f"{AUDIO_CPP_REPO}/{folder}", network = False).required_inputs == ()
+
+
+def _opt_spec(name, type_, **kw):
+    return {"name": name, "type": type_, "description": name, **kw}
+
+
+# The request options of the runtime's rvc and seed_vc specs (model_specs/*.json at the pin).
+RVC_SPEC = {
+    "family": "rvc",
+    "tasks": ["vc"],
+    "options": {
+        "request": [
+            _opt_spec("voice_id", "enum", values = ["default", "manthos", "chocola", "fraise"]),
+            _opt_spec("voice_model_path", "path"),
+            _opt_spec("pitch_extractor", "enum", values = ["rmvpe"], default = "rmvpe"),
+            _opt_spec("pitch_path", "path"),
+            _opt_spec("retrieval_index_path", "path"),
+            _opt_spec("retrieval_blend", "float", default = 0.0, min = 0.0, max = 1.0),
+            _opt_spec("semitone_shift", "int", default = 0),
+            _opt_spec("pitch_filter_radius", "int", default = 3, min = 0),
+            _opt_spec("output_sample_rate", "int", default = 0, min = 0),
+            _opt_spec("rms_mix_rate", "float", default = 0.25),
+            _opt_spec("unvoiced_protection", "float", default = 0.33, min = 0.0, max = 1.0),
+            _opt_spec("speaker_id", "int", default = 0, min = 0),
+            _opt_spec("audio_pad_duration_sec", "int", default = 1, min = 1),
+            _opt_spec("split_query_sec", "int", default = 5, min = 1),
+        ]
+    },
+}
+SEED_VC_SPEC = {
+    "family": "seed_vc",
+    "tasks": ["vc", "svc"],
+    "options": {
+        "request": [
+            _opt_spec(
+                "route",
+                "enum",
+                values = ["v2_vc", "v1_svc", "v1_whisper_bigvgan_vc", "v1_xlsr_hift_vc"],
+            ),
+            _opt_spec("length_adjust", "float", default = 1.0, min = 0.0),
+            _opt_spec("num_inference_steps", "int", default = 30, min = 1),
+            _opt_spec("inference_guidance_scale", "float", default = 0.7, min = 0.0),
+            _opt_spec("intelligibility_guidance_scale", "float", default = 0.7, min = 0.0),
+            _opt_spec("similarity_guidance_scale", "float", default = 0.7, min = 0.0),
+            _opt_spec("voice_anonymization", "bool", default = False),
+            _opt_spec("seed", "int", min = 0),
+            _opt_spec("noise_path", "path"),
+            _opt_spec("f0_condition", "bool"),
+            _opt_spec("auto_f0_adjust", "bool", default = False),
+            _opt_spec("semitone_shift", "int", default = 0),
+        ]
+    },
+}
+MEANVC2_SPEC = {
+    "family": "meanvc2",
+    "tasks": ["vc"],
+    "options": {"request": [_opt_spec("seed", "int", default = 42, min = 0)]},
+}
+_NEVER_IN_CONVERT = {
+    "voice_model_path",
+    "retrieval_index_path",
+    "pitch_path",
+    "noise_path",
+    "audio_pad_duration_sec",
+    "seed",
+}
+
+
+def test_voice_conversion_families_resolve_and_offer_convert_alone(hub):
+    snap = _snapshot(hub)
+    _put(snap, "RVC-GGUF/rvc-f16.gguf", _gguf_bytes(family = "rvc", spec = RVC_SPEC))
+    for name in ("seed-vc-mlx-q8_0", "seed-vc-mlx-f16", "seed-vc-mlx-q4_k"):
+        _put(
+            snap,
+            f"SeedVC-MLX-GGUF/{name}.gguf",
+            _gguf_bytes(family = "seed_vc", spec = SEED_VC_SPEC),
+        )
+    for name in ("meanvc2-120ms-40ms-fp32", "meanvc2-120ms-40ms-q4_k"):
+        _put(
+            snap,
+            f"MeanVC2-GGUF/{name}.gguf",
+            _gguf_bytes(family = "meanvc2", spec = MEANVC2_SPEC),
+        )
+    rvc = acm.resolve(f"{AUDIO_CPP_REPO}/RVC-GGUF", network = False)
+    seed_vc = acm.resolve(f"{AUDIO_CPP_REPO}/SeedVC-MLX-GGUF", network = False)
+    meanvc2 = acm.resolve(f"{AUDIO_CPP_REPO}/MeanVC2-GGUF", network = False)
+    for model in (rvc, seed_vc, meanvc2):
+        assert model.unsupported is None, model.family
+        assert (model.task, model.server_task, model.speaks) == ("tts", "vc", False)
+        assert list(model.workflows) == ["convert"]
+        acm.require_runnable(model, "tts")
+        names = {o["name"] for o in model.convert_options}
+        assert not names & _NEVER_IN_CONVERT, model.family
+        assert not names & acm.CONVERT_DRIVEN_OPTIONS, model.family
+    assert seed_vc.variant.key == "Q8_0"
+    assert meanvc2.variant.key == "FP32"
+    assert [o["name"] for o in rvc.convert_options] == [
+        "retrieval_blend",
+        "pitch_filter_radius",
+        "output_sample_rate",
+        "rms_mix_rate",
+        "unvoiced_protection",
+        "split_query_sec",
+    ]
+    assert {"route", "length_adjust", "similarity_guidance_scale"} <= {
+        o["name"] for o in seed_vc.convert_options
+    }
+    assert "f0_condition" not in {o["name"] for o in seed_vc.options}
+    assert meanvc2.convert_options == ()
+
+
+def test_samsone_is_refused_for_transcription(hub):
+    from core.inference import stt_audiocpp_sidecar as s
+    from core.inference.stt_sidecar import SttModelIdError
+
+    spec = {"category": "asr", "tasks": ["asr"]}
+    _put(_snapshot(hub), "Samsone-GGUF/s-q8_0.gguf", _gguf_bytes(family = "samsone", spec = spec))
+    with pytest.raises(SttModelIdError, match = "describes audio"):
+        s.resolve_audio_cpp_stt_model(f"{AUDIO_CPP_REPO}/Samsone-GGUF")
+    assert f"{AUDIO_CPP_REPO}/Samsone-GGUF" not in s.downloaded_model_ids()

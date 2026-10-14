@@ -47,6 +47,7 @@ import {
   nativeImportSource,
   fileImportSource,
   type ImportSource,
+  notifyChatProjectsUpdated,
   offerToDeleteKeptSandboxes,
   useChatPreferencesStore,
   useChatRuntimeStore,
@@ -58,6 +59,7 @@ import {
   formatSize,
   refreshLibraryStorage,
   useLibraryStorage,
+  useLibraryVisitStore,
 } from "@/features/library";
 import {
   LinkedFoldersManager,
@@ -75,21 +77,29 @@ import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
-  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
   Image03Icon,
+  LibrariesIcon,
   Tick02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import {
   ChevronLeftIcon,
 } from "lucide-react";
-import { MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
+import {
+  EXTERNAL_IMPORT_LABELS,
+  EXTERNAL_IMPORT_SOURCES,
+  type ExternalImportSource,
+  type ExternalImportStatus,
+  importExternalChats,
+  loadExternalImportStatus,
+} from "../api/external-import";
 import { ArchivedChatsView } from "../components/archived-chats-dialog";
 import {
   type ArchivedMediaKind,
@@ -205,6 +215,12 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   });
   const [clearing, setClearing] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  // A source's row appears only once its probe reports conversations.
+  const [externalStatus, setExternalStatus] = useState<
+    Partial<Record<ExternalImportSource, ExternalImportStatus>>
+  >({});
+  const [externalImporting, setExternalImporting] =
+    useState<ExternalImportSource | null>(null);
   const [fineTuneExporting, setFineTuneExporting] = useState(false);
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
@@ -315,6 +331,22 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       cancelled = true;
     };
   }, [subpage, t]);
+
+  const refreshExternalStatus = (source: ExternalImportSource) =>
+    loadExternalImportStatus(source)
+      .catch(() => null)
+      .then((status) =>
+        setExternalStatus((prev) => ({
+          ...prev,
+          [source]: status?.available ? status : undefined,
+        })),
+      );
+
+  useEffect(() => {
+    for (const source of EXTERNAL_IMPORT_SOURCES) {
+      void refreshExternalStatus(source);
+    }
+  }, []);
 
   const handleExport = async () => {
     setExporting(true);
@@ -427,6 +459,43 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
       toast.error(t("settings.chat.importFailed"), {
         description: error instanceof Error ? error.message : String(error),
       });
+    }
+  };
+
+  const handleExternalImport = async (source: ExternalImportSource) => {
+    setExternalImporting(source);
+    try {
+      const result = await importExternalChats(source);
+      notifyChatProjectsUpdated();
+      setCount(await countAllChats().catch(() => count));
+      await refreshExternalStatus(source);
+      const vars = { source: EXTERNAL_IMPORT_LABELS[source] };
+      if (result.warnings.length > 0) {
+        toast.warning(t("settings.chat.importedSourcePartial", vars), {
+          description: result.warnings.join("\n"),
+        });
+      } else if (result.newChats === 0) {
+        toast.success(
+          result.messages > 0
+            ? t("settings.chat.sourceUpdated", { ...vars, count: result.messages })
+            : t("settings.chat.sourceUpToDate", vars),
+        );
+      } else {
+        toast.success(
+          result.newChats === 1
+            ? t("settings.chat.importedSourceOneChat", vars)
+            : t("settings.chat.importedSourceChatCount", {
+                ...vars,
+                count: result.newChats,
+              }),
+        );
+      }
+    } catch (error) {
+      toast.error(t("settings.chat.importFailed"), {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setExternalImporting(null);
     }
   };
 
@@ -733,6 +802,27 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
         </p>
       </header>
 
+      <SettingsSection title={t("settings.data.manageFiles.label")} hideHeading>
+        <SettingsRow
+          label={t("settings.data.manageFiles.label")}
+          description={t("settings.data.manageFiles.description")}
+        >
+          <Button
+            variant="outline"
+            className="px-3.5"
+            onClick={() => {
+              useSettingsDialogStore.getState().closeDialog();
+              // Already on All, the view would keep its search and filters.
+              useLibraryVisitStore.getState().restart();
+              void navigate({ to: "/library", search: { show: "all" } });
+            }}
+          >
+            <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} className="size-4" />
+            {t("settings.data.manageFiles.action")}
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+
       <SettingsSection title={t("settings.data.chatsSection")}>
         <div
           data-settings-label={t("settings.data.archives")}
@@ -760,7 +850,7 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
                 "archived-audio",
                 "archivedAudio",
                 "shell.navigation.audio",
-                AudioWave01Icon,
+                AiSpeechIcon,
               ],
             ] as const).map(([page, label, shortLabel, icon]) => (
               <button
@@ -836,6 +926,38 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
             }}
           />
         </SettingsRow>
+        {EXTERNAL_IMPORT_SOURCES.map((source) =>
+          externalStatus[source] ? (
+            <SettingsRow
+              key={source}
+              label={t("settings.chat.importFromSource", {
+                source: EXTERNAL_IMPORT_LABELS[source],
+              })}
+              description={t("settings.chat.importFromSourceDescription", {
+                source: EXTERNAL_IMPORT_LABELS[source],
+              })}
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleExternalImport(source)}
+                disabled={externalImporting !== null}
+              >
+                {externalImporting === source ? (
+                  <Spinner className="size-3.5 mr-1.5" />
+                ) : (
+                  <HugeiconsIcon
+                    icon={Upload01Icon}
+                    className="size-3.5 mr-1.5"
+                  />
+                )}
+                {externalImporting === source
+                  ? t("settings.chat.importingAction")
+                  : t("settings.chat.importChatsAction")}
+              </Button>
+            </SettingsRow>
+          ) : null,
+        )}
         <SettingsRow
           label={t("settings.chat.exportHistory")}
           description={t("settings.chat.exportHistoryDescription")}

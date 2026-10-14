@@ -216,6 +216,11 @@ def _row_token_count(row) -> int:
     return max(1, len(row["text"] or "") // 4)
 
 
+def _whole_document_token_count(row) -> int:
+    token_count = _row_value(row, "whole_document_token_count")
+    return max(0, int(token_count)) if token_count is not None else _row_token_count(row)
+
+
 def search_knowledge_base_with_sources(
     *,
     query: str,
@@ -316,26 +321,25 @@ def search_for_autoinject(
     return (text, sources) if sources else None
 
 
+def _drop_chunk_overlap(text: str, start: int | None, prev_end: int | None) -> str:
+    if not isinstance(start, int) or not isinstance(prev_end, int) or start >= prev_end:
+        return text
+    return text[min(prev_end - start, len(text)) :].lstrip("\r\n")
+
+
 def whole_document_context(
     *, scope_thread_id: str | None = None, max_tokens: int
 ) -> tuple[str, list[dict]] | None:
-    """Render EVERY chunk of the THREAD's attached documents (in order) as the same
-    ``<chunk>`` blocks + citation source-map as retrieval, so the model reads the whole
-    file rather than top-K passages. Thread-attached files only: KB and project corpora
-    are search corpora, never whole-document, so this resolves the thread scope alone.
-    ``None`` (caller falls back to retrieval) when there is no thread scope, no completed
-    chunks, or the total exceeds ``max_tokens``."""
+    """render ordered thread attachment chunks with citation blocks; KB and project corpora stay search-only; return None when absent or over max_tokens."""
     if not scope_thread_id:
         return None
-    # A non-positive budget means "never inject" (disable whole-doc via RAG_THREAD_WHOLE_DOC=0), not
-    # "inject the whole corpus unbounded".
+    # a non-positive budget disables whole-document injection rather than removing the limit
     if max_tokens <= 0:
         return None
     scope = thread_scope(scope_thread_id)
     conn = rag_db.get_connection()
     try:
-        # Cheap SUM pre-check so an oversized attachment is rejected before the whole corpus is hydrated;
-        # all_chunks_for_scope runs only once it fits.
+        # reject oversized attachments before all_chunks_for_scope hydrates the corpus
         if scope_token_estimate(conn, scope) > max_tokens:
             return None
         rows = all_chunks_for_scope(conn, scope)
@@ -343,22 +347,30 @@ def whole_document_context(
         conn.close()
     if not rows:
         return None
-    total = sum(_row_token_count(r) for r in rows)
+    total = sum(_whole_document_token_count(r) for r in rows)
     if total > max_tokens:
         return None
 
-    sources: list[dict] = [
-        {
-            "citationId": i,
-            "chunkId": r["id"],
-            "documentId": r["document_id"],
-            "filename": r["filename"] or "unknown",
-            "page": r["page_number"],
-            "text": r["text"] or "",
-            "score": None,
-        }
-        for i, r in enumerate(rows, 1)
-    ]
+    sources: list[dict] = []
+    prev_page, prev_end = None, None
+    for i, r in enumerate(rows, 1):
+        page = (r["document_id"], r["source_page_index"])
+        text = r["text"] or ""
+        trimmed = (
+            _drop_chunk_overlap(text, r["page_char_start"], prev_end) if page == prev_page else text
+        )
+        sources.append(
+            {
+                "citationId": i,
+                "chunkId": r["id"],
+                "documentId": r["document_id"],
+                "filename": r["filename"] or "unknown",
+                "page": r["page_number"],
+                "text": trimmed,
+                "score": None,
+            }
+        )
+        prev_page, prev_end = page, r["page_char_end"]
     rendered = render_sources(sources)
     if max(1, len(rendered) // 4) > max_tokens:
         return None

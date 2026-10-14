@@ -25,7 +25,9 @@ export {
   loadModel,
   unloadModel,
   notifyChatHistoryUpdated,
+  notifyChatProjectsUpdated,
   removeScanFolder,
+  subscribeChatHistoryUpdated,
   revealCachedModel,
   revealFineTunedModel,
   validateModel,
@@ -37,11 +39,14 @@ export {
   type KvCacheEstimate,
   type LocalModelInfo,
   type ScanFolderInfo,
+  CHAT_HISTORY_UPDATED_EVENT,
+  fetchSidebarThreadRows,
 } from "./api/chat-api";
 export type {
   ApiMonitorEntry,
   BackendModelDetails,
   GgufVariantDetail,
+  GgufVariantsResponse,
   InferenceStatusResponse,
 } from "./types/api";
 export {
@@ -58,12 +63,19 @@ export {
 } from "./chat-settings-sheet";
 export { useChatRuntimeStore } from "./stores/chat-runtime-store";
 export { openFolderAsProject, useOpeningFolder } from "./utils/open-folder-as-project";
+export { requestReplyFinishedPermission } from "./utils/reply-finished-notification";
 export {
   hydrateModelDisclaimerPreference,
   refreshModelDisclaimerPreference,
   saveModelDisclaimerPreference,
 } from "./sync-model-disclaimer-preference";
-export { useChatActive, useInComparePane } from "./runtime-provider";
+export {
+  ChatComposerFocusableContext,
+  pythonToolRunsInStudio,
+  useChatActive,
+  useInComparePane,
+} from "./runtime-provider";
+export { withAttachmentOriginal } from "./attachment-originals";
 export {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
@@ -89,7 +101,22 @@ export {
   useToolPaneScope,
 } from "./tool-output-scope";
 export { useToolAwaitingApproval } from "./tool-approval";
-export { PermissionModeDropdown } from "./permission-mode-select";
+export {
+  PermissionModeDropdown,
+  useActivePermissionMode,
+  useSandboxCapability,
+} from "./permission-mode-select";
+export { sandboxSwitchState } from "./sandbox-level";
+export { pickSandboxLevel } from "./sandbox-pick";
+export { SandboxSetupDialog } from "./sandbox-setup-dialog";
+export {
+  type SandboxSetupAction,
+  type SandboxSetupJob,
+  type SandboxSetupOperation,
+  forgetSandboxCapability,
+  loadSandboxSetup,
+  startSandboxSetup,
+} from "./api/sandbox-capability";
 export { useChatSearchStore } from "./stores/chat-search-store";
 export type { ChatNavigationState } from "./stores/chat-navigation-store";
 export {
@@ -118,6 +145,28 @@ export {
   useForkBoundaryStore,
   type ForkBoundaryState,
 } from "./stores/fork-boundary-store";
+export { rewindChatThread } from "./api/rewind-api";
+export {
+  type RewindDialogRequest,
+  useRewindDialogStore,
+} from "./stores/rewind-dialog-store";
+export {
+  collectRewindTurnIds,
+  defaultRewindMode,
+  isRewindCommand,
+  type RewindMode,
+  type RewindResult,
+  rewindChangedCount,
+  rewindPickerEntries,
+  rewindSkippedCount,
+  rewindTouchesConversation,
+  rewindTouchesFiles,
+} from "./utils/rewind";
+export {
+  isCompactCommand,
+  requestThreadCompaction,
+  useCompactRequestStore,
+} from "./stores/compact-request-store";
 export {
   folderRingKey,
   planKey,
@@ -189,6 +238,10 @@ export type {
   SidebarOrganizeBy,
 } from "./stores/sidebar-organization-store";
 export { useChatPreferencesStore } from "./stores/chat-preferences-store";
+export {
+  type ContextTruncation,
+  promptWasShortened,
+} from "./utils/context-truncation";
 export { SectionNameDialog } from "./components/section-name-dialog";
 export { removeCustomSectionWithUndo } from "./stores/remove-custom-section";
 export {
@@ -217,6 +270,7 @@ export {
   releasePreStreamRunForThreadIds,
   releasePreStreamRunReservation,
   reservePreStreamRun,
+  subscribePreStreamRunReservations,
 } from "./utils/pre-stream-run-reservation";
 export { claimThreadCreation } from "./utils/chat-thread-creation-claim";
 export { useChatProjectScope } from "./chat-project-scope";
@@ -254,6 +308,7 @@ export {
   discardQueuedChatRunSettings,
   discardQueuedChatRunSettingsForThread,
   registerQueuedChatRunSettings,
+  resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
   type QueuedChatRunSettings,
 } from "./utils/queued-chat-run-settings";
@@ -331,6 +386,8 @@ export {
   forkChatRow,
   getSidebarItemThreadIds,
   recordedSandboxSessionIds,
+  regenerateChatTitle,
+  regenerateChatTitleWithToast,
   sandboxSessionIdsHolding,
   type ConversationExportFormat,
 } from "./components/chat-row-menu";
@@ -381,6 +438,14 @@ export {
   shouldAttachPastedText,
 } from "./utils/pasted-text";
 export {
+  type DocumentAnnotation,
+  type DocumentAnnotations,
+  annotationsOfFile,
+  createAnnotationsFile,
+  isAnnotationsContent,
+  parseAnnotationsContent,
+} from "./utils/document-annotations";
+export {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,
@@ -403,6 +468,7 @@ export { forkCountFor, subscribeForkCounts } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
+  reasoningTailCapped,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
@@ -418,16 +484,14 @@ export {
   resolveOpen,
 } from "./utils/display-visibility";
 export { ArtifactCard } from "./artifacts/artifact-card";
+export { ReactPreview } from "./artifacts/react-preview/react-preview";
 export { ArtifactHtmlFrame } from "./artifacts/html-frame";
 export { ResearchMessage } from "./components/research-message";
 export {
   ResearchActivityPanel,
   ResearchActivitySheet,
 } from "./components/research-activity-panel";
-export {
-  useChatArtifactsStore,
-  useSelectedChatArtifact,
-} from "./artifacts/store";
+export { useChatArtifactsStore } from "./artifacts/store";
 export {
   downloadArchivedChatExport,
   downloadChatExport,
@@ -476,6 +540,22 @@ export {
   useChatSidebarItems,
   type SidebarItem,
 } from "./hooks/use-chat-sidebar-items";
+export {
+  fetchSidebarRowPage,
+  readAllSidebarRowIds,
+  readAllSidebarRows,
+  useSidebarRowPages,
+  type SidebarRowPages,
+  type SidebarRowSlot,
+} from "./hooks/use-sidebar-row-pages";
+export {
+  SIDEBAR_PAGE_SIZE,
+  holdRowsPastLoadedChats,
+  mergeManualOrderTail,
+  settledManualOrder,
+  sidebarRowQuery,
+  type SidebarRowQuery,
+} from "./utils/sidebar-row-query";
 export {
   createChatProject,
   deleteChatProject,
@@ -551,3 +631,7 @@ export {
 } from "./api/gguf-variants-request";
 export type { ChatModelSummary, ChatLoraSummary } from "./types/runtime";
 export { startLlamaCppAutoReload } from "./llama-cpp-auto-reload";
+export { chatLocalModelOptions } from "./local-model-options";
+export { readLastLocalModelLoad } from "./utils/last-local-model-load";
+export { decideAutoRead } from "./utils/auto-read-aloud";
+export { wantsDownloadManagerStaging } from "./utils/model-download-staging";

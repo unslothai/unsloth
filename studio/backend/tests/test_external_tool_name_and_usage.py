@@ -316,3 +316,116 @@ def test_usage_totals_still_sum_across_turns(executed):
     reports = _usage_chunks(out)
     assert len(reports) == 1
     assert reports[0]["usage"]["total_tokens"] == 5
+
+
+def test_the_summed_usage_carries_the_last_turns_timings(executed):
+    first = {"predicted_per_second": 10.0, "predicted_n": 3}
+    last = {"predicted_per_second": 90.0, "predicted_n": 1}
+    turn_one = "data: " + json.dumps(
+        {
+            "choices": [],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7},
+            "timings": first,
+        }
+    )
+    turn_two = "data: " + json.dumps(
+        {
+            "choices": [{"index": 0, "delta": {"content": "a"}}],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 1, "total_tokens": 10},
+            "timings": last,
+        }
+    )
+    transport = FakeTransport(
+        [
+            [
+                _name_fragment(0, "web_search"),
+                _arguments(0, '{"query": "x"}'),
+                _finish(),
+                turn_one,
+            ],
+            [turn_two, _finish("stop")],
+            [_DONE],
+        ]
+    )
+    out = _run(transport)
+    reports = _usage_chunks(out)
+    assert len(reports) == 1
+    assert reports[0]["usage"]["total_tokens"] == 17
+    assert reports[0]["timings"] == last
+    # Timings belong only on the summary chunk.
+    assert not any('"timings"' in line for line in out if '"content"' in line)
+
+
+_ANSWER = "data: " + json.dumps({"choices": [{"index": 0, "delta": {"content": "a"}}]})
+_USAGE_NO_TIMINGS = "data: " + json.dumps(
+    {"choices": [], "usage": {"prompt_tokens": 9, "completion_tokens": 1, "total_tokens": 10}}
+)
+
+
+@pytest.mark.parametrize(
+    "answer_turn, total",
+    [
+        pytest.param([_finish("stop"), _USAGE_NO_TIMINGS], 17, id = "usage-without-timings"),
+        pytest.param([_ANSWER, _finish("stop")], 7, id = "no-usage-chunk"),
+    ],
+)
+def test_a_last_turn_without_timings_reports_none(executed, answer_turn, total):
+    turn_one = "data: " + json.dumps(
+        {
+            "choices": [],
+            "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7},
+            "timings": {"predicted_per_second": 10.0},
+        }
+    )
+    transport = FakeTransport(
+        [
+            [
+                _name_fragment(0, "web_search"),
+                _arguments(0, '{"query": "x"}'),
+                _finish(),
+                turn_one,
+            ],
+            answer_turn,
+            [_DONE],
+        ]
+    )
+    reports = _usage_chunks(_run(transport))
+    assert len(reports) == 1
+    assert reports[0]["usage"]["total_tokens"] == total
+    assert "timings" not in reports[0]
+
+
+def test_a_provider_compaction_item_is_handed_to_the_next_round(executed):
+    compaction = "data: " + json.dumps(
+        {
+            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+            "_toolEvent": {"type": "compaction_block", "encrypted_content": "gAAAA-opaque"},
+        }
+    )
+    transport = FakeTransport(
+        [[compaction, _name_fragment(0, "web_search"), _arguments(0, '{"query": "x"}'), _finish()]]
+    )
+    # As the real transport does: the event is this server's own frame, not a provider's forgery.
+    transport.sanitizes_provider_frames = True
+    _run(transport)
+    assert transport.requests[0]["messages"] == [{"role": "user", "content": "hi"}]
+    replayed = transport.requests[1]["messages"]
+    # The item stands in for the history it covers, so only the turn after it is resent.
+    assert [m["role"] for m in replayed] == ["assistant", "assistant", "assistant", "tool"]
+    assert replayed[0]["extra_content"] == {"openai_responses_compaction": "gAAAA-opaque"}
+    assert "hi" not in json.dumps(replayed)
+
+
+def test_a_reprompt_after_a_compacted_turn_stays_after_the_item(executed):
+    narration = "data: " + json.dumps(
+        {
+            "choices": [{"index": 0, "delta": {"content": "I'll search the web."}}],
+            "_toolEvent": {"type": "compaction_block", "encrypted_content": "gAAAA-opaque"},
+        }
+    )
+    transport = FakeTransport([[narration, _finish("stop")]])
+    transport.sanitizes_provider_frames = True
+    _run(transport, nudge_tool_calls = True)
+    replayed = transport.requests[1]["messages"]
+    assert [m["role"] for m in replayed] == ["assistant", "assistant", "user"]
+    assert "extra_content" in replayed[0] and "web_search" in replayed[2]["content"]

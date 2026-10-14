@@ -21,6 +21,8 @@ logger = get_logger(__name__)
 CHAT = "chat"
 DIFFUSION = "diffusion"
 VIDEO = "video"
+# A Decision API llama.cpp server on the GPU (the PyTorch Clef worker is not arbitrated).
+DECISIONS = "decisions"
 
 _lock = threading.Lock()
 _owner: Optional[str] = None
@@ -38,10 +40,12 @@ def _evict_chat() -> None:
     import time
 
     from core.inference import get_inference_backend
+    from core.inference.model_slots import unload_extra_models
     from routes.inference import get_llama_cpp_backend
 
     from core.inference.llama_cpp import chat_load_active
 
+    unload_extra_models(strict = True)
     llama = get_llama_cpp_backend()
     # is_active (process exists), not is_loaded (exists AND healthy): a chat model still starting up holds VRAM but is
     # not healthy. chat_load_active too, since an HF load has no process until its GGUF downloaded. unload_model sets
@@ -90,9 +94,19 @@ def _evict_video() -> None:
     get_video_backend().unload()
 
 
+def _evict_decisions() -> None:
+    from core.systemone.laya_runtime import evict_for_gpu
+    evict_for_gpu()
+
+
 # Patchable in tests via monkeypatch.setitem. Ownership is exclusive, so acquire_for's evict-the-current-owner
 # generalises to any number of owners.
-_EVICTORS = {CHAT: _evict_chat, DIFFUSION: _evict_diffusion, VIDEO: _evict_video}
+_EVICTORS = {
+    CHAT: _evict_chat,
+    DIFFUSION: _evict_diffusion,
+    VIDEO: _evict_video,
+    DECISIONS: _evict_decisions,
+}
 
 
 class GpuOwnerBusyError(RuntimeError):
@@ -179,6 +193,7 @@ def acquire_for(
     allow_evict: bool = True,
     account_id: Optional[str] = None,
     replacing: bool = False,
+    alongside: bool = False,
 ) -> Any:
     """Make ``owner`` the sole GPU owner, evicting the other if it holds it.
 
@@ -209,7 +224,7 @@ def acquire_for(
             # A resident H3 sd-server sits outside every owner's teardown.
             _release_idle_video_servers(f"GPU acquired for {owner}")
         # Records who LOADED the model; a plain re-assert must not hand it to whoever asked last.
-        claims = _owner != owner or register is not None or replacing
+        claims = _owner != owner or ((register is not None or replacing) and not alongside)
         _owner = owner
         _owner_epoch += 1
         result = register() if register is not None else None
