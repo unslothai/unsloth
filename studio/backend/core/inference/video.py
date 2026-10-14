@@ -1413,6 +1413,7 @@ def _h3_offloaded_render_flags(
     render_resident: bool,
     memory_mode: Optional[str],
     reuse_live_server: bool = True,
+    compute_bytes: Optional[int] = None,
 ) -> list[str]:
     """The flags an H3 native render runs with once Auto chose resident or offloaded. Every offloaded render is
     re-fitted on live RAM, swap and GTT readings (file reads only) before a process starts, so pressure since the load
@@ -1460,6 +1461,7 @@ def _h3_offloaded_render_flags(
         render_flags,
         memory_mode,
         hint = H3_NATIVE_RENDER_RUNNING_HINT if released == "pending" else "",
+        compute_bytes = compute_bytes,
     )
 
 
@@ -1476,12 +1478,18 @@ def _h3_launch_flags(
     memory_mode: Optional[str],
     *,
     hint: str = "",
+    compute_bytes: Optional[int] = None,
 ) -> list[str]:
     """The live fit for one process launch, with no server-slot calls (it also runs under the slot's lock, from
     ``H3NativeServerSlot.get``'s ``pre_spawn``). Auto may move the encoder; an explicit mode runs exactly its flags
-    or is refused. A resident render or a runtime without fit inputs passes through."""
+    or is refused. A resident render or a runtime without fit inputs passes through. ``compute_bytes`` is the
+    render's denoiser compute buffer."""
     from .sd_cpp_args import device_backend_flags
-    from .video_minimax_h3 import H3NativeMemoryRefusal, h3_native_live_fit
+    from .video_minimax_h3 import (
+        H3NativeMemoryRefusal,
+        h3_native_live_fit,
+        h3_native_with_max_vram,
+    )
 
     from .video_minimax_h3 import h3_native_fit_check_enabled
 
@@ -1493,13 +1501,14 @@ def _h3_launch_flags(
         _h3_check_render_overhead(hint)
         return list(render_flags)
     mode = memory_mode or "auto"
-    fit = h3_native_live_fit(inputs, mode)
+    fit = h3_native_live_fit(inputs, mode, compute_bytes)
     if fit.refusal:
         raise H3NativeMemoryRefusal(fit.refusal + hint)
     if fit.note:
         logger.info("video.h3_native_memory_fit (launch): %s", fit.note)
     if mode != "auto":
-        return list(render_flags)
+        # The placement is the mode's; only a UMA device's --max-vram reserve is applied.
+        return h3_native_with_max_vram(render_flags, fit.max_vram)
     flags = tuple(fit.flags)
     return list(flags + tuple(device_backend_flags(inputs.device_name, list(flags))))
 
@@ -3924,6 +3933,7 @@ class VideoBackend:
             sd_cpp_graph_cut_options,
             sd_cpp_listed_device,
             sd_cpp_supports_sage_attn,
+            sd_cpp_vulkan_device_is_uma,
         )
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
@@ -4335,6 +4345,7 @@ class VideoBackend:
             from .video_minimax_h3 import (
                 H3_NATIVE_RENDER_RUNNING_HINT,
                 H3NativeFitInputs,
+                h3_native_compute_bytes,
                 h3_native_live_fit,
                 h3_native_render_flags,
                 h3_native_resident_bytes,
@@ -4370,8 +4381,17 @@ class VideoBackend:
                 te_bytes = _size(resolved[1]),
                 vae_bytes = _size(resolved[2]) + _size(resolved[3]),
                 device_name = native_device_name,
+                uma = check_gtt
+                and sd_cpp_vulkan_device_is_uma(binary, native_device_name, probe = False) is True,
             )
-            fit = h3_native_live_fit(native_fit_inputs, requested_mode)
+            # The smallest clip: a load is refused only when no render could fit.
+            fam_presets = [p for p in (fam.resolution_presets or ()) if len(p) == 2]
+            small_w, small_h = (
+                min(fam_presets, key = lambda p: p[0] * p[1]) if fam_presets else (864, 480)
+            )
+            small_frames = fam.min_num_frames or fam.default_num_frames or 1
+            small_compute = h3_native_compute_bytes(small_w, small_h, small_frames)
+            fit = h3_native_live_fit(native_fit_inputs, requested_mode, small_compute)
             release_pending = False
             if fit.refusal or fit.note:
                 # Free the replaced model's idle sd-server (it respawns on demand) and re-measure.
@@ -4379,7 +4399,7 @@ class VideoBackend:
                     "a new MiniMax-H3 load is measuring host memory"
                 )
                 if released == "stopped":
-                    fit = h3_native_live_fit(native_fit_inputs, requested_mode)
+                    fit = h3_native_live_fit(native_fit_inputs, requested_mode, small_compute)
                 release_pending = released == "pending"
             if fit.refusal and release_pending:
                 fit = dataclasses.replace(fit, refusal = fit.refusal + H3_NATIVE_RENDER_RUNNING_HINT)
@@ -4397,11 +4417,6 @@ class VideoBackend:
                 )
             if requested_mode == "auto" and (fit.refusal or fit.note):
                 # Auto decides resident vs offloaded at render time; refuse only if even the smallest clip cannot fit.
-                fam_presets = [p for p in (fam.resolution_presets or ()) if len(p) == 2]
-                small_w, small_h = (
-                    min(fam_presets, key = lambda p: p[0] * p[1]) if fam_presets else (864, 480)
-                )
-                small_frames = fam.min_num_frames or fam.default_num_frames or 1
                 resident_need = h3_native_resident_bytes(
                     sum(_size(p) for p in resolved[:4]), small_w, small_h, small_frames
                 )
@@ -11072,7 +11087,7 @@ class VideoBackend:
         from .sd_cpp_engine import SdCppCancelled
         from .sd_cpp_server import SdCppServerUnsupported
         from .video_minimax_h3 import H3NativeMemoryRefusal
-        from .video_minimax_h3 import h3_native_server_enabled
+        from .video_minimax_h3 import h3_native_compute_bytes, h3_native_server_enabled
 
         slot = getattr(runtime, "server_slot", None)
         if slot is None or slot.disabled_reason is not None:
@@ -11108,7 +11123,13 @@ class VideoBackend:
                     render_env,
                     cancel_event = cancel,
                     pre_spawn = functools.partial(
-                        _h3_launch_flags, runtime, render_flags, memory_mode
+                        _h3_launch_flags,
+                        runtime,
+                        render_flags,
+                        memory_mode,
+                        compute_bytes = h3_native_compute_bytes(
+                            params.width, params.height, params.num_frames
+                        ),
                     ),
                 )
             except (SdCppCancelled, H3NativeMemoryRefusal):
@@ -11173,6 +11194,7 @@ class VideoBackend:
         from .sd_cpp_args import SdCppVideoGenParams
         from .sd_cpp_engine import SdCppCancelled
         from .video_minimax_h3 import (
+            h3_native_compute_bytes,
             h3_native_render_flags,
             h3_native_resident_bytes,
             inspect_video,
@@ -11221,8 +11243,13 @@ class VideoBackend:
                 need_bytes = need,
             )
         # The GTT fit the load prepared for an offloaded Auto render; a resident one never needed it.
+        compute_bytes = h3_native_compute_bytes(width, height, frames)
         render_flags = _h3_offloaded_render_flags(
-            runtime, render_flags, render_resident = render_resident, memory_mode = state.memory_mode
+            runtime,
+            render_flags,
+            render_resident = render_resident,
+            memory_mode = state.memory_mode,
+            compute_bytes = compute_bytes,
         )
         if seed is None:
             seed = random.SystemRandom().randrange(0, 2**53)
@@ -11355,6 +11382,7 @@ class VideoBackend:
                                 render_resident = render_resident,
                                 memory_mode = state.memory_mode,
                                 reuse_live_server = False,
+                                compute_bytes = compute_bytes,
                             )
                             generated = runtime.engine.generate_video(
                                 runtime.files,

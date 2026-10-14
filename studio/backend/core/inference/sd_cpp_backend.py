@@ -567,6 +567,36 @@ def sd_cpp_cuda_compute_capability(
     return caps.get(int(device_name[len(head) :]))
 
 
+_VULKAN_DEVICE_UMA_RE = re.compile(r"^ggml_vulkan: (\d+) = .*?\| uma: ([01]) \|", re.MULTILINE)
+
+
+def sd_cpp_vulkan_device_is_uma(
+    binary: Optional[str],
+    device_name: Optional[str],
+    *,
+    probe: bool = True,
+) -> Optional[bool]:
+    """Whether ggml-vulkan reports ``device_name`` (``Vulkan<i>``; Vulkan0 when unpinned) as unified memory. Its free
+    memory for such a device sums every heap, the GTT the pinned weights come from included. None when unsure."""
+    if not binary:
+        return None
+    text = None
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    if seen is not None and seen[0] == _binary_stat_identity(binary):
+        text = seen[1]
+    elif probe:
+        text = _sd_cpp_probe_output(binary, "--list-devices")
+    if text is None:
+        return None
+    uma = {int(m.group(1)): m.group(2) == "1" for m in _VULKAN_DEVICE_UMA_RE.finditer(text)}
+    if device_name is None:
+        return uma.get(0)
+    head = device_name.rstrip("0123456789")
+    if head.upper() != "VULKAN" or not device_name[len(head) :]:
+        return None
+    return uma.get(int(device_name[len(head) :]))
+
+
 # Every namespace ggml names a device in; the narrower list above is physical-index schemes only.
 _GGML_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM", "VULKAN", "SYCL", "METAL", "OPENCL")
 
@@ -1733,6 +1763,10 @@ _ACCELERATOR_CAPACITY_FAILURE_MARKERS: tuple[str, ...] = (
     "allocation failure",
     "insufficient memory",
     "not enough memory",
+    # sd.cpp's graph-cut executor when a segment's device memory cannot be made available.
+    "cannot make enough memory available",
+    "workspace capacity check",
+    "failed during workspace allocation",
 )
 
 

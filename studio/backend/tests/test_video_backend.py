@@ -4285,6 +4285,11 @@ def test_h3_native_drops_stream_layers_without_cpu_offload(monkeypatch, tmp_path
 
 
 _AMD_VULKAN = "Vulkan0\tAMD Radeon RX 7800 XT (RADV NAVI32)\n"
+# ggml-vulkan's init line rides along on stderr; "uma: 1" is an integrated GPU.
+_AMD_UMA_VULKAN = (
+    "ggml_vulkan: 0 = AMD Radeon Graphics (RADV GFX1151) (radv) | uma: 1 | fp16: 1 | bf16: 0 |\n"
+    "Vulkan0\tAMD Radeon Graphics (RADV GFX1151)\n"
+)
 
 
 def _tiny_gtt(
@@ -4302,6 +4307,13 @@ def _tiny_gtt(
     limit = video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + (4 if encoder_fits else 3)
     monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (limit, True))
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
+    _discrete_vram(monkeypatch)
+
+
+def _discrete_vram(monkeypatch, free = 1 << 50):
+    """The selected card's sysfs free VRAM; the default holds any render's activations, so nothing spills to GTT."""
+    from core.inference import video_minimax_h3
+    monkeypatch.setattr(video_minimax_h3, "amdgpu_vram_free_bytes", lambda *a, **k: free)
 
 
 def test_h3_native_auto_prepares_the_encoder_on_the_cpu_for_an_offloaded_render(
@@ -4368,6 +4380,7 @@ def _no_gtt_room(monkeypatch, free_vram):
 
     monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", lambda *a, **k: (0, True))
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: free_vram)
+    _discrete_vram(monkeypatch)
 
 
 def test_h3_native_auto_refuses_at_load_only_when_no_render_could_go_resident(
@@ -4395,6 +4408,32 @@ def test_h3_native_auto_defers_the_gtt_refusal_when_a_resident_render_fits(monke
     )
     assert "--clip-on-cpu" not in offload
     assert "GTT" in state.pipe.offload_refusal
+
+
+def test_h3_native_refuses_a_uma_card_whose_gtt_cannot_hold_the_smallest_clips_activations(
+    monkeypatch, tmp_path
+):
+    """A UMA card (small carve-out) serves the denoiser's compute buffer from GTT too. Measured on a gfx1151 with the
+    pool held to 22.5 GiB free: the weights fit, every default-size render failed in sd.cpp's capacity check."""
+    _tiny_gtt(monkeypatch, encoder_fits = True)
+    _discrete_vram(monkeypatch, free = 512 << 20)
+    with pytest.raises(RuntimeError, match = "activations"):
+        _load_h3_native_offload(
+            monkeypatch,
+            tmp_path,
+            help_text = _GRAPH_CUT_HELP,
+            devices = _AMD_UMA_VULKAN,
+            installed_accelerator = "vulkan",
+        )
+    # A discrete card's VRAM is not GTT: the same reading leaves its load alone.
+    state, offload = _load_h3_native_offload(
+        monkeypatch,
+        tmp_path,
+        help_text = _GRAPH_CUT_HELP,
+        devices = _AMD_VULKAN,
+        installed_accelerator = "vulkan",
+    )
+    assert state.pipe.offload_refusal is None and state.pipe.fit_inputs.uma is False
 
 
 def test_h3_native_refuses_balanced_on_an_overflowing_vulkan_gtt_pool(monkeypatch, tmp_path):
@@ -4477,6 +4516,7 @@ def test_h3_native_replacement_frees_the_outgoing_idle_server_before_refusing(
         lambda *a, **k: (roomy if slot.released else 0, True),
     )
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    _discrete_vram(monkeypatch)
     state, offload = _load_h3_native_offload(
         monkeypatch,
         tmp_path,
@@ -4506,6 +4546,7 @@ def test_h3_native_a_busy_outgoing_server_is_not_counted_as_freed(monkeypatch, t
 
     monkeypatch.setattr(video_minimax_h3, "amdgpu_gtt_reading", gtt)
     monkeypatch.setattr(video_mod, "_h3_card_free_bytes", lambda *a, **k: 1)
+    _discrete_vram(monkeypatch)
     with pytest.raises(RuntimeError, match = "still running"):
         _load_h3_native_offload(
             monkeypatch,
@@ -4523,6 +4564,7 @@ def _render_runtime(
     base = ("--offload-to-cpu", "--diffusion-fa"),
     slot = None,
     snapshot_refusal = None,
+    uma = False,
 ):
     from core.inference.video_minimax_h3 import H3NativeFitInputs
     inputs = H3NativeFitInputs(
@@ -4534,6 +4576,7 @@ def _render_runtime(
         te_bytes = 1,
         vae_bytes = 2,
         device_name = "Vulkan0",
+        uma = uma,
     )
     return types.SimpleNamespace(
         fit_inputs = inputs,
@@ -4580,6 +4623,74 @@ def test_an_offloaded_auto_render_lifts_a_refusal_once_memory_is_free(monkeypatc
     )
     assert "--clip-on-cpu" in flags
     assert flags[-2:] == ["--backend", "diffusion=Vulkan0,te=cpu,vae=Vulkan0"]
+
+
+def test_an_offloaded_render_charges_activations_vram_cannot_hold_to_gtt(monkeypatch):
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+    from core.inference.video_minimax_h3 import H3NativeMemoryRefusal, h3_native_compute_bytes
+
+    compute = h3_native_compute_bytes(864, 480, 124)
+    # Room for the weights and this clip's activations beside them, nothing more.
+    _live_gtt(
+        monkeypatch,
+        video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES + 4 + compute,
+    )
+    _discrete_vram(monkeypatch, free = 0)
+
+    def render(compute_bytes, uma = True):
+        return _h3_offloaded_render_flags(
+            _render_runtime(uma = uma),
+            ["--offload-to-cpu", "--diffusion-fa"],
+            render_resident = False,
+            memory_mode = "auto",
+            reuse_live_server = False,
+            compute_bytes = compute_bytes,
+        )
+
+    assert "--clip-on-cpu" not in render(compute)
+    with pytest.raises(H3NativeMemoryRefusal, match = "activations"):
+        render(h3_native_compute_bytes(1344, 768, 124))
+    # A discrete card's compute buffer is in VRAM, whatever sysfs says is free there.
+    assert "--clip-on-cpu" not in render(h3_native_compute_bytes(1344, 768, 124), uma = False)
+    # A UMA card whose carve-out holds the activations keeps them out of GTT.
+    _discrete_vram(monkeypatch, free = 16 << 30)
+    assert "--clip-on-cpu" not in render(h3_native_compute_bytes(1344, 768, 124))
+
+
+def test_an_explicit_mode_on_a_uma_card_launches_with_the_pinned_reserve(monkeypatch):
+    """Low VRAM keeps its placement; the --max-vram reserve only corrects the budget sd.cpp reads at startup."""
+    from core.inference import video_minimax_h3
+    from core.inference.video import _h3_offloaded_render_flags
+
+    _live_gtt(monkeypatch, 1 << 50)
+    _discrete_vram(monkeypatch, free = 0)
+    base = ("--offload-to-cpu", "--clip-on-cpu", "--diffusion-fa", "--max-vram", "-1")
+    pinned = (
+        1 + 2 + video_minimax_h3.H3_NATIVE_PINNED_MARGIN_BYTES
+    )  # denoiser + VAEs, the encoder on the CPU
+    flags = _h3_offloaded_render_flags(
+        _render_runtime(base = base, uma = True),
+        list(base),
+        render_resident = False,
+        memory_mode = "low_vram",
+        compute_bytes = 1,
+    )
+    assert flags == [
+        "--offload-to-cpu",
+        "--clip-on-cpu",
+        "--diffusion-fa",
+        "--max-vram",
+        f"-{pinned / 1024**3:.2f}",
+    ]
+    discrete = _h3_offloaded_render_flags(
+        _render_runtime(base = base),
+        list(base),
+        render_resident = False,
+        memory_mode = "low_vram",
+        compute_bytes = 1,
+    )
+    assert discrete == list(base)
 
 
 def test_a_live_offloaded_server_keeps_its_flags_without_a_reading(monkeypatch):
