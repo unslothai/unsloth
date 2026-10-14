@@ -232,8 +232,11 @@ def start() -> dict:
         job.remaining = sum(stale_counts().values())
         job.thread = account_thread(target = _run, args = (job,), daemon = True)
         _jobs[key] = job
+        # Before the worker runs: a job that ends at once must still read as started, so the
+        # client follows it and announces how it ended.
+        started = job.snapshot()
     job.thread.start()
-    return job.snapshot()
+    return started
 
 
 def status() -> dict | None:
