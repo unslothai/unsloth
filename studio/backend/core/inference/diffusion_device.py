@@ -674,7 +674,6 @@ def mps_high_watermark_ratio(
 def _total_ram_bytes() -> Optional[int]:
     try:
         import psutil
-
         return int(psutil.virtual_memory().total)
     except Exception:  # noqa: BLE001 -- fall back to sysconf
         pass

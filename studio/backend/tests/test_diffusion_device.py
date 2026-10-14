@@ -1037,7 +1037,9 @@ GIB = 1024**3
         (5.0, 5.5, 5.0),  # reserve would go below the working set: never cap under it
     ],
 )
-def test_mps_ratio_caps_below_ram_never_below_working_set(recommended_gib, ram_gib, expected_cap_gib):
+def test_mps_ratio_caps_below_ram_never_below_working_set(
+    recommended_gib, ram_gib, expected_cap_gib
+):
     ratio = dd.mps_high_watermark_ratio(int(recommended_gib * GIB), int(ram_gib * GIB))
     cap_gib = ratio * recommended_gib
     assert cap_gib == pytest.approx(expected_cap_gib, rel = 1e-3)
@@ -1052,7 +1054,12 @@ def test_mps_ratio_unknown_readings_mean_no_cap():
     assert dd.mps_high_watermark_ratio("x", 16 * GIB) is None
 
 
-def _mps_cap_torch(recorded, *, recommended = 10 * GIB, fraction_raises = False):
+def _mps_cap_torch(
+    recorded,
+    *,
+    recommended = 10 * GIB,
+    fraction_raises = False,
+):
     torch = _make_torch(mps_available = True, mps_probe = "pass")
 
     def _set(fraction):
@@ -1096,7 +1103,6 @@ def test_mps_cap_respects_user_override(monkeypatch, env):
     assert recorded == []
     if dd.MPS_HIGH_WATERMARK_ENV in env:
         import os
-
         assert os.environ[dd.MPS_HIGH_WATERMARK_ENV] == env[dd.MPS_HIGH_WATERMARK_ENV]
 
 

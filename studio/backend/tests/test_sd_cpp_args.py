@@ -1049,20 +1049,30 @@ def _managed_install(tmp_path, tag):
     (root / "bin").mkdir(parents = True)
     binary = root / "bin" / "sd-cli"
     binary.write_text("")
-    (root / ".unsloth-sd-cpp-install.json").write_text(json.dumps({"tag": tag, "accelerator": "cpu"}))
+    (root / ".unsloth-sd-cpp-install.json").write_text(
+        json.dumps({"tag": tag, "accelerator": "cpu"})
+    )
     _sd_cpp_args_module._installed_sd_cpp_tag.cache_clear()
     return str(binary)
 
 
 def _all_builders(binary, extra_args = None):
-    files = SdCppModelFiles(diffusion_model = "/m/model.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf")
+    files = SdCppModelFiles(
+        diffusion_model = "/m/model.gguf", vae = "/m/vae.safetensors", llm = "/m/te.gguf"
+    )
     yield build_sd_cpp_command(
         binary, files, SdCppGenParams(prompt = "a cat"), output_path = "/o.png", extra_args = extra_args
     )
     yield build_sd_cpp_video_command(
-        binary, files, SdCppVideoGenParams(prompt = "a cat", width = 256, height = 256, num_frames = 5), output_path = "/o.webm", extra_args = extra_args
+        binary,
+        files,
+        SdCppVideoGenParams(prompt = "a cat", width = 256, height = 256, num_frames = 5),
+        output_path = "/o.webm",
+        extra_args = extra_args,
     )
-    yield build_sd_cpp_server_command(binary, files, host = "127.0.0.1", port = 1, extra_args = extra_args)
+    yield build_sd_cpp_server_command(
+        binary, files, host = "127.0.0.1", port = 1, extra_args = extra_args
+    )
 
 
 @pytest.mark.parametrize(
@@ -1075,7 +1085,9 @@ def _all_builders(binary, extra_args = None):
         ("b1234", False),  # undatable: fail closed
     ],
 )
-def test_mmap_rides_every_macos_builder_from_the_metal_mmap_build(monkeypatch, tmp_path, tag, expected):
+def test_mmap_rides_every_macos_builder_from_the_metal_mmap_build(
+    monkeypatch, tmp_path, tag, expected
+):
     monkeypatch.delenv("UNSLOTH_DIFFUSION_SD_CPP_MMAP", raising = False)
     monkeypatch.setattr("sys.platform", "darwin")
     binary = _managed_install(tmp_path, tag)
