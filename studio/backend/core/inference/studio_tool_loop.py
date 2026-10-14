@@ -84,6 +84,7 @@ from core.inference.tool_loop_controller import (
     mcp_display_parts,
     provisional_tool_provenance,
     restore_replayed_tool_results,
+    with_appended_text,
     strip_result_for_model,
 )
 from core.inference.tool_stream_exec import (
@@ -1353,12 +1354,11 @@ def _append_user_turn(conversation: list[dict[str, Any]], content: str) -> None:
     if not content:
         return
     last = conversation[-1] if conversation else None
-    if (
-        isinstance(last, dict)
-        and last.get("role") == "user"
-        and isinstance(last.get("content"), str)
-    ):
-        conversation[-1] = {**last, "content": f"{last['content']}\n\n{content}"}
+    if isinstance(last, dict) and last.get("role") == "user":
+        conversation[-1] = {
+            **last,
+            "content": with_appended_text(last.get("content") or "", f"\n\n{content}"),
+        }
         return
     conversation.append({"role": "user", "content": content})
 
@@ -1613,7 +1613,10 @@ async def stream_with_studio_tools(
 
                 delta = choice.get("delta")
                 delta = delta if isinstance(delta, dict) else {}
+                # vLLM 0.11+ streams thinking as `reasoning`; llama-server and Kimi as `reasoning_content`.
                 reasoning = delta.get("reasoning_content")
+                if reasoning is None:
+                    reasoning = delta.get("reasoning")
                 if getattr(transport, "preserves_reasoning", False) and isinstance(reasoning, str):
                     turn.reasoning.append(reasoning)
                 content = delta.get("content")

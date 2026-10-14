@@ -274,7 +274,6 @@ import {
   comparePairReadState,
   resolveComparePaneThreadIds,
 } from "./utils/compare-pane-threads";
-import { clearNewChatDraft } from "./utils/composer-draft";
 import { isChatThreadDeleted } from "./utils/chat-thread-tombstones";
 import {
   getStoredChatThread,
@@ -2796,6 +2795,7 @@ export function ChatPage({
   const activeGgufVariant = useChatRuntimeStore(
     (state) => state.activeGgufVariant,
   );
+  const loadedIsMlx = useChatRuntimeStore((state) => state.loadedIsMlx);
   const residentCheckpoint = useChatRuntimeStore(
     (state) => state.residentCheckpoint,
   );
@@ -2886,7 +2886,6 @@ export function ChatPage({
   );
 
   const handleDesktopNewChat = useCallback(() => {
-    clearNewChatDraft();
     const runtime = useChatRuntimeStore.getState();
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(currentProjectId);
@@ -4713,6 +4712,7 @@ export function ChatPage({
                   residentCheckpoint,
                 })}
                 activeGgufVariant={activeGgufVariant}
+                activeVariantIsMlx={loadedIsMlx === true}
                 activeModelConfig={activeModelConfig}
                 activeLoadedContextLength={loadedContextLength}
                 configRequest={modelConfigRequest}

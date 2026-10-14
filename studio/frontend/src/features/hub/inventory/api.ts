@@ -229,6 +229,8 @@ export interface GgufVariantsResponse {
   default_variant: string | null;
   /** True when Hub metadata or a complete cached download plan proves companion readiness. */
   dependencies_resolved?: boolean;
+  /** "mlx" for precision folders of an MLX repo. */
+  variant_format?: string | null;
 }
 
 async function parseJsonOrThrow<T>(

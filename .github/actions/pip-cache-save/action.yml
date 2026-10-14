@@ -6,6 +6,13 @@
 # Runs on the default branch ONLY. That is the whole point: an entry written on a
 # pull_request ref is restorable only by re-runs of that same PR, so it buys no
 # hit rate and evicts the copy on main that every PR can read.
+#
+# One other branch ref saves too: `upstream-main` in a repository that is NOT
+# unslothai/unsloth. Staging repos (scripts/pr_review/staging_ci.py) open their PRs
+# against that branch and never push their own main, so main-only saves left them
+# restoring stale seeds forever. A PR can restore from its base branch, so a seeding
+# run dispatched on upstream-main gives every staged PR a current entry. Still never
+# a PR ref, and never in this repository.
 
 name: Save the pip cache
 description: Save pip's cache under the restore step's key, on the default branch only.
@@ -31,7 +38,7 @@ runs:
       # because a LATER step in the job failed. The install itself is what fills
       # this directory, and a failed test does not make its downloads wrong.
       if: >-
-        always() && github.ref == 'refs/heads/main'
+        always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
         && inputs.cache-hit != 'true'
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
       continue-on-error: true

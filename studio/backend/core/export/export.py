@@ -88,6 +88,22 @@ def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     return {} if load_in_4bit else {"load_in_4bit": False}
 
 
+# Export merges one module at a time and trains nothing, so the auto plan keeps 1 GiB for that, not a training step.
+_EXPORT_AUTO_OFFLOAD_KWARGS = {
+    "offload_layers": "auto",
+    "device_map_planner_kwargs": {"reserve_bytes": 1 << 30},
+}
+
+
+def _offload_layers_kwargs(offload_layers, device_map_kw: Optional[dict] = None) -> dict:
+    if not offload_layers or offload_layers == "auto":
+        return {}
+    # A fixed count loads onto one card; core raises on a multi-GPU map.
+    if (device_map_kw or {}).get("device_map") in ("unsloth_balanced", "balanced"):
+        return {}
+    return {"offload_layers": offload_layers}
+
+
 def _export_runtime_available() -> bool:
     """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
     return bool(_IS_MLX) or (FastLanguageModel is not None)
@@ -245,9 +261,14 @@ def _is_cpu_spill_rejection(exc: BaseException) -> bool:
 
     Busy secondary GPUs can make ``balanced`` spill to CPU even where the old sequential
     load fit on GPU0, and that message says nothing about memory, so the retry has to
-    match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``.
+    match it explicitly. See transformers ``quantizers/quantizer_bnb_4bit.py``. Unsloth
+    re-raises it as "does not fit in GPU memory" with the original as ``__cause__``.
     """
-    return "dispatched on the cpu or the disk" in str(exc).lower()
+    while exc is not None:
+        if "dispatched on the cpu or the disk" in str(exc).lower():
+            return True
+        exc = exc.__cause__
+    return False
 
 
 def _is_device_map_infeasible(exc: BaseException) -> bool:
@@ -710,6 +731,15 @@ class ExportBackend:
         self.is_peft = False
         self._audio_type = None
         self.decision = None
+        self.diffusion_lm_profile = None
+
+    def _diffusion_refusal(self, method: str) -> Optional[str]:
+        profile = getattr(self, "diffusion_lm_profile", None)
+        if not profile:
+            return None
+        from utils.models.diffusion_lm import export_refusal
+
+        return export_refusal(profile, method)
 
     def cleanup_memory(self):
         """Offload and delete all models from memory"""
@@ -758,6 +788,8 @@ class ExportBackend:
         hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
         base_model: Optional[str] = None,
+        offload_layers = "auto",
+        _offload_retry: bool = False,
     ) -> Tuple[bool, str]:
         """Load a checkpoint for export.
 
@@ -766,6 +798,8 @@ class ExportBackend:
         ``hf_token`` authenticates the actual weight load for gated/private checkpoints, matching
         the token the worker used for the security preflight (otherwise a gated repo passes scanning
         then 401s at from_pretrained).
+
+        ``offload_layers = "auto"`` only retries a single-GPU 4-bit load that spilled to the CPU (#13696).
 
         ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as "go and
         find a credential" (``if token is None: get_token()`` in ``save.py`` and ``hf_login``), and
@@ -779,6 +813,7 @@ class ExportBackend:
             logger.info(f"Loading checkpoint: {checkpoint_path}")
 
             self.cleanup_memory()
+            self.diffusion_lm_profile = None
 
             # Before the base / audio / vision probes: a decision run never reaches the chat loaders.
             from core.export.decision import decision_kind
@@ -813,6 +848,11 @@ class ExportBackend:
                 if _device_map_override is None
                 else _device_map_override
             )
+            _offload_kw = (
+                _EXPORT_AUTO_OFFLOAD_KWARGS
+                if _offload_retry
+                else _offload_layers_kwargs(offload_layers, _device_map_kw)
+            )
 
             # Run the type-detection probes inside the forced-offline window, else a gated base 404s: it
             # covers is_vision_model's Hub reads, and local_files_only makes detect_audio_type's requests.get
@@ -824,6 +864,18 @@ class ExportBackend:
                 self.is_vision = not self._audio_type and is_vision_model(
                     model_id, hf_token = probe_token, local_files_only = local_files_only
                 )
+                from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+
+                self.diffusion_lm_profile = (
+                    None
+                    if self._audio_type
+                    else diffusion_lm_profile_for_model(
+                        model_id, hf_token = probe_token, local_files_only = local_files_only
+                    )
+                )
+                if self.diffusion_lm_profile:
+                    # DiffusionGemma ships a vision tower; its text-diffusion load is FastModel's.
+                    self.is_vision = False
 
             if self._audio_type == "csm":
                 from unsloth import FastModel
@@ -840,6 +892,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "whisper":
@@ -858,6 +911,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "snac":
@@ -871,6 +925,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "bicodec":
@@ -890,6 +945,7 @@ class ExportBackend:
                         token = token,
                         local_files_only = local_files_only,
                         **_device_map_kw,
+                        **_offload_kw,
                     )
 
             elif self._audio_type == "dac":
@@ -899,6 +955,22 @@ class ExportBackend:
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
                     load_in_4bit = False,
+                    trust_remote_code = trust_remote_code,
+                    token = token,
+                    local_files_only = local_files_only,
+                    **_device_map_kw,
+                    **_offload_kw,
+                )
+
+            elif self.diffusion_lm_profile:
+                from unsloth import FastModel
+                logger.info(f"Loading as text-diffusion model ({self.diffusion_lm_profile})...")
+                # Text-diffusion has no block swapping; skip offload like Training does.
+                model, tokenizer = FastModel.from_pretrained(
+                    model_name = checkpoint_path,
+                    max_seq_length = max_seq_length,
+                    dtype = None,
+                    **_load_in_4bit_kwargs(load_in_4bit),
                     trust_remote_code = trust_remote_code,
                     token = token,
                     local_files_only = local_files_only,
@@ -916,6 +988,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
                 tokenizer = processor
 
@@ -930,6 +1003,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
                 if _IS_MLX and adapter_config.exists():
                     tokenizer = load_mlx_adapter_tokenizer(tokenizer, checkpoint_path)
@@ -952,6 +1026,12 @@ class ExportBackend:
                     f"Restored Hub model identity for legacy adapter export: {restored_repo_id}"
                 )
 
+            # A Hub adapter has no config.json for the probe, but core loads a diffusion base through its
+            # diffusion path: classify from what loaded, so the merged / GGUF refusals still apply.
+            if not self.diffusion_lm_profile and not _IS_MLX:
+                from utils.models.diffusion_lm import loaded_diffusion_profile
+                self.diffusion_lm_profile = loaded_diffusion_profile(model)
+
             # The MLX GGUF LoRA converter honors the approved load decision.
             self.trust_remote_code = bool(trust_remote_code)
             self.current_model = model
@@ -960,6 +1040,8 @@ class ExportBackend:
 
             if self._audio_type:
                 model_type = f"Audio ({self._audio_type})"
+            elif self.diffusion_lm_profile:
+                model_type = f"Text-diffusion ({self.diffusion_lm_profile})"
             elif self.is_vision:
                 model_type = "Vision"
             else:
@@ -985,6 +1067,19 @@ class ExportBackend:
                 # Retry outside this block: the live traceback pins the half-built model's frames, so an in-block
                 # retry inherits the exhausted device.
                 retry_reason = str(e)
+                # Name the map: an omitted one is unsloth's DEFAULT_DEVICE_MAP, which requested_device_map
+                # upgrades back to the planner, re-running the placement that just failed.
+                retry_kw = {"_device_map_override": {"device_map": "sequential"}}
+            elif (
+                offload_layers == "auto"
+                and not _offload_retry
+                and _device_map_override is None
+                and not self.diffusion_lm_profile
+                and _is_cpu_spill_rejection(e)
+                and not _multi_gpu_device_map_kwargs()
+            ):
+                retry_reason = str(e)
+                retry_kw = {"_offload_retry": True}
             else:
                 logger.error(f"Error loading checkpoint: {e}")
                 import traceback
@@ -992,20 +1087,26 @@ class ExportBackend:
                 logger.error(traceback.format_exc())
                 return False, f"Failed to load checkpoint: {str(e)}"
 
-        logger.warning(
-            f"Multi-GPU export load unusable ({retry_reason}); retrying on "
-            f"the sequential loader default."
-        )
+        if "_offload_retry" in retry_kw:
+            logger.warning(
+                f"Export load does not fit in GPU memory ({retry_reason}); retrying with "
+                f"offload_layers='auto' to keep the layers the GPU cannot hold in host RAM."
+            )
+        else:
+            logger.warning(
+                f"Multi-GPU export load unusable ({retry_reason}); retrying on "
+                f"the sequential loader default."
+            )
         self.cleanup_memory()
         return self.load_checkpoint(
             checkpoint_path,
             max_seq_length = max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = offload_layers,
             trust_remote_code = trust_remote_code,
             hf_token = hf_token,
-            # Name the map: an omitted one is unsloth's DEFAULT_DEVICE_MAP, which requested_device_map
-            # upgrades back to the planner, re-running the placement that just failed.
-            _device_map_override = {"device_map": "sequential"},
+            base_model = base_model,
+            **retry_kw,
         )
 
     def _load_decision_checkpoint(
@@ -1131,6 +1232,9 @@ class ExportBackend:
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("merged")
+        if refusal:
+            return False, refusal, None
 
         # save_pretrained_merged is a no-op merge for non-PEFT base models, so one path covers both.
 
@@ -1576,6 +1680,9 @@ class ExportBackend:
             )
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("gguf")
+        if refusal:
+            return False, refusal, None
 
         # Older unsloth builds raise on an unexpected imatrix_file kwarg even for a plain no-imatrix export.
         if imatrix_file and not _imatrix_export_supported(self.current_model.save_pretrained_gguf):
@@ -2131,6 +2238,9 @@ class ExportBackend:
             return False, _export_runtime_message(), None
         if not self.current_model or not self.current_tokenizer:
             return False, "No model loaded. Please select a checkpoint first.", None
+        refusal = self._diffusion_refusal("gguf") if gguf else None
+        if refusal:
+            return False, refusal, None
 
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None
