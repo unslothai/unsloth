@@ -313,6 +313,23 @@ def _installed_identity() -> tuple[Optional[str], Optional[str]]:
 
 def _install(phase: dict, set_progress, unloaded: bool) -> dict:
     before = _installed_identity()
+    reload_hint = " Reload your model to use it." if unloaded else ""
+    # The offered tag is passed as a pin, which the installer never second-guesses. A setup run that installed a
+    # newer release since the plan was made must not be downgraded by it; a user's UNSLOTH_AUDIO_CPP_TAG still is.
+    to_tag = phase.get("to_tag")
+    if (
+        before[0] == phase.get("repo")
+        and before[1]
+        and to_tag
+        and _target()[1] is None
+        and _freshness.is_behind(to_tag, before[1])
+    ):
+        logger.info("audio.cpp update: already newer", installed = before[1], offered = to_tag)
+        return {
+            "to_tag": before[1],
+            "reload_required": unloaded,
+            "message": f"audio.cpp is already at {before[1]}.{reload_hint}",
+        }
     cmd = [sys.executable, str(phase["script"]), "--install-dir", str(phase["install_dir"])]
     if phase.get("accelerator"):
         cmd.extend(["--accelerator", phase["accelerator"]])
@@ -335,7 +352,6 @@ def _install(phase: dict, set_progress, unloaded: bool) -> dict:
     _refresh_release_cache(phase.get("repo"))
 
     new_repo, new_tag = _installed_identity()
-    reload_hint = " Reload your model to use it." if unloaded else ""
     # Repo and tag together: switching UNSLOTH_AUDIO_CPP_REPO can replace a runtime with another repo's same tag.
     # A runtime that is already the offered release (a setup run got there first) is not a kept old tree.
     if (new_repo, new_tag) == before and (new_repo, new_tag) != (

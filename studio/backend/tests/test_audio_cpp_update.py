@@ -438,6 +438,24 @@ def test_the_install_drops_the_on_disk_release_cache(run_env, managed, monkeypat
     assert audio_cpp_freshness.cached_latest_release(_REPO) is None
 
 
+def test_a_newer_runtime_installed_since_the_plan_is_not_downgraded(run_env, managed):
+    _write_record(managed.tree, release_tag = "v0.9.2-unsloth.1")
+    result = aupd.run_chained_phase(run_env.phase, lambda fraction: None)
+    assert "install" not in run_env.events
+    assert result["to_tag"] == "v0.9.2-unsloth.1"
+    assert result["message"] == "audio.cpp is already at v0.9.2-unsloth.1."
+
+
+def test_a_user_pin_still_installs_an_older_release(run_env, managed, monkeypatch):
+    monkeypatch.setattr(aupd, "_target", lambda: (_REPO, "v0.9.0-unsloth.1"))
+    _write_record(managed.tree, release_tag = "v0.9.2-unsloth.1")
+    run_env.installer(new_tag = "v0.9.0-unsloth.1")
+    phase = dict(run_env.phase, to_tag = "v0.9.0-unsloth.1", pin_release_tag = "v0.9.0-unsloth.1")
+    result = aupd.run_chained_phase(phase, lambda fraction: None)
+    assert "install" in run_env.events
+    assert result["to_tag"] == "v0.9.0-unsloth.1"
+
+
 def test_an_unloaded_model_asks_for_a_reload(run_env, monkeypatch):
     monkeypatch.setattr(aupd, "_unload_audio_cpp_models", lambda: True)
     result = aupd.run_chained_phase(run_env.phase, lambda fraction: None)
