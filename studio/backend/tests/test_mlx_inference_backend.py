@@ -2502,8 +2502,8 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
     backend = mlx_inference.MLXInferenceBackend()
     backend._model, backend._is_vlm = SimpleNamespace(), True
     backend._tokenizer = backend._processor = SimpleNamespace()
-    for untouched in ("_render_vlm_prompt", "_vlm_prompt_cache_session"):
-        monkeypatch.setattr(backend, untouched, lambda *_a, **_k: pytest.fail(untouched))
+    monkeypatch.setattr(backend, "_render_vlm_prompt", lambda *_a, **_k: pytest.fail("templated"))
+    monkeypatch.setattr(backend, "_vlm_prompt_cache_session", lambda *a, **_k: seen.update(cache = a))
     monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
     monkeypatch.setattr("core.inference.grammar_constraint.GrammarConstraint", _RawConstraint)
 
@@ -2511,6 +2511,7 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
     assert seen["args"][2:] == ("", None) and seen["kwargs"]["input_ids"] == [[5, 6]]
     assert seen["penalty_prompt"] == [5, 6]
     assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
+    assert seen["cache"] == (None, None, "")
 
 
 _COMPLETION_TOK = SimpleNamespace(

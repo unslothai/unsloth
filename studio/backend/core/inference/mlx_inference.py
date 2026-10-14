@@ -6500,18 +6500,14 @@ class MLXInferenceBackend:
 
         if prompt_ids is not None:
             import mlx.core as mx
-
-            # Not resumable: the VLM prompt-cache session keys on the rendered prompt.
-            session = None
             vlm_kwargs["input_ids"] = mx.array([list(prompt_ids)])
-        else:
-            if not self._reads_vision_input():
-                # mlx-vlm adds special tokens by family, doubling a BOS the template already emitted.
-                import mlx.core as mx
-                vlm_kwargs["input_ids"] = mx.array([self._encode_prompt(prompt)])
-            session = self._vlm_prompt_cache_session(
-                _adapter_state, images, prompt, has_video = video is not None
-            )
+        elif not self._reads_vision_input():
+            # mlx-vlm adds special tokens by family, doubling a BOS the template already emitted.
+            import mlx.core as mx
+            vlm_kwargs["input_ids"] = mx.array([self._encode_prompt(prompt)])
+        session = self._vlm_prompt_cache_session(
+            _adapter_state, images, prompt, has_video = video is not None
+        )
         vlm_kwargs.update(self._kv_runtime_quant_kwargs())
         if session is not None:
             vlm_kwargs["prompt_cache"] = session.cache
