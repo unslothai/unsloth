@@ -138,8 +138,7 @@ def test_same_conversation_key_always_maps_to_the_same_backend_and_remaps_on_fai
             for path, body, _headers in first_fake(a, b, first.name).served:
                 if path.startswith("/v1/chat"):
                     assert CONVERSATION_FIELD not in body
-            # Consistent hashing, not a rotation: the key comes back to its own backend once that
-            # backend is healthy again.
+            # Consistent hashing: the key returns to its backend once healthy.
             await router.mark_down(first, "test")
             other = router.pick("thread-1")
             assert other is not None and other is not first
@@ -526,8 +525,6 @@ def test_an_oversized_chunked_body_gets_the_same_413_as_content_length(monkeypat
 
 
 def test_a_client_that_leaves_while_queued_gives_its_slot_back():
-    # dispatch waits in the admission queue, and for a non-streaming call llama-server may send no
-    # headers until the generation is finished.
     async def scenario():
         hold = asyncio.Event()
         a = await FakeLlama("a", hold = hold).start()

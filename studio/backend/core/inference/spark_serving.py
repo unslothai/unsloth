@@ -262,8 +262,7 @@ def looks_like_a_gguf_load(
     text = str(model_path or "").strip().lower()
     if text.endswith(".gguf"):
         return True
-    # Uncached repo: the sizing already asked the hub for the variants, so its answer settles this
-    # too.
+    # Uncached repo: the sizing already asked the hub, so its answer settles this too.
     return False
 
 
@@ -357,8 +356,6 @@ def cached_repo_file(model_path: str, variant: Optional[str]) -> Optional[str]:
     if osp.isfile(expanded):
         return expanded
     if osp.isdir(expanded):
-        # A local directory of GGUF variants is what an export produces, and the loader opens one of
-        # them.
         return _local_dir_gguf(expanded, variant)
     if "/" not in model_path or osp.isabs(model_path):
         return None
@@ -389,9 +386,6 @@ def _local_dir_gguf(directory: str, variant: Optional[str]) -> Optional[str]:
     """The GGUF the loader would open out of a local directory, or None."""
     try:
         from utils.models.model_config import list_local_gguf_variants
-
-        # ``(variants, has_vision)``, the same shape as the remote lister, and the second element is
-        # not ours to interpret here.
         variants, _has_vision = list_local_gguf_variants(directory)
         variants = list(variants or [])
     except Exception:
@@ -935,8 +929,6 @@ def replica_argv(
                 pending_sidecar = True
             continue
         if name in _TEMPLATE_FILE_FLAGS:
-            # One plain path: no comma list and no :SCALE, so the sidecar splitter is not used on
-            # it.
             if sep:
                 out.append(f"{name}={_absolute_plain(inline)}")
             else:
@@ -1070,7 +1062,6 @@ async def replica_build_mismatch(peer: str, peer_binary: str) -> Optional[str]:
 
 # The names this process writes, not "anything under the temp directory".
 _GENERATED_NAME_PATTERNS = ("unsloth_chat_template_*.jinja",)
-# A generated template is a few KiB.
 _GENERATED_MAX_BYTES = 8 * 1024 * 1024
 
 
@@ -1366,7 +1357,6 @@ def llama_server_accepts_groups_with_drafter(
     groups = int(groups or 0)
     if groups <= 1:
         return False
-    # Only ask the expensive question of a build that has the flag at all.
     if not (
         llama_server_supports(PIPELINE_GROUPS_FLAG, binary)
         or llama_server_accepts(PIPELINE_GROUPS_FLAG, str(groups), binary)
@@ -1412,7 +1402,6 @@ def llama_server_accepts_groups_with_drafter(
                 timeout = GROUPS_DRAFTER_PROBE_TIMEOUT_S,
             )
         text = (done.stdout or b"").decode("utf-8", "replace")
-        # Positive evidence, not merely the absence of the refusal.
         accepted = _GROUPS_REFUSAL_TEXT not in text and _PROBE_MODEL_NAME in text
     except Exception as exc:
         logger.info(
@@ -2200,8 +2189,7 @@ async def wait_for_own_port(
         await asyncio.sleep(PEER_OWNERSHIP_SETTLE_S)
     if not process.alive:
         return False
-    # ``process.alive`` is the LOCAL ssh session, and it is not a timely answer about the remote
-    # child.
+    # process.alive is the LOCAL ssh session, not a timely answer about the remote child.
     if not await peer_pid_alive(process):
         return False
     # Alive is not bound: a child still starting while a stale server holds the port looks the same.
@@ -2302,7 +2290,6 @@ class SparkServing:
         self.split_config: Optional[str] = None
         self.split_config_reason: Optional[str] = None
         self.mtp: str = "unknown"
-        # Held from before_load to after_load.
         self.load_in_progress: bool = False
         self.mtp_reason: Optional[str] = "no load yet"
         self._supervisor: Optional[asyncio.Task] = None
@@ -2323,9 +2310,7 @@ class SparkServing:
         kv_bytes_per_user: Optional[float],
         gguf: bool = True,
     ) -> Dict[str, Any]:
-        # before_load runs ahead of model classification, so a forced topology applied
-        # unconditionally started an rpc-server and added llama arguments for a Transformers or MLX
-        # load.
+        # before_load runs ahead of model classification: never start an rpc-server for a Transformers/MLX load.
         forced = forced_topology() if gguf else None
         plan = plan_topology(model_bytes, users = users, kv_bytes_per_user = kv_bytes_per_user or 0.0)
         if forced and forced != plan.get("topology"):
@@ -2360,9 +2345,7 @@ class SparkServing:
         topology ask for MTP at the Spark depth."""
         if not enabled():
             return request
-        # The route validates the pass-through args AFTER this runs, "up front so a managed-flag
-        # collision returns 400 before any model work" -- but starting or restarting a peer is model
-        # work, and it happens here, before that.
+        # The route validates pass-through args AFTER this, but starting a peer is model work.
         running_peer = self.peer_process
         if running_peer is not None and running_peer.alive:
             try:
@@ -2427,7 +2410,6 @@ class SparkServing:
             if size is not None:
                 size += sidecars
             if sidecars_unknown:
-                # NOT abstaining.
                 logger.info(
                     "spark serving: a sidecar could not be sized; the plan charges "
                     "%.1f GiB of sidecars it could see",
@@ -2435,7 +2417,6 @@ class SparkServing:
                 )
             remote_size = None
             if size is None:
-                # Not cached yet.
                 remote_size = await asyncio.to_thread(
                     remote_gguf_size_bytes,
                     model_path,
@@ -2467,8 +2448,7 @@ class SparkServing:
             if plan.get("fits_any_topology") is False:
                 why = str(plan.get("reason", "")) or "no topology holds this load"
                 logger.warning("spark serving: refusing the load: %s", why)
-                # Nothing was started and nothing is being replaced, so this must leave the module
-                # exactly as it found it.
+                # Nothing started or replaced: leave the module exactly as found.
                 self.load_in_progress = False
                 self._restore_pre_load_state()
                 raise SparkLoadDoesNotFit(why)
@@ -2504,7 +2484,6 @@ class SparkServing:
                 logger.info("spark serving: mtp %s (%s)", self.mtp, self.mtp_reason)
             return self._request_with(out, mtp["request"])
         except (SparkLoadDoesNotFit, _TeardownRefused):
-            # Not a pre-load step that failed.
             raise
         except Exception as exc:
             self.last_error = f"before_load: {exc}"[:300]
@@ -2609,17 +2588,14 @@ class SparkServing:
                 port,
             )
             reusable = False
-        # These two are properties of the REQUEST, not of the peer, so they are decided before the
-        # reuse shortcut and not after it.
+        # Properties of the REQUEST, not the peer: decided before the reuse shortcut.
         if getattr(request, "gpu_ids", None):
-            # The backend strips every --device pass-through when gpu_ids is set, because the pin
-            # owns placement.
+            # The backend strips --device pass-through when gpu_ids is set.
             return _fall_back(
                 "a layer split needs its own device order and an explicit GPU selection "
                 "replaces it; clear the GPU pin to serve this model across both Sparks"
             )
         if argv_or_env_rpc(_effective(request)):
-            # Their placement, not ours.
             return _fall_back(
                 "llama-server is being launched with a caller-supplied --rpc; leaving the "
                 "placement alone"
@@ -2768,9 +2744,6 @@ class SparkServing:
         # being served.
         backend = self.attached_backend
         if backend is not None and getattr(backend, "is_loaded", False):
-            # The previous model is still resident and still being served, so the topology that
-            # describes it must be the topology reported. before_load snapshots it precisely because
-            # a rejected replacement can fall back and overwrite it without ever replacing anything.
             self._restore_pre_load_state()
             return
         self.mtp, self.mtp_reason = "unknown", "the load failed; nothing is running"
@@ -2826,7 +2799,6 @@ class SparkServing:
                 await self.detach()
             gguf_path = getattr(llama_backend, "gguf_path", None)
             size = gguf_size_bytes(gguf_path)
-            # Prefer the aggregate.
             n_ctx = int(
                 getattr(llama_backend, "_kv_cache_context_total", None)
                 or getattr(llama_backend, "_effective_context_length", None)
@@ -3104,7 +3076,6 @@ class SparkServing:
                     return
                 if getattr(backend, "_process", None) is None:
                     if self.load_in_progress:
-                        # NOT an unload.
                         continue
                     logger.info(
                         "spark serving: this node's llama-server was unloaded; tearing the peer down"
@@ -3422,9 +3393,6 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
 
 
 def current_topology() -> Optional[str]:
-    # Status polls run this constantly and it used to go through enabled(), which does rail
-    # discovery: a sysfs walk and an `ip` fork, measured at 16.2 ms per call on a paired Spark,
-    # synchronously on the event loop.
     st = state()
     if st.attached_backend is None and st.peer_process is None and st.router is None:
         return None
