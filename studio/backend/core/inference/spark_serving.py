@@ -2288,6 +2288,8 @@ class SparkServing:
         self._passthrough: bool = False
         # The route's refusal checks for replacing the served model, run before the split goes.
         self._confirm_teardown: Any = None
+        # Awaited once a load passes the fit check, before anything is started or replaced.
+        self._on_plan_accepted: Any = None
         self.relaunch_attempts: int = 0
         self.relaunch_gave_up: bool = False
         self._cancel_event: Any = None
@@ -2461,6 +2463,14 @@ class SparkServing:
                 self.load_in_progress = False
                 self._restore_pre_load_state()
                 raise SparkLoadDoesNotFit(why)
+            hook, self._on_plan_accepted = self._on_plan_accepted, None
+            if hook is not None:
+                try:
+                    await hook()
+                except BaseException as exc:
+                    self.load_in_progress = False
+                    self._restore_pre_load_state()
+                    raise _TeardownRefused() from exc
             extra = getattr(request, "llama_extra_args", None)
             mtp = await asyncio.to_thread(
                 mtp_plan,
@@ -3470,11 +3480,14 @@ async def before_load(
             getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
         )
         if replacing and cluster_serving._STATE.retire_on_commit and enabled():
-            # The two-Spark path is about to start its own rpc-server, possibly on a port a
-            # cluster worker still holds; this load replaces the model those workers serve.
-            if confirm_teardown is not None:
-                confirm_teardown()
-            await cluster_serving._STATE.shutdown()
+            # The two-Spark path may start its own rpc-server on a port a cluster worker holds, so
+            # the workers go once its planner accepts the load; a refused one keeps them serving.
+            async def retire_cluster() -> None:
+                if confirm_teardown is not None:
+                    confirm_teardown()
+                await cluster_serving._STATE.shutdown()
+
+            state()._on_plan_accepted = retire_cluster
     if not enabled():
         return request
     st = state()
@@ -3496,6 +3509,7 @@ async def before_load(
         raise exc.__cause__
     finally:
         st._confirm_teardown = None
+        st._on_plan_accepted = None
 
 
 async def after_load(

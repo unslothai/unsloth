@@ -322,7 +322,9 @@ def configured() -> bool:
 def load_nodes() -> List[Node]:
     value = (os.environ.get(ENV_NODES) or "").strip()
     if value:
-        return parse_nodes_env(value, managed = (os.environ.get(ENV_MANAGED) or "") == "1")
+        return _one_managed_worker_per_host(
+            parse_nodes_env(value, managed = (os.environ.get(ENV_MANAGED) or "") == "1")
+        )
     path = _config_path()
     if path is None or not path.is_file():
         raise ClusterConfigError("no cluster configured")
@@ -333,6 +335,16 @@ def load_nodes() -> List[Node]:
     nodes = parse_nodes_json(data)
     if (os.environ.get(ENV_MANAGED) or "") == "1":
         nodes = [replace(n, managed = True) for n in nodes]
+    return _one_managed_worker_per_host(nodes)
+
+
+def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
+    # A managed rpc-server exposes every accelerator on its host, so a second one would count the
+    # same memory twice.
+    managed = [n.host for n in nodes if n.managed]
+    for host in managed:
+        if managed.count(host) > 1:
+            raise ClusterConfigError(f"{host} is listed twice as a managed node")
     return nodes
 
 
@@ -385,8 +397,10 @@ def list_devices(binary: str, endpoints: Sequence[str]) -> Tuple[List[Device], s
     return [], (reason or (lines[-1] if lines else "no devices")).split(": ", 1)[-1][:300]
 
 
-def usable_bytes(device: Device) -> float:
-    reserve = max(DEVICE_RESERVE_MIN_BYTES, DEVICE_RESERVE_FRACTION * device.total_bytes)
+def usable_bytes(device: Device, margin_bytes: float = 0.0) -> float:
+    reserve = max(
+        DEVICE_RESERVE_MIN_BYTES, DEVICE_RESERVE_FRACTION * device.total_bytes, margin_bytes
+    )
     return max(0.0, float(device.free_bytes) - reserve)
 
 
@@ -398,6 +412,7 @@ def plan_cluster(
     *,
     forced: Optional[str] = None,
     layer_bytes: Optional[float] = None,
+    margin_bytes: float = 0.0,
 ) -> ClusterPlan:
     """single when this machine holds the load, else a layer split weighted by usable memory.
 
@@ -410,7 +425,7 @@ def plan_cluster(
     local = [d for d in devices if not d.remote]
     remote = [d for d in devices if d.remote]
     need = float(model_bytes) + float(kv_bytes or 0)
-    local_budgets = [usable_bytes(d) for d in local]
+    local_budgets = [usable_bytes(d, margin_bytes) for d in local]
     local_usable = sum(local_budgets)
     # The projector / drafter is pinned to the first local GPU, so it has to fit there itself.
     if local and local_extra_bytes > local_budgets[0]:
@@ -441,7 +456,7 @@ def plan_cluster(
     # logits stay local and the wire carries only the hidden state. Sidecars load on the first
     # local device.
     ordered = remote + local
-    budgets = [usable_bytes(d) for d in remote] + local_budgets
+    budgets = [usable_bytes(d, margin_bytes) for d in remote] + local_budgets
     if local:
         budgets[len(remote)] -= local_extra_bytes
     if layer_bytes:
@@ -705,8 +720,8 @@ class ClusterServing:
         )
         while endpoints and error and not any(d.remote for d in devices):
             # One worker that answers TCP but fails the handshake aborts the whole listing.
-            bad = next((e for e in endpoints if e in error), None)
-            if bad is None:
+            bad = _endpoint_in(error, endpoints)
+            if bad not in endpoints:
                 break
             endpoints.remove(bad)
             down.append(bad)
@@ -738,8 +753,18 @@ class ClusterServing:
         layer_bytes = (
             (model_bytes + kv_bytes) / self._n_layers if self._n_layers and model_bytes else None
         )
+        from core.inference.llama_server_args import fit_target_margin_in
+
+        # llama.cpp's fitter keeps an explicit --fit-target free on every device.
+        margin = (fit_target_margin_in(flags, os.environ) or 0.0) * 1024 * 1024
         plan = plan_cluster(
-            model_bytes, kv_bytes, local_extra, devices, forced = forced, layer_bytes = layer_bytes
+            model_bytes,
+            kv_bytes,
+            local_extra,
+            devices,
+            forced = forced,
+            layer_bytes = layer_bytes,
+            margin_bytes = margin,
         )
         self.plan = plan
         if plan.topology == "refuse":
@@ -926,6 +951,8 @@ class ClusterServing:
         if self._backend is not None and getattr(self._backend, "is_loaded", False):
             if pre is not None:
                 self.topology, self.reason, self.plan, self.block = pre
+                if self.block:
+                    _remember_block(self.block)  # failed replacements may have pushed it out
         else:
             # The failed load got as far as tearing the old one down.
             self.forget_served()

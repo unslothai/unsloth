@@ -716,11 +716,34 @@ def test_dropping_the_cluster_on_a_spark_frees_its_workers_before_the_spark_spli
 
     async def legacy_before_load(self, request, n_parallel, **kw):
         seen.append(list(stopped))
+        await self._on_plan_accepted()  # the two-Spark planner accepted the load
+        seen.append(list(stopped))
         return request
 
     monkeypatch.setattr(ss.SparkServing, "before_load", legacy_before_load)
     run(ss.before_load(_request(), 4))
-    assert seen == [[1]], "the cluster's workers stop before the two-Spark path plans"
+    assert seen == [[], [1]], "the cluster's workers stop once the two-Spark plan is accepted"
+
+
+def test_a_two_spark_refusal_keeps_the_cluster_serving(monkeypatch):
+    stopped = []
+
+    class Worker:
+        alive = True
+
+        async def stop(self, timeout = 10.0):
+            stopped.append(1)
+
+    cs.state().workers["10.0.0.2:50052"] = Worker()
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+
+    async def legacy_before_load(self, request, n_parallel, **kw):
+        raise ss.SparkLoadDoesNotFit("no topology holds this load")
+
+    monkeypatch.setattr(ss.SparkServing, "before_load", legacy_before_load)
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 4))
+    assert stopped == [] and "10.0.0.2:50052" in cs.state().workers
 
 
 def test_a_sidecar_larger_than_the_device_it_loads_on_is_refused():
@@ -1277,3 +1300,63 @@ def test_the_tensor_parallel_toggle_is_caller_placement(monkeypatch):
     request = _request(tensor_parallel = True)
     assert run(ss.before_load(request, 4)) is request and seen == []
     assert "tensor_parallel" in ss.status()["reason"]
+
+
+def test_a_failed_replacement_keeps_the_served_block_recognised(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    block = list(cs.state().block)
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    for i in range(8):
+        cs._remember_block(["--rpc", f"10.9.9.{i}:1"])
+    _cluster_env(monkeypatch, model_bytes = 280 * GIB)
+    run(ss.before_load(_request(), 4))
+    assert cs.state().block != block
+    run(ss.load_failed())
+    assert cs.state().block == block
+    assert cs.strip_managed_block(["--seed", "1"] + block) == ["--seed", "1"]
+
+
+def test_a_failing_worker_is_matched_by_its_whole_endpoint(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    monkeypatch.setenv(cs.ENV_NODES, "10.0.0.2:5005,10.0.0.2:50052")
+    listing = """Available devices:
+  RPC0: 10.0.0.2:5005 (122502 MiB, 118000 MiB free)
+  CUDA0: NVIDIA GB10 (122502 MiB, 110000 MiB free)
+"""
+    calls = []
+
+    def fake_list(binary, endpoints):
+        calls.append(list(endpoints))
+        if "10.0.0.2:50052" in endpoints:
+            return [], "Failed to connect to 10.0.0.2:50052"
+        return cs.parse_device_list(listing, endpoints), ""
+
+    monkeypatch.setattr(cs, "list_devices", fake_list)
+    out = run(ss.before_load(_request(), 4))
+    assert calls[1] == ["10.0.0.2:5005"]
+    assert out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1] == "10.0.0.2:5005"
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_an_explicit_fit_target_is_kept_free_on_every_device(monkeypatch, env):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request  # fits here with the default reserve
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_FIT_TARGET", "30000")
+    extra = [] if env else ["--fit-target", "30000"]
+    run(ss.before_load(_request(llama_extra_args = extra), 4))
+    assert ss.status()["topology"] == "layer_split"
+
+
+def test_a_host_managed_twice_is_a_config_error(monkeypatch):
+    monkeypatch.setenv(cs.ENV_NODES, "10.0.0.2:50052,10.0.0.2:50053")
+    assert [n.endpoint for n in cs.load_nodes()] == ["10.0.0.2:50052", "10.0.0.2:50053"]
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    with pytest.raises(cs.ClusterConfigError, match = "managed"):
+        cs.load_nodes()
