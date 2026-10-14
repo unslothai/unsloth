@@ -54,7 +54,7 @@ export const it = {
       enable: "Consenti ai modelli di usare il browser",
       enableDescription: "I modelli aprono le pagine in una propria scheda del browser, le leggono e fanno clic e scrivono per te. Anche nel menu + del compositore.",
       history: "Cronologia di navigazione",
-      historyDescription: "Scegli se i modelli possono leggere la cronologia del browser",
+      historyDescription: "Accesso completo salta la conferma; Mai blocca comunque l'accesso",
       alwaysAsk: "Chiedi sempre",
       alwaysAllow: "Consenti sempre",
       never: "Mai",
@@ -2964,6 +2964,22 @@ export const it = {
         "Le app che usano questo token perdono immediatamente l'accesso. L'operazione è irreversibile.",
       revokeAction: "Revoca «{name}»",
       revoking: "Revoca in corso...",
+      audioApi: {
+        title: "API audio",
+        description: "Sintesi vocale, clonazione della voce, trascrizione e i flussi della pagina Audio.",
+        speak: "Parla",
+        clone: "Clona",
+        transcribe: "Trascrivi",
+        workflows: "Flussi",
+        separate: "Separa",
+        convert: "Converti",
+        music: "Musica",
+        edit: "Modifica",
+        placeholderModel: "Nessun modello scaricato può ancora eseguire questo esempio, quindi il modello mostrato è solo indicativo. Scaricane prima uno dalla pagina Audio.",
+        autoSwitchOff:
+          "Il modello si carica per nome solo con il cambio automatico del modello attivo. Attivalo, oppure carica prima il modello dalla sua pagina Audio.",
+        useViaApi: "Usa via API",
+      },
       decisionApi: {
         title: "API decisionale",
         docs: "Documentazione",
@@ -3164,6 +3180,10 @@ export const it = {
   chatMenu: {
     more: "Opzioni chat",
     copy: "Copia",
+    compact: "Compatta conversazione",
+    compactQueued: "Compattazione richiesta per il prossimo messaggio",
+    compactEmpty: "Ancora niente da compattare",
+    compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
   },
   welcome: {
     goodToSeeYou: "Che piacere vederti",

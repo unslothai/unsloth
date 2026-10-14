@@ -55,7 +55,7 @@ export const fr = {
       enable: "Autoriser les modèles à utiliser le navigateur",
       enableDescription: "Les modèles ouvrent des pages dans leur propre onglet du navigateur, les lisent, et cliquent et saisissent pour vous. Aussi dans le menu + de la zone de saisie.",
       history: "Historique de navigation",
-      historyDescription: "Choisissez si les modèles peuvent lire l'historique du navigateur",
+      historyDescription: "Accès complet ignore la confirmation ; Jamais bloque toujours l'accès",
       alwaysAsk: "Toujours demander",
       alwaysAllow: "Toujours autoriser",
       never: "Jamais",
@@ -586,6 +586,10 @@ export const fr = {
   chatMenu: {
     more: "Options de la discussion",
     copy: "Copier",
+    compact: "Compacter la conversation",
+    compactQueued: "Compactage demandé pour le prochain message",
+    compactEmpty: "Rien à compacter pour le moment",
+    compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
@@ -3055,6 +3059,22 @@ export const fr = {
         "Les applications utilisant ce jeton perdent immédiatement l’accès. Cette action est irréversible.",
       revokeAction: 'Révoquer "{name}"',
       revoking: "Révocation...",
+      audioApi: {
+        title: "API audio",
+        description: "Synthèse vocale, clonage de voix, transcription et les flux de la page Audio.",
+        speak: "Parler",
+        clone: "Cloner",
+        transcribe: "Transcrire",
+        workflows: "Flux",
+        separate: "Séparer",
+        convert: "Convertir",
+        music: "Musique",
+        edit: "Modifier",
+        placeholderModel: "Aucun modèle téléchargé ne peut encore exécuter cet exemple : le modèle affiché n'est qu'un exemple. Téléchargez-en un d'abord sur la page Audio.",
+        autoSwitchOff:
+          "Le modèle ne se charge par son nom que si le changement automatique de modèle est activé. Activez-le, ou chargez d'abord le modèle sur sa page Audio.",
+        useViaApi: "Utiliser via l'API",
+      },
       decisionApi: {
         title: "API de décision",
         docs: "Documentation",

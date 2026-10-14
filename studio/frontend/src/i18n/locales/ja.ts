@@ -56,7 +56,7 @@ export const ja = {
       enable: "モデルにブラウザを使わせる",
       enableDescription: "モデルが専用のブラウザタブでページを開いて読み、代わりにクリックや入力を行います。入力欄の + メニューからも切り替えられます。",
       history: "閲覧履歴",
-      historyDescription: "モデルがブラウザの閲覧履歴を読めるかどうかを選びます",
+      historyDescription: "フルアクセスでは確認を省略します。「許可しない」は引き続きアクセスを禁止します",
       alwaysAsk: "毎回確認",
       alwaysAllow: "常に許可",
       never: "許可しない",
@@ -587,6 +587,10 @@ export const ja = {
   chatMenu: {
     more: "チャットのオプション",
     copy: "コピー",
+    compact: "会話を圧縮",
+    compactQueued: "次のメッセージで会話を圧縮するようリクエストしました",
+    compactEmpty: "まだ圧縮する内容がありません",
+    compactUnsupported: "会話の圧縮にはツール対応のGGUFまたはMLXモデルが必要です",
   },
   welcome: {
     goodToSeeYou: "お会いできてうれしいです",
@@ -2979,6 +2983,22 @@ export const ja = {
       revokeDescription: "このトークンを使用しているアプリはすぐにアクセスできなくなります。この操作は取り消せません。",
       revokeAction: '"{name}" を失効',
       revoking: "失効中...",
+      audioApi: {
+        title: "オーディオ API",
+        description: "音声合成、ボイスクローン、文字起こし、オーディオページのワークフロー。",
+        speak: "読み上げ",
+        clone: "クローン",
+        transcribe: "文字起こし",
+        workflows: "ワークフロー",
+        separate: "分離",
+        convert: "変換",
+        music: "音楽",
+        edit: "編集",
+        placeholderModel: "この例を実行できるダウンロード済みモデルがまだないため、表示中のモデルは仮のものです。先にオーディオページでモデルをダウンロードしてください。",
+        autoSwitchOff:
+          "モデルの自動切り替えがオンのときだけ、名前でモデルが読み込まれます。オンにするか、先にそのモデルをオーディオページで読み込んでください。",
+        useViaApi: "API で使う",
+      },
       decisionApi: {
         title: "判定 API",
         docs: "ドキュメント",

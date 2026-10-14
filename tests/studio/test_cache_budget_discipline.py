@@ -167,6 +167,15 @@ _MAIN_ONLY = re.compile(r"github\.ref\s*==\s*['\"]refs/heads/main['\"]")
 _LEAF_MAIN = re.compile(
     r"github\.ref\s*==\s*['\"]refs/heads/main['\"]|['\"]refs/heads/main['\"]\s*==\s*github\.ref"
 )
+# Staging repos (scripts/pr_review/staging_ci.py) open PRs against `upstream-main` and never
+# push their own main, so their dependency caches are seeded by a run dispatched on that branch.
+# The equality counts as restricted ONLY next to an AND-ed guard that excludes this repository:
+# a branch ref is never a PR ref, but here upstream-main has no business saving anything.
+_LEAF_SEED = re.compile(
+    r"github\.ref\s*==\s*['\"]refs/heads/upstream-main['\"]"
+    r"|['\"]refs/heads/upstream-main['\"]\s*==\s*github\.ref"
+)
+_NOT_THIS_REPO = re.compile(r"github\.repository\s*!=\s*['\"]unslothai/unsloth['\"]")
 
 
 def _restricted_to_main(expr: str) -> bool:
@@ -187,18 +196,27 @@ def _restricted_to_main(expr: str) -> bool:
     if not expr.strip():
         return False
 
-    def restricted(part: str) -> bool:
+    def strip(part: str) -> str:
         part = part.strip()
         while part.startswith("(") and part.endswith(")") and _balanced(part[1:-1]):
             part = part[1:-1].strip()
+        return part
+
+    def restricted(part: str, seed_ok: bool = False) -> bool:
+        part = strip(part)
         ors = _split_top(part, "||")
         if len(ors) > 1:
             return all(restricted(p) for p in ors)
         ands = _split_top(part, "&&")
         if len(ands) > 1:
-            return any(restricted(p) for p in ands)
+            # The staging seed branch is accepted only when a SIBLING of this same AND
+            # excludes this repository; the guard cannot come from an outer level.
+            guarded = any(_NOT_THIS_REPO.fullmatch(strip(p)) for p in ands)
+            return any(restricted(p, seed_ok = guarded) for p in ands)
         if re.search(r"!(?!=)", part):
             return False
+        if seed_ok and _LEAF_SEED.fullmatch(part):
+            return True
         # The leaf must BE the equality, not contain it. Searching inside accepted
         # every wrapper that quotes it and inverts it: `(...) == false`, `... != true`,
         # and `startsWith(..., 'false')`, which is true off main because GitHub casts
@@ -247,6 +265,28 @@ def _restricted_to_main(expr: str) -> bool:
         # The reversed operand order is the same guard and stays accepted.
         ("'refs/heads/main' == github.ref", True),
         ("always() && (github.ref == 'refs/heads/main' && !cancelled())", True),
+        # The staging seed: upstream-main, and only outside this repository.
+        (
+            "always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main'"
+            " && github.repository != 'unslothai/unsloth')) && x != 'true'",
+            True,
+        ),
+        ("github.ref == 'refs/heads/upstream-main'", False),
+        ("github.ref == 'refs/heads/upstream-main' && always()", False),
+        # The repository guard must be an AND sibling of the seed equality itself.
+        (
+            "github.repository != 'unslothai/unsloth' && (github.ref == 'refs/heads/upstream-main'"
+            " || github.event_name == 'pull_request')",
+            False,
+        ),
+        (
+            "github.ref == 'refs/heads/upstream-main' && github.repository == 'unslothai/unsloth'",
+            False,
+        ),
+        (
+            "github.ref == 'refs/heads/upstream-main' || github.repository != 'unslothai/unsloth'",
+            False,
+        ),
     ],
 )
 def test_the_main_only_expression_check_reads_the_expression(expr, restricted):

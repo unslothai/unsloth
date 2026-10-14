@@ -52,6 +52,7 @@ globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
 const {
   invalidateOpenAIAutoSwitchSettings,
   loadOpenAIAutoSwitchSettings,
+  subscribeOpenAIAutoSwitchSettings,
   updateOpenAIAutoSwitchSettings,
 } = await import("../src/features/settings/api/openai-auto-switch.ts");
 
@@ -104,4 +105,18 @@ test("a false toggle is sent, not dropped as absent", async () => {
     // biome-ignore lint/style/useNamingConvention: API schema
     media_auto_switch_model: false,
   });
+});
+
+test("a saved auto-switch value reaches subscribers until they unsubscribe", async () => {
+  invalidateOpenAIAutoSwitchSettings();
+  const seen: boolean[] = [];
+  const unsubscribe = subscribeOpenAIAutoSwitchSettings((settings) =>
+    seen.push(settings.enabled),
+  );
+  nextBody = { ...API, enabled: false };
+  await updateOpenAIAutoSwitchSettings({ enabled: false });
+  unsubscribe();
+  nextBody = { ...API, enabled: true };
+  await updateOpenAIAutoSwitchSettings({ enabled: true });
+  assert.deepEqual(seen, [false]);
 });

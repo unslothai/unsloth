@@ -55,7 +55,7 @@ export const zhCN = {
       enable: "允许模型使用浏览器",
       enableDescription: "模型会在专属浏览器标签页中打开并阅读网页，并替你点击和输入。也可在输入框的 + 菜单中开关。",
       history: "浏览记录",
-      historyDescription: "选择模型是否可以读取浏览器的浏览记录",
+      historyDescription: "完全访问跳过审批；从不仍会阻止访问",
       alwaysAsk: "每次询问",
       alwaysAllow: "始终允许",
       never: "从不",
@@ -586,6 +586,10 @@ export const zhCN = {
   chatMenu: {
     more: "聊天选项",
     copy: "复制",
+    compact: "压缩对话",
+    compactQueued: "已请求在下一条消息时压缩对话",
+    compactEmpty: "暂无可压缩的内容",
+    compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
   },
   welcome: {
     goodToSeeYou: "很高兴见到你",
@@ -2958,6 +2962,22 @@ export const zhCN = {
         "使用此 token 的应用会立即失去访问权限。此操作无法撤销。",
       revokeAction: "撤销“{name}”",
       revoking: "撤销中...",
+      audioApi: {
+        title: "音频 API",
+        description: "语音合成、声音克隆、转写以及音频页面的工作流。",
+        speak: "朗读",
+        clone: "克隆",
+        transcribe: "转写",
+        workflows: "工作流",
+        separate: "分离",
+        convert: "转换",
+        music: "音乐",
+        edit: "编辑",
+        placeholderModel: "还没有能运行此示例的已下载模型，因此显示的模型只是示意。请先在音频页面下载一个模型。",
+        autoSwitchOff:
+          "只有开启模型自动切换时，才会按名称加载模型。请开启它，或先在该模型的音频页面加载模型。",
+        useViaApi: "通过 API 使用",
+      },
       decisionApi: {
         title: "决策 API",
         docs: "文档",

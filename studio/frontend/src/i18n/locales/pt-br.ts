@@ -55,7 +55,7 @@ export const ptBR = {
       enable: "Permitir que os modelos usem o navegador",
       enableDescription: "Os modelos abrem páginas na própria aba do navegador, leem e clicam e digitam por você. Também no menu + do campo de mensagem.",
       history: "Histórico de navegação",
-      historyDescription: "Escolha se os modelos podem ler o histórico do navegador",
+      historyDescription: "Acesso total dispensa aprovação; Nunca continua bloqueando o acesso",
       alwaysAsk: "Sempre perguntar",
       alwaysAllow: "Sempre permitir",
       never: "Nunca",
@@ -586,6 +586,10 @@ export const ptBR = {
   chatMenu: {
     more: "Opções do chat",
     copy: "Copiar",
+    compact: "Compactar conversa",
+    compactQueued: "A compactação foi solicitada para a próxima mensagem",
+    compactEmpty: "Ainda não há nada para compactar",
+    compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
   },
   welcome: {
     goodToSeeYou: "Que bom ver você",
@@ -3026,6 +3030,22 @@ export const ptBR = {
         "Aplicativos que usam este token perderão o acesso imediatamente. Esta ação não pode ser desfeita.",
       revokeAction: 'Revogar "{name}"',
       revoking: "Revogando...",
+      audioApi: {
+        title: "API de áudio",
+        description: "Fala, clonagem de voz, transcrição e os fluxos da página Áudio.",
+        speak: "Falar",
+        clone: "Clonar",
+        transcribe: "Transcrever",
+        workflows: "Fluxos",
+        separate: "Separar",
+        convert: "Converter",
+        music: "Música",
+        edit: "Editar",
+        placeholderModel: "Nenhum modelo baixado consegue rodar este exemplo ainda, então o modelo mostrado é só ilustrativo. Baixe um antes na página Áudio.",
+        autoSwitchOff:
+          "O modelo só é carregado pelo nome com a troca automática de modelo ativada. Ative-a ou carregue antes o modelo na página de Áudio dele.",
+        useViaApi: "Usar via API",
+      },
       decisionApi: {
         title: "API de decisões",
         docs: "Documentação",
