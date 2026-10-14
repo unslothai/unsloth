@@ -306,6 +306,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization: Basic firstsecret1==,\r\n Basic supersecret2== why",
         "Authorization: Basic firstsecret1==, SCRAM-SHA-256 data=supersecret2 why",
         'Authorization: Basic "supersecret2" why',
+        '{"name":"Authorization","value":"Basic supersecret2=="} why',
     ):
         assert "supersecret2" not in _sanitize_public_query(text), text
     assert "supersecret" not in _sanitize_public_query(custom)
