@@ -963,7 +963,7 @@ def test_learned_peaks_are_keyed_by_text_encoder_precision(klein_pipe):
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert 'peak_te = str(te_quant or "dense")' in src and "te = peak_te," in src
+    assert "peak_te = _peak_te_label(te_quant, te_outcome)" in src and "te = peak_te," in src
 
 
 def test_vae_key_names_only_the_savers_the_pipeline_can_engage():
@@ -2140,3 +2140,21 @@ def test_poisoned_graph_load_records_no_video_calibration(monkeypatch):
     handle.poisoned = False  # graphs live: the request records
     run()
     assert vsr.measured_extra_mib(key, work) == 3000
+
+
+# --------------------------------------------------------------------------------------------------- review round 19
+
+
+def test_partially_quantized_text_encoders_neither_read_nor_record(klein_pipe):
+    import core.inference.diffusion as diffusion
+    from core.inference.diffusion_precision import TEQuantOutcome
+
+    full = TEQuantOutcome("int8", None)
+    partial = full._replace(partial = True)
+    assert diffusion._peak_te_label("int8", full) == "int8"
+    assert diffusion._peak_te_label(None, None) == "dense"
+    te = diffusion._peak_te_label("int8", partial)
+    label = dm.learned_peak_label(klein_pipe, "native", "m", "none", te, "off", "off")
+    assert not mp.identified(label)  # a mixed build never reuses the fully quantised build's peak
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    assert "peak_te = _peak_te_label(te_quant, te_outcome)" in src

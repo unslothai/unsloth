@@ -2087,6 +2087,14 @@ def _live_graph_mode(state: Any) -> str:
         return "unknown"
 
 
+def _peak_te_label(te_quant: Any, outcome: Any) -> str:
+    """The text encoders' precision as the learned-peak key names it. A partial cast (some encoders quantised, others
+    left dense) is no build the key can name: ``unknown``, so it neither reads nor records a learned peak."""
+    if getattr(outcome, "partial", False):
+        return "unknown"
+    return str(te_quant or "dense")
+
+
 def _engaged_graph_mode(pipe: Any, applied: Any) -> str:
     """The graph implementation placement armed: whole-step and per-block graphs hold different statics, slot rings
     and pools, so their peaks never share a key."""
@@ -8425,7 +8433,7 @@ class DiffusionBackend:
                     except Exception:  # noqa: BLE001
                         pass
                     peak_vae = planned_vae_saver_tag(pipe, plan)
-                    peak_te = str(te_quant or "dense")
+                    peak_te = _peak_te_label(te_quant, te_outcome)
                     # an auto step cache toggles per request: only uncached renders (the full transformer) record
                     peak_cache = "off" if cache_may_toggle else str(cache_engaged or "off")
                     # graph statics and pools sit above a graph-free peak; a graph armed after an offloaded placement
