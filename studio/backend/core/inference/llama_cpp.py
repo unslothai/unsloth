@@ -13978,7 +13978,6 @@ class LlamaCppBackend:
         # 0 means the kernel default, Metal's recommended working set.
         if cap_bytes <= 0:
             from utils.hardware.hardware import _metal_recommended_working_set_bytes
-
             cap_bytes = _metal_recommended_working_set_bytes()
         if cap_bytes <= 0:
             return 0

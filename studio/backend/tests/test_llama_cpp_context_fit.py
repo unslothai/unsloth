@@ -724,13 +724,18 @@ def test_select_gpus_reserves_per_device_overhead():
 
 def _force_apple(monkeypatch):
     import platform as _platform
+
     monkeypatch.setattr(_platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_platform, "machine", lambda: "arm64")
     # The working-set reader falls back to torch.mps; keep the host's torch out of it.
     monkeypatch.setitem(sys.modules, "torch", None)
 
 
-def _install_fake_torch_mps(monkeypatch, working_set_bytes, available = True):
+def _install_fake_torch_mps(
+    monkeypatch,
+    working_set_bytes,
+    available = True,
+):
     fake = _types.ModuleType("torch")
     fake.backends = _types.SimpleNamespace(
         mps = _types.SimpleNamespace(is_available = lambda: available)
