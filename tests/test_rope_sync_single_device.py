@@ -9,6 +9,7 @@ import pytest
 import torch
 
 import unsloth.kernels.rope_embedding as RE
+from real_accelerator import has_real_cuda
 
 
 class _FakeQ:
@@ -199,7 +200,7 @@ def test_hand_dispatched_split_syncs_from_the_first_call(monkeypatch, synced):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "Triton RoPE kernel needs CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "Triton RoPE kernel needs CUDA")
 @pytest.mark.parametrize("use_indices", [False, True])
 def test_real_kernel_single_device_no_sync_same_result(monkeypatch, use_indices):
     monkeypatch.setattr(RE, "_SPLIT_MODELS", weakref.WeakSet(), raising = False)
