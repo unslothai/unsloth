@@ -36,10 +36,9 @@ def fake_stack(monkeypatch):
 
     monkeypatch.setattr(runtime, "compile_tasks", tasks, raising = False)
     monkeypatch.setattr(torch.version, "cuda", "13.0", raising = False)
-    utils_triton = getattr(torch.utils, "_triton", None)
-    if utils_triton is None or not hasattr(utils_triton, "_extern_libs_key"):
-        fake = types.SimpleNamespace(_extern_libs_key = lambda backend: "")
-        monkeypatch.setattr(torch.utils, "_triton", fake, raising = False)
+    utils_triton = types.ModuleType("torch.utils._triton")
+    utils_triton._extern_libs_key = lambda backend: ""
+    monkeypatch.setitem(sys.modules, "torch.utils._triton", utils_triton)
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PIN_LIBDEVICE", raising = False)
     return knobs, calls
 
@@ -61,7 +60,7 @@ def test_kill_switch(fake_stack, monkeypatch):
 def test_a_build_without_the_extern_libs_check_is_left_alone(fake_stack, monkeypatch):
     """Older torch never keyed cache entries on libdevice, so there is no miss to prevent."""
     knobs, calls = fake_stack
-    monkeypatch.setattr(torch.utils, "_triton", types.SimpleNamespace(), raising = False)
+    monkeypatch.setitem(sys.modules, "torch.utils._triton", types.ModuleType("torch.utils._triton"))
     assert aot.pin_triton_libdevice() is None
     assert calls == []
 
@@ -71,6 +70,13 @@ def test_cpu_only_torch_is_left_alone(fake_stack, monkeypatch):
     monkeypatch.setattr(torch.version, "cuda", None, raising = False)
     assert aot.pin_triton_libdevice() is None
     assert calls == []
+
+
+def test_works_before_anything_imported_the_triton_utils(fake_stack, monkeypatch):
+    """torch.utils._triton is a lazily imported submodule: probing it as an attribute found nothing in a real run."""
+    monkeypatch.delattr(torch.utils, "_triton", raising = False)
+    knobs, calls = fake_stack
+    assert aot.pin_triton_libdevice() is not None and calls == [1]
 
 
 def test_never_raises(fake_stack, monkeypatch):

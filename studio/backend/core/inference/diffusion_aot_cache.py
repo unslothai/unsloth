@@ -109,7 +109,14 @@ def pin_triton_libdevice(logger: Any = None) -> Any:
         if getattr(torch.version, "cuda", None) is None:
             return None
         # Probe the capability, not the version: only builds that key cache entries on extern libs can miss on it.
-        if not callable(getattr(getattr(torch.utils, "_triton", None), "_extern_libs_key", None)):
+        # Imported, not read off torch.utils: the submodule is not an attribute until something imports it.
+        try:
+            import importlib
+
+            utils_triton = importlib.import_module("torch.utils._triton")
+        except Exception:  # noqa: BLE001 - no such module on this build
+            return None
+        if not callable(getattr(utils_triton, "_extern_libs_key", None)):
             return None
         from torch._inductor.runtime import compile_tasks
 
