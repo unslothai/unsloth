@@ -880,6 +880,7 @@ def visible_report(
     unstable: frozenset[tuple[str, str]] = frozenset(),
     select: Optional[set] = None,
     min_reps: int = 1,
+    declared_ui_change: bool = False,
 ) -> Outcome:
     """VISIBLE-REGION PARITY. The verdict the off-screen exemption asks for.
 
@@ -1008,9 +1009,14 @@ def visible_report(
         )
     # See the same three lines in `behaviour_report` and `report`: the diagnosis prints, then a
     # failure outranks a refusal.
-    if differing or build_failed:
+    if build_failed or (differing and not declared_ui_change):
         return Outcome(1, frozenset(compared), _keys(results))
-    if matched == 0:
+    if differing:
+        print(
+            "\n  DECLARED UI CHANGE: the PR says it changes the screen (--declared-ui-change), so the "
+            "rendering differences above are reported, not failed. Behaviour differences still fail."
+        )
+    if matched == 0 and not differing:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
 
@@ -1716,6 +1722,7 @@ def report(
     select: Optional[set] = None,
     min_reps: int = 1,
     min_compared: int = 0,
+    declared_ui_change: bool = False,
 ) -> Outcome:
     """THREAD-STRUCTURE PARITY. `select` scores only those pair keys; see `decide_modes`.
 
@@ -2004,12 +2011,19 @@ def report(
     # A one-sided action is a failure on the same footing as a differing digest: the two builds
     # behaved differently and the difference leaves no digest to compare.
     # `expect_bad` is collected ahead of the verdict branches.
-    if stable_bad or one_sided or expect_bad:
+    if one_sided or expect_bad or (stable_bad and not declared_ui_change):
         return Outcome(1, frozenset(compared), _keys(results))
+    if stable_bad:
+        print(
+            "\n  DECLARED UI CHANGE: the PR says it changes the screen (--declared-ui-change), so the "
+            "rendering differences above are reported, not failed. Behaviour differences still fail."
+        )
+
     # 2, the same code the empty-payload path uses: the tool was asked a question it could not
     # answer, and exiting 0 would let CI go green on a run structurally incapable of firing.
     # `decided`, not `matched`. AFTER the failure return, since "it failed" is more specific.
-    if decided == 0:
+    # A declared difference was decided too: a wrapper change can differ on every pair.
+    if decided == 0 and not stable_bad:
         return Outcome(2, frozenset(compared), _keys(results))
     return Outcome(0, frozenset(compared), _keys(results))
 
@@ -2215,6 +2229,12 @@ def main(argv: list[str] | None = None) -> int:
         "excuse needs no excuse. Uses --min-reps, so pass the verdict's own value",
     )
     ap.add_argument(
+        "--declared-ui-change",
+        action = "store_true",
+        help = "the PR declares that it changes the screen: rendering differences are reported, not "
+        "failed. One-arm-only actions, failed action assertions and behaviour differences still fail",
+    )
+    ap.add_argument(
         "--allow-undecided",
         metavar = "ACTIONS",
         dest = "allow_undecided",
@@ -2343,7 +2363,12 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 floor = frozenset()
             vis = visible_report(
-                paths, f"UI PARITY: {pattern}", floor, select = win, min_reps = args.min_reps
+                paths,
+                f"UI PARITY: {pattern}",
+                floor,
+                select = win,
+                min_reps = args.min_reps,
+                declared_ui_change = args.declared_ui_change,
             )
             worst = max(worst, int(vis))
             windowed_compared = frozenset(vis.compared)
@@ -2495,7 +2520,14 @@ def main(argv: list[str] | None = None) -> int:
         # comparing nine windowed and nine structural pairs would fail a floor of sixteen twice over.
         # `args.min_compared` was the argument that went missing.
         # `report` (`elif decided == 0`) and `visible_report` (`and not not_run`) each check their own.
-        struct = report(paths, label, effective, select, args.min_reps)
+        struct = report(
+            paths,
+            label,
+            effective,
+            select,
+            args.min_reps,
+            declared_ui_change = args.declared_ui_change,
+        )
         worst = max(worst, int(struct))
         note(pattern, struct)
     # COMBINED, and the worst outcome wins: a behavioural failure on one payload is not cancelled by

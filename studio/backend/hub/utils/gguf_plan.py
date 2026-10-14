@@ -451,6 +451,45 @@ def plan_for_variant(plans: dict[str, GgufVariantPlan], variant: str) -> Optiona
     return plans[matches[0]] if len(matches) == 1 else None
 
 
+def precision_folder_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
+    """Each MLX precision folder (``6-bit/``) as a variant plan over every file in the folder."""
+    from hub.utils.snapshot_filters import precision_variant_subfolders
+
+    by_name = {getattr(s, "rfilename", ""): s for s in siblings}
+    return {
+        folder.lower(): _precision_folder_plan(
+            tuple(expected_file_from_sibling(by_name[name]) for name in sorted(names))
+        )
+        for folder, names in precision_variant_subfolders(by_name).items()
+    }
+
+
+def _precision_folder_plan(expected: tuple[ExpectedFile, ...]) -> GgufVariantPlan:
+    hashes = frozenset(file.sha256 for file in expected if file.sha256)
+    size = sum(max(0, int(file.size or 0)) for file in expected)
+    return GgufVariantPlan(
+        main_filenames = frozenset(file.path for file in expected),
+        target_filenames = tuple(file.path for file in expected),
+        main_hashes = hashes,
+        required_hashes = hashes,
+        companion_hashes = frozenset(),
+        mmproj_filenames = frozenset(),
+        mmproj_hashes = frozenset(),
+        expected_files = expected,
+        main_size_bytes = size,
+        download_size_bytes = size,
+    )
+
+
+def resolve_variant_plan(siblings: Sequence, variant: str) -> Optional[GgufVariantPlan]:
+    """A GGUF variant's plan, else the MLX precision folder of that name."""
+    siblings = list(siblings)
+    plan = plan_for_variant(build_gguf_variant_plans(siblings), variant)
+    if plan is not None:
+        return plan
+    return precision_folder_plans(siblings).get((variant or "").strip().lower())
+
+
 def _one_shard_family(main_files: Sequence[ExpectedFile]) -> tuple[ExpectedFile, ...]:
     """Narrow a variant's weight files to the one shard set the loader opens (see ``group_gguf_variant_files``); a genuine split keeps every shard."""
     if len(main_files) < 2:
@@ -473,6 +512,16 @@ def plan_from_expected_files(
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
     all_main = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
+    from hub.utils.snapshot_filters import PRECISION_FOLDER_RE
+
+    folder = (variant or "").strip()
+    if (
+        not all_main
+        and expected
+        and PRECISION_FOLDER_RE.fullmatch(folder)
+        and all(file.path.lower().startswith(f"{folder.lower()}/") for file in expected)
+    ):
+        return _precision_folder_plan(expected)
     main_files = _one_shard_family(all_main)
     # A discarded family has to leave the plan ENTIRELY: target_filenames, required_hashes and download_size_bytes are what the worker fetches, so leaving the copy there downloaded it, then reclaim deleted it as not-ours (absent from main_hashes) and the job fetched it again.
     kept = {file.path for file in main_files}

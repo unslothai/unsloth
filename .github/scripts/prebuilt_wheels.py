@@ -80,8 +80,9 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": " / win_amd64",
         "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
-        # 2.11 too: Linux reuses upstream's torch2.10 wheels there, which have no Windows build.
-        "torches": ("2.11.0", "2.13.0", "2.14.0"),
+        # On top of TORCH_VERSIONS: Linux reuses upstream's torch2.10 wheels for 2.11, which have
+        # no Windows build.
+        "extra_torches": ("2.11.0",),
     },
     # Upstream's aarch64 wheels stop at torch 2.10. ubuntu-22.04-arm keeps the glibc 2.35 floor
     # the x86_64 build has, and the build asserts it.
@@ -211,8 +212,23 @@ SPECS = {
 # torch minors, not patch levels, are what the ABI is keyed on, but the build needs an exact
 # version to pip install, so the table is keyed by the full version and the minor is derived.
 TORCH_VERSIONS = ("2.13.0", "2.14.0")
-# Accepted from a dispatch; a platform builds only its own `torches` (2.11.0 is win_amd64 only).
-ALLOWED_TORCH = ("2.11.0", *TORCH_VERSIONS)
+
+
+def _platform_torches(platform: str) -> tuple[str, ...]:
+    """What a platform builds: its own `torches`, else TORCH_VERSIONS plus its `extra_torches`."""
+    return _platform(platform, "torches") or (
+        *(_platform(platform, "extra_torches") or ()),
+        *TORCH_VERSIONS,
+    )
+
+
+# Accepted from a dispatch; each platform builds only its own subset (2.11.0 is win_amd64 only).
+ALLOWED_TORCH = tuple(
+    sorted(
+        {torch for platform in PLATFORMS for torch in _platform_torches(platform)},
+        key = lambda v: tuple(map(int, v.split("."))),
+    )
+)
 
 # cp313 is the default and the only one the dispatch defaults to, because each extra
 # interpreter is a whole extra flash-attn build. 3.11 and 3.12 are here so a run can add them
@@ -326,7 +342,7 @@ def build_matrix(
     include = []
     for platform in chosen_platforms:
         target = PLATFORMS[platform]
-        torches = _platform(platform, "torches") or TORCH_VERSIONS
+        torches = _platform_torches(platform)
         packages_here = _platform(platform, "packages") or tuple(SPECS)
         local = _platform(platform, "torch_local")
         for torch_version in chosen_torch:
@@ -577,6 +593,9 @@ def _cmd_wheel_name(args: argparse.Namespace) -> int:
         raise SystemExit(f"unknown python version: {args.python}")
     if args.platform not in PLATFORMS:
         raise SystemExit(f"unknown platform: {args.platform}")
+    # The same cells build_matrix accepts: no name for a wheel nothing builds.
+    if args.torch not in _platform_torches(args.platform):
+        raise SystemExit(f"torch {args.torch} is not built for {args.platform}")
     print(wheel_name(args.package, args.torch, args.python, args.platform))
     return 0
 
