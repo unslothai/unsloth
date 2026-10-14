@@ -79,6 +79,36 @@ _PLACEMENT_ENV = (
 )
 
 
+def _gguf_block_count(path: Optional[str], ss: Any) -> Optional[int]:
+    if not path:
+        return None
+    try:
+        meta = ss._cluster().gguf_metadata(path)
+        arch = meta.get("general.architecture")
+        count = meta.get(f"{arch}.block_count") if isinstance(arch, str) else None
+        return int(count) if isinstance(count, int) and count > 0 else None
+    except Exception:
+        return None
+
+
+def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> int:
+    """The largest projector a not-yet-downloaded Hub repo ships, 0 when none or unknown."""
+    if not model_path or "/" not in model_path or os.path.isabs(model_path):
+        return 0
+    try:
+        from huggingface_hub import HfApi
+
+        info = HfApi().model_info(model_path, files_metadata = True, token = hf_token)
+        sizes = [
+            int(s.size or 0)
+            for s in info.siblings or []
+            if "mmproj" in s.rfilename.lower() and s.rfilename.lower().endswith(".gguf")
+        ]
+        return max(sizes, default = 0)
+    except Exception:
+        return 0
+
+
 def _flag_args(args: Sequence[str], flags: frozenset) -> List[str]:
     tokens = [str(a) for a in args]
     out: List[str] = []
@@ -215,7 +245,10 @@ def parse_nodes_json(data: Any) -> List[Node]:
             continue
         if not isinstance(entry, dict) or not entry.get("host"):
             raise ClusterConfigError(f"a node needs a host: {entry!r}")
-        node = _parse_node(str(entry["host"]), managed = bool(entry.get("managed", False)))
+        managed = entry.get("managed", False)
+        if not isinstance(managed, bool):
+            raise ClusterConfigError(f"managed must be true or false: {entry!r}")
+        node = _parse_node(str(entry["host"]), managed = managed)
         port = entry.get("rpc_port", node.rpc_port)
         if not isinstance(port, int) or not (0 < port < 65536):
             raise ClusterConfigError(f"not a port: {entry!r}")
@@ -331,6 +364,7 @@ def plan_cluster(
     devices: Sequence[Device],
     *,
     forced: Optional[str] = None,
+    layer_bytes: Optional[float] = None,
 ) -> ClusterPlan:
     """single when this machine holds the load, else a layer split weighted by usable memory.
 
@@ -374,6 +408,13 @@ def plan_cluster(
                 need_bytes = need,
             )
         budgets[len(remote)] -= local_extra_bytes
+    if layer_bytes:
+        # Layers land whole, so any device can end up with one more than its share: keep that much
+        # free on every device, not 5% of the total.
+        budgets = [max(0.0, b - layer_bytes) for b in budgets]
+        margin = 0.0
+    else:
+        margin = LAYER_ROUNDING_MARGIN
     total = sum(budgets)
     if not local and local_extra_bytes > 0:
         return ClusterPlan(
@@ -381,11 +422,16 @@ def plan_cluster(
             "this machine has no accelerator to hold the projector / drafter the load names",
             need_bytes = need,
         )
-    if total <= 0 or need * (1 + LAYER_ROUNDING_MARGIN) > total:
+    if total <= 0 or need * (1 + margin) > total:
+        slack = (
+            f"one {layer_bytes / _GIB:.2f} GiB layer kept free per device"
+            if layer_bytes
+            else f"+{LAYER_ROUNDING_MARGIN:.0%} for whole layers"
+        )
         return ClusterPlan(
             "refuse",
-            f"the model with its KV needs {need / _GIB:.1f} GiB (+{LAYER_ROUNDING_MARGIN:.0%} for "
-            f"whole layers) against {total / _GIB:.1f} GiB usable over {len(ordered)} devices; "
+            f"the model with its KV needs {need / _GIB:.1f} GiB ({slack}) against "
+            f"{total / _GIB:.1f} GiB usable over {len(ordered)} devices; "
             "add a node, use a smaller quant, fewer users or a shorter context",
             ordered,
             need_bytes = need,
@@ -458,6 +504,7 @@ class ClusterServing:
         # if the config changed meanwhile.
         self.in_flight: bool = False
         self._has_projector: bool = False
+        self._n_layers: Optional[int] = None
         # Set when the config went away while workers run: the next committed load stops them.
         self.retire_on_commit: bool = False
         self._pre_load: Optional[Tuple[str, str, Optional[ClusterPlan], List[str]]] = None
@@ -645,7 +692,12 @@ class ClusterServing:
             if failed:
                 self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
-        plan = plan_cluster(model_bytes, kv_bytes, local_extra, devices, forced = forced)
+        layer_bytes = (
+            (model_bytes + kv_bytes) / self._n_layers if self._n_layers and model_bytes else None
+        )
+        plan = plan_cluster(
+            model_bytes, kv_bytes, local_extra, devices, forced = forced, layer_bytes = layer_bytes
+        )
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -701,6 +753,7 @@ class ClusterServing:
         variant = getattr(request, "gguf_variant", None)
         local_file = ss.cached_repo_file(model_path, variant)
         size = ss.gguf_size_bytes(local_file)
+        self._n_layers = _gguf_block_count(local_file, ss)
         sidecars, _unknown = ss.sidecar_bytes(extras)
         # Adapters and control vectors sit beside the layers they modify, on every device.
         adapters, _unknown = ss.sidecar_bytes(_flag_args(extras, _ADAPTER_FLAGS))
@@ -722,6 +775,13 @@ class ClusterServing:
             )
             sidecars += int(ss.gguf_size_bytes(projector) or 0) if projector else 0
             self._has_projector = bool(projector)
+            if not local_file and not getattr(request, "disable_vision", False):
+                # A first load of a Hub repo fetches its projector during the load.
+                remote = await asyncio.to_thread(
+                    _remote_projector_bytes, model_path, getattr(request, "hf_token", None)
+                )
+                sidecars += remote
+                self._has_projector = self._has_projector or remote > 0
         # Files named through the environment (LLAMA_ARG_MMPROJ, a drafter) load all the same.
         named_files = ss.launch_files_from(extras)
         for path in ss.env_launch_files(dict(os.environ)):

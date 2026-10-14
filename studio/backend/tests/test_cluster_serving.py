@@ -1070,3 +1070,54 @@ def test_a_spawn_the_platform_refuses_fails_only_that_node(monkeypatch):
     out = run(ss.before_load(_request(), 4))
     assert ss.status()["topology"] == "layer_split"
     assert "10.0.0.3" in ss.status()["last_error"]
+
+
+def test_every_split_device_keeps_a_whole_layer_free():
+    # A small worker beside two large ones: 5% of the total would not cover one layer there.
+    listing = (
+        "  RPC0: 10.0.0.2:50052 (122502 MiB, 118000 MiB free)\n"
+        "  RPC1: 10.0.0.3:50052 (12288 MiB, 12000 MiB free)\n"
+        "  CUDA0: NVIDIA GB10 (122502 MiB, 110000 MiB free)\n"
+    )
+    devices = cs.parse_device_list(listing, ["10.0.0.2:50052", "10.0.0.3:50052"])
+    layer = 4 * GIB
+    plan = cs.plan_cluster(200 * GIB, 0, 0, devices, layer_bytes = layer)
+    assert plan.topology == "layer_split"
+    for d, w in zip(plan.devices, plan.weights):
+        assert w * 200 * GIB + layer <= cs.usable_bytes(d) + 1
+
+
+def test_a_split_reads_its_layer_count_from_the_gguf(monkeypatch):
+    _cluster_env(monkeypatch)
+    seen = {}
+    real = cs.plan_cluster
+
+    def spy(*a, **k):
+        seen["layer_bytes"] = k.get("layer_bytes")
+        return real(*a, **k)
+
+    monkeypatch.setattr(cs, "plan_cluster", spy)
+    monkeypatch.setattr(cs, "_gguf_block_count", lambda path, ss: 50)
+    run(ss.before_load(_request(), 4))
+    assert seen["layer_bytes"] == pytest.approx(250 * GIB / 50)
+
+
+def test_a_first_hub_load_reserves_its_projector(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
+    monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
+    run(ss.before_load(_request(model_path = "org/vision-GGUF", max_seq_length = 0), 4))
+    assert ss.status()["topology"] == "layer_split"
+    monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 0)
+    run(ss.before_load(_request(model_path = "org/vision-GGUF", max_seq_length = 0), 4))
+    assert ss.status()["topology"] == "single"
+
+
+def test_managed_must_be_a_json_boolean():
+    with pytest.raises(cs.ClusterConfigError, match = "managed"):
+        cs.parse_nodes_json({"nodes": [{"host": "10.0.0.2", "managed": "false"}]})
+    assert (
+        cs.parse_nodes_json({"nodes": [{"host": "10.0.0.2", "managed": False}]})[0].managed is False
+    )
