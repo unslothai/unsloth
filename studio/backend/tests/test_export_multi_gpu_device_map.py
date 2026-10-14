@@ -160,6 +160,57 @@ def test_load_checkpoint_omits_device_map_on_single_gpu(monkeypatch, tmp_path):
     assert "device_map" not in kwargs  # loader default (sequential) untouched
 
 
+def test_load_checkpoint_defaults_offload_layers_to_auto(monkeypatch, tmp_path):
+    """#13696: export load must pass offload_layers='auto' so low-VRAM hosts fit."""
+    kwargs = _load_text_checkpoint(monkeypatch, tmp_path, {})
+    assert kwargs["offload_layers"] == "auto"
+
+
+def test_load_checkpoint_forwards_explicit_offload_layers(monkeypatch, tmp_path):
+    mod = _export_mod(monkeypatch)
+    _RecordingLoader.calls = []
+    monkeypatch.setattr(mod, "FastLanguageModel", _RecordingLoader)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {})
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint), offload_layers = 8)
+    assert ok, message
+    assert _RecordingLoader.calls[0]["offload_layers"] == 8
+
+
+def test_load_checkpoint_omits_fixed_offload_on_balanced_map(monkeypatch, tmp_path):
+    mod = _export_mod(monkeypatch)
+    _RecordingLoader.calls = []
+    monkeypatch.setattr(mod, "FastLanguageModel", _RecordingLoader)
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {"device_map": "balanced"})
+
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+    ok, message = backend.load_checkpoint(str(checkpoint), offload_layers = 8)
+    assert ok, message
+    assert "offload_layers" not in _RecordingLoader.calls[0]
+    assert _RecordingLoader.calls[0]["device_map"] == "balanced"
+
+
+def test_load_checkpoint_keeps_auto_offload_with_balanced_map(monkeypatch, tmp_path):
+    kwargs = _load_text_checkpoint(monkeypatch, tmp_path, {"device_map": "balanced"})
+    assert kwargs["device_map"] == "balanced"
+    assert kwargs["offload_layers"] == "auto"
+
+
 def test_whisper_checkpoint_loads_with_its_processor_like_training(monkeypatch, tmp_path):
     mod = _export_mod(monkeypatch)
     _RecordingLoader.calls = []

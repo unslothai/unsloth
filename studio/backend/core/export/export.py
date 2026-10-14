@@ -88,6 +88,20 @@ def _load_in_4bit_kwargs(load_in_4bit: bool) -> dict:
     return {} if load_in_4bit else {"load_in_4bit": False}
 
 
+def _offload_layers_kwargs(offload_layers, device_map_kw: Optional[dict] = None) -> dict:
+    """Pass offload_layers into from_pretrained the same way Training does.
+
+    A fixed count loads onto one card; core raises on a multi-GPU map, so skip it when
+    export already chose balanced / unsloth_balanced. ``"auto"`` plans per card and is fine.
+    """
+    if not offload_layers:
+        return {}
+    device_map = (device_map_kw or {}).get("device_map")
+    if offload_layers != "auto" and device_map in ("unsloth_balanced", "balanced"):
+        return {}
+    return {"offload_layers": offload_layers}
+
+
 def _export_runtime_available() -> bool:
     """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
     return bool(_IS_MLX) or (FastLanguageModel is not None)
@@ -763,6 +777,7 @@ class ExportBackend:
         checkpoint_path: str,
         max_seq_length: int = 2048,
         load_in_4bit: bool = True,
+        offload_layers = "auto",
         trust_remote_code: bool = False,
         hf_token: HfTokenArg = None,
         _device_map_override: Optional[dict] = None,
@@ -775,6 +790,9 @@ class ExportBackend:
         ``hf_token`` authenticates the actual weight load for gated/private checkpoints, matching
         the token the worker used for the security preflight (otherwise a gated repo passes scanning
         then 401s at from_pretrained).
+
+        ``offload_layers`` streams decoder layers from host RAM so a model larger than VRAM can
+        still load for export (same kwarg as Training / FastLanguageModel). Defaults to ``"auto"``.
 
         ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as "go and
         find a credential" (``if token is None: get_token()`` in ``save.py`` and ``hf_login``), and
@@ -823,6 +841,7 @@ class ExportBackend:
                 if _device_map_override is None
                 else _device_map_override
             )
+            _offload_kw = _offload_layers_kwargs(offload_layers, _device_map_kw)
 
             # Run the type-detection probes inside the forced-offline window, else a gated base 404s: it
             # covers is_vision_model's Hub reads, and local_files_only makes detect_audio_type's requests.get
@@ -862,6 +881,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "whisper":
@@ -880,6 +900,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "snac":
@@ -893,6 +914,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self._audio_type == "bicodec":
@@ -912,6 +934,7 @@ class ExportBackend:
                         token = token,
                         local_files_only = local_files_only,
                         **_device_map_kw,
+                        **_offload_kw,
                     )
 
             elif self._audio_type == "dac":
@@ -925,11 +948,13 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
 
             elif self.diffusion_lm_profile:
                 from unsloth import FastModel
                 logger.info(f"Loading as text-diffusion model ({self.diffusion_lm_profile})...")
+                # Text-diffusion has no block swapping; skip offload like Training does.
                 model, tokenizer = FastModel.from_pretrained(
                     model_name = checkpoint_path,
                     max_seq_length = max_seq_length,
@@ -952,6 +977,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
                 tokenizer = processor
 
@@ -966,6 +992,7 @@ class ExportBackend:
                     token = token,
                     local_files_only = local_files_only,
                     **_device_map_kw,
+                    **_offload_kw,
                 )
                 if _IS_MLX and adapter_config.exists():
                     tokenizer = load_mlx_adapter_tokenizer(tokenizer, checkpoint_path)
