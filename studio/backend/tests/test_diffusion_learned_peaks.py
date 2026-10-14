@@ -1844,3 +1844,34 @@ def test_a_graph_replaced_in_a_full_cache_stops_video_sampling(monkeypatch):
     )
     vsr._open_window(module, dev)
     assert not module._unsloth_video_graphs_clean
+
+
+# --------------------------------------------------------------------------------------------------- review round 14
+
+
+def test_unseeded_reserve_scales_without_the_store(store, klein_pipe):
+    klein_pipe._unsloth_phase_seeds = False
+    klein_pipe._unsloth_peak_identity = ("some-new-dit", "torchao:Int8Tensor", "default")
+    klein_pipe._unsloth_measured_reserve = (3072, "some-new-dit", "default", None, None, 2600, 1 << 20, False)
+    assert mp.lookup(family = "some-new-dit", quant = "torchao:Int8Tensor", speed_mode = "default") is None
+    # the store holds nothing (evicted, deleted, unwritable): a larger request still scales the reserved peak
+    assert dm.measured_request_extra_mib(klein_pipe, width = 2048, height = 2048) > 0
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
+
+
+def test_another_pipelines_reset_keeps_this_pipes_capture_dirty(monkeypatch):
+    import core.inference.diffusion_cuda_graph as cg
+
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    monkeypatch.setattr(diffusion, "_peak_device_index", lambda state: 0)
+    live, gen = [6], [10]
+    monkeypatch.setattr(cg, "live_graph_count", lambda index: live[0])
+    monkeypatch.setattr(cg, "capture_generation", lambda index: gen[0])
+    assert diffusion._start_peak_probe(state) is not None  # baseline: 6 graphs, generation 10
+    live[0], gen[0] = 7, 11  # this pipe captured one graph in a render that was not recorded
+    assert diffusion._start_peak_probe(state) is None
+    live[0] = 3  # a video pipeline on the same card reset its 4 graphs; this pipe's capture is still alive
+    assert diffusion._start_peak_probe(state) is None
+    live[0] = 0  # nothing alive on the card: nothing unaccounted can remain
+    assert diffusion._start_peak_probe(state) is not None

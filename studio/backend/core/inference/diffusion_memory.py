@@ -3425,7 +3425,9 @@ def measured_request_extra_mib(
             condition_pixels = condition_pixels,
         )
         return max(0, int(flat) - int(headroom))
-    if need is not None and learned:
+    if learned:
+        # the learned peak the load reserved, scaled here (not reread from the store, which another worker may evict
+        # or a failed write may leave empty while this pipeline stays loaded)
         from .diffusion_measured_peaks import resolution_bucket
 
         w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
@@ -3446,7 +3448,13 @@ def measured_request_extra_mib(
         elif w * h * batch > int(covered):
             scale = resolution_bucket(w, h, batch) / float(covered)
         step = _MEASURED_PEAK_ROUND_MIB
-        need = max(need, int(-(-(float(learned) * scale * _MEASURED_PEAK_MARGIN) // step) * step))
+        scaled = int(-(-(float(learned) * scale * _MEASURED_PEAK_MARGIN) // step) * step)
+        seeded = need is not None
+        need = scaled if need is None else max(need, scaled)
+        if not seeded and isinstance(identity, tuple) and len(identity) == 3:
+            stored = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
+            if stored is not None:
+                need = max(need, stored)
     if need is None and isinstance(identity, tuple) and len(identity) == 3:
         need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
     if need is None:

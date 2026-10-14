@@ -1994,8 +1994,12 @@ def _start_peak_probe(state: Any) -> Any:
         accounted = getattr(pipe, "_unsloth_peak_graphs", None)
         if accounted is None or graphs < accounted:
             # the load's own graphs (every render starts above them), or fewer after a reset freed some
+            first = accounted is None
             pipe._unsloth_peak_graphs = accounted = graphs
-            pipe._unsloth_peak_graph_gen = generation
+            if first or graphs == 0:
+                # nothing alive on the card: no unrecorded capture can remain. A drop to a non-zero count may be
+                # another pipeline's reset, so a capture this one made unrecorded keeps the generation dirty
+                pipe._unsloth_peak_graph_gen = generation
         if getattr(pipe, "_unsloth_peak_graph_gen", None) is None:
             pipe._unsloth_peak_graph_gen = generation
         if graphs > accounted or generation > pipe._unsloth_peak_graph_gen:

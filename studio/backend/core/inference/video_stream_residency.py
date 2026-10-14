@@ -282,8 +282,12 @@ def _open_window(module: Any, dev: Any) -> Any:
     accounted = getattr(module, "_unsloth_video_graphs", None)
     if accounted is None or graphs < accounted:
         # the load's own graphs (every request starts above them), or fewer after a reset freed some
+        first = accounted is None
         module._unsloth_video_graphs = accounted = graphs
-        module._unsloth_video_graph_gen = generation
+        if first or graphs <= 0:
+            # nothing alive on the card; a drop to a non-zero count may be another pipeline's reset, so a capture
+            # this one made unrecorded keeps the generation dirty
+            module._unsloth_video_graph_gen = generation
     if getattr(module, "_unsloth_video_graph_gen", None) is None:
         module._unsloth_video_graph_gen = generation
     # graphs a discarded request recorded stay allocated, also one that replaced an evicted graph (same count): a
