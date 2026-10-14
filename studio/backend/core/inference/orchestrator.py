@@ -1431,6 +1431,7 @@ class InferenceOrchestrator:
         diffusion_frames: bool = False,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
+        grammar: Optional[str] = None,
     ) -> dict:
         """Build the 'generate' command shared by the locked and dispatched paths."""
         cmd = {
@@ -1483,6 +1484,8 @@ class InferenceOrchestrator:
             cmd["prompt_ids"] = list(prompt_ids)
         if penalty_window is not None:
             cmd["penalty_window"] = penalty_window
+        if grammar is not None:
+            cmd["grammar"] = grammar
         return cmd
 
     def _consume_token_stream(
@@ -1733,6 +1736,7 @@ class InferenceOrchestrator:
         diffusion_frames: bool = False,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
+        grammar: Optional[str] = None,
     ) -> Generator[Any, None, None]:
         """Dispatched generation, sending the command without holding _gen_lock. Uses a per-request
         mailbox for tokens so two compare-mode requests can be queued at once. The subprocess
@@ -1792,6 +1796,7 @@ class InferenceOrchestrator:
             diffusion_frames = diffusion_frames,
             prompt_ids = prompt_ids,
             penalty_window = penalty_window,
+            grammar = grammar,
         )
 
         mailbox = _WorkerMailbox(self._proc)
@@ -3481,6 +3486,7 @@ class InferenceOrchestrator:
         diffusion_frames: bool = False,
         prompt_ids: Optional[list] = None,
         penalty_window: Optional[int] = None,
+        grammar: Optional[str] = None,
     ) -> Generator[Any, None, None]:
         """Inner generation logic: sends the command to the subprocess and yields tokens. Serialized
         by _gen_lock (one generation at a time) so concurrent readers don't consume each other's
@@ -3546,6 +3552,7 @@ class InferenceOrchestrator:
                 diffusion_frames = diffusion_frames,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
+                grammar = grammar,
             )
             return
 
@@ -3590,6 +3597,7 @@ class InferenceOrchestrator:
                 diffusion_frames = diffusion_frames,
                 prompt_ids = prompt_ids,
                 penalty_window = penalty_window,
+                grammar = grammar,
             )
 
             read_one, drain, release_mailbox = self._direct_reader(request_id, cancel_event)

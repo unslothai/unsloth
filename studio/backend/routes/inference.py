@@ -37257,9 +37257,8 @@ _MLX_COMPLETION_FIELDS_OFF = {
     # best_of equal to the choice count asks for no hidden candidates; llama-server ignores it.
     "best_of": lambda v, b: v in (1, _llama_value(b, "n_cmpl")),
     "suffix": lambda v, b: v == "",
-    "response_format": lambda v, b: v == {"type": "text"},
-    "grammar": lambda v, b: _llama_grammar_off(b),
-    "json_schema": lambda v, b: _llama_grammar_off(b),
+    # A lazy grammar waits for a trigger; this one constrains from the first token.
+    "grammar_lazy": lambda v, b: v is False or _llama_grammar_off(b),
     "timings_per_token": lambda v, b: v is False,
     "return_tokens": lambda v, b: v is False,
     "return_progress": lambda v, b: v is False,
@@ -37357,6 +37356,32 @@ def _llama_logit_bias(raw) -> Optional[dict]:
     return bias or None
 
 
+def _mlx_completion_grammar(body: dict) -> Optional[str]:
+    """The llguidance grammar constraining a /v1/completions body, read in llama-server's
+    precedence, with ``response_format`` (which llama-server ignores here) honored last.
+    Raises ResponseFormatError for one that does not compile."""
+    from core.inference.grammar_constraint import (
+        ResponseFormatError,
+        constraint_spec_from_response_format,
+        grammar_from_gbnf,
+        grammar_from_json_schema,
+    )
+
+    if "grammar" in body:
+        gbnf = body["grammar"]
+        if gbnf is not None and not isinstance(gbnf, str):
+            raise ResponseFormatError("'grammar' must be a GBNF string.")
+        return grammar_from_gbnf(gbnf) if gbnf else None
+    schema = body.get("json_schema")
+    if schema is not None:
+        if not isinstance(schema, dict):
+            raise ResponseFormatError("'json_schema' must be a JSON Schema object.")
+        # llama.cpp reads an empty schema as any object, llguidance as any value.
+        return grammar_from_json_schema(schema or {"type": "object"})
+    spec = constraint_spec_from_response_format(body.get("response_format"))
+    return spec.grammar if spec is not None else None
+
+
 def _mlx_completions_refusal(body: dict) -> Optional[str]:
     """Why an MLX model cannot serve this /v1/completions body as llama-server would, or None."""
     prompts = _completion_prompts(body.get("prompt"))
@@ -37386,6 +37411,7 @@ def _mlx_completions_refusal(body: dict) -> Optional[str]:
         return "Streaming more than one completion is not supported for MLX models."
     try:
         _llama_logit_bias(body.get("logit_bias"))
+        _mlx_completion_grammar(body)
     except ValueError as exc:
         return str(exc)
     return None
@@ -37427,6 +37453,7 @@ def _mlx_completion_sampling(body: dict, model_id) -> dict:
         logit_bias = _llama_logit_bias(body.get("logit_bias")),
         stop = _normalize_stop_sequences(body.get("stop")),
         penalty_window = _llama_field(body, "repeat_last_n", 64),
+        grammar = _mlx_completion_grammar(body),
     )
 
 
@@ -37739,7 +37766,14 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         _pre = await request.json()
     except (json.JSONDecodeError, ValueError):
         _pre = _UNPARSEABLE_BODY
-    _mlx_refusal = _mlx_completions_refusal(_pre) if isinstance(_pre, dict) else None
+    # Compiling a client grammar can take a while, so it runs off the event loop as chat's does.
+    _mlx_refusal = (
+        await asyncio.get_running_loop().run_in_executor(
+            _SCHEMA_VALIDATION_EXECUTOR, _mlx_completions_refusal, _pre
+        )
+        if isinstance(_pre, dict)
+        else None
+    )
     _mlx_device = await asyncio.to_thread(get_device) == DeviceType.MLX
 
     # Reject a request with no prompt before any automatic load so an invalid request never
@@ -37798,9 +37832,10 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         if not isinstance(body, dict):
             raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
     if mlx_backend is not None:
-        return await _mlx_completions(
-            request, current_subject, mlx_backend, body, _mlx_completions_refusal(body)
+        refusal = await asyncio.get_running_loop().run_in_executor(
+            _SCHEMA_VALIDATION_EXECUTOR, _mlx_completions_refusal, body
         )
+        return await _mlx_completions(request, current_subject, mlx_backend, body, refusal)
     _raise_ignored_completions_params(body)
 
     # GGUF is loaded and the body is valid. The middleware claims the slot on a successful

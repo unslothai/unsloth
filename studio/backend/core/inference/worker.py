@@ -1218,6 +1218,7 @@ _COMPLETION_OPTIONS = (
     "logit_bias",
     "stop",
     "penalty_window",
+    "grammar",
 )
 
 

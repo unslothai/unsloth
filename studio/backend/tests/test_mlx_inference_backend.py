@@ -2458,11 +2458,14 @@ def test_mlx_completion_prompt_skips_the_template_and_reuses_the_prompt_cache(mo
     monkeypatch.setattr(
         "core.inference.mlx_inference._mlx_sampling_processors", lambda **kw: seen.update(kw)
     )
-    out = list(backend.generate_completion([1, 2, 3, 7, 8, 9], max_new_tokens = 4, penalty_window = 4))
+    monkeypatch.setattr("core.inference.grammar_constraint.GrammarConstraint", _RawConstraint)
+    ids = [1, 2, 3, 7, 8, 9]
+    out = list(backend.generate_completion(ids, max_new_tokens = 4, penalty_window = 4, grammar = "G"))
 
     assert captured[1]["prompt"] == [9]
     assert out[-1] == "78" and backend.last_generation_stats["timings"]["cache_n"] == 5
     assert seen["penalty_prompt"] == [1, 2, 3, 7, 8, 9] and seen["penalty_window"] == 4
+    assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
     # Unconstrained too: llama-server returns the pieces without whitespace cleanup.
     cleanups, decode = [], type(backend._tokenizer).decode
     monkeypatch.setattr(
@@ -2471,8 +2474,15 @@ def test_mlx_completion_prompt_skips_the_template_and_reuses_the_prompt_cache(mo
         lambda tok, ids, **kw: cleanups.append(kw.get("clean_up_tokenization_spaces"))
         or decode(tok, ids, **kw),
     )
-    list(backend.generate_completion([1, 2, 3, 7, 8, 9], max_new_tokens = 4))
+    list(backend.generate_completion(ids, max_new_tokens = 4))
     assert cleanups and set(cleanups) == {False}
+
+
+def _RawConstraint(grammar, tokenizer):
+    noop = lambda *_a: None
+    return SimpleNamespace(
+        built = (grammar, tokenizer), allows_reasoning = False, decoded_dropping = noop, stops_on = noop
+    )
 
 
 def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
@@ -2495,10 +2505,12 @@ def test_mlx_vlm_completion_prompt_runs_untemplated_from_its_ids(monkeypatch):
     for untouched in ("_render_vlm_prompt", "_vlm_prompt_cache_session"):
         monkeypatch.setattr(backend, untouched, lambda *_a, **_k: pytest.fail(untouched))
     monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **kw: seen.update(kw))
+    monkeypatch.setattr("core.inference.grammar_constraint.GrammarConstraint", _RawConstraint)
 
-    assert list(backend.generate_completion([5, 6], max_new_tokens = 2, penalty_window = 2)) == ["ok"]
+    assert list(backend.generate_completion([5, 6], max_new_tokens = 2, grammar = "G")) == ["ok"]
     assert seen["args"][2:] == ("", None) and seen["kwargs"]["input_ids"] == [[5, 6]]
     assert seen["penalty_prompt"] == [5, 6]
+    assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
 
 
 _COMPLETION_TOK = SimpleNamespace(

@@ -3244,6 +3244,13 @@ def _build_grammar_constraint(
     return constraint
 
 
+def _raw_prompt_constraint(grammar, tokenizer):
+    if grammar is None:
+        return None
+    from core.inference.grammar_constraint import GrammarConstraint
+    return GrammarConstraint(grammar, tokenizer)
+
+
 def _with_prompt_history(processor, prompt, window):
     """*processor* also scoring the prompt tokens the runtime withholds: mlx_lm and mlx_vlm hand
     processors only what is left of the prompt after prefill and prompt-cache reuse."""
@@ -5556,10 +5563,11 @@ class MLXInferenceBackend:
         logit_bias = None,
         stop = None,
         penalty_window = None,
+        grammar = None,
     ) -> Generator[str, None, None]:
         """Cumulative text sampled after ``prompt_ids`` with no chat template, from
         :meth:`resolve_completion_prompt`. ``penalty_window`` is llama-server's
-        ``repeat_last_n``."""
+        ``repeat_last_n``; ``grammar`` an llguidance grammar the text must match."""
         if self._model is None:
             raise RuntimeError("No model loaded")
         self.last_generation_stats = None
@@ -5571,6 +5579,7 @@ class MLXInferenceBackend:
             stop = stop,
             prompt_ids = list(prompt_ids),
             penalty_window = penalty_window,
+            grammar = grammar,
         )
         args = (temperature, top_p, top_k, min_p, max_new_tokens, repetition_penalty, cancel_event)
         if self._is_vlm:
@@ -5610,14 +5619,16 @@ class MLXInferenceBackend:
         reasoning_is_extracted = False,
         prompt_ids = None,
         penalty_window = None,
+        grammar = None,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler
 
         if prompt_ids is not None:
-            # A raw completion prompt: no template, so no prefill, reasoning channel or grammar.
+            # A raw completion prompt: no template, so no prefill or reasoning channel.
             prompt, reasoning_channel_markers, think_prefix = list(prompt_ids), None, ""
-            preserve_native_channels, constraint = False, None
+            preserve_native_channels = False
+            constraint = _raw_prompt_constraint(grammar, self._tokenizer)
         else:
             render_result = self._render_text_prompt(
                 messages,
@@ -6313,6 +6324,7 @@ class MLXInferenceBackend:
         reasoning_is_extracted = False,
         prompt_ids = None,
         penalty_window = None,
+        grammar = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
@@ -6401,14 +6413,18 @@ class MLXInferenceBackend:
             0.0,
             1.0,
         )
-        constraint = _build_grammar_constraint(
-            response_format,
-            chat_target,
-            prompt,
-            reasoning_markers = vlm_reasoning_markers,
-            tools = tools,
-            reasoning_is_extracted = reasoning_is_extracted,
-            reply_keeps_special_tokens = True,
+        constraint = (
+            _raw_prompt_constraint(grammar, self._tokenizer)
+            if prompt_ids is not None
+            else _build_grammar_constraint(
+                response_format,
+                chat_target,
+                prompt,
+                reasoning_markers = vlm_reasoning_markers,
+                tools = tools,
+                reasoning_is_extracted = reasoning_is_extracted,
+                reply_keeps_special_tokens = True,
+            )
         )
         document_only = constraint is not None and not constraint.allows_reasoning
         if document_only:

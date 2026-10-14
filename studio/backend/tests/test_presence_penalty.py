@@ -495,9 +495,10 @@ def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serve
         _ for _ in ()
     ).throw(_Built())
     with pytest.raises(_Built):
-        list(o.generate_completion([5, 6], max_new_tokens = 3, penalty_window = 0))
+        list(o.generate_completion([5, 6], max_new_tokens = 3, penalty_window = 0, grammar = "G"))
     cmd = built[0]
     assert (cmd["messages"], cmd["prompt_ids"], cmd["penalty_window"]) == ([], [5, 6], 0)
+    assert cmd["grammar"] == "G"
     # A chat batch would render it as messages.
     assert _ResidentBatch.unavailable_reason(SimpleNamespace(_refused = ()), cmd)
 
@@ -515,6 +516,7 @@ def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serve
     mlx, queue = _MLX(), _Queue()
     _handle_generate(mlx, cmd, queue, threading.Event())
     assert mlx.received[0] == [5, 6] and mlx.received[1]["penalty_window"] == 0
+    assert mlx.received[1]["grammar"] == "G"
     assert [item["type"] for item in queue] == ["token", "gen_done"]
     queue.clear()
     _handle_generate(chat, cmd, queue, threading.Event())
