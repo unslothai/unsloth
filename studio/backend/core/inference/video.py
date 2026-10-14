@@ -11323,6 +11323,11 @@ class VideoBackend:
                         slot.stop("device out of memory; retrying with a smaller VRAM budget")
                         retry_cap = cap
                         continue
+                    from .sd_cpp_args import is_device_oom_text
+
+                    if retry_cap is not None and is_device_oom_text(str(exc)):
+                        slot.stop("render failed")
+                        raise
                     if not server.is_alive():
                         logger.warning(
                             "video.h3_native_server_died (retrying once on sd-cli, staying one-shot): %s",

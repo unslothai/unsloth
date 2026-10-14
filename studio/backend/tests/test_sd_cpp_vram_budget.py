@@ -336,6 +336,24 @@ def test_server_render_retries_only_once(tmp_path, monkeypatch):
     assert len(slot.launches) == 2
 
 
+def test_server_render_does_not_fall_back_to_sd_cli_after_the_retry_dies(tmp_path, monkeypatch):
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    server = _Server([RuntimeError(_AUDIT_OOM), RuntimeError(_AUDIT_OOM)])
+    vid_gen = server.vid_gen
+
+    def dies_on_retry(*args, **kwargs):
+        if len(server.outcomes) == 1:
+            server.alive = False
+        return vid_gen(*args, **kwargs)
+
+    server.vid_gen = dies_on_retry
+    slot = _Slot(server)
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        _server_render(slot, int(10 * GiB), tmp_path)
+    assert len(slot.launches) == 2
+    assert slot.disabled_reason is None
+
+
 def test_server_render_does_not_retry_other_failures_or_auto_budget(tmp_path, monkeypatch):
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
     slot = _Slot(_Server([RuntimeError("sd-server generation failed: bad prompt")]))
