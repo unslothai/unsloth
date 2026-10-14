@@ -475,6 +475,9 @@ def truncate_text_encoders(pipe: Any, *, logger: Any = None, encode_kwargs: Opti
             logger.warning("diffusion.text_encoder: dead-tail truncation failed (%s)", exc)
         return {"skipped": f"apply: {exc}", "plan": plan}
     if logger is not None:
+        for attr in plan:
+            if attr not in report:
+                logger.info("diffusion.text_encoder: %s has no dead tail (every decoder layer is read); kept whole", attr)
         for attr, entry in report.items():
             logger.info(
                 "diffusion.text_encoder: %s runs %d/%d decoder layers%s; %.2f GiB never placed "
