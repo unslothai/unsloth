@@ -410,15 +410,16 @@ export function deleteCoversRememberedModel(
   return remembered === deleted || remembered.startsWith(`${deleted}/`);
 }
 
-/** Delete markers a settled inventory listing newer than the delete has now been judged against.
- *  Each marker keeps the listing current when its delete was announced. */
+/** Delete markers spent by a settled listing whose Hub cache fetches were all sent after the
+ *  delete; the undebounced local listing lands first beside the old cache rows. */
 export function settledDeleteMarkers(
-  markers: ReadonlyMap<string, ReadonlySet<string>>,
-  inventory: { settled: boolean; error: boolean; available: ReadonlySet<string> },
+  markers: ReadonlyMap<string, number>,
+  inventory: { settled: boolean; error: boolean; refreshStartedAt: number | null },
 ): string[] {
-  if (!inventory.settled || inventory.error) return [];
+  const { refreshStartedAt } = inventory;
+  if (!inventory.settled || inventory.error || refreshStartedAt === null) return [];
   return [...markers]
-    .filter(([, listedAtDelete]) => listedAtDelete !== inventory.available)
+    .filter(([, deletedAt]) => refreshStartedAt > deletedAt)
     .map(([repoId]) => repoId);
 }
 
