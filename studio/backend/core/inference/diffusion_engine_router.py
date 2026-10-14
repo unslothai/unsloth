@@ -182,6 +182,18 @@ def _vulkan_loader_loads() -> bool:
         return False
 
 
+# Runtime masks Vulkan does not read: a card hidden by one stays hidden. ZE_AFFINITY_MASK is read separately.
+_MASKS_VULKAN_IGNORES = ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+
+
+def _linux_render_node_accessible() -> bool:
+    """A container can list a card in sysfs without mounting its /dev/dri node, and Vulkan then
+    sees no device."""
+    import glob
+
+    return any(os.access(node, os.R_OK | os.W_OK) for node in glob.glob("/dev/dri/renderD*"))
+
+
 def _vulkan_gpu_for_cpu_torch() -> bool:
     """True when torch is CPU-only but the host has a GPU the Vulkan sd.cpp build can render on:
     an AMD card (Vega, RDNA1 and Polaris get no ROCm wheel) or an Intel Arc. Never beside NVIDIA,
@@ -190,10 +202,18 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return False
     if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:
         return False
-    if (
-        os.environ.get("ROCR_VISIBLE_DEVICES") is not None
-        or os.environ.get("GGML_VK_VISIBLE_DEVICES") is not None
-    ):
+    if any(os.environ.get(var) is not None for var in _MASKS_VULKAN_IGNORES):
+        return False
+    try:
+        from utils.hardware.hardware import _ze_affinity_mask
+
+        if _ze_affinity_mask() is not None:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    # ggml reads this one itself, so it pins the card; empty hides every device.
+    vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
+    if vk_mask is not None and not vk_mask.strip():
         return False
     inventory = _physical_inventory()
     if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
@@ -213,10 +233,15 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
             return device.get("xpu_class") is True
         return "arc" in str(device.get("name") or "").lower().replace("(tm)", " ").split()
 
-    if not any(_renders(d) for d in devices):
+    gpus = [d for d in devices if d.get("vendor") in ("amd", "intel")]
+    # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
+    if not gpus or not (all(_renders(d) for d in gpus) or vk_mask is not None):
+        return False
+    if sys.platform != "win32" and not _linux_render_node_accessible():
         return False
     try:
         from utils.hardware.amd import the_vulkan_loader_has_no_usable_driver
+
         if the_vulkan_loader_has_no_usable_driver():
             return False
     except Exception:  # noqa: BLE001

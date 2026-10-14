@@ -1765,11 +1765,17 @@ def preferred_accelerator(accelerator: Optional[str], card: Optional[str] = None
 
     A function of the stored record only, never of the live host: the loader preflight is applied
     where the runtime verdict is interpreted, so this stays reproducible."""
-    klass = _accelerator_class_of(accelerator) or (accelerator or "auto")
-    nxt = fallback_accelerator_for(klass)
-    if nxt and accelerator_runtime_failed(klass, card):
-        return nxt
-    return accelerator or "auto"
+    chosen = accelerator or "auto"
+    klass = _accelerator_class_of(accelerator) or chosen
+    seen: set[str] = set()
+    # Walk the ladder (rocm -> vulkan -> cpu) past every rung already shown unrunnable.
+    while klass not in seen:
+        seen.add(klass)
+        nxt = fallback_accelerator_for(klass)
+        if not (nxt and accelerator_runtime_failed(klass, card)):
+            break
+        chosen = klass = nxt
+    return chosen
 
 
 def _incomplete_tree_replacement(exc: BaseException) -> bool:

@@ -29,6 +29,9 @@ _ENVS = (
     "UNSLOTH_DIFFUSION_SD_CPP_DEVICE",
     "UNSLOTH_DIFFUSION_SD_CPP_VULKAN_FALLBACK",
     "ROCR_VISIBLE_DEVICES",
+    "HIP_VISIBLE_DEVICES",
+    "CUDA_VISIBLE_DEVICES",
+    "ZE_AFFINITY_MASK",
     "GGML_VK_VISIBLE_DEVICES",
 )
 
@@ -60,6 +63,7 @@ def _pinned_host(monkeypatch):
     _platform(monkeypatch, "linux", "x86_64")
     monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_VEGA))
     monkeypatch.setattr(r, "_vulkan_loader_loads", lambda: True)
+    monkeypatch.setattr(r, "_linux_render_node_accessible", lambda: True)
     import utils.hardware.amd as amd
 
     monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
@@ -70,7 +74,9 @@ def _pinned_host(monkeypatch):
     [
         ((_VEGA,), "vulkan"),
         ((_ARC_LINUX,), "vulkan"),
-        ((_UHD_LINUX, _VEGA), "vulkan"),
+        # Unpinned sd.cpp could take the UHD iGPU first.
+        ((_UHD_LINUX, _VEGA), "auto"),
+        ((_ARC_LINUX, _VEGA), "vulkan"),
         ((_UHD_LINUX,), "auto"),
         ((), "auto"),
         ((_VEGA, _RTX), "auto"),
@@ -98,10 +104,39 @@ def test_an_unanswered_nvidia_probe_keeps_cpu(monkeypatch, inventory):
     assert r.image_install_accelerator("cpu") == "auto"
 
 
-@pytest.mark.parametrize("var", ["ROCR_VISIBLE_DEVICES", "GGML_VK_VISIBLE_DEVICES"])
-def test_a_mask_vulkan_does_not_read_keeps_cpu(monkeypatch, var):
-    monkeypatch.setenv(var, "0")
+@pytest.mark.parametrize(
+    "var,value",
+    [
+        ("ROCR_VISIBLE_DEVICES", "0"),
+        ("HIP_VISIBLE_DEVICES", "0"),
+        ("CUDA_VISIBLE_DEVICES", "0"),
+        ("ZE_AFFINITY_MASK", "0"),
+        ("GGML_VK_VISIBLE_DEVICES", ""),
+    ],
+)
+def test_a_mask_vulkan_does_not_read_keeps_cpu(monkeypatch, var, value):
+    monkeypatch.setenv(var, value)
     assert r.image_install_accelerator("cpu") == "auto"
+
+
+@pytest.mark.parametrize("value", ["", "default"])
+def test_an_unset_equivalent_ze_mask_is_not_a_mask(monkeypatch, value):
+    monkeypatch.setenv("ZE_AFFINITY_MASK", value)
+    assert r.image_install_accelerator("cpu") == "vulkan"
+
+
+def test_a_ggml_vulkan_mask_pins_the_card(monkeypatch):
+    # ggml reads it, so it also settles which device a mixed UHD + Radeon host uses.
+    monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _VEGA))
+    assert r.image_install_accelerator("cpu") == "vulkan"
+
+
+def test_an_unmounted_render_node_keeps_cpu(monkeypatch):
+    monkeypatch.setattr(r, "_linux_render_node_accessible", lambda: False)
+    assert r.image_install_accelerator("cpu") == "auto"
+    _platform(monkeypatch, "win32", "AMD64")
+    assert r.image_install_accelerator("cpu") == "vulkan"
 
 
 @pytest.mark.parametrize(
@@ -147,6 +182,10 @@ def test_a_vulkan_build_that_cannot_run_falls_to_cpu(monkeypatch):
     assert sd_cpp_backend.preferred_accelerator("vulkan") == "vulkan"
     sd_cpp_backend.note_accelerator_runtime_failure("vulkan", proven = True)
     assert sd_cpp_backend.preferred_accelerator("vulkan") == "cpu"
+    # A ROCm host whose Vulkan rung also failed reaches CPU instead of retrying Vulkan.
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "rocm"
+    sd_cpp_backend.note_accelerator_runtime_failure("rocm", proven = True)
+    assert sd_cpp_backend.preferred_accelerator("rocm") == "cpu"
 
 
 def test_selection_installs_the_vulkan_build(monkeypatch):
