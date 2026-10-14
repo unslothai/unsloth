@@ -311,6 +311,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization: Hawk abcdefghijklmnop, Hawk supersecret2 why",
         "Authorization: Basic firstsecret1==,\r\n Basic\r\n supersecret2== why",
         'Authorization: Basic firstsecret1==, Hawk id="123", mac="supersecret2" why',
+        "Authorization: Basic firstsecret1==, SharedKeyLite myaccount:supersecret2== why",
+        'Authorization: Digest USERNAME = "bob", RESPONSE = "supersecret2" why',
         "Authorization: Basic firstsecret1=, Basic supersecret2==. server rejected it",
         'Authorization: Custom realm="api", custom response="supersecret2" why',
         "Authorization: Basic supersecret2== server echoed supersecret2 why",
@@ -365,6 +367,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     assert "why" in _sanitize_public_query('Authorization: Custom token="abc\ud800defghijk" why')
     assert _sanitize_public_query("why Authorization: GNAP shorttoken failed") == "why failed"
     assert _sanitize_public_query("Authorization: Basic Zm9vYmE= kubernetes") == "kubernetes"
+    assert _sanitize_public_query("Authorization: Basic dnpuejoydmw= kubernetes") == "kubernetes"
     public = "Authorization: RBAC cancellationToken=none"
     assert _sanitize_public_query(public) == "cancellationToken=none"
     assert "kzvqmtprxwjyhfn" not in _sanitize_public_query(

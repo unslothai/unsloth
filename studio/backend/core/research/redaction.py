@@ -48,6 +48,8 @@ _REGISTERED_AUTH_SCHEMES = frozenset(
         "privatetoken",
         "scram-sha-1",
         "scram-sha-256",
+        "sharedkey",
+        "sharedkeylite",
         "token",
         "vapid",
     }
@@ -59,17 +61,19 @@ _SCHEME_ALTERNATION = "|".join(
 _HSPACE = "[ \\t\u00a0\u2000-\u200a\u202f\u205f\u3000]"
 # Spaces around "=" only after an identifier-like name (nonce, keyId), so a padded token68
 # followed by prose ("Zm9vYmE= kubernetes") does not read as a parameter.
-_AUTH_PARAM = r"""(?:[\w!#$%&'*+.^`|~-]+=|(?-i:[a-z][a-z_-]*(?:[A-Z][a-z_-]+)*)[ \t]*=[ \t]*)(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
+_AUTH_PARAM = r"""(?:[\w!#$%&'*+.^`|~-]+=|(?-i:[a-z][a-z_-]*(?:[A-Z][a-z_-]+)*|[A-Z][A-Z_-]*)[ \t]*=[ \t]*)(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
     r"[ \t]", _HSPACE
 )
 _QUERY_AUTHORIZATION = re.compile(
     rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])(?:[ \t]*(?:\r?\n[ \t]*)?\\?["'“‘]value\\?["'”’][ \t]*[:=])?|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`"'“‘]*
-    (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
+    (?P<credentials>(?:(?<=basic\s)|(?<=bearer\s)|(?<=negotiate\s)|(?<=ntlm\s))[\w.~+/-]+=*(?![\w"'“‘])
+    |(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
     (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
     (?:{_SCHEME_ALTERNATION}
     |[\w-]*(?:key|token|secret|password|credential|signature)|(?P=scheme))(?:[ \t]+|[ \t]*\r?\n[ \t]+)
     (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’.;!?—–]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
-    |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
+    |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*
+    |(?-i:[A-Z][A-Za-z0-9-]*[ \t]+(?=[\w.~+/:-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{{2}}))[\w.~+/-]+(?::[\w.~+/-]+)*=*)))*)""".replace(
         r"[ \t]", _HSPACE
     )
 )
@@ -104,7 +108,8 @@ _REGISTERED_SCHEME_NAMES = frozenset(
 )
 _COALESCED_MEMBER = re.compile(
     rf"\s*,\s*(?=(?:{_SCHEME_ALTERNATION}|[\w-]*(?:key|token|secret|password|credential|signature))\s"
-    r"|(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{2,})\s+[\w!#$%&'*+.^`|~-]+\s*=)",
+    r"|(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{2,})\s+[\w!#$%&'*+.^`|~-]+\s*="
+    r"|(?-i:[A-Z][A-Za-z0-9-]*\s+(?=[\w.~+/:-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{2}))))",
     re.IGNORECASE,
 )
 _TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
