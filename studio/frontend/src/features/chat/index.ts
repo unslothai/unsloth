@@ -471,6 +471,7 @@ export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
   reasoningFollowsPreference,
   reasoningTailCapped,
+  reasoningTailFlexBox,
   resolveReasoningOpen,
   startsNewReasoningRound,
 } from "./utils/reasoning-visibility";
@@ -499,7 +500,10 @@ export {
   downloadChatExport,
 } from "./utils/export-chat-history";
 export {
-  clearNewChatDraft,
+  adoptLegacyDraft,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   readComposerDraft,

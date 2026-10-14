@@ -13780,7 +13780,7 @@ class LlamaCppBackend:
 
         No GPU is enumerated on Metal, so the context would default to native and
         over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
-        fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
+        fraction of the Metal working set, else total RAM; 0 off Apple Silicon or
         when unresolvable, so callers skip the cap.
 
         Both of those inputs describe the MACHINE, not the moment. MLX's
@@ -13805,13 +13805,9 @@ class LlamaCppBackend:
 
         if not is_apple_silicon():
             return 0
-        rec_bytes = 0
-        try:
-            import mlx.core as mx
-            if mx.metal.is_available():
-                rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
-        except Exception:
-            rec_bytes = 0
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+
+        rec_bytes = _metal_recommended_working_set_bytes()
         vm = None
         try:
             import psutil
@@ -14004,15 +14000,8 @@ class LlamaCppBackend:
             return 0
         # 0 means the kernel default, Metal's recommended working set.
         if cap_bytes <= 0:
-            try:
-                import mlx.core as mx
-                from utils.hardware.hardware import _mlx_device_info
-                if mx.metal.is_available():
-                    cap_bytes = int(
-                        _mlx_device_info(mx).get("max_recommended_working_set_size") or 0
-                    )
-            except Exception:
-                cap_bytes = 0
+            from utils.hardware.hardware import _metal_recommended_working_set_bytes
+            cap_bytes = _metal_recommended_working_set_bytes()
         if cap_bytes <= 0:
             return 0
         from utils.hardware.hardware import _read_apple_gpu_stats
@@ -14035,14 +14024,10 @@ class LlamaCppBackend:
         headroom = LlamaCppBackend._apple_metal_wired_ceiling_bytes()
         if headroom <= 0:
             return 0.0
-        try:
-            import mlx.core as mx
-            from utils.hardware.hardware import _mlx_device_info
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
 
-            if not mx.metal.is_available():
-                return 0.0
-            seen = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
-        except Exception:
+        seen = _metal_recommended_working_set_bytes()
+        if seen <= 0:
             return 0.0
         return max(0.0, (seen - headroom) / (1024 * 1024))
 
@@ -38909,10 +38894,15 @@ class LlamaCppBackend:
 
         # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
         # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = no gate.
-        _enabled_names_gate = set(_gguf_active_tool_names(tools)) if tools else None
+        from core.inference.tools import mcp_loadable_specs
+
+        # Plus the MCP tools a search can load mid-turn (#10997).
+        _loadable_mcp = mcp_loadable_specs(tools)
+        _loadable_mcp_names = set(_gguf_active_tool_names(_loadable_mcp))
+        _detect_tools = list(tools or []) + _loadable_mcp
+        _enabled_names_gate = set(_gguf_active_tool_names(_detect_tools)) if tools else None
         # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
         # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-        _detect_tools = list(tools or [])
 
         def _reasoning_summary_event(started_at: float) -> dict:
             return {
@@ -39347,7 +39337,7 @@ class LlamaCppBackend:
                 (tool.get("function") or {}).get("name")
                 for tool in safe_tools
                 if (tool.get("function") or {}).get("name")
-            }
+            } | (set() if forced_name else _loadable_mcp_names)
             # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
@@ -41909,8 +41899,10 @@ class LlamaCppBackend:
                     # stall text over would read the same sentence as a repeat and
                     # swallow the one post-tool nudge.
                     _last_reprompt_text = ""
-                    # A tool ran this turn, so it counts against the caller's budget.
-                    _turn_executed_real_tool = True
+                    # A tool ran this turn, so it counts against the caller's budget. Loading
+                    # MCP tools does not, or a budget of one could never call what it found.
+                    if decision.tool_name != "mcp_tool_search":
+                        _turn_executed_real_tool = True
                     _forced_choice_resolved = True
                     _tool_end = completion.tool_end_event()
                     yield _tool_end
