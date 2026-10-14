@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useVllmAvailable } from "@/features/model-picker";
+import { useVllmAvailable, useVllmPlatform } from "@/features/model-picker";
 import { useHfEndpoint, useHubName } from "@/lib/hf-endpoint";
 import {
   Tooltip,
@@ -49,6 +49,7 @@ import { useDatasetSize } from "../hooks/use-dataset-size";
 import {
   type HubModelRunSelection,
   hubModelRunsOnAudioPage,
+  isEmbeddingOnly,
   isHubModelRunEligible,
 } from "../lib/model-run-selection";
 import { studioPageForTask } from "../lib/unsloth-support";
@@ -511,6 +512,7 @@ export const ModelInspector = memo(function ModelInspector({
   const supportLibraryName = model?.libraryName;
   const supportQuantMethod = model?.quantMethod;
   const vllmAvailable = useVllmAvailable();
+  const vllmPlatform = useVllmPlatform();
   const unslothSupport = useMemo<UnslothSupport>(() => {
     return classifyUnslothSupport({
       modelId: supportModelId,
@@ -520,9 +522,11 @@ export const ModelInspector = memo(function ModelInspector({
       deviceType,
       quantMethod: supportQuantMethod,
       vllmAvailable,
+      vllmPlatform,
     });
   }, [
     vllmAvailable,
+    vllmPlatform,
     deviceType,
     supportLibraryName,
     supportModelId,
@@ -599,6 +603,21 @@ export const ModelInspector = memo(function ModelInspector({
     runEligible && onRun
       ? (selection: HubModelRunSelection) =>
           onRun(selection, audioPage ? "audio" : mediaPage)
+      : undefined;
+  // A precision folder downloads as it loads, so it need not be on device.
+  const isMlx =
+    !model.isGguf &&
+    (model.libraryName?.toLowerCase() === "mlx" ||
+      Boolean(model.tags?.some((tag) => tag.toLowerCase() === "mlx")));
+  const precisionRunAction =
+    isMlx &&
+    onRun &&
+    !isDataset &&
+    !isEmbeddingOnly(model) &&
+    !runsOnMediaRuntime &&
+    !chatOnlyMeasured &&
+    unslothSupport.status !== "unsupported"
+      ? (selection: HubModelRunSelection) => onRun(selection, mediaPage)
       : undefined;
 
   const languages = parseLanguageTags(model.tags);
@@ -755,6 +774,8 @@ export const ModelInspector = memo(function ModelInspector({
               onRun={runAction}
               runPending={runConfigPending}
               onChange={onInventoryChange}
+              isMlx={isMlx}
+              onRunPrecision={precisionRunAction}
             />
           )}
         </InspectorDownloadSlot>

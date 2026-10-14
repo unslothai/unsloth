@@ -554,7 +554,7 @@ def test_ltx2_flow_shift_defaults_to_auto():
     flux = DiffusionLoraConfig(
         base_model = "black-forest-labs/FLUX.1-dev", data_dir = "d", output_dir = "o"
     ).normalized()
-    assert flux.flow_shift == 1.0
+    assert flux.flow_shift is None
 
 
 def test_ltx2_rejects_fp16_before_loading():
