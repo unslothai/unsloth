@@ -1079,5 +1079,7 @@ def test_conv_direct_force_on_reaches_apple_metal(monkeypatch):
     monkeypatch.setattr("platform.machine", lambda: "arm64")
     monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
     assert native_speed_flags("default") == ["--diffusion-fa"]
-    monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "1")  # an explicit force beats the Metal default
+    monkeypatch.setenv(
+        "UNSLOTH_SD_CPP_CONV_DIRECT", "1"
+    )  # an explicit force beats the Metal default
     assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
