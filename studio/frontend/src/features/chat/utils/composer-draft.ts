@@ -71,6 +71,26 @@ export function writeComposerDraft(key: string, text: string): void {
   }
 }
 
+// A draft saved per chat before the shared slot existed becomes the shared draft when that chat
+// opens and nothing newer is waiting, so an upgrade never loses unsent text.
+export function adoptLegacyDraft(threadId: string | null): void {
+  const id = threadId ?? "__new__";
+  try {
+    const storage = window.localStorage;
+    const text = storage.getItem(`${LEGACY_DRAFT_PREFIX}${id}`);
+    const pastes = storage.getItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);
+    if (text === null && pastes === null) return;
+    if (storage.getItem(DRAFT_KEY) === null && storage.getItem(PASTE_DRAFT_KEY) === null) {
+      if (text !== null) storage.setItem(DRAFT_KEY, text);
+      if (pastes !== null) storage.setItem(PASTE_DRAFT_KEY, pastes);
+    }
+    storage.removeItem(`${LEGACY_DRAFT_PREFIX}${id}`);
+    storage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);
+  } catch {
+    // ignore
+  }
+}
+
 // Removes a deleted chat's leftover per-chat draft. Never the shared draft, which belongs to no chat.
 export function clearComposerDraft(threadId: string): void {
   try {

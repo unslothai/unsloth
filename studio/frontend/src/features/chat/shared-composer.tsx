@@ -88,6 +88,11 @@ import {
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import {
+  composerDraftKey,
+  readComposerDraft,
+  writeComposerDraft,
+} from "./utils/composer-draft";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
 import { requestLocalPromptQueueStop } from "./utils/prompt-queue-boundary";
 import {
@@ -641,7 +646,18 @@ export function SharedComposer({
     }
     navigate({ to: "/chat" });
   }, [navigate, onExitCompare]);
-  const [text, setText] = useState("");
+  // The same shared draft as the chat composer; a temporary chat leaves it alone.
+  const incognito = useChatRuntimeStore((s) => s.incognito);
+  const [text, setText] = useState(() =>
+    useChatRuntimeStore.getState().incognito
+      ? ""
+      : (readComposerDraft(composerDraftKey()) ?? ""),
+  );
+  useEffect(() => {
+    if (incognito) return;
+    const timer = setTimeout(() => writeComposerDraft(composerDraftKey(), text), 300);
+    return () => clearTimeout(timer);
+  }, [text, incognito]);
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);

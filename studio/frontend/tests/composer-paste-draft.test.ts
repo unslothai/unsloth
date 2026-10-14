@@ -22,6 +22,7 @@ let failWrites = false;
 };
 
 const {
+  adoptLegacyDraft,
   clearComposerDraft,
   composerDraftKey,
   composerPasteDraftKey,
@@ -34,6 +35,37 @@ const {
 test.beforeEach(() => {
   store.clear();
   failWrites = false;
+});
+
+test("a per-chat draft from before the upgrade becomes the shared draft when its chat opens", () => {
+  store.set("chat-draft:t1", "unsent");
+  store.set("chat-draft-pastes:t1", '["pasted"]');
+  adoptLegacyDraft("t1");
+  assert.equal(readComposerDraft(composerDraftKey()), "unsent");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey()), ["pasted"]);
+  assert.equal(store.has("chat-draft:t1"), false);
+  assert.equal(store.has("chat-draft-pastes:t1"), false);
+});
+
+test("an old new-chat draft is adopted when a new chat opens", () => {
+  store.set("chat-draft:__new__", "unsent");
+  adoptLegacyDraft(null);
+  assert.equal(readComposerDraft(composerDraftKey()), "unsent");
+});
+
+test("a newer shared draft wins over an old per-chat one", () => {
+  writeComposerDraft(composerDraftKey(), "newer");
+  store.set("chat-draft:t1", "older");
+  adoptLegacyDraft("t1");
+  assert.equal(readComposerDraft(composerDraftKey()), "newer");
+  assert.equal(store.has("chat-draft:t1"), false);
+});
+
+test("a failed adoption keeps the old draft rather than losing it", () => {
+  store.set("chat-draft:t1", "unsent");
+  failWrites = true;
+  adoptLegacyDraft("t1");
+  assert.equal(store.get("chat-draft:t1"), "unsent");
 });
 
 test("an unsent paste survives a reload", () => {
