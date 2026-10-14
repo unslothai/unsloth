@@ -114,7 +114,11 @@ def _visible_capabilities():
 _DEVICE_BACKENDS = _per_device_backends(_visible_capabilities())
 
 
-def _backend_for_device(backend: str, device, dtype = None) -> str:
+def _backend_for_device(
+    backend: str,
+    device,
+    dtype = None,
+) -> str:
     index = getattr(device, "index", None)
     if getattr(device, "type", None) != "cuda" or index is None or index >= len(_DEVICE_BACKENDS):
         return backend
@@ -125,6 +129,8 @@ def _backend_for_device(backend: str, device, dtype = None) -> str:
     if backend == XFORMERS and (not xformers_ok or (dtype == torch.bfloat16 and not bf16)):
         return SDPA
     return backend
+
+
 SDPA_HAS_GQA = "enable_gqa" in (scaled_dot_product_attention.__doc__ or "")
 
 # Packed SDPA runs per segment: a dense (T, T) mask + enable_gqa leaves only the math kernel.

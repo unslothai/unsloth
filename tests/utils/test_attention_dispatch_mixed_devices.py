@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Mixed-generation multi-GPU hosts: the attention backend follows the device Q lives on, not
 device 0, and homogeneous hosts never consult the per-device table."""
 
@@ -17,7 +18,13 @@ def _cuda(index):
     return SimpleNamespace(type = "cuda", index = index)
 
 
-def _table(monkeypatch, capabilities, flash = True, xformers = True, probe = lambda *a, **k: True):
+def _table(
+    monkeypatch,
+    capabilities,
+    flash = True,
+    xformers = True,
+    probe = lambda *a, **k: True,
+):
     monkeypatch.setattr(ad, "HAS_FLASH_ATTENTION", flash)
     monkeypatch.setattr(ad, "HAS_XFORMERS", xformers)
     return ad._per_device_backends(capabilities, probe = probe)
@@ -87,7 +94,11 @@ def test_non_cuda_and_out_of_range_devices_are_left_alone(monkeypatch):
     assert ad._backend_for_device(ad.FLASH_DENSE, _cuda(5)) == ad.FLASH_DENSE
 
 
-def _run(monkeypatch, table, config_kwargs = None):
+def _run(
+    monkeypatch,
+    table,
+    config_kwargs = None,
+):
     calls = []
 
     def fake_flash(Q, K, V, **kwargs):
@@ -147,7 +158,11 @@ def test_run_attention_refuses_to_drop_a_softcap(monkeypatch):
 class _Model(torch.nn.Module):
     _supports_sdpa = True
 
-    def __init__(self, device_map, impl = "flash_attention_2"):
+    def __init__(
+        self,
+        device_map,
+        impl = "flash_attention_2",
+    ):
         super().__init__()
         self.config = SimpleNamespace(_attn_implementation = impl)
         self.hf_device_map = device_map
