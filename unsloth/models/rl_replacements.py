@@ -547,7 +547,7 @@ _WRAPPED_PACKING_SETUP = (
     "    except Exception:\n"
     "        _unsloth_pack_has_strategy = True\n"
     "    _unsloth_wrapped_packing = packing and (\n"
-    '        getattr(args, "packing_strategy", None) == "wrapped"\n'
+    '        getattr(args, "packing_strategy", None) in ("wrapped", "bfd_split")\n'
     "        or not _unsloth_pack_has_strategy\n"
     "    )\n"
 )
