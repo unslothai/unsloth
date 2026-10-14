@@ -374,6 +374,7 @@ interface ClientNeeds {
   studio: boolean;
   upload: boolean;
   longRuns: boolean;
+  toFile?: boolean;
 }
 
 const SDK_ONLY: ClientNeeds = {
@@ -432,10 +433,10 @@ def upload(file):
 function javascriptClient(
   base: string,
   apiKey: string,
-  { sdk, studio, upload, longRuns }: ClientNeeds,
+  { sdk, studio, upload, longRuns, toFile }: ClientNeeds,
 ): string {
   let out = `import fs from "node:fs";
-${sdk ? 'import OpenAI from "openai";\n' : ""}${longRuns ? 'import { Agent, setGlobalDispatcher } from "undici";\n' : ""}
+${sdk ? `import OpenAI${toFile ? ", { toFile }" : ""} from "openai";\n` : ""}${longRuns ? 'import { Agent, setGlobalDispatcher } from "undici";\n' : ""}
 const BASE = ${j(base)};
 const KEY = ${j(apiKey)};`;
   if (longRuns) {
@@ -660,11 +661,12 @@ ${output}`;
   console.log(\`[\${segment.start.toFixed(1)}s - \${segment.end.toFixed(1)}s] \${segment.text}\`);
 }`
       : "console.log(transcript.text);";
-    return `${javascriptClient(base, apiKey, SDK_ONLY)}
+    return `${javascriptClient(base, apiKey, { ...SDK_ONLY, toFile: true })}
 
 const transcript = await client.audio.transcriptions.create({
   model: ${j(model)},
-  file: fs.createReadStream("speech.wav"),${options}
+  // A read stream uploads chunked, and Studio refuses uploads without a Content-Length.
+  file: await toFile(fs.readFileSync("speech.wav"), "speech.wav"),${options}
 });
 ${output}`;
   }

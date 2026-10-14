@@ -174,6 +174,23 @@ test("timestamps are asked for only where the model returns them", () => {
   );
 });
 
+test("the JavaScript transcription uploads a sized file, not a chunked stream", () => {
+  const js = S.buildAudioApiSnippet("transcribe", {
+    base: BASE,
+    apiKey: KEY,
+    model: cpp("Parakeet-TDT-0.6B-v3-GGUF"),
+    lang: "javascript",
+    os: "unix",
+  });
+  assert.ok(js.includes('import OpenAI, { toFile } from "openai";'));
+  assert.ok(
+    js.includes(
+      'file: await toFile(fs.readFileSync("speech.wav"), "speech.wav")',
+    ),
+  );
+  assert.ok(!js.includes("createReadStream"));
+});
+
 test("each example picks a downloaded model that can run it, loaded first", () => {
   const models = [
     tts(cpp("ACE-Step1.5-GGUF")),
