@@ -395,7 +395,7 @@ def _fit_rolling_remembered(messages, kwargs):
         **{**kwargs, "keeps_boundary": remembered > 0, "sticky_dropped": remembered},
     )
     if truncation and truncation.get("fits") and int(truncation.get("dropped_messages") or 0) > 0:
-        prefix_boundary.remember(messages, int(truncation["dropped_messages"]), scope)
+        prefix_boundary.remember(messages, fitted, int(truncation["dropped_messages"]), scope)
     return fitted, truncation
 
 

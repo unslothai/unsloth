@@ -25,7 +25,7 @@ _IDLE_EXPIRY_S = 6 * 3600
 _KEY_TURNS = 2
 
 _lock = threading.Lock()
-_entries: "OrderedDict[str, tuple[int, str, float]]" = OrderedDict()
+_entries: "OrderedDict[str, tuple[int, int, str, float]]" = OrderedDict()
 
 
 def _digest(*parts) -> str:
@@ -45,12 +45,6 @@ def _key(messages: list[dict], scope) -> Optional[str]:
     return _digest(scope, system, turns[:_KEY_TURNS])
 
 
-def _anchor(turns: list[dict], dropped: int) -> str:
-    # Everything the cut removed: a conversation that only shares the opening (another user's, or this one edited)
-    # differs somewhere in it, so it never borrows another's cut.
-    return _digest(turns[:dropped])
-
-
 def recall(messages: list[dict], scope = None) -> int:
     """The cut this conversation last took, or 0. Only replayed onto the same history."""
     key = _key(messages, scope)
@@ -61,29 +55,37 @@ def recall(messages: list[dict], scope = None) -> int:
         entry = _entries.get(key)
         if entry is None:
             return 0
-        dropped, anchor, seen = entry
+        dropped, span, anchor, seen = entry
         if now - seen > _IDLE_EXPIRY_S:
             del _entries[key]
             return 0
         _entries.move_to_end(key)
-        _entries[key] = (dropped, anchor, now)
+        _entries[key] = (dropped, span, anchor, now)
     _, turns = _split(messages)
-    if dropped >= len(turns) or _anchor(turns, dropped) != anchor:
+    # Everything up to the last removed turn, kept ones in between included: a conversation that only shares the
+    # opening (another user's, or this one edited) differs somewhere in it, so it never borrows another's cut.
+    if span >= len(turns) or _digest(turns[:span]) != anchor:
         return 0
     return dropped
 
 
 def remember(
     messages: list[dict],
+    kept: list[dict],
     dropped: int,
     scope = None,
 ) -> None:
-    """Record that ``messages`` (the uncut request) lost its ``dropped`` oldest non-system turns."""
+    """Record that ``messages`` (the uncut request) became ``kept`` by losing ``dropped`` oldest turns."""
     key = _key(messages, scope)
     _, turns = _split(messages)
     if key is None or not 0 < dropped < len(turns):
         return
-    entry = (int(dropped), _anchor(turns, dropped), time.monotonic())
+    kept_ids = {id(message) for message in kept}
+    # By identity, as the evictor works. Protected turns can sit between removed ones, so the span ends at the
+    # dropped-th removed turn rather than at index ``dropped``.
+    removed = [index for index, message in enumerate(turns) if id(message) not in kept_ids]
+    span = removed[dropped - 1] + 1 if len(removed) >= dropped else dropped
+    entry = (int(dropped), span, _digest(turns[:span]), time.monotonic())
     with _lock:
         _entries[key] = entry
         _entries.move_to_end(key)

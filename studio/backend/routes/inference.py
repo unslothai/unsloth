@@ -1252,12 +1252,13 @@ def _apply_measured_overflow_truncation(body: dict, err_text: str, policy: str) 
     return max(0, before - len(body.get("messages") or []))
 
 
-def _passthrough_cut_scope(body: dict) -> tuple:
-    return ("passthrough", body.get("model"))
+def _passthrough_cut_scope(llama_backend) -> tuple:
+    # The loaded model and window: a cut measured with another tokenizer or template does not carry over.
+    return ("passthrough", llama_backend.model_identifier, llama_backend.context_length)
 
 
 def _replay_passthrough_cut(
-    body: dict, policy: Optional[str], context_length: Optional[int]
+    body: dict, policy: Optional[str], context_length: Optional[int], scope
 ) -> int:
     """Apply the cut this conversation took last request before sending, so the oldest kept turn
     stays put (and the prompt cache with it) instead of moving on every overflow retry. Only while
@@ -1265,11 +1266,16 @@ def _replay_passthrough_cut(
     if policy != "truncate_oldest" or not context_length:
         return 0
     messages = body.get("messages") or []
-    if _estimate_messages_tokens(messages) <= _OVERFLOW_PROMPT_TARGET_FRACTION * context_length:
+    # Tool schemas render into the prompt too, and an agent's can be most of it.
+    estimate = (
+        _estimate_messages_tokens(messages)
+        + len(json.dumps(body.get("tools") or [], default = str)) // 4
+    )
+    if estimate <= _OVERFLOW_PROMPT_TARGET_FRACTION * context_length:
         return 0
     from core.inference import prefix_boundary
 
-    remembered = prefix_boundary.recall(messages, _passthrough_cut_scope(body))
+    remembered = prefix_boundary.recall(messages, scope)
     if not remembered:
         return 0
     cut, dropped = _truncate_oldest_messages(messages, 1.0, min_dropped = remembered)
@@ -1279,12 +1285,12 @@ def _replay_passthrough_cut(
 
 
 def _remember_passthrough_cut(
-    original: list, body: dict, policy: Optional[str], dropped: int
+    original: list, body: dict, policy: Optional[str], dropped: int, scope
 ) -> None:
     if policy != "truncate_oldest" or dropped <= 0:
         return
     from core.inference import prefix_boundary
-    prefix_boundary.remember(original, dropped, _passthrough_cut_scope(body))
+    prefix_boundary.remember(original, body.get("messages") or [], dropped, scope)
 
 
 def _anthropic_stream_error_event(exc, *, force: bool = False):
@@ -45402,8 +45408,13 @@ async def _openai_passthrough_stream_admitted(
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
         _uncut_messages = list(body.get("messages") or [])
         # Hashing the history can mean megabytes of image data, so off the event loop.
+        _cut_scope = _passthrough_cut_scope(llama_backend)
         _truncated_messages = await asyncio.to_thread(
-            _replay_passthrough_cut, body, _truncate_policy, llama_backend.context_length
+            _replay_passthrough_cut,
+            body,
+            _truncate_policy,
+            llama_backend.context_length,
+            _cut_scope,
         )
         _context_was_truncated = _truncated_messages > 0
         # One respawn per request: a second unreachable upstream after a successful
@@ -45417,7 +45428,9 @@ async def _openai_passthrough_stream_admitted(
                 return False
             _context_was_truncated = True
             _truncated_messages += dropped
-            _remember_passthrough_cut(_uncut_messages, body, _truncate_policy, _truncated_messages)
+            _remember_passthrough_cut(
+                _uncut_messages, body, _truncate_policy, _truncated_messages, _cut_scope
+            )
             return True
 
         while True:
@@ -46325,8 +46338,9 @@ async def _openai_passthrough_non_streaming_upstream(
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
     _uncut_messages = list(body.get("messages") or [])
     # Hashing the history can mean megabytes of image data, so off the event loop.
+    _cut_scope = _passthrough_cut_scope(llama_backend)
     _truncated_messages = await asyncio.to_thread(
-        _replay_passthrough_cut, body, _truncate_policy, llama_backend.context_length
+        _replay_passthrough_cut, body, _truncate_policy, llama_backend.context_length, _cut_scope
     )
     _context_was_truncated = _truncated_messages > 0
     # One respawn per request, as on the streaming twin.
@@ -46339,7 +46353,9 @@ async def _openai_passthrough_non_streaming_upstream(
             return False
         _context_was_truncated = True
         _truncated_messages += dropped
-        _remember_passthrough_cut(_uncut_messages, body, _truncate_policy, _truncated_messages)
+        _remember_passthrough_cut(
+            _uncut_messages, body, _truncate_policy, _truncated_messages, _cut_scope
+        )
         return True
 
     async def _post(body_to_send):
