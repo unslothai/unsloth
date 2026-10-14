@@ -1626,6 +1626,12 @@ class CfgParallelRouter:
                 )
             self.stats["replica_rebuilds"] += 1
             self.drop_replica()
+            return
+        # A step cache (transformer_cache=auto) may be installed on the source at generate time, after the replica
+        # was built: the copy would then run uncached while the source's cache saw only the even branches.
+        hooked = _hooks_present(module)
+        if hooked is not None:
+            self.disable(f"denoiser gained hooks after the replica was built ({hooked})")
 
     def _build_replica(self) -> None:
         module = self.module_ref()

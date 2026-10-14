@@ -1094,3 +1094,20 @@ def test_hook_with_a_mutable_closure_counter_is_declined():
     router, replicas = _router(dit)
     _cfg_loop(dit, torch.randn(2, 4), steps = 3)
     assert replicas == [] and "hooks" in router.describe()["disabled_reason"]
+
+
+def test_replica_is_dropped_when_the_source_gains_a_cache_hook():
+    # transformer_cache=auto installs a stateful step cache on the SOURCE at generate time, after the replica exists
+    torch.manual_seed(0)
+    dit = _Dit()
+    router, replicas = _router(dit)
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    assert len(replicas) == 1
+
+    class Registry:
+        hooks = {"fbc_leader": object()}
+
+    dit._diffusers_hook = Registry()
+    _cfg_loop(dit, torch.randn(2, 4), steps = 2)
+    assert router.replica is None
+    assert "fbc_leader" in router.describe()["disabled_reason"]
