@@ -47,7 +47,11 @@ _MODULE_INTERNALS = frozenset(
 )
 # Shared with the replaced layer: transformers >= 5 installs hidden-state recorders once per model as forward hooks,
 # so sharing keeps restored layers and passthrough slots recording.
-_SHARED_HOOK_DICTS = ("_forward_hooks", "_forward_hooks_with_kwargs", "_forward_hooks_always_called")
+_SHARED_HOOK_DICTS = (
+    "_forward_hooks",
+    "_forward_hooks_with_kwargs",
+    "_forward_hooks_always_called",
+)
 
 
 def truncate_enabled() -> bool:
@@ -89,7 +93,12 @@ def _passthrough_class(layer_cls: type) -> type:
     )
 
 
-def _make_passthrough(layer: Any, fmt: dict, *, taint: bool = False) -> Any:
+def _make_passthrough(
+    layer: Any,
+    fmt: dict,
+    *,
+    taint: bool = False,
+) -> Any:
     import torch
 
     cls = _passthrough_class(type(layer))
@@ -158,9 +167,7 @@ def _set_child(root: Any, dotted: str, value: Any) -> None:
 @lru_cache(maxsize = None)
 def _stub_head_class() -> type:
     import torch
-
     class ProbeHead(torch.nn.Module):
-
         def __init__(self, out_features: int) -> None:
             super().__init__()
             self.out_features = out_features
@@ -168,14 +175,15 @@ def _stub_head_class() -> type:
 
         def forward(self, hidden_states: Any) -> Any:  # noqa: D102
             fill = float("nan") if self.taint else 0.0
-            return hidden_states.new_full((1,), fill).expand(*hidden_states.shape[:-1], self.out_features)
+            return hidden_states.new_full((1,), fill).expand(
+                *hidden_states.shape[:-1], self.out_features
+            )
 
     return ProbeHead
 
 
 def _collect_tensors(value: Any, out: list) -> list:
     import torch
-
     if isinstance(value, torch.Tensor):
         out.append(value)
     elif isinstance(value, dict):
@@ -215,7 +223,9 @@ def _encode_kwargs(pipe: Any, device: Any) -> Optional[dict]:
 
 
 class _Target:
-    def __init__(self, attr: str, encoder: Any, stack_name: str, stack: Any, head: Optional[tuple[str, Any]]):
+    def __init__(
+        self, attr: str, encoder: Any, stack_name: str, stack: Any, head: Optional[tuple[str, Any]]
+    ):
         self.attr = attr
         self.encoder = encoder
         self.stack_name = stack_name
@@ -277,11 +287,20 @@ def probe_consumption(pipe: Any, encode_kwargs: Optional[dict] = None) -> dict:
         for target in targets:
             fmt = target.fmt
 
-            def record(_m: Any, _a: Any, output: Any, fmt: dict = fmt) -> None:
+            def record(
+                _m: Any,
+                _a: Any,
+                output: Any,
+                fmt: dict = fmt,
+            ) -> None:
                 fmt["tuple_len"] = len(output) if isinstance(output, tuple) else None
                 fmt["seen"] = True
 
-            def count(_m: Any, _a: Any, target: _Target = target) -> None:
+            def count(
+                _m: Any,
+                _a: Any,
+                target: _Target = target,
+            ) -> None:
                 target.called += 1
 
             handles.append(target.originals[0].register_forward_hook(record))
@@ -309,7 +328,9 @@ def probe_consumption(pipe: Any, encode_kwargs: Optional[dict] = None) -> dict:
         for target in targets:
             target.stack[0] = _make_passthrough(target.originals[0], target.fmt)
         reference = run()
-        if not reference or not all(bool(torch.isfinite(t.float()).all()) for t in reference if t.is_floating_point()):
+        if not reference or not all(
+            bool(torch.isfinite(t.float()).all()) for t in reference if t.is_floating_point()
+        ):
             raise RuntimeError("probe reference is empty or non-finite")
 
         def unchanged() -> bool:
@@ -407,11 +428,17 @@ def apply_truncation(pipe: Any, plan: dict) -> dict:
                     embed = encoder.get_input_embeddings()
                 except Exception:  # noqa: BLE001
                     pass
-                tied = embed is not None and getattr(embed, "weight", None) is not None and (
-                    embed.weight is weight or embed.weight.data_ptr() == weight.data_ptr()
+                tied = (
+                    embed is not None
+                    and getattr(embed, "weight", None) is not None
+                    and (embed.weight is weight or embed.weight.data_ptr() == weight.data_ptr())
                 )
                 head_bytes = 0 if tied else _bytes_of([head])
-                setattr(encoder, info["head"], _no_logits_head_class()(int(weight.shape[1]), out_features))
+                setattr(
+                    encoder,
+                    info["head"],
+                    _no_logits_head_class()(int(weight.shape[1]), out_features),
+                )
                 head_dropped = True
         layer_bytes = _bytes_of(dropped_layers)
         entry = {
@@ -427,7 +454,12 @@ def apply_truncation(pipe: Any, plan: dict) -> dict:
     return report
 
 
-def truncate_text_encoders(pipe: Any, *, logger: Any = None, encode_kwargs: Optional[dict] = None) -> dict:
+def truncate_text_encoders(
+    pipe: Any,
+    *,
+    logger: Any = None,
+    encode_kwargs: Optional[dict] = None,
+) -> dict:
     """Probe + apply. Never raises: any failure keeps every encoder whole and returns ``{"skipped": reason}``."""
     if pipe is None:
         return {"skipped": "no pipeline"}
@@ -437,7 +469,9 @@ def truncate_text_encoders(pipe: Any, *, logger: Any = None, encode_kwargs: Opti
         plan = probe_consumption(pipe, encode_kwargs)
     except Exception as exc:  # noqa: BLE001
         if logger is not None:
-            logger.info("diffusion.text_encoder: dead-tail probe declined (%s); encoders kept whole", exc)
+            logger.info(
+                "diffusion.text_encoder: dead-tail probe declined (%s); encoders kept whole", exc
+            )
         return {"skipped": f"probe: {exc}"}
     if not plan:
         return {"skipped": "nothing to probe"}
@@ -450,7 +484,10 @@ def truncate_text_encoders(pipe: Any, *, logger: Any = None, encode_kwargs: Opti
     if logger is not None:
         for attr in plan:
             if attr not in report:
-                logger.info("diffusion.text_encoder: %s has no dead tail (every decoder layer is read); kept whole", attr)
+                logger.info(
+                    "diffusion.text_encoder: %s has no dead tail (every decoder layer is read); kept whole",
+                    attr,
+                )
         for attr, entry in report.items():
             logger.info(
                 "diffusion.text_encoder: %s runs %d/%d decoder layers%s; %.2f GiB never placed "
