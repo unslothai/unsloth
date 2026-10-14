@@ -2924,3 +2924,35 @@ def test_rocm_probe_index_keeps_an_integer_ordinal(monkeypatch):
     monkeypatch.setattr(torch, "device", _old_device)
     assert rc._index(1) == 1
     assert rc._index(3) == 3
+
+
+@pytest.mark.parametrize("which", ["image", "video"])
+def test_direct_load_pipeline_marks_the_rocm_probe_load_boundary(monkeypatch, which):
+    # A direct load_pipeline() call never passes begin_load, so it must reset held OOM probes itself; a
+    # begin_load-launched one (token passed) must not reset twice.
+    if which == "image":
+        from core.inference import diffusion as mod
+
+        backend = mod.DiffusionBackend()
+    else:
+        from core.inference import video as mod
+
+        backend = mod.VideoBackend()
+    resets = []
+    monkeypatch.setattr(mod, "rocm_compile_probe_new_load", lambda: resets.append(1))
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(*a, **k):
+        raise _Stop
+
+    monkeypatch.setattr(backend, "validate_load_request", _stop)
+    if which == "image":
+        monkeypatch.setattr(backend, "_raise_if_load_cancelled", lambda token: None)
+    with pytest.raises(_Stop):
+        backend.load_pipeline(repo_id = "x/y")
+    assert resets == [1]
+    with pytest.raises(_Stop):
+        backend.load_pipeline(repo_id = "x/y", _load_token = 7)
+    assert resets == [1]

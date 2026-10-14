@@ -1251,6 +1251,9 @@ def _account_owned_load(method):
     def wrapped(self, *args, **kwargs):
         request = object()
         inherited = kwargs.get("_load_token")
+        if inherited is None:
+            # A direct call: begin_load (which passes its token) already marked this load boundary.
+            rocm_compile_probe_new_load()
         while True:
             if inherited is None:
                 # Wait the in-flight ejects out and take the epoch they leave; a worker inherits one.

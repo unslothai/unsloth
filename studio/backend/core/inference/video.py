@@ -6487,6 +6487,9 @@ class VideoBackend:
         _video_auto_denoiser_planned: Optional[str] = None,
         _denoiser_prequant_skipped: tuple[str, ...] = (),
     ) -> dict[str, Any]:
+        if _load_token is None:
+            # A direct call: begin_load (which passes its token) already marked this load boundary.
+            rocm_compile_probe_new_load()
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
