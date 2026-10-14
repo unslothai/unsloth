@@ -3050,6 +3050,10 @@ def _openai_llama_residency_observer(*, llama_backend, completion_id: str):
         except Exception:
             pass
 
+    if _server_parks_raw_streams(llama_backend):
+        # The server parks and restores slots itself and Studio picks no victims, so nothing reads
+        # the token stream: no per-token callback, and no timings_per_token on the wire.
+        return _openai_llama_inert_residency_observer()[0], None, _gguf_note_state
     return _gguf_refresh_residency, _gguf_observe_tokens, _gguf_note_state
 
 
@@ -3134,7 +3138,8 @@ def _openai_llama_publish_round_charge(
                 counted_prompt_tokens = counted_prompt_tokens,
             ),
         )
-        observe_tokens(0)
+        if observe_tokens is not None:
+            observe_tokens(0)
     except Exception:
         pass
 
