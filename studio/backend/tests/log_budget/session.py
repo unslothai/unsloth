@@ -61,6 +61,9 @@ IDLE_POLLS: dict[str, tuple[float, str]] = {
 # all of them at once is not idle, and averaging them into the idle envelope would hide a
 # regression in either direction.
 BUSY_POLLS: dict[str, tuple[float, str]] = {
+    # The Hub's vLLM availability read retries every 5s, at most 24 times, only while the engine's GPU probe still
+    # answers "Checking...": a probe in flight, not a steady idle poll.
+    "/api/engines": (5.0, "declared"),
     "/api/models/download-progress": (1.0, "declared"),
     "/api/models/gguf-download-progress": (1.0, "declared"),
     "/api/datasets/download-progress": (1.0, "declared"),
