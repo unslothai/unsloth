@@ -3058,6 +3058,22 @@ export const de = {
         "Apps, die dieses Token verwenden, verlieren sofort den Zugriff. Dies kann nicht rückgängig gemacht werden.",
       revokeAction: "„{name}“ widerrufen",
       revoking: "Wird widerrufen...",
+      audioApi: {
+        title: "Audio-API",
+        description: "Sprache, Stimmklonen, Transkription und die Workflows der Audio-Seite.",
+        speak: "Sprechen",
+        clone: "Klonen",
+        transcribe: "Transkribieren",
+        workflows: "Workflows",
+        separate: "Trennen",
+        convert: "Umwandeln",
+        music: "Musik",
+        edit: "Bearbeiten",
+        placeholderModel: "Noch kann kein heruntergeladenes Modell dieses Beispiel ausführen, daher ist das gezeigte Modell nur ein Platzhalter. Lade zuerst eines auf der Audio-Seite herunter.",
+        autoSwitchOff:
+          "Das Modell wird nur per Name geladen, wenn der automatische Modellwechsel an ist. Schalte ihn ein oder lade das Modell zuerst auf seiner Audio-Seite.",
+        useViaApi: "Per API nutzen",
+      },
       decisionApi: {
         title: "Entscheidungs-API",
         docs: "Dokumentation",

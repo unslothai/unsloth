@@ -27,7 +27,25 @@ export type FrameMessage =
   | { type: "zoom"; direction: 1 | -1 | 0; wheel: boolean }
   | { type: "annotate"; event: AnnotateEvent }
   /** The browser agent's answer to command `id` (agent/page-agent.ts); the panel checks `result`. */
-  | { type: "agent"; id: string; installed: boolean; result: Record<string, unknown> | null };
+  | { type: "agent"; id: string; installed: boolean; result: Record<string, unknown> | null }
+  /** A fetch or XHR to the page's own site, for the panel to make (routes/browser_network.py);
+   *  `request` is null for one the panel won't make (malformed, too large), which then fails. */
+  | { type: "request"; id: string; request: PageRequest | null }
+  | { type: "requestAbort"; id: string };
+
+export type RedirectMode = "follow" | "error" | "manual";
+
+export type PageRequest = {
+  url: string;
+  method: string;
+  headers: Array<[string, string]>;
+  body: ArrayBuffer | null;
+  redirect: RedirectMode;
+  /** Fetch's integrity metadata, checked against the body. */
+  integrity: string;
+};
+
+const REDIRECT_MODES = new Set<unknown>(["follow", "error", "manual"]);
 
 export type AnnotateRect = { left: number; top: number; width: number; height: number };
 
@@ -59,6 +77,10 @@ const MAX_QUOTE_CHARS = 300;
 export const MAX_MARKS = 500;
 // Far past any screen, so a page can't make the panel draw something huge.
 const MAX_COORD = 1_000_000;
+// The request endpoint's limits.
+const MAX_REQUEST_HEADERS = 64;
+const MAX_HEADER_NAME_CHARS = 256;
+const MAX_REQUEST_BODY_BYTES = 1024 * 1024;
 
 const text = (value: unknown, max: number): string | null =>
   typeof value === "string" && value.length <= max ? value : null;
@@ -114,6 +136,31 @@ function annotateEvent(message: Record<string, unknown>): AnnotateEvent | null {
     default:
       return null;
   }
+}
+
+function headerList(value: unknown): Array<[string, string]> | null {
+  if (!Array.isArray(value) || value.length > MAX_REQUEST_HEADERS) return null;
+  const headers: Array<[string, string]> = [];
+  for (const entry of value) {
+    const name = Array.isArray(entry) && entry.length === 2 ? text(entry[0], MAX_HEADER_NAME_CHARS) : null;
+    const content = name === null ? null : text(entry[1], MAX_URL_CHARS);
+    if (name === null || content === null) return null;
+    headers.push([name, content]);
+  }
+  return headers;
+}
+
+function pageRequest(message: Record<string, unknown>): PageRequest | null {
+  const url = text(message.url, MAX_URL_CHARS);
+  const method = text(message.method, 16);
+  const headers = headerList(message.headers);
+  const body = message.body;
+  if (!url || !method || !/^[A-Za-z]+$/.test(method) || !headers) return null;
+  if (body !== null && !(body instanceof ArrayBuffer && body.byteLength <= MAX_REQUEST_BODY_BYTES)) return null;
+  const redirect = message.redirect ?? "follow";
+  const integrity = text(message.integrity ?? "", 4096);
+  if (!REDIRECT_MODES.has(redirect) || integrity === null) return null;
+  return { url, method, headers, body, redirect: redirect as RedirectMode, integrity };
 }
 
 /** A message from a page, checked field by field: pages can post anything. */
@@ -176,6 +223,12 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
           ? (message.result as Record<string, unknown>)
           : null;
       return { type: "agent", id, installed: message.installed === true, result };
+    }
+    case "request":
+    case "requestAbort": {
+      const id = text(message.id, 64);
+      if (!id) return null;
+      return message.type === "request" ? { type: "request", id, request: pageRequest(message) } : { type: "requestAbort", id };
     }
     default:
       return null;
