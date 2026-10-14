@@ -26,6 +26,7 @@ import {
   PASTED_TEXT_PREVIEW_MAX_CHARS,
   attachmentFileKind,
   attachmentKindLabel,
+  COMPOSER_ATTACHMENT_MAX_ROWS,
   composerAttachmentsOverflow,
   sentAttachmentLayout,
   type AttachmentFileKind,
@@ -718,8 +719,14 @@ export const UserMessageAttachments: FC = () => {
 };
 
 // The layout decision is a DOM data attribute, never state, so a resize or new card re-renders no card.
-export const ComposerAttachments: FC<{ className?: string }> = ({ className }) => {
+export const ComposerAttachments: FC<{
+  className?: string;
+  /** One scrolling row once the thread has messages, so the strip does not push the reply up. */
+  oneRowInChat?: boolean;
+}> = ({ className, oneRowInChat = false }) => {
   const count = useAuiState(({ composer }) => composer.attachments.length);
+  const inChat = useAuiState(({ thread }) => !thread.isEmpty);
+  const maxRows = oneRowInChat && inChat ? 1 : COMPOSER_ATTACHMENT_MAX_ROWS;
   const ref = useRef<HTMLDivElement | null>(null);
   const previousCount = useRef(count);
 
@@ -738,6 +745,7 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
         width,
         card?.getBoundingClientRect().width ?? 0,
         Number.parseFloat(style.columnGap) || 0,
+        maxRows,
       );
       const next = strip ? "strip" : "wrap";
       if (el.dataset.layout !== next) el.dataset.layout = next;
@@ -763,14 +771,14 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
       observer.disconnect();
       el.removeEventListener("wheel", onWheel);
     };
-  }, [count]);
+  }, [count, maxRows]);
 
   return (
     <div
       ref={ref}
       data-reload-snapshot-sensitive
       className={cn(
-        "aui-composer-attachments aui-composer-attachment-cards mb-4 flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain",
+        "aui-composer-attachments aui-composer-attachment-cards mb-[calc(0.5rem*var(--ui-space-scale,1))] flex w-full flex-row flex-wrap gap-2 px-1.5 pt-0.5 pb-1 empty:hidden data-[layout=strip]:flex-nowrap data-[layout=strip]:overflow-x-auto data-[layout=strip]:overscroll-x-contain",
         className,
       )}
     >

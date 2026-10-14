@@ -12,7 +12,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   collectRewindTurnIds,
   defaultRewindMode,
@@ -126,32 +133,25 @@ const FileList: FC<{ label: string; files: string[] }> = ({ label, files }) =>
     </div>
   );
 
-/** Mounted once per Thread; opens for requests addressed to this thread's list item. */
+/** Mounted once per Thread; handles requests addressed to this thread's list item. */
 export const RewindDialog: FC = () => {
   const threadKey = useAuiState(({ threadListItem }) => threadListItem.id);
   const request = useRewindDialogStore((s) => s.request);
   const closeRewind = useRewindDialogStore((s) => s.closeRewind);
-  const open = request !== null && request.threadKey === threadKey;
-  return (
-    <Dialog open={open} onOpenChange={(next) => !next && closeRewind()}>
-      <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-md">
-        {/* Content unmounts on close, so each open starts from a fresh read of the branch. */}
-        {open ? (
-          <RewindDialogBody
-            initialMessageId={request.messageId}
-            onClose={closeRewind}
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
-  );
+  // Unmounts on close, so each request starts from a fresh read of the branch.
+  return request !== null && request.threadKey === threadKey ? (
+    <RewindFlow
+      key={request.messageId ?? ""}
+      initialMessageId={request.messageId}
+      onClose={closeRewind}
+    />
+  ) : null;
 };
 
-const RewindDialogBody: FC<{
+const RewindFlow: FC<{
   initialMessageId: string | null;
   onClose: () => void;
 }> = ({ initialMessageId, onClose }) => {
-  const t = useT();
   const aui = useAui();
   const [messageId, setMessageId] = useState(initialMessageId);
   // Read once: subscribing would re-render this dialog on every streamed token.
@@ -160,7 +160,34 @@ const RewindDialogBody: FC<{
 
   if (messageId === null) {
     return (
-      <>
+      <RewindPicker
+        entries={entries}
+        onPick={setMessageId}
+        onClose={onClose}
+      />
+    );
+  }
+  return (
+    <RewindChoices
+      key={messageId}
+      messageId={messageId}
+      preview={entries.find((entry) => entry.id === messageId)?.text ?? ""}
+      turnIds={collectRewindTurnIds(branch, messageId)}
+      onBack={initialMessageId === null ? () => setMessageId(null) : undefined}
+      onClose={onClose}
+    />
+  );
+};
+
+const RewindPicker: FC<{
+  entries: { id: string; preview: string; text: string }[];
+  onPick: (id: string) => void;
+  onClose: () => void;
+}> = ({ entries, onPick, onClose }) => {
+  const t = useT();
+  return (
+    <Dialog open={true} onOpenChange={(next) => !next && onClose()}>
+      <DialogContent className="corner-squircle dialog-soft-surface gap-5 sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="text-ui-21">{t("rewind.title")}</DialogTitle>
           <DialogDescription>{t("rewind.pickDescription")}</DialogDescription>
@@ -173,7 +200,7 @@ const RewindDialogBody: FC<{
               <li key={entry.id}>
                 <button
                   type="button"
-                  onClick={() => setMessageId(entry.id)}
+                  onClick={() => onPick(entry.id)}
                   className="w-full truncate rounded-[12px] px-3 py-2 text-left hover:bg-accent focus-visible:bg-accent outline-none"
                 >
                   {entry.preview || (
@@ -186,26 +213,18 @@ const RewindDialogBody: FC<{
             ))}
           </ul>
         )}
-      </>
-    );
-  }
-  return (
-    <RewindChoices
-      key={messageId}
-      messageId={messageId}
-      turnIds={collectRewindTurnIds(branch, messageId)}
-      onBack={initialMessageId === null ? () => setMessageId(null) : undefined}
-      onClose={onClose}
-    />
+      </DialogContent>
+    </Dialog>
   );
 };
 
 const RewindChoices: FC<{
   messageId: string;
+  preview: string;
   turnIds: string[];
   onBack?: () => void;
   onClose: () => void;
-}> = ({ messageId, turnIds, onBack, onClose }) => {
+}> = ({ messageId, preview, turnIds, onBack, onClose }) => {
   const t = useT();
   const aui = useAui();
   const remoteId = useAuiState(({ threadListItem }) => threadListItem.remoteId);
@@ -242,12 +261,13 @@ const RewindChoices: FC<{
   // Rows can exist with nothing left to put back (right after a rewind): that is no change.
   const hasChanges = result !== null && rewindChangedCount(result) > 0;
 
-  const confirm = async () => {
+  const rewind = async (chosen: RewindMode) => {
     if (aui.thread().getState().isRunning) {
       toast.error(t("rewind.waitForResponse"));
+      onClose();
       return;
     }
-    if (rewindTouchesFiles(mode) && remoteId) {
+    if (rewindTouchesFiles(chosen) && remoteId) {
       setBusy(true);
       try {
         const restored = await rewindChatThread(remoteId, {
@@ -266,7 +286,7 @@ const RewindChoices: FC<{
         return;
       }
     }
-    if (rewindTouchesConversation(mode)) {
+    if (rewindTouchesConversation(chosen)) {
       try {
         aui.thread().message({ id: messageId }).composer().beginEdit();
       } catch {
@@ -276,76 +296,92 @@ const RewindChoices: FC<{
     onClose();
   };
 
-  const options: { value: RewindMode; label: string; files: boolean }[] = [
-    { value: "both", label: t("rewind.modeBoth"), files: true },
-    { value: "conversation", label: t("rewind.modeConversation"), files: false },
-    { value: "files", label: t("rewind.modeFiles"), files: true },
+  // Only the conversation can go back: no choice to make, so no dialog.
+  const conversationOnly = dryRun.state !== "loading" && !hasChanges;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fires once, when the check settles.
+  useEffect(() => {
+    if (!conversationOnly) return;
+    if (dryRun.state === "error") {
+      toast.error(t("rewind.checkFailed", { error: dryRun.message }));
+    }
+    // Files changed since, but none can be put back: say so, or the rewind reads as a full restore.
+    const skipped = result ? result.conflicts.length + result.untracked.length : 0;
+    if (skipped > 0) {
+      toast.warning(t("rewind.filesNotRestored", { count: skipped }));
+    }
+    void rewind("conversation");
+  }, [conversationOnly]);
+
+  if (!hasChanges || result === null) return null;
+
+  const options: { value: RewindMode; label: string }[] = [
+    { value: "both", label: t("rewind.modeBoth") },
+    { value: "conversation", label: t("rewind.modeConversation") },
+    { value: "files", label: t("rewind.modeFiles") },
   ];
 
   return (
-    <>
-      <DialogHeader>
-        <DialogTitle className="text-ui-21">{t("rewind.title")}</DialogTitle>
-        <DialogDescription>{t("rewind.chooseDescription")}</DialogDescription>
-      </DialogHeader>
-      <RadioGroup
-        value={mode}
-        onValueChange={(value) => setMode(value as RewindMode)}
-        disabled={busy}
-      >
-        {options.map((option) => (
-          <label
-            key={option.value}
-            className="flex cursor-pointer items-center gap-3 has-[button:disabled]:cursor-not-allowed has-[button:disabled]:opacity-50"
+    <Dialog open={true} onOpenChange={(next) => !next && !busy && onClose()}>
+      <DialogContent className="corner-squircle dialog-soft-surface gap-4 sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-ui-21">
+            {t("rewind.confirmTitle")}
+          </DialogTitle>
+        </DialogHeader>
+        <p className="line-clamp-3 rounded-[14px] bg-muted px-4 py-3 text-sm wrap-break-word">
+          {preview || (
+            <span className="text-muted-foreground">
+              {t("rewind.attachmentOnly")}
+            </span>
+          )}
+        </p>
+        <div className="grid gap-2">
+          <Label htmlFor="rewind-restore">{t("rewind.restoreLabel")}</Label>
+          <Select
+            value={mode}
+            onValueChange={(value) => setMode(value as RewindMode)}
+            disabled={busy}
           >
-            <RadioGroupItem
-              value={option.value}
-              disabled={option.files && !hasChanges}
-            />
-            {option.label}
-          </label>
-        ))}
-      </RadioGroup>
-      <div className="grid gap-2 text-sm">
-        {dryRun.state === "loading" ? (
-          <p className="text-muted-foreground">{t("rewind.checking")}</p>
-        ) : dryRun.state === "error" ? (
-          <p className="text-destructive">
-            {t("rewind.checkFailed", { error: dryRun.message })}
+            <SelectTrigger id="rewind-restore" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="grid gap-2 text-sm">
+          <p>
+            {t("rewind.summary", {
+              restore: result.restored.length,
+              remove: result.deleted.length,
+              recreate: result.recreated.length,
+            })}
           </p>
-        ) : !result?.has_changes ? (
-          <p className="text-muted-foreground">{t("rewind.noFileChanges")}</p>
-        ) : (
-          <>
-            <p>
-              {t("rewind.summary", {
-                restore: result.restored.length,
-                remove: result.deleted.length,
-                recreate: result.recreated.length,
-              })}
-            </p>
-            <FileList label={t("rewind.conflicts")} files={result.conflicts} />
-            <FileList label={t("rewind.untracked")} files={result.untracked} />
-          </>
-        )}
-        <p className="text-muted-foreground text-xs">{t("rewind.scopeNote")}</p>
-      </div>
-      <DialogFooter>
-        {onBack ? (
-          <Button variant="ghost" onClick={onBack} disabled={busy}>
-            {t("rewind.back")}
+          <FileList label={t("rewind.conflicts")} files={result.conflicts} />
+          <FileList label={t("rewind.untracked")} files={result.untracked} />
+          <DialogDescription className="text-xs">
+            {t("rewind.scopeNote")}
+          </DialogDescription>
+        </div>
+        <DialogFooter>
+          {onBack ? (
+            <Button variant="ghost" onClick={onBack} disabled={busy}>
+              {t("rewind.back")}
+            </Button>
+          ) : null}
+          <Button variant="outline" onClick={onClose} disabled={busy}>
+            {t("rewind.cancel")}
           </Button>
-        ) : null}
-        <Button variant="outline" onClick={onClose} disabled={busy}>
-          {t("rewind.cancel")}
-        </Button>
-        <Button
-          onClick={() => void confirm()}
-          disabled={busy || dryRun.state === "loading"}
-        >
-          {t("rewind.confirm")}
-        </Button>
-      </DialogFooter>
-    </>
+          <Button onClick={() => void rewind(mode)} disabled={busy}>
+            {t("rewind.confirm")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 };

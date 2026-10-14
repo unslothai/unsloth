@@ -63,6 +63,7 @@ def test_specs_cover_the_dit_families():
         "flux.2-dev",
         # The first VIDEO family; its own assertions live in test_diffusion_dit_trainer_ltx2.
         "ltx-2",
+        "wan2.2-ti2v-5b",
     }
     # FLUX / Qwen share the added-kv attention target set; Z-Image and Krea 2 are single-stream.
     assert "add_q_proj" in _SPECS["flux.1"].lora_targets
