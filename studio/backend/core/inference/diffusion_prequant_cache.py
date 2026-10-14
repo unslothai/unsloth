@@ -94,6 +94,8 @@ _DTYPE_TAGS = {
 
 _lock = threading.Lock()
 _HEADER_MEMO: dict[tuple, str] = {}
+# Realpaths of entries a load in this process resolved but could not use: the next save of that key replaces them.
+_REJECTED: set[str] = set()
 
 
 # ------------------------------------------------------------------------------------------------- settings
@@ -449,6 +451,19 @@ def lookup(
         return None
 
 
+def note_rejected(path: Any, logger: Any = None) -> None:
+    """Called when the loader could not use the cached artifact at ``path``; the save after its dense fallback then
+    replaces the entry rather than skipping it as already cached. Never raises."""
+    try:
+        if not path_in_cache(path):
+            return
+        with _lock:
+            _REJECTED.add(os.path.realpath(str(path)))
+        _log(logger, "warning", f"entry {Path(str(path)).parent.name} failed to load; the next save replaces it")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def note_hit(path: Any, logger: Any = None) -> None:
     """Called once the loader really used ``path``."""
     _log(logger, "info", f"hit ({Path(str(path)).parent.name})")
@@ -716,9 +731,16 @@ def save_runtime_quant(
         if bool(info.get("convrot_fqns")) != bool(parts["convrot"]):
             _log(logger, "info", "skipped (ConvRot state differs from the key)")
             return None
-        if _entry(key) is not None:
-            _log(logger, "info", f"skipped (already cached as {key})")
-            return None
+        existing = _entry(key)
+        replacing = None
+        if existing is not None:
+            real = os.path.realpath(str(existing))
+            with _lock:
+                replacing = real if real in _REJECTED else None
+            if replacing is None:
+                _log(logger, "info", f"skipped (already cached as {key})")
+                return None
+            _log(logger, "info", f"replacing {key} (it failed to load)")
 
         state_dict = transformer.state_dict()
         if any(".lora_" in k or k.startswith("lora_") for k in state_dict):
@@ -800,6 +822,9 @@ def save_runtime_quant(
             kdir / MANIFEST_NAME, json.dumps(manifest, indent = 1, default = str).encode("utf-8")
         )
         _touch(kdir)
+        if replacing is not None:
+            with _lock:
+                _REJECTED.discard(replacing)
         _log(
             logger,
             "info",

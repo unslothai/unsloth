@@ -696,3 +696,46 @@ def test_bases_sharing_their_weights_but_not_their_identity_never_share_an_entry
     header = json.loads(C.read_header_bytes(path_b)[8:])
     assert json.loads(header["__metadata__"][PS.UNSLOTH_METADATA_KEY])["base_model_id"] == str(base_b)
     assert C.lookup(_fam(base_a), scheme, base_repo = str(base_a)) != path_b
+
+
+def _corrupt_in_place(path: str) -> None:
+    """Same-size corruption: manifest key and byte count still match, so ``_entry`` accepts it."""
+    size = os.path.getsize(path)
+    with open(path, "r+b") as fh:
+        fh.write(b"\xff" * min(size, 64))
+
+
+def test_an_entry_the_loader_rejects_is_replaced_by_the_dense_build(env, tmp_path, scheme):
+    from core.inference.diffusion_prequant import PrequantSource, load_prequantized_transformer
+
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    fam = _fam(base)
+    path = C.save_runtime_quant(model, fam, base_repo = str(base))
+    good = Path(path).read_bytes()
+    _corrupt_in_place(path)
+    assert C.lookup(fam, scheme, base_repo = str(base)) == path  # still looks cached
+
+    source = PrequantSource(kind = "path", location = path, filename = None)
+    out = load_prequantized_transformer(Tiny, str(base), source, device = "cpu", dtype = torch.bfloat16, scheme = scheme)
+    assert out is None
+    # The load's dense fallback then saves: the corrupt entry is replaced, not kept as "already cached".
+    assert C.save_runtime_quant(model, fam, base_repo = str(base)) == path
+    assert Path(path).read_bytes() == good
+    # Replaced once: a further save of the now good entry is skipped again.
+    assert C.save_runtime_quant(model, fam, base_repo = str(base)) is None
+
+
+def test_a_forced_accumulate_mismatch_is_not_a_bad_entry(env, tmp_path, scheme, monkeypatch):
+    """A forced fp8 accumulate the entry does not bake is the request's choice: the entry stays for default loads."""
+    from core.inference import diffusion_prequant as P
+
+    monkeypatch.setattr(P, "hosted_fast_accum_conflict", lambda s, f: f is not None)
+    rejected = []
+    monkeypatch.setattr(C, "note_rejected", lambda path, logger = None: rejected.append(path))
+    source = P.PrequantSource(kind = "path", location = str(env / ("d" * 32) / C.FILE_NAME), filename = None)
+    kwargs = dict(device = "cpu", dtype = torch.bfloat16, scheme = "fp8")
+    assert P.load_prequantized_transformer(Tiny, "x", source, fast_accum = False, **kwargs) is None
+    assert rejected == []
+    assert P.load_prequantized_transformer(Tiny, "x", source, **kwargs) is None
+    assert len(rejected) == 1

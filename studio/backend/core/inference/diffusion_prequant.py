@@ -2237,6 +2237,30 @@ def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
     return pinned
 
 
+def _reports_rejected_cache_entry(fn: Any) -> Any:
+    """A local pre-quant cache entry this load could not use (corrupt bytes, a torch / torchao patch that no longer
+    reads it) is reported to the cache, so the dense build the load falls back to replaces it instead of the stale
+    entry staying "already cached" for good. A forced fp8 accumulate the entry does not bake is the request's
+    choice, not a fault in the entry, and leaves it alone."""
+
+    @functools.wraps(fn)
+    def wrapper(transformer_cls: Any, base: str, source: Any, *args: Any, **kwargs: Any) -> Any:
+        out = fn(transformer_cls, base, source, *args, **kwargs)
+        if out is None and getattr(source, "kind", None) == "path":
+            try:
+                if not hosted_fast_accum_conflict(
+                    str(kwargs.get("scheme") or ""), kwargs.get("fast_accum")
+                ):
+                    from .diffusion_prequant_cache import note_rejected
+                    note_rejected(source.location, kwargs.get("logger"))
+            except Exception:  # noqa: BLE001 - bookkeeping never changes the load's outcome
+                pass
+        return out
+
+    return wrapper
+
+
+@_reports_rejected_cache_entry
 def load_prequantized_transformer(
     transformer_cls: Any,
     base: str,
