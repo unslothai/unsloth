@@ -272,6 +272,9 @@ function ProjectBadge() {
   );
 }
 
+// Inline 16px: the font-scaled size-4 is 15px, an odd inset that sits off centre in the 32px circle.
+const HEADER_ICON = { width: 16, height: 16 } as const;
+
 /** Set by a collapsed panel: its cards render as pills. */
 const CompactCardsContext = createContext(false);
 
@@ -815,7 +818,8 @@ function ChatFilesPanel({
           {children ? (
             <button
               type="button"
-              className="unsloth-files-panel-icon-btn"
+              // Its glyph is narrow, so 4px from Add files reads as crowded beside the X.
+              className="unsloth-files-panel-icon-btn ml-3"
               onClick={() => {
                 setCollapsed(!compact);
                 setShowAll(false);
@@ -827,7 +831,7 @@ function ChatFilesPanel({
               <HugeiconsIcon
                 icon={compact ? ChevronDownStandardIcon : ChevronUpStandardIcon}
                 strokeWidth={1.75}
-                className="size-4"
+                style={HEADER_ICON}
               />
             </button>
           ) : null}
@@ -839,7 +843,7 @@ function ChatFilesPanel({
               aria-label={closeLabel ?? "Close"}
               title={closeLabel}
             >
-              <XIcon className="size-4" />
+              <XIcon style={HEADER_ICON} />
             </button>
           ) : null}
         </div>
