@@ -42,6 +42,19 @@ export function openRagDocumentExternally(
     });
 }
 
+/** For a file Studio can't preview: a toast whose action opens it outside Studio. */
+export function offerRagDocumentOutside(
+  documentId: string,
+  filename: string,
+): void {
+  toast.message(`${filename} is too large to preview in Studio`, {
+    action: {
+      label: "Open",
+      onClick: () => openRagDocumentExternally(documentId, filename),
+    },
+  });
+}
+
 /** Opens an indexed document's file in Studio's browser; past the preview limit, offers it outside. */
 export function openRagDocumentInBrowser(
   documentId: string,
@@ -66,12 +79,7 @@ export function openRagDocumentInBrowser(
     })
     .then((blob) => {
       if (blob === null || blob.size > MAX_DOCUMENT_PREVIEW_BYTES) {
-        toast.message(`${filename} is too large to preview in Studio`, {
-          action: {
-            label: "Open",
-            onClick: () => openRagDocumentExternally(documentId, filename),
-          },
-        });
+        offerRagDocumentOutside(documentId, filename);
         return;
       }
       openFileInBrowser({

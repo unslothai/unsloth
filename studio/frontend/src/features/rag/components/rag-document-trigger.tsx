@@ -8,6 +8,7 @@ import { useBrowserPanelAvailable } from "@/features/browser/panel-availability"
 import { useBrowserPrefsStore } from "@/features/browser/prefs-store";
 import { type ReactElement, cloneElement } from "react";
 import {
+  offerRagDocumentOutside,
   openRagDocumentExternally,
   openRagDocumentInBrowser,
 } from "../lib/open-document";
@@ -45,6 +46,8 @@ export function RagDocumentTrigger({
         MAX_DOCUMENT_PREVIEW_BYTES,
       );
       if (!file) {
+        // Past the viewer's limit (uploads go up to 200 MB): still let it open outside Studio.
+        offerRagDocumentOutside(documentId, filename);
         throw new Error(`Couldn't preview ${filename}`);
       }
       return asViewerFile(file);
