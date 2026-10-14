@@ -71,6 +71,7 @@ __all__ = [
     "unsloth_compile_transformers",
     "resolve_model_class",
     "resolve_attention_implementation",
+    "fall_back_from_flash_attention_on_pre_ampere",
     "resolve_encoder_attention_implementation",
     "_set_attn_impl",
     "set_task_config_attr",
@@ -1612,6 +1613,55 @@ def _set_attn_impl(config, impl):
         return impl
     _write_attn_impl(config, impl)
     return impl
+
+
+def _pre_ampere_cuda_devices(device_map):
+    """CUDA indices in a loaded `hf_device_map` that Flash Attention 2 cannot run on (sm < 80)."""
+    if DEVICE_TYPE != "cuda" or not isinstance(device_map, dict):
+        return []
+    indices = set()
+    for placement in device_map.values():
+        if isinstance(placement, int):
+            indices.add(placement)
+            continue
+        try:
+            device = torch.device(placement)
+        except (RuntimeError, TypeError):
+            continue  # "cpu" / "disk" offload
+        if device.type == "cuda":
+            indices.add(device.index or 0)
+    try:
+        return sorted(i for i in indices if torch.cuda.get_device_capability(i)[0] < 8)
+    except Exception:
+        return []
+
+
+def fall_back_from_flash_attention_on_pre_ampere(model):
+    """Device 0 chose Flash Attention 2; switch to SDPA (or eager) when the device map also put layers
+    on a pre-Ampere card, where every flash call would raise. Same-generation hosts never change."""
+    if not HAS_FLASH_ATTENTION:
+        return False
+    pre_ampere = _pre_ampere_cuda_devices(getattr(model, "hf_device_map", None))
+    if not pre_ampere:
+        return False
+    fallback = "sdpa" if getattr(type(model), "_supports_sdpa", False) else "eager"
+    changed = False
+    seen = set()
+    for module in model.modules():
+        config = getattr(module, "config", None)
+        if config is None or id(config) in seen:
+            continue
+        seen.add(id(config))
+        impl = _config_get(config, "_attn_implementation", None)
+        if isinstance(impl, str) and impl.startswith("flash_attention"):
+            _write_attn_impl(config, fallback)
+            changed = True
+    if changed:
+        print(
+            f"Unsloth: Layers were placed on cuda:{pre_ampere[0]}, which cannot run Flash Attention 2 "
+            f"(compute capability below 8.0), so the model uses {fallback} attention instead."
+        )
+    return changed
 
 
 _REMOTE_CODE_HUB_KWARGS = (

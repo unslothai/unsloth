@@ -3811,6 +3811,7 @@ class FastBaseModel:
                     _cast_text_only_prequantized_params(model, torch_dtype)
                 # transformers 5 leaves remote code's non-persistent buffers (RoPE inv_freq, decay slopes) uninitialised.
                 restore_remote_code_non_persistent_buffers(model)
+                fall_back_from_flash_attention_on_pre_ampere(model)
                 # Must precede _attach_bnb_multidevice_hooks: it returns early while offload_embedding is True.
                 # Repair remote code first so the offload decision reads the real input embeddings.
                 apply_remote_code_shims(model)
