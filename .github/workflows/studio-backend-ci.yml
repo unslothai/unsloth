@@ -99,6 +99,9 @@ on:
       - '.github/workflows/woa-wheelhouse.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/workflows/security-audit.yml'
+  # Staging repos dispatch this on `upstream-main` to seed their dependency caches
+  # (scripts/pr_review/staging_ci.py); see .github/actions/pip-cache-save.
+  workflow_dispatch:
 
 concurrency:
   # One group per workflow, ref and event. On a PR branch a new push cancels the old run.
@@ -112,7 +115,7 @@ concurrency:
   # keeps a nightly or a dispatch from being replaced by a push. The contract is enforced
   # by tests/studio/test_main_runs_survive_merge_bursts.py.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
