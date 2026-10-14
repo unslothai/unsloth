@@ -31,26 +31,13 @@ _TILE = {"rows": 8, "g": 16, "warps": 2}
 _ORIGINAL = None
 
 
-def fast_act_quant_enabled() -> bool:
-    return os.environ.get(FAST_ACT_QUANT_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
-
-
-def describe() -> dict:
-    return dict(_STATE)
-
-
-def _build_op():
-    """Register ``unsloth_nvfp4::act_quant(x, per_tensor_scale) -> (qdata u8 [M, K/2], scales u8 flat)``."""
-    global _OP
-    if _OP is not None:
-        return _OP
-    import torch
+try:  # Module scope, not a closure: Inductor re-imports a user kernel and its helpers by their global names.
     import triton
     import triton.language as tl
-    from torch.library import triton_op, wrap_triton
+except Exception:  # noqa: BLE001 - no Triton means torchao's quantiser
+    triton = None
 
-    # ``from __future__ import annotations`` leaves the op's annotations as strings that infer_schema resolves here.
-    globals().setdefault("torch", torch)
+if triton is not None:
 
     @triton.jit
     def _e2m1_code(y):
@@ -109,6 +96,29 @@ def _build_op():
         tile = (rows // 128)[:, None] * NCB + (blocks // 4)[None, :]
         soffs = tile.to(tl.int64) * 512 + ((rr % 32) * 16 + (rr // 32) * 4)[:, None] + (blocks % 4)[None, :]
         tl.store(sf_ptr + soffs, sf8.to(tl.uint8, bitcast = True), mask = (rows < M)[:, None])
+
+
+def fast_act_quant_enabled() -> bool:
+    return os.environ.get(FAST_ACT_QUANT_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def describe() -> dict:
+    return dict(_STATE)
+
+
+def _build_op():
+    """Register ``unsloth_nvfp4::act_quant(x, per_tensor_scale) -> (qdata u8 [M, K/2], scales u8 flat)``."""
+    global _OP
+    if _OP is not None:
+        return _OP
+    import torch
+    from torch.library import triton_op, wrap_triton
+
+    if triton is None:
+        raise RuntimeError("triton unavailable")
+
+    # ``from __future__ import annotations`` leaves the op's annotations as strings that infer_schema resolves here.
+    globals().setdefault("torch", torch)
 
     @triton_op("unsloth_nvfp4::act_quant", mutates_args = ())
     def act_quant(x: torch.Tensor, per_tensor_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -185,7 +195,11 @@ def _patched_to_nvfp4(
     if counting:
         _STATE["eager_calls"] += 1
     m, k = data_hp.shape
-    q, sf = torch.ops.unsloth_nvfp4.act_quant(data_hp, per_tensor_scale.reshape(1).to(torch.float32))
+    # A Triton launch lands on the CURRENT device, not the tensor's: guard it like every other NVFP4 launch.
+    with torch.cuda.device(data_hp.device):
+        q, sf = torch.ops.unsloth_nvfp4.act_quant(
+            data_hp, per_tensor_scale.reshape(1).to(torch.float32)
+        )
     scale_m, scale_k = hp_data_dims_to_swizzled_scale_dims_nvfp4(m, k)
     sf = sf.view(torch.float8_e4m3fn).view(scale_m, scale_k)
     return NVFP4Tensor(
@@ -218,6 +232,14 @@ def verify(device: Any = None) -> tuple:
         return t.qdata.view(torch.uint8), t.scale.reshape(-1).view(torch.uint8), s
 
     compiled = torch.compile(reference, fullgraph = True, dynamic = False)
+    op_compiled = torch.compile(lambda x, s: op(x, s), fullgraph = True, dynamic = False)
+    with torch.cuda.device(device):
+        return _verify_shapes(device, reference, compiled, op, op_compiled)
+
+
+def _verify_shapes(device, reference, compiled, op, op_compiled) -> tuple:
+    import torch
+
     gen = torch.Generator(device = device).manual_seed(0)
     eager_diff = 0
     for m, k in ((256, 512), (77, 3840), (300, 2560), (1, 64)):
@@ -226,11 +248,16 @@ def verify(device: Any = None) -> tuple:
         x[0, :16] = 0
         x[-1, 16:32] = -1e-6
         want_q, want_sf, s = compiled(x)
-        q, sf = op(x, s.reshape(1).to(torch.float32))
+        with torch.cuda.device(x.device):
+            q, sf = op(x, s.reshape(1).to(torch.float32))
         if not torch.equal(want_q, q):
             return False, f"packed data differs from compiled torchao at {m}x{k}"
         if not torch.equal(want_sf, sf):
             return False, f"block scales differ from compiled torchao at {m}x{k}"
+        # And as Inductor will run it: the op inside a compiled graph (catches a kernel Inductor cannot re-import).
+        cq, csf = op_compiled(x, s.reshape(1).to(torch.float32))
+        if not (torch.equal(cq, q) and torch.equal(csf, sf)):
+            return False, f"the compiled op differs from the eager op at {m}x{k}"
         eq, esf, _ = reference(x)
         eager_diff += int((eq != q).sum().item()) + int((esf != sf).sum().item())
     _STATE["eager_bytes_differing"] = eager_diff
