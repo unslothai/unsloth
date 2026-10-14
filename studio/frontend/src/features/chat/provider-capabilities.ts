@@ -15,7 +15,11 @@ import {
   sortReasoningEfforts,
 } from "./model-catalog";
 
-import { normalizeCustomReasoningConfig } from "./custom-reasoning";
+import {
+  customReasoningEffortLevels,
+  customReasoningStyleTakesEffort,
+  normalizeCustomReasoningConfig,
+} from "./custom-reasoning";
 
 export { modelCatalogVersion, subscribeModelCatalog } from "./model-catalog";
 
@@ -1349,11 +1353,11 @@ export function getExternalReasoningCapabilities(
           })
         : withEnableThinkingStyle();
     }
-    return config.style === "reasoning_effort" || config.style === "reasoning"
+    return customReasoningStyleTakesEffort(config.style)
       ? withReasoningEffortStyle({
           supportsReasoning: true,
           supportsReasoningOff: true,
-          reasoningEffortLevels: ["none", "low", "medium", "high"],
+          reasoningEffortLevels: ["none", ...customReasoningEffortLevels(config)],
         })
       : withEnableThinkingStyle({ supportsReasoning: true, supportsReasoningOff: true });
   }
