@@ -14492,6 +14492,8 @@ class LlamaCppBackend:
         # skipped block reaches no buffer and no table row. Those bytes are in the file and not
         # in the probe, which is the signature the embeddings are being recognised by.
         mapped = int(layout.tensor_bytes) - int(layout.excluded_block_bytes)
+        # The probe's rows hold the tied output duplicate the fit now charges on top of the file.
+        mapped += self._tied_output_bytes(model_path)
         unmapped = min(embeddings, max(0, mapped - charged))
         if not unmapped:
             logger.info(

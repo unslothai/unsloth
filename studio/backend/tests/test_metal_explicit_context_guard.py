@@ -1307,6 +1307,17 @@ class TestInputEmbeddingsLeftInTheFileMapping:
         assert self._fit_tokens(cmd)[:4] == ["-ngl", "-1", "--fit", "off"]
         assert not fit_is_effectively_on(cmd, {})
 
+    def test_a_tied_output_the_probe_measured_is_not_charged_twice(self, tmp_path, monkeypatch):
+        """llama-fit-params already counts the tied output duplicate in its Metal rows."""
+        embd = 6 * _GIB
+        # 7 GiB on Metal: the 6 GiB of layers plus the 1 GiB tied output duplicate.
+        measured = (7 * 1024, embd // _MIB, 2)
+        untied, _ = self._published(tmp_path, monkeypatch, n_ctx = 0, embd = embd, measured = measured)
+        monkeypatch.setattr(LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: _GIB))
+        tied, _ = self._published(tmp_path, monkeypatch, n_ctx = 0, embd = embd, measured = measured)
+        # Same measured residency, same ceiling: the extra charge is already in the rows.
+        assert tied == untied > _FIT_MIN_CTX
+
     def test_a_placement_it_did_not_measure_keeps_the_fitter(self, tmp_path, monkeypatch):
         _, _, cmd = self._launched(
             tmp_path, monkeypatch, n_ctx = 32768, extra_args = ["--load-mode", "none"]
