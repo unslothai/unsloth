@@ -8085,6 +8085,11 @@ class DiffusionBackend:
                             "diffusion.text_encoder: dropped unused lm_head (%.2fM params); hidden states unchanged",
                             te_trim["params"] / 1e6,
                         )
+                    # Generic dead tail: decoder layers after the last hidden state encode_prompt reads, and an unread
+                    # head, never run, cast or move. Probe-verified per pipeline; declines keep the encoder whole.
+                    from .diffusion_te_truncate import truncate_text_encoders
+
+                    truncate_text_encoders(pipe, logger = logger)
                     # Quantise the dense companion text encoder(s) before placement so offload moves the smaller
                     # weights.
                     te_outcome = quantize_text_encoders(

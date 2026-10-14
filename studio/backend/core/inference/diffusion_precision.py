@@ -389,17 +389,27 @@ def _te_exclude_tokens(encoder: Any) -> tuple[str, ...]:
 
 def _keep_bf16_block_fqns(encoder: Any, skip_first: int, skip_last: int) -> set[str]:
     """FQNs of decoder blocks to keep bf16: the first ``skip_first`` and last ``skip_last`` of
-    each top-level ``nn.ModuleList`` stack. Structural, so no per-architecture table."""
+    each top-level ``nn.ModuleList`` stack. Structural, so no per-architecture table.
+
+    Counts LIVE slots only: a stack whose dead tail was dropped (``diffusion_te_truncate``) keeps weightless passthroughs
+    in those slots, and "the last k blocks" must mean the last k that still run.
+
+    A list with ``live <= skip_first + skip_last`` entries protects nothing. Every such list in the shipped encoders
+    (Qwen3-VL ``visual.deepstack_merger_list``, 3 entries under (6, 6)) sits under a token ``_te_exclude_tokens``
+    already keeps dense, so no real encoder quantizes a block this skips; it is left as is."""
     import torch
+
+    from .diffusion_te_truncate import live_slots
 
     keep: set[str] = set()
     for name, module in encoder.named_modules():
         if not isinstance(module, torch.nn.ModuleList):
             continue
-        n = len(module)
+        live = live_slots(module)
+        n = len(live)
         if n <= skip_first + skip_last:
             continue
-        for i in list(range(skip_first)) + list(range(n - skip_last, n)):
+        for i in live[:skip_first] + live[n - skip_last :]:
             keep.add(f"{name}.{i}" if name else str(i))
     return keep
 

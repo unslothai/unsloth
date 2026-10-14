@@ -154,6 +154,8 @@ def _load(config: dict) -> tuple[Any, Any]:
         )
     model.eval()
     model.requires_grad_(False)
+    # Before the quant and the resident move: what never runs is never quantized or placed.
+    _truncate_dead_tail(tokenizer, model)
     if config.get("te_quant") == TE_QUANT_INT8_CONVROT:
         quantize_int8_convrot_(model, config.get("device") or "cpu", bool(config.get("resident")))
     elif config.get("te_quant"):
@@ -395,6 +397,36 @@ def _memory_stats(device: str) -> dict:
     return stats
 
 
+def _pack_hidden_states(model: Any, ids: Any, mask: Any) -> Any:
+    """``LTX2Pipeline._get_gemma_prompt_embeds``: every hidden state stacked on a last axis, flattened."""
+    import torch
+
+    out = model(input_ids = ids, attention_mask = mask, output_hidden_states = True)
+    return torch.stack(out.hidden_states, dim = -1).flatten(2, 3).to(dtype = model.dtype)
+
+
+def _truncate_dead_tail(tokenizer: Any, model: Any) -> dict:
+    """Drop what ``_pack_hidden_states`` never reads (generic ``diffusion_te_truncate`` probe on this exact packing).
+
+    Every hidden state is read, so no decoder layer goes; the tied 262k-vocab head does: it costs no resident bytes
+    but computes (and holds) a ``[B, L, 262144]`` logits tensor per encode that nothing consumes."""
+    from core.inference.diffusion_te_truncate import truncate_text_encoders
+
+    class _Probe:
+        text_encoder = model
+
+        @staticmethod
+        def encode_prompt(prompt: str, device: Any = None) -> Any:
+            tokenizer.padding_side = "left"
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            inputs = tokenizer([prompt], padding = "max_length", max_length = 32, truncation = True,
+                               add_special_tokens = True, return_tensors = "pt")
+            return _pack_hidden_states(model, inputs.input_ids.to(device), inputs.attention_mask.to(device))
+
+    return truncate_text_encoders(_Probe())
+
+
 def _encode(
     tokenizer: Any, model: Any, config: dict, prompts: list, max_len: int
 ) -> tuple[Any, Any]:
@@ -432,12 +464,10 @@ def _encode_on(
         with torch.inference_mode():
             ids = inputs.input_ids.to(device)
             mask = inputs.attention_mask.to(device)
-            out = model(input_ids = ids, attention_mask = mask, output_hidden_states = True)
-            stacked = torch.stack(out.hidden_states, dim = -1)
-            embeds = stacked.flatten(2, 3).to(dtype = model.dtype)
+            embeds = _pack_hidden_states(model, ids, mask)
             embeds_host = embeds.to("cpu")
             mask_host = mask.to("cpu")
-            del out, stacked, embeds
+            del embeds
     finally:
         if onloaded:
             model.to("cpu")
