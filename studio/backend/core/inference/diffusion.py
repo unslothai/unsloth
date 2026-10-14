@@ -3521,7 +3521,9 @@ class DiffusionBackend:
         # Every selected card, for the multi-GPU layer (diffusion_multigpu); the ranked one above stays the primary.
         gpu_ordinals = (
             resolve_selected_cuda_ordinals(gpu_ids)
-            if gpu_ids and len(set(gpu_ids)) > 1 and resolve_diffusion_device_target().device == "cuda"
+            if gpu_ids
+            and len(set(gpu_ids)) > 1
+            and resolve_diffusion_device_target().device == "cuda"
             else []
         )
         fam = self.validate_load_request(

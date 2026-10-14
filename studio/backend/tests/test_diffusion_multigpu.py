@@ -234,17 +234,33 @@ def test_planner_split_off_on_unified_memory(monkeypatch):
 
 
 def test_assignment_prefers_moving_the_companions():
-    sizes = {"transformer": (10000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    sizes = {
+        "transformer": (10000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     moved = mg.choose_component_assignment(
-        sizes, headroom_mib = 2000, overhead_mib = 1000, primary_limit_mib = 13500, secondary_limit_mib = 13000
+        sizes,
+        headroom_mib = 2000,
+        overhead_mib = 1000,
+        primary_limit_mib = 13500,
+        secondary_limit_mib = 13000,
     )
     assert moved == ("text_encoder", "vae")
 
 
 def test_assignment_can_move_only_the_text_encoders():
-    sizes = {"transformer": (9000, "dit"), "text_encoder": (11000, "text_encoder"), "vae": (1400, "other")}
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (11000, "text_encoder"),
+        "vae": (1400, "other"),
+    }
     moved = mg.choose_component_assignment(
-        sizes, headroom_mib = 4000, overhead_mib = 1000, primary_limit_mib = 16000, secondary_limit_mib = 13500
+        sizes,
+        headroom_mib = 4000,
+        overhead_mib = 1000,
+        primary_limit_mib = 16000,
+        secondary_limit_mib = 13500,
     )
     assert moved == ("text_encoder",)
 
@@ -264,7 +280,9 @@ def test_place_split_resolves_text_encoders_only(monkeypatch):
     monkeypatch.setattr(mg, "install_execution_device_patch", lambda: True)
     pipe = Pipe()
     real_device = torch.device
-    monkeypatch.setattr(torch, "device", lambda *a: real_device("cpu") if a and a[0] == "cuda" else real_device(*a))
+    monkeypatch.setattr(
+        torch, "device", lambda *a: real_device("cpu") if a and a[0] == "cuda" else real_device(*a)
+    )
     try:
         mg.place_split(pipe, primary = "cpu", secondary_ordinal = 1, names = mg.TEXT_ENCODERS_ONLY)
     finally:
@@ -281,17 +299,29 @@ def test_assignment_puts_the_second_expert_on_the_secondary():
         "vae": (500, "other"),
     }
     moved = mg.choose_component_assignment(
-        sizes, headroom_mib = 2000, overhead_mib = 1000, primary_limit_mib = 21000, secondary_limit_mib = 16000
+        sizes,
+        headroom_mib = 2000,
+        overhead_mib = 1000,
+        primary_limit_mib = 21000,
+        secondary_limit_mib = 16000,
     )
     assert moved == ("transformer_2",)
     # tighter primary: the second expert takes the companions along
     moved = mg.choose_component_assignment(
-        sizes, headroom_mib = 2000, overhead_mib = 1000, primary_limit_mib = 15500, secondary_limit_mib = 21000
+        sizes,
+        headroom_mib = 2000,
+        overhead_mib = 1000,
+        primary_limit_mib = 15500,
+        secondary_limit_mib = 21000,
     )
     assert moved == ("transformer_2", "text_encoder", "vae")
     assert (
         mg.choose_component_assignment(
-            sizes, headroom_mib = 2000, overhead_mib = 1000, primary_limit_mib = 9000, secondary_limit_mib = 9000
+            sizes,
+            headroom_mib = 2000,
+            overhead_mib = 1000,
+            primary_limit_mib = 9000,
+            secondary_limit_mib = 9000,
         )
         is None
     )
@@ -300,7 +330,11 @@ def test_assignment_puts_the_second_expert_on_the_secondary():
 def test_refine_plan_for_multigpu(monkeypatch):
     plan = _plan()
     assert plan.offload_policy != dm.OFFLOAD_NONE
-    sizes = {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
@@ -343,7 +377,11 @@ def test_move_to_device_keeps_container_types():
     out = mg.move_to_device(obj, torch.device("meta"))
     assert out["tuple"][0].device.type == "meta" and out["tuple"][1] == 1
     assert out["list"][0].device.type == "meta"
-    assert type(out["named"]) is Named and out["named"].a.device.type == "meta" and out["named"].b == "s"
+    assert (
+        type(out["named"]) is Named
+        and out["named"].a.device.type == "meta"
+        and out["named"].b == "s"
+    )
     assert isinstance(out["ordered"], OrderedDict) and out["ordered"]["x"].device.type == "meta"
     assert isinstance(out["dc"], _DC) and out["dc"].sample.device.type == "meta"
     assert isinstance(out["holder"], _Holder) and out["holder"].mean.device.type == "meta"
@@ -377,7 +415,11 @@ class _Vae(torch.nn.Module):
         self.seen.append(("forward", x.device))
         return self.lin(x)
 
-    def decode(self, z, return_dict = False):
+    def decode(
+        self,
+        z,
+        return_dict = False,
+    ):
         self.seen.append(("decode", z.device))
         return (self.lin(z),)
 
@@ -387,7 +429,11 @@ def test_boundary_moves_inputs_in_and_outputs_home(monkeypatch):
     home = torch.device("meta")  # stands for the primary card
     moves = []
 
-    def fake_move(obj, device, _depth = 0):
+    def fake_move(
+        obj,
+        device,
+        _depth = 0,
+    ):
         moves.append(device)
         return obj
 
@@ -487,7 +533,9 @@ def test_place_split_and_fallback(monkeypatch):
     status = mg.placement_status(pipe)
     assert status["moved"] == ["text_encoder", "vae"]
     mg.undo_split(pipe)
-    assert "decode" not in pipe.vae.__dict__ and "_unsloth_split_home" not in pipe.transformer.__dict__
+    assert (
+        "decode" not in pipe.vae.__dict__ and "_unsloth_split_home" not in pipe.transformer.__dict__
+    )
     assert mg.placement_status(pipe) is None
     del moved_to
 
@@ -520,7 +568,9 @@ def test_apply_memory_plan_falls_back_to_model_offload(monkeypatch):
     assert policy == dm.OFFLOAD_MODEL and calls == [("offload", "cuda:0")]
 
     placed = []
-    monkeypatch.setattr(mg, "apply_split_plan", lambda pipe, plan, placement, logger = None: placed.append(1) or True)
+    monkeypatch.setattr(
+        mg, "apply_split_plan", lambda pipe, plan, placement, logger = None: placed.append(1) or True
+    )
     policy, _tiling = dm.apply_memory_plan(Pipe(), plan, device = "cuda", placement_device = "cuda:0")
     assert policy == dm.OFFLOAD_NONE and placed == [1]
 
@@ -534,7 +584,13 @@ class _Dit(torch.nn.Module):
         self.proj = torch.nn.Linear(4, 4)
         self.calls = 0
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
         self.calls += 1
         return (self.proj(hidden_states) * timestep + encoder_hidden_states.sum(),)
 
@@ -547,18 +603,29 @@ def _router(dit, **kw):
         replicas.append(r)
         return r
 
-    router = mg.CfgParallelRouter(dit, primary = "cpu", secondary = "cpu", replica_factory = factory, **kw)
+    router = mg.CfgParallelRouter(
+        dit, primary = "cpu", secondary = "cpu", replica_factory = factory, **kw
+    )
     dit.forward = router
     return router, replicas
 
 
-def _cfg_loop(dit, latents, steps, branches = 2, scale = 4.0):
+def _cfg_loop(
+    dit,
+    latents,
+    steps,
+    branches = 2,
+    scale = 4.0,
+):
     cond = torch.randn(3, 4, generator = torch.Generator().manual_seed(1))
     uncond = torch.randn(3, 4, generator = torch.Generator().manual_seed(2))
     extra = torch.randn(3, 4, generator = torch.Generator().manual_seed(3))
     for i in range(steps):
         t = torch.tensor(1.0 - i / steps)
-        outs = [dit(hidden_states = latents, timestep = t, encoder_hidden_states = e)[0] for e in (cond, uncond, extra)[:branches]]
+        outs = [
+            dit(hidden_states = latents, timestep = t, encoder_hidden_states = e)[0]
+            for e in (cond, uncond, extra)[:branches]
+        ]
         if branches == 1:
             pred = outs[0]
         else:
@@ -628,9 +695,13 @@ def test_portable_hooks_and_root_hooks_are_accepted():
     torch.manual_seed(0)
     dit = _Dit()
     scale = 0.5
-    dit.proj.register_forward_hook(lambda m, i, o: o * scale)  # captures only a float: shared safely
+    dit.proj.register_forward_hook(
+        lambda m, i, o: o * scale
+    )  # captures only a float: shared safely
     calls = []
-    dit.register_forward_pre_hook(lambda m, a: calls.append(1))  # root: runs on the source around every branch
+    dit.register_forward_pre_hook(
+        lambda m, a: calls.append(1)
+    )  # root: runs on the source around every branch
     assert mg._hooks_present(dit) is None
     latents = torch.randn(2, 4)
     reference = _cfg_loop(dit, latents.clone(), steps = 4)
@@ -652,7 +723,9 @@ def test_closure_forward_override_is_declined_but_bound_methods_are_rebound():
     dit.proj.forward = lambda x: source.weight @ x  # a closure would keep reading the source module
     assert "instance override" in mg._hooks_present(dit)
     dit2 = _Dit()
-    dit2.proj.forward = types.MethodType(lambda self, x: torch.nn.functional.linear(x, self.weight), dit2.proj)
+    dit2.proj.forward = types.MethodType(
+        lambda self, x: torch.nn.functional.linear(x, self.weight), dit2.proj
+    )
     assert mg._hooks_present(dit2) is None
     replica = mg.build_replica(dit2, torch.device("cpu"))
     assert replica.proj.forward.__self__ is replica.proj
@@ -684,7 +757,13 @@ def test_worker_propagates_grad_mode_and_context_variables():
     try:
         var.set("caller")
         with torch.inference_mode():
-            seen = worker.call(lambda: (torch.is_inference_mode_enabled(), var.get(), threading.current_thread().name))
+            seen = worker.call(
+                lambda: (
+                    torch.is_inference_mode_enabled(),
+                    var.get(),
+                    threading.current_thread().name,
+                )
+            )
         assert seen[0] is True and seen[1] == "caller" and seen[2].startswith("unsloth-cfg-replica")
         with pytest.raises(ValueError):
             worker.call(lambda: (_ for _ in ()).throw(ValueError("boom")))
@@ -718,7 +797,10 @@ def test_cfg_parallel_decline_reasons(monkeypatch):
         transformer = _Dit()
 
     sel = mg.MultiGpuSelection(primary = 0, secondaries = (1,))
-    assert mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = None) == "one card selected"
+    assert (
+        mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = None)
+        == "one card selected"
+    )
     assert "offloaded" in mg.cfg_parallel_decline(Pipe(), offload_policy = "model", selection = sel)
     # a group plan that left the denoiser resident (encoders streamed) qualifies; a hooked denoiser does not
     assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "group", selection = sel)
@@ -734,7 +816,9 @@ def test_cfg_parallel_decline_reasons(monkeypatch):
 
     assert "U-Net" in mg.cfg_parallel_decline(Unet(), offload_policy = "none", selection = sel)
     monkeypatch.setenv(mg.CFG_PARALLEL_ENV, "0")
-    assert mg.CFG_PARALLEL_ENV in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = sel)
+    assert mg.CFG_PARALLEL_ENV in mg.cfg_parallel_decline(
+        Pipe(), offload_policy = "none", selection = sel
+    )
 
 
 def test_status_reports_a_declined_cfg_parallel():
@@ -813,7 +897,13 @@ class _BlockDit(torch.nn.Module):
         self.proj_in = torch.nn.Linear(4, 4)
         self.blocks = torch.nn.ModuleList([torch.nn.Linear(4, 4) for _ in range(3)])
 
-    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
         x = self.proj_in(hidden_states) * timestep
         for block in self.blocks:
             x = block(x) + encoder_hidden_states.sum()
@@ -868,7 +958,11 @@ def test_offload_torch_hooks_are_stripped_from_the_replica():
     assert mg._hooks_present(dit) is None
     replica = mg.build_replica(dit, torch.device("cpu"))
     assert not replica.proj._forward_pre_hooks
-    replica(hidden_states = torch.ones(1, 4), timestep = torch.tensor(1.0), encoder_hidden_states = torch.ones(1, 4))
+    replica(
+        hidden_states = torch.ones(1, 4),
+        timestep = torch.tensor(1.0),
+        encoder_hidden_states = torch.ones(1, 4),
+    )
     assert calls == []
 
 
@@ -921,7 +1015,9 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
         x = latents.clone()
         for i in range(steps):
             t = torch.tensor(1000.0 * (1.0 - i / steps))
-            a = dit(hidden_states = x, timestep = t / 1000, encoder_hidden_states = cond)[0]  # fresh object per call
+            a = dit(hidden_states = x, timestep = t / 1000, encoder_hidden_states = cond)[
+                0
+            ]  # fresh object per call
             b = dit(hidden_states = x, timestep = t / 1000, encoder_hidden_states = uncond)[0]
             x = x - 0.1 * (b + 4.0 * (a - b))
         return x
@@ -935,6 +1031,8 @@ def test_inline_recomputed_scalars_are_predicted_by_value():
 
 def test_bitwise_equal_distinguishes_signed_zero():
     assert mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([0.0]))
-    assert mg._bitwise_equal(torch.tensor(0.5), torch.tensor(1.0) / 2)  # 0-dim, as an inline timestep / 1000
+    assert mg._bitwise_equal(
+        torch.tensor(0.5), torch.tensor(1.0) / 2
+    )  # 0-dim, as an inline timestep / 1000
     assert not mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([-0.0]))
     assert not mg._bitwise_equal(torch.tensor([1.0]), torch.tensor([1.0], dtype = torch.float64))

@@ -3254,7 +3254,6 @@ def apply_memory_plan(
             policy = OFFLOAD_MODEL
     elif getattr(plan, "secondary_ordinal", None) is not None:
         from .diffusion_multigpu import apply_split_plan
-
         if not apply_split_plan(pipe, plan, placement = placement, logger = logger):
             # The single-card plan offloaded (that is why the split was chosen), so whole-module offload on the primary
             # is the safe fallback.

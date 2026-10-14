@@ -43,7 +43,12 @@ CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL"
 
 # Denoiser attributes: they stay on the primary card under the companion split (the same contract as the speed and
 # offload layers, diffusion_autoopt/targets.py).
-DENOISER_ATTRS: tuple[str, ...] = ("transformer", "transformer_2", "unconditional_transformer", "unet")
+DENOISER_ATTRS: tuple[str, ...] = (
+    "transformer",
+    "transformer_2",
+    "unconditional_transformer",
+    "unet",
+)
 # Run inside every step beside the denoiser, so moving them to another card buys nothing and costs a copy per step.
 _KEEP_WITH_DENOISER_PREFIXES: tuple[str, ...] = ("controlnet",)
 # Public entry points a pipeline calls on a companion. Internal helpers are not wrapped: they run on the module's own
@@ -106,7 +111,9 @@ _SELECTION: contextvars.ContextVar[Optional[MultiGpuSelection]] = contextvars.Co
 )
 
 
-def make_selection(primary: Optional[int], ordinals: Optional[Sequence[int]]) -> Optional[MultiGpuSelection]:
+def make_selection(
+    primary: Optional[int], ordinals: Optional[Sequence[int]]
+) -> Optional[MultiGpuSelection]:
     """A selection when at least two distinct cards were picked and the lever is on, else None (one card)."""
     if primary is None or multigpu_mode() == "off":
         return None
@@ -117,7 +124,9 @@ def make_selection(primary: Optional[int], ordinals: Optional[Sequence[int]]) ->
 
 
 @contextlib.contextmanager
-def selection_scope(selection: Optional[MultiGpuSelection]) -> Iterator[Optional[MultiGpuSelection]]:
+def selection_scope(
+    selection: Optional[MultiGpuSelection],
+) -> Iterator[Optional[MultiGpuSelection]]:
     """Make ``selection`` visible to the planner and placement for the duration of one load (thread / task local)."""
     if selection is None:
         yield None
@@ -174,7 +183,8 @@ class DeviceProbe:
             "free_mib": self.free_mib,
             "h2d_gib_s": self.h2d_gib_s,
             "peers": [
-                {"ordinal": o, "peer_access": access, "copy_gib_s": gbps} for o, access, gbps in self.peers
+                {"ordinal": o, "peer_access": access, "copy_gib_s": gbps}
+                for o, access, gbps in self.peers
             ],
         }
 
@@ -187,7 +197,6 @@ _BANDWIDTH_MIB = 64
 
 def _measure_copy_gib_s(src: Any, dst_device: Any) -> Optional[float]:
     import torch
-
     try:
         torch.cuda.synchronize(dst_device)
         if src.is_cuda:
@@ -213,7 +222,6 @@ def _measure_copy_gib_s(src: Any, dst_device: Any) -> Optional[float]:
 def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     try:
         import torch
-
         free, total = torch.cuda.mem_get_info(ordinal)
         return int(free) // (1 << 20), int(total) // (1 << 20)
     except Exception:  # noqa: BLE001
@@ -255,7 +263,9 @@ def probe_devices(ordinals: Sequence[int], *, measure: bool = True) -> dict[int,
                 gbps = None
                 if measure:
                     try:
-                        src = torch.empty(_BANDWIDTH_MIB << 20, dtype = torch.uint8, device = torch.device("cuda", a))
+                        src = torch.empty(
+                            _BANDWIDTH_MIB << 20, dtype = torch.uint8, device = torch.device("cuda", a)
+                        )
                         gbps = _measure_copy_gib_s(src, torch.device("cuda", b))
                         del src
                     except Exception:  # noqa: BLE001
@@ -281,7 +291,9 @@ def _reset_probe_cache_for_tests() -> None:
         _PAIR_PROBE.clear()
 
 
-def best_secondary(selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None) -> Optional[int]:
+def best_secondary(
+    selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None
+) -> Optional[int]:
     """The secondary with the most free memory (ties to the lowest ordinal)."""
     if not selection.secondaries:
         return None
@@ -360,9 +372,13 @@ def plan_companion_split(
         (int(companion_dense_mib), *companions_split, None, "text encoders + VAE"),
     ]
     if text_encoder_dense_mib and 0 < int(text_encoder_dense_mib) <= int(companion_dense_mib):
-        candidates.append((int(text_encoder_dense_mib), *encoders_split, TEXT_ENCODERS_ONLY, "text encoders"))
+        candidates.append(
+            (int(text_encoder_dense_mib), *encoders_split, TEXT_ENCODERS_ONLY, "text encoders")
+        )
     for moved_mib, pri_headroom, sec_headroom, components, label in candidates:
-        primary_required = max(0, int(model_dense_mib) - moved_mib) + int(pri_headroom) + int(base_overhead_mib)
+        primary_required = (
+            max(0, int(model_dense_mib) - moved_mib) + int(pri_headroom) + int(base_overhead_mib)
+        )
         if primary_required > int(primary_limit_mib):
             continue
         secondary_required = moved_mib + sec_headroom + int(base_overhead_mib)
@@ -437,7 +453,11 @@ def choose_component_assignment(
     return None
 
 
-def refine_plan_for_multigpu(pipe: Any, plan: Any, logger: Any = None) -> Any:
+def refine_plan_for_multigpu(
+    pipe: Any,
+    plan: Any,
+    logger: Any = None,
+) -> Any:
     """Post-load: an offloading plan becomes a resident split when the LOADED components can be shared by the cards.
 
     No-op without a selection, for explicit offload modes, a plan already resident (or already split), unified memory
@@ -519,7 +539,9 @@ def secondary_device_memory(ordinal: int) -> Any:
     free, total = _free_total_mib(int(ordinal))
     if free is None:
         return None
-    return DeviceMemory(backend = "cuda", device = "cuda", memory_kind = "discrete_vram", free_mib = free, total_mib = total)
+    return DeviceMemory(
+        backend = "cuda", device = "cuda", memory_kind = "discrete_vram", free_mib = free, total_mib = total
+    )
 
 
 def secondary_safe_budget_mib(ordinal: int) -> Optional[int]:
@@ -549,17 +571,24 @@ def secondary_resident_limit_mib(ordinal: int, mode: str) -> Optional[int]:
 
 def _torch():
     import torch
-
     return torch
 
 
-def move_to_device(obj: Any, device: Any, _depth: int = 0) -> Any:
+def move_to_device(
+    obj: Any,
+    device: Any,
+    _depth: int = 0,
+) -> Any:
     """``obj`` with every tensor inside on ``device`` (exact copies). Containers keep their type; a tensor already
     there is returned as is."""
     torch = _torch()
     if isinstance(obj, torch.Tensor):
         return obj if obj.device == device else obj.to(device)
-    if _depth > 6 or obj is None or isinstance(obj, (str, bytes, int, float, bool, torch.device, torch.dtype)):
+    if (
+        _depth > 6
+        or obj is None
+        or isinstance(obj, (str, bytes, int, float, bool, torch.device, torch.dtype))
+    ):
         return obj
     if isinstance(obj, dict):
         # ModelOutput is an OrderedDict that also mirrors its keys as attributes; __setitem__ keeps both in sync.
@@ -601,9 +630,15 @@ def move_to_device(obj: Any, device: Any, _depth: int = 0) -> Any:
             return out
     state = getattr(obj, "__dict__", None)
     # Plain value holders only (diffusers' DiagonalGaussianDistribution): every attribute a tensor or a scalar.
-    if isinstance(state, dict) and state and any(isinstance(v, torch.Tensor) for v in state.values()):
+    if (
+        isinstance(state, dict)
+        and state
+        and any(isinstance(v, torch.Tensor) for v in state.values())
+    ):
         if all(
-            isinstance(v, (torch.Tensor, bool, int, float, str, type(None), torch.dtype, torch.device))
+            isinstance(
+                v, (torch.Tensor, bool, int, float, str, type(None), torch.dtype, torch.device)
+            )
             for v in state.values()
         ):
             out = copy.copy(obj)
@@ -761,7 +796,9 @@ def place_split(
     else:
         moved = tuple(names) if names else companion_names(pipe)
     components = {
-        str(n): m for n, m in (getattr(pipe, "components", {}) or {}).items() if isinstance(m, torch.nn.Module)
+        str(n): m
+        for n, m in (getattr(pipe, "components", {}) or {}).items()
+        if isinstance(m, torch.nn.Module)
     }
     placement: dict[str, str] = {}
     # Secondary first: its bytes never touch the primary.
@@ -791,7 +828,10 @@ def place_split(
         pass
     if logger is not None:
         logger.info(
-            "diffusion.multigpu: placed %s on %s, the rest on %s", ", ".join(moved) or "nothing", secondary_dev, primary_dev
+            "diffusion.multigpu: placed %s on %s, the rest on %s",
+            ", ".join(moved) or "nothing",
+            secondary_dev,
+            primary_dev,
         )
     return placement
 
@@ -810,7 +850,13 @@ def undo_split(pipe: Any) -> None:
         pass
 
 
-def apply_split_plan(pipe: Any, plan: Any, *, placement: str, logger: Any = None) -> bool:
+def apply_split_plan(
+    pipe: Any,
+    plan: Any,
+    *,
+    placement: str,
+    logger: Any = None,
+) -> bool:
     """Place a split plan. True when placed; on any failure the split is undone and False is returned (the caller
     then applies its single-card fallback)."""
     secondary = getattr(plan, "secondary_ordinal", None)
@@ -827,7 +873,9 @@ def apply_split_plan(pipe: Any, plan: Any, *, placement: str, logger: Any = None
         return True
     except Exception as exc:  # noqa: BLE001 - fall back to one card
         if logger is not None:
-            logger.warning("diffusion.multigpu: split placement failed (%s); falling back to one card", exc)
+            logger.warning(
+                "diffusion.multigpu: split placement failed (%s); falling back to one card", exc
+            )
         undo_split(pipe)
         try:
             pipe.to("cpu")
@@ -896,7 +944,9 @@ _ROOT_HOOK_DICTS = (
 
 # Offload machinery moves weights between host and card without changing the math. A replica holds its weights
 # resident, so it drops these instead of inheriting them.
-_OFFLOAD_REGISTRY_HOOKS = frozenset({"group_offloading", "layer_execution_tracker", "lazy_prefetch_group_offloading"})
+_OFFLOAD_REGISTRY_HOOKS = frozenset(
+    {"group_offloading", "layer_execution_tracker", "lazy_prefetch_group_offloading"}
+)
 _OFFLOAD_MODULE_MARKERS = (
     "diffusers.hooks.group_offloading",
     "diffusers.hooks.hooks",
@@ -914,7 +964,11 @@ def _origin_modules(fn: Any) -> list[str]:
         seen += 1
         out.append(str(getattr(fn, "__module__", "") or ""))
         out.append(str(getattr(type(fn), "__module__", "") or ""))
-        fn = getattr(fn, "__wrapped__", None) or getattr(fn, "__func__", None) or getattr(fn, "func", None)
+        fn = (
+            getattr(fn, "__wrapped__", None)
+            or getattr(fn, "__func__", None)
+            or getattr(fn, "func", None)
+        )
     return out
 
 
@@ -938,13 +992,18 @@ def _portable(fn: Any, depth: int = 0) -> bool:
     torch = _torch()
     if depth > 3:
         return False
-    if isinstance(fn, torch.nn.Module) or (isinstance(fn, torch.Tensor) and fn.device.type != "cpu"):
+    if isinstance(fn, torch.nn.Module) or (
+        isinstance(fn, torch.Tensor) and fn.device.type != "cpu"
+    ):
         return False
     if isinstance(fn, (list, tuple, set)):
         return all(_portable(v, depth + 1) for v in fn)
     if isinstance(fn, dict):
         return all(_portable(v, depth + 1) for v in fn.values())
-    if isinstance(fn, (str, bytes, int, float, bool, type(None), torch.Tensor, torch.dtype, torch.device, type)):
+    if isinstance(
+        fn,
+        (str, bytes, int, float, bool, type(None), torch.Tensor, torch.dtype, torch.device, type),
+    ):
         return True
     if isinstance(fn, (types.FunctionType, types.MethodType)):
         owner = getattr(fn, "__self__", None)
@@ -962,7 +1021,8 @@ def _portable(fn: Any, depth: int = 0) -> bool:
     partial_func = getattr(fn, "func", None)
     if partial_func is not None and hasattr(fn, "args"):
         return _portable(partial_func, depth + 1) and all(
-            _portable(a, depth + 1) for a in (*fn.args, *(getattr(fn, "keywords", None) or {}).values())
+            _portable(a, depth + 1)
+            for a in (*fn.args, *(getattr(fn, "keywords", None) or {}).values())
         )
     # any other object (a hook object, a captured state holder): portable when its attributes are
     state = getattr(fn, "__dict__", None)
@@ -1075,7 +1135,11 @@ def build_replica(module: Any, device: Any) -> Any:
     for (name, src), (_rname, dst) in zip(module.named_modules(), replica.named_modules()):
         # Plain tensor attributes (cached RoPE tables and the like) were deep-copied on the source card.
         for key, value in list(dst.__dict__.items()):
-            if isinstance(value, torch.Tensor) and value.device != device and value.device.type == "cuda":
+            if (
+                isinstance(value, torch.Tensor)
+                and value.device != device
+                and value.device.type == "cuda"
+            ):
                 dst.__dict__[key] = value.to(device)
         if getattr(src, "_compiled_call_impl", None) is not None:
             recorded = src.__dict__.get("_unsloth_compile_args")
@@ -1092,7 +1156,13 @@ def build_replica(module: Any, device: Any) -> Any:
     return replica
 
 
-_ADAPTER_ATTRS = ("scaling", "active_adapters", "merged_adapters", "disable_adapters", "_disable_adapters")
+_ADAPTER_ATTRS = (
+    "scaling",
+    "active_adapters",
+    "merged_adapters",
+    "disable_adapters",
+    "_disable_adapters",
+)
 
 
 def weights_fingerprint(module: Any) -> int:
@@ -1150,7 +1220,9 @@ class _ReplicaWorker:
     def __init__(self, device: Any):
         self.device = device
         self._jobs: "queue.Queue[Optional[tuple]]" = queue.Queue()
-        self._thread = threading.Thread(target = self._loop, name = f"unsloth-cfg-replica-{device}", daemon = True)
+        self._thread = threading.Thread(
+            target = self._loop, name = f"unsloth-cfg-replica-{device}", daemon = True
+        )
         self._thread.start()
 
     def _loop(self) -> None:
@@ -1217,7 +1289,11 @@ class _ReplicaWorker:
         self._jobs.put(None)
 
 
-def _leaves(obj: Any, path: tuple = (), depth: int = 0) -> list[tuple[tuple, Any]]:
+def _leaves(
+    obj: Any,
+    path: tuple = (),
+    depth: int = 0,
+) -> list[tuple[tuple, Any]]:
     """(path, leaf) pairs of a call's arguments; tuples / lists / dicts are walked, anything else is a leaf."""
     if depth < 4 and isinstance(obj, (tuple, list)) and not hasattr(obj, "_fields"):
         out: list = []
@@ -1232,12 +1308,24 @@ def _leaves(obj: Any, path: tuple = (), depth: int = 0) -> list[tuple[tuple, Any
     return [(path, obj)]
 
 
-def _rebuild(template: Any, values: dict, path: tuple = (), depth: int = 0) -> Any:
-    if depth < 4 and isinstance(template, (tuple, list)) and not hasattr(template, "_fields") and len(template):
+def _rebuild(
+    template: Any,
+    values: dict,
+    path: tuple = (),
+    depth: int = 0,
+) -> Any:
+    if (
+        depth < 4
+        and isinstance(template, (tuple, list))
+        and not hasattr(template, "_fields")
+        and len(template)
+    ):
         items = [_rebuild(v, values, path + (i,), depth + 1) for i, v in enumerate(template)]
         return type(template)(items) if isinstance(template, tuple) else items
     if depth < 4 and isinstance(template, dict) and template:
-        return type(template)((k, _rebuild(v, values, path + (k,), depth + 1)) for k, v in template.items())
+        return type(template)(
+            (k, _rebuild(v, values, path + (k,), depth + 1)) for k, v in template.items()
+        )
     return values[path]
 
 
@@ -1254,7 +1342,12 @@ def _bitwise_equal(a: Any, b: Any) -> bool:
     if a is b:
         return True
     try:
-        return bool(torch.equal(a.reshape(-1).contiguous().view(torch.uint8), b.reshape(-1).contiguous().view(torch.uint8)))
+        return bool(
+            torch.equal(
+                a.reshape(-1).contiguous().view(torch.uint8),
+                b.reshape(-1).contiguous().view(torch.uint8),
+            )
+        )
     except Exception:  # noqa: BLE001 - a layout that cannot be viewed as bytes is never assumed equal
         return False
 
@@ -1338,7 +1431,9 @@ class CfgParallelRouter:
         if self.disabled_reason is None:
             self.disabled_reason = reason
             if self.logger is not None:
-                self.logger.warning("diffusion.multigpu: CFG-parallel disabled (%s); one card from here", reason)
+                self.logger.warning(
+                    "diffusion.multigpu: CFG-parallel disabled (%s); one card from here", reason
+                )
         self.drop_replica()
 
     def drop_replica(self) -> None:
@@ -1506,7 +1601,9 @@ class CfgParallelRouter:
             return
         if current != self.fingerprint:
             if self.logger is not None:
-                self.logger.info("diffusion.multigpu: denoiser weights changed; rebuilding the CFG-parallel replica")
+                self.logger.info(
+                    "diffusion.multigpu: denoiser weights changed; rebuilding the CFG-parallel replica"
+                )
             self.stats["replica_rebuilds"] += 1
             self.drop_replica()
 
@@ -1524,7 +1621,9 @@ class CfgParallelRouter:
             ) // (1 << 20)
             free, _total = _free_total_mib(self.secondary.index)
             if free is not None and need_mib + 1024 > free:
-                raise RuntimeError(f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}")
+                raise RuntimeError(
+                    f"replica needs {need_mib} MiB, {free} MiB free on {self.secondary}"
+                )
             self.fingerprint = weights_fingerprint(module)
             with _device_context(self.secondary):
                 self.replica = self.replica_factory()
@@ -1534,7 +1633,9 @@ class CfgParallelRouter:
             self.stats["replica_build_s"] = round(time.perf_counter() - t0, 3)
             if self.logger is not None:
                 self.logger.info(
-                    "diffusion.multigpu: CFG-parallel replica on %s built in %.2fs", self.secondary, time.perf_counter() - t0
+                    "diffusion.multigpu: CFG-parallel replica on %s built in %.2fs",
+                    self.secondary,
+                    time.perf_counter() - t0,
                 )
         except Exception as exc:  # noqa: BLE001
             self.replica = None
@@ -1589,7 +1690,9 @@ _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.Weak
 _CFG_DECLINES: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
 
 
-def cfg_parallel_decline(pipe: Any, *, offload_policy: str, selection: Optional[MultiGpuSelection]) -> Optional[str]:
+def cfg_parallel_decline(
+    pipe: Any, *, offload_policy: str, selection: Optional[MultiGpuSelection]
+) -> Optional[str]:
     """Why CFG-parallel cannot be armed on this load, or None."""
     if selection is None:
         return "one card selected"
@@ -1616,7 +1719,12 @@ def cfg_parallel_decline(pipe: Any, *, offload_policy: str, selection: Optional[
     return None
 
 
-def install_cfg_parallel(pipe: Any, *, offload_policy: str, logger: Any = None) -> Optional[str]:
+def install_cfg_parallel(
+    pipe: Any,
+    *,
+    offload_policy: str,
+    logger: Any = None,
+) -> Optional[str]:
     """Arm CFG-parallel on ``pipe.transformer`` when a secondary card can hold a replica. The replica is built on the
     first step that shows two branches, so a guidance-distilled model never pays for it. Returns the decline reason or
     None when armed."""
