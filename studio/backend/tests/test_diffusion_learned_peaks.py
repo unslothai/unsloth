@@ -2156,5 +2156,7 @@ def test_partially_quantized_text_encoders_neither_read_nor_record(klein_pipe):
     te = diffusion._peak_te_label("int8", partial)
     label = dm.learned_peak_label(klein_pipe, "native", "m", "none", te, "off", "off")
     assert not mp.identified(label)  # a mixed build never reuses the fully quantised build's peak
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
     assert "peak_te = _peak_te_label(te_quant, te_outcome)" in src
