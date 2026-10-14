@@ -1257,6 +1257,55 @@ def test_latency_gate_first_tune_rekeys_the_compile_bundle(monkeypatch, tmp_path
     cc.restore(ctx2)
 
 
+def _rekey_env(monkeypatch, tmp_path, mode):
+    from core.inference import diffusion_compile_cache as cc
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path / "tune"))
+    monkeypatch.setenv(cc._ENV_MODE, mode)
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "cc"))
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: (b"A", None), raising = False)
+    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", lambda data: object(), raising = False)
+    model = torch.nn.Sequential(_int8_linear(1024, 768, True, 2))
+    kw = dict(family = "f", dtype = "bf16", quant = "int8", attention_backend = None, compile_kwargs = {})
+
+    def first_tune():  # as _swap does after begin(): cuBLAS for one bucket, stored for the next load
+        index = torch.cuda.current_device()
+        key = g8.toolchain_key(index)
+        g8._DEVICE_PLAN[index] = {(768, 1024, 2): g8._CUBLAS}
+        g8._save_plan(g8._tune_path(key), key, {(768, 1024, 2): g8._CUBLAS}, {})
+
+    return cc, lambda: cc.begin(transformer = model, **kw), first_tune
+
+
+@needs_cuda
+def test_latency_gate_rekey_after_restore_leaves_no_live_dir(monkeypatch, tmp_path):
+    cc, begin, first_tune = _rekey_env(monkeypatch, tmp_path, "on")
+    ctx = begin()
+    first_tune()
+    cc.restore(ctx)  # unload while the first save is still queued
+    assert cc.save(ctx)
+    assert not {str(ctx.dir)} & set(cc._live_dirs)
+
+
+@needs_cuda
+def test_latency_gate_rekeys_a_bundle_hit(monkeypatch, tmp_path):
+    cc, begin, first_tune = _rekey_env(monkeypatch, tmp_path, "auto")
+    ctx = begin()
+    assert cc.save(ctx)  # an all-fused bundle exists
+    cc.restore(ctx)
+    ctx = begin()
+    assert ctx.hit and ctx.saved
+    first_tune()  # the tune file was missing: tuning now picks cuBLAS and compiles the stock graph
+    monkeypatch.setenv(cc._ENV_SYNC, "1")
+    assert cc.save_async(ctx)
+    cc.restore(ctx)
+    g8._DEVICE_PLAN.clear()
+    ctx2 = begin()
+    assert ctx2.hit and ctx2.key == ctx.key
+    cc.restore(ctx2)
+
+
 @needs_cuda
 def test_latency_gate_toolchain_key_tracks_the_driver(monkeypatch):
     index = torch.cuda.current_device()
