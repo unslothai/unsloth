@@ -356,10 +356,10 @@ def load_nodes() -> List[Node]:
 def _one_managed_worker_per_host(nodes: List[Node]) -> List[Node]:
     # A managed rpc-server exposes every accelerator on its host, so a second one would count the
     # same memory twice.
-    managed = [n.host for n in nodes if n.managed]
-    for host in managed:
-        if managed.count(host) > 1:
-            raise ClusterConfigError(f"{host} is listed twice as a managed node")
+    hosts = [n.host for n in nodes]
+    for host in {n.host for n in nodes if n.managed}:
+        if hosts.count(host) > 1:
+            raise ClusterConfigError(f"{host} is managed, so it can be listed only once")
     return nodes
 
 

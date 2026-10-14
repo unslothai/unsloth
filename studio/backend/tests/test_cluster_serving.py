@@ -1362,6 +1362,16 @@ def test_a_host_managed_twice_is_a_config_error(monkeypatch):
         cs.load_nodes()
 
 
+def test_a_managed_host_takes_no_second_endpoint(monkeypatch, tmp_path):
+    nodes = [
+        {"host": "10.0.0.2", "managed": True},
+        {"host": "10.0.0.2", "rpc_port": 50053},
+    ]
+    (tmp_path / "cluster.json").write_text(json.dumps({"nodes": nodes}), encoding = "utf-8")
+    with pytest.raises(cs.ClusterConfigError, match = "managed"):
+        cs.load_nodes()
+
+
 def test_a_hung_managed_worker_is_stopped_once_a_load_without_it_commits(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 150 * GIB)
     monkeypatch.setenv(cs.ENV_MANAGED, "1")
