@@ -3405,7 +3405,6 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
         except OSError:
             pass
         path.unlink()
-        # count the filtered sidecar's bytes as freed storage, not as a model.
         deleted_bytes += remove_appledouble_sidecar(path)
         deleted_count += 1
     return deleted_count, deleted_bytes

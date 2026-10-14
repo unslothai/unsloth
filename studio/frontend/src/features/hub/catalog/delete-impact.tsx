@@ -11,7 +11,6 @@ export function useDeleteImpact(
   open: boolean,
   repoId: string,
   variant?: string | null,
-  /** target copy used to avoid measuring another duplicate. */
   cachePath?: string | null,
 ): DeleteImpact | null {
   const [impact, setImpact] = useState<DeleteImpact | null>(null);

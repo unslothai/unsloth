@@ -321,7 +321,6 @@ async def list_hidden_models(
 async def delete_impact(
     repo_id: str = Body(...),
     variant: Optional[str] = Body(None),
-    # the listing's cache copy keeps preview and deletion aligned
     cache_path: Optional[str] = Body(None),
     hf_token: HfTokenArg = Depends(get_request_hf_token),
     current_subject: str = Depends(get_current_subject),

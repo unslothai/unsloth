@@ -48,7 +48,6 @@ def _repo_blob_bytes(repo_info, *, only = None) -> int:
     return sum(size for key, size in unique.items() if key not in retained)
 
 
-# one shared predicate keeps orphan listings and delete previews consistent
 _repo_holds_denoiser = companion_assets.repo_holds_denoiser
 
 
@@ -214,7 +213,6 @@ def _delete_impact_blocking(
     ignore = [repo_id] if removes_last_checkpoint else []
     required_after = companion_assets.required_companion_bases(scans, ignore_repo_ids = ignore)
 
-    # derive this selection's companion bases through the loader's resolver
     own_bases = companion_assets.required_companion_bases(
         [_SingleRepoScan(repos)] if repos else [],
     )
