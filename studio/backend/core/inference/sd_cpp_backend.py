@@ -3164,12 +3164,14 @@ class SdCppDiffusionBackend:
                 device = "cpu"
             # A CPU torch routed to the Vulkan build renders on a card torch never measured, so
             # auto offloads rather than assume the model fits in its VRAM.
-            vulkan_on_cpu_torch = (
-                device == "cpu"
-                and off_torch is None
-                and _accelerator_class_of(self._resolved_accelerator(self._loading_card))
-                == "vulkan"
-            )
+            # Read off the build this load runs, not a fresh host probe; a deferred install lands
+            # the resolved one below.
+            run_accelerator = server_accelerator if mode == "server" else engine_accelerator
+            vulkan_on_cpu_torch = device == "cpu" and off_torch is None
+            if vulkan_on_cpu_torch:
+                if self._deferred_accelerator_install:
+                    run_accelerator = self._resolved_accelerator(self._loading_card)
+                vulkan_on_cpu_torch = _accelerator_class_of(run_accelerator) == "vulkan"
             if vulkan_on_cpu_torch:
                 device = "vulkan"
             spawn_env = off_torch.child_env() if off_torch is not None else None
