@@ -11270,6 +11270,8 @@ class VideoBackend:
         )
         render_flags = list(runtime.offload_flags) if flags is None else list(flags)
         render_env = dict(runtime.env) if env is None else dict(env)
+        from .sd_cpp_args import is_device_oom_text
+
         slot.begin_render()
         try:
             retry_cap: Any = None
@@ -11291,6 +11293,9 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 - any start failure leaves the one-shot path
                     if cancel.is_set():
                         raise SdCppCancelled("sd-server start was cancelled.") from exc
+                    if retry_cap is not None and is_device_oom_text(str(exc)):
+                        slot.stop("render failed")
+                        raise
                     logger.warning("video.h3_native_server_start_failed (using sd-cli): %s", exc)
                     slot.disable(f"start failed: {exc}")
                     return None
@@ -11309,7 +11314,7 @@ class VideoBackend:
                     # one more start at a smaller budget, on a fresh server, before anything else.
                     cap = (
                         _h3_retry_vram_cap(getattr(slot, "launched_flags", None), str(exc))
-                        if retry_cap is None
+                        if retry_cap is None and getattr(slot, "release_pending", None) is None
                         else None
                     )
                     if cap is not None:
@@ -11323,8 +11328,6 @@ class VideoBackend:
                         slot.stop("device out of memory; retrying with a smaller VRAM budget")
                         retry_cap = cap
                         continue
-                    from .sd_cpp_args import is_device_oom_text
-
                     if retry_cap is not None and is_device_oom_text(str(exc)):
                         slot.stop("render failed")
                         raise

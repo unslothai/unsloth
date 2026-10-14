@@ -354,6 +354,33 @@ def test_server_render_does_not_fall_back_to_sd_cli_after_the_retry_dies(tmp_pat
     assert slot.disabled_reason is None
 
 
+def test_server_render_does_not_fall_back_when_the_retry_start_runs_out_of_memory(tmp_path, monkeypatch):
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    slot = _Slot(_Server([RuntimeError(_AUDIT_OOM)]))
+    get = slot.get
+
+    def oom_on_second_start(*args, **kwargs):
+        server = get(*args, **kwargs)
+        if len(slot.launches) == 2:
+            raise RuntimeError(_AUDIT_OOM)
+        return server
+
+    slot.get = oom_on_second_start
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        _server_render(slot, int(10 * GiB), tmp_path)
+    assert len(slot.launches) == 2
+    assert slot.disabled_reason is None
+
+
+def test_server_render_does_not_restart_over_a_pending_release(tmp_path, monkeypatch):
+    monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
+    slot = _Slot(_Server([RuntimeError(_AUDIT_OOM)]))
+    slot.release_pending = "another model is loading"
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        _server_render(slot, int(10 * GiB), tmp_path)
+    assert len(slot.launches) == 1
+
+
 def test_server_render_does_not_retry_other_failures_or_auto_budget(tmp_path, monkeypatch):
     monkeypatch.delenv(h3.H3_NATIVE_SERVER_ENV, raising = False)
     slot = _Slot(_Server([RuntimeError("sd-server generation failed: bad prompt")]))

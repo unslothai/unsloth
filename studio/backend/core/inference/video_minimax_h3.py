@@ -2039,6 +2039,10 @@ class H3NativeServerSlot:
         finally:
             self._lock.release()
 
+    @property
+    def release_pending(self) -> Optional[str]:
+        return self._release_pending
+
     def stop(self, reason: str = "stopped") -> None:
         with self._lock:
             self._stop_locked(reason)
