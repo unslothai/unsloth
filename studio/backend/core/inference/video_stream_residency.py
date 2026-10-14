@@ -193,7 +193,6 @@ def _key_peaks(key: Any) -> dict:
     if peaks is None:
         try:
             from .diffusion_measured_peaks import work_peaks
-
             peaks = dict(work_peaks(key))
         except Exception:  # noqa: BLE001 - no store: start empty
             peaks = {}
@@ -253,7 +252,6 @@ def arm_request(
 def _failed_captures() -> int:
     try:
         from .diffusion_cuda_graph import failed_capture_count
-
         return failed_capture_count()
     except Exception:  # noqa: BLE001
         return 0

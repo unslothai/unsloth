@@ -2319,7 +2319,6 @@ def measured_image_runtime_mib(
     learned = None
     if quant is not None:
         from .diffusion_measured_peaks import lookup as learned_peak
-
         learned = learned_peak(
             family = family, quant = quant, speed_mode = speed_mode, width = w, height = h, batch_size = batch
         )
@@ -2582,7 +2581,9 @@ def refine_plan_from_loaded_weights(
                     encode_room = int(dit_room)
                     dit_room, room, wide_dit = streamed_room, streamed_room, True
                     estimates["stream_window_mib"] = window
-        te_room = min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
+        te_room = (
+            min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
+        )
         if dit_room <= 0 and te_room <= 0:
             return plan
         if whole_dit or wide_dit:
@@ -3309,7 +3310,6 @@ def _set_group_offload_failure(pipe: Any, exc: Optional[BaseException]) -> None:
 
 def _is_oom(exc: BaseException) -> bool:
     from .diffusion_batched import is_oom_error
-
     return is_oom_error(exc)
 
 
@@ -3334,9 +3334,11 @@ def _retry_group_offload_lower(
             name = str(name)
             if not isinstance(comp, torch.nn.Module):
                 continue
-            if name in ("transformer", "transformer_2", "unconditional_transformer") or name.startswith(
-                "text_encoder"
-            ):
+            if name in (
+                "transformer",
+                "transformer_2",
+                "unconditional_transformer",
+            ) or name.startswith("text_encoder"):
                 comp.to("cpu")
         gc.collect()
         if torch.cuda.is_available():
@@ -3351,7 +3353,9 @@ def _retry_group_offload_lower(
             return None
     except Exception as retry_exc:  # noqa: BLE001 - the caller's refusal stands
         if logger is not None:
-            logger.warning("diffusion.memory: lower-residency group offload retry failed (%s)", retry_exc)
+            logger.warning(
+                "diffusion.memory: lower-residency group offload retry failed (%s)", retry_exc
+            )
         return None
     estimates = dict(plan.estimates or {})
     estimates.update(resident_transformer_mib = 0, resident_text_encoder_mib = 0, setup_oom_retry = True)
@@ -3363,7 +3367,9 @@ def _retry_group_offload_lower(
         resident_text_encoder_mib = None,
         estimates = estimates,
         reasons = tuple(plan.reasons)
-        + ("group offload setup hit OOM; re-planned once with the transformer and text encoders streamed",),
+        + (
+            "group offload setup hit OOM; re-planned once with the transformer and text encoders streamed",
+        ),
     )
 
 
@@ -3841,7 +3847,9 @@ class _GroupPinner:
                             tensor,
                             src,
                             pool.submit(
-                                registered_host_copy if type(src) is torch.Tensor else src.pin_memory,
+                                registered_host_copy
+                                if type(src) is torch.Tensor
+                                else src.pin_memory,
                                 *((src,) if type(src) is torch.Tensor else ()),
                             ),
                         )

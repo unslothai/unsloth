@@ -39,7 +39,12 @@ _cache: dict[str, Any] = {"path": None, "mtime": None, "data": None}
 
 
 def enabled() -> bool:
-    return (os.environ.get(LEARNED_PEAKS_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+    return (os.environ.get(LEARNED_PEAKS_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def store_path() -> Optional[Path]:
@@ -56,7 +61,11 @@ def store_path() -> Optional[Path]:
         return None
 
 
-def resolution_bucket(width: Optional[int], height: Optional[int], batch_size: int = 1) -> int:
+def resolution_bucket(
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+) -> int:
     """Pixels of the power-of-two megapixel bucket covering ``width x height x batch`` (at least 1/4 MP)."""
     pixels = max(1, int(width or 1024)) * max(1, int(height or 1024)) * max(1, int(batch_size or 1))
     if pixels <= _MIN_BUCKET_PIXELS:
@@ -64,7 +73,12 @@ def resolution_bucket(width: Optional[int], height: Optional[int], batch_size: i
     return int(_MIN_BUCKET_PIXELS * 2 ** math.ceil(math.log2(pixels / _MIN_BUCKET_PIXELS)))
 
 
-def model_key(family: Optional[str], quant: Optional[str], speed_mode: Optional[str], frames: int = 1) -> str:
+def model_key(
+    family: Optional[str],
+    quant: Optional[str],
+    speed_mode: Optional[str],
+    frames: int = 1,
+) -> str:
     return "|".join(
         (
             str(family or "unknown").lower(),
@@ -88,7 +102,11 @@ def _read(path: Path) -> dict:
         return _cache["data"]
     try:
         data = json.loads(path.read_text())
-        if not isinstance(data, dict) or data.get("version") != _VERSION or not isinstance(data.get("entries"), dict):
+        if (
+            not isinstance(data, dict)
+            or data.get("version") != _VERSION
+            or not isinstance(data.get("entries"), dict)
+        ):
             data = _empty()
     except Exception:  # noqa: BLE001 - a corrupt file is an empty store, never a failed load
         data = _empty()
@@ -174,8 +192,12 @@ def lookup(
         return None
     try:
         with _lock:
-            entry = (_read(path).get("entries") or {}).get(model_key(family, quant, speed_mode, frames))
-        peaks = {int(k): int(v) for k, v in ((entry or {}).get("peaks") or {}).items() if int(v) > 0}
+            entry = (_read(path).get("entries") or {}).get(
+                model_key(family, quant, speed_mode, frames)
+            )
+        peaks = {
+            int(k): int(v) for k, v in ((entry or {}).get("peaks") or {}).items() if int(v) > 0
+        }
     except Exception:  # noqa: BLE001
         return None
     if not peaks:
@@ -254,7 +276,6 @@ class PeakProbe:
             return None
         try:
             import torch
-
             torch.cuda.synchronize(self.device)
             peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
         except Exception:  # noqa: BLE001
@@ -265,7 +286,6 @@ class PeakProbe:
 def device_name(device: Any) -> Optional[str]:
     try:
         import torch
-
         return str(torch.cuda.get_device_name(torch.device(device)))
     except Exception:  # noqa: BLE001
         return None
