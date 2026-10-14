@@ -10247,12 +10247,6 @@ if ($LocalLlamaCppLinked) {
                 $expectedKinds = if ($HasROCm -or $script:ROCmGfxArch) { $_rocmKinds } elseif ($_nvidiaEvidence) { $_nvidiaKinds } else { @("windows-cpu", "windows-arm64", "windows-vulkan") }
                 # A pre-CUDA 11 library still proves physical NVIDIA presence, even when AMD/Intel selects torch.
                 if ($script:NvidiaDriverLibraryOnly) { $expectedKinds += $_nvidiaKinds }
-                # Below the CUDA 12.4 floor the selector installs Vulkan, then CPU (#12842, #13662).
-                # Checked last, so the driver is read only for a CPU install on an NVIDIA host.
-                if ($existingKind -eq "windows-cpu" -and ($expectedKinds -contains "windows-cuda") -and
-                    (Test-CudaDriverNeedsUncompressedFatbin -DriverMaxCuda (Get-LlamaDriverMaxCuda))) {
-                    $expectedKinds += "windows-cpu"
-                }
                 if ($existingKind -and ($existingKind -notin $expectedKinds)) {
                     substep "Removing mismatched llama.cpp install (found '$existingKind', need one of: $($expectedKinds -join ', '))..."
                     Remove-Item -Recurse -Force -LiteralPath $LlamaCppDir -ErrorAction SilentlyContinue
