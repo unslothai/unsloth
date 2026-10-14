@@ -367,9 +367,10 @@ def run_chained_phase(phase: dict, set_progress) -> dict:
     # Set first: a load that starts while the sidecar drains a transcription is refused, not unloaded later.
     audio_cpp_server.UPDATE_IN_PROGRESS.set()
     try:
-        with sidecar.update_maintenance():
+        # The sidecar yields whether it stopped a loaded dictation model: the UI must resync for that too.
+        with sidecar.update_maintenance() as stt_was_active:
             try:
-                unloaded = _unload_audio_cpp_models()
+                unloaded = _unload_audio_cpp_models() or bool(stt_was_active)
             except Exception as exc:
                 # Some model may already be gone, so the UI must resync either way.
                 raise _AudioPhaseError(
