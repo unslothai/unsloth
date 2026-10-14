@@ -347,7 +347,7 @@ def test_research_is_one_shot_per_thread_without_disabling_normal_chat() -> None
     assert "runtime.setDeepResearchEnabled(false)" in adapter
     assert "effectiveDeepResearchEnabled" in thread
     assert "researchAvailable={!researchUsed}" in thread
-    # #13679 builds the + menu from a keyed list: the Deep research entry is null once used.
+    # #13679: the + menu is a keyed list.
     assert "deepResearch: researchAvailable ? (" in thread
     assert "setToolsEnabled" in thread
     assert "Web search" in thread
