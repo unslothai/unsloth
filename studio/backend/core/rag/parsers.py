@@ -940,7 +940,8 @@ def _docx_number_lists(document) -> None:
         (
             style_id
             for style_id, style in style_by_id.items()
-            if style.get(_W + "type") == "paragraph" and style.get(_W + "default") in ("1", "true", "on")
+            if style.get(_W + "type") == "paragraph"
+            and style.get(_W + "default") in ("1", "true", "on")
         ),
         None,
     )
@@ -1009,7 +1010,9 @@ def _docx_number_lists(document) -> None:
 
     def label(p_pr):
         mark = None if p_pr is None else p_pr.find(_W + "rPr")
-        if mark is not None and (mark.find(_W + "del") is not None or mark.find(_W + "moveFrom") is not None):
+        if mark is not None and (
+            mark.find(_W + "del") is not None or mark.find(_W + "moveFrom") is not None
+        ):
             return None
         direct = None if p_pr is None else p_pr.find(_W + "numPr")
         style = val(p_pr, "pStyle") or default_style

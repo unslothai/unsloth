@@ -944,7 +944,9 @@ def test_docx_list_numbers_count_placeholders_and_survive_huge_starts(tmp_path):
             )
         )
         numbering.append(
-            parse_xml(f'<w:num {_DOCX_XMLNS} w:numId="{num_id}"><w:abstractNumId w:val="{num_id}"/></w:num>')
+            parse_xml(
+                f'<w:num {_DOCX_XMLNS} w:numId="{num_id}"><w:abstractNumId w:val="{num_id}"/></w:num>'
+            )
         )
 
     def item(num_id, text):
@@ -954,7 +956,9 @@ def test_docx_list_numbers_count_placeholders_and_survive_huge_starts(tmp_path):
         "<w:sdt><w:sdtPr><w:showingPlcHdr/></w:sdtPr>"
         f"<w:sdtContent>{item(91, 'Click here')}</w:sdtContent></w:sdt>"
     )
-    body = item(91, "First") + placeholder + item(91, "Third") + item(92, "Big") + item(92, "Bigger")
+    body = (
+        item(91, "First") + placeholder + item(91, "Third") + item(92, "Big") + item(92, "Bigger")
+    )
     section = document.element.body[-1]
     for element in list(parse_xml(f"<w:body {_DOCX_XMLNS}>{body}</w:body>")):
         section.addprevious(element)
@@ -1057,9 +1061,7 @@ def test_html_ordered_lists_keep_their_numbers(tmp_path):
 
 
 def test_html_list_numbers_stay_in_their_cell(tmp_path):
-    text = _parse_html(
-        tmp_path, '<table><tr><td><ol><li><img src="x"></td><td>B</td></tr></table>'
-    )
+    text = _parse_html(tmp_path, '<table><tr><td><ol><li><img src="x"></td><td>B</td></tr></table>')
     assert text == "1. | B"
 
 
