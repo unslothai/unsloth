@@ -500,6 +500,9 @@ export {
 } from "./utils/export-chat-history";
 export {
   adoptLegacyDraft,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   readComposerDraft,

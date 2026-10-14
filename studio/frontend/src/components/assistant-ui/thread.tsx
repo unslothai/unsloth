@@ -301,6 +301,9 @@ import {
   resolveDeferredQueuedModelSettings,
   snapshotQueuedChatRunSettings,
   adoptLegacyDraft,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
   composerDraftKey,
   composerPasteDraftKey,
   createPastedTextFile,
@@ -3919,8 +3922,11 @@ const Composer: FC<{
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const draftScope = incognito ? INCOGNITO_DRAFT_SCOPE : referenceThreadId;
   const draftKey = composerDraftKey();
-  // Text that arrived from another tab, so saving it back can't overwrite a newer write there.
+  // Text that came from Compare or another tab, so saving it back can't overwrite a newer write.
   const remoteDraftRef = useRef<string | null>(null);
+  const [draftSource] = useState(() => Symbol("chat composer"));
+  // Whose pastes are on screen: a temporary chat's never cross into the saved draft, nor back.
+  const pasteScopeShownRef = useRef<string | null>(draftScope);
   // unsent pasted File objects need a separate slot because they exist only in memory
   const pasteDraftKey = composerPasteDraftKey();
   const lastDraftScopeRef = useRef(draftScope);
@@ -3935,8 +3941,9 @@ const Composer: FC<{
       composer.setText("");
       return;
     }
-    adoptLegacyDraft(draftScope);
-    const draft = readComposerDraft(draftKey) ?? "";
+    const draft = adoptLegacyDraft(draftScope)
+      ? (readComposerDraft(draftKey) ?? "")
+      : latestDraft();
     // A save that raced the send still holds the sent text, so restoring it
     // would undo the clear. Clear rather than return early, which would leave
     // the previous thread's text on screen under this one.
@@ -3953,20 +3960,16 @@ const Composer: FC<{
     }
     composer.setText(draft);
   }, [draftScope, draftKey, aui]);
-  // Another tab's edit, so a tab left open shows the latest draft too. The
-  // event never fires in the tab that wrote, nor for a write of the same value.
+  // Compare's composer or another tab, so whichever is on screen shows the latest draft.
   useEffect(() => {
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== draftKey) return;
+    return subscribeDraft(draftSource, (text) => {
       const composer = aui.composer();
       if (!composer.getState().isEditing) return;
-      remoteDraftRef.current = event.newValue ?? "";
-      composer.setText(remoteDraftRef.current);
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
-  }, [draftScope, draftKey, aui]);
+      remoteDraftRef.current = text;
+      composer.setText(text);
+    });
+  }, [draftScope, draftSource, aui]);
   // The saved-prompt menu and the prompt storage dialog fill the composer
   // directly, bypassing the guard. Text appearing after the send was put there
   // deliberately, so retire. Read live, or a
@@ -3985,6 +3988,25 @@ const Composer: FC<{
     const composer = aui.composer();
     if (!composer.getState().isEditing) return;
     if (restoredPasteScopeRef.current === draftScope) return;
+    if (
+      (pasteScopeShownRef.current === INCOGNITO_DRAFT_SCOPE) !==
+      (draftScope === INCOGNITO_DRAFT_SCOPE)
+    ) {
+      const pasted = composer
+        .getState()
+        .attachments.filter(
+          (attachment) =>
+            pastedTextOf((attachment as { file?: File }).file) !== undefined,
+        );
+      if (pasted.length > 0) {
+        // Removing them changes the attachments, which runs this again.
+        for (const attachment of pasted) {
+          void composer.attachment({ id: attachment.id }).remove();
+        }
+        return;
+      }
+    }
+    pasteScopeShownRef.current = draftScope;
     // The composer can outlive a thread switch, still holding the shared
     // draft's pastes: adopt them rather than adding them a second time.
     if (
@@ -4035,10 +4057,11 @@ const Composer: FC<{
     if (draftScope === INCOGNITO_DRAFT_SCOPE) return;
     if (composerText === remoteDraftRef.current) return;
     remoteDraftRef.current = null;
+    publishDraft(composerText, draftSource);
     const t = setTimeout(() => writeComposerDraft(draftKey, composerText), 300);
     draftSaveTimerRef.current = t;
     return () => clearTimeout(t);
-  }, [composerText, draftScope, draftKey]);
+  }, [composerText, draftScope, draftKey, draftSource]);
   const draftScopeRef = useRef(draftScope);
   useEffect(() => {
     draftKeyRef.current = draftKey;
@@ -4062,9 +4085,10 @@ const Composer: FC<{
     }
     // A temporary chat's send was never the stored draft.
     if (draftScopeRef.current === INCOGNITO_DRAFT_SCOPE) return;
+    publishDraft("", draftSource);
     writeComposerDraft(composerDraftKey(), "");
     writePasteDraft(composerPasteDraftKey(), []);
-  }, []);
+  }, [draftSource]);
   // react-textarea-autosize re-measures only on value change or window resize,
   // not on the width swap from expanding, so it keeps the taller height and
   // leaves a stray blank row. Nudge a resize whenever input width changes.

@@ -72,23 +72,65 @@ export function writeComposerDraft(key: string, text: string): void {
 }
 
 // A draft saved per chat before the shared slot existed becomes the shared draft when that chat
-// opens and nothing newer is waiting, so an upgrade never loses unsent text.
-export function adoptLegacyDraft(threadId: string | null): void {
+// opens and nothing newer is waiting, so an upgrade never loses unsent text. True if it did.
+export function adoptLegacyDraft(threadId: string | null): boolean {
   const id = threadId ?? "__new__";
   try {
     const storage = window.localStorage;
     const text = storage.getItem(`${LEGACY_DRAFT_PREFIX}${id}`);
     const pastes = storage.getItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);
-    if (text === null && pastes === null) return;
+    if (text === null && pastes === null) return false;
+    let adopted = false;
     if (storage.getItem(DRAFT_KEY) === null && storage.getItem(PASTE_DRAFT_KEY) === null) {
       if (text !== null) storage.setItem(DRAFT_KEY, text);
-      if (pastes !== null) storage.setItem(PASTE_DRAFT_KEY, pastes);
+      try {
+        if (pastes !== null) storage.setItem(PASTE_DRAFT_KEY, pastes);
+      } catch (error) {
+        // All or nothing: a text-only copy would make the next try skip, dropping the paste.
+        storage.removeItem(DRAFT_KEY);
+        throw error;
+      }
+      adopted = true;
     }
     storage.removeItem(`${LEGACY_DRAFT_PREFIX}${id}`);
     storage.removeItem(`${LEGACY_PASTE_DRAFT_PREFIX}${id}`);
+    return adopted;
   } catch {
-    // ignore
+    return false;
   }
+}
+
+// The chat composer stays mounted, hidden, under Compare's, and localStorage tells only other tabs
+// about a write. So every composer publishes its text here as it changes, and hears the others and
+// other tabs here too; `latestDraft` is ahead of the debounced save.
+type DraftListener = (text: string, source: symbol) => void;
+const draftListeners = new Set<DraftListener>();
+let latest: string | null = null;
+const OTHER_TAB = Symbol("other tab");
+
+export function latestDraft(): string {
+  return latest ?? readComposerDraft(DRAFT_KEY) ?? "";
+}
+
+export function publishDraft(text: string, source: symbol): void {
+  if (text === latest) return;
+  latest = text;
+  for (const listener of draftListeners) listener(text, source);
+}
+
+/** Calls `listener` with every other composer's text, and another tab's. */
+export function subscribeDraft(source: symbol, listener: (text: string) => void): () => void {
+  const wrapped: DraftListener = (text, from) => {
+    if (from !== source) listener(text);
+  };
+  draftListeners.add(wrapped);
+  return () => draftListeners.delete(wrapped);
+}
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === DRAFT_KEY) publishDraft(event.newValue ?? "", OTHER_TAB);
+  });
 }
 
 // Removes a deleted chat's leftover per-chat draft. Never the shared draft, which belongs to no chat.

@@ -26,8 +26,11 @@ const {
   clearComposerDraft,
   composerDraftKey,
   composerPasteDraftKey,
+  latestDraft,
+  publishDraft,
   readComposerDraft,
   readPasteDraft,
+  subscribeDraft,
   writeComposerDraft,
   writePasteDraft,
 } = await import("../src/features/chat/utils/composer-draft.ts");
@@ -59,6 +62,35 @@ test("a newer shared draft wins over an old per-chat one", () => {
   adoptLegacyDraft("t1");
   assert.equal(readComposerDraft(composerDraftKey()), "newer");
   assert.equal(store.has("chat-draft:t1"), false);
+});
+
+test("a paste too big to adopt rolls back the text, so the next try still carries both", () => {
+  store.set("chat-draft:t1", "unsent");
+  store.set("chat-draft-pastes:t1", '["pasted"]');
+  const setItem = window.localStorage.setItem;
+  window.localStorage.setItem = (key: string, value: string) => {
+    if (key === composerPasteDraftKey()) throw new Error("QuotaExceededError");
+    setItem(key, value);
+  };
+  assert.equal(adoptLegacyDraft("t1"), false);
+  window.localStorage.setItem = setItem;
+  assert.equal(readComposerDraft(composerDraftKey()), null);
+  assert.equal(adoptLegacyDraft("t1"), true);
+  assert.equal(readComposerDraft(composerDraftKey()), "unsent");
+  assert.deepEqual(readPasteDraft(composerPasteDraftKey()), ["pasted"]);
+});
+
+test("composers hear each other's text, never their own", () => {
+  const chat = Symbol("chat");
+  const compare = Symbol("compare");
+  const heard: string[] = [];
+  const stop = subscribeDraft(chat, (text) => heard.push(text));
+  publishDraft("from compare", compare);
+  publishDraft("from chat", chat);
+  stop();
+  publishDraft("after stop", compare);
+  assert.deepEqual(heard, ["from compare"]);
+  assert.equal(latestDraft(), "after stop");
 });
 
 test("a failed adoption keeps the old draft rather than losing it", () => {

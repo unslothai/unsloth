@@ -90,7 +90,9 @@ import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
 import {
   composerDraftKey,
-  readComposerDraft,
+  latestDraft,
+  publishDraft,
+  subscribeDraft,
   writeComposerDraft,
 } from "./utils/composer-draft";
 import { confirmStopRunningChatsIfNeeded } from "./utils/confirm-stop-running-chats";
@@ -649,15 +651,32 @@ export function SharedComposer({
   // The same shared draft as the chat composer; a temporary chat leaves it alone.
   const incognito = useChatRuntimeStore((s) => s.incognito);
   const [text, setText] = useState(() =>
-    useChatRuntimeStore.getState().incognito
-      ? ""
-      : (readComposerDraft(composerDraftKey()) ?? ""),
+    useChatRuntimeStore.getState().incognito ? "" : latestDraft(),
   );
+  const [draftSource] = useState(() => Symbol("compare composer"));
+  // Text that came from the chat composer or another tab, so it isn't published back.
+  const remoteDraftRef = useRef<string | null>(null);
+  const unsavedDraftRef = useRef<string | null>(null);
   useEffect(() => {
-    if (incognito) return;
-    const timer = setTimeout(() => writeComposerDraft(composerDraftKey(), text), 300);
+    if (incognito || text === remoteDraftRef.current) return;
+    remoteDraftRef.current = null;
+    publishDraft(text, draftSource);
+    unsavedDraftRef.current = text;
+    const timer = setTimeout(() => {
+      writeComposerDraft(composerDraftKey(), text);
+      unsavedDraftRef.current = null;
+    }, 300);
     return () => clearTimeout(timer);
-  }, [text, incognito]);
+  }, [text, incognito, draftSource]);
+  // Leaving Compare inside the debounce still saves what was typed.
+  useEffect(
+    () => () => {
+      if (unsavedDraftRef.current !== null) {
+        writeComposerDraft(composerDraftKey(), unsavedDraftRef.current);
+      }
+    },
+    [],
+  );
   const shortcutLabels = composerShortcutLabels(sendShortcut, isMacPlatform(), text);
   const [running, setRunning] = useState(false);
   const [comparing, setComparing] = useState(false);
@@ -685,6 +704,13 @@ export function SharedComposer({
     },
     [],
   );
+  useEffect(() => {
+    if (incognito) return;
+    return subscribeDraft(draftSource, (next) => {
+      remoteDraftRef.current = next;
+      setCurrentText(next);
+    });
+  }, [incognito, draftSource, setCurrentText]);
   // Attachments still classifying or converting; a ref so runPromptList reads it synchronously.
   const attachingRef = useRef(0);
   useEffect(() => {
