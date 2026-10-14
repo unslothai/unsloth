@@ -16763,6 +16763,54 @@ def _guard_chat_load_against_training(
     raise HTTPException(status_code = 409, detail = detail)
 
 
+def _shadow_stripped_inherited(
+    request,
+    stored_args: list[str],
+    effective_chat_template_override: Optional[str] = None,
+) -> list[str]:
+    """``stored_args`` without the split block and without every flag a field the request set
+    now emits itself (last-wins would otherwise keep the stale value)."""
+    from core.inference.llama_server_args import matches_explicit_ctx_override
+    from core.inference.spark_serving import strip_layer_split_extra_args
+
+    fields_set = getattr(request, "model_fields_set", set())
+    return strip_shadowing_flags(
+        # The Spark split block was ours, not the caller's: a reload planned single or as
+        # replicas must not relaunch against the old rpc-server.
+        strip_layer_split_extra_args(stored_args),
+        strip_context = "max_seq_length" in fields_set
+        and not matches_explicit_ctx_override(
+            stored_args, getattr(request, "max_seq_length", None)
+        ),
+        strip_cache = "cache_type_kv" in fields_set,
+        strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
+        strip_template = (
+            "chat_template_override" in fields_set or effective_chat_template_override is not None
+        ),
+        strip_split_mode = _should_strip_split_mode(request, stored_args),
+        # manual + per-GPU ratio emits its own --tensor-split; drop
+        # an inherited one (appended last would override it) while
+        # keeping the user's --split-mode row/none/layer choice.
+        strip_tensor_split = _should_strip_tensor_split(request),
+        # manual emits its own --fit/--gpu-layers, so an inherited offload flag
+        # must not last-wins-override it. auto leaves a user's inherited -ngl
+        # alone. getattr: a validate request reuses this resolver, no offload fields.
+        strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+        strip_reasoning_budget = "reasoning_budget" in fields_set,
+        strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
+        # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
+        strip_batch = "n_batch" in fields_set,
+        strip_ubatch = "n_ubatch" in fields_set,
+        # same rule for the llama-server tuning group. The load mode strips its
+        # deprecated aliases too, because a trailing one resets the whole mode.
+        strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
+        strip_cache_ram = "cache_ram" in fields_set,
+        strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
+        strip_load_mode = "load_mode" in fields_set,
+        strip_load_mode_aliases = "load_mode" in fields_set,
+    )
+
+
 def _resolve_inherited_extra_args(
     request,
     config: ModelConfig,
@@ -16820,49 +16868,12 @@ def _resolve_inherited_extra_args(
         # a first-class template even when the request omits chat_template_override,
         # so strip the inherited --chat-template-file then too -- else the stale arg
         # (appended last) shadows the bundled template while Unsloth reports its caps.
-        fields_set = getattr(request, "model_fields_set", set())
         # A MATCHING inherited -c/--ctx-size is the user's opt-in to exceed the
         # VRAM-fit estimate, so it survives here as it does on auto-switch.
         # Stripping it relaunched an Apply at the fit estimate, silently collapsing
         # the confirmed context while the stored override still said otherwise.
-        from core.inference.llama_server_args import matches_explicit_ctx_override
-        from core.inference.spark_serving import strip_layer_split_extra_args
-
-        stripped = strip_shadowing_flags(
-            # The Spark split block was ours, not the caller's: a reload planned single or as
-            # replicas must not relaunch against the old rpc-server.
-            strip_layer_split_extra_args(stored_args),
-            strip_context = "max_seq_length" in fields_set
-            and not matches_explicit_ctx_override(
-                stored_args, getattr(request, "max_seq_length", None)
-            ),
-            strip_cache = "cache_type_kv" in fields_set,
-            strip_spec = ("speculative_type" in fields_set or "spec_draft_n_max" in fields_set),
-            strip_template = (
-                "chat_template_override" in fields_set
-                or effective_chat_template_override is not None
-            ),
-            strip_split_mode = _should_strip_split_mode(request, stored_args),
-            # manual + per-GPU ratio emits its own --tensor-split; drop
-            # an inherited one (appended last would override it) while
-            # keeping the user's --split-mode row/none/layer choice.
-            strip_tensor_split = _should_strip_tensor_split(request),
-            # manual emits its own --fit/--gpu-layers, so an inherited offload flag
-            # must not last-wins-override it. auto leaves a user's inherited -ngl
-            # alone. getattr: a validate request reuses this resolver, no offload fields.
-            strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
-            strip_reasoning_budget = "reasoning_budget" in fields_set,
-            strip_reasoning_budget_message = "reasoning_budget_message" in fields_set,
-            # a set field emits its own flag; an inherited -b / -ub would last-wins-override it
-            strip_batch = "n_batch" in fields_set,
-            strip_ubatch = "n_ubatch" in fields_set,
-            # same rule for the llama-server tuning group. The load mode strips its
-            # deprecated aliases too, because a trailing one resets the whole mode.
-            strip_ctx_checkpoints = "ctx_checkpoints" in fields_set,
-            strip_cache_ram = "cache_ram" in fields_set,
-            strip_spec_draft_cache = "spec_draft_cache_type" in fields_set,
-            strip_load_mode = "load_mode" in fields_set,
-            strip_load_mode_aliases = "load_mode" in fields_set,
+        stripped = _shadow_stripped_inherited(
+            request, stored_args, effective_chat_template_override
         )
         # Inherited, not sent: a flag denylisted since it was stored loses only
         # itself. The previous behaviour dropped the whole list, so one name added
@@ -17723,11 +17734,10 @@ def _spark_inherited_extra_args(request: LoadRequest) -> Optional[list[str]]:
         != str(source[1] or "").strip().lower()
     ):
         return None
-    from core.inference.spark_serving import strip_layer_split_extra_args
-
     # The split block is ours, appended by before_load; inheriting it would read our own --rpc as
-    # a caller override and skip rebuilding the split.
-    return strip_layer_split_extra_args(stored)
+    # a caller override and skip rebuilding the split. The planner writes these into the request,
+    # so they are shadow-stripped here exactly as the route would strip them.
+    return drop_managed_flags(_shadow_stripped_inherited(request, stored))[0]
 
 
 def _hub_access_warnings(token_rejections) -> list[str]:
