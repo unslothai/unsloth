@@ -6228,15 +6228,58 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .aui-composer-root:has(.unsloth-files-panel[data-dragging="true"]) .aui-composer-drop-overlay {
 	opacity: 0 !important;
 }
+.unsloth-files-panel-row {
+	@apply relative flex items-center;
+}
+.unsloth-files-panel-row:has(.unsloth-files-panel-strip:empty) {
+	display: none;
+}
 /* Inset at rest; cards scroll under the panel edges. */
 .unsloth-files-panel-strip {
-	@apply -mx-4 flex flex-row flex-nowrap gap-2 overflow-x-auto overscroll-x-contain px-4;
+	@apply -mx-4 flex min-w-0 flex-1 flex-row flex-nowrap gap-2 overflow-x-auto overscroll-x-contain px-4;
 	scroll-padding-inline: 1rem;
 	scrollbar-width: none;
 }
 .unsloth-files-panel-strip::-webkit-scrollbar {
 	display: none;
 }
+.unsloth-files-panel[data-collapsed="true"] {
+	@apply gap-2.5 pt-3 pb-3;
+}
+/* Dropdown-surface look. Hover washes over the solid fill, never replaces it (it would turn see-through). */
+.unsloth-files-panel-show-all {
+	@apply pointer-events-none absolute top-1/2 right-0 z-10 inline-flex h-8 -translate-y-1/2 items-center rounded-full px-3.5 text-ui-13 text-popover-foreground opacity-0 transition-opacity;
+	background-color: var(--popover);
+	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
+}
+.dark .unsloth-files-panel-show-all {
+	box-shadow: none;
+}
+.unsloth-files-panel:not([data-collapsed]) .unsloth-files-panel-show-all {
+	top: calc(100% - 0.75rem);
+}
+.unsloth-files-panel-show-all:hover {
+	background-image: linear-gradient(
+		rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))),
+		rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)))
+	);
+}
+.unsloth-files-panel-row:has(> .unsloth-files-panel-strip:hover) > .unsloth-files-panel-show-all,
+.unsloth-files-panel-show-all:is(:hover, :focus-visible) {
+	@apply pointer-events-auto opacity-100;
+}
+@media (pointer: coarse) {
+	.unsloth-files-panel-show-all {
+		@apply pointer-events-auto opacity-100;
+	}
+}
+.unsloth-files-panel-strip[data-show-all="true"] {
+	@apply max-h-[40dvh] flex-wrap overflow-x-hidden overflow-y-auto;
+}
+.unsloth-files-panel-strip[data-show-all="true"] .unsloth-files-pill {
+	@apply max-w-[calc(14rem*var(--ui-space-scale,1))];
+}
+
 .unsloth-files-panel-action {
 	@apply inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-ui-13 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
 	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
@@ -6248,15 +6291,23 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	@apply pointer-events-none opacity-50;
 }
 /* Dark mode: Add files is a fill, not an outline. */
-.dark .unsloth-files-panel-action,
 .dark .unsloth-files-add-card {
 	border-color: transparent;
 	background-color: color-mix(in oklab, var(--foreground) 8%, transparent);
 }
-.dark .unsloth-files-panel-action:hover,
 .dark .unsloth-files-add-card:hover {
 	border-color: transparent;
 	background-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+.dark :is(.unsloth-files-panel-action, .unsloth-files-panel-show-all) {
+	border-color: transparent;
+	background-color: color-mix(in srgb, var(--card), white 10%);
+	background-image: none;
+}
+.dark :is(.unsloth-files-panel-action, .unsloth-files-panel-show-all):hover {
+	border-color: transparent;
+	background-color: color-mix(in srgb, var(--card), white 15%);
+	background-image: none;
 }
 .unsloth-files-panel-icon-btn {
 	@apply inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-35;
