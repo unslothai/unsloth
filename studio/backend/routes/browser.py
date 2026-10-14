@@ -1735,6 +1735,9 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
         if request.redirect != "follow":
             hops["stopped"] = True
             return "Redirected, and the request asked not to follow."
+        # Mixed content: an https page never reads what came over plain http, so that hop is never sent.
+        if scheme == "https" and urlsplit(url).scheme.lower() != "https":
+            return "Redirected from https to an insecure address."
         # A browser CORS-checks each response from another site, a redirect too, before following it.
         if not hops["same_origin"] and not allowed(headers.get("Access-Control-Allow-Origin")):
             return "Redirected through a site that does not allow it."
@@ -1769,10 +1772,8 @@ def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) ->
                 },
                 "Origin": hops["origin"],
             }
-            # The default referrer policy sends another site the page's origin, and nothing on a
-            # downgrade from https to http.
-            if not (scheme == "https" and hops["last"][0] == "http"):
-                own_headers["Referer"] = serialized_origin + "/"
+            # The default referrer policy sends another site only the page's origin.
+            own_headers["Referer"] = serialized_origin + "/"
         return {**_studio_headers(current_host), **own_headers}
 
     meta: dict = {}

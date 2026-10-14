@@ -104,14 +104,25 @@ BROWSER_NETWORK_JS = r"""
         const readCapped = async (request) => {
           const reader = request.clone().body?.getReader();
           if (!reader) return new ArrayBuffer(0);
+          // The request's signal doesn't reach a copy's reader: an abort cancels it here, so a stalled
+          // stream can't keep the fetch pending.
+          const signal = request.signal;
+          const onAbort = () => reader.cancel(signal.reason).catch(() => {});
+          signal.addEventListener("abort", onAbort);
           const chunks = [];
           let size = 0;
-          for (;;) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            size += value.byteLength;
-            if (size > MAX_RELAY_BODY) { reader.cancel().catch(() => {}); return undefined; }
-            chunks.push(value);
+          try {
+            for (;;) {
+              if (signal.aborted) throw signal.reason;
+              const { done, value } = await reader.read();
+              if (signal.aborted) throw signal.reason;
+              if (done) break;
+              size += value.byteLength;
+              if (size > MAX_RELAY_BODY) { reader.cancel().catch(() => {}); return undefined; }
+              chunks.push(value);
+            }
+          } finally {
+            signal.removeEventListener("abort", onAbort);
           }
           const bytes = new Uint8Array(size);
           let at = 0;

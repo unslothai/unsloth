@@ -420,9 +420,9 @@ def test_redirect_manual_stops_at_an_opaque_redirect(monkeypatch):
     assert [hop["url"] for hop in sent] == ["site.test/a"]
 
 
-@pytest.mark.parametrize("target", ["https://site.test:8443/data", "http://site.test/data"])
+@pytest.mark.parametrize("target", ["https://site.test:8443/data"])
 def test_the_pages_headers_stay_with_its_origin_not_just_its_host(monkeypatch, target):
-    # Same host, another port or scheme: another origin, so Authorization is not forwarded.
+    # Same host, another port: another origin, so Authorization is not forwarded.
     host_path = target.split("://", 1)[1]
     sent = _serve(
         monkeypatch,
@@ -434,9 +434,22 @@ def test_the_pages_headers_stay_with_its_origin_not_just_its_host(monkeypatch, t
     _request(url = "https://site.test/go", headers = [["Authorization", "Bearer page"]])
     assert sent[0]["headers"]["authorization"] == "Bearer page"
     assert "authorization" not in sent[1]["headers"]
-    # Only the page's origin as Referer, and none on the downgrade to http.
-    expected = "https://site.test/" if target.startswith("https") else None
-    assert sent[1]["headers"].get("referer") == expected
+    assert sent[1]["headers"].get("referer") == "https://site.test/"
+
+
+@pytest.mark.parametrize("target", ["http://site.test/data", "http://other.test/data"])
+def test_an_https_page_never_follows_a_redirect_to_plain_http(monkeypatch, target):
+    sent = _serve(
+        monkeypatch,
+        {
+            "site.test/go": (302, b"", {"Location": target}),
+            target.split("://", 1)[1]: (200, b"injected", {"Access-Control-Allow-Origin": "*"}),
+        },
+    )
+    with pytest.raises(HTTPException) as caught:
+        _request(url = "https://site.test/go")
+    assert caught.value.status_code == 502
+    assert [hop["url"] for hop in sent] == ["site.test/go"]
 
 
 @pytest.mark.parametrize("allow", [None, "*"])

@@ -340,6 +340,18 @@ test("a write past the panel's body limit stays the browser's, as before relayin
   assert.equal(multipart.calls.at(-1)?.[0], "send");
 });
 
+test("aborting an upload whose stream stalls rejects the fetch at once", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, () => true);
+  const stream = new ReadableStream({ pull: () => new Promise(() => {}) });
+  const controller = new AbortController();
+  const write = t.window.fetch("/upload", { method: "POST", body: stream, duplex: "half", signal: controller.signal } as RequestInit);
+  await tick();
+  controller.abort();
+  const outcome = await Promise.race([write.then(() => "resolved", () => "rejected"), new Promise((r) => setTimeout(() => r("pending"), 500))]);
+  assert.equal(outcome, "rejected");
+  assert.equal(t.posted.length, 0);
+});
+
 test("an upload past the limit is read only up to it before going to the browser", async () => {
   const t = setup(NativeXHR, "https://site.test/", false, () => true);
   let pulled = 0;
