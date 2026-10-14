@@ -286,6 +286,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     assert _sanitize_public_query("Authorization: Basic YTpi why did YTpi fail") == "why did fail"
     assert "requirements" in _sanitize_public_query("pre-authorization: Basic requirements for MRI")
     assert "requirements" in _sanitize_public_query("PRE-AUTHORIZATION: Basic requirements for MRI")
+    assert "requirements" in _sanitize_public_query("pre_authorization: Basic requirements for MRI")
     assert (
         _sanitize_public_query("Authorization: Bearer abcdefghijklmnop, HTTP status=401")
         == "HTTP status=401"
@@ -348,6 +349,9 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "why did my Authorization header: Basic supersecret2== fail",
         "authorization_header=Basic supersecret2== why",
         "x-authorization: Basic supersecret2== why",
+        "Authorization: Digest response=\r\n supersecret2 why",
+        '{"Authorization":["Digest response=\\"firstsecret1111\\"","Digest response=\\"supersecret2\\""]} echoed supersecret2 why',
+        "HTTP_AUTHORIZATION: Basic supersecret2== why",
         '{"value":"Basic supersecret2==","name":"Authorization"} why',
         '{"Authorization":"Bearer abcdefghijkl\\/supersecret2=="} why',
         "authorizationHeader: Basic supersecret2== why",
