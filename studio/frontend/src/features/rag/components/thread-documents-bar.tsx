@@ -854,11 +854,11 @@ function ChatFilesPanel({
             <CompactCardsContext.Provider value={compact}>
               {children}
             </CompactCardsContext.Provider>
-            {/* In the grid, Show less takes the next free cell instead of a column of its own. */}
+            {/* Inline after the last file, so it takes no column of its own. */}
             {showAll ? (
               <button
                 type="button"
-                className="unsloth-files-panel-action justify-self-start"
+                className="unsloth-files-panel-action"
                 aria-expanded={true}
                 onClick={() => setShowAll(false)}
               >

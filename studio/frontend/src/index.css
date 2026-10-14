@@ -6259,19 +6259,16 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.16);
 }
 .dark .unsloth-files-panel-show-all {
-	background-color: var(--card);
 	box-shadow: 0 4px 14px var(--background);
+}
+/* Over the cards it straddles their bottom edge instead of covering a preview. */
+.unsloth-files-panel:not([data-collapsed]) .unsloth-files-panel-show-all {
+	top: 100%;
 }
 .unsloth-files-panel-show-all:hover {
 	background-image: linear-gradient(
 		rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1))),
 		rgb(0 0 0 / calc(0.06 * var(--contrast-wash-gain, 1)))
-	);
-}
-.dark .unsloth-files-panel-show-all:hover {
-	background-image: linear-gradient(
-		rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1))),
-		rgb(255 255 255 / calc(0.1 * var(--contrast-wash-gain, 1)))
 	);
 }
 .unsloth-files-panel-row:has(.unsloth-files-item:hover) > .unsloth-files-panel-show-all,
@@ -6283,16 +6280,12 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		@apply pointer-events-auto opacity-100;
 	}
 }
-/* Show all: equal columns across the full width, every pill stretched to its column. */
+/* Show all: pills wrap at their own width, capped wider than the single row's. */
 .unsloth-files-panel-strip[data-show-all="true"] {
-	@apply grid max-h-[40dvh] items-center overflow-x-hidden overflow-y-auto;
-	grid-template-columns: repeat(auto-fill, minmax(calc(12rem * var(--ui-space-scale, 1)), 1fr));
-}
-.unsloth-files-panel-strip[data-show-all="true"] :is(.unsloth-files-pill-item, .unsloth-files-pill-item > div) {
-	@apply min-w-0 flex-1;
+	@apply max-h-[40dvh] flex-wrap overflow-x-hidden overflow-y-auto;
 }
 .unsloth-files-panel-strip[data-show-all="true"] .unsloth-files-pill {
-	@apply w-full max-w-none;
+	@apply max-w-[calc(20rem*var(--ui-space-scale,1))];
 }
 
 .unsloth-files-panel-action {
@@ -6305,16 +6298,24 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-add-card:disabled {
 	@apply pointer-events-none opacity-50;
 }
-/* Dark mode: Add files is a fill, not an outline. */
-.dark .unsloth-files-panel-action,
+/* Dark mode: Add files is a fill, not an outline, the same one Show all rests on. */
 .dark .unsloth-files-add-card {
 	border-color: transparent;
 	background-color: color-mix(in oklab, var(--foreground) 8%, transparent);
 }
-.dark .unsloth-files-panel-action:hover,
 .dark .unsloth-files-add-card:hover {
 	border-color: transparent;
 	background-color: color-mix(in oklab, var(--foreground) 12%, transparent);
+}
+.dark :is(.unsloth-files-panel-action, .unsloth-files-panel-show-all) {
+	border-color: transparent;
+	background-color: color-mix(in srgb, var(--card), white 10%);
+	background-image: none;
+}
+.dark :is(.unsloth-files-panel-action, .unsloth-files-panel-show-all):hover {
+	border-color: transparent;
+	background-color: color-mix(in srgb, var(--card), white 15%);
+	background-image: none;
 }
 .unsloth-files-panel-icon-btn {
 	@apply inline-flex size-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-35;
