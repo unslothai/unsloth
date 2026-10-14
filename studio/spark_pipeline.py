@@ -132,23 +132,34 @@ LORA_TARGETS_LLAMA = (
 )
 
 
+# Gated-delta linear attention in Qwen3-Next / Qwen3.5 hybrids, as unsloth/models/decision.py
+# targets them: their layers also carry the Llama MLP names, so these must be added, not inferred.
+LORA_TARGETS_HYBRID_ATTENTION = ("in_proj_qkvz", "in_proj_qkv", "in_proj_z", "out_proj")
+
+
 def lora_target_modules(model) -> List[str]:
     """The projection names to attach LoRA to, read off THIS model's decoder layers."""
     import torch.nn as nn
 
+    projections = (nn.Linear,)
+    try:
+        from transformers.pytorch_utils import Conv1D  # GPT-2's c_attn / c_proj / c_fc
+        projections += (Conv1D,)
+    except Exception:
+        pass
     _, layers = find_layers(model)
     names = set()
     for layer in layers:
         for name, mod in layer.named_modules():
-            if isinstance(mod, nn.Linear):
+            if isinstance(mod, projections):
                 names.add(name.rsplit(".", 1)[-1])
     keep = [n for n in LORA_TARGETS_LLAMA if n in names]
     if keep:
-        return keep
+        return keep + [n for n in LORA_TARGETS_HYBRID_ATTENTION if n in names]
     if names:
         return sorted(names)
     raise RuntimeError(
-        "no nn.Linear modules were found inside this model's decoder layers, so there is "
+        "no linear projections were found inside this model's decoder layers, so there is "
         "nothing for LoRA to attach to. Train with --full-finetune, or use a model whose "
         "layers hold ordinary linear projections."
     )
