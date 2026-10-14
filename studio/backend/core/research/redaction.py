@@ -77,6 +77,11 @@ _QUERY_AUTHORIZATION = re.compile(
         r"[ \t]", _HSPACE
     )
 )
+# HAR records may list "value" before "name"; JSON key order carries no meaning.
+_REVERSED_HAR_HEADER = re.compile(
+    r"""(?i)(?P<value>\\?"value\\?"\s*:\s*\\?"(?:[^"\\]|\\.)*?\\?")(?P<sep>\s*,\s*)"""
+    r"""(?P<name>\\?"name\\?"\s*:\s*\\?"(?:proxy-|x-)?authorization\\?")"""
+)
 # Multi-value header maps: {"Authorization": ["Basic a", "Basic b"]}.
 _QUERY_AUTHORIZATION_ARRAY = re.compile(
     r"""(?i)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?\s*(?:=>|[:=,])|\]?\s*(?:=>|[:=]))\s*\[(?P<members>[^\[\]]*)\]"""
@@ -298,6 +303,7 @@ def _array_values(match: re.Match) -> list[str]:
 def _sanitize_public_query(query: str) -> str:
     # The Authorization pass may eat a label a later pass needs, so keep only tokens that also
     # survive without it: it can remove more than the plain passes, never less.
+    query = _REVERSED_HAR_HEADER.sub(r"\g<name>\g<sep>\g<value>", query)
     plain = _redact_public_query(query, authorization = False)
     with_authorization = _redact_public_query(query, authorization = True)
     # An echoed copy of an identified credential (an error repeating it) goes too.

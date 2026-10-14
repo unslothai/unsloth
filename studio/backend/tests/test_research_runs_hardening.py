@@ -333,6 +333,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "why did my Authorization header: Basic supersecret2== fail",
         "authorization_header=Basic supersecret2== why",
         "x-authorization: Basic supersecret2== why",
+        '{"value":"Basic supersecret2==","name":"Authorization"} why',
         '{"Authorization":"Bearer abcdefghijkl\\/supersecret2=="} why',
         "authorizationHeader: Basic supersecret2== why",
         "Authorization: Custom token=supersecret2%2fx server echoed supersecret2%2Fx why",
