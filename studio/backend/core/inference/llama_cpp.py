@@ -7292,9 +7292,6 @@ _MOE_CACHE_MAX_RESIDENT_SHARE = 0.75
 # Drafted launches may get the cache. L4 gemma-4 decode cache/split at r 0.53/0.82/0.23:
 # MTP 1.76x/1.25x/0.96x, ngram-mod 1.19x/0.87x/1.11x (the band covers the losses).
 _MOE_CACHE_WITH_DRAFTER = True
-# Skip the spill micro-batch raise if it pushes more than this share of resident experts
-# off the GPU. L4 gemma-4: r 0.23 lost 14% (decode -3%), r 0.53/0.82 lost 4-6%.
-_MOE_SPILL_UB_MAX_RESIDENT_LOSS = 0.10
 # "on" = ungated v0.1.906, "off" = v0.1.905 (no cache / no raise), else auto.
 _MOE_CACHE_ENV = "UNSLOTH_MOE_CACHE"
 _MOE_SPILL_UBATCH_ENV = "UNSLOTH_MOE_SPILL_UBATCH"
@@ -7338,22 +7335,16 @@ def _moe_cache_share_admits(
     )
 
 
-def _moe_spill_raise_keeps_experts(
-    share_before: Optional[float],
-    share_after: Optional[float],
-    *,
-    switch: str = "auto",
-) -> bool:
-    """Keep the spill micro-batch raise? Nothing spilling = no; unpriceable = yes."""
+# The raise costs decode about equally at any resident share, so any spill keeps it. Split
+# pp / tg, 2048 vs default micro-batch on an RTX 3090 and an RTX 6000 Ada: gemma-4-26B-A4B
+# r 0.17 +25-34% / -3..+3%, r 0.77 +12-18% / -5..-6%; gpt-oss-20b r 0.26 +116-153% /
+# -1..-4%; Qwen3-30B-A3B r 0.25 +135-155% / -3..-4%.
+def _moe_spill_raise_wanted(resident_share: Optional[float], *, switch: str = "auto") -> bool:
+    """Raise the spill micro-batch? Nothing spilling at the default micro-batch = no;
+    unpriceable = yes."""
     if switch != "auto":
         return switch == "on"
-    if share_before is None:
-        return True
-    if share_before >= 1.0:
-        return False
-    if share_after is None:
-        return True
-    return share_before - share_after <= _MOE_SPILL_UB_MAX_RESIDENT_LOSS * share_before
+    return resident_share is None or resident_share < 1.0
 
 
 # User placement: the fitter aborts on most of it, and the cache refuses >1 device (--rpc adds one).
@@ -28921,17 +28912,24 @@ class LlamaCppBackend:
                         user_named_batch = _user_named_batch,
                     )
                     _moe_ub_switch = _moe_switch(_MOE_SPILL_UBATCH_ENV)
-                    if _spill_n_ubatch != n_ubatch and _moe_ub_switch != "off":
-                        _share_before = (
-                            _moe_resident_share_now() if _moe_ub_switch == "auto" else None
+                    if _spill_n_ubatch != n_ubatch and not _moe_spill_raise_wanted(
+                        _moe_resident_share_now() if _moe_ub_switch == "auto" else None,
+                        switch = _moe_ub_switch,
+                    ):
+                        _spill_n_batch, _spill_n_ubatch = n_batch, n_ubatch
+                        if _moe_ub_switch == "auto":
+                            logger.info(
+                                "MoE experts: keeping the default --ubatch-size; the --fit "
+                                "split keeps every routed expert on the GPU."
+                            )
+                    if _spill_n_ubatch != n_ubatch:
+                        logger.info(
+                            "MoE experts are offloaded to system RAM; raising --ubatch-size "
+                            "%s -> %s for faster prompt processing.",
+                            n_ubatch if n_ubatch is not None else _DEFAULT_LLAMA_N_UBATCH,
+                            _spill_n_ubatch,
                         )
-                        _pre_raise = (
-                            n_batch,
-                            n_ubatch,
-                            _effective_ubatch,
-                            _compute_buffer_pipeline,
-                            _compute_buffer_tensor,
-                        )
+                        self._moe_spill_batch_restore = (n_batch, n_ubatch)
                         n_batch, n_ubatch = _spill_n_batch, _spill_n_ubatch
                         _effective_ubatch = _ubatch_for_slots(n_parallel)
                         # Same calls and fallbacks as above, at the new micro-batch.
@@ -28945,41 +28943,6 @@ class LlamaCppBackend:
                             n_parallel = n_parallel,
                             per_device_tensor = True,
                         ) or (self._TENSOR_PARALLEL_BUFFER_RESERVE_MIB * 1024 * 1024)
-                        _share_after = (
-                            _moe_resident_share_now()
-                            if _moe_ub_switch == "auto" and _share_before is not None
-                            else None
-                        )
-                        if _moe_spill_raise_keeps_experts(
-                            _share_before, _share_after, switch = _moe_ub_switch
-                        ):
-                            logger.info(
-                                "MoE experts are offloaded to system RAM; raising "
-                                "--ubatch-size %s -> %s for faster prompt processing.",
-                                (
-                                    _pre_raise[1]
-                                    if _pre_raise[1] is not None
-                                    else _DEFAULT_LLAMA_N_UBATCH
-                                ),
-                                _spill_n_ubatch,
-                            )
-                            self._moe_spill_batch_restore = (_pre_raise[0], _pre_raise[1])
-                        else:
-                            (
-                                n_batch,
-                                n_ubatch,
-                                _effective_ubatch,
-                                _compute_buffer_pipeline,
-                                _compute_buffer_tensor,
-                            ) = _pre_raise
-                            logger.info(
-                                "MoE experts: keeping the default --ubatch-size; %s would "
-                                "move the GPU's resident share of the routed experts "
-                                "%.0f%% -> %.0f%%.",
-                                _spill_n_ubatch,
-                                100 * (_share_before or 0.0),
-                                100 * (_share_after or 0.0),
-                            )
 
                     _moe_cache_candidate = self._moe_cache_auto_eligible(
                         caps = server_caps,

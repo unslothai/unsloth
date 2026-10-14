@@ -4982,28 +4982,25 @@ def test_the_drafter_gate_is_one_constant(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "before, after, kept",
+    "share, wanted",
     [
-        # L4 gemma-4: the 2048 compute buffer cost 14% of the resident experts at 8 GB,
-        # 6% at 12 GB and 4% at 16 GB.
-        (0.23, 0.197, False),
-        (0.527, 0.494, True),
-        (0.824, 0.791, True),
+        # Any spill keeps the raise: its decode cost does not grow as the resident share falls.
+        (0.17, True),
+        (0.527, True),
+        (0.824, True),
+        (0.0, True),
         # Nothing spills at the default micro-batch: the raise would only push experts off.
-        (1.0, 0.95, False),
-        (1.0, 1.0, False),
+        (1.0, False),
         # Unpriceable keeps today's raise.
-        (None, None, True),
-        (0.5, None, True),
-        (0.0, 0.0, True),
+        (None, True),
     ],
 )
-def test_the_spill_raise_keeps_the_resident_experts(before, after, kept):
-    keeps = llama_cpp_module._moe_spill_raise_keeps_experts
+def test_the_spill_raise_follows_the_spill(share, wanted):
+    raise_wanted = llama_cpp_module._moe_spill_raise_wanted
 
-    assert keeps(before, after) is kept
-    assert keeps(before, after, switch = "on") is True
-    assert keeps(before, after, switch = "off") is False
+    assert raise_wanted(share) is wanted
+    assert raise_wanted(share, switch = "on") is True
+    assert raise_wanted(share, switch = "off") is False
 
 
 @pytest.mark.parametrize(
@@ -5446,38 +5443,37 @@ def _ubatch_sized_compute_buffer(monkeypatch, raise_cost_gib):
 
 
 @pytest.mark.parametrize(
-    "free_mib, raised, cached",
+    "free_mib, cached",
     [
-        # ~25% resident, raise costs ~27%: default micro-batch, split.
-        (11_000, False, False),
-        # ~44% resident, the raise would cost ~15%: the cache at the default micro-batch.
-        (14_000, False, True),
-        # ~70% resident, the raise costs ~10% or less: raised, and 63% is in the band.
-        (18_000, True, True),
-        # ~83% resident, the raise costs ~8%: raised, 77% is above the band, so split.
-        (20_000, True, False),
+        # ~25% resident, ~18% after the raise: below the band, split.
+        (11_000, False),
+        # ~44% resident, ~37% after the raise: the cache.
+        (14_000, True),
+        # ~70% resident, ~63% after the raise: the cache.
+        (18_000, True),
+        # ~83% resident, ~77% after the raise: above the band, split.
+        (20_000, False),
     ],
     ids = ["tight_split", "tight_cache", "roomy_cache", "roomy_split"],
 )
-def test_the_spill_raise_is_priced_against_the_resident_experts(
-    tmp_path, _moe_cache_host, monkeypatch, free_mib, raised, cached
+def test_any_spill_raises_and_the_band_reads_the_raised_share(
+    tmp_path, _moe_cache_host, monkeypatch, free_mib, cached
 ):
     _ubatch_sized_compute_buffer(monkeypatch, 1.0)
     backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
 
-    assert _ubatch_values(cmd) == (["2048"] if raised else []), cmd
-    assert (backend._moe_spill_batch_restore is not None) is raised
+    assert _ubatch_values(cmd) == ["2048"], cmd
+    assert backend._moe_spill_batch_restore is not None
     assert _has_moe_cache(cmd) is cached, cmd
 
 
 @pytest.mark.parametrize(
     "cache_switch, cached",
-    # ~51% resident, and the raise costs ~5% of those experts (under the 10% rule): the
-    # raise stays whether or not the cache follows it.
+    # ~51% resident: the raise stays whether or not the cache follows it.
     [("auto", True), ("off", False)],
     ids = ["cache_takes_the_raise", "split_takes_the_raise"],
 )
-def test_a_cache_launch_keeps_a_raise_the_resident_rule_allows(
+def test_the_raise_stays_whether_or_not_the_cache_follows(
     tmp_path, _moe_cache_host, monkeypatch, cache_switch, cached
 ):
     _ubatch_sized_compute_buffer(monkeypatch, 0.4)
@@ -5490,19 +5486,21 @@ def test_a_cache_launch_keeps_a_raise_the_resident_rule_allows(
 
 
 @pytest.mark.parametrize(
-    "free_mib, ubatch",
-    [(11_000, ["1120"]), (14_000, ["1120"]), (18_000, ["2048"])],
-    ids = ["tight_split", "tight_cache", "roomy"],
+    "share, ubatch",
+    [(1.0, ["1120"]), (0.25, ["2048"])],
+    ids = ["nothing_spills", "spills"],
 )
 def test_a_skipped_raise_keeps_the_projector_micro_batch(
-    tmp_path, _moe_cache_host, monkeypatch, free_mib, ubatch
+    tmp_path, _moe_cache_host, monkeypatch, share, ubatch
 ):
-    """gemma-4's vision projector needs -ub 1120; a skipped 2048 raise must hand it back."""
+    """gemma-4's vision projector needs -ub 1120; a skipped 2048 raise must hand it back.
+    Studio's own budget can call a launch spilled that llama.cpp's fitter keeps whole."""
     monkeypatch.setattr(llama_cpp_module, "_launch_required_ubatch", lambda *a, **k: 1120)
-    _ubatch_sized_compute_buffer(monkeypatch, 1.0)
-    _backend, cmd = _cache_launch(tmp_path, memory = [(0, free_mib, 32_000)])
+    monkeypatch.setattr(llama_cpp_module, "_moe_resident_expert_share", lambda *_a: share)
+    backend, cmd = _cache_launch(tmp_path, memory = [(0, 14_000, 32_000)])
 
     assert _ubatch_values(cmd) == ubatch, cmd
+    assert (backend._moe_spill_batch_restore is not None) is (share < 1.0)
 
 
 def test_the_v0_1_905_workaround_args_are_honoured(tmp_path, _moe_cache_host):
@@ -5517,9 +5515,10 @@ def test_the_v0_1_905_workaround_args_are_honoured(tmp_path, _moe_cache_host):
 def test_the_spill_ubatch_switch(tmp_path, _moe_cache_host, monkeypatch):
     _ubatch_sized_compute_buffer(monkeypatch, 1.0)
 
-    # Auto skips the raise at 11,000 MiB free and keeps it at 18,000 (see above).
+    # Auto skips the raise when the fitter keeps every expert and keeps it on any spill.
     monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "on")
-    _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
+    with patch.object(llama_cpp_module, "_moe_resident_expert_share", lambda *_a: 1.0):
+        _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
     assert _ubatch_values(cmd) == ["2048"], cmd
 
     monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "off")
@@ -5532,7 +5531,7 @@ def test_both_switches_on_restore_the_ungated_launch(tmp_path, _moe_cache_host, 
     _ubatch_sized_compute_buffer(monkeypatch, 1.0)
     monkeypatch.setenv("UNSLOTH_MOE_CACHE", "on")
     monkeypatch.setenv("UNSLOTH_MOE_SPILL_UBATCH", "on")
-    # Auto launches neither here (25% resident, a costly raise).
+    # Auto raises here but keeps the split (25% resident, below the band).
     _backend, cmd = _cache_launch(tmp_path, memory = [(0, 11_000, 32_000)])
 
     assert _has_moe_cache(cmd) and _ubatch_values(cmd) == ["2048"], cmd
