@@ -1101,6 +1101,131 @@ export function installPageAgent(): PageAgent {
     return { ok: true };
   };
 
+  // The agent's own pointer, so the user can follow what it clicks. It is never the user's: it takes
+  // no events (hit tests, elementFromPoint and the page's handlers pass through it), its closed shadow
+  // root is out of the snapshot's reach, and the mask hides it from screenshots. Styled only through
+  // the CSSOM and animated with transform and opacity: a page's CSP can't block it, and moving it
+  // costs no layout or paint in the page. Any failure here leaves the action itself untouched.
+  const cursor = (() => {
+    const SVG = "http://www.w3.org/2000/svg";
+    const IDLE_MS = 4000;
+    let box: HTMLElement | null = null;
+    let pointerEl: HTMLElement | null = null;
+    let ring: HTMLElement | null = null;
+    let idle = 0;
+    let shown = false;
+    let masking = false;
+    const styled = <E extends Element>(el: E, css: Record<string, string>): E => {
+      for (const [name, value] of Object.entries(css)) (el as unknown as HTMLElement).style.setProperty(name, value, "important");
+      return el;
+    };
+    const build = () => {
+      if (box?.isConnected) return;
+      box = styled(document.createElement("unsloth-agent-cursor"), {
+        all: "initial", display: "block", position: "fixed", left: "0", top: "0", width: "0", height: "0",
+        "z-index": "2147483647", "pointer-events": "none", contain: "layout style size",
+      });
+      box.setAttribute("aria-hidden", "true");
+      const root = box.attachShadow({ mode: "closed" });
+      pointerEl = styled(document.createElement("div"), {
+        position: "absolute", left: "0", top: "0", "pointer-events": "none", opacity: "0",
+        transition: "transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease",
+        "will-change": "transform, opacity",
+      });
+      const glow = styled(document.createElement("div"), {
+        position: "absolute", left: "-22px", top: "-22px", width: "44px", height: "44px", "border-radius": "50%",
+        background: "radial-gradient(circle, rgba(96, 150, 255, 0.55) 0%, rgba(96, 150, 255, 0.22) 45%, rgba(96, 150, 255, 0) 70%)",
+      });
+      ring = styled(document.createElement("div"), {
+        position: "absolute", left: "-14px", top: "-14px", width: "28px", height: "28px", "border-radius": "50%",
+        border: "2px solid rgba(96, 150, 255, 0.9)", "box-sizing": "border-box", opacity: "0",
+      });
+      const arrow = styled(document.createElementNS(SVG, "svg"), {
+        position: "absolute", left: "-3px", top: "-2px", width: "20px", height: "24px", overflow: "visible",
+        filter: "drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.45))",
+      });
+      arrow.setAttribute("viewBox", "0 0 20 24");
+      const path = document.createElementNS(SVG, "path");
+      path.setAttribute("d", "M3 2 L3 19.5 L7.6 15.4 L10.6 22 L13.6 20.7 L10.7 14.2 L16.8 14.2 Z");
+      path.setAttribute("fill", "#111");
+      path.setAttribute("stroke", "#fff");
+      path.setAttribute("stroke-width", "1.6");
+      path.setAttribute("stroke-linejoin", "round");
+      arrow.appendChild(path);
+      pointerEl.append(glow, ring, arrow);
+      root.appendChild(pointerEl);
+      // Beside body, not in it, so body-level layout and selectors never see it.
+      document.documentElement.appendChild(box);
+      shown = false;
+    };
+    const fade = () => {
+      shown = false;
+      if (pointerEl) pointerEl.style.setProperty("opacity", "0", "important");
+    };
+    return {
+      /** Glides to `at` (CSS px of the viewport); `press` adds the click ripple. */
+      show(at: Point, press: boolean, quick = false) {
+        try {
+          build();
+          if (!pointerEl || !box) return;
+          const to = `translate3d(${Math.round(at.x)}px, ${Math.round(at.y)}px, 0)`;
+          if (!shown) {
+            // Appears where it acts rather than sliding in from the corner.
+            pointerEl.style.setProperty("transition", "none", "important");
+            pointerEl.style.setProperty("transform", to, "important");
+            void pointerEl.offsetWidth;
+          }
+          pointerEl.style.setProperty(
+            "transition",
+            `transform ${quick ? 90 : 260}ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease`,
+            "important",
+          );
+          pointerEl.style.setProperty("transform", to, "important");
+          pointerEl.style.setProperty("opacity", masking ? "0" : "1", "important");
+          shown = true;
+          if (press && ring && typeof ring.animate === "function") {
+            ring.animate(
+              [
+                { transform: "scale(0.4)", opacity: 0.9 },
+                { transform: "scale(1.7)", opacity: 0 },
+              ],
+              { duration: 480, delay: quick ? 0 : 200, easing: "cubic-bezier(0.22, 1, 0.36, 1)" },
+            );
+          }
+          window.clearTimeout(idle);
+          idle = window.setTimeout(fade, IDLE_MS);
+        } catch {
+          // A page that blocks custom elements or shadow roots just goes without the pointer.
+        }
+      },
+      /** Out of screenshots while the mask is on. */
+      mask(on: boolean) {
+        masking = on;
+        if (pointerEl) pointerEl.style.setProperty("opacity", !on && shown ? "1" : "0", "important");
+        if (pointerEl && on) pointerEl.style.setProperty("transition", "none", "important");
+      },
+    };
+  })();
+
+  /** Where an action happened: its point, or the centre of its element after the action scrolled it. */
+  const actedAt = (command: Record<string, unknown>): Point | null => {
+    const at = pointIn(command);
+    if (at) return at;
+    if (typeof command.ref !== "string" || !command.ref) return null;
+    try {
+      const rect = lookup(command.ref).getBoundingClientRect();
+      if (!sized(rect)) return null;
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    } catch {
+      return null;
+    }
+  };
+  const followed = (command: Record<string, unknown>, result: Record<string, unknown>, press: boolean, quick = false) => {
+    const at = result.ok ? actedAt(command) : null;
+    if (at) cursor.show(at, press, quick);
+    return result;
+  };
+
   const run = (command: Record<string, unknown>): Record<string, unknown> => {
     // Each page numbers its refs from where the panel says, so a ref kept from the last page
     // misses rather than landing on whatever has that number here.
@@ -1134,29 +1259,36 @@ export function installPageAgent(): PageAgent {
           return describe(ref, command.value, pointIn(command));
         case "click": {
           const at = pointIn(command);
-          return inOwnTab(() =>
-            at ? clickAt(at, command.directLinks === true, command.expect, command.sig) : click(ref, command.directLinks === true),
+          return followed(
+            command,
+            inOwnTab(() =>
+              at ? clickAt(at, command.directLinks === true, command.expect, command.sig) : click(ref, command.directLinks === true),
+            ),
+            true,
           );
         }
         case "locate":
           return locate(ref, command.scroll === true);
         case "pointer": {
           const at = pointIn(command);
-          return at ? inOwnTab(() => pointer(command.phase, at, command.expect, command.sig)) : { ok: false, error: "unknown command" };
+          return at
+            ? followed(command, inOwnTab(() => pointer(command.phase, at, command.expect, command.sig)), command.phase === "down", command.phase === "move")
+            : { ok: false, error: "unknown command" };
         }
         case "evaluate":
           return compileAndEvaluate(String(command.id ?? ""), command.doc, String(command.script ?? ""));
         case "evaluated":
           return evaluated(String(command.id ?? ""));
         case "type":
-          return inOwnTab(() => type(ref, String(command.text ?? ""), command.submit === true));
+          return followed(command, inOwnTab(() => type(ref, String(command.text ?? ""), command.submit === true)), true);
         case "select":
-          return inOwnTab(() => choose(ref, String(command.value ?? "")));
+          return followed(command, inOwnTab(() => choose(ref, String(command.value ?? ""))), true);
         case "scroll":
           return scrollPage(String(command.direction ?? "down"), ref || undefined);
         case "press":
           return inOwnTab(() => press(String(command.key ?? "")));
         case "mask":
+          cursor.mask(command.on === true);
           return mask(command.on === true);
         default:
           return { ok: false, error: "unknown command" };
