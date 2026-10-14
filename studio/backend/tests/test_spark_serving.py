@@ -748,6 +748,11 @@ def test_after_load_attaches_replicas_behind_the_router(cluster, monkeypatch, tm
             backend._port = fake.port + 1
             assert ss.route_base_url(backend) is None
             backend._port = fake.port
+            # Respawned on the same port: direct until the replica is resynced.
+            launched = backend._process
+            backend._process = SimpleNamespace(args = list(launched.args))
+            assert ss.route_base_url(backend) is None
+            backend._process = launched
             status = ss.status()
             assert status["topology"] == "replicas" and status["router"]["healthy_backends"] >= 1
             assert [b["name"] for b in status["router"]["backends"]] == ["main", "peer"]

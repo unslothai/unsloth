@@ -3083,6 +3083,8 @@ class SparkServing:
             return None
         if getattr(llama_backend, "_port", None) != self.attached_port:
             return None  # respawned on a new port; direct until the supervisor re-points
+        if getattr(llama_backend, "_process", None) is not self.attached_process:
+            return None  # respawned on the same port, maybe with a new key the replica lacks
         return router.base_url
 
     def tag_conversation(self, payload: Dict[str, Any], thread_id: Optional[str]) -> None:
