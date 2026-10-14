@@ -62,7 +62,6 @@ import { attachWheelHoverSuppression } from "@/components/assistant-ui/thread-wh
 import { threadHasResearchMessage } from "@/components/assistant-ui/thread-research-presence";
 import { observeThreadWidthSteps } from "@/components/assistant-ui/thread-width-steps";
 import { Reasoning, ReasoningGroup } from "@/components/assistant-ui/reasoning";
-import { RagSourcesGroup } from "@/components/assistant-ui/rag-sources";
 import { researchReplyOwners } from "@/components/assistant-ui/research-reply-owners";
 import { Sources, SourcesGroup } from "@/components/assistant-ui/sources";
 import {
@@ -353,7 +352,6 @@ import {
 import { useRagAvailabilityStore } from "@/features/rag/api/rag-availability";
 import { ThreadDocumentsBar } from "@/features/rag/components/thread-documents-bar";
 import { KnowledgeBaseComposerButton } from "@/features/rag/components/knowledge-base-composer-button";
-import { DocumentPreviewMount } from "@/features/rag/components/document-preview-mount";
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { usePublishedFrame } from "@/features/settings/hooks/use-published-frame";
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
@@ -2408,8 +2406,6 @@ export const Thread: FC<{
           )}
         </IntentAwareScrollProvider>
       </ThreadPrimitive.Root>
-      {/* Document preview, opened by citation badges. */}
-      <DocumentPreviewMount />
       <RewindDialogMount />
       </PageDragContext.Provider>
     </GeneratedImageOverlayProvider>
@@ -2779,7 +2775,6 @@ export const ProjectComposer: FC<{
         disableQueue
       />
       {/* Its file cards open previews; the thread's mount is not on this page. */}
-      <DocumentPreviewMount />
     </GeneratedImageOverlayProvider>
   );
 };
@@ -8330,7 +8325,6 @@ const AssistantMessage: FC = () => {
             */}
                 <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
                 <SourcesGroup />
-                <RagSourcesGroup />
                 <MessageHtmlArtifacts />
                 <ContinueMessageBar />
               </>
