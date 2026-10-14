@@ -1106,6 +1106,14 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
 
 
 def uninstall(vae: Any) -> None:
+    inner = vae.__dict__.pop("_unsloth_vae_structural_inner", None)
+    if inner is not None and getattr(vae.__dict__.get("_decode"), "_unsloth_vae_fused", False):
+        if getattr(inner, "__self__", None) is vae:
+            vae.__dict__.pop("_decode", None)
+        else:
+            vae._decode = inner
+    vae.__dict__.pop("_unsloth_vae_structural", None)
+    vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
     vae.__dict__.pop("_unsloth_vae_fused_cl_weights", None)
     for m in vae.modules():
@@ -2062,11 +2070,17 @@ SUPPORTED_VAES = frozenset(
 
 
 def will_install(vae: Any) -> bool:
-    """Whether :func:`install` would engage on ``vae`` here (class covered, NVIDIA CUDA, usable Triton, not disabled)."""
+    """Whether :func:`install` would engage on ``vae`` here (class covered or matched by structure, NVIDIA CUDA,
+    usable Triton, not disabled)."""
     return (
         vae is not None
-        and type(vae).__name__ in SUPPORTED_VAES
-        and (type(vae).__name__ != "AutoencoderKLLTX2Video" or _ltx2_convs_fusable(vae))
+        and (
+            (
+                type(vae).__name__ in SUPPORTED_VAES
+                and (type(vae).__name__ != "AutoencoderKLLTX2Video" or _ltx2_convs_fusable(vae))
+            )
+            or structural_candidate(vae)
+        )
         and runtime_ok()
     )
 
@@ -2083,6 +2097,10 @@ def install(
     if done:
         return done  # idempotent: a dual-DiT family runs the speed layer once per expert over the same VAE
     n = _install(vae, logger)
+    if not n and type(vae).__name__ not in SUPPORTED_VAES:
+        n = install_structural(vae, logger)
+        if n:
+            vae._unsloth_vae_fused_structural = True
     # Only where measured faster, and only when a fused pass feeds a conv (relaid weights alone slow LTX-2's decode).
     if (
         n
@@ -2116,3 +2134,241 @@ def _install(vae: Any, logger: Any = None) -> int:
         n = install_ltx2_vae(vae, logger)
         return n + (install_vectorised_blend(vae) if n else 0)
     return 0
+
+
+# Structural path: any VAE class outside the measured set whose decoder runs nn.GroupNorm (optionally straight into
+# an nn.SiLU module) gets the fused GroupNorm(+SiLU) kernel. The pairing is read off the dataflow of one tiny decode
+# (forward hooks: a GroupNorm is paired when every output it produced was the input of an nn.SiLU call), and the fused
+# tiny decode must match the stock one within tolerance, else the patch is removed. Kill switch
+# ``UNSLOTH_VAE_FUSED_STRUCTURAL=0``.
+STRUCTURAL_ENV = "UNSLOTH_VAE_FUSED_STRUCTURAL"
+_PROBE_LATENTS = 16
+_PROBE_FRAMES = 2
+# Output space is [-1, 1]; the measured classes' fused-vs-stock bf16 decode differences sit well under these.
+_PROBE_MAX_ABS = 0.125
+_PROBE_MEAN_ABS = 0.01
+
+
+def structural_disabled() -> bool:
+    return os.environ.get(STRUCTURAL_ENV, "").strip().lower() in _FALSE
+
+
+def _plain_group_norms(part: Any) -> list:
+    torch = _torch()
+    return [
+        m
+        for m in part.modules()
+        if isinstance(m, torch.nn.GroupNorm)
+        and type(m).forward is torch.nn.GroupNorm.forward
+        and "forward" not in m.__dict__
+    ]
+
+
+def _plain_silus(part: Any) -> list:
+    torch = _torch()
+    return [
+        m
+        for m in part.modules()
+        if isinstance(m, torch.nn.SiLU)
+        and type(m).forward is torch.nn.SiLU.forward
+        and "forward" not in m.__dict__
+    ]
+
+
+def structural_candidate(vae: Any) -> bool:
+    """A VAE outside the measured set whose decoder holds plain nn.GroupNorm modules, reached through ``_decode``."""
+    if vae is None or structural_disabled() or type(vae).__name__ in SUPPORTED_VAES:
+        return False
+    if getattr(vae, "_unsloth_decode_blocks_bypassed", False):
+        return False  # a family fast path (MiniMax-H3) owns the decoder
+    decoder = getattr(vae, "decoder", None)
+    if decoder is None or not callable(getattr(vae, "_decode", None)):
+        return False
+    try:
+        return bool(_plain_group_norms(decoder))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _decoded_tensor(out: Any) -> Any:
+    if isinstance(out, (tuple, list)):
+        return out[0]
+    return getattr(out, "sample", out)
+
+
+def _probe_latent(z: Any) -> Any:
+    sl = [slice(None)] * z.dim()
+    sl[-1] = slice(0, min(_PROBE_LATENTS, z.shape[-1]))
+    sl[-2] = slice(0, min(_PROBE_LATENTS, z.shape[-2]))
+    if z.dim() == 5:
+        sl[2] = slice(0, min(_PROBE_FRAMES, z.shape[2]))
+    return z[tuple(sl)].contiguous()
+
+
+def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
+    """(calls per norm, outputs of each norm consumed by an nn.SiLU) over one ``run()``."""
+    calls = [0] * len(norms)
+    consumed = [0] * len(norms)
+    produced: dict = {}
+    keep: list = []
+    handles = []
+
+    def norm_hook(idx: int):
+        def hook(_m, _inp, out):
+            calls[idx] += 1
+            produced[id(out)] = idx
+            keep.append(out)  # pin the id for the run
+
+        return hook
+
+    def silu_hook(_m, inp):
+        idx = produced.pop(id(inp[0]), None) if inp else None
+        if idx is not None:
+            consumed[idx] += 1
+
+    try:
+        for i, m in enumerate(norms):
+            handles.append(m.register_forward_hook(norm_hook(i)))
+        for m in silus:
+            handles.append(m.register_forward_pre_hook(silu_hook))
+        out = run()
+    finally:
+        for h in handles:
+            h.remove()
+        keep.clear()
+    return calls, consumed, out
+
+
+def _fast_gn_maybe_act(norm: Any, act: bool, state: Any) -> Any:
+    def fast(x: Any) -> Any:
+        y = group_norm_act(x, norm, act = act)
+        state.calls += 1
+        if act:
+            y._unsloth_silu_applied = True
+        return y
+
+    return fast
+
+
+def _silu_passthrough(silu: Any) -> Any:
+    torch = _torch()
+
+    def forward(x: Any) -> Any:
+        if getattr(x, "_unsloth_silu_applied", False):
+            return x
+        return torch.nn.functional.silu(x, inplace = bool(getattr(silu, "inplace", False)))
+
+    forward._unsloth_vae_fused = True
+    return forward
+
+
+def _structural_patch(norms: list, paired: list, silus: list, state: Any, logger: Any) -> int:
+    n = 0
+    for norm, act in zip(norms, paired):
+        if act is None:
+            continue
+        # The stock fallback is the plain norm: its output carries no flag, so the paired SiLU still runs.
+        _guard(
+            norm,
+            _fast_gn_maybe_act(norm, act, state),
+            _stock_forward(norm),
+            "GroupNorm+SiLU" if act else "GroupNorm",
+            logger,
+        )
+        n += 1
+    if any(paired):
+        for silu in silus:
+            silu.forward = _silu_passthrough(silu)
+    return n
+
+
+def _structural_unpatch(norms: list, silus: list) -> None:
+    for m in (*norms, *silus):
+        m.__dict__.pop("forward", None)
+        m.__dict__.pop("_unsloth_vae_fused_failed", None)
+
+
+def install_structural(vae: Any, logger: Any = None) -> int:
+    """Arm the dataflow-matched fused GroupNorm(+SiLU) path on ``vae``'s decoder; it is calibrated (paired, checked
+    against stock) on the first CUDA decode and removed if the check fails. Returns the plain GroupNorm count."""
+    if not structural_candidate(vae) or not runtime_ok():
+        return 0
+    if getattr(vae, "_unsloth_vae_structural", None) is not None:
+        return vae._unsloth_vae_structural.norms
+    decoder = vae.decoder
+    norms = _plain_group_norms(decoder)
+    silus = _plain_silus(decoder)
+    state = types.SimpleNamespace(
+        status = "pending", norms = len(norms), gn_silu = 0, gn = 0, calls = 0, max_abs = None,
+        mean_abs = None,
+    )  # fmt: skip
+    inner = vae._decode
+    torch = _torch()
+
+    def calibrate(z: Any, args: tuple, kwargs: dict) -> None:
+        tiny = _probe_latent(z)
+        with torch.no_grad():
+            calls, consumed, ref = _trace_group_norm_silu(
+                norms, silus, lambda: _decoded_tensor(inner(tiny, *args, **kwargs))
+            )
+            paired = [
+                None if c == 0 else (c == k)
+                for c, k in zip(calls, consumed)
+            ]
+            n = _structural_patch(norms, paired, silus, state, logger)
+            if n == 0:
+                state.status = "no_match"
+                _structural_unpatch(norms, silus)
+                return
+            calls_before = state.calls
+            out = _decoded_tensor(inner(tiny, *args, **kwargs))
+            err = (out.float() - ref.float()).abs()
+            state.max_abs, state.mean_abs = float(err.max()), float(err.mean())
+            fused_ran = state.calls > calls_before
+        if (
+            fused_ran
+            and state.max_abs <= _PROBE_MAX_ABS
+            and state.mean_abs <= _PROBE_MEAN_ABS
+        ):
+            state.status = "ok"
+            state.gn_silu = sum(1 for p in paired if p)
+            state.gn = sum(1 for p in paired if p is False)
+            state.calls = 0
+            if logger is not None:
+                logger.info(
+                    "diffusion.vae_fused: %s matched by structure: %d GroupNorm+SiLU, %d GroupNorm fused "
+                    "(probe max |d| %.4f, mean |d| %.5f)",
+                    type(vae).__name__, state.gn_silu, state.gn, state.max_abs, state.mean_abs,
+                )  # fmt: skip
+        else:
+            state.status = "rejected"
+            _structural_unpatch(norms, silus)
+            if logger is not None:
+                logger.warning(
+                    "diffusion.vae_fused: %s structural fusion rejected (probe max |d| %s, mean |d| %s)",
+                    type(vae).__name__, state.max_abs, state.mean_abs,
+                )  # fmt: skip
+
+    def _decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+        if state.status == "pending" and getattr(z, "is_cuda", False):
+            try:
+                calibrate(z, args, kwargs)
+            except Exception as exc:  # noqa: BLE001 - never fail a decode over the probe
+                state.status = "rejected"
+                _structural_unpatch(norms, silus)
+                if logger is not None:
+                    logger.warning("diffusion.vae_fused: structural probe failed: %s", exc)
+        return inner(z, *args, **kwargs)
+
+    _decode._unsloth_vae_fused = True
+    vae._unsloth_vae_structural = state
+    vae._unsloth_vae_structural_inner = inner
+    vae._decode = _decode
+    if logger is not None:
+        logger.info(
+            "diffusion.vae_fused: %s is outside the measured set; %d GroupNorms will be matched by structure "
+            "on the first decode",
+            type(vae).__name__,
+            len(norms),
+        )
+    return len(norms)

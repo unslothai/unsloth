@@ -267,8 +267,11 @@ def _free_mib(
 
 
 def _fused(vae: Any) -> bool:
-    return bool(getattr(vae, "_unsloth_vae_fused_installed", 0)) and not getattr(
-        vae, "_unsloth_vae_fused_failed", False
+    # A structurally matched class keeps its unfused memory figure: the fused one was measured per class.
+    return (
+        bool(getattr(vae, "_unsloth_vae_fused_installed", 0))
+        and not getattr(vae, "_unsloth_vae_fused_failed", False)
+        and not getattr(vae, "_unsloth_vae_fused_structural", False)
     )
 
 
@@ -574,7 +577,12 @@ def install(vae: Any, logger: Any = None) -> bool:
         z: Any,
         return_dict: bool = True,
     ) -> Any:
-        if wide_tiles_disabled() or stock_layout_ok(geometry, z.shape[-2], z.shape[-1]):
+        if (
+            wide_tiles_disabled()
+            or self.__dict__.get("_unsloth_vae_oom_halvings")
+            or stock_layout_ok(geometry, z.shape[-2], z.shape[-1])
+        ):
+            # diffusion_vae_oom halving the stock tiles after an OOM: the stock decode reads the halved sizes
             return _stock(z, return_dict)
         # Never trade an OOM for quality: floor tile cannot fit (or OOMs) -> the smaller stock tiles.
         reason = floor_shortfall(self, z)
