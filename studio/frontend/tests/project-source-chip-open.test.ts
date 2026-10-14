@@ -31,7 +31,6 @@ const chip = loadWithStubs<typeof ChipModule>(
   },
 );
 
-const opened: Record<string, unknown>[] = [];
 const LocalFileDialog = () => null;
 
 const { ProjectSourceChip } = loadWithStubs<typeof SourceChipModule>(
@@ -44,14 +43,10 @@ const { ProjectSourceChip } = loadWithStubs<typeof SourceChipModule>(
       attachmentFileKind: (name: string) => (name.endsWith(".pdf") ? "pdf" : "file"),
     },
     "./document-status-chip": chip,
-    "./preview-store": {
-      useDocumentPreviewStore: (select: (s: Record<string, unknown>) => unknown) =>
-        select({ openPreview: (args: Record<string, unknown>) => opened.push(args) }),
-    },
     "./source-file": {
       asViewerFile: (file: File) => file,
       fetchSourceFile: async () => null,
-      isViewableSource: (name: string) => /\.(md|txt|docx)$/.test(name),
+      isViewableSource: (name: string) => /\.(pdf|md|txt|docx)$/.test(name),
     },
   },
 );
@@ -64,13 +59,14 @@ function chipProps(doc: Record<string, unknown>): Record<string, unknown> {
   return element.props;
 }
 
-test("an indexed PDF source opens the source preview", () => {
-  opened.length = 0;
+// PDFs used to open a separate preview sheet; every source now opens in the attachment viewer.
+test("an indexed PDF source opens in the attachment viewer", () => {
   const props = chipProps({ id: "doc-1", filename: "handbook.pdf", status: "completed" });
-  assert.equal(props.openTrigger, undefined);
-  assert.equal(typeof props.onOpen, "function");
-  (props.onOpen as () => void)();
-  assert.deepEqual(opened, [{ documentId: "doc-1", filename: "handbook.pdf" }]);
+  assert.equal(props.onOpen, undefined);
+  const trigger = React.createElement("button");
+  const wrapped = (props.openTrigger as (t: React.ReactElement) => StubElement)(trigger);
+  assert.equal(wrapped.type, LocalFileDialog);
+  assert.equal(wrapped.props.name, "handbook.pdf");
 });
 
 test("an indexed text, markdown or Office source opens in the attachment viewer", () => {

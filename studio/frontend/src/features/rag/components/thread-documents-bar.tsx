@@ -95,7 +95,6 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { STAGE_LABELS } from "./document-status-chip";
-import { useDocumentPreviewStore } from "./preview-store";
 import {
   type KnowledgeBaseFocus,
   KnowledgeBaseDialog,
@@ -419,7 +418,6 @@ function DocumentCard({
   onRemove?: () => void;
   onRetry?: () => void;
 }) {
-  const openPreview = useDocumentPreviewStore((s) => s.openPreview);
   const kind = attachmentFileKind(doc.filename, undefined);
   const processing = isProcessing(doc);
   const failed = doc.status === "failed";
@@ -447,10 +445,8 @@ function DocumentCard({
   const ready = doc.status === "completed" && !pending;
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const thumbnail = useDocumentThumbnail(doc, ready, slot);
-  // PDFs open the source preview, which can jump to a page. Without a chunk it has no text for
-  // anything else, so other files open in the attachment viewer, read on click.
-  const isPdf = kind === "pdf";
-  const viewable = !isPdf && isViewableSource(doc.filename);
+  // Every viewable file, PDFs included, opens in the attachment viewer, read on click.
+  const viewable = isViewableSource(doc.filename);
   const thumbnailFile = thumbnail?.kind === "file" ? thumbnail.file : null;
   const loadSource = useCallback(async (): Promise<Blob> => {
     // The thumbnail's copy when there is one; past its cap, up to the viewer's own limit, the
@@ -462,7 +458,7 @@ function DocumentCard({
     // The id names the stored file; the rest of the row changes with progress frames.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.id, thumbnailFile]);
-  const canOpen = ready && (isPdf || viewable);
+  const canOpen = ready && viewable;
   const preview =
     thumbnail?.kind === "image" ? (
       <img
@@ -485,11 +481,6 @@ function DocumentCard({
       <button
         type="button"
         disabled={!canOpen}
-        onClick={
-          isPdf
-            ? () => openPreview({ documentId: doc.id, filename: doc.filename })
-            : undefined
-        }
         title={
           doc.error ??
           (shared

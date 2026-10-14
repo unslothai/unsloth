@@ -88,9 +88,6 @@ const { ThreadDocumentsBar } = loadWithStubs<typeof BarModule>(
       TooltipTrigger: Passthrough,
     },
     "@/components/ui/spinner": { Spinner: Nothing },
-    "./preview-store": {
-      useDocumentPreviewStore: selectorStore({ openPreview: () => undefined }),
-    },
     "@/lib/chevron-icons": {},
     "@assistant-ui/react": {
       useAui: () => ({}),

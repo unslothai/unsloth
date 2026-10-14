@@ -28,9 +28,19 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
-import { useDocumentPreviewStore } from "@/features/rag/components/preview-store";
+import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
+import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
+import {
+  asViewerFile,
+  fetchSourceFile,
+  isViewableSource,
+} from "@/features/rag/components/source-file";
 
-import { type Citation, parseCitations } from "./citation-utils";
+import {
+  type Citation,
+  parseCitations,
+  topCitationPerDocument,
+} from "./citation-utils";
 import { ScrollPane } from "./scroll-pane";
 
 export function CitationBadge({
@@ -40,22 +50,12 @@ export function CitationBadge({
   citation: Citation;
   index: number;
 }) {
-  const openPreview = useDocumentPreviewStore((s) => s.openPreview);
-  const clickable = Boolean(citation.documentId);
   const label =
     citation.page != null
       ? `${citation.filename} · p.${citation.page}`
       : citation.filename;
-
-  const open = () => {
-    if (!citation.documentId) return;
-    openPreview({
-      documentId: citation.documentId,
-      chunkId: citation.chunkId,
-      filename: citation.filename,
-      page: citation.page,
-    });
-  };
+  const { documentId, filename } = citation;
+  const clickable = Boolean(documentId) && isViewableSource(filename);
 
   const badge = (
     <Badge
@@ -73,12 +73,26 @@ export function CitationBadge({
     </Badge>
   );
 
-  return clickable ? (
-    <button type="button" onClick={open} className="inline-block">
-      {badge}
-    </button>
-  ) : (
-    <span className="inline-block">{badge}</span>
+  if (!clickable || !documentId) {
+    return <span className="inline-block">{badge}</span>;
+  }
+  // The attachment viewer, as the chat with files cards open their files.
+  const load = async (): Promise<Blob> => {
+    const file = await fetchSourceFile(
+      { id: documentId, filename },
+      MAX_DOCUMENT_PREVIEW_BYTES,
+    );
+    if (!file) {
+      throw new Error(`Couldn't preview ${filename}`);
+    }
+    return asViewerFile(file);
+  };
+  return (
+    <LocalFileDialog name={filename.split("/").pop() ?? filename} load={load}>
+      <button type="button" className="inline-block">
+        {badge}
+      </button>
+    </LocalFileDialog>
   );
 }
 
@@ -101,11 +115,12 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
 
   const resultText = result == null ? "" : stringifyToolResult(result);
   const citations = useMemo(() => parseCitations(result), [result]);
-  // Citations render in RagSourcesGroup; this block keeps a one-line summary.
-  const docCount = useMemo(
-    () => new Set(citations.map((c) => c.documentId ?? c.filename)).size,
+  // The documents behind the passages, listed in the expanded card.
+  const documents = useMemo(
+    () => topCitationPerDocument(citations),
     [citations],
   );
+  const docCount = documents.length;
 
   const hasText = useAuiState(({ message }) =>
     partsHaveNonEmptyText(message.content),
@@ -143,11 +158,22 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
           // Outcome first, then the full query: the one-line header may clip it in every outcome.
           <div className="flex flex-col gap-2 text-sm text-muted-foreground">
             {citations.length > 0 ? (
-              <div>
-                Retrieved {citations.length} passage
-                {citations.length === 1 ? "" : "s"} from {docCount} document
-                {docCount === 1 ? "" : "s"}. See Document Sources below.
-              </div>
+              <>
+                <div>
+                  Retrieved {citations.length} passage
+                  {citations.length === 1 ? "" : "s"} from {docCount} document
+                  {docCount === 1 ? "" : "s"}.
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {documents.map((citation, i) => (
+                    <CitationBadge
+                      key={citation.id}
+                      citation={citation}
+                      index={i}
+                    />
+                  ))}
+                </div>
+              </>
             ) : resultText ? (
               <ScrollPane
                 className="rounded bg-muted/50 p-2"

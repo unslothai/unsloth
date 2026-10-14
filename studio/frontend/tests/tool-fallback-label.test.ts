@@ -120,3 +120,26 @@ test("the document search header stays one line, with the summary first and the 
   );
   assert.match(fallback, /const wrapWhenOpen = !singleLine;/);
 });
+
+// The documents behind a search are listed inside its expanded card, and open in the attachment
+// viewer; the reply no longer carries a separate Document Sources strip or a custom PDF sheet.
+test("a document search lists its documents in the card, opening them in the attachment viewer", () => {
+  const read = (path: string) =>
+    readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
+  const kb = read("components/assistant-ui/tool-ui-knowledge-base.tsx");
+  assert.match(kb, /documents\.map\(\(citation, i\) => \(\s*<CitationBadge/);
+  assert.match(kb, /<LocalFileDialog/);
+  assert.ok(!kb.includes("See Document Sources below"));
+  const thread = read("components/assistant-ui/thread.tsx");
+  assert.ok(!thread.includes("RagSourcesGroup"));
+  assert.ok(!thread.includes("DocumentPreviewMount"));
+  for (const path of [
+    "features/rag/components/project-source-chip.tsx",
+    "features/rag/components/thread-documents-bar.tsx",
+  ]) {
+    assert.ok(
+      !read(path).includes("isPdf"),
+      `${path} sends PDFs to the attachment viewer too`,
+    );
+  }
+});

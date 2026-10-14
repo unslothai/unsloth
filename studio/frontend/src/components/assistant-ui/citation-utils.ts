@@ -61,14 +61,20 @@ export function parseCitations(result: unknown): Citation[] {
       try {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) rows = parsed;
-        else if (parsed && Array.isArray((parsed as { results?: unknown }).results)) {
+        else if (
+          parsed &&
+          Array.isArray((parsed as { results?: unknown }).results)
+        ) {
           rows = (parsed as { results: unknown[] }).results;
         }
       } catch {
         rows = null;
       }
     }
-  } else if (result && Array.isArray((result as { results?: unknown }).results)) {
+  } else if (
+    result &&
+    Array.isArray((result as { results?: unknown }).results)
+  ) {
     rows = (result as { results: unknown[] }).results;
   }
   if (!rows) return [];
@@ -102,4 +108,23 @@ export function parseCitations(result: unknown): Citation[] {
     });
   });
   return citations;
+}
+
+/** One citation per document, its best-scoring passage, in first-seen order. */
+export function topCitationPerDocument(
+  citations: readonly Citation[],
+): Citation[] {
+  const byDoc = new Map<string, Citation>();
+  for (const c of citations) {
+    const key = c.documentId ?? c.filename;
+    const prev = byDoc.get(key);
+    if (
+      !prev ||
+      (c.score ?? Number.NEGATIVE_INFINITY) >
+        (prev.score ?? Number.NEGATIVE_INFINITY)
+    ) {
+      byDoc.set(key, c);
+    }
+  }
+  return Array.from(byDoc.values());
 }

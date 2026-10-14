@@ -160,7 +160,6 @@ function harness(
       "@/components/file-viewer": {},
       "@/components/ui/tooltip": {},
       "@/components/ui/spinner": {},
-      "./preview-store": { useDocumentPreviewStore: () => undefined },
       "@/lib/chevron-icons": {},
       "@assistant-ui/react": {
         useAui: () => ({ threadListItem: () => item }),
