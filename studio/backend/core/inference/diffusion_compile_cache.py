@@ -504,7 +504,7 @@ def model_fingerprint(
     # The int8 latency gate's cuBLAS slots trace the stock graph in place of the fused op. Added only when present.
     if transformer is not None:
         from .diffusion_int8_gemm import plan_identity
-        int8_cublas = plan_identity(transformer)
+        int8_cublas = plan_identity(transformer, _current_cuda_index())
         if int8_cublas:
             fp["int8_gemm_cublas"] = int8_cublas
     # Added only when armed, so other bundles keep their key.
@@ -524,6 +524,14 @@ def model_fingerprint(
         if reduction_filter and reduction_config_filter_available():
             fp["inductor"]["force_filter_reduction_configs"] = True
     return fp
+
+
+def _current_cuda_index() -> Optional[int]:
+    try:
+        import torch  # noqa: PLC0415
+        return torch.cuda.current_device() if torch.cuda.is_available() else None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def cache_key(env_fp: dict[str, Any], model_fp: dict[str, Any]) -> str:
@@ -562,6 +570,8 @@ class CacheContext:
     # them, and every future start would reject the cache again with no way back.
     rejected_bundle: Optional[str] = None
     last_touch: float = 0.0
+    # () -> the int8 latency gate's cuBLAS identity now; it can first tune after begin() (see _rekey_int8_plan).
+    int8_plan: Any = None
 
 
 def begin(
@@ -665,6 +675,18 @@ def begin(
 
     _register_live(cdir)
     _touch_last_used(ctx)
+    try:
+        import weakref
+
+        import torch  # noqa: PLC0415
+        from .diffusion_int8_gemm import plan_identity
+
+        ref, index = weakref.ref(transformer), torch.cuda.current_device()
+        ctx.int8_plan = lambda: plan_identity(ref(), index) if ref() is not None else ctx.model_fp.get(
+            "int8_gemm_cublas"
+        )
+    except Exception:  # noqa: BLE001 - no CUDA / not weak-referenceable: keyed as begin() saw it
+        pass
 
     # Collect here as well as after a save, because the grace window can otherwise leak a bundle for
     # good: two saves for one key inside 60 s leave the first one too young to collect, and the
@@ -932,10 +954,34 @@ def _collect_superseded(cdir: Path, logger: Any) -> list[str]:
     return removed
 
 
+def _rekey_int8_plan(ctx: CacheContext) -> None:
+    """A first-time int8 latency-gate tune runs after begin(): save under the key of the plan the graphs were traced
+    with, so the next load (which reads that plan at begin) hits."""
+    if ctx.int8_plan is None:
+        return
+    ident = ctx.int8_plan()
+    if ident == ctx.model_fp.get("int8_gemm_cublas"):
+        return
+    model_fp = {k: v for k, v in ctx.model_fp.items() if k != "int8_gemm_cublas"}
+    if ident:
+        model_fp["int8_gemm_cublas"] = ident
+    key = cache_key(ctx.env_fp, model_fp)
+    cdir = cache_root() / key
+    _unregister_live(ctx.dir)
+    _register_live(cdir)
+    ctx.key, ctx.dir, ctx.model_fp = key, cdir, model_fp
+    ctx.bundle, ctx.manifest_path = cdir / _BUNDLE_NAME, cdir / _MANIFEST_NAME
+    ctx.rejected_bundle = None
+
+
 def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     """The save itself. Runs on the caller's thread (``save``) or the worker (``save_async``)."""
     if not _save_enabled(ctx.mode) or ctx.saved:
         return False
+    try:
+        _rekey_int8_plan(ctx)
+    except Exception as exc:  # noqa: BLE001 - keep begin()'s key
+        _warn(logger, f"compile-cache: int8 plan re-key failed: {exc}")
     # Read BEFORE the artifacts are collected: anything registered from here on is not in `data`, and iterating the
     # live set while the request thread adds to it is a "set changed size during iteration" away from failing.
     with _dirty_lock:

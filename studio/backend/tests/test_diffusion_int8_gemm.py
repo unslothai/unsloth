@@ -1206,6 +1206,55 @@ def test_latency_gate_save_merges_slots_another_process_stored(tmp_path):
     assert g8._load_plan(path, "k") == {(64, 64, 0): g8._CUBLAS, (128, 64, 0): g8._CUBLAS}
 
 
+def test_latency_gate_concurrent_saves_keep_both_slots(monkeypatch, tmp_path):
+    import threading
+
+    path = str(tmp_path / "tune.json")
+    load, other = g8._load_plan, []
+
+    def racing_load(p, key):
+        out = load(p, key)
+        if not other:  # first reload: a second process saves in between our reload and replace
+            other.append(
+                threading.Thread(target = g8._save_plan, args = (path, "k", {(128, 64, 0): g8._CUBLAS}, {}))
+            )
+            other[0].start()
+            other[0].join(0.5)
+        return out
+
+    monkeypatch.setattr(g8, "_load_plan", racing_load)
+    g8._save_plan(path, "k", {(64, 64, 0): g8._CUBLAS}, {})
+    other[0].join()
+    assert load(path, "k") == {(64, 64, 0): g8._CUBLAS, (128, 64, 0): g8._CUBLAS}
+
+
+@needs_cuda
+def test_latency_gate_first_tune_rekeys_the_compile_bundle(monkeypatch, tmp_path):
+    from core.inference import diffusion_compile_cache as cc
+
+    monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
+    monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path / "tune"))
+    monkeypatch.setenv(cc._ENV_MODE, "on")
+    monkeypatch.setenv(cc._ENV_DIR, str(tmp_path / "cc"))
+    monkeypatch.setattr(torch.compiler, "save_cache_artifacts", lambda: (b"A", None), raising = False)
+    monkeypatch.setattr(torch.compiler, "load_cache_artifacts", lambda data: object(), raising = False)
+    model = torch.nn.Sequential(_int8_linear(1024, 768, True, 2))
+    kw = dict(family = "f", dtype = "bf16", quant = "int8", attention_backend = None, compile_kwargs = {})
+    ctx = cc.begin(transformer = model, **kw)
+    assert ctx is not None and not ctx.hit
+    # first-time tuning after begin(), as _swap does: cuBLAS for one bucket, stored for the next load
+    index = torch.cuda.current_device()
+    key = g8.toolchain_key(index)
+    g8._DEVICE_PLAN[index] = {(768, 1024, 2): g8._CUBLAS}
+    g8._save_plan(g8._tune_path(key), key, {(768, 1024, 2): g8._CUBLAS}, {})
+    assert cc.save(ctx)
+    cc.restore(ctx)
+    g8._DEVICE_PLAN.clear()
+    ctx2 = cc.begin(transformer = model, **kw)
+    assert ctx2.hit and ctx2.key == ctx.key
+    cc.restore(ctx2)
+
+
 @needs_cuda
 def test_latency_gate_toolchain_key_tracks_the_driver(monkeypatch):
     index = torch.cuda.current_device()

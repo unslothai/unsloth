@@ -45,6 +45,7 @@ call sees the onloaded copy. Kill switch ``UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED=
 
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import types
@@ -994,7 +995,7 @@ def _driver_version() -> str:
     return "unknown"
 
 
-def plan_identity(transformer: Any) -> Optional[str]:
+def plan_identity(transformer: Any, index: Optional[int] = None) -> Optional[str]:
     """The cuBLAS slots the latency gate holds for this transformer's shapes on the current device, or None (all
     fused / gate off). Those slots trace the stock graph instead of the op, so the compile cache keys on them. No
     timing: the in-memory plan, else the stored file."""
@@ -1012,7 +1013,7 @@ def plan_identity(transformer: Any) -> Optional[str]:
         }
         if not shapes:
             return None
-        index = torch.cuda.current_device()
+        index = torch.cuda.current_device() if index is None else index
         key = toolchain_key(index) + ("" if tiles_enabled() else "|tiles0")
         plan = {**_load_plan(_tune_path(key), key), **_DEVICE_PLAN.get(index, {})}
         slots = sorted(s for s, c in plan.items() if c == _CUBLAS and s[:2] in shapes)
@@ -1057,34 +1058,45 @@ def _load_plan(path: Optional[str], key: str) -> dict:
 
 
 def _save_plan(path: Optional[str], key: str, plan: dict, timings: dict) -> None:
-    import json
     if path is None:
         return
     try:
         os.makedirs(os.path.dirname(path), exist_ok = True)
-        # merge what another process stored since our load, so concurrent tunes do not drop each other's slots
-        plan = {**_load_plan(path, key), **plan}
         try:
-            with open(path, encoding = "utf-8") as f:
-                old = json.load(f)
-            if old.get("key") == key:
-                timings = {**old.get("ms", {}), **timings}
-        except Exception:  # noqa: BLE001
-            pass
-        data = {
-            "key": key,
-            "plan": {
-                f"{n},{k},{b}": (c if c == _CUBLAS else list(c))
-                for (n, k, b), c in sorted(plan.items())
-            },
-            "ms": timings,
-        }
-        tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding = "utf-8") as f:
-            json.dump(data, f, indent = 1, sort_keys = True)
-        os.replace(tmp, path)
-    except Exception:  # noqa: BLE001 - read-only cache: timed again next load
+            from filelock import FileLock
+
+            lock: Any = FileLock(f"{path}.lock", timeout = 60)
+        except ImportError:
+            lock = contextlib.nullcontext()
+        with lock:
+            _merge_and_write(path, key, plan, timings)
+    except Exception:  # noqa: BLE001 - read-only cache / lock timeout: timed again next load
         pass
+
+
+def _merge_and_write(path: str, key: str, plan: dict, timings: dict) -> None:
+    """Under the file lock: merge what another process stored since our load, then replace."""
+    import json
+
+    plan = {**_load_plan(path, key), **plan}
+    try:
+        with open(path, encoding = "utf-8") as f:
+            old = json.load(f)
+        if old.get("key") == key:
+            timings = {**old.get("ms", {}), **timings}
+    except Exception:  # noqa: BLE001
+        pass
+    data = {
+        "key": key,
+        "plan": {
+            f"{n},{k},{b}": (c if c == _CUBLAS else list(c)) for (n, k, b), c in sorted(plan.items())
+        },
+        "ms": timings,
+    }
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(tmp, "w", encoding = "utf-8") as f:
+        json.dump(data, f, indent = 1, sort_keys = True)
+    os.replace(tmp, path)
 
 
 def _time_ms(
