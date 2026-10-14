@@ -2769,3 +2769,61 @@ def test_server_failure_drops_a_cached_sd_cli_of_the_failed_build(monkeypatch):
     assert asked == ["cpu"]
     assert b._state is not None and b._state.mode == "oneshot"
     assert b._state.sd_accelerator == "cpu"
+
+
+def test_a_deferred_cuda_upgrade_keeps_the_selected_card(monkeypatch):
+    # A CUDA load starts on the resident CPU bundle (placed on the CPU) and the deferred upgrade then
+    # lands the CUDA build: the server must still be pinned to the card the route selected.
+    b = SdCppDiffusionBackend()
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/x/sd-server")
+    monkeypatch.setattr(bk, "_server_binary_runnable", lambda *_a, **_k: True)
+    monkeypatch.setattr(bk, "ensure_sd_server_binary", lambda **_k: "/x/sd-server")
+    started = []
+
+    class _Server:
+        def __init__(self, binary):
+            pass
+
+        def start(self, *a, **k):
+            started.append(k.get("offload"))
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(bk, "SdCppServer", _Server)
+    fake = _FakeEngine()
+    _shared_setup_1(b, fake, monkeypatch)
+    monkeypatch.setattr(
+        bk, "resolve_diffusion_device_target", lambda: types.SimpleNamespace(device = "cuda")
+    )
+    installed = {"/x/sd-server": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: installed.get(binary))
+
+    def _upgrade(server_binary, **_k):
+        installed["/x/sd-server"] = "cuda"
+        return server_binary
+
+    monkeypatch.setattr(b, "_upgraded_or_refused", _upgrade)
+    monkeypatch.setattr(b, "_resolved_accelerator", lambda card = None: "cuda")
+    pins = []
+    monkeypatch.setattr(
+        bk,
+        "_offload_with_device_pin_impl",
+        lambda offload, binary, ordinal: pins.append(ordinal) or list(offload),
+    )
+    # The resident CPU bundle is in use, so _resolve_backend defers the upgrade to the teardown.
+    monkeypatch.setattr(bk, "_managed_tree_in_use", lambda: True)
+    fam = detect_family("z-image")
+    b._load_token = 1
+    b._run_load(
+        repo_id = "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z.gguf",
+        base = fam.base_repo,
+        fam = fam,
+        hf_token = None,
+        _load_token = 1,
+        gpu_ordinal = 1,
+    )
+    assert started, "the server must start"
+    assert pins and all(p == 1 for p in pins), pins
+    assert b._state is not None and b._state.device == "cuda"

@@ -319,7 +319,7 @@ def test_only_a_render_node_of_the_listed_vendor_counts(monkeypatch, tmp_path):
     import glob
 
     monkeypatch.undo()  # the real helper, not the fixture's stub
-    vendors = {"renderD128": "0x1af4", "renderD129": "0x1002"}  # virtio, then AMD
+    vendors = {"renderD128": "0x8086", "renderD129": "0x1002"}  # Intel, then AMD
     real_open = builtins.open
 
     def _open(path, *a, **k):
@@ -336,7 +336,11 @@ def test_only_a_render_node_of_the_listed_vendor_counts(monkeypatch, tmp_path):
     assert r._accessible_render_vendors({"amd"}) == set()
     accessible.add("/dev/dri/renderD129")
     assert r._accessible_render_vendors({"amd"}) == {"amd"}
-    assert r._accessible_render_vendors({"intel"}) == set()
+    assert r._accessible_render_vendors({"amd", "intel"}) == {"amd", "intel"}
+    # A virtio-gpu (Venus) node beside the card: unpinned sd.cpp could pick it.
+    vendors["renderD130"] = "0x1af4"
+    accessible.add("/dev/dri/renderD130")
+    assert r._accessible_render_vendors({"amd"}) == set()
 
 
 @pytest.mark.parametrize("var", ["VK_LOADER_DRIVERS_DISABLE", "VK_LOADER_DRIVERS_SELECT"])

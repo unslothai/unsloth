@@ -193,7 +193,8 @@ _RENDER_NODE_VENDORS = {"0x1002": "amd", "0x8086": "intel"}
 
 def _accessible_render_vendors(vendors) -> set:
     """Which of ``vendors`` have a readable and writable /dev/dri render node. A container can list
-    a card in sysfs without mounting its node, and Vulkan then sees no device."""
+    a card in sysfs without mounting its node, and Vulkan then sees no device. Empty when another
+    vendor's GPU (virtio, VMware) also has a node, since unpinned sd.cpp could take it first."""
     import glob
 
     found = set()
@@ -202,9 +203,12 @@ def _accessible_render_vendors(vendors) -> set:
             with open(
                 f"/sys/class/drm/{os.path.basename(node)}/device/vendor", encoding = "utf-8"
             ) as f:
-                vendor = _RENDER_NODE_VENDORS.get(f.read().strip().lower())
+                pci_vendor = f.read().strip().lower()
         except OSError:
             continue
+        vendor = _RENDER_NODE_VENDORS.get(pci_vendor)
+        if vendor is None:
+            return set()
         if vendor in vendors and os.access(node, os.R_OK | os.W_OK):
             found.add(vendor)
     return found

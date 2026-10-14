@@ -3219,7 +3219,13 @@ class SdCppDiffusionBackend:
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
             # the ggml device names come from whichever build ends up running. It is added at each point the flags are
             # handed to a binary instead.
-            gpu_ordinal = gpu_ordinal if device == "cuda" else None
+            # The route's card, applied only while the placement is CUDA: a deferred upgrade can move
+            # a load placed on the CPU bundle back onto the selected GPU.
+            selected_ordinal = gpu_ordinal
+
+            def _ordinal() -> Optional[int]:
+                return selected_ordinal if device == "cuda" else None
+
             native_speed = _native_speed_for(speed_mode)
 
             # Tear down the old model then commit the new one under _generate_lock: abort and WAIT for a generation
@@ -3336,7 +3342,7 @@ class SdCppDiffusionBackend:
                             files,
                             vae_format = fam.sd_cpp_vae_format,
                             offload = _offload_with_device_pin_impl(
-                                offload, server_binary, gpu_ordinal
+                                offload, server_binary, _ordinal()
                             ),
                             native_speed = native_speed,
                             threads = _default_threads(),
@@ -3413,7 +3419,7 @@ class SdCppDiffusionBackend:
                     _offload_with_device_pin_impl(
                         offload,
                         server_binary if mode == "server" else getattr(engine, "binary", None),
-                        gpu_ordinal,
+                        _ordinal(),
                     )
                 )
                 state = _SdState(
@@ -3449,7 +3455,7 @@ class SdCppDiffusionBackend:
                         _resolved_server_physical_gpu_id(
                             server_binary,
                             device,
-                            gpu_ordinal,
+                            _ordinal(),
                             committed_offload_flags,
                         )
                         if mode == "server" and off_torch is None
