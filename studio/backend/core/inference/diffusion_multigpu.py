@@ -1241,6 +1241,24 @@ def _rebuild(template: Any, values: dict, path: tuple = (), depth: int = 0) -> A
     return values[path]
 
 
+# A per-call scalar the pipeline recomputes inline (``timestep / 1000``) is a new object with the primary call's value.
+_SMALL_TENSOR_NUMEL = 4096
+
+
+def _bitwise_equal(a: Any, b: Any) -> bool:
+    torch = _torch()
+    if not (isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor)):
+        return False
+    if a.shape != b.shape or a.dtype != b.dtype or a.device != b.device:
+        return False
+    if a is b:
+        return True
+    try:
+        return bool(torch.equal(a.reshape(-1).contiguous().view(torch.uint8), b.reshape(-1).contiguous().view(torch.uint8)))
+    except Exception:  # noqa: BLE001 - a layout that cannot be viewed as bytes is never assumed equal
+        return False
+
+
 def _same_value(a: Any, b: Any) -> bool:
     if a is b:
         return True
@@ -1394,6 +1412,15 @@ class CfgParallelRouter:
                     kinds[path] = ("latent",)
                 elif id(leaf) in b0_by_id and self.b0_leaves.get(b0_by_id[id(leaf)]) is leaf:
                     kinds[path] = ("b0", b0_by_id[id(leaf)])
+                elif (
+                    isinstance(self.b0_leaves.get(path), torch.Tensor)
+                    and leaf.numel() <= _SMALL_TENSOR_NUMEL
+                    and _bitwise_equal(leaf, self.b0_leaves[path])
+                ):
+                    # Recomputed per call with the primary call's value (``timestep / 1000``): predicted from the
+                    # primary call, verified bitwise at the branch. The check reads a few bytes; the branches are
+                    # waited on right after anyway.
+                    kinds[path] = ("b0eq", path)
                 else:
                     kinds[path] = ("const", leaf)
             else:
@@ -1408,7 +1435,7 @@ class CfgParallelRouter:
         for path, kind in kinds.items():
             if kind[0] == "latent":
                 values[path] = latent
-            elif kind[0] == "b0":
+            elif kind[0] in ("b0", "b0eq"):
                 if kind[1] not in self.b0_leaves:
                     return None
                 values[path] = self.b0_leaves[kind[1]]
@@ -1430,8 +1457,10 @@ class CfgParallelRouter:
         except Exception:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
             return
         replica = self.replica
+        _structure, kinds = self.template
         self.pending = {
             "leaves": _leaves((p_args, p_kwargs)),
+            "by_value": {path for path, kind in kinds.items() if kind[0] == "b0eq"},
             "job": self.worker.submit(lambda: replica(*r_args, **r_kwargs)),
         }
 
@@ -1441,8 +1470,10 @@ class CfgParallelRouter:
             return None
         actual = _leaves((args, kwargs))
         predicted = pending["leaves"]
+        by_value = pending["by_value"]
         ok = len(actual) == len(predicted) and all(
-            pa == pp and _same_value(va, vp) for (pa, va), (pp, vp) in zip(actual, predicted)
+            pa == pp and (_bitwise_equal(va, vp) if pa in by_value else _same_value(va, vp))
+            for (pa, va), (pp, vp) in zip(actual, predicted)
         )
         try:
             out = _ReplicaWorker.wait(pending["job"])

@@ -908,3 +908,33 @@ def test_mispredicted_branch_is_recomputed_exactly():
     assert torch.equal(out, reference)
     assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
     assert router.stats["replica_calls"] == 4  # still on the replica, just not overlapped
+
+
+def test_inline_recomputed_scalars_are_predicted_by_value():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    cond = torch.randn(3, 4)
+    uncond = torch.randn(3, 4)
+
+    def loop(steps):
+        x = latents.clone()
+        for i in range(steps):
+            t = torch.tensor(1000.0 * (1.0 - i / steps))
+            a = dit(hidden_states = x, timestep = t / 1000, encoder_hidden_states = cond)[0]  # fresh object per call
+            b = dit(hidden_states = x, timestep = t / 1000, encoder_hidden_states = uncond)[0]
+            x = x - 0.1 * (b + 4.0 * (a - b))
+        return x
+
+    reference = loop(6)
+    router, _replicas = _router(dit)
+    out = loop(6)
+    assert torch.equal(out, reference)
+    assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
+
+
+def test_bitwise_equal_distinguishes_signed_zero():
+    assert mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([0.0]))
+    assert mg._bitwise_equal(torch.tensor(0.5), torch.tensor(1.0) / 2)  # 0-dim, as an inline timestep / 1000
+    assert not mg._bitwise_equal(torch.tensor([0.0]), torch.tensor([-0.0]))
+    assert not mg._bitwise_equal(torch.tensor([1.0]), torch.tensor([1.0], dtype = torch.float64))
