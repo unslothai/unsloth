@@ -5,7 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
 import { pageRequests } from "./page-requests";
-import { onPageStorageClear, pageOrigin, readPageStorage, writePageStorage } from "./page-storage";
+import {
+  onPageStorageClear,
+  onPageStorageWrite,
+  type PageStorageArea,
+  pageOrigin,
+  readPageStorage,
+  writePageStorage,
+} from "./page-storage";
 
 export type { FrameMessage };
 
@@ -20,6 +27,7 @@ export type FrameCommand =
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
   | { command: "clearStorage" }
+  | { command: "storageSync"; area: PageStorageArea; key: string | null; value: string | null }
   | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
@@ -185,7 +193,7 @@ export function PageFrame({
         return;
       }
       if (message.type === "storage") {
-        if (origin) writePageStorage(origin, tabIdRef.current, message.area, message.key, message.value);
+        if (origin) writePageStorage(origin, tabIdRef.current, message.area, message.key, message.value, frame);
         return;
       }
       if (isUserAction(message)) {
@@ -208,9 +216,17 @@ export function PageFrame({
     };
     window.addEventListener("message", listener);
     const stopClearing = onPageStorageClear(() => sendFrameCommand(tabIdRef.current, { command: "clearStorage" }));
+    // sessionStorage belongs to one tab, which shows one page.
+    const stopSyncing = onPageStorageWrite(({ origin: site, area, key, value, from }) => {
+      const target = frameRef.current;
+      if (!target || from === target || site !== origin || area === "session") return;
+      const command: FrameCommand = { command: "storageSync", area, key, value };
+      target.contentWindow?.postMessage({ type: "unsloth:browser-command", ...command }, "*");
+    });
     return () => {
       window.removeEventListener("message", listener);
       stopClearing();
+      stopSyncing();
       requests.stop();
     };
   }, [origin]);

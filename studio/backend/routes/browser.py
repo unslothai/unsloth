@@ -187,7 +187,7 @@ _PAGE_STORAGE_JS = r"""
           type: "storage", area, key,
           value: key !== null && value !== null && key.length + value.length <= 131072 ? value : null,
         });
-        const pageStores = [];
+        const pageStores = {};
         const pageStore = (area) => {
           const data = new Map(cfg.storage?.[area] || []);
           const store = {
@@ -206,14 +206,27 @@ _PAGE_STORAGE_JS = r"""
               sync(area, null, null);
             },
           };
-          pageStores.push(store);
+          pageStores[area] = store;
           return store;
         };
-        // Clearing browsing data empties the open page's copy too, so it can't write the data back.
+        const text = (value) => value === null || typeof value === "string";
         window.addEventListener("message", (event) => {
           const data = event.data;
-          if (event.source !== parent || !data || data.type !== "unsloth:browser-command" || data.command !== "clearStorage") return;
-          for (const store of pageStores) store.data.clear();
+          if (event.source !== parent || !data || data.type !== "unsloth:browser-command") return;
+          // Clearing browsing data empties the open page's copy too, so it can't write the data back.
+          if (data.command === "clearStorage") for (const store of Object.values(pageStores)) store.data.clear();
+          // Another open page of this site changed its data, as other tabs do in a browser.
+          else if (data.command === "storageSync" && (data.area === "local" || data.area === "cookie") && text(data.key) && text(data.value)) {
+            const store = pageStores[data.area];
+            if (!store) return;
+            const oldValue = data.key === null ? null : (store.data.get(data.key) ?? null);
+            if (data.key === null) store.data.clear();
+            else if (data.value === null) store.data.delete(data.key);
+            else store.data.set(data.key, data.value);
+            if (data.area === "local") {
+              try { window.dispatchEvent(new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url: cfg.url || "" })); } catch {}
+            }
+          }
         });
         for (const [name, area] of [["localStorage", "local"], ["sessionStorage", "session"]]) {
           try { void window[name]; } catch {
@@ -262,13 +275,23 @@ _PAGE_STORAGE_JS = r"""
             if (key === "max-age" && /^-?\d+$/.test(setting)) maxAge = Number(setting);
             else if (key === "expires") expires = Date.parse(setting);
           }
-          const expired = maxAge !== null ? maxAge <= 0 : expires !== null && expires <= Date.now();
-          if (expired) cookies.remove(name);
-          else cookies.set(name, value);
+          const deadline = maxAge !== null ? Date.now() + maxAge * 1000 : expires !== null && !Number.isNaN(expires) ? expires : null;
+          if (deadline !== null && deadline <= Date.now()) cookies.remove(name);
+          // Kept as "<deadline>|<value>", so a Max-Age or Expires still ends the cookie on later pages.
+          else cookies.set(name, (deadline ?? "") + "|" + value);
+        };
+        const liveCookies = () => {
+          const live = [];
+          for (const [name, stored] of cookies.data) {
+            const at = stored.indexOf("|");
+            if (at > 0 && Number(stored.slice(0, at)) <= Date.now()) cookies.remove(name);
+            else live.push(name ? name + "=" + stored.slice(at + 1) : stored.slice(at + 1));
+          }
+          return live.join("; ");
         };
         try {
           Object.defineProperty(document, "cookie", {
-            get: () => Array.from(cookies.data, ([name, value]) => name ? name + "=" + value : value).join("; "),
+            get: liveCookies,
             set: setCookie,
             configurable: true,
           });

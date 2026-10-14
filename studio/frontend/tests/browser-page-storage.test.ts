@@ -8,7 +8,9 @@ import { runInNewContext } from "node:vm";
 import { parseFrameMessage } from "../src/features/browser/frame-message.ts";
 import {
   clearPageStorage,
+  dropTabPageStorage,
   onPageStorageClear,
+  onPageStorageWrite,
   pageOrigin,
   readPageStorage,
   writePageStorage,
@@ -19,16 +21,35 @@ const source = readFileSync(new URL("../../backend/routes/browser.py", import.me
   .split('_PAGE_STORAGE_JS = r"""')[1]
   .split('"""')[0];
 
+const clock = { now: Date.UTC(2026, 9, 15) };
+const pageDate = { now: () => clock.now, parse: Date.parse };
+class StorageEvent {
+  constructor(type: string, init: Record<string, unknown>) {
+    Object.assign(this, init, { type });
+  }
+}
+const stopPages: Array<() => void> = [];
+
+function reset() {
+  clearPageStorage();
+  for (const stop of stopPages.splice(0)) {
+    stop();
+  }
+}
+
 function openPage(url: string, tabId = "tab-1") {
   const origin = pageOrigin(url);
   const parent = {};
+  const self = {};
   const listeners: Array<(event: { source: unknown; data: unknown }) => void> = [];
+  const events: Array<{ key: string | null; newValue: string | null }> = [];
   const window = {
     addEventListener: (type: string, listener: (event: { source: unknown; data: unknown }) => void) => {
       if (type === "message") {
         listeners.push(listener);
       }
     },
+    dispatchEvent: (event: { key: string | null; newValue: string | null }) => events.push(event),
   };
   for (const name of ["localStorage", "sessionStorage"]) {
     Object.defineProperty(window, name, {
@@ -41,20 +62,33 @@ function openPage(url: string, tabId = "tab-1") {
   const document = {};
   const post = (message: Record<string, unknown>) => {
     const parsed = parseFrameMessage({ source: "unsloth-browser", ...message });
-    if (parsed?.type === "storage" && origin) writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value);
+    if (parsed?.type === "storage" && origin) writePageStorage(origin, tabId, parsed.area, parsed.key, parsed.value, self);
   };
   const cfg = { storage: origin ? readPageStorage(origin, tabId) : null };
-  runInNewContext(source, { window, document, cfg, post, parent });
+  runInNewContext(source, { window, document, cfg, post, parent, Date: pageDate, StorageEvent });
   const message = (data: unknown, source: unknown = parent) => {
     for (const listener of listeners) {
       listener({ source, data });
     }
   };
-  return { window: window as unknown as Record<string, Storage>, document: document as { cookie: string }, message };
+  // As page-frame.tsx does for every open page.
+  stopPages.push(
+    onPageStorageWrite(({ origin: site, area, key, value, from }) => {
+      if (from !== self && site === origin && area !== "session") {
+        message({ type: "unsloth:browser-command", command: "storageSync", area, key, value });
+      }
+    }),
+  );
+  return {
+    window: window as unknown as Record<string, Storage>,
+    document: document as { cookie: string },
+    message,
+    events,
+  };
 }
 
 test("a cookie set on one page is there on the same site's next page", () => {
-  clearPageStorage();
+  reset();
   const first = openPage("https://en.wikipedia.org/wiki/Cat");
   first.document.cookie = "enwikimwclientpreferences=skin-theme-clientpref-night; path=/; max-age=2592000; secure";
   first.document.cookie = "consent=yes";
@@ -64,7 +98,7 @@ test("a cookie set on one page is there on the same site's next page", () => {
 });
 
 test("expired cookies are removed", () => {
-  clearPageStorage();
+  reset();
   const page = openPage("https://example.com/");
   page.document.cookie = "a=1";
   page.document.cookie = "b=2";
@@ -75,7 +109,7 @@ test("expired cookies are removed", () => {
 });
 
 test("localStorage carries over within the site, and sessionStorage within the tab", () => {
-  clearPageStorage();
+  reset();
   const first = openPage("https://example.com/");
   first.window.localStorage.setItem("banner", "closed");
   first.window.sessionStorage.setItem("step", "2");
@@ -90,7 +124,7 @@ test("localStorage carries over within the site, and sessionStorage within the t
 });
 
 test("one site never sees another site's cookies or storage", () => {
-  clearPageStorage();
+  reset();
   const site = openPage("https://a.example/");
   site.document.cookie = "session=secret";
   site.window.localStorage.setItem("token", "secret");
@@ -105,7 +139,7 @@ test("one site never sees another site's cookies or storage", () => {
 });
 
 test("values past the quota stay in their page, and the store stays bounded", () => {
-  clearPageStorage();
+  reset();
   const page = openPage("https://example.com/");
   page.window.localStorage.setItem("small", "kept");
   page.window.localStorage.setItem("cache", "x".repeat(200 * 1024));
@@ -131,7 +165,7 @@ test("malformed storage messages are dropped", () => {
 });
 
 test("keys read and write as properties too, as on a real Storage", () => {
-  clearPageStorage();
+  reset();
   const first = openPage("https://example.com/");
   (first.window.localStorage as unknown as Record<string, string>).currentTheme = "dark";
   const next = openPage("https://example.com/docs");
@@ -146,7 +180,7 @@ test("keys read and write as properties too, as on a real Storage", () => {
 });
 
 test("a removal reaches the store for a key another tab wrote after this page loaded", () => {
-  clearPageStorage();
+  reset();
   const older = openPage("https://example.com/", "tab-1");
   const newer = openPage("https://example.com/", "tab-2");
   newer.window.localStorage.setItem("token", "t");
@@ -162,7 +196,7 @@ test("a removal reaches the store for a key another tab wrote after this page lo
 });
 
 test("clearing browsing data empties the pages that are open, too", () => {
-  clearPageStorage();
+  reset();
   const page = openPage("https://example.com/");
   page.window.localStorage.setItem("banner", "closed");
   page.document.cookie = "sid=1";
@@ -176,4 +210,49 @@ test("clearing browsing data empties the pages that are open, too", () => {
   assert.equal(page.document.cookie, "");
   page.window.localStorage.setItem("seen", "1");
   assert.deepEqual(readPageStorage("https://example.com", "tab-1"), { local: [["seen", "1"]], session: [], cookie: [] });
+});
+
+test("a cookie's Max-Age or Expires still ends it on later pages", () => {
+  reset();
+  const page = openPage("https://example.com/");
+  page.document.cookie = "flag=1; Max-Age=60";
+  page.document.cookie = `promo=shown; Expires=${new Date(clock.now + 120_000).toUTCString()}`;
+  page.document.cookie = "theme=dark";
+  assert.equal(openPage("https://example.com/next").document.cookie, "flag=1; promo=shown; theme=dark");
+  clock.now += 61_000;
+  assert.equal(page.document.cookie, "promo=shown; theme=dark");
+  clock.now += 60_000;
+  assert.equal(openPage("https://example.com/later").document.cookie, "theme=dark");
+});
+
+test("a write shows up at once in the site's other open pages", () => {
+  reset();
+  const first = openPage("https://example.com/", "tab-1");
+  const second = openPage("https://example.com/", "tab-2");
+  const other = openPage("https://other.example/", "tab-3");
+  first.window.localStorage.setItem("state", '{"theme":"dark"}');
+  first.document.cookie = "sid=1";
+  first.window.sessionStorage.setItem("step", "2");
+  assert.equal(second.window.localStorage.getItem("state"), '{"theme":"dark"}');
+  assert.equal(second.document.cookie, "sid=1");
+  assert.equal(second.window.sessionStorage.getItem("step"), null);
+  assert.equal(other.window.localStorage.getItem("state"), null);
+  assert.deepEqual(
+    second.events.map((event) => [event.key, event.newValue]),
+    [["state", '{"theme":"dark"}']],
+  );
+  first.window.localStorage.removeItem("state");
+  assert.equal(second.window.localStorage.getItem("state"), null);
+});
+
+test("a closed tab's sessionStorage is dropped", () => {
+  reset();
+  const page = openPage("https://example.com/", "tab-1");
+  page.window.sessionStorage.setItem("step", "2");
+  page.window.localStorage.setItem("banner", "closed");
+  dropTabPageStorage("tab-1");
+  const next = openPage("https://example.com/", "tab-1");
+  assert.equal(next.window.sessionStorage.getItem("step"), null);
+  assert.equal(next.window.localStorage.getItem("banner"), "closed");
+  assert.deepEqual(readPageStorage("https://example.com", "tab-1").session, []);
 });
