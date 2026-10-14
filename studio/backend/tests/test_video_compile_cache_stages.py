@@ -368,3 +368,25 @@ def test_a_failed_or_cancelled_render_dirties_the_bundle():
     finally_at = src.index("settle_compile_fallback(state, pipe, logger)")
     block = src[finally_at:src.index("_finish_denoise()", finally_at)]
     assert "mark_recompiled(compile_ctx)" in block and "not bg_eager" in block
+
+
+def test_a_direct_load_that_raises_releases_its_compile_cache_context(cache_dir, fake_megacache, monkeypatch):
+    """load_pipeline is also called without _run_load, whose rollback would otherwise be the only release."""
+    from core.inference import video as V
+
+    backend = V.VideoBackend.__new__(V.VideoBackend)
+    pipe = types.SimpleNamespace(transformer = _DiT(), components = {})
+    ctx, _ = backend._begin_stage_compile_cache(
+        token = None, roots = (pipe,), speed_optims = ("compiled",), dtype = None, quant = None, attention_backend = None
+    )
+    assert str(ctx.dir) in cc._live_dirs
+
+    def refuse(*args, **kwargs):
+        raise RuntimeError("memory plan refused")
+
+    monkeypatch.setattr(V.VideoBackend, "validate_load_request", refuse)
+    with pytest.raises(RuntimeError, match = "memory plan refused"):
+        backend.load_pipeline("org/model")
+    assert backend._precommit_compile_caches == {}
+    assert str(ctx.dir) not in cc._live_dirs
+

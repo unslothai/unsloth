@@ -3009,6 +3009,24 @@ def _return_direct_loaded_modules(
             )
 
 
+def _releases_precommit_compile_cache(fn: Any) -> Any:
+    """A load that raises before committing its state hands its compile-cache context back. ``_run_load`` rolls back
+    too, but ``load_pipeline`` is also called directly; releasing is idempotent (keyed by the load token)."""
+
+    @functools.wraps(fn)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(self, *args, **kwargs)
+        except BaseException:
+            try:
+                self._release_precommit_compile_cache(kwargs.get("_load_token"))
+            except Exception:  # noqa: BLE001 - never mask the load's own error
+                pass
+            raise
+
+    return wrapper
+
+
 class VideoBackend:
     """One loaded video pipeline; loads swap it atomically (same model as images)."""
 
@@ -6521,6 +6539,7 @@ class VideoBackend:
 
     @_invalidates_gpu_memory("video load")
     @scoped_local_files_only
+    @_releases_precommit_compile_cache
     def load_pipeline(
         self,
         repo_id: str,
