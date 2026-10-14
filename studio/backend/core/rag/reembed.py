@@ -235,7 +235,8 @@ def start() -> dict:
         # Before the worker runs: a job that ends at once must still read as started, so the
         # client follows it and announces how it ended.
         started = job.snapshot()
-    job.thread.start()
+        # Under the lock, so retirement never finds a registered job it cannot join yet.
+        job.thread.start()
     return started
 
 
