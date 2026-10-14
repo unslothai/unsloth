@@ -223,7 +223,9 @@ def test_training_scheduler_bakes_in_the_inference_flow_shift(unipc_base):
 def test_the_generic_scheduler_load_would_drop_the_shift(unipc_base):
     """The trap the spec hook exists for: FlowMatchEuler.from_pretrained on Wan's UniPC config ignores flow_shift and
     yields the identity (shift 1) table, so a run trains mostly at low noise."""
-    from diffusers import FlowMatchEulerDiscreteScheduler
+    FlowMatchEulerDiscreteScheduler = pytest.importorskip(
+        "diffusers"
+    ).FlowMatchEulerDiscreteScheduler
 
     generic = FlowMatchEulerDiscreteScheduler.from_pretrained(
         unipc_base.base_model, subfolder = "scheduler"
