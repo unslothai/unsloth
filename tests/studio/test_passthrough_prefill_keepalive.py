@@ -60,6 +60,9 @@ def _load_pump():
         "_DEFAULT_STREAM_STALL_TIMEOUT_S": 120.0,
         "_DEFAULT_FIRST_TOKEN_TIMEOUT_S": 1200.0,
         "_first_token_timeout_s": lambda: 1200.0,
+        "start_first_token_wait": lambda seconds: time.monotonic() + seconds,
+        "finish_first_token_wait": lambda: None,
+        "socket_timeout": lambda seconds: seconds if math.isfinite(seconds) else None,
         "_TEARDOWN_TASK_STOP_TIMEOUT_S": 5.0,
         "_set_stream_response_read_timeout": lambda response, read_timeout_s = None: None,
         "_discard_task_outcome": lambda task: None,
@@ -313,6 +316,7 @@ def _load_env_accessors():
         "os": __import__("os"),
         "math": math,
         "_DEFAULT_FIRST_TOKEN_TIMEOUT_S": 1200.0,
+        "configured_first_token_timeout_s": lambda: 1200.0,
     }
     exec("\n\n".join(chunks), ns)
     return ns

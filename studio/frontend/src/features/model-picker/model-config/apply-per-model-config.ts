@@ -39,13 +39,29 @@ export function applyPerModelConfigToRuntime(
   const engine = config.engine ?? "auto";
   const engineParallelism = config.engineParallelism ?? "tensor";
   const enginePrecision = config.enginePrecision ?? "auto";
+  const engineKvCacheDtype = config.engineKvCacheDtype ?? "auto";
+  const engineSeed = config.engineSeed ?? null;
+  const engineGpuMemoryUtilization = config.engineGpuMemoryUtilization ?? null;
   if (
     maxSeqLength !== store.params.maxSeqLength ||
     engine !== (store.params.engine ?? "auto") ||
     enginePrecision !== (store.params.enginePrecision ?? "auto") ||
-    engineParallelism !== (store.params.engineParallelism ?? "tensor")
+    engineParallelism !== (store.params.engineParallelism ?? "tensor") ||
+    engineKvCacheDtype !== (store.params.engineKvCacheDtype ?? "auto") ||
+    engineSeed !== (store.params.engineSeed ?? null) ||
+    engineGpuMemoryUtilization !==
+      (store.params.engineGpuMemoryUtilization ?? null)
   ) {
-    store.setParams({ ...store.params, maxSeqLength, engine, enginePrecision, engineParallelism });
+    store.setParams({
+      ...store.params,
+      maxSeqLength,
+      engine,
+      enginePrecision,
+      engineParallelism,
+      engineKvCacheDtype,
+      engineSeed,
+      engineGpuMemoryUtilization,
+    });
   }
   const gpuSelection =
     config.selectedGpuIds !== undefined
@@ -124,6 +140,9 @@ export function currentRuntimePerModelConfig(
     engine: s.params.engine ?? "auto",
     enginePrecision: s.params.enginePrecision ?? "auto",
     engineParallelism: s.params.engineParallelism ?? "tensor",
+    engineKvCacheDtype: s.params.engineKvCacheDtype ?? "auto",
+    engineSeed: s.params.engineSeed ?? null,
+    engineGpuMemoryUtilization: s.params.engineGpuMemoryUtilization ?? null,
     customContextLength: s.customContextLength ?? null,
     maxSeqLength: options.includeMaxSeqLength
       ? normalizeMaxSeqLength(s.params.maxSeqLength)
@@ -177,6 +196,10 @@ export function perModelConfigsEqual(
     (a.engine ?? "auto") === (b.engine ?? "auto") &&
     (a.enginePrecision ?? "auto") === (b.enginePrecision ?? "auto") &&
     (a.engineParallelism ?? "tensor") === (b.engineParallelism ?? "tensor") &&
+    (a.engineKvCacheDtype ?? "auto") === (b.engineKvCacheDtype ?? "auto") &&
+    (a.engineSeed ?? null) === (b.engineSeed ?? null) &&
+    (a.engineGpuMemoryUtilization ?? null) ===
+      (b.engineGpuMemoryUtilization ?? null) &&
     (a.customContextLength ?? null) === (b.customContextLength ?? null) &&
     normalizeMaxSeqLength(a.maxSeqLength) ===
       normalizeMaxSeqLength(b.maxSeqLength) &&
