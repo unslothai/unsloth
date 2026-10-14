@@ -61,7 +61,7 @@ _SCHEME_ALTERNATION = "|".join(
 _HSPACE = "[ \\t\u00a0\u2000-\u200a\u202f\u205f\u3000]"
 # Spaces around "=" only after an identifier-like name (nonce, keyId), so a padded token68
 # followed by prose ("Zm9vYmE= kubernetes") does not read as a parameter.
-_AUTH_PARAM = r"""(?:[\w!#$%&'*+.^`|~-]+=|(?-i:[A-Z]?[a-z][a-z_-]*(?:[A-Z][a-z_-]+)*|[A-Z][A-Z_-]*)\*?[ \t]+=[ \t]*|(?=[A-Za-z_-]{1,15}\*?=)(?-i:[A-Z]?[a-z][a-z_-]*(?:[A-Z][a-z_-]+)*|[A-Z][A-Z_-]*)\*?=[ \t]*)(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
+_AUTH_PARAM = r"""(?:[\w!#$%&'*+.^`|~-]+=|[\w!#$%&'*+.^`|~-]+[ \t]+=[ \t]*|(?=[A-Za-z_-]{1,15}\*?=)(?-i:[A-Z]?[a-z][a-z_-]*(?:[A-Z][a-z_-]+)*|[A-Z][A-Z_-]*)\*?=[ \t]*)(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
     r"[ \t]", _HSPACE
 )
 _QUERY_AUTHORIZATION = re.compile(
