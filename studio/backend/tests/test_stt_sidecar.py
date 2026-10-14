@@ -1623,7 +1623,11 @@ def test_bounded_decoder_rejects_malformed_audio(audio):
 
 
 def _mp3(av, rate, seconds):
-    tone = (0.3 * np.sin(np.arange(int(rate * seconds)) * 0.06) * 32767).astype(np.int16).reshape(1, -1)
+    tone = (
+        (0.3 * np.sin(np.arange(int(rate * seconds)) * 0.06) * 32767)
+        .astype(np.int16)
+        .reshape(1, -1)
+    )
     buf = io.BytesIO()
     with av.open(buf, mode = "w", format = "mp3") as out:
         stream = out.add_stream("libmp3lame", rate = rate, layout = "mono")
