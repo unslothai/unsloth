@@ -805,3 +805,68 @@ def test_portability_looks_inside_captured_containers():
     assert not mg._portable(lambda m, a: holder)
     plain = {"scale": 2.0}
     assert mg._portable(lambda m, a: plain)
+
+
+class _BlockDit(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.proj_in = torch.nn.Linear(4, 4)
+        self.blocks = torch.nn.ModuleList([torch.nn.Linear(4, 4) for _ in range(3)])
+
+    def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        x = self.proj_in(hidden_states) * timestep
+        for block in self.blocks:
+            x = block(x) + encoder_hidden_states.sum()
+        return (x,)
+
+
+def test_replica_drops_group_offload_and_stays_exact():
+    from diffusers.hooks import apply_group_offloading
+
+    torch.manual_seed(0)
+    dit = _BlockDit()
+    latents = torch.randn(2, 4)
+    reference = _cfg_loop(dit, latents.clone(), steps = 4)
+    apply_group_offloading(
+        dit,
+        onload_device = torch.device("cpu"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+    )
+    assert mg._hooks_present(dit) is None
+    assert mg._registry_kind(dit) == "offload"
+    router, replicas = _router(dit)
+    out = _cfg_loop(dit, latents.clone(), steps = 4)
+    assert torch.equal(out, reference)
+    assert router.stats["replica_calls"] == 3
+    replica = replicas[0]
+    for sub in replica.modules():
+        assert "_diffusers_hook" not in sub.__dict__
+        assert "forward" not in sub.__dict__
+
+
+def test_step_cache_registry_is_declined():
+    class Registry:
+        hooks = {"first_block_cache": object()}
+
+    dit = _Dit()
+    dit._diffusers_hook = Registry()
+    assert "first_block_cache" in mg._hooks_present(dit)
+
+
+def test_offload_torch_hooks_are_stripped_from_the_replica():
+    dit = _Dit()
+    source = dit.proj
+    calls = []
+
+    def prefetch_begin(module, args):  # captures the source, as a prefetcher does
+        calls.append(source)
+
+    prefetch_begin.__module__ = "core.inference.diffusion_offload_prefetch"
+    dit.proj.register_forward_pre_hook(prefetch_begin)
+    assert mg._hooks_present(dit) is None
+    replica = mg.build_replica(dit, torch.device("cpu"))
+    assert not replica.proj._forward_pre_hooks
+    replica(hidden_states = torch.ones(1, 4), timestep = torch.tensor(1.0), encoder_hidden_states = torch.ones(1, 4))
+    assert calls == []

@@ -894,14 +894,58 @@ _ROOT_HOOK_DICTS = (
 )
 
 
+# Offload machinery moves weights between host and card without changing the math. A replica holds its weights
+# resident, so it drops these instead of inheriting them.
+_OFFLOAD_REGISTRY_HOOKS = frozenset({"group_offloading", "layer_execution_tracker", "lazy_prefetch_group_offloading"})
+_OFFLOAD_MODULE_MARKERS = (
+    "diffusers.hooks.group_offloading",
+    "diffusers.hooks.hooks",
+    "accelerate.hooks",
+    "diffusion_offload_prefetch",
+    "diffusion_small_host",
+    "diffusion_pinned_arena",
+)
+
+
+def _origin_modules(fn: Any) -> list[str]:
+    out: list[str] = []
+    seen = 0
+    while fn is not None and seen < 6:
+        seen += 1
+        out.append(str(getattr(fn, "__module__", "") or ""))
+        out.append(str(getattr(type(fn), "__module__", "") or ""))
+        fn = getattr(fn, "__wrapped__", None) or getattr(fn, "__func__", None) or getattr(fn, "func", None)
+    return out
+
+
+def _is_offload_object(obj: Any) -> bool:
+    return any(marker in mod for mod in _origin_modules(obj) for marker in _OFFLOAD_MODULE_MARKERS)
+
+
+def _registry_kind(sub: Any) -> str:
+    """'none', 'offload' (only group-offload hooks) or 'other' for a module's diffusers hook registry."""
+    registry = sub.__dict__.get("_diffusers_hook")
+    hooks = getattr(registry, "hooks", None) if registry is not None else None
+    if not hooks:
+        return "none"
+    return "offload" if set(hooks) <= _OFFLOAD_REGISTRY_HOOKS else "other"
+
+
 def _portable(fn: Any, depth: int = 0) -> bool:
     """True when a hook / forward override can be shared by a copy of its module: nothing it captures (closure cells,
-    bound ``self``, partial arguments) is a module or a CUDA tensor, which would keep pointing at the source card."""
+    bound ``self``, partial arguments, the attributes of a captured object) is a module or a CUDA tensor, which would
+    keep pointing at the source card."""
     torch = _torch()
     if depth > 3:
         return False
     if isinstance(fn, torch.nn.Module) or (isinstance(fn, torch.Tensor) and fn.device.type != "cpu"):
         return False
+    if isinstance(fn, (list, tuple, set)):
+        return all(_portable(v, depth + 1) for v in fn)
+    if isinstance(fn, dict):
+        return all(_portable(v, depth + 1) for v in fn.values())
+    if isinstance(fn, (str, bytes, int, float, bool, type(None), torch.Tensor, torch.dtype, torch.device, type)):
+        return True
     if isinstance(fn, (types.FunctionType, types.MethodType)):
         owner = getattr(fn, "__self__", None)
         if owner is not None and not _portable(owner, depth + 1):
@@ -912,51 +956,65 @@ def _portable(fn: Any, depth: int = 0) -> bool:
                 value = cell.cell_contents
             except ValueError:  # empty cell
                 continue
-            if isinstance(value, dict):
-                value = list(value.values())
-            items = value if isinstance(value, (list, tuple, set)) else (value,)
-            for item in items:
-                if callable(item) or isinstance(item, (torch.nn.Module, torch.Tensor)):
-                    if not _portable(item, depth + 1):
-                        return False
+            if not _portable(value, depth + 1):
+                return False
         return True
     partial_func = getattr(fn, "func", None)
     if partial_func is not None and hasattr(fn, "args"):
         return _portable(partial_func, depth + 1) and all(
             _portable(a, depth + 1) for a in (*fn.args, *(getattr(fn, "keywords", None) or {}).values())
         )
-    if callable(fn) and not isinstance(fn, type):
-        # a hook object: portable when none of its attributes is a module / CUDA tensor
-        state = getattr(fn, "__dict__", {})
-        return all(_portable(v, depth + 1) for v in state.values() if callable(v) or isinstance(v, torch.Tensor))
+    # any other object (a hook object, a captured state holder): portable when its attributes are
+    state = getattr(fn, "__dict__", None)
+    if isinstance(state, dict):
+        return all(_portable(v, depth + 1) for v in state.values())
     return True
 
 
 def _hooks_present(module: Any) -> Optional[str]:
-    """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: an offload / cache
-    hook registry anywhere, or a forward hook / instance forward override below the root whose captured state points
-    at the source (deepcopy treats functions as atoms). The ROOT's torch forward hooks are fine: the source module's
-    ``__call__`` runs them around the router for every branch, and :func:`build_replica` strips them from the copy."""
+    """Name of the first submodule carrying state a replica cannot inherit faithfully, else None: a non-offload hook
+    registry (step caches), an accelerate hook, or a forward hook / instance forward override below the root whose
+    captured state points at the source (deepcopy treats functions as atoms). Offload machinery (diffusers group
+    offloading, Studio's prefetchers) is dropped by :func:`build_replica`, which holds every weight resident. The
+    ROOT's torch forward hooks are fine: the source module's ``__call__`` runs them around the router for every
+    branch, and the copy does not carry them."""
     for name, sub in module.named_modules():
-        if getattr(sub, "_diffusers_hook", None) is not None:
-            registry = sub._diffusers_hook
-            hooks = getattr(registry, "hooks", None)
-            if hooks:
-                return f"{name or '<root>'}._diffusers_hook"
+        kind = _registry_kind(sub)
+        if kind == "other":
+            return f"{name or '<root>'}._diffusers_hook ({', '.join(sorted(sub._diffusers_hook.hooks))})"
         if getattr(sub, "_hf_hook", None) is not None:
             return f"{name or '<root>'}._hf_hook"
         if name:
             for attr in ("_forward_hooks", "_forward_pre_hooks"):
                 for hook in (getattr(sub, attr, None) or {}).values():
-                    if not _portable(hook):
+                    if not _is_offload_object(hook) and not _portable(hook):
                         return f"{name}.{attr}"
         override = sub.__dict__.get("forward")
         if override is None or isinstance(override, (types.MethodType, CfgParallelRouter)):
             # bound methods are rebound to the copy, the router is dropped
             continue
+        if kind == "offload" or _is_offload_object(override):
+            continue  # the registry's forward wrapper, dropped with it
         if callable(override) and not _portable(override):
             return f"{name or '<root>'}.forward (instance override)"
     return None
+
+
+def _offload_attr_keys(sub: Any) -> list[str]:
+    """Instance attributes of ``sub`` that belong to offload machinery (never copied into a replica)."""
+    torch = _torch()
+    keys = []
+    kind = _registry_kind(sub)
+    for key, value in sub.__dict__.items():
+        if key in ("_parameters", "_buffers", "_modules") or key.startswith("_forward_"):
+            continue
+        if key == "_diffusers_hook" and kind == "offload":
+            keys.append(key)
+        elif key == "forward" and (kind == "offload" or _is_offload_object(value)):
+            keys.append(key)
+        elif not isinstance(value, (torch.Tensor, torch.nn.Module)) and _is_offload_object(value):
+            keys.append(key)
+    return keys
 
 
 _DROP = object()
@@ -986,17 +1044,28 @@ def build_replica(module: Any, device: Any) -> Any:
             continue
         memo[id(buffer)] = buffer.detach().to(device)
         keep.append(buffer)
-    dropped = []
     for sub in module.modules():
+        offload_keys = set(_offload_attr_keys(sub))
         for key, value in sub.__dict__.items():
-            if isinstance(value, CfgParallelRouter):
+            if isinstance(value, CfgParallelRouter) or key in offload_keys:
+                # never traversed: offload state holds pinned host copies a deepcopy would duplicate
                 memo[id(value)] = _DROP
-                dropped.append(key)
+        for attr in ("_forward_hooks", "_forward_pre_hooks"):
+            for hook in (getattr(sub, attr, None) or {}).values():
+                if _is_offload_object(hook):
+                    memo[id(hook)] = _DROP
     memo[id(memo)] = keep  # deepcopy's own keep-alive convention
     replica = copy.deepcopy(module, memo)
     for sub in replica.modules():
         for key in [k for k, v in sub.__dict__.items() if v is _DROP]:
             del sub.__dict__[key]
+        for attr in _ROOT_HOOK_DICTS:
+            hooks = sub.__dict__.get(attr)
+            if hooks:
+                for hook_id in [k for k, v in hooks.items() if v is _DROP]:
+                    del hooks[hook_id]
+                    for other in _ROOT_HOOK_DICTS:
+                        sub.__dict__.get(other, {}).pop(hook_id, None)
     # The source's own __call__ runs its root hooks around every branch; the copy must not run them a second time.
     for attr in _ROOT_HOOK_DICTS:
         hooks = getattr(replica, attr, None)
