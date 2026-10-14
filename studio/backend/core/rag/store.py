@@ -912,6 +912,19 @@ def search_dense(
     written before identities carried a backend match on the model name alone, and
     NULL-model legacy documents are assumed current, matching the ingestion dedupe
     rule."""
+    # One snapshot for the KNN and the identity filter, as in search_lexical: a re-embed swap committed
+    # between them would pass an old-space distance under the new identity.
+    own_read_txn = not conn.in_transaction
+    if own_read_txn:
+        conn.execute("BEGIN")
+    try:
+        return _search_dense(conn, scope, vector, k, embedding_model)
+    finally:
+        if own_read_txn:
+            conn.commit()
+
+
+def _search_dense(conn: sqlite3.Connection, scope, vector, k: int, embedding_model: str | None):
     if not rag_db.vec_table_exists(conn):
         return []
     dim = rag_db.vec_table_dim(conn)

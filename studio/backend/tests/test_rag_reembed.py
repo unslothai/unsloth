@@ -195,3 +195,27 @@ def test_retirement_racing_a_start_waits_for_its_worker(models, tmp_path, monkey
     reembed.start()
     racers[0].join(5)
     assert errors == [] and reembed.status() is None
+
+
+def test_a_swap_committed_mid_search_cannot_pass_an_old_space_score(models, tmp_path, monkeypatch):
+    scope = store.kb_scope("K9")
+    doc = _ingest(tmp_path, scope, "a.txt", "text a")
+    models["model"] = NEW
+    assert _run_job()["status"] == "completed"
+    models["model"] = NEWER  # same width: NEW's vectors stay in the table until swapped
+    original = store._drop_incompatible
+
+    def swap_between_reads(conn, *args):
+        # The swap's commit, from another connection, after the KNN read scored NEW's vector.
+        with _connect() as other:
+            other.execute(
+                "UPDATE documents SET embedding_model=? WHERE id=?",
+                (embeddings.embedding_identity(NEWER), doc),
+            )
+            other.commit()
+        return original(conn, *args)
+
+    monkeypatch.setattr(store, "_drop_incompatible", swap_between_reads)
+    with _connect() as c:
+        hits = retrieval.retrieve_dense(c, scope, "text a", k = 5, model_name = NEWER)
+    assert hits == []
