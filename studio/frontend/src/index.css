@@ -6261,7 +6261,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .dark .unsloth-files-panel-show-all {
 	box-shadow: none;
 }
-/* Over the cards it straddles their bottom edge instead of covering a preview. */
+/* Over the cards it sits low, on the filenames rather than the previews. */
 .unsloth-files-panel:not([data-collapsed]) .unsloth-files-panel-show-all {
 	top: calc(100% - 0.75rem);
 }
@@ -6280,7 +6280,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		@apply pointer-events-auto opacity-100;
 	}
 }
-/* Show all: pills wrap at their own width, capped wider than the single row's. */
+/* Show all: pills wrap at their own width. */
 .unsloth-files-panel-strip[data-show-all="true"] {
 	@apply max-h-[40dvh] flex-wrap overflow-x-hidden overflow-y-auto;
 }

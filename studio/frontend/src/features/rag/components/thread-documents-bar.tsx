@@ -729,8 +729,7 @@ function ChatFilesPanel({
 }) {
   const collapsed = useChatPreferencesStore((s) => s.filesPanelCollapsed);
   const setCollapsed = useChatPreferencesStore((s) => s.setFilesPanelCollapsed);
-  // Show all lays every file out as pills without touching the saved collapse, so Show less
-  // returns to the cards when it started from them.
+  // Show all leaves the saved collapse alone, so Show less returns to the cards it started from.
   const [showAll, setShowAll] = useState(false);
   const compact = collapsed || showAll;
   const stripRef = useRef<HTMLDivElement>(null);
@@ -746,7 +745,7 @@ function ChatFilesPanel({
     measure();
     const observer = new ResizeObserver(measure);
     observer.observe(el);
-    // Adding a card does not resize the strip, and nor does swapping cards for pills.
+    // Adding a card or swapping cards for pills does not resize the strip.
     const mutations = new MutationObserver(measure);
     mutations.observe(el, { childList: true, subtree: true });
     return () => {
@@ -818,7 +817,7 @@ function ChatFilesPanel({
           {children ? (
             <button
               type="button"
-              // Its glyph is narrow, so 4px from Add files reads as crowded beside the X.
+              // A narrow glyph: 4px from Add files reads as crowded next to the X.
               className="unsloth-files-panel-icon-btn ml-3"
               onClick={() => {
                 setCollapsed(!compact);
@@ -858,7 +857,6 @@ function ChatFilesPanel({
             <CompactCardsContext.Provider value={compact}>
               {children}
             </CompactCardsContext.Provider>
-            {/* Inline after the last file, so it takes no column of its own. */}
             {showAll ? (
               <button
                 type="button"
@@ -871,7 +869,7 @@ function ChatFilesPanel({
             ) : null}
           </div>
           {overflowing && !showAll ? (
-            // Over the strip's end, shown on hover or focus: it takes no room from the files.
+            // Floats over the strip's end while it is hovered, so it takes no room from the files.
             <button
               type="button"
               className="unsloth-files-panel-show-all"
