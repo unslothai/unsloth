@@ -37,7 +37,7 @@ def cell_text(value):
     arrives as 1.0. Untreated, the first trains the word None and the second
     raises on .strip(). NaN counts as blank too: Arrow normalises a blank
     numeric cell to null, but a dataset built straight from pandas need not have
-    passed through Arrow.
+    passed through Arrow. A dict or list cell trains as JSON, not its Python repr.
     """
     if value is None:
         return ""
