@@ -227,7 +227,7 @@ def write_gguf(path: Path, arch: str, **uint32_keys: int) -> Path:
 
 def probe_runs(script: Path) -> int:
     calls = Path(str(script) + ".calls")
-    return len(calls.read_text().splitlines()) if calls.exists() else 0
+    return len(calls.read_text(encoding = "utf-8").splitlines()) if calls.exists() else 0
 
 
 def run(coro):
@@ -3174,7 +3174,7 @@ def test_the_capability_probe_follows_the_binary_the_loader_will_launch(monkeypa
 
 
 def test_every_tool_loop_round_names_the_same_conversation():
-    source = (Path(ss.__file__).resolve().parent / "llama_cpp.py").read_text()
+    source = (Path(ss.__file__).resolve().parent / "llama_cpp.py").read_text(encoding = "utf-8")
     start = source.index("def generate_chat_completion_with_tools(")
     body = source[start:]
     for marker in ("payload = {", "stream_payload = {"):
