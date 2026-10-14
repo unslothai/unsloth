@@ -275,7 +275,6 @@ function ProjectBadge() {
 // Inline 16px: the font-scaled size-4 is 15px, an odd inset that sits off centre in the 32px circle.
 const HEADER_ICON = { width: 16, height: 16 } as const;
 
-/** Set by a collapsed panel: its cards render as pills. */
 const CompactCardsContext = createContext(false);
 
 const PILL =
@@ -586,7 +585,6 @@ function DocumentCard({
               <span
                 className={cn(
                   "truncate",
-                  // The hover X sits on the name's end; fade the text out under it.
                   removable &&
                     "group-hover/attachment-card:[mask-image:linear-gradient(to_left,transparent_1.25rem,black_2.5rem)] group-focus-within/attachment-card:[mask-image:linear-gradient(to_left,transparent_1.25rem,black_2.5rem)]",
                 )}
@@ -673,7 +671,6 @@ function AddFilesCard({
   disabled: boolean;
   onClick: () => void;
 }) {
-  // Collapsed, the header's Add files is the only one.
   const compact = useContext(CompactCardsContext);
   if (compact) {
     return null;
@@ -869,7 +866,6 @@ function ChatFilesPanel({
             ) : null}
           </div>
           {overflowing && !showAll ? (
-            // Floats over the strip's end while it is hovered, so it takes no room from the files.
             <button
               type="button"
               className="unsloth-files-panel-show-all"

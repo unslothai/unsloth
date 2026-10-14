@@ -6247,12 +6247,10 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel-strip::-webkit-scrollbar {
 	display: none;
 }
-/* Collapsed: a header over one row of pills; with no files, the header alone. */
 .unsloth-files-panel[data-collapsed="true"] {
 	@apply gap-2.5 pt-3 pb-3;
 }
-/* Styled as an Unsloth dropdown surface, so it reads over the files it floats on. Hover lays a
-   wash over the solid fill rather than replacing it. Shown while the files strip is hovered. */
+/* Dropdown-surface look. Hover washes over the solid fill, never replaces it (it would turn see-through). */
 .unsloth-files-panel-show-all {
 	@apply pointer-events-none absolute top-1/2 right-0 z-10 inline-flex h-8 -translate-y-1/2 items-center rounded-full px-3.5 text-ui-13 text-popover-foreground opacity-0 transition-opacity;
 	background-color: var(--popover);
@@ -6261,7 +6259,6 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .dark .unsloth-files-panel-show-all {
 	box-shadow: none;
 }
-/* Over the cards it sits low, on the filenames rather than the previews. */
 .unsloth-files-panel:not([data-collapsed]) .unsloth-files-panel-show-all {
 	top: calc(100% - 0.75rem);
 }
@@ -6280,7 +6277,6 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		@apply pointer-events-auto opacity-100;
 	}
 }
-/* Show all: pills wrap at their own width. */
 .unsloth-files-panel-strip[data-show-all="true"] {
 	@apply max-h-[40dvh] flex-wrap overflow-x-hidden overflow-y-auto;
 }
@@ -6298,7 +6294,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-add-card:disabled {
 	@apply pointer-events-none opacity-50;
 }
-/* Dark mode: Add files is a fill, not an outline, the same one Show all rests on. */
+/* Dark mode: Add files is a fill, not an outline. */
 .dark .unsloth-files-add-card {
 	border-color: transparent;
 	background-color: color-mix(in oklab, var(--foreground) 8%, transparent);
