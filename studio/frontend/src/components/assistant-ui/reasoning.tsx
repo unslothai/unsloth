@@ -600,7 +600,8 @@ function ReasoningTail({
             aria-hidden={true}
             className={cn(
               "size-3.5 shrink-0 transition-transform duration-200 ease-out",
-              !expanded && "-rotate-90",
+              // Below the trace, so Collapse points up at what it folds away; -180, not 180, turns a quarter.
+              expanded ? "-rotate-180" : "-rotate-90",
             )}
           />
         </button>
