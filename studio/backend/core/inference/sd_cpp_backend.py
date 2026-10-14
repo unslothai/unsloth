@@ -567,6 +567,39 @@ def sd_cpp_cuda_compute_capability(
     return caps.get(int(device_name[len(head) :]))
 
 
+def sd_cpp_device_listing_known(binary: Optional[str]) -> bool:
+    """True when a ``--list-devices`` answer of this exact file is cached (what ``probe = False`` readers use)."""
+    if not binary:
+        return False
+    seen = _LAST_DEVICE_LISTING.get(binary)
+    return seen is not None and seen[0] == _binary_stat_identity(binary)
+
+
+def torch_cuda_compute_capability(ordinal: Optional[int]) -> Optional[tuple[int, int]]:
+    """Compute capability torch reports for CUDA ordinal ``ordinal`` (the lowest visible card when None), or None on
+    a non-CUDA torch (ROCm included: its numbers are not sm versions) or any error. The second source for
+    ``sd_cpp_cuda_compute_capability`` when the build's ``--list-devices`` listing could not be read: torch and a CUDA
+    sd.cpp enumerate the same runtime under the same visibility mask, so the indices agree."""
+    try:
+        import torch
+
+        if getattr(torch.version, "hip", None) or not getattr(torch.version, "cuda", None):
+            return None
+        if not torch.cuda.is_available():
+            return None
+        if ordinal is None:
+            caps = [
+                tuple(torch.cuda.get_device_capability(i)) for i in range(torch.cuda.device_count())
+            ]
+            return min(caps) if caps else None  # type: ignore[return-value]
+        if not 0 <= int(ordinal) < torch.cuda.device_count():
+            return None
+        major, minor = torch.cuda.get_device_capability(int(ordinal))
+        return (int(major), int(minor))
+    except Exception:  # noqa: BLE001 -- unknown stays unknown
+        return None
+
+
 # Every namespace ggml names a device in; the narrower list above is physical-index schemes only.
 _GGML_DEVICE_PREFIXES: tuple[str, ...] = ("CUDA", "ROCM", "VULKAN", "SYCL", "METAL", "OPENCL")
 

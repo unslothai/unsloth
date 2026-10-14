@@ -286,6 +286,145 @@ GRAPH_CUT_STREAM_FLAGS: tuple[str, ...] = ("--stream-layers",)
 # The full set, for callers that already offload to CPU.
 GRAPH_CUT_AUTO_FLAGS: tuple[str, ...] = GRAPH_CUT_VRAM_FLAGS + GRAPH_CUT_STREAM_FLAGS
 
+# The committed flags keep the "-1" above as a placeholder (it is what a live server's signature is compared on); a
+# process launch swaps it for an explicit GiB budget read by Studio right before the spawn. With "-1" sd.cpp budgets on
+# its own free-VRAM snapshot and any other process moving memory mid-render kills it in "output caching"; an explicit
+# value is a managed budget that does not move. The reading is taken before the child exists, so the reserve covers
+# the child's own CUDA context and library workspaces (~1 GiB) plus the 1 GiB "-1" spared.
+GRAPH_CUT_BUDGET_RESERVE_BYTES = 2 << 30
+# Below this the explicit budget buys nothing over sd.cpp's own reading: keep "-1".
+GRAPH_CUT_MIN_BUDGET_BYTES = 1 << 30
+# A render that still ran out of device memory under an explicit budget is retried once at this share of it.
+GRAPH_CUT_RETRY_SCALE = 0.75
+GRAPH_CUT_EXPLICIT_BUDGET_ENV = "UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET"
+
+
+def explicit_vram_budget_enabled(env: Optional[dict] = None) -> bool:
+    """Kill switch: ``UNSLOTH_SD_CPP_EXPLICIT_VRAM_BUDGET=0`` keeps sd.cpp's own "-1" free-VRAM reading."""
+    import os
+
+    environ = os.environ if env is None else env
+    return str(environ.get(GRAPH_CUT_EXPLICIT_BUDGET_ENV, "")).strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def graph_cut_budget_gib(
+    free_bytes: Optional[int],
+    *,
+    reserve_bytes: int = GRAPH_CUT_BUDGET_RESERVE_BYTES,
+    scale: float = 1.0,
+) -> Optional[float]:
+    """GiB to pass as ``--max-vram`` for a device with ``free_bytes`` free, or None (keep sd.cpp's reading) when the
+    reading is unknown or what is left after the reserve is below ``GRAPH_CUT_MIN_BUDGET_BYTES``. Rounded DOWN to
+    1/100 GiB so the printed value never exceeds the plan."""
+    if free_bytes is None:
+        return None
+    budget = (int(free_bytes) - int(reserve_bytes)) * float(scale)
+    if budget < GRAPH_CUT_MIN_BUDGET_BYTES:
+        return None
+    return int(budget / float(1 << 30) * 100) / 100.0
+
+
+def _format_gib(value: float) -> str:
+    return f"{value:.2f}"
+
+
+def max_vram_value(flags: Sequence[str]) -> Optional[str]:
+    """The ``--max-vram`` argument in ``flags``, or None when the flag is absent / dangling."""
+    items = list(flags)
+    for i, flag in enumerate(items):
+        if flag == "--max-vram":
+            return items[i + 1] if i + 1 < len(items) else None
+    return None
+
+
+def max_vram_is_auto(value: Optional[str]) -> bool:
+    """True for a single negative ``--max-vram`` value (sd.cpp's live free-VRAM reading), the placeholder above."""
+    if value is None or "=" in value or "," in value:
+        return False
+    try:
+        return float(value) < 0
+    except ValueError:
+        return False
+
+
+def with_max_vram_budget(
+    flags: Sequence[str], budget: "Optional[float | dict[str, float]]"
+) -> list[str]:
+    """``flags`` with an auto (negative) ``--max-vram`` replaced by ``budget``: one GiB value for every device, or a
+    ``{device: GiB}`` map rendered as sd.cpp's per-device form (``cuda0=6.25,cuda1=12.50``). Unchanged when the flag
+    is absent, already explicit, or ``budget`` is None / empty, so a caller can never widen a value the user set."""
+    out = list(flags)
+    if not budget:
+        return out
+    for i, flag in enumerate(out):
+        if flag != "--max-vram" or i + 1 >= len(out) or not max_vram_is_auto(out[i + 1]):
+            continue
+        if isinstance(budget, dict):
+            out[i + 1] = ",".join(f"{name}={_format_gib(gib)}" for name, gib in budget.items())
+        else:
+            out[i + 1] = _format_gib(float(budget))
+    return out
+
+
+def explicit_max_vram_gib(flags: Sequence[str]) -> "Optional[float | dict[str, float]]":
+    """The explicit budget in ``flags`` as ``with_max_vram_budget`` takes it, or None (absent, auto, unparseable)."""
+    value = max_vram_value(flags)
+    if value is None or max_vram_is_auto(value):
+        return None
+    try:
+        if "=" in value:
+            out: dict[str, float] = {}
+            for part in value.split(","):
+                name, _, gib = part.partition("=")
+                out[name.strip()] = float(gib)
+            return out
+        gib = float(value)
+    except ValueError:
+        return None
+    return gib if gib > 0 else None
+
+
+def scaled_vram_budget(
+    budget: "float | dict[str, float]", scale: float
+) -> "Optional[float | dict[str, float]]":
+    """``budget`` times ``scale`` (per device), rounded down to 1/100 GiB; None once any device would fall below
+    ``GRAPH_CUT_MIN_BUDGET_BYTES``, where a smaller budget no longer means a working one."""
+    floor_gib = GRAPH_CUT_MIN_BUDGET_BYTES / float(1 << 30)
+
+    def one(gib: float) -> Optional[float]:
+        value = int(float(gib) * float(scale) * 100) / 100.0
+        return value if value >= floor_gib else None
+
+    if isinstance(budget, dict):
+        out = {name: one(gib) for name, gib in budget.items()}
+        if not out or any(v is None for v in out.values()):
+            return None
+        return out  # type: ignore[return-value]
+    return one(float(budget))
+
+
+# What ggml prints when a device allocation fails (CUDA / HIP / Vulkan / Metal), and the graph-cut stage that hit it.
+_DEVICE_OOM_MARKERS: tuple[str, ...] = (
+    "out of memory",  # cudaMalloc / hipMalloc failed: out of memory
+    "erroroutofdevicememory",
+    "failed to allocate cuda",
+    "failed to allocate rocm",
+    "failed to allocate vulkan",
+)
+
+
+def is_device_oom_text(text: Optional[str]) -> bool:
+    """True when an sd.cpp failure message (with its log tail) reports a device allocation failure."""
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(marker in lowered for marker in _DEVICE_OOM_MARKERS)
+
 
 def device_backend_flags(
     device_name: Optional[str], offload: Optional[list[str]] = None
