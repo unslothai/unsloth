@@ -1202,7 +1202,9 @@ def test_latency_gate_autotune_off_drops_an_earlier_plan(forced, monkeypatch):
 def test_latency_gate_save_merges_slots_another_process_stored(tmp_path):
     path = str(tmp_path / "tune.json")
     g8._save_plan(path, "k", {(64, 64, 0): g8._CUBLAS}, {"64,64,0": {}})
-    g8._save_plan(path, "k", {(128, 64, 0): g8._CUBLAS}, {"128,64,0": {}})  # loaded before the first save landed
+    g8._save_plan(
+        path, "k", {(128, 64, 0): g8._CUBLAS}, {"128,64,0": {}}
+    )  # loaded before the first save landed
     assert g8._load_plan(path, "k") == {(64, 64, 0): g8._CUBLAS, (128, 64, 0): g8._CUBLAS}
 
 
@@ -1272,12 +1274,18 @@ def test_latency_gate_cublas_slots_key_the_compile_cache(monkeypatch, tmp_path):
     monkeypatch.setenv(g8.INT8_GEMM_TUNE_DIR_ENV, str(tmp_path))
     model = torch.nn.Sequential(_int8_linear(1024, 768, True, 2))
     fp = lambda: cc.model_fingerprint(
-        family = "f", transformer = model, dtype = "bf16", quant = "int8",
-        attention_backend = None, compile_kwargs = {},
+        family = "f",
+        transformer = model,
+        dtype = "bf16",
+        quant = "int8",
+        attention_backend = None,
+        compile_kwargs = {},
     )
     index = torch.cuda.current_device()
     k_fused = fp()
-    g8._DEVICE_PLAN[index] = {(768, 1024, 2): (128, 128, 64, 8, 4, 4)}  # another tile: same traced graph
+    g8._DEVICE_PLAN[index] = {
+        (768, 1024, 2): (128, 128, 64, 8, 4, 4)
+    }  # another tile: same traced graph
     assert fp() == k_fused
     g8._DEVICE_PLAN[index] = {(768, 1024, 2): g8._CUBLAS}  # stock graph for this shape
     assert fp() != k_fused
