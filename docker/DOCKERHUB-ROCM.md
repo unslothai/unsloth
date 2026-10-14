@@ -25,6 +25,7 @@ done
 docker run --rm -it \
   $GPU_FLAGS \
   --ipc=host \
+  -v unsloth-workspace-rocm:/workspace \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth/unsloth-rocm
 ```
@@ -41,6 +42,7 @@ GPU_FLAGS="--device /dev/dxg -e HSA_ENABLE_DXG_DETECTION=1 \
 docker run --rm -it \
   $GPU_FLAGS \
   --ipc=host \
+  -v unsloth-workspace-rocm:/workspace \
   -v "$HOME/.cache/huggingface":/workspace/.cache/huggingface \
   unsloth-rocm:latest
 ```

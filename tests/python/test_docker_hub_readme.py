@@ -101,6 +101,13 @@ def test_the_quick_starts_keep_the_workspace():
     core = hub[hub.index("### Notebooks only") : hub.index("### Scripts")]
     for quick_start in (hub_quick_start, core, *running):
         assert "-v unsloth-workspace:/workspace " in quick_start, quick_start
+    cpu = hub[hub.index("### CPU-only hosts") : hub.index("## Tags")]
+    assert "-v unsloth-workspace:/workspace unsloth/unsloth\n" in cpu, cpu
+    rocm = (HUB_README.parent / "DOCKERHUB-ROCM.md").read_text(encoding = "utf-8")
+    shells = [b for b in rocm.split("```bash")[1:] if "docker run --rm -it" in b]
+    assert len(shells) == 2 and all(
+        "-v unsloth-workspace-rocm:/workspace " in b for b in shells
+    ), shells
 
 
 def _docker_sections(text: str) -> list[str]:
