@@ -171,3 +171,27 @@ def test_a_document_changed_while_it_encodes_is_not_overwritten_but_redone(model
     assert ((job := _run_job())["status"], job["done"]) == ("completed", 2)
     sent = [t for m, [t] in models["encoded"] if m == NEW]
     assert sent == ["text b", "text b", "text a"]  # widened while b encoded: b re-read
+
+
+def test_retirement_racing_a_start_waits_for_its_worker(models, tmp_path, monkeypatch):
+    _ingest(tmp_path, store.kb_scope("K7"), "a.txt", "alpha bravo")
+    models["model"] = NEW
+    errors, racers = [], []
+
+    def retire():
+        try:
+            reembed.retire_account_reembed()
+        except Exception as exc:
+            errors.append(exc)
+
+    class Racing(threading.Thread):
+        def start(self):
+            racers.append(racer := threading.Thread(target = retire))
+            racer.start()
+            racer.join(0.3)  # retirement lands between publishing the job and starting its worker
+            super().start()
+
+    monkeypatch.setattr(reembed, "account_thread", lambda **kw: Racing(**kw))
+    reembed.start()
+    racers[0].join(5)
+    assert errors == [] and reembed.status() is None
