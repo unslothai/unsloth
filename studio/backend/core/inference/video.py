@@ -10819,7 +10819,9 @@ class VideoBackend:
                 # The pipeline returned, so every step ran whatever the last event said. This is
                 # also the only place a latent-only render (no decoder entered) can complete.
                 _finish_denoise()
-                if compile_ctx is not None:
+                if compile_ctx is not None and not bg_eager:
+                    # Not from a render the background compile forced eager: nothing of this load compiled yet, so a
+                    # save would publish only what other loads left in the process record and mark the bundle saved.
                     # Persist the stages' compiled graphs for the NEXT process: queued, never waited on. A render that
                     # compiled new graphs (a new resolution under a static compile, automatic dynamic generalising)
                     # re-dirties a bundle that was a hit.
