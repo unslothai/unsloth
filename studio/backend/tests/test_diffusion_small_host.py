@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import struct
+import sys
 import types
 
 import pytest
@@ -148,6 +149,15 @@ def test_available_host_mib_is_capped_by_the_windows_commit_headroom(monkeypatch
     assert dm._host_available_mib() == 5000
     monkeypatch.setattr(dm, "_windows_commit_headroom_mib", lambda: None)
     assert dm._host_available_mib() == 5000
+
+
+def test_windows_commit_headroom_reader_reports_a_value_on_windows():
+    # the reader once called an unexported kernel32 name and silently returned None, leaving the guard on the
+    # physical reading; on Windows it must reach the real API, elsewhere None is by design
+    if sys.platform != "win32":
+        pytest.skip("Windows-only reader")
+    value = dm._windows_commit_headroom_mib()
+    assert value is not None and value >= 0
 
 
 def test_lora_keeps_the_dense_load():

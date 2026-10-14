@@ -926,7 +926,7 @@ def _host_ram_capacity_mib() -> Optional[int]:
 
 
 def _windows_commit_headroom_mib() -> Optional[int]:
-    """(CommitLimit - CommitTotal) in MiB on Windows via ``GetPerformanceInfo``; 0 when exhausted, None when
+    """(CommitLimit - CommitTotal) in MiB on Windows via ``K32GetPerformanceInfo``; 0 when exhausted, None when
     unreadable or not Windows. The diffusion guards' failure mode is commit exhaustion (#13432), which a
     physical `available` reading does not see."""
     if sys.platform != "win32":
@@ -954,7 +954,9 @@ def _windows_commit_headroom_mib() -> Optional[int]:
 
         info = _PERFORMANCE_INFORMATION()
         info.cb = ctypes.sizeof(_PERFORMANCE_INFORMATION)
-        if not ctypes.windll.kernel32.GetPerformanceInfo(ctypes.byref(info), info.cb):
+        # kernel32 exports the K32-prefixed name only; the unprefixed one lives in psapi
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        if not kernel32.K32GetPerformanceInfo(ctypes.byref(info), info.cb):
             return None
         headroom = (int(info.CommitLimit) - int(info.CommitTotal)) * int(info.PageSize)
         return max(0, headroom // (1024 * 1024))
