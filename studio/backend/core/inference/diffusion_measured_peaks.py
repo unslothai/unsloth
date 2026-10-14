@@ -1,0 +1,268 @@
+"""Learned activation peaks: the real CUDA peak above the resident weights, recorded per
+(family, denoiser quant, speed tier, resolution bucket, frames) at a successful render and persisted under the
+Studio cache dir, so later loads of the same model place it from a measurement instead of the flat
+8192 MiB/MP estimate.
+
+The static tables in ``diffusion_memory`` stay the seed: a learned value only RAISES a seeded peak (a local
+measurement above the seed means this machine needs more) and supplies one where no seed exists. It never lowers a
+seed, because one render does not exercise every phase (a prompt-cache hit skips the encoder, a smaller request
+decodes less), and the seed was measured on the worst phase.
+
+``UNSLOTH_DIFFUSION_LEARNED_PEAKS=0`` turns lookups and recording off; ``UNSLOTH_DIFFUSION_LEARNED_PEAKS_FILE``
+names the JSON file (default ``<studio cache>/diffusion_measured_peaks.json``).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import tempfile
+import threading
+from pathlib import Path
+from typing import Any, Optional
+
+LEARNED_PEAKS_ENV = "UNSLOTH_DIFFUSION_LEARNED_PEAKS"
+LEARNED_PEAKS_FILE_ENV = "UNSLOTH_DIFFUSION_LEARNED_PEAKS_FILE"
+_FILE_NAME = "diffusion_measured_peaks.json"
+_VERSION = 1
+_MAX_ENTRIES = 512
+_MEGAPIXEL = 1024 * 1024
+# Smallest bucket: a quarter megapixel. Below it the activation is dominated by fixed costs.
+_MIN_BUCKET_PIXELS = _MEGAPIXEL // 4
+
+_lock = threading.Lock()
+_cache: dict[str, Any] = {"path": None, "mtime": None, "data": None}
+
+
+def enabled() -> bool:
+    return (os.environ.get(LEARNED_PEAKS_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def store_path() -> Optional[Path]:
+    explicit = (os.environ.get(LEARNED_PEAKS_FILE_ENV) or "").strip()
+    if explicit:
+        return Path(explicit)
+    try:
+        from utils.paths.storage_roots import cache_root
+    except Exception:  # noqa: BLE001 - imported without studio/backend on sys.path: nowhere safe to write
+        return None
+    try:
+        return cache_root() / _FILE_NAME
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def resolution_bucket(width: Optional[int], height: Optional[int], batch_size: int = 1) -> int:
+    """Pixels of the power-of-two megapixel bucket covering ``width x height x batch`` (at least 1/4 MP)."""
+    pixels = max(1, int(width or 1024)) * max(1, int(height or 1024)) * max(1, int(batch_size or 1))
+    if pixels <= _MIN_BUCKET_PIXELS:
+        return _MIN_BUCKET_PIXELS
+    return int(_MIN_BUCKET_PIXELS * 2 ** math.ceil(math.log2(pixels / _MIN_BUCKET_PIXELS)))
+
+
+def model_key(family: Optional[str], quant: Optional[str], speed_mode: Optional[str], frames: int = 1) -> str:
+    return "|".join(
+        (
+            str(family or "unknown").lower(),
+            str(quant or "unknown"),
+            str(speed_mode or "unknown"),
+            f"f{max(1, int(frames or 1))}",
+        )
+    )
+
+
+def _empty() -> dict:
+    return {"version": _VERSION, "entries": {}}
+
+
+def _read(path: Path) -> dict:
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return _empty()
+    if _cache["path"] == str(path) and _cache["mtime"] == mtime and _cache["data"] is not None:
+        return _cache["data"]
+    try:
+        data = json.loads(path.read_text())
+        if not isinstance(data, dict) or data.get("version") != _VERSION or not isinstance(data.get("entries"), dict):
+            data = _empty()
+    except Exception:  # noqa: BLE001 - a corrupt file is an empty store, never a failed load
+        data = _empty()
+    _cache.update(path = str(path), mtime = mtime, data = data)
+    return data
+
+
+def _write(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents = True, exist_ok = True)
+    fd, tmp = tempfile.mkstemp(prefix = ".peaks.", dir = str(path.parent))
+    try:
+        with os.fdopen(fd, "w") as handle:
+            json.dump(data, handle, indent = 1, sort_keys = True)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    _cache.update(path = None, mtime = None, data = None)
+
+
+def record(
+    *,
+    family: Optional[str],
+    quant: Optional[str],
+    speed_mode: Optional[str],
+    width: Optional[int],
+    height: Optional[int],
+    batch_size: int = 1,
+    frames: int = 1,
+    peak_mib: int,
+    device_name: Optional[str] = None,
+) -> bool:
+    """Keep the max peak seen for this key and bucket. Returns True when the stored value rose."""
+    if not enabled() or peak_mib is None or int(peak_mib) <= 0 or not family:
+        return False
+    path = store_path()
+    if path is None:
+        return False
+    key = model_key(family, quant, speed_mode, frames)
+    bucket = str(resolution_bucket(width, height, batch_size))
+    try:
+        with _lock:
+            data = _read(path)
+            entries = data.setdefault("entries", {})
+            entry = entries.setdefault(key, {"peaks": {}})
+            peaks = entry.setdefault("peaks", {})
+            old = int(peaks.get(bucket) or 0)
+            if int(peak_mib) <= old:
+                return False
+            peaks[bucket] = int(peak_mib)
+            if device_name:
+                entry["device"] = str(device_name)
+            if len(entries) > _MAX_ENTRIES:
+                for stale in list(entries)[: len(entries) - _MAX_ENTRIES]:
+                    entries.pop(stale, None)
+            _write(path, data)
+            return True
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        return False
+
+
+def lookup(
+    *,
+    family: Optional[str],
+    quant: Optional[str],
+    speed_mode: Optional[str],
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    batch_size: int = 1,
+    frames: int = 1,
+) -> Optional[int]:
+    """Learned peak MiB (no margin) for a request of this size, or None when nothing was recorded.
+
+    The smallest recorded bucket at or above the request's bucket answers as is (an overestimate); with only smaller
+    buckets recorded, the largest one is scaled linearly by pixel count."""
+    if not enabled() or not family:
+        return None
+    path = store_path()
+    if path is None:
+        return None
+    try:
+        with _lock:
+            entry = (_read(path).get("entries") or {}).get(model_key(family, quant, speed_mode, frames))
+        peaks = {int(k): int(v) for k, v in ((entry or {}).get("peaks") or {}).items() if int(v) > 0}
+    except Exception:  # noqa: BLE001
+        return None
+    if not peaks:
+        return None
+    want = resolution_bucket(width, height, batch_size)
+    above = [b for b in peaks if b >= want]
+    if above:
+        return peaks[min(above)]
+    largest = max(peaks)
+    return int(math.ceil(peaks[largest] * want / float(largest)))
+
+
+def record_work(key: Any, work: int, peak_mib: int) -> bool:
+    """Persist a peak under an opaque calibration key (the video path's work = pixels x frames table); max wins."""
+    if not enabled() or key is None or peak_mib is None or int(peak_mib) <= 0 or int(work) <= 0:
+        return False
+    path = store_path()
+    if path is None:
+        return False
+    try:
+        with _lock:
+            data = _read(path)
+            table = data.setdefault("work", {})
+            peaks = table.setdefault(repr(key), {})
+            old = int(peaks.get(str(int(work))) or 0)
+            if int(peak_mib) <= old:
+                return False
+            peaks[str(int(work))] = int(peak_mib)
+            if len(table) > _MAX_ENTRIES:
+                for stale in list(table)[: len(table) - _MAX_ENTRIES]:
+                    table.pop(stale, None)
+            _write(path, data)
+            return True
+    except Exception:  # noqa: BLE001 - persistence is best-effort
+        return False
+
+
+def work_peaks(key: Any) -> dict[int, int]:
+    """Persisted {work: peak MiB} for an opaque calibration key ({} when none or disabled)."""
+    if not enabled() or key is None:
+        return {}
+    path = store_path()
+    if path is None:
+        return {}
+    try:
+        with _lock:
+            peaks = (_read(path).get("work") or {}).get(repr(key)) or {}
+        return {int(w): int(v) for w, v in peaks.items() if int(v) > 0}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+class PeakProbe:
+    """CUDA peak above the allocation at ``start``; ``finish`` returns MiB or None (non-CUDA / unreadable)."""
+
+    def __init__(self, device: Any) -> None:
+        self.device = None
+        self.base = None
+        try:
+            import torch
+
+            dev = torch.device(device)
+            if dev.type != "cuda" or not torch.cuda.is_available():
+                return
+            if dev.index is None:
+                dev = torch.device("cuda", torch.cuda.current_device())
+            torch.cuda.synchronize(dev)
+            torch.cuda.reset_peak_memory_stats(dev)
+            self.base = int(torch.cuda.memory_allocated(dev))
+            self.device = dev
+        except Exception:  # noqa: BLE001 - measurement only
+            self.device = None
+
+    def finish(self) -> Optional[int]:
+        if self.device is None or self.base is None:
+            return None
+        try:
+            import torch
+
+            torch.cuda.synchronize(self.device)
+            peak = int(torch.cuda.max_memory_allocated(self.device)) - self.base
+        except Exception:  # noqa: BLE001
+            return None
+        return -(-peak // (1024 * 1024)) if peak > 0 else None
+
+
+def device_name(device: Any) -> Optional[str]:
+    try:
+        import torch
+
+        return str(torch.cuda.get_device_name(torch.device(device)))
+    except Exception:  # noqa: BLE001
+        return None

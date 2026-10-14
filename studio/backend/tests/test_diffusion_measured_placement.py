@@ -402,7 +402,9 @@ def test_only_measured_family_moves(q21_pipe, speed, budget, total):
     plan = _flat_plan(budget, total)
     for family in names:
         new = _refine(q21_pipe, plan, family = family, speed = speed)
-        if family in ("qwen-image-2.1", "flux.1", "z-image") and speed in ("default", "max"):
+        # seeded: the peak table, or the per-phase calibration for a family the peak table lacks
+        seeded = set(dm._MEASURED_IMAGE_PEAK_MIB) | set(dm._MEASURED_IMAGE_ACTIVATION_MIB)
+        if family in seeded and speed in ("default", "max"):
             continue
         assert new is plan, family
 

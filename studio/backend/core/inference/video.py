@@ -124,6 +124,7 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
+    applied_plan,
     finish_background_pins,
     release_pinned_host_memory,
     request_background_pins,
@@ -7990,6 +7991,8 @@ class VideoBackend:
                 placement_device = target.torch_device,
                 logger = logger,
             )
+            # a transient OOM during setup may have re-planned to lower residency
+            plan = applied_plan(pipe, plan)
             ltx25_upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None)
             if ltx25_upsampler is not None and offload_policy == OFFLOAD_NONE:
                 # ~1 GB; resident with the rest, else render() moves it in for the upsample only.

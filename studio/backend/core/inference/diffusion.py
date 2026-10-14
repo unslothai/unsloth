@@ -160,6 +160,8 @@ from .diffusion_memory import (
     refine_balanced_plan_for_components,
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
+    denoiser_quant_label,
+    applied_plan,
     release_resident_groups,
     resident_group_mib,
     hook_resident_denoiser,
@@ -1958,6 +1960,60 @@ def _quadratic_attention(
         return not bounded_math_attention(pipe)
     except Exception:  # noqa: BLE001 - known math stays quadratic unless every processor is verified
         return True
+
+
+def _start_peak_probe(state: Any) -> Any:
+    """Arm the learned-peak measurement for one render (CUDA loads that carry a peak identity), else None."""
+    pipe = getattr(state, "pipe", None)
+    if getattr(pipe, "_unsloth_peak_identity", None) is None:
+        return None
+    try:
+        from .diffusion_measured_peaks import PeakProbe, enabled
+
+        if not enabled():
+            return None
+        probe = PeakProbe(getattr(state, "device", None))
+        return probe if probe.device is not None else None
+    except Exception:  # noqa: BLE001 - measurement only
+        return None
+
+
+def _record_peak_probe(
+    state: Any, probe: Any, *, width: Optional[int], height: Optional[int], batch_size: int
+) -> None:
+    """Persist a completed render's peak above its starting allocation under the load's peak identity."""
+    if probe is None or not width or not height:
+        return
+    identity = getattr(getattr(state, "pipe", None), "_unsloth_peak_identity", None)
+    try:
+        from .diffusion_measured_peaks import device_name, record
+
+        peak = probe.finish()
+        if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
+            return
+        family, quant, speed_mode = identity
+        if record(
+            family = family,
+            quant = quant,
+            speed_mode = speed_mode,
+            width = width,
+            height = height,
+            batch_size = batch_size,
+            peak_mib = peak,
+            device_name = device_name(probe.device),
+        ):
+            logger.info(
+                "diffusion.memory: learned activation peak %d MiB recorded for %s / %s / %s at %dx%d x%d",
+                peak,
+                family,
+                quant,
+                speed_mode,
+                int(width),
+                int(height),
+                int(batch_size),
+            )
+    except Exception as exc:  # noqa: BLE001 - recording must never fail a finished render
+        logger.debug("diffusion.memory: learned activation peak not recorded (%s)", exc)
 
 
 def _activation_guard_batch(chunks: Sequence[Sequence[Any]]) -> int:
@@ -8134,6 +8190,15 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
+                    try:
+                        # the learned-peak key: recorded at every completed render, read by later loads
+                        pipe._unsloth_peak_identity = (
+                            fam.name,
+                            denoiser_quant_label(pipe),
+                            effective_speed,
+                        )
+                    except Exception:  # noqa: BLE001 - recording is optional
+                        pass
                     # not under the legacy cpu_offload flag alone: that request asked for offload
                     if not cpu_offload or normalize_memory_mode(memory_mode) is not None:
                         plan = refine_plan_from_loaded_weights(
@@ -8199,6 +8264,8 @@ class DiffusionBackend:
                         placement_device = target.torch_device,
                         logger = logger,
                     )
+                    # a transient OOM during setup may have re-planned to lower residency
+                    plan = applied_plan(pipe, plan)
                     # streams the whole-resident denoiser back to the flat room while the encoders run
                     install_encode_release(pipe, plan, logger)
                     # the speed layer saw only the plan; placement may have pinned every denoiser group since
@@ -10851,6 +10918,8 @@ class DiffusionBackend:
                 # cap; the OOM backoff below halves a failed chunk. Layered: one input per forward (the pipeline's
                 # per-prompt layer stride is only right for one).
                 chunks = [[job] for job in jobs] if layer_count else chunk_jobs(jobs, batch_size)
+                guard_width = guard_height = None
+                guard_batch = 1
 
                 try:
                     # The dimensions the forward runs at, not the sliders: img2img / inpaint / upscale / edit take
@@ -11088,6 +11157,7 @@ class DiffusionBackend:
                 chunk_shapes: list[int] = []
                 graphs_before = fresh_compile_count()
                 compile_cache.note_use(state.compile_cache_ctx)
+                peak_probe = _start_peak_probe(state)
                 try:
                     previewer = _start_previewer()
                     pending = list(chunks)
@@ -11209,6 +11279,7 @@ class DiffusionBackend:
                                 empty_cache()
                             first_half, second_half = split_chunk(chunk)
                             pending[:0] = [first_half, second_half]
+                            peak_probe = None  # the failed attempt's peak is the card's limit, not this request's
                             gen.total_steps += steps  # one extra chunk to run
                             logger.warning(
                                 "diffusion.generate: batch of %d hit OOM; retrying as %d + %d",
@@ -11250,6 +11321,13 @@ class DiffusionBackend:
                     raise
                 if previewer is not None:
                     previewer.finish()
+                _record_peak_probe(
+                    state,
+                    peak_probe,
+                    width = guard_width,
+                    height = guard_height,
+                    batch_size = max(chunk_shapes or [1]),
+                )
                 if static_skip:
                     logger.debug("diffusion.step_skip: %s", static_skip_stats(state.pipe))
                 # Keep progress ACTIVE through the post-denoise work: the route persists the image after this returns,

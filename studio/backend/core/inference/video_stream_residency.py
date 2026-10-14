@@ -187,10 +187,24 @@ def _covering(peaks: dict, work: int) -> Optional[int]:
     return max(covering) if covering else None
 
 
+def _key_peaks(key: Any) -> dict:
+    """This process's peaks for ``key``, seeded once from the persisted store (an earlier process's measurements)."""
+    peaks = _PEAKS.get(key)
+    if peaks is None:
+        try:
+            from .diffusion_measured_peaks import work_peaks
+
+            peaks = dict(work_peaks(key))
+        except Exception:  # noqa: BLE001 - no store: start empty
+            peaks = {}
+        _PEAKS[key] = peaks
+    return peaks
+
+
 def measured_extra_mib(key: Any, work: int) -> Optional[int]:
     if key is None or not measured_enabled():
         return None
-    return _covering(_PEAKS.get(key) or {}, int(work))
+    return _covering(_key_peaks(key), int(work))
 
 
 def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
@@ -199,7 +213,7 @@ def _measured_extra_mib(module: Any, work: int) -> Optional[int]:
     peaks it recorded itself; the module's own mode-blind table is the fallback for an untagged one."""
     key = getattr(module, "_unsloth_video_calibration_key", None)
     if key is not None:
-        return _covering(_PEAKS.get(key) or {}, work)
+        return _covering(_key_peaks(key), work)
     return _covering(getattr(module, "_unsloth_video_peaks", None) or {}, work)
 
 
@@ -256,8 +270,14 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         peaks[work] = max(extra, peaks.get(work, 0))
         key = getattr(module, "_unsloth_video_calibration_key", None)
         if key is not None:
-            shared = _PEAKS.setdefault(key, {})
+            shared = _key_peaks(key)
             shared[work] = max(extra, shared.get(work, 0))
+            try:
+                from .diffusion_measured_peaks import record_work
+
+                record_work(key, work, shared[work])
+            except Exception:  # noqa: BLE001 - persistence is best-effort
+                pass
         _COUNTS["recorded"] += 1
         if logger is not None:
             logger.info("video.dit_resident: request peak %d MiB above its start recorded", extra)
