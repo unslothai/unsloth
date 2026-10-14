@@ -3781,6 +3781,16 @@ def _openai_llama_admission_estimate(
 _TOKENS_UNSET = object()
 
 
+def _openai_llama_admission_queue_budget(llama_backend, budget: Optional[int]) -> Optional[int]:
+    """The KV budget the admission queue holds chats to. None, slot-only admission, while the
+    server parks slots itself: it parks a resident to make room, so a chat that fits alone must
+    not wait in Studio for the sum of the others' charges (four half-context chats at -c 8192
+    were admitted two at a time). Otherwise the cache, as before."""
+    if preemption_enabled() and _server_parks_raw_streams(llama_backend):
+        return None
+    return budget
+
+
 def _openai_llama_admission_reserve(
     *,
     request: Optional[Request],
@@ -3836,7 +3846,7 @@ def _openai_llama_admission_reserve(
     reservation = get_llama_admission_queue(key).reserve(
         capacity = capacity,
         config = config,
-        budget = budget,
+        budget = _openai_llama_admission_queue_budget(llama_backend, budget),
         tokens = tokens,
     )
     if counted_prompt_tokens is not None:
