@@ -988,12 +988,13 @@ def _tune_path(key: str) -> Optional[str]:
         except Exception:  # noqa: BLE001 - outside Studio: in-memory only
             return None
         root = str(cache_root() / "diffusion_int8_gemm")
-    return os.path.join(root, "tune_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".json")
+    return os.path.join(
+        root, "tune_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:16] + ".json"
+    )
 
 
 def _load_plan(path: Optional[str], key: str) -> dict:
     import json
-
     if path is None or not os.path.isfile(path):
         return {}
     try:
@@ -1012,7 +1013,6 @@ def _load_plan(path: Optional[str], key: str) -> dict:
 
 def _save_plan(path: Optional[str], key: str, plan: dict, timings: dict) -> None:
     import json
-
     if path is None:
         return
     try:
@@ -1020,7 +1020,8 @@ def _save_plan(path: Optional[str], key: str, plan: dict, timings: dict) -> None
         data = {
             "key": key,
             "plan": {
-                f"{n},{k},{b}": (c if c == _CUBLAS else list(c)) for (n, k, b), c in sorted(plan.items())
+                f"{n},{k},{b}": (c if c == _CUBLAS else list(c))
+                for (n, k, b), c in sorted(plan.items())
             },
             "ms": timings,
         }
@@ -1032,7 +1033,11 @@ def _save_plan(path: Optional[str], key: str, plan: dict, timings: dict) -> None
         pass
 
 
-def _time_ms(fn: Any, iters: int = 3, rounds: int = 3) -> float:
+def _time_ms(
+    fn: Any,
+    iters: int = 3,
+    rounds: int = 3,
+) -> float:
     import torch
 
     fn()
@@ -1127,7 +1132,9 @@ def tune(index: int, shapes: Any) -> dict:
                 stored[slot] = choice
                 dirty = True
             if choice != _CUBLAS and not _probed(index, choice):
-                choice = default  # an alternative tile that is not bit-exact here: the probed default
+                choice = (
+                    default  # an alternative tile that is not bit-exact here: the probed default
+                )
             plan[slot] = choice
     if dirty:
         _save_plan(path, key, stored, timings)

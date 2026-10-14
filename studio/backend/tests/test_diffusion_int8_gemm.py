@@ -997,7 +997,9 @@ def test_m_buckets_and_plan_lookup():
     g8._DEVICE_PLAN[0] = {(1024, 512, 0): g8._CUBLAS, (1024, 512, 1): tile}
     assert not g8.fused_for(0, 512, 1024, 512)
     assert g8.fused_for(0, 4096, 1024, 512) and g8.planned(0, 4096, 1024, 512) == tile
-    assert g8.fused_for(0, 512, 2048, 512) and g8.planned(0, 512, 2048, 512) is None  # untimed: static table
+    assert (
+        g8.fused_for(0, 512, 2048, 512) and g8.planned(0, 512, 2048, 512) is None
+    )  # untimed: static table
     assert g8.fused_for(1, 512, 1024, 512)  # no plan on this device
 
 
@@ -1077,14 +1079,22 @@ def test_latency_gate_prefers_the_fused_kernel_unless_cublas_wins(monkeypatch, t
         g8._DEVICE_PLAN.clear()
         for f in tmp_path.glob("tune_*.json"):
             f.unlink()
-        ms2 = lambda tiles, cub = cub: {g8._CUBLAS: cub, default: 1.10, **{t: 1.5 for t in tiles if t != default}}
+        ms2 = lambda tiles, cub = cub: {
+            g8._CUBLAS: cub,
+            default: 1.10,
+            **{t: 1.5 for t in tiles if t != default},
+        }
         monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles, ms2 = ms2: ms2(tiles))
         assert set(g8.tune(0, {(18432, 3072)}).values()) == {want}
     # A100 / Triton 3.8 Z-Image: static tile regressed, the best new tile only ties cuBLAS (1.249 vs 1.256 ms): cuBLAS.
     g8._DEVICE_PLAN.clear()
     for f in tmp_path.glob("tune_*.json"):
         f.unlink()
-    ms4 = lambda tiles: {g8._CUBLAS: 1.256, default: 6.68, **{t: 1.249 for t in tiles if t != default}}
+    ms4 = lambda tiles: {
+        g8._CUBLAS: 1.256,
+        default: 6.68,
+        **{t: 1.249 for t in tiles if t != default},
+    }
     monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles: ms4(tiles))
     assert set(g8.tune(0, {(18432, 3072)}).values()) == {g8._CUBLAS}
     g8._DEVICE_PLAN.clear()
@@ -1094,18 +1104,26 @@ def test_latency_gate_prefers_the_fused_kernel_unless_cublas_wins(monkeypatch, t
     g8._DEVICE_PLAN.clear()
     for f in tmp_path.glob("tune_*.json"):
         f.unlink()
-    ms3 = lambda tiles: {g8._CUBLAS: 1.45, default: 7.8, **{t: (1.0 if t == alt else 1.6) for t in tiles if t != default}}
+    ms3 = lambda tiles: {
+        g8._CUBLAS: 1.45,
+        default: 7.8,
+        **{t: (1.0 if t == alt else 1.6) for t in tiles if t != default},
+    }
     monkeypatch.setattr(g8, "_measure", lambda index, n, k, m, tiles: ms3(tiles))
     assert set(g8.tune(0, {(18432, 3072)}).values()) == {alt}
     g8._DEVICE_PLAN.clear()
     g8._PROBED.clear()
     monkeypatch.setattr(g8, "_probe", lambda index, cfg: cfg != alt)
-    assert set(g8.tune(0, {(18432, 3072)}).values()) == {default}  # stored alt, not exact here: the default
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {
+        default
+    }  # stored alt, not exact here: the default
 
 
 def test_latency_gate_retimes_on_a_new_toolchain_and_ignores_corrupt_files(monkeypatch, tmp_path):
     default = g8._ARCH_CONFIG[(8, 0)]
-    calls = _fake_tune_env(monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}})
+    calls = _fake_tune_env(
+        monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}}
+    )
     g8.tune(0, {(4096, 4096)})
     assert len(calls) == 2
     g8._DEVICE_PLAN.clear()
@@ -1127,7 +1145,9 @@ def test_latency_gate_kill_switch_skips_timing(monkeypatch):
 
 @needs_cuda
 @pytest.mark.parametrize("pick", ["cublas", "fused"])
-def test_latency_gate_linear_is_bit_identical_eager_and_compiled(forced, monkeypatch, tmp_path, pick):
+def test_latency_gate_linear_is_bit_identical_eager_and_compiled(
+    forced, monkeypatch, tmp_path, pick
+):
     """Real timing on this GPU, then the plan forced to each arm: the swapped Linear must equal torchao's eager and
     compiled output either way, and the cuBLAS arm must not run the fused op."""
     from torch._dynamo.utils import counters
@@ -1158,14 +1178,33 @@ def test_latency_gate_linear_is_bit_identical_eager_and_compiled(forced, monkeyp
     g8.uninstall(holder)
 
 
-
 @pytest.mark.parametrize(
     "static_ms, new_ms, cublas_ms, want",
     [
-        (7.66, 1.64, 1.52, "cublas"),  # A100 / Triton 3.8 klein FFN in: static regressed, new tile behind cuBLAS
-        (1.07, 1.30, 1.40, "static"),  # A100 / Triton 3.7: static fast, cuBLAS + epilogue pass slower
-        (0.63, 0.66, 0.68, "static"),  # RTX PRO 6000 deep K: cuBLAS within the margin keeps the measured tile
-        (4.40, 1.04, 1.30, "new"),  # L4 / Triton 3.8: static regressed, the 8-warp tile clearly beats cuBLAS
+        (
+            7.66,
+            1.64,
+            1.52,
+            "cublas",
+        ),  # A100 / Triton 3.8 klein FFN in: static regressed, new tile behind cuBLAS
+        (
+            1.07,
+            1.30,
+            1.40,
+            "static",
+        ),  # A100 / Triton 3.7: static fast, cuBLAS + epilogue pass slower
+        (
+            0.63,
+            0.66,
+            0.68,
+            "static",
+        ),  # RTX PRO 6000 deep K: cuBLAS within the margin keeps the measured tile
+        (
+            4.40,
+            1.04,
+            1.30,
+            "new",
+        ),  # L4 / Triton 3.8: static regressed, the 8-warp tile clearly beats cuBLAS
         (1.00, 0.90, 1.30, "new"),  # a fused tile clearly faster than the static one and cuBLAS
     ],
 )
