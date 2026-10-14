@@ -774,6 +774,28 @@ def test_a_cached_artifact_records_a_payload_fingerprint_that_catches_same_size_
     assert not _verify_packed_fingerprint(ckpt["state_dict"], ckpt.get("metadata") or {})
 
 
+def test_the_rejected_artifact_is_reclaimed_before_measuring_room_for_its_replacement(env, tmp_path, scheme, monkeypatch):
+    """A corrupt entry filling a nearly full volume: deleting it is what makes room for its own replacement."""
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    fam = _fam(base)
+    path = C.save_runtime_quant(model, fam, base_repo = str(base))
+    good = Path(path).read_bytes()
+    _corrupt_in_place(path)
+    C.note_rejected(path)
+    kdir = Path(path).parent
+    marker = kdir / "old-artifact-still-here"
+    marker.touch()
+
+    def usage(_p):
+        # Room for the replacement only once the rejected entry's bytes are gone.
+        return types.SimpleNamespace(total = 1 << 41, used = 0, free = (1 << 20) if marker.exists() else (1 << 40))
+
+    monkeypatch.setattr(C.shutil, "disk_usage", usage)
+    assert C.save_runtime_quant(model, fam, base_repo = str(base)) == path
+    assert Path(path).read_bytes() == good
+
+
 def test_a_cancelled_load_stops_the_cache_write_between_tensors(env, tmp_path, scheme):
     base, model = _write_base(tmp_path)
     _quantize(model, scheme)

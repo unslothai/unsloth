@@ -547,6 +547,17 @@ def _cache_lock(root: Optional[Path] = None):
                 pass
 
 
+def _reclaim(kdir: Path) -> None:
+    """Remove a key dir: renamed to a tombstone under the cache lock, then deleted. Never raises."""
+    tomb = kdir.with_name(f"{kdir.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}")
+    try:
+        with _cache_lock(kdir.parent):
+            os.rename(kdir, tomb)
+    except OSError:
+        return
+    shutil.rmtree(tomb, ignore_errors = True)
+
+
 def _touch(kdir: Path) -> None:
     try:
         p = kdir / LAST_USED_NAME
@@ -777,6 +788,12 @@ def save_runtime_quant(
             return None
         root = cache_root()
         root.mkdir(parents = True, exist_ok = True)
+        if replacing is not None:
+            # The rejected artifact is unusable: reclaim its space before measuring room for the replacement (the
+            # eviction below keeps ``key``, so it would otherwise hold a second copy's worth of disk).
+            _reclaim(root / key)
+            with _lock:
+                _REJECTED.discard(replacing)
         free = shutil.disk_usage(str(root)).free
         need = nbytes + max(_DISK_MARGIN_BYTES, nbytes // 20)
         if free < need:
