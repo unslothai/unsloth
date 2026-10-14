@@ -2586,10 +2586,20 @@ def _openai_llama_admission_reserve(
     return reservation, config
 
 
+def _preserve_probe_pending(llama_backend) -> bool:
+    """Whether resolving preserve_thinking may still make the one-off template probe (HTTP)."""
+    if not getattr(llama_backend, "_supports_preserve_thinking", False):
+        return False
+    cached = getattr(llama_backend, "_empty_think_preserve_probe", None)
+    key = getattr(llama_backend, "_empty_think_probe_key", None)
+    return key is not None and (cached is None or cached[0] != key())
+
+
 def _replay_preserve_thinking(llama_backend, payload, messages):
     """The preserve_thinking generation will render with, so counts price the same prompt."""
     resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
-    if resolver is None:
+    # An Anthropic recount: conversion dropped replayed thinking the resolver would miss.
+    if resolver is None or _anthropic_history_has_thinking(payload):
         return payload.preserve_thinking
     return resolver(
         payload.preserve_thinking, messages, payload.enable_thinking, payload.reasoning_effort
@@ -5289,7 +5299,10 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
     # web_search prompts once the model supplies a ``url`` (it fetches that page), and the
     # gate can only prompt while streaming. Without this a non-streaming auto request is
     # admitted, then blocks in wait_tool_decision on an approval the client never reads.
-    return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
+    # mcp_tool_search loads MCP tools, which can prompt, into the same turn.
+    return not all(
+        is_always_safe_tool(t) and t not in ("web_search", "mcp_tool_search") for t in enabled
+    )
 
 
 class _AutoPermissionMode:
@@ -5557,9 +5570,46 @@ def _think_parsing_expected(llama_backend, payload) -> bool:
     return _resolved_kwargs_think(llama_backend, resolved)
 
 
-def _anthropic_count_template_kwargs(llama_backend, payload):
-    """Resolved reasoning chat_template_kwargs for prompt-token counting."""
+def _anthropic_history_has_thinking(payload) -> bool:
+    for message in payload.messages or ():
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if role != "assistant" or isinstance(content, str):
+            continue
+        for block in content or ():
+            kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if kind in ("thinking", "redacted_thinking"):
+                return True
+    return False
+
+
+async def _resolved_anthropic_reasoning_args_async(llama_backend, payload, messages) -> dict:
+    """Off the loop only while resolving may still probe the template over HTTP."""
+    if _preserve_probe_pending(llama_backend):
+        return await asyncio.to_thread(
+            _resolved_anthropic_reasoning_args, llama_backend, payload, messages
+        )
+    return _resolved_anthropic_reasoning_args(llama_backend, payload, messages)
+
+
+def _resolved_anthropic_reasoning_args(llama_backend, payload, messages) -> dict:
+    """``_anthropic_reasoning_args`` with preserve_thinking resolved as generation resolves it."""
     args = _anthropic_reasoning_args(payload)
+    resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
+    # Conversion drops thinking it does not preserve, so ask the payload whether any was replayed.
+    if resolver is not None and not _anthropic_history_has_thinking(payload):
+        args["preserve_thinking"] = resolver(
+            args["preserve_thinking"], messages, args["enable_thinking"], args["reasoning_effort"]
+        )
+    return args
+
+
+def _anthropic_count_template_kwargs(llama_backend, args):
+    """Reasoning chat_template_kwargs for prompt-token counting, from resolved args."""
     return _reasoning_template_kwargs(
         llama_backend, args["enable_thinking"], args["reasoning_effort"], args["preserve_thinking"]
     )
@@ -27800,6 +27850,31 @@ def _replay_tool_call_ids(tool_calls: Any, replay_ids: dict[str, str]) -> Any:
     return out
 
 
+def _live_tool_call_ids(messages: list[dict]) -> list[dict]:
+    """GGUF history with each tool-call id as the model generated it: the client suffixes every card id
+    with a minted uuid, which templates that render ids (Kimi, Mistral) would otherwise show, and Mistral
+    rejects outright. Calls and results lose the same suffix, so they stay paired."""
+    out = []
+    for message in messages:
+        calls = message.get("tool_calls")
+        call_id = message.get("tool_call_id")
+        if isinstance(calls, list):
+            calls = [
+                {**call, "id": _MINTED_TOOL_CALL_ID_SUFFIX.sub("", call["id"]) or call["id"]}
+                if isinstance(call, dict) and isinstance(call.get("id"), str)
+                else call
+                for call in calls
+            ]
+            message = {**message, "tool_calls": calls}
+        if isinstance(call_id, str):
+            message = {
+                **message,
+                "tool_call_id": _MINTED_TOOL_CALL_ID_SUFFIX.sub("", call_id) or call_id,
+            }
+        out.append(message)
+    return out
+
+
 def _build_external_messages(
     messages: list,
     supports_vision: bool,
@@ -31705,7 +31780,13 @@ async def produce_openai_chat_completions(
         if use_tools:
             from core.inference.tools import set_mcp_listing_context_tokens
 
-            set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
+            set_mcp_listing_context_tokens(
+                getattr(llama_backend, "context_length", None),
+                payload.thread_id,
+                payload.messages,
+                payload.tool_choice,
+                getattr(payload, "mcp_image", None),
+            )
             tools_to_use = await _select_request_tools(
                 payload,
                 supports_vision = bool(getattr(llama_backend, "is_vision", False)),
@@ -33881,7 +33962,13 @@ async def produce_openai_chat_completions(
     if _sf_use_tools:
         from core.inference.tools import set_mcp_listing_context_tokens
 
-        set_mcp_listing_context_tokens(_monitor_context_length())
+        set_mcp_listing_context_tokens(
+            _monitor_context_length(),
+            payload.thread_id,
+            payload.messages,
+            payload.tool_choice,
+            getattr(payload, "mcp_image", None),
+        )
         _sf_tools_to_use = await _select_request_tools(
             payload,
             tools_on = _sf_tools_on,
@@ -41121,7 +41208,13 @@ async def _mlx_count_chat_tokens(
             from core.inference.mcp_client import mcp_server_snapshot_guard
             from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
 
-            set_mcp_listing_context_tokens(_monitor_context_length())
+            set_mcp_listing_context_tokens(
+                _monitor_context_length(),
+                getattr(payload, "thread_id", None),
+                payload.messages,
+                getattr(payload, "tool_choice", None),
+                getattr(payload, "mcp_image", None),
+            )
 
             # A database read, so off the loop. Guarded as the GGUF count guards it, or
             # an interleaving edit pairs a new row with the schema cached before it.
@@ -41457,10 +41550,15 @@ async def chat_count_tokens(
 
         # As generation sends them; off the loop since restoring may parse an envelope.
         _count_dumped = await asyncio.to_thread(restore_replayed_tool_results, _count_dumped)
+    _count_kept = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels(_count_dumped)
+    )
+    if not _takes_passthrough:
+        _count_kept = _live_tool_call_ids(_count_kept)
     # Awaited: stripping parses the whole envelope, and this recount runs in the
     # background on every turn, so it must not do that on the shared loop.
     openai_messages = await _promote_mcp_history_images_async(
-        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(_count_dumped)),
+        _count_kept,
         # Never as pixels: /apply-template prices a media marker, not the image.
         # This drops the base64 the completion path would have promoted, which is
         # the one part a count must not price as text.
@@ -41519,7 +41617,13 @@ async def chat_count_tokens(
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
         from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
 
-        set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
+        set_mcp_listing_context_tokens(
+            getattr(llama_backend, "context_length", None),
+            getattr(payload, "thread_id", None),
+            payload.messages,
+            getattr(payload, "tool_choice", None),
+            getattr(payload, "mcp_image", None),
+        )
         from core.inference.mcp_client import mcp_server_snapshot_guard
 
         # Keep the SQLite read off-loop while coordinating the row/cache snapshot with edits.
@@ -41595,11 +41699,7 @@ async def chat_count_tokens(
         payload.enable_thinking,
         payload.reasoning_effort,
         # Off the loop: first use probes the template.
-        payload.preserve_thinking
-        if _takes_passthrough
-        else await asyncio.to_thread(
-            _replay_preserve_thinking, llama_backend, payload, openai_messages
-        ),
+        await asyncio.to_thread(_replay_preserve_thinking, llama_backend, payload, openai_messages),
     )
 
     # Whose tokenizer this is, in the shape /api/inference/status publishes: another tab's load
@@ -41834,18 +41934,13 @@ async def anthropic_count_tokens(
     # templates thinking / reasoning_effort / preserve_thinking change the
     # rendered prompt, so counting the load-time default would under- or
     # over-count the request the client is about to send.
-    _reasoning_args = _anthropic_reasoning_args(payload)
-    _count_preserve = _reasoning_args["preserve_thinking"]
-    _resolve_preserve = getattr(llama_backend, "_replay_preserve_thinking", None)
-    if _resolve_preserve is not None and not _count_client_tools:
-        # Off the loop: first use probes the template.
-        _count_preserve = await asyncio.to_thread(
-            _resolve_preserve,
-            _count_preserve,
-            openai_messages,
-            _reasoning_args["enable_thinking"],
-            _reasoning_args["reasoning_effort"],
-        )
+    if _count_server_tools:
+        from core.inference.tool_loop_controller import restore_replayed_tool_results
+        openai_messages = await asyncio.to_thread(restore_replayed_tool_results, openai_messages)
+    # Off the loop: first use probes the template.
+    _reasoning_args = await _resolved_anthropic_reasoning_args_async(
+        llama_backend, payload, openai_messages
+    )
     try:
         count = await asyncio.to_thread(
             lambda: llama_backend.count_chat_tokens(
@@ -41853,11 +41948,8 @@ async def anthropic_count_tokens(
                 None,
                 openai_tools,
                 strict = True,
-                chat_template_kwargs = _reasoning_template_kwargs(
-                    llama_backend,
-                    _reasoning_args["enable_thinking"],
-                    _reasoning_args["reasoning_effort"],
-                    _count_preserve,
+                chat_template_kwargs = _anthropic_count_template_kwargs(
+                    llama_backend, _reasoning_args
                 ),
             )
         )
@@ -42507,6 +42599,10 @@ async def anthropic_messages(
             else:
                 reservation.cancel()
 
+    _reasoning_args = await _resolved_anthropic_reasoning_args_async(
+        llama_backend, payload, openai_messages
+    )
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools or response_format is not None:
         openai_tools = openai_client_tools if client_tools else []
@@ -42537,7 +42633,7 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                     response_format = response_format,
                     parse_think = _think_parsing_expected(llama_backend, payload),
-                    **_anthropic_reasoning_args(payload),
+                    **_reasoning_args,
                 )
             )
         return await _admitted_anthropic(
@@ -42564,7 +42660,7 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
                 response_format = response_format,
                 parse_think = _think_parsing_expected(llama_backend, payload),
-                **_anthropic_reasoning_args(payload),
+                **_reasoning_args,
             )
         )
 
@@ -42574,6 +42670,10 @@ async def anthropic_messages(
     _think_prov: dict = {"wrapped": 0}
 
     if server_tools:
+        from core.inference.tool_loop_controller import restore_replayed_tool_results
+
+        # As the tool loop does, so the opening usage count prices what it sends.
+        openai_messages = await asyncio.to_thread(restore_replayed_tool_results, openai_messages)
         # Bypass Permissions suppresses confirm, so both flags together is fine.
         if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
             getattr(payload, "bypass_permissions", False)
@@ -42697,7 +42797,8 @@ async def anthropic_messages(
                     monitor_id,
                     llama_backend.context_length,
                 ),
-                **_anthropic_reasoning_args(payload),
+                replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
+                **_reasoning_args,
             )
 
         if payload.stream:
@@ -42714,7 +42815,9 @@ async def anthropic_messages(
                     disable_parallel_tool_use = _disable_parallel,
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     think_provenance = _think_prov,
-                    count_template_kwargs = _anthropic_count_template_kwargs(llama_backend, payload),
+                    count_template_kwargs = _anthropic_count_template_kwargs(
+                        llama_backend, _reasoning_args
+                    ),
                 ),
                 # Same server-side loop the chat route runs, up to 25 rounds on one lease.
                 tool_loop = True,
@@ -42754,7 +42857,8 @@ async def anthropic_messages(
                 monitor_id,
                 llama_backend.context_length,
             ),
-            **_anthropic_reasoning_args(payload),
+            replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
+            **_reasoning_args,
         )
 
     if payload.stream:
@@ -42769,7 +42873,9 @@ async def anthropic_messages(
                 openai_messages = openai_messages,
                 parse_think = _think_parsing_expected(llama_backend, payload),
                 think_provenance = _think_prov,
-                count_template_kwargs = _anthropic_count_template_kwargs(llama_backend, payload),
+                count_template_kwargs = _anthropic_count_template_kwargs(
+                    llama_backend, _reasoning_args
+                ),
             )
         )
     return await _admitted_anthropic(
@@ -44813,11 +44919,14 @@ def _openai_messages_for_gguf_chat(
 
     # Coalesce only on the GGUF chat path (strict Jinja template); the tool path
     # reuses this via _set_or_prepend_system_message. Passthrough forwards verbatim.
+    # Ids lose their minted suffix only after the synthetic pass, which drops results by id.
     messages = _coalesce_consecutive_user_turns(
-        _strip_provider_synthetic_tool_history(
-            _drop_empty_assistant_sentinels(
-                restore_replayed_tool_results(
-                    [m.model_dump(exclude_none = True) for m in payload.messages]
+        _live_tool_call_ids(
+            _strip_provider_synthetic_tool_history(
+                _drop_empty_assistant_sentinels(
+                    restore_replayed_tool_results(
+                        [m.model_dump(exclude_none = True) for m in payload.messages]
+                    )
                 )
             )
         )
@@ -44846,7 +44955,10 @@ async def _openai_messages_for_gguf_chat_async(
     is_vision: bool,
     promoted_out: "Optional[list]" = None,
 ) -> tuple[list[dict], bool]:
-    if _request_has_image(payload):
+    # Restoring a tool result may parse its envelope or source map.
+    if _request_has_image(payload) or any(
+        getattr(message, "role", None) == "tool" for message in payload.messages
+    ):
         return await asyncio.to_thread(
             _openai_messages_for_gguf_chat, payload, is_vision, promoted_out
         )
@@ -44945,7 +45057,7 @@ def _build_openai_passthrough_body(
         llama_backend._request_reasoning_kwargs(
             payload.enable_thinking,
             payload.reasoning_effort,
-            payload.preserve_thinking,
+            _replay_preserve_thinking(llama_backend, payload, messages),
         )
         if llama_backend is not None
         else None
@@ -44988,7 +45100,7 @@ async def _build_openai_passthrough_body_async(
     backend_ctx = None,
     llama_backend = None,
 ) -> dict:
-    if _request_has_image(payload):
+    if _request_has_image(payload) or _preserve_probe_pending(llama_backend):
         return await asyncio.to_thread(
             _build_openai_passthrough_body,
             payload,
@@ -46910,6 +47022,7 @@ async def load_diffusion_model_gated(
         annotate_status,
         begin_load_on,
         engine_for,
+        image_install_accelerator,
         off_torch_sd_cpp_device,
         predict_engine,
         select_and_activate_engine,
@@ -46923,6 +47036,12 @@ async def load_diffusion_model_gated(
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.sd_cpp_args import forces_cpu_backend
+    from core.inference.sd_cpp_backend import (
+        managed_sd_cpp_accelerator,
+        preferred_accelerator,
+        sd_cpp_binaries_all_cpu,
+        selected_card_identity,
+    )
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -47003,6 +47122,41 @@ async def load_diffusion_model_gated(
         # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
         if pending_name == ENGINE_MLX:
             needs_gpu = True
+        # So does the Vulkan sd.cpp build a CPU torch is routed to beside an AMD or Arc card,
+        # unless that build has failed here and the ladder runs the CPU one instead.
+        # A retained managed Vulkan build also renders on the card, whatever this load requested.
+        vulkan_on_cpu_torch = (
+            device == "cpu"
+            and off_torch is None
+            and await asyncio.to_thread(
+                lambda: preferred_accelerator(image_install_accelerator("cpu"), None) == "vulkan"
+                or managed_sd_cpp_accelerator() == "vulkan"
+            )
+        )
+        if pending_name == ENGINE_SD_CPP and vulkan_on_cpu_torch:
+            needs_gpu = True
+        # A GPU torch whose GPU builds have all failed here runs the managed CPU bundle: no claim.
+        def _runs_cpu_rung() -> bool:
+            try:
+                torch_backend = getattr(resolve_diffusion_device_target(), "backend", device)
+                return (
+                    preferred_accelerator(
+                        image_install_accelerator(torch_backend),
+                        selected_card_identity(gpu_ordinal),
+                    )
+                    == "cpu"
+                    and sd_cpp_binaries_all_cpu()
+                )
+            except Exception:  # noqa: BLE001 -- unknown keeps the claim
+                return False
+
+        cpu_rung_on_gpu_torch = (
+            device not in ("cpu", "mps")
+            and off_torch is None
+            and await asyncio.to_thread(_runs_cpu_rung)
+        )
+        if pending_name == ENGINE_SD_CPP and cpu_rung_on_gpu_torch:
+            needs_gpu = False
         # Before selection: switching to diffusers would unload the resident off-torch model, then refuse.
         if off_torch is not None and pending_name != ENGINE_SD_CPP:
             _guard_diffusion_load_against_training()
@@ -47121,8 +47275,18 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        if device == "cpu" and off_torch is None:
+            # Re-settled on what selection activated and installed: a CPU diffusers fallback, or a
+            # retained CPU bundle after a failed Vulkan install, takes no GPU.
+            needs_gpu = (
+                activated == ENGINE_SD_CPP
+                and vulkan_on_cpu_torch
+                and not await asyncio.to_thread(sd_cpp_binaries_all_cpu)
+            )
         if activated == ENGINE_MLX:
             needs_gpu = True
+        if activated == ENGINE_SD_CPP and cpu_rung_on_gpu_torch:
+            needs_gpu = False
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
         if (
             activated == ENGINE_SD_CPP

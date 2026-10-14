@@ -55,7 +55,7 @@ export const ptBR = {
       enable: "Permitir que os modelos usem o navegador",
       enableDescription: "Os modelos abrem páginas na própria aba do navegador, leem e clicam e digitam por você. Também no menu + do campo de mensagem.",
       history: "Histórico de navegação",
-      historyDescription: "Escolha se os modelos podem ler o histórico do navegador",
+      historyDescription: "Acesso total dispensa aprovação; Nunca continua bloqueando o acesso",
       alwaysAsk: "Sempre perguntar",
       alwaysAllow: "Sempre permitir",
       never: "Nunca",
@@ -586,6 +586,10 @@ export const ptBR = {
   chatMenu: {
     more: "Opções do chat",
     copy: "Copiar",
+    compact: "Compactar conversa",
+    compactQueued: "A compactação foi solicitada para a próxima mensagem",
+    compactEmpty: "Ainda não há nada para compactar",
+    compactUnsupported: "A compactação requer um modelo GGUF ou MLX com suporte a ferramentas",
   },
   welcome: {
     goodToSeeYou: "Que bom ver você",
@@ -3664,6 +3668,9 @@ export const ptBR = {
       evalSteps: "Passos de Validação",
       evalStepsTooltip:
         "Fração dos passos totais de treino entre as validações (0-1). Defina como 0 para desativar. Ex: 0.01 = valida a cada 1% dos passos.",
+      earlyStoppingPatience: "Paciência de parada antecipada",
+      earlyStoppingPatienceTooltip:
+        "Interrompe o treinamento após este número de validações seguidas sem uma perda de validação menor e mantém os pesos da melhor validação. Requer validação (Passos de Validação acima de 0). 0 para desativar.",
       seed: "Seed",
       seedTooltip: "Semente aleatória para reprodutibilidade.",
       offloadLayers: "Descarregar camadas",
@@ -4032,6 +4039,7 @@ export const ptBR = {
     discard: "Descartar",
     mentions: "Habilidades",
     manage: "Gerenciar habilidades",
+    turnOff: "Desativar habilidades",
     bulkActions: "Ações de habilidades",
     enableAll: "Ativar todas",
     disableAll: "Desativar todas",

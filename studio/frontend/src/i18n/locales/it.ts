@@ -54,7 +54,7 @@ export const it = {
       enable: "Consenti ai modelli di usare il browser",
       enableDescription: "I modelli aprono le pagine in una propria scheda del browser, le leggono e fanno clic e scrivono per te. Anche nel menu + del compositore.",
       history: "Cronologia di navigazione",
-      historyDescription: "Scegli se i modelli possono leggere la cronologia del browser",
+      historyDescription: "Accesso completo salta la conferma; Mai blocca comunque l'accesso",
       alwaysAsk: "Chiedi sempre",
       alwaysAllow: "Consenti sempre",
       never: "Mai",
@@ -2798,7 +2798,6 @@ export const it = {
         working: "Elaborazione...",
         loadFailed: "Impossibile caricare gli elementi archiviati",
         loadMoreFailed: "Impossibile caricare altri elementi archiviati",
-        filesNotRestored: "{count} file modificati non possono essere ripristinati e restano come sono.",
         restoreFailed: "Impossibile ripristinare gli elementi selezionati",
         deleteFailed: "Impossibile eliminare gli elementi selezionati",
         projectsFailed: "Impossibile caricare i progetti archiviati",
@@ -3171,6 +3170,7 @@ export const it = {
     restoredMany: "{count} file ripristinati",
     nothingRestored: "Nessun file da ripristinare",
     skippedCount: "{count} saltati",
+    filesNotRestored: "{count} file modificati non possono essere ripristinati e restano come sono.",
     restoreFailed: "Impossibile ripristinare i file",
     undo: "Annulla",
     undone: "Ripristino dei file annullato",
@@ -3180,6 +3180,10 @@ export const it = {
   chatMenu: {
     more: "Opzioni chat",
     copy: "Copia",
+    compact: "Compatta conversazione",
+    compactQueued: "Compattazione richiesta per il prossimo messaggio",
+    compactEmpty: "Ancora niente da compattare",
+    compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
   },
   welcome: {
     goodToSeeYou: "Che piacere vederti",
@@ -3701,6 +3705,9 @@ export const it = {
       evalSteps: "Step fra le valutazioni",
       evalStepsTooltip:
         "Frazione degli step totali fra due valutazioni (0-1). Imposta 0 per disattivare la valutazione. Per esempio 0,01 = valuta ogni 1% degli step.",
+      earlyStoppingPatience: "Pazienza early stopping",
+      earlyStoppingPatienceTooltip:
+        "Interrompe l'addestramento dopo questo numero di valutazioni consecutive senza una loss di valutazione più bassa e mantiene i pesi della valutazione migliore. Richiede la valutazione (step fra le valutazioni maggiore di 0). 0 per disattivare.",
       seed: "Seed",
       seedTooltip: "Seed casuale per la riproducibilità.",
       offloadLayers: "Scarica livelli",
@@ -4074,6 +4081,7 @@ export const it = {
     discard: "Scarta",
     mentions: "Competenze",
     manage: "Gestisci competenze",
+    turnOff: "Disattiva competenze",
     bulkActions: "Azioni sulle competenze",
     enableAll: "Attiva tutte",
     disableAll: "Disattiva tutte",

@@ -52,7 +52,7 @@ export const en = {
       enable: "Let models use the browser",
       enableDescription: "Models open pages in their own browser tab, read them, and click and type for you. Also in the composer's + menu.",
       history: "Browsing history",
-      historyDescription: "Choose whether models can read your browser history",
+      historyDescription: "Full access skips approval; Never still blocks access",
       alwaysAsk: "Always ask",
       alwaysAllow: "Always allow",
       never: "Never",
@@ -638,6 +638,10 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
+    compact: "Compact conversation",
+    compactQueued: "Compaction requested for the next message",
+    compactEmpty: "Nothing to compact yet",
+    compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
@@ -3676,6 +3680,9 @@ export const en = {
       evalSteps: "Eval Steps",
       evalStepsTooltip:
         "Fraction of total training steps between evaluations (0-1). Set to 0 to disable evaluation. E.g. 0.01 = evaluate every 1% of steps.",
+      earlyStoppingPatience: "Early Stopping Patience",
+      earlyStoppingPatienceTooltip:
+        "Stop training after this many evaluations in a row without a lower eval loss, and keep the weights from the best evaluation. Needs evaluation (Eval Steps above 0). 0 to disable.",
       seed: "Seed",
       seedTooltip: "Random seed for reproducibility.",
       offloadLayers: "Offload layers",

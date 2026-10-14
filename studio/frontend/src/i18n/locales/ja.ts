@@ -56,7 +56,7 @@ export const ja = {
       enable: "モデルにブラウザを使わせる",
       enableDescription: "モデルが専用のブラウザタブでページを開いて読み、代わりにクリックや入力を行います。入力欄の + メニューからも切り替えられます。",
       history: "閲覧履歴",
-      historyDescription: "モデルがブラウザの閲覧履歴を読めるかどうかを選びます",
+      historyDescription: "フルアクセスでは確認を省略します。「許可しない」は引き続きアクセスを禁止します",
       alwaysAsk: "毎回確認",
       alwaysAllow: "常に許可",
       never: "許可しない",
@@ -587,6 +587,10 @@ export const ja = {
   chatMenu: {
     more: "チャットのオプション",
     copy: "コピー",
+    compact: "会話を圧縮",
+    compactQueued: "次のメッセージで会話を圧縮するようリクエストしました",
+    compactEmpty: "まだ圧縮する内容がありません",
+    compactUnsupported: "会話の圧縮にはツール対応のGGUFまたはMLXモデルが必要です",
   },
   welcome: {
     goodToSeeYou: "お会いできてうれしいです",
@@ -3588,6 +3592,9 @@ export const ja = {
       saveStepsTooltip: "N ステップごとにチェックポイントを保存します。0 で無効化します。",
       evalSteps: "評価ステップ間隔",
       evalStepsTooltip: "評価を行う間隔を、総トレーニングステップに対する割合 (0-1) で指定します。0 に設定すると評価が無効になります。例: 0.01 = ステップの 1% ごとに評価を実行。",
+      earlyStoppingPatience: "早期終了の猶予回数",
+      earlyStoppingPatienceTooltip:
+        "評価ロスが下がらない評価がこの回数続いたらトレーニングを停止し、最良の評価時の重みを保持します。評価が必要です (評価ステップ間隔を 0 より大きく設定)。0 で無効になります。",
       seed: "シード値",
       seedTooltip: "再現性のための乱数シード。",
       offloadLayers: "レイヤーのオフロード",
@@ -3945,6 +3952,7 @@ export const ja = {
     discard: "破棄",
     mentions: "スキル",
     manage: "スキルを管理",
+    turnOff: "スキルをオフにする",
     bulkActions: "スキルの操作",
     enableAll: "すべて有効にする",
     disableAll: "すべて無効にする",
