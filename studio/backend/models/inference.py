@@ -4108,6 +4108,17 @@ def _merge_anthropic_system(system: Any, additions: list[str]) -> Any:
     return system
 
 
+def _with_user_note(message: dict, note: str, *, first: bool) -> dict:
+    """A copy of a user turn with a text block added, keeping its own blocks as sent."""
+    content = message.get("content")
+    if isinstance(content, str):
+        blocks = [{"type": "text", "text": content}] if content else []
+    else:
+        blocks = list(content or [])
+    block = {"type": "text", "text": note}
+    return {**message, "content": [block, *blocks] if first else [*blocks, block]}
+
+
 _CLAUDE_STYLE_REMINDER_SUFFIX = (
     " output style is active. Remember to follow the specific guidelines for this style."
 )
@@ -4309,20 +4320,45 @@ class AnthropicMessagesRequest(BaseModel):
         normalized_messages: list[Any] = []
         system_additions: list[str] = []
         retained_system = [_anthropic_content_to_system_text(data.get("system"))]
+        # Notes after an assistant turn wait for the next user turn.
+        pending_notes: list[str] = []
         changed = False
 
         for message in messages:
             if isinstance(message, dict) and message.get("role") == "system":
                 text = _anthropic_content_to_system_text(message.get("content", ""))
-                if not _is_repeated_claude_style_reminder(text, retained_system):
-                    system_additions.append(text)
-                    retained_system.append(text)
                 changed = True
+                if _is_repeated_claude_style_reminder(text, retained_system):
+                    continue
+                retained_system.append(text)
+                if not normalized_messages:
+                    system_additions.append(text)
+                elif text.strip():
+                    # Hoisting a later one would put it above the tools: claude's per-session
+                    # environment message then breaks the cache for every new session.
+                    note = f"<system-reminder>\n{text}\n</system-reminder>"
+                    previous = normalized_messages[-1]
+                    if isinstance(previous, dict) and previous.get("role") == "user":
+                        normalized_messages[-1] = _with_user_note(previous, note, first = False)
+                    else:
+                        pending_notes.append(note)
                 continue
+            if pending_notes and isinstance(message, dict) and message.get("role") == "user":
+                for note in reversed(pending_notes):
+                    message = _with_user_note(message, note, first = True)
+                pending_notes = []
             normalized_messages.append(message)
 
         if not changed:
             return data
+
+        if pending_notes:
+            normalized_messages.append(
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": note} for note in pending_notes],
+                }
+            )
 
         normalized = dict(data)
         normalized["messages"] = normalized_messages

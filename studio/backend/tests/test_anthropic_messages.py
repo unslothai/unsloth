@@ -687,7 +687,7 @@ class TestAnthropicModels:
         assert len(req.messages) == 1
         assert req.messages[0].role == "user"
 
-    def test_system_role_message_merges_with_existing_system_field(self):
+    def test_later_system_role_message_stays_in_the_user_turn_it_follows(self):
         req = AnthropicMessagesRequest(
             max_tokens = 50,
             system = "Base instructions.",
@@ -697,8 +697,116 @@ class TestAnthropicModels:
                 {"role": "assistant", "content": "Hello."},
             ],
         )
-        assert req.system == "Base instructions.\n\nAdditional instructions."
+        assert req.system == "Base instructions."
         assert [msg.role for msg in req.messages] == ["user", "assistant"]
+        assert [block.text for block in req.messages[0].content] == [
+            "Hi",
+            "<system-reminder>\nAdditional instructions.\n</system-reminder>",
+        ]
+
+    def test_leading_system_role_message_still_joins_the_system_field(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            system = "Base instructions.",
+            messages = [
+                {"role": "system", "content": "Additional instructions."},
+                {"role": "user", "content": "Hi"},
+            ],
+        )
+        assert req.system == "Base instructions.\n\nAdditional instructions."
+        assert req.messages[0].content == "Hi"
+
+    def test_system_role_message_after_an_assistant_turn_opens_the_next_user_turn(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            messages = [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello."},
+                {"role": "system", "content": "Note."},
+                {"role": "user", "content": [{"type": "text", "text": "Next."}]},
+            ],
+        )
+        assert [msg.role for msg in req.messages] == ["user", "assistant", "user"]
+        assert [block.text for block in req.messages[2].content] == [
+            "<system-reminder>\nNote.\n</system-reminder>",
+            "Next.",
+        ]
+
+    def test_trailing_system_role_message_after_an_assistant_turn_becomes_a_user_turn(self):
+        req = AnthropicMessagesRequest(
+            max_tokens = 50,
+            messages = [
+                {"role": "user", "content": "Hi"},
+                {"role": "assistant", "content": "Hello."},
+                {"role": "system", "content": "Note."},
+            ],
+        )
+        assert [msg.role for msg in req.messages] == ["user", "assistant", "user"]
+        assert req.messages[2].content[0].text == "<system-reminder>\nNote.\n</system-reminder>"
+
+    def test_claude_environment_message_leaves_system_and_tools_identical_across_sessions(self):
+        # claude sends its per-session environment (working directory) as a system message after the first
+        # user turn; hoisted, it sat above the tool schemas and every new session re-read them.
+        def converted(cwd):
+            req = AnthropicMessagesRequest(
+                max_tokens = 50,
+                system = "Static instructions.",
+                tools = [{"name": "Read", "input_schema": {"type": "object"}}],
+                messages = [
+                    {"role": "user", "content": "Fix the bug."},
+                    {
+                        "role": "system",
+                        "content": f"# Environment\n - Primary working directory: {cwd}",
+                    },
+                ],
+            ).model_dump()
+            return anthropic_messages_to_openai(req["messages"], req["system"]), req["tools"]
+
+        first, first_tools = converted("/work/a")
+        second, second_tools = converted("/work/b")
+        assert first[0] == second[0] == {"role": "system", "content": "Static instructions."}
+        assert first_tools == second_tools
+        assert first[1]["content"].startswith("Fix the bug.\n<system-reminder>\n# Environment")
+        assert "/work/a" in first[1]["content"] and "/work/b" in second[1]["content"]
+
+    def test_per_round_system_reminders_only_append(self):
+        # A system message after each tool result (claude's token countdown) used to rewrite the system
+        # prefix every round; in place, each request extends the previous one.
+        base = [
+            {"role": "user", "content": "Read it."},
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "r1", "name": "Read", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "r1", "content": "data"}],
+            },
+            {"role": "system", "content": "<total_tokens>900 tokens left</total_tokens>"},
+        ]
+        later = [
+            *base,
+            {
+                "role": "assistant",
+                "content": [{"type": "tool_use", "id": "r2", "name": "Read", "input": {}}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "tool_result", "tool_use_id": "r2", "content": "more"}],
+            },
+            {"role": "system", "content": "<total_tokens>800 tokens left</total_tokens>"},
+        ]
+
+        def converted(messages):
+            req = AnthropicMessagesRequest(
+                max_tokens = 50, system = "Base.", messages = messages
+            ).model_dump()
+            return anthropic_messages_to_openai(req["messages"], req["system"])
+
+        before, after = converted(base), converted(later)
+        assert after[: len(before)] == before
+        assert after[0] == {"role": "system", "content": "Base."}
+        assert "800 tokens left" in after[-1]["content"]
 
     def test_system_role_message_with_null_content_ignored(self):
         req = AnthropicMessagesRequest(
