@@ -399,7 +399,6 @@ def test_native_speed_flags_drop_conv_direct_on_vulkan_and_rocm(monkeypatch):
         assert native_speed_flags("max", [], accel) == fa_only
     for accel in ("cuda", "cpu", None):
         assert native_speed_flags("default", [], accel) == full
-    # The diffusion pin names the device the graph runs on, whatever the build's class says.
     assert native_speed_flags("default", ["--backend", "diffusion=Vulkan0,te=cpu"], "cuda") == fa_only
     assert native_speed_flags("default", ["--backend", "diffusion=ROCm1"], None) == fa_only
     assert native_speed_flags("default", ["--backend", "diffusion=CUDA0"], "vulkan") == full

@@ -299,8 +299,7 @@ def _terminate(proc: "subprocess.Popen") -> None:
 
 
 def binary_accelerator(binary: Optional[str]) -> Optional[str]:
-    """Accelerator class of ``binary`` (``vulkan`` / ``rocm`` / ``cuda`` / ``cpu``): its managed install record, else
-    the device listing an earlier probe already took of it (no subprocess here). None when neither says."""
+    """Accelerator class from the install record, else a cached probe listing (no subprocess); None if unknown."""
     if not binary:
         return None
     try:

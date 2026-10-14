@@ -136,9 +136,7 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa +
-# --diffusion-conv-direct (numerically exact), except Apple Metal, Vulkan and ROCm keep only --diffusion-fa. max keeps it
-# (profiles chain).
+# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -152,8 +150,7 @@ def native_speed_flags(
 ) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
-    ``backend_args``: the other argv flags, whose ``--backend`` decides whether the graph runs on Metal.
-    ``accelerator``: the build's accelerator class (``vulkan`` / ``rocm`` / ``cuda`` / ``cpu``), None if unknown."""
+    ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
@@ -166,17 +163,12 @@ def native_speed_flags(
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
 
 
-# ggml backends whose direct conv (implicit GEMM) loses to im2col: Vulkan (sd.cpp #2137, RDNA2 10.9 -> 73.4 s) and HIP
-# (#2085, RDNA3). On gfx1151 it is never faster: neutral on the DiTs (Z-Image), 4.5-5% slower on an SDXL UNet under
-# HIP. CUDA, CPU and an unknown build keep it.
+# Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
 _CONV_DIRECT_SLOW_BACKENDS = ("vulkan", "rocm", "hip")
 
 
 def conv_direct_wanted(backend_args: Sequence[str] = (), accelerator: Optional[str] = None) -> bool:
-    """Whether ``--diffusion-conv-direct`` should ride the default / max speed profile.
-
-    The diffusion graph's device decides: an explicit ``--backend`` pin (``diffusion=Vulkan0``) wins, else the
-    build's ``accelerator`` class. ``UNSLOTH_SD_CPP_CONV_DIRECT`` = ``1`` / ``0`` forces it either way."""
+    """``--backend diffusion=`` pin beats ``accelerator``; ``UNSLOTH_SD_CPP_CONV_DIRECT`` = 1/0 forces it."""
     import os
 
     forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
