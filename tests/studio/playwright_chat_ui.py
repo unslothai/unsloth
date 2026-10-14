@@ -162,6 +162,30 @@ def new_throttled_page(ctx):
     return page
 
 
+def close_page_without_waiting(ctx, page) -> None:
+    """Close a page without waiting on its renderer, on Chromium; page.close() elsewhere.
+
+    page.close() returns only once the page reports itself closed, and has no timeout. On the
+    Windows lane it has sat out a whole 540 s step budget on the persisted-monitor reset, the
+    last line printed being "closing the stale page". Attaching a CDP session, reading the
+    target id and Target.closeTarget are all answered by the browser process, so none of them
+    waits on a busy or throttled renderer, and closeTarget returns as soon as the close is
+    queued. Requests the page sends before it is gone are the caller's to discount.
+    """
+    if PLAYWRIGHT_BROWSER == "chromium":
+        try:
+            target = ctx.new_cdp_session(page).send("Target.getTargetInfo")["targetInfo"][
+                "targetId"
+            ]
+            ctx.browser.new_browser_cdp_session().send("Target.closeTarget", {"targetId": target})
+            return
+        except Exception as exc:
+            info(
+                f"WARN closing the page browser-side failed ({exc!r}); falling back to page.close()"
+            )
+    page.close()
+
+
 def recover_or_replace_page(page, ctx, **kwargs):
     """The shared recovery, with the throttle carried onto a replacement page.
 
@@ -1130,14 +1154,21 @@ with sync_playwright() as p:
     # See _playwright_robust.py.
     install_view_transition_killer(ctx)
     system_requests: list[str] = []
-    ctx.on(
-        "request",
-        lambda request: (
-            system_requests.append(request.url)
-            if request.url.split("?", 1)[0].endswith("/api/system")
-            else None
-        ),
-    )
+    # Pages closed without waiting (close_page_without_waiting) can still send a request or two while the
+    # browser tears them down; those are not the page the monitor steps observe.
+    stale_pages: set = set()
+
+    def _count_system_request(request) -> None:
+        if not request.url.split("?", 1)[0].endswith("/api/system"):
+            return
+        try:
+            if request.frame.page in stale_pages:
+                return
+        except Exception:
+            pass  # no frame (a worker): counted, as before
+        system_requests.append(request.url)
+
+    ctx.on("request", _count_system_request)
     page = new_throttled_page(ctx)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -2675,9 +2706,10 @@ with sync_playwright() as p:
     # clearing cookies are browser-side calls, and the storage writes go through the
     # fresh page parked on a same-origin JSON endpoint where no app code runs. Each call
     # announces itself first, so a wedge that remains names the call it sits in.
+    stale_pages.add(page)
     info("closing the stale page")
     try:
-        page.close()
+        close_page_without_waiting(ctx, page)
     except Exception as exc:
         info(f"WARN closing the stale page failed: {exc!r}")
     info("clearing stale session cookies")

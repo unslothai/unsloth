@@ -55,7 +55,7 @@ export const fr = {
       enable: "Autoriser les modèles à utiliser le navigateur",
       enableDescription: "Les modèles ouvrent des pages dans leur propre onglet du navigateur, les lisent, et cliquent et saisissent pour vous. Aussi dans le menu + de la zone de saisie.",
       history: "Historique de navigation",
-      historyDescription: "Choisissez si les modèles peuvent lire l'historique du navigateur",
+      historyDescription: "Accès complet ignore la confirmation ; Jamais bloque toujours l'accès",
       alwaysAsk: "Toujours demander",
       alwaysAllow: "Toujours autoriser",
       never: "Jamais",
@@ -586,6 +586,10 @@ export const fr = {
   chatMenu: {
     more: "Options de la discussion",
     copy: "Copier",
+    compact: "Compacter la conversation",
+    compactQueued: "Compactage demandé pour le prochain message",
+    compactEmpty: "Rien à compacter pour le moment",
+    compactUnsupported: "Le compactage nécessite un modèle GGUF ou MLX prenant en charge les outils",
   },
   welcome: {
     goodToSeeYou: "Ravi de vous voir",
@@ -3692,6 +3696,9 @@ export const fr = {
       evalSteps: "Étapes d'évaluation",
       evalStepsTooltip:
         "Fraction du nombre total d'étapes d'entraînement entre les évaluations (0-1). Définissez 0 pour désactiver l'évaluation. Ex. 0,01 = évaluer tous les 1 % d'étapes.",
+      earlyStoppingPatience: "Patience d'arrêt anticipé",
+      earlyStoppingPatienceTooltip:
+        "Arrête l'entraînement après ce nombre d'évaluations consécutives sans perte d'évaluation plus basse, et conserve les poids de la meilleure évaluation. Nécessite l'évaluation (étapes d'évaluation supérieures à 0). 0 pour désactiver.",
       seed: "Graine",
       seedTooltip: "Graine aléatoire pour la reproductibilité.",
       offloadLayers: "Décharger des couches",
@@ -4068,6 +4075,7 @@ export const fr = {
     discard: "Abandonner",
     mentions: "Compétences",
     manage: "Gérer les compétences",
+    turnOff: "Désactiver les compétences",
     bulkActions: "Actions sur les compétences",
     enableAll: "Tout activer",
     disableAll: "Tout désactiver",

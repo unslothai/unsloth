@@ -55,7 +55,7 @@ export const de = {
       enable: "Modelle den Browser nutzen lassen",
       enableDescription: "Modelle öffnen Seiten in einem eigenen Browser-Tab, lesen sie und klicken und tippen für dich. Auch im +-Menü des Eingabefelds.",
       history: "Browserverlauf",
-      historyDescription: "Lege fest, ob Modelle deinen Browserverlauf lesen dürfen",
+      historyDescription: "Vollzugriff überspringt die Abfrage; Nie sperrt weiterhin den Zugriff",
       alwaysAsk: "Immer fragen",
       alwaysAllow: "Immer erlauben",
       never: "Nie",
@@ -586,6 +586,10 @@ export const de = {
   chatMenu: {
     more: "Chat-Optionen",
     copy: "Kopieren",
+    compact: "Unterhaltung komprimieren",
+    compactQueued: "Komprimierung für die nächste Nachricht angefordert",
+    compactEmpty: "Noch nichts zu komprimieren",
+    compactUnsupported: "Die Komprimierung erfordert ein GGUF- oder MLX-Modell mit Tool-Unterstützung",
   },
   welcome: {
     goodToSeeYou: "Schön, dich zu sehen",
@@ -3682,6 +3686,9 @@ export const de = {
       evalSteps: "Eval-Schritte",
       evalStepsTooltip:
         "Anteil der gesamten Trainingsschritte zwischen Auswertungen (0-1). Auf 0 setzen, um die Auswertung zu deaktivieren. Z. B. 0.01 = alle 1 % der Schritte auswerten.",
+      earlyStoppingPatience: "Early-Stopping-Geduld",
+      earlyStoppingPatienceTooltip:
+        "Beendet das Training nach so vielen Evaluierungen in Folge ohne niedrigeren Eval-Loss und behält die Gewichte der besten Evaluierung. Erfordert Evaluierung (Eval-Schritte über 0). 0 deaktiviert es.",
       seed: "Seed",
       seedTooltip: "Zufalls-Seed für Reproduzierbarkeit.",
       offloadLayers: "Schichten auslagern",
@@ -4057,6 +4064,7 @@ export const de = {
     discard: "Verwerfen",
     mentions: "Fähigkeiten",
     manage: "Fähigkeiten verwalten",
+    turnOff: "Fähigkeiten ausschalten",
     bulkActions: "Fähigkeiten-Aktionen",
     enableAll: "Alle aktivieren",
     disableAll: "Alle deaktivieren",
