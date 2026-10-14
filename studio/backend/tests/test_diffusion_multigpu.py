@@ -1404,3 +1404,33 @@ def test_split_video_request_is_guarded_on_every_card():
     assert "cuda:0" in message
     del mg._PLACEMENTS[pipe]
     assert vid._video_split_card_floors(pipe) is None
+
+
+def test_primary_tile_verdict_does_not_tile_a_vae_decoding_elsewhere(monkeypatch):
+    import types as _types
+
+    from core.inference import diffusion as D
+
+    engaged = []
+    monkeypatch.setattr(D, "diffusion_device_scope", lambda o: contextlib.nullcontext())
+    monkeypatch.setattr(D, "reclaimable_snapshot_device_memory", lambda target: "card1-free")
+    # the VAE's card decodes untiled; only the smaller primary asks for tiling
+    monkeypatch.setattr(
+        D,
+        "raise_on_image_activation_shortfall",
+        lambda **kw: _types.SimpleNamespace(action = "ok", overridden = False),
+    )
+    monkeypatch.setattr(
+        D, "engage_vae_tiling", lambda pipe, logger = None: engaged.append(1) or ("restore", True)
+    )
+    pipe = _types.SimpleNamespace(vae = torch.nn.Linear(1, 1))
+    target = _types.SimpleNamespace(ordinal = 0)
+    primary_verdict = _types.SimpleNamespace(action = D.ACTIVATION_TILE, overridden = False)
+    kwargs = {"device_memory": "card0-free", "vae_tile_side": 512, "vae_sliced": False}
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 1))
+    assert D._tile_for_verdict(pipe, primary_verdict, target, kwargs, 1, None, None) is None
+    assert engaged == []
+    # one card: the primary's tile verdict still tiles
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    assert D._tile_for_verdict(pipe, primary_verdict, target, kwargs, 1, None, None) == "restore"
+    assert engaged == [1]

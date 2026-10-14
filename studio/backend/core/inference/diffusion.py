@@ -1920,6 +1920,22 @@ def _plans_at_requested_speed(fn: Callable[..., Any]) -> Callable[..., Any]:
     return wrapper
 
 
+def _vae_on_other_card(pipe: Any, guard_target: Any) -> Any:
+    """The CUDA device of ``pipe.vae`` when a multi-GPU split put it on another card than ``guard_target``, else None."""
+    from .diffusion_multigpu import _module_device
+
+    vae = getattr(pipe, "vae", None)
+    try:
+        device = _module_device(vae) if vae is not None else None
+    except Exception:  # noqa: BLE001 - an unreadable VAE keeps the primary's verdict
+        return None
+    if device is None or getattr(device, "type", None) != "cuda":
+        return None
+    if device.index in (None, getattr(guard_target, "ordinal", None)):
+        return None
+    return device
+
+
 def _guard_vae_card(
     pipe: Any, guard_target: Any, guard_kwargs: dict, restore_vae: Any, logger: Any
 ) -> tuple[Any, bool]:
@@ -1928,15 +1944,8 @@ def _guard_vae_card(
     when only a tiled decode fits that card (unless already tiled) and raises the guard's refusal when nothing fits.
     Returns ``(restore_vae, tiled)`` for a tiling it engaged, else ``(None, False)``. Conservative: the whole request's
     estimate is checked against the VAE's card."""
-    from .diffusion_multigpu import _module_device
-
-    vae = getattr(pipe, "vae", None)
-    primary = getattr(guard_target, "ordinal", None)
-    try:
-        device = _module_device(vae) if vae is not None else None
-    except Exception:  # noqa: BLE001 - an unreadable VAE keeps the primary's verdict
-        device = None
-    if device is None or getattr(device, "type", None) != "cuda" or device.index in (None, primary):
+    device = _vae_on_other_card(pipe, guard_target)
+    if device is None:
         return None, False
     with diffusion_device_scope(device.index):
         vae_kwargs = {**guard_kwargs, "device_memory": reclaimable_snapshot_device_memory(guard_target)}
@@ -1947,6 +1956,43 @@ def _guard_vae_card(
     if not tiled and not verdict.overridden:
         raise_on_image_activation_shortfall(**{**vae_kwargs, "vae_tile_side": None})
     return restore, tiled
+
+
+def _tile_for_verdict(
+    pipe: Any,
+    verdict: Any,
+    guard_target: Any,
+    guard_kwargs: dict,
+    guard_batch: int,
+    restore_vae: Any,
+    logger: Any,
+) -> Any:
+    """Engage VAE tiling when the guard says only a tiled decode fits; returns the VAE restore handle. A multi-GPU split
+    that decodes on another card is decided by that card's verdict alone: the primary never runs the decode, so its
+    tile verdict must not switch the secondary's VAE to the (not bit-identical) tiled path."""
+    vae_restore, vae_card_tiled = _guard_vae_card(pipe, guard_target, guard_kwargs, restore_vae, logger)
+    if vae_card_tiled:
+        return vae_restore
+    if verdict.action != ACTIVATION_TILE or _vae_on_other_card(pipe, guard_target):
+        return restore_vae
+    restore_vae, vae_tiled = engage_vae_tiling(pipe, logger = logger)
+    try:
+        if not vae_tiled and not verdict.overridden:
+            # Passed only because it would be tiled; tiling failed, so refuse on the untiled figure.
+            raise_on_image_activation_shortfall(**{**guard_kwargs, "vae_tile_side": None})
+        elif (
+            guard_batch > 1
+            and guard_kwargs["vae_sliced"]
+            and not verdict.overridden
+            and not vae_is_sliced(getattr(pipe, "vae", None))
+        ):
+            raise_on_image_activation_shortfall(**{**guard_kwargs, "vae_sliced": False})
+    except BaseException:
+        # the caller never receives the handle on a refusal: undo the tiling here
+        if restore_vae is not None:
+            restore_vae()
+        raise
+    return restore_vae
 
 
 def _controlnet_streams(state: Any) -> bool:
@@ -10983,28 +11029,9 @@ class DiffusionBackend:
                         logger = logger,
                     )
                     verdict = raise_on_image_activation_shortfall(**guard_kwargs)
-                    # a multi-GPU split may decode on another card: check (and tile for) that card too
-                    vae_restore, vae_card_tiled = _guard_vae_card(
-                        pipe, guard_target, guard_kwargs, restore_vae, logger
+                    restore_vae = _tile_for_verdict(
+                        pipe, verdict, guard_target, guard_kwargs, guard_batch, restore_vae, logger
                     )
-                    if vae_card_tiled:
-                        restore_vae = vae_restore
-                    if verdict.action == ACTIVATION_TILE and not vae_card_tiled:
-                        restore_vae, vae_tiled = engage_vae_tiling(pipe, logger = logger)
-                        if not vae_tiled and not verdict.overridden:
-                            # Passed only because it would be tiled; tiling failed, so refuse on the untiled figure.
-                            raise_on_image_activation_shortfall(
-                                **{**guard_kwargs, "vae_tile_side": None}
-                            )
-                        elif (
-                            guard_batch > 1
-                            and guard_kwargs["vae_sliced"]
-                            and not verdict.overridden
-                            and not vae_is_sliced(getattr(pipe, "vae", None))
-                        ):
-                            raise_on_image_activation_shortfall(
-                                **{**guard_kwargs, "vae_sliced": False}
-                            )
                 except ValueError:
                     raise  # the refusal itself: the route turns this into a 400 with the reason
                 except Exception as exc:  # noqa: BLE001 - fail OPEN on a broken probe
