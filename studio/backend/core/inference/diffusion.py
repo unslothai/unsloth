@@ -2222,6 +2222,21 @@ def _bg_compile_module(
     )
 
 
+def _prequant_bakes_auto_accumulate(source: Any) -> bool:
+    """Whether ``source`` is an artifact built with the auto fp8 accumulate: a hosted repo, or an entry of the local
+    pre-quant cache (``save_runtime_quant`` never caches a build quantized under a forced mode)."""
+    kind = getattr(source, "kind", None)
+    if kind == "repo":
+        return True
+    if kind != "path":
+        return False
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+        return path_in_cache(getattr(source, "location", None) or "")
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class DiffusionBackend:
     """Holds at most one loaded diffusers pipeline. All mutations are serialised."""
 
@@ -4262,8 +4277,9 @@ class DiffusionBackend:
                     if source is None:
                         continue
                     # The loader's checkpoint validation refuses a FORCED fp8 accumulate the artifact does not bake,
-                    # but only after the plan dropped the released shards. An operator's own file is left to it.
-                    if getattr(source, "kind", None) == "repo" and hosted_fast_accum_conflict(
+                    # but only after the plan dropped the released shards. Hosted artifacts and Studio's own local
+                    # pre-quant cache entries both bake the auto value; an operator's own file is left to it.
+                    if _prequant_bakes_auto_accumulate(source) and hosted_fast_accum_conflict(
                         rung, fast_accum
                     ):
                         continue
