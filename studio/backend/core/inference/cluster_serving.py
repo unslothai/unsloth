@@ -13,9 +13,7 @@ path exactly as it was. Configure with ``UNSLOTH_CLUSTER_NODES`` (comma list of
 ``managed`` nodes get their ``ggml-rpc-server`` started over ssh; the others are expected to run
 ``ggml-rpc-server -H <ip> -p <port>`` themselves (the way a Mac or a Windows box joins).
 
-Placement comes from the coordinator's own ``llama-server --rpc ... --list-devices``: one
-``RPC<k>`` per remote device in endpoint order, with its free memory, so a Metal, CUDA or ROCm
-worker is priced by what its backend reports, without ssh.
+Placement reads free memory per remote device from ``llama-server --rpc ... --list-devices``.
 """
 
 from __future__ import annotations
@@ -47,8 +45,7 @@ LAYER_ROUNDING_MARGIN = 0.05
 LIST_DEVICES_TIMEOUT_S = 60.0
 WORKER_START_TIMEOUT_S = 60.0
 REACH_TIMEOUT_S = 3.0
-# A Hub GGUF not downloaded yet has no header to price its KV from; reserve this share of the
-# weights for it rather than none.
+# KV share of the weights reserved for a Hub GGUF whose header is not downloaded yet.
 KV_UNKNOWN_FRACTION = 0.2
 
 _MMPROJ_DEVICE_FLAGS = frozenset({"--mmproj-device", "-mmdev"})
@@ -441,9 +438,7 @@ def plan_cluster(
 ) -> ClusterPlan:
     """single when this machine holds the load, else a layer split weighted by usable memory.
 
-    The split prices weights and KV by share, which is what ``--tensor-split`` hands out, and
-    charges the projector and drafter to the coordinator, which loads them; adapters go with the
-    layers, so the caller adds them to ``model_bytes``.
+    Projector and drafter are charged to the coordinator; callers add adapters to ``model_bytes``.
     """
     if model_bytes is None:
         return ClusterPlan("single", "model size unknown; not guessing, serving on this machine")
@@ -613,10 +608,9 @@ class ClusterServing:
 
     async def _ensure_workers(self) -> Dict[str, str]:
         """Start the managed nodes' rpc-servers that are not running: ``{endpoint: why}`` for the
-        ones that could not be, so planning goes on with the rest.
+        ones that could not be.
 
-        A live worker is kept across reloads, even forced ones: restarting it would drop the buffers
-        of the model still being served, and a later failure of this load could not bring them back.
+        Live workers are never restarted, even on forced reloads: that drops the served model's buffers.
         """
         from core.inference import spark_serving as ss
 
