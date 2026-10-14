@@ -205,7 +205,7 @@ import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { useT } from "@/i18n";
 import {
-  PLUS_MENU_ORDER,
+  splitPlusMenuItems,
   type PlusMenuItemId,
   usePlusMenuPrefsStore,
 } from "./stores/plus-menu-prefs-store";
@@ -710,6 +710,7 @@ export function SharedComposer({
     }
   }, []);
   const plusPins = usePlusMenuPrefsStore((s) => s.pins);
+  const plusOrder = usePlusMenuPrefsStore((s) => s.order);
   const [isQueueRunning, setIsQueueRunning] = useState(false);
   const [queueProgress, setQueueProgress] = useState({ current: 0, total: 0 });
   const queueRef = useRef<string[]>([]);
@@ -2549,6 +2550,9 @@ export function SharedComposer({
   // Adjustable "+" menu items, keyed by id. Pinned ones render at the top level; the rest fall into
   // the "More" overflow submenu. Core items and "More" itself live outside this map.
   const plusMenuNodes: Record<PlusMenuItemId, ReactNode> = {
+    // Compare runs no research, so the item has nothing to offer here.
+    deepResearch: null,
+    browserUse: <BrowserAgentMenuItem />,
     chatWithFiles: (
       <DropdownMenuItem
         disabled={ragDisabled}
@@ -2704,8 +2708,8 @@ export function SharedComposer({
       </DropdownMenuSub>
     ),
   };
-  const pinnedPlusItems = PLUS_MENU_ORDER.filter((id) => plusPins[id]);
-  const overflowPlusItems = PLUS_MENU_ORDER.filter((id) => !plusPins[id]);
+  const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
+    splitPlusMenuItems(plusOrder, plusPins);
 
   return (
     <div
@@ -2944,12 +2948,8 @@ export function SharedComposer({
                 )}
                 <DropdownMenuSeparator />
                 {/* Browser use sits right under Chat with files, or leads this section without it. */}
-                {pinnedPlusItems.includes("chatWithFiles") ? null : <BrowserAgentMenuItem />}
                 {pinnedPlusItems.map((id) => (
-                  <Fragment key={id}>
-                    {plusMenuNodes[id]}
-                    {id === "chatWithFiles" ? <BrowserAgentMenuItem /> : null}
-                  </Fragment>
+                  <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
                 ))}
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger>

@@ -2584,14 +2584,17 @@ export const ru = {
       },
       menu: {
         title: "Меню чата",
-        description:
-          "Закрепляйте пункты в боковом меню «+» чата. Остальные будут доступны в разделе «Ещё».",
+        description: "Закрепляйте пункты в меню + чата и перетаскивайте их, чтобы изменить порядок. Остальные попадут в «Ещё».",
+        deepResearch: "Глубокое исследование",
+        browserUse: "Управление браузером",
         chatWithFiles: "Чат с файлами (RAG)",
         mcp: "MCP",
         skills: "Навыки",
         savedPrompts: "Сохранённые промпты",
         compareChat: "Сравнить чаты",
         exportChat: "Экспортировать чат",
+        reorder: "Переместить: {item}",
+        reset: "Сбросить по умолчанию",
       },
       pastedTextThreshold: "Сворачивать длинные вставки",
       pastedTextThresholdDescription:

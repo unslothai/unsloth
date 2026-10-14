@@ -2564,14 +2564,17 @@ export const ko = {
       },
       menu: {
         title: "채팅 메뉴",
-        description:
-          "채팅의 + 사이드 메뉴에 항목을 고정합니다. 나머지 항목은 ‘더 보기’로 이동합니다.",
+        description: "채팅의 + 메뉴에 항목을 고정하고 드래그해 순서를 바꾸세요. 나머지는 ‘더보기’로 이동합니다.",
+        deepResearch: "심층 리서치",
+        browserUse: "브라우저 사용",
         chatWithFiles: "파일과 채팅(RAG)",
         mcp: "MCP",
         skills: "스킬",
         savedPrompts: "저장된 프롬프트",
         compareChat: "채팅 비교",
         exportChat: "채팅 내보내기",
+        reorder: "{item} 이동",
+        reset: "기본값으로 재설정",
       },
       pastedTextThreshold: "긴 붙여넣기 압축",
       pastedTextThresholdDescription:

@@ -2767,14 +2767,17 @@ export const sv = {
       },
       menu: {
         title: "Chattmeny",
-        description:
-          "Fäst objekt i chattens +-sidomeny. Övriga flyttas till ”Mer”.",
+        description: "Fäst objekt i chattens +-meny och dra dem för att ändra ordning. Övriga hamnar under ”Mer”.",
+        deepResearch: "Djupsökning",
+        browserUse: "Webbläsarstyrning",
         chatWithFiles: "Chatta med filer (RAG)",
         mcp: "MCP",
         skills: "Färdigheter",
         savedPrompts: "Sparade uppmaningar",
         compareChat: "Jämför chatt",
         exportChat: "Exportera chatt",
+        reorder: "Flytta {item}",
+        reset: "Återställ standard",
       },
       pastedTextThreshold: "Kondensera långa inklistringar",
       pastedTextThresholdDescription:

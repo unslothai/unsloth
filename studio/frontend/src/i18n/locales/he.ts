@@ -2685,14 +2685,17 @@ export const he = {
       },
       menu: {
         title: "תפריט צ'אט",
-        description:
-          "הצמד פריטים לתפריט ה-+ של הצ'אט. פריטים אחרים יעברו אל 'עוד'.",
+        description: "הצמידו פריטים לתפריט + של הצ'אט וגררו אותם כדי לשנות את הסדר. השאר עוברים אל \"עוד\".",
+        deepResearch: "מחקר מעמיק",
+        browserUse: "שימוש בדפדפן",
         chatWithFiles: "צ'אט עם קבצים (RAG)",
         mcp: "MCP",
         skills: "מיומנויות",
         savedPrompts: "פרומפטים שמורים",
         compareChat: "השוואת צ'אט",
         exportChat: "ייצוא צ'אט",
+        reorder: "הזזת {item}",
+        reset: "איפוס לברירת המחדל",
       },
       pastedTextThreshold: "כווץ טקסט מודבק ארוך",
       pastedTextThresholdDescription:

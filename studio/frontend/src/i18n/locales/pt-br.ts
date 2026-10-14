@@ -2588,14 +2588,17 @@ export const ptBR = {
       },
       menu: {
         title: "Menu do chat",
-        description:
-          "Fixe itens no menu lateral do botão + do chat. Os demais ficam em “Mais”.",
+        description: "Fixe itens no menu + do chat e arraste-os para reordenar. Os demais vão para “Mais”.",
+        deepResearch: "Pesquisa aprofundada",
+        browserUse: "Uso do navegador",
         chatWithFiles: "Chat com arquivos (RAG)",
         mcp: "MCP",
         skills: "Habilidades",
         savedPrompts: "Prompts salvos",
         compareChat: "Comparar chats",
         exportChat: "Exportar chat",
+        reorder: "Mover {item}",
+        reset: "Restaurar padrão",
       },
       pastedTextThreshold: "Condensar colagens longas",
       pastedTextThresholdDescription:
