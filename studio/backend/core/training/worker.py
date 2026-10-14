@@ -203,6 +203,26 @@ def _untrainable_model_format_error(config: dict) -> str | None:
     return None
 
 
+def _lora_uses_loftq(config: dict) -> bool:
+    """A resume rebuilds its adapter before loading the checkpoint, so it reruns LoftQ only when the checkpoint was
+    trained with it: runs saved while Studio never applied LoftQ kept the original base weights."""
+    if not config.get("use_loftq"):
+        return False
+    resume = config.get("resume_from_checkpoint")
+    if not resume:
+        return True
+    import json
+
+    from core.training.resume import get_resume_checkpoint_path
+
+    checkpoint = Path(get_resume_checkpoint_path(resume) or resume)
+    try:
+        saved = json.loads((checkpoint / "adapter_config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(saved, dict) and saved.get("init_lora_weights") == "loftq"
+
+
 def _resolve_cached_model_load_name(config: dict) -> str:
     return config.get("model_snapshot_path") or config["model_name"]
 
@@ -497,6 +517,13 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
         )
         return False
     return True
+
+
+def _mlx_diffusion_lm_error(config: dict, model_load_target: str) -> str | None:
+    from utils.models.diffusion_lm import mlx_refusal
+    return mlx_refusal(
+        model_load_target, _worker_hf_token(config), revision = config.get("model_revision")
+    )
 
 
 def _validate_training_worker_config(config: dict, event_queue: Any) -> bool:
@@ -821,6 +848,36 @@ def _pre_detect_training_model(
         load_in_4bit = _pre_detect_load_in_4bit(config, model_load_name, hf_token),
     )
     _check_finetune_targets_after_detect(trainer, config)
+    _apply_diffusion_lm_overrides(trainer, config)
+
+
+_LORA_DEFAULT_LR = 2e-4
+# Near-duplicate head rows for <|im_end|> / <tool_call> / ... (cosine 0.97): a 2e-4 LoRA swaps them in chat.
+_DIFFUSION_LM_LORA_LR = {"dream": 5e-5, "sdar": 5e-5}
+
+
+def _apply_diffusion_lm_overrides(trainer, config: dict) -> None:
+    """Text-diffusion runs never pack: packed rows would share one bidirectional attention window. Set before
+    the row bound and online tokenization read the flag, so their accounting matches what trains."""
+    profile = getattr(trainer, "diffusion_lm_profile", None)
+    if not profile:
+        return
+    config["diffusion_lm_profile"] = profile
+    if config.get("packing"):
+        config["packing"] = False
+        logger.info("Text-diffusion model (%s): sequence packing turned off", profile)
+    lowered = _DIFFUSION_LM_LORA_LR.get(profile)
+    try:
+        at_default = float(config.get("learning_rate", _LORA_DEFAULT_LR)) == _LORA_DEFAULT_LR
+    except (TypeError, ValueError):
+        at_default = False  # the trainer reports the invalid value itself
+    if lowered is not None and at_default:
+        config["learning_rate"] = lowered
+        logger.info(
+            "Text-diffusion model (%s): learning rate 2e-4 lowered to %g; set any other value to override",
+            profile,
+            lowered,
+        )
 
 
 _NOTHING_TO_TRAIN = (
@@ -946,6 +1003,30 @@ def _check_mlx_effective_targets(
     if _names_a_cpt_target(config.get("target_modules") or ()):
         return
     raise ValueError(_NOTHING_TO_TRAIN)
+
+
+def _fetch_spark_tts_repo(trainer, event_queue: Any, model_name: str) -> None:
+    """Spark-TTS encodes its dataset with the BiCodec weights in the model repo, so the repo is fetched before the
+    dataset step (#13458), under the model-load lifecycle so a stalled Xet download still respawns over HTTP."""
+    from utils.hf_xet_fallback import start_watchdog
+
+    _send_status(event_queue, "Loading model...")
+    event_queue.put({"type": "model_load_started", "ts": time.time()})
+    # The download lands under the resolved repo, not the "Spark-TTS-0.5B/LLM" alias.
+    watchdog_stop = start_watchdog(
+        repo_ids = list(dict.fromkeys([model_name, trainer.spark_tts_hub_repo()])),
+        on_stall = lambda msg: event_queue.put({"type": "stall", "message": msg, "ts": time.time()}),
+        xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
+    )
+    try:
+        trainer.resolve_spark_tts_repo(
+            on_model_resolved = lambda repo_id: event_queue.put(
+                {"type": "model_load_resolved", "repo_id": repo_id, "ts": time.time()}
+            ),
+        )
+    finally:
+        watchdog_stop.set()
+        event_queue.put({"type": "model_load_completed", "ts": time.time()})
 
 
 def _reload_dataset_with_remote_model_tokenizer(
@@ -2441,6 +2522,11 @@ def _start_mlx_stop_poller(stop_queue):
         trainer = trainer_ref[0]
         if trainer is not None:
             trainer.stop_requested = True
+            # Early stopping set load_best_model_at_end; a manual stop keeps the current adapters instead, since the
+            # stop checkpoint stores this step's optimizer state next to them.
+            args = getattr(trainer, "args", None)
+            if getattr(args, "load_best_model_at_end", False):
+                args.load_best_model_at_end = False
 
     stop_thread = _start_worker_stop_poller(
         stop_queue,
@@ -2687,6 +2773,9 @@ def _finalize_mlx_training(
                 resume_blocked = True,
             )
             return
+    if not stopped_after_save and getattr(trainer, "_early_stopped", False):
+        # Zoo ends an early-stopped run without stop_requested, so it reads as a plain completion otherwise.
+        completion_message = "Training completed (stopped early: eval loss stopped improving)"
     send(
         "complete",
         output_dir = output_dir if bool(trainer.is_main_process) else None,
@@ -3305,6 +3394,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # Refills the gradient-norm chart. MLX returns a norm for free only under global-norm clipping; asking for it
         # beats switching clip modes, which would alter the loss trajectory and cost VLM runs mx.compile.
         mlx_config_kwargs["report_grad_norm"] = True
+    if (
+        "early_stopping_patience" in _supported_fields
+        and "load_best_model_at_end" in _supported_fields
+    ):
+        from core.training.early_stopping import early_stopping_patience
+
+        # Zoo counts patience in evaluations and restores the best adapters itself, the CUDA path's contract.
+        patience = early_stopping_patience(config.get("early_stopping_patience"))
+        if patience and eval_dataset is not None and eval_steps_value > 0:
+            mlx_config_kwargs["early_stopping_patience"] = patience
+            mlx_config_kwargs["load_best_model_at_end"] = True
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
@@ -3691,6 +3791,10 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     )
     os.environ["PYTHONWARNINGS"] = "ignore"  # before imports
 
+    from utils.security.hub_data_files import install as guard_hub_data_files
+
+    guard_hub_data_files()
+
     if not config.get("allow_ambient", True):
         from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
 
@@ -3811,6 +3915,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     _hw.detect_hardware()
     if mlx_backend_requested or should_use_mlx_training_backend(device = _hw.DEVICE):
+        diffusion_error = _mlx_diffusion_lm_error(config, model_load_target)
+        if diffusion_error:
+            event_queue.put(
+                {"type": "error", "error": diffusion_error, "stack": "", "ts": time.time()}
+            )
+            return
         run_mlx_training_process(
             event_queue = event_queue,
             stop_queue = stop_queue,
@@ -4342,6 +4452,24 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
+    if config.get("offload_layers"):
+        from utils.models.diffusion_lm import diffusion_lm_profile_for_model
+
+        # The diffusion load has no block swapping; off before the budget below sizes itself to offloading.
+        _diffusion = diffusion_lm_profile_for_model(
+            model_load_target, _worker_hf_token(config), revision = config.get("model_revision")
+        )
+        if _diffusion:
+            config["offload_layers"] = 0
+            event_queue.put(
+                {
+                    "type": "warning",
+                    "message": f"Layer offloading is not available for text-diffusion models ({_diffusion}); "
+                    "training without it.",
+                    "ts": time.time(),
+                }
+            )
+
     # Offload layers sizes "auto" to what the allocator may use, so a budget makes the run fit in it,
     # and two runs on one card can each take their share.
     # ── 2b. Training VRAM budget ──
@@ -4562,6 +4690,12 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "instead of resuming to size it for this machine\n"
                 )
         max_train_rows = resumed_rows
+
+        if getattr(trainer, "_audio_type", None) == "bicodec":
+            _fetch_spark_tts_repo(trainer, event_queue, model_name)
+            if trainer.should_stop:
+                event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
+                return
 
         _send_status(event_queue, "Loading and formatting dataset...")
         dataset, eval_dataset = _load_training_dataset()
@@ -4804,7 +4938,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_dropout = config.get("lora_dropout", 0.0),
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
             )
         elif use_lora:
@@ -4821,7 +4955,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 lora_dropout = config.get("lora_dropout", 0.0),
                 use_gradient_checkpointing = config.get("gradient_checkpointing", "unsloth"),
                 use_rslora = config.get("use_rslora", False),
-                use_loftq = config.get("use_loftq", False),
+                use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
             )
         else:
@@ -4943,6 +5077,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             tensorboard_dir = tensorboard_dir,
             eval_dataset = eval_dataset,
             eval_steps = eval_steps,
+            early_stopping_patience = config.get("early_stopping_patience", 0),
             max_seq_length = config.get("max_seq_length", 2048),
             vision_image_size = config.get("vision_image_size"),
             optim = config.get("optim", "adamw_8bit"),
@@ -5410,6 +5545,18 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             if gradient_checkpointing in ("none", "", None):
                 gradient_checkpointing = False
 
+            from core.training.trainer import (
+                LOFTQ_SKIPPED_ON_QUANTIZED,
+                _has_quantized_weights,
+                _loftq_peft_kwargs,
+            )
+
+            use_loftq = _lora_uses_loftq(config)
+            # The fast encoder prepares an intrinsically quantized repo for k-bit training, and LoftQ fails on it.
+            if use_loftq and _has_quantized_weights(model):
+                _send_status(event_queue, LOFTQ_SKIPPED_ON_QUANTIZED)
+                use_loftq = False
+
             model = FastSentenceTransformer.get_peft_model(
                 model,
                 r = config.get("lora_r", 32),
@@ -5422,9 +5569,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 random_state = config.get("random_seed", 3407),
                 use_rslora = config.get("use_rslora", False),
                 use_dora = config.get("use_dora", False),
-                loftq_config = {"loftq_bits": 4, "loftq_iter": 1}
-                if config.get("use_loftq")
-                else None,
+                **_loftq_peft_kwargs(use_loftq),
                 task_type = "FEATURE_EXTRACTION",
             )
         except Exception as e:

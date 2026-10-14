@@ -56,13 +56,22 @@ def _xformers_runs_on_device() -> bool:
         return False
 
 
-def _xformers_disabled_for_capability(capability, probe = _xformers_runs_on_device) -> bool:
+def _xformers_fa3_enabled() -> bool:
+    return getattr(xformers, "_get_use_fa3", lambda: True)()
+
+
+def _xformers_disabled_for_capability(
+    capability,
+    probe = _xformers_runs_on_device,
+    fa3_enabled = _xformers_fa3_enabled,
+) -> bool:
     # At sm_120 (RTX 50-series) xformers' cutlass op is capability-rejected (it caps at sm_90) and its
-    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide;
-    # below sm_120 xformers always works.
-    if capability[0] < 12:
-        return False
-    return not probe()
+    # flash-2 op runs only if the build ships an sm_120 kernel, so run one real forward to decide.
+    # On sm_90 FA3 is off only for builds without sm_90a (_utils), which may also ship no sm_90 kernel
+    # at all (conda-forge xformers >= 0.0.33), so probe those too; elsewhere xformers works.
+    if capability[0] >= 12 or (tuple(capability) == (9, 0) and not fa3_enabled()):
+        return not probe()
+    return False
 
 
 # FlashAttention always wins in select_attention_backend and nothing downgrades flash to xformers,
@@ -108,6 +117,8 @@ def _load_torch_varlen_attn():
 
 _TORCH_VARLEN_ATTN = _load_torch_varlen_attn()
 
+from .flash_impl import flash_impl_allows  # noqa: E402
+
 
 def _torch_varlen_takes(
     Q: Tensor,
@@ -135,6 +146,9 @@ def _torch_varlen_takes(
         return False
     # torch 2.14 routes bidirectional MHA to cuDNN ragged on sm90/sm100: no head_dim 256 plan.
     if not is_causal and Q.shape[1] == K.shape[1]:
+        return False
+    # An FA4 / FA3 impl behind torch's flash op lacks some shapes (sm100: hd 136-248, hd256 + window).
+    if not flash_impl_allows(Q.shape[-1], sliding_window, Q.device):
         return False
     return not torch.are_deterministic_algorithms_enabled()
 

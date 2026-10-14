@@ -89,7 +89,8 @@ def db_rows(table):
 
 @pytest.mark.parametrize("actor", ["unsloth", "alice", "bob"])
 @pytest.mark.parametrize(
-    "operation", ["list", "create", "setup-code", "deactivate", "reactivate", "delete"]
+    "operation",
+    ["list", "create", "setup-code", "deactivate", "reactivate", "model-access", "delete"],
 )
 @pytest.mark.parametrize("target", ["unsloth", "alice", "bob"])
 def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
@@ -103,6 +104,10 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         response = client.post("/api/accounts", headers = headers(actor), json = {"username": "carol"})
     elif operation == "setup-code":
         response = client.post(url + "/setup-code", headers = headers(actor))
+    elif operation == "model-access":
+        response = client.put(
+            url + "/model-access", headers = headers(actor), json = {"model_allowlist": ["unsloth/*"]}
+        )
     elif operation in ("deactivate", "reactivate"):
         response = client.patch(
             url, headers = headers(actor), json = {"is_active": operation == "reactivate"}
@@ -122,7 +127,15 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         assert {r["username"] for r in response.json()["accounts"]} == {"unsloth", "alice", "bob"}
         assert all(
             set(row)
-            == {"account_id", "username", "role", "is_active", "created_at", "setup_code_pending"}
+            == {
+                "account_id",
+                "username",
+                "role",
+                "is_active",
+                "created_at",
+                "setup_code_pending",
+                "model_allowlist",
+            }
             for row in response.json()["accounts"]
         )
 
@@ -134,6 +147,7 @@ def test_owner_alice_bob_endpoint_matrix(matrix, actor, operation, target):
         ("POST", "", {"username": "carol"}),
         ("POST", "/missing/setup-code", None),
         ("PATCH", "/missing", {"is_active": False}),
+        ("PUT", "/missing/model-access", {"model_allowlist": None}),
         ("DELETE", "/missing", None),
     ],
 )

@@ -97,10 +97,21 @@ def test_every_page_the_driver_opens_goes_through_one_factory():
 
 
 def test_the_cdp_call_has_exactly_one_owner():
-    assert CODE.count("new_cdp_session") == 1, (
-        "a second CDP session would sit outside apply_cpu_throttle, so the "
-        "refusal and the recovery path would both miss it"
+    # Two owners: apply_cpu_throttle, and close_page_without_waiting, which only reads the page's
+    # target id and is gated on chromium itself. The throttle itself is set in one place only.
+    assert CODE.count("new_cdp_session") == 2, (
+        "a CDP session outside apply_cpu_throttle and close_page_without_waiting would "
+        "sit outside the chromium refusal and the recovery path"
     )
+    assert CODE.count("Emulation.setCPUThrottlingRate") == 1
+    closer = re.search(
+        r"def close_page_without_waiting\([^)]*\)[^:]*:(?P<body>(?:\n(?:[ \t].*)?)+?)(?=\ndef |\nclass |\Z)",
+        CODE,
+    )
+    assert closer and "new_cdp_session" in closer.group("body")
+    assert 'PLAYWRIGHT_BROWSER == "chromium"' in closer.group(
+        "body"
+    ), "the closer's CDP session is not gated on chromium, so firefox/webkit would hit a CDP error"
     owner = re.search(
         r"def apply_cpu_throttle\([^)]*\):(?P<body>(?:\n(?:[ \t].*)?)+?)(?=\ndef |\nclass |\Z)",
         CODE,

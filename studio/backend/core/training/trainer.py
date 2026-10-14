@@ -72,6 +72,11 @@ from utils.third_party_source import (
 )
 
 from utils.models import is_vision_model, detect_audio_type_checked
+from utils.models.diffusion_lm import (
+    diffusion_lm_profile_for_model,
+    loaded_diffusion_profile,
+    require_diffusion_api,
+)
 from utils.models.model_identity import restore_hf_cache_repo_identity
 from utils.models.unsloth_mirror import unsloth_public_mirror
 from utils.models.model_config import _env_offline
@@ -101,6 +106,17 @@ from .training import (
 from .dataset_bounds import bound_dataset_rows, world_size_env_report, world_size_from_env
 
 logger = get_logger(__name__)
+
+_STUDIO_DEFAULT_TARGETS = (
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj",
+)
+_CPT_EMBEDDING_TARGETS = ("embed_tokens", "lm_head")
 
 # Streaming eval has no __len__, so cap it or an unbounded eval iterates the whole source on every eval step.
 STREAMING_EVAL_MAX_SAMPLES = 500
@@ -139,6 +155,39 @@ def _hf_stdout_progress_disabled() -> bool:
     it unparseable. Every number the bar carries is already published twice, as the throttled
     `training_progress` event added in #7087 and as the per-step SSE stream the UI charts."""
     return not _verbose_logging_requested()
+
+
+_EMBEDDING_GETTERS = {"embed_tokens": "get_input_embeddings", "lm_head": "get_output_embeddings"}
+
+
+def _embedding_module_path(model, name: str):
+    """Full module path of the model's input embedding / output head for Studio's generic CPT names."""
+    getter = getattr(model, _EMBEDDING_GETTERS.get(name, ""), None)
+    if not callable(getter):
+        return None
+    try:
+        module = getter()
+    except Exception:
+        return None
+    if module is None:
+        return None
+    return next((path for path, m in model.named_modules() if m is module and path), None)
+
+
+def _tokenizer_blocks_map_workers(tokenizer) -> bool:
+    """True when `dataset_num_proc` workers cannot receive this tokenizer. dill pickles a remote-code
+    tokenizer class by value (transformers 5.5 does not set its module on the parent package), dragging
+    in module globals up to huggingface_hub's live HTTP client: "cannot pickle 'SSLContext' object"
+    (Dream's DreamTokenizer). Stock tokenizer classes pickle by reference, so only those are probed."""
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    if not str(getattr(type(inner), "__module__", "")).startswith("transformers_modules"):
+        return False
+    try:
+        import dill
+        dill.dumps(tokenizer)
+    except Exception:
+        return True
+    return False
 
 
 # Keys that only ever appear on Trainer's end-of-run / end-of-eval summary record.
@@ -236,6 +285,36 @@ def _spark_tts_tokenizer_kwargs(audio_type: Optional[str], lookup_name: str) -> 
     if os.path.isfile(os.path.join(lookup_name, "tokenizer_config.json")):
         return {}
     return {"subfolder": "LLM"}
+
+
+def _spark_tts_hub_repo(model_name: str) -> str:
+    """The Hub repo behind a Spark-TTS name: the "Spark-TTS-0.5B/LLM" registry alias is a subfolder, not a repo."""
+    if model_name.endswith("/LLM"):
+        return f"unsloth/{model_name.rsplit('/', 1)[0]}"
+    return model_name
+
+
+def _spark_tts_repo_dir(
+    model_name: str,
+    lookup_name: str,
+    local_files_only: bool,
+    model_revision: Optional[str],
+    on_model_resolved: Optional[Callable[[str], None]] = None,
+) -> str:
+    """Spark-TTS repo root: LLM/ for training, BiCodec/ and wav2vec2 beside it for the codec."""
+    local = os.path.abspath(os.path.expanduser(lookup_name))
+    # Local folders are never cache-pinned, so local_files_only is False for them.
+    if local_files_only or os.path.isdir(local):
+        parent = os.path.dirname(local)
+        if os.path.basename(local) == "LLM" and os.path.isdir(os.path.join(parent, "BiCodec")):
+            return parent
+        return local
+    from huggingface_hub import snapshot_download
+
+    hf_repo = _spark_tts_hub_repo(model_name)
+    if on_model_resolved is not None:
+        on_model_resolved(hf_repo)
+    return os.path.abspath(snapshot_download(hf_repo, revision = model_revision))
 
 
 # Enough rows to see past a leading null or malformed value, few enough to stay cheap on a streamed dataset.
@@ -402,6 +481,37 @@ def _ignored_adapter_settings(
     return ignored
 
 
+def _tokenizer_is_empty(tokenizer) -> bool:
+    # Not a length check: a snapshot keeping tokenizer_config.json but no vocab still lists its special tokens.
+    inner = getattr(tokenizer, "tokenizer", tokenizer)
+    try:
+        return not inner("hello world", add_special_tokens = False)["input_ids"]
+    except Exception:
+        return False
+
+
+LOFTQ_SKIPPED_ON_QUANTIZED = (
+    "LoftQ needs 16-bit weights and this model is loaded quantized, so it trains without LoftQ. "
+    "Choose LoRA (16-bit) to use LoftQ."
+)
+
+
+def _has_quantized_weights(model) -> bool:
+    try:
+        from unsloth.models._utils import _has_quantized_linears
+    except ImportError:
+        return False
+    # routed_ok mirrors Unsloth's own LoftQ check: its loader densifies routed NVFP4 / FP8 weights.
+    return _has_quantized_linears(model, routed_ok = True)
+
+
+def _loftq_peft_kwargs(use_loftq) -> dict:
+    # PEFT ignores loftq_config unless init_lora_weights is "loftq", so the toggle alone trained plain LoRA.
+    if not use_loftq:
+        return {"loftq_config": None}
+    return {"init_lora_weights": "loftq", "loftq_config": {"loftq_bits": 4, "loftq_iter": 1}}
+
+
 def _load_adapter_aware_tokenizer(lookup_name, hf_token, **kwargs):
     """AutoTokenizer for *lookup_name*. A PEFT adapter saved without tokenizer files falls back
     to the base it names, as Unsloth's own adapter loader does (#13140)."""
@@ -436,6 +546,7 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
+        self._early_stopping = None
         self.load_in_4bit = True
 
         self.is_cpt = False
@@ -443,6 +554,7 @@ class UnslothTrainer:
         self.is_audio = False
         self.is_audio_vlm = False
         self._audio_type = None
+        self.diffusion_lm_profile = None
         self._use_gradient_checkpointing = "unsloth"
         self._offload_layers = 0
         self._prefetch_depth = 2
@@ -454,6 +566,7 @@ class UnslothTrainer:
         self._is_dataset_audio = False
         self._cuda_audio_used = False
         self._spark_tts_repo_dir = None
+        self._spark_tts_repo_source = None
         self._spark_tts_code_dir = None
         self._outetts_code_dir = None
         self.model_name = None
@@ -534,13 +647,15 @@ class UnslothTrainer:
             else False
         )
         self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
+        self._detect_diffusion_lm(lookup_name, hf_token, local_files_only, model_revision)
 
         logger.info(
-            "pre_detect: audio_type=%s, is_audio=%s, is_audio_vlm=%s, is_vlm=%s",
+            "pre_detect: audio_type=%s, is_audio=%s, is_audio_vlm=%s, is_vlm=%s, diffusion_lm=%s",
             self._audio_type,
             self.is_audio,
             self.is_audio_vlm,
             self.is_vlm,
+            self.diffusion_lm_profile,
         )
 
         # Load tokenizer/processor (CPU only, no VRAM). Whisper needs AutoProcessor; others AutoTokenizer (CSM loads
@@ -565,6 +680,17 @@ class UnslothTrainer:
                     # Spark-TTS keeps its tokenizer under LLM/; reading the root finds no vocab and fails blaming a
                     # missing sentencepiece that is installed and irrelevant.
                     **_spark_tts_tokenizer_kwargs(self._audio_type, lookup_name),
+                )
+            # Transformers 5 builds a one-token tokenizer from a snapshot without vocab files instead of raising, which
+            # skipped the incomplete-cache Hub retry and trained to NaN loss (#6958).
+            if local_files_only and _tokenizer_is_empty(self.tokenizer):
+                raise FileNotFoundError(
+                    f"The cached snapshot of {model_name} has no tokenizer files."
+                )
+            if model_revision and _tokenizer_is_empty(self.tokenizer):
+                raise FileNotFoundError(
+                    f"{model_name} has no tokenizer files at revision {model_revision}, the revision of "
+                    "its cached copy. Delete the cached model and retry to use the latest revision."
                 )
 
         # The probe and the tokenizer load are separate reads of the same repo, so a transient 5xx can leave the probe
@@ -623,6 +749,45 @@ class UnslothTrainer:
                 "Reloaded tokenizer for %s after detection changed to %s",
                 model_name,
                 self._audio_type,
+            )
+
+        # The worker formats the dataset before load_model, so BiCodec preprocessing resolves the repo itself (#13458).
+        self._spark_tts_repo_source = (
+            model_name,
+            model_load_name or model_name,
+            local_files_only,
+            model_revision,
+        )
+
+    def resolve_spark_tts_repo(
+        self, on_model_resolved: Optional[Callable[[str], None]] = None
+    ) -> None:
+        """Set the Spark-TTS repo root from what pre_detect recorded, unless load_model already set it."""
+        if self._spark_tts_repo_dir is None:
+            self._spark_tts_repo_dir = _spark_tts_repo_dir(
+                *self._spark_tts_repo_source, on_model_resolved
+            )
+
+    def spark_tts_hub_repo(self) -> str:
+        return _spark_tts_hub_repo(self._spark_tts_repo_source[0])
+
+    def _detect_diffusion_lm(self, lookup_name, hf_token, local_files_only, model_revision):
+        """Text-diffusion LMs train with their own denoising objective on the text path, never the VLM one
+        (DiffusionGemma ships a vision tower the diffusion objective does not use)."""
+        self.diffusion_lm_profile = (
+            None
+            if self.is_audio or self.is_audio_vlm
+            else diffusion_lm_profile_for_model(
+                lookup_name,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                revision = model_revision,
+            )
+        )
+        if self.diffusion_lm_profile and self.is_vlm:
+            self.is_vlm = False
+            self._record_warning(
+                "Text-diffusion models train on text only here; the dataset's images are ignored."
             )
 
     def add_progress_callback(self, callback: Callable[[TrainingProgress], None]):
@@ -881,6 +1046,23 @@ class UnslothTrainer:
 
         return _ProgressCallback()
 
+    def _attach_early_stopping(self, training_args):
+        from core.training.early_stopping import attach_early_stopping
+        self._early_stopping = attach_early_stopping(
+            self.trainer,
+            training_args.get("early_stopping_patience"),
+            user_stopped = lambda: self.should_stop,
+        )
+
+    def _early_stopping_summary(self) -> str:
+        es = self._early_stopping
+        if es is None:
+            return ""
+        summary = f"Stopped early at step {es.stopped_at}. " if es.stopped_at is not None else ""
+        if es.restored:
+            summary += f"Kept the weights from step {es.best_step} (eval loss {es.best_loss:.4f}). "
+        return summary
+
     def _calculate_total_steps(self, num_samples, batch_size, grad_accum, num_epochs, max_steps):
         """Calculate total training steps from dataset size and training params."""
         if max_steps and max_steps > 0:
@@ -960,7 +1142,9 @@ class UnslothTrainer:
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
                 is_training = False,
-                status_message = f"Training stopped. Model saved to {output_dir}",
+                status_message = (
+                    f"Training stopped. {self._early_stopping_summary()}Model saved to {output_dir}"
+                ),
             )
         elif self.should_stop:
             msg = f"{label} training cancelled" if label else "Training cancelled"
@@ -975,7 +1159,9 @@ class UnslothTrainer:
             self._update_progress(
                 is_training = False,
                 is_completed = True,
-                status_message = f"Training completed! Model saved to {output_dir}",
+                status_message = (
+                    f"Training completed! {self._early_stopping_summary()}Model saved to {output_dir}"
+                ),
             )
 
     def _cleanup_audio_artifacts(self):
@@ -1161,6 +1347,7 @@ class UnslothTrainer:
                 else False
             )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
+            self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
             self.max_seq_length = max_seq_length
 
@@ -1180,7 +1367,15 @@ class UnslothTrainer:
             )
 
             model_display = model_name.split("/")[-1] if "/" in model_name else model_name
-            model_type_label = "audio" if self.is_audio else ("vision" if self.is_vlm else "text")
+            model_type_label = (
+                "audio"
+                if self.is_audio
+                else (
+                    "vision"
+                    if self.is_vlm
+                    else ("text-diffusion" if self.diffusion_lm_profile else "text")
+                )
+            )
             self._update_progress(
                 status_message = f"Loading {model_type_label} model... {model_display}"
             )
@@ -1319,23 +1514,14 @@ class UnslothTrainer:
                 # (sparktts + BiCodec weights) but loads only the LLM subfolder, so model_name is "Spark-TTS-0.5B/LLM"
                 # (YAML mapping) or "unsloth/Spark-TTS-0.5B".
                 from unsloth import FastModel
-                from huggingface_hub import snapshot_download
 
-                if model_name.endswith("/LLM"):
-                    hf_repo = f"unsloth/{model_name.rsplit('/', 1)[0]}"
-                else:
-                    hf_repo = model_name
-
-                if local_files_only:
-                    repo_path = lookup_name
-                else:
-                    if on_model_resolved is not None:
-                        on_model_resolved(hf_repo)
-                    repo_path = snapshot_download(
-                        hf_repo,
-                        revision = model_revision,
-                    )
-                self._spark_tts_repo_dir = os.path.abspath(repo_path)
+                self._spark_tts_repo_dir = _spark_tts_repo_dir(
+                    model_name,
+                    lookup_name,
+                    local_files_only,
+                    model_revision,
+                    on_model_resolved,
+                )
                 llm_path = os.path.join(self._spark_tts_repo_dir, "LLM")
 
                 self.model, self.tokenizer = FastModel.from_pretrained(
@@ -1389,6 +1575,34 @@ class UnslothTrainer:
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
+            elif self.diffusion_lm_profile:
+                # FastModel routes every registered text-diffusion family to its diffusion loader.
+                from unsloth import FastModel
+
+                self.model, self.tokenizer = FastModel.from_pretrained(
+                    model_name = lookup_name,
+                    max_seq_length = max_seq_length,
+                    dtype = _auto_dtype,
+                    load_in_4bit = load_in_4bit,
+                    device_map = device_map,
+                    full_finetuning = full_finetuning,
+                    token = hf_token,
+                    trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    on_model_resolved = on_model_resolved,
+                )
+                loaded = loaded_diffusion_profile(self.model)
+                if loaded is None:
+                    raise RuntimeError(
+                        f"Unsloth: {model_name} looks like a text-diffusion model "
+                        f"({self.diffusion_lm_profile}) but loaded as an autoregressive one, so it "
+                        "would train on the wrong objective. Update Unsloth (`unsloth studio update`)."
+                    )
+                self.diffusion_lm_profile = loaded
+                logger.info(f"Loaded text-diffusion model (profile: {loaded})")
+
             elif self.is_vlm:
                 self.model, self.tokenizer = FastVisionModel.from_pretrained(
                     model_name = lookup_name,
@@ -1436,6 +1650,12 @@ class UnslothTrainer:
                     **self._offload_load_kwargs(device_map),
                 )
                 logger.info("Loaded text model")
+                # The config probe misses a Hub LoRA (no config.json), but core loads a diffusion base through
+                # its diffusion path: train it with its own objective, never next-token SFT.
+                loaded = loaded_diffusion_profile(self.model)
+                if loaded:
+                    self.diffusion_lm_profile = loaded
+                    logger.info(f"Loaded text-diffusion model (profile: {loaded})")
 
             raise_if_offloaded(self.model, device_map, "Unsloth training")
 
@@ -1452,7 +1672,12 @@ class UnslothTrainer:
             if self.should_stop:
                 return False
 
-            if full_finetuning:
+            if full_finetuning and self.diffusion_lm_profile:
+                from unsloth import FastModel
+                FastModel.for_training(
+                    self.model, use_gradient_checkpointing = bool(use_gradient_checkpointing)
+                )
+            elif full_finetuning:
                 self.model.for_training(
                     use_gradient_checkpointing = use_gradient_checkpointing,
                 )
@@ -1535,6 +1760,79 @@ class UnslothTrainer:
         finally:
             self._source_code_retried = False
 
+    def _prepare_diffusion_lora(
+        self,
+        target_modules,
+        modules_to_save,
+        lora_r,
+        lora_alpha,
+        lora_dropout,
+        use_gradient_checkpointing,
+        use_rslora,
+        use_loftq,
+        use_dora,
+    ) -> bool:
+        """LoRA for a text-diffusion model through its profile. Studio's default target list names
+        autoregressive projections (LLaDA has none of o/gate/down_proj, and the MoE families must keep their
+        experts and router frozen), so the default list means "the profile's own targets"."""
+        from unsloth import FastModel
+
+        unsupported = [name for name, on in (("DoRA", use_dora), ("LoftQ", use_loftq)) if on]
+        if unsupported:
+            raise ValueError(
+                f"{' and '.join(unsupported)} {'is' if len(unsupported) == 1 else 'are'} not supported "
+                "for text-diffusion models yet. Turn it off and train with LoRA."
+            )
+        requested = (
+            [target_modules] if isinstance(target_modules, str) else list(target_modules or [])
+        )
+        if not requested or set(requested) - set(_CPT_EMBEDDING_TARGETS) == set(
+            _STUDIO_DEFAULT_TARGETS
+        ):
+            target_modules = None
+        elif requested == ["all-linear"]:
+            target_modules = "all-linear"
+        else:
+            target_modules = [m for m in requested if m != "all-linear"] or "all-linear"
+        leaf_names = {name.rsplit(".", 1)[-1] for name, _ in self.model.named_modules()}
+        if modules_to_save:
+            # LLaDA names them transformer.wte / transformer.ff_out; the full path keeps each block's ff_out out.
+            resolved = {
+                m: m if m in leaf_names else _embedding_module_path(self.model, m)
+                for m in modules_to_save
+            }
+            kept = list(dict.fromkeys(path for path in resolved.values() if path))
+            dropped = sorted(m for m, path in resolved.items() if not path)
+            if dropped:
+                logger.info(
+                    f"Text-diffusion model has no {dropped}; training them is skipped for this model.\n"
+                )
+            modules_to_save = kept or None
+        logger.info(
+            f"Text-diffusion LoRA ({self.diffusion_lm_profile}): target modules = "
+            f"{'profile default' if target_modules is None else target_modules}\n"
+        )
+        peft_kwargs = dict(
+            r = lora_r,
+            target_modules = target_modules,
+            lora_alpha = lora_alpha,
+            lora_dropout = lora_dropout,
+            bias = "none",
+            use_gradient_checkpointing = bool(use_gradient_checkpointing),
+            random_state = 3407,
+        )
+        if modules_to_save:
+            peft_kwargs["modules_to_save"] = modules_to_save
+        if use_rslora:
+            peft_kwargs["use_rslora"] = True
+        self.model = FastModel.get_peft_model(self.model, **peft_kwargs)
+        if self.should_stop:
+            logger.info("Stopped during LoRA configuration\n")
+            return False
+        self._update_progress(status_message = "LoRA adapters configured")
+        logger.info("LoRA adapters configured successfully\n")
+        return True
+
     def prepare_model_for_training(
         self,
         use_lora: bool = True,
@@ -1601,6 +1899,25 @@ class UnslothTrainer:
                 )
                 return True
 
+            if use_loftq and _has_quantized_weights(self.model):
+                # Unsloth refuses LoftQ on quantized weights; train as before rather than fail a QLoRA run or its resume.
+                logger.warning(LOFTQ_SKIPPED_ON_QUANTIZED)
+                self._update_progress(status_message = LOFTQ_SKIPPED_ON_QUANTIZED)
+                use_loftq = False
+
+            if getattr(self, "diffusion_lm_profile", None):
+                return self._prepare_diffusion_lora(
+                    target_modules = target_modules,
+                    modules_to_save = modules_to_save,
+                    lora_r = lora_r,
+                    lora_alpha = lora_alpha,
+                    lora_dropout = lora_dropout,
+                    use_gradient_checkpointing = use_gradient_checkpointing,
+                    use_rslora = use_rslora,
+                    use_loftq = use_loftq,
+                    use_dora = use_dora,
+                )
+
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
             if isinstance(target_modules, list) and "all-linear" in target_modules:
                 if len(target_modules) == 1:
@@ -1663,7 +1980,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                     **self._offload_peft_kwargs(),
                 )
                 if self.is_audio_vlm:
@@ -1695,7 +2012,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                     task_type = None,
                 )
 
@@ -1715,7 +2032,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                 )
 
             elif self.is_vlm:
@@ -1740,7 +2057,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                     modules_to_save = modules_to_save,
                     **self._offload_peft_kwargs(),
                 )
@@ -1761,7 +2078,7 @@ class UnslothTrainer:
                     random_state = 3407,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
-                    loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
+                    **_loftq_peft_kwargs(use_loftq),
                     modules_to_save = modules_to_save,
                     **self._offload_peft_kwargs(),
                 )
@@ -2323,6 +2640,7 @@ class UnslothTrainer:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         self._update_progress(status_message = "Preparing Spark-TTS codec source...")
+        self.resolve_spark_tts_repo()
         spark_code_dir = ensure_spark_tts_source(self._spark_tts_repo_dir)
         self._spark_tts_code_dir = spark_code_dir
         BiCodecTokenizer = import_sparktts_module(
@@ -4131,6 +4449,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
                 # no terminal; --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
@@ -4177,6 +4496,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4229,6 +4549,7 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4409,7 +4730,14 @@ class UnslothTrainer:
                 # to keep dataset workers off a process holding audio/CUDA state; pass None otherwise, so the shared
                 # policy sizes it from CPU affinity and cgroup quota rather than host os.cpu_count().
                 "dataset_num_proc": dataset_map_num_proc(
-                    1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else None,
+                    1
+                    if (
+                        self.is_audio
+                        or self.is_audio_vlm
+                        or self._cuda_audio_used
+                        or _tokenizer_blocks_map_workers(self.tokenizer)
+                    )
+                    else None,
                     serial_as_none = False,
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),
@@ -4542,6 +4870,10 @@ class UnslothTrainer:
             elif self._audio_type == "dac":
                 config_args["packing"] = False
                 logger.info("Applied DAC overrides: packing=False\n")
+            if getattr(self, "diffusion_lm_profile", None) and config_args.get("packing"):
+                # Packed rows share one bidirectional attention window, so documents would see each other.
+                config_args["packing"] = False
+                logger.info("Text-diffusion model: sequence packing turned off\n")
 
             # Plain-text single-pass runs tokenize in the DataLoader workers instead of a blocking .map(); everything
             # else stays eager.
@@ -4605,7 +4937,47 @@ class UnslothTrainer:
                     logger.info("Unwrapping Processor → raw tokenizer for text-only SFTTrainer")
                     sft_tokenizer = self.tokenizer.tokenizer
 
-                if is_cpt:
+                if getattr(self, "diffusion_lm_profile", None):
+                    # Same SFT data path; the loss is the family's denoising objective. CPT = every token
+                    # supervised, which is what the objective does when no label is -100.
+                    DiffusionTrainer = require_diffusion_api("DiffusionTrainer")
+                    DiffusionConfig = require_diffusion_api("DiffusionConfig")
+                    fields = getattr(DiffusionConfig, "__dataclass_fields__", {})
+                    diffusion_args = {k: v for k, v in config_args.items() if k in fields}
+                    if (
+                        "max_seq_length" in config_args
+                        and "max_seq_length" not in fields
+                        and "max_length" in fields
+                    ):
+                        # Unpatched TRL (CPU runs) only knows max_length: keep the chosen context length.
+                        diffusion_args.setdefault("max_length", config_args["max_seq_length"])
+                    embedding_lr = training_args.get("embedding_learning_rate") if is_cpt else None
+                    if embedding_lr is not None:
+                        if "embedding_learning_rate" not in fields:
+                            raise RuntimeError(
+                                "Continued pretraining of a text-diffusion model with an embedding "
+                                "learning rate needs a newer Unsloth. Upgrade with: "
+                                "`pip install -U unsloth unsloth_zoo`."
+                            )
+                        diffusion_args["embedding_learning_rate"] = embedding_lr
+                    skipped = sorted(set(config_args) - set(diffusion_args))
+                    if skipped:
+                        logger.info(f"DiffusionConfig has no {skipped}; not passed\n")
+                    trainer_kwargs = {
+                        "model": self.model,
+                        "tokenizer": sft_tokenizer,
+                        "train_dataset": dataset["dataset"],
+                        "data_collator": data_collator,
+                        "args": DiffusionConfig(**diffusion_args),
+                    }
+                    if eval_dataset is not None:
+                        trainer_kwargs["eval_dataset"] = eval_dataset
+                    self.trainer = DiffusionTrainer(**trainer_kwargs)
+                    logger.info(
+                        f"Text-diffusion trainer: {type(self.trainer).__name__} "
+                        f"(profile {self.diffusion_lm_profile})\n"
+                    )
+                elif is_cpt:
                     try:
                         from unsloth import (
                             UnslothTrainer as _UnslothCPTTrainer,
@@ -4758,6 +5130,7 @@ class UnslothTrainer:
                     logger.info("Training on full sequences (including prompts)\n")
 
             self.trainer.add_callback(self._create_progress_callback())
+            self._attach_early_stopping(training_args)
             # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has no
             # terminal; --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)
