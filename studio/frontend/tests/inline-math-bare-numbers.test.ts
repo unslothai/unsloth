@@ -37,7 +37,10 @@ function renderedMath(html: string): string[] {
 function visibleText(html: string): string {
   return html
     .replace(/<span class="katex">[\s\S]*?<\/annotation>/g, "")
-    .replace(/<[^>]+>/g, "");
+    .replace(/<[^>]+>/g, "")
+    .replaceAll("&#x27;", "'")
+    .replaceAll("&#39;", "'")
+    .replaceAll("&quot;", '"');
 }
 
 test("numbers written as inline maths render as maths", () => {
@@ -92,6 +95,11 @@ test("a shell parameter right after a positional one stays text", () => {
     ['Run echo "$1${_}" to print both.', "$1${_}"],
     ['Run echo "$1${foo_bar}" to print both.', "$1${foo_bar}"],
     ['Run echo "$1${foo:-${bar}}" to print both.', "$1${foo:-${bar}}"],
+    ['Run echo "$1$(date)" to print both.', "$1$(date)"],
+    ['Run echo "$1$((n + 1))" to print both.', "$1$((n + 1))"],
+    ['Run echo "$1$[n + 1]" to print both.', "$1$[n + 1]"],
+    [`Run echo "$1$'value'" to print both.`, `$1$'value'`],
+    [`Run echo '$1$"localized"' to print both.`, `$1$"localized"`],
   ]) {
     const html = render(source);
     assert.deepEqual(renderedMath(html), [], source);
@@ -107,5 +115,14 @@ test("a shell parameter right after a positional one stays text", () => {
       visibleText(html).includes(literal),
       `${combined} lost ${literal}`,
     );
+  }
+});
+
+test("raw-text element bodies keep adjacent shell syntax byte-for-byte", () => {
+  for (const source of [
+    '<script>const value = "$1$x";</script>',
+    '<style>var { value: "$1${2}"; }</style>',
+  ]) {
+    assert.equal(preprocessLaTeX(source), source);
   }
 });

@@ -54,10 +54,18 @@ function startsLikeVariable(text: string, at: number): boolean {
   return a === 123 && (isAsciiLetter(b) || b === 95);
 }
 
-/** valid Bash parameter starts after `$`, including braced, positional, and special forms. */
-function startsShellParameter(text: string, at: number): boolean {
+/** valid Bash expansion starts after `$`, including substitutions and quoted strings. */
+function startsShellExpansion(text: string, at: number): boolean {
   const char = text.charCodeAt(at);
-  return isWordChar(char) || char === 123 || "*@#?-$!".includes(text[at] ?? "");
+  return (
+    isWordChar(char) ||
+    char === 123 ||
+    char === 40 ||
+    char === 91 ||
+    char === 34 ||
+    char === 39 ||
+    "*@#?-$!".includes(text[at] ?? "")
+  );
 }
 
 function followsNumericShellParameter(text: string, at: number): boolean {
@@ -70,17 +78,55 @@ function followsNumericShellParameter(text: string, at: number): boolean {
   return start < at && text[start - 1] === "$" && text[start - 2] !== "\\";
 }
 
-function shellParameterEnd(text: string, at: number): number {
-  const first = text.charCodeAt(at + 1);
-  if (first === 123) {
-    let depth = 1;
-    for (let index = at + 2; index < text.length; index++) {
-      const char = text.charCodeAt(index);
-      if (char === 123) depth++;
-      if (char === 125 && --depth === 0) return index + 1;
+function balancedShellExpansionEnd(
+  text: string,
+  at: number,
+  open: number,
+  close: number,
+): number {
+  let depth = 1;
+  let quote = 0;
+  for (let index = at + 2; index < text.length; index++) {
+    const char = text.charCodeAt(index);
+    if (quote !== 0) {
+      if (char === 92 && quote !== 39) index++;
+      else if (char === quote) quote = 0;
+      continue;
     }
-    return at + 2;
+    if (char === 34 || char === 39 || char === 96) {
+      quote = char;
+      continue;
+    }
+    if (char === 92) {
+      index++;
+      continue;
+    }
+    if (char === open) depth++;
+    else if (char === close && --depth === 0) return index + 1;
   }
+  return at + 2;
+}
+
+function quotedShellExpansionEnd(
+  text: string,
+  at: number,
+  quote: number,
+): number {
+  for (let index = at + 2; index < text.length; index++) {
+    const char = text.charCodeAt(index);
+    if (char === 92) index++;
+    else if (char === quote) return index + 1;
+  }
+  return at + 2;
+}
+
+function shellExpansionEnd(text: string, at: number): number {
+  const first = text.charCodeAt(at + 1);
+  if (first === 123) return balancedShellExpansionEnd(text, at, 123, 125);
+  if (first === 40) return balancedShellExpansionEnd(text, at, 40, 41);
+  if (first === 91) return balancedShellExpansionEnd(text, at, 91, 93);
+  if (first === 34 || first === 39)
+    return quotedShellExpansionEnd(text, at, first);
   if (!isAsciiLetter(first) && first !== 95) return at + 2;
   let end = at + 2;
   while (end < text.length && isWordChar(text.charCodeAt(end))) end++;
@@ -570,7 +616,7 @@ function hasInlineMathCloser(
       continue;
     }
     const body = content.slice(offset + 1, i);
-    if (BARE_NUMBER_RE.test(body) && !startsShellParameter(content, i + 1)) {
+    if (BARE_NUMBER_RE.test(body) && !startsShellExpansion(content, i + 1)) {
       return true;
     }
     if (offset >= 2) {
@@ -755,7 +801,8 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     const code = inCode(offset);
     const link = inLink(offset);
     const math = inMath(offset);
-    if (code || link) {
+    const rawText = inRawText(offset);
+    if (code || link || rawText) {
       return "$";
     }
     // preserve converted numeric math to avoid currency re-escaping
@@ -796,7 +843,6 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
         ? isStreaming
         : NEW_TOKEN_RE.test(text[next + 1])) &&
       next - offset - 1 <= MAX_VARIABLE_PROSE_SPAN &&
-      !inRawText(offset) &&
       (proseBudget -= next - offset - 1) >= 0 &&
       VARIABLE_PROSE_RE.test(text.slice(offset + 1, next))
     ) {
@@ -818,12 +864,13 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     const prev = text[offset - 1];
     if (
       followsNumericShellParameter(text, offset) &&
-      startsShellParameter(text, offset + 1) &&
+      startsShellExpansion(text, offset + 1) &&
       !inCode(offset) &&
       !inLink(offset) &&
-      !inMath(offset)
+      !inMath(offset) &&
+      !inRawText(offset)
     ) {
-      const end = shellParameterEnd(text, offset);
+      const end = shellExpansionEnd(text, offset);
       parts.push(
         text.slice(last, offset),
         encodeMarkdownLiteral(text.slice(offset, end)),
