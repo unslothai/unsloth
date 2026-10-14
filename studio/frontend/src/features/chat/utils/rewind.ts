@@ -65,13 +65,15 @@ function messageText(content: unknown): string {
 /** One line per user message on the branch, newest first; an empty preview is attachment-only. */
 export function rewindPickerEntries(
   branch: readonly BranchMessage[],
-): { id: string; preview: string }[] {
+): { id: string; preview: string; text: string }[] {
   return branch
     .filter((message) => message.role === "user")
     .map((message) => {
       const line = messageText(message.content).replace(/\s+/g, " ").trim();
       return {
         id: message.id,
+        // Untruncated, for the confirm dialog's line-clamped quote.
+        text: line,
         preview:
           line.length > PREVIEW_MAX_CHARS
             ? `${line.slice(0, PREVIEW_MAX_CHARS - 1).trimEnd()}…`

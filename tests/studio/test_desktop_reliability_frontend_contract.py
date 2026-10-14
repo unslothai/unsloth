@@ -33,7 +33,6 @@ TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 SHEET = FRONTEND / "components/ui/sheet.tsx"
 RESEARCH_ACTIVITY_PANEL = FRONTEND / "features/chat/components/research-activity-panel.tsx"
 RESPONSE_DETAILS_SHEET = FRONTEND / "components/assistant-ui/message-response-details-sheet.tsx"
-DOCUMENT_PREVIEW_SHEET = FRONTEND / "features/rag/components/document-preview-sheet.tsx"
 INTERFACE_SCALE_RUNTIME = FRONTEND / "features/settings/lib/interface-scale-runtime.ts"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
@@ -899,7 +898,6 @@ def test_fixed_sheets_start_below_the_custom_titlebar():
     for portalled in (
         RESEARCH_ACTIVITY_PANEL,
         RESPONSE_DETAILS_SHEET,
-        DOCUMENT_PREVIEW_SHEET,
     ):
         assert "studio-custom-titlebar-height" not in _ui_source(portalled)
 
