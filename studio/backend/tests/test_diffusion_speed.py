@@ -535,6 +535,31 @@ def test_speed_max_gguf_regional_compile_not_dequant(monkeypatch):
     assert called == {"compiled_dequant": 0}
 
 
+def test_speed_max_gguf_without_block_compile_keeps_dequant_compile(monkeypatch):
+    # ROCm targets never regionally compile, so max used to run the GGUF dequant eager: slower than default on gfx1151
+    # (3.83 vs 2.98 s per 512 px FLUX.2-klein Q2_K render).
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    pipe = _Pipe(with_compile = True, with_fuse = True)
+    applied = apply_speed_optims(
+        pipe, _target(compile_ok = False), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is False and pipe.compiled is False
+    assert applied["compiled_dequant"] is True
+    assert called == {"compiled_dequant": 1}
+
+
+def test_speed_max_gguf_whose_block_compile_fails_keeps_dequant_compile(monkeypatch):
+    _stub_torch(monkeypatch)
+    called = _stub_gguf_accel(monkeypatch)
+    monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: False)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = SPEED_MAX
+    )
+    assert applied["compiled"] is False and applied["compiled_dequant"] is True
+    assert called == {"compiled_dequant": 1}
+
+
 def test_speed_default_cudnn_benchmark_only_on_cuda(monkeypatch):
     _stub_torch(monkeypatch)
     pipe = _Pipe(with_compile = True)
@@ -563,6 +588,57 @@ def test_speed_default_skips_cudnn_benchmark_on_rocm(monkeypatch, hip, version):
     )
     assert applied["cudnn_benchmark"] is False
     assert torch.backends.cudnn.benchmark is False
+
+
+@pytest.mark.parametrize("speed_mode", [SPEED_OFF, SPEED_DEFAULT])
+@pytest.mark.parametrize(
+    "hip, version",
+    [("7.13.0", "2.11.0+rocm7.13.0"), (None, "2.9.1+rocmsdk20251116")],
+    ids = ["version_hip", "rocm_tag_only"],
+)
+def test_rocm_load_turns_on_miopen_immediate(monkeypatch, hip, version, speed_mode):
+    # #9130: torch's MIOpen Find trial-launches kernels; one faulting there aborted the server.
+    monkeypatch.delenv("MIOPEN_FIND_MODE", raising = False)
+    monkeypatch.delenv("MIOPEN_FIND_ENFORCE", raising = False)
+    torch = _stub_torch(monkeypatch)
+    torch.version = types.SimpleNamespace(hip = hip)
+    torch.__version__ = version
+    torch.backends.miopen = types.SimpleNamespace(immediate = False)
+    flags = snapshot_backend_flags()
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = _family(), speed_mode = speed_mode
+    )
+    assert torch.backends.miopen.immediate is True
+    restore_backend_flags(flags)
+    assert torch.backends.miopen.immediate is True
+
+
+@pytest.mark.parametrize(
+    "hip, version, env",
+    [
+        (None, "2.11.0+cu130", {}),
+        ("7.13.0", "2.11.0+rocm7.13.0", {"MIOPEN_FIND_MODE": "NORMAL"}),
+        ("7.13.0", "2.11.0+rocm7.13.0", {"MIOPEN_FIND_ENFORCE": "SEARCH"}),
+    ],
+    ids = ["cuda_torch", "explicit_find_mode", "explicit_find_enforce"],
+)
+def test_miopen_immediate_left_alone(monkeypatch, hip, version, env):
+    for name in ("MIOPEN_FIND_MODE", "MIOPEN_FIND_ENFORCE"):
+        monkeypatch.delenv(name, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    torch = _stub_torch(monkeypatch)
+    torch.version = types.SimpleNamespace(hip = hip)
+    torch.__version__ = version
+    torch.backends.miopen = types.SimpleNamespace(immediate = False)
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = False,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert torch.backends.miopen.immediate is False
 
 
 def test_speed_default_respects_family_cudnn_benchmark_opt_out(monkeypatch):
@@ -1234,6 +1310,53 @@ def test_snapshot_restores_emulate_precision_casts(monkeypatch):
     assert cfg.emulate_precision_casts is False
 
 
+def _stub_training_config(torch):
+    """Unsloth's training config as torch < 2.12 leaves it process-wide: memory planning on, compile errors suppressed."""
+    inductor = types.SimpleNamespace(memory_planning = True, emulate_precision_casts = False)
+    dynamo = types.SimpleNamespace(suppress_errors = True)
+    torch._inductor = types.SimpleNamespace(config = inductor)
+    torch._dynamo = types.SimpleNamespace(config = dynamo)
+    return inductor, dynamo
+
+
+@pytest.mark.parametrize("is_gguf", [True, False], ids = ["gguf_dequant", "regional"])
+def test_compile_runs_with_torch_defaults_not_the_training_config(monkeypatch, is_gguf):
+    # #9897: memory planning's inductor::_alloc_from_pool views fail AOTAutograd's aliasing check at the first render,
+    # and suppress_errors hid every failed compile as a silent eager run.
+    torch = _stub_torch(monkeypatch)
+    _stub_gguf_accel(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    apply_speed_optims(
+        _Pipe(with_compile = True),
+        _target(),
+        is_gguf = is_gguf,
+        family = _family(),
+        speed_mode = SPEED_DEFAULT,
+    )
+    assert inductor.memory_planning is False
+    assert dynamo.suppress_errors is False
+
+
+@pytest.mark.parametrize("mode", [SPEED_OFF, SPEED_EAGER])
+def test_non_compiling_tiers_leave_the_compile_config_alone(monkeypatch, mode):
+    torch = _stub_torch(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = True, family = _family(), speed_mode = mode
+    )
+    assert inductor.memory_planning is True and dynamo.suppress_errors is True
+
+
+def test_snapshot_restores_the_compile_config(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    inductor, dynamo = _stub_training_config(torch)
+    snap = snapshot_backend_flags()
+    inductor.memory_planning = False
+    dynamo.suppress_errors = False
+    restore_backend_flags(snap)
+    assert inductor.memory_planning is True and dynamo.suppress_errors is True
+
+
 def test_missing_inductor_config_is_tolerated(monkeypatch):
     # A build without torch._inductor (or with the flag renamed) must break neither the snapshot nor the compile path.
     _stub_torch(monkeypatch)  # the stub torch has no _inductor attribute
@@ -1787,10 +1910,32 @@ def test_the_loader_keys_the_compile_bundle_on_the_vae_decode_decision():
     src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert src.count('"vae_decode": vae_decode_compile_allowed(') == 2
-    assert '"vae_decode": vae_decode_compile_allowed(pipe, effective_speed)' in src
-    assert '"vae_decode": vae_decode_compile_allowed(state.pipe, SPEED_DEFAULT)' in src
-    assert ds_mod.vae_decode_compile_allowed is not None
+    # Both compile-cache begins (load, and the deferred 3rd-image profile) key through the one resolver ...
+    assert src.count("autoopt.compile_cache_kwargs(") == 2
+    assert "deferred = True" in src
+    # ... which keys vae_decode on the same decision the speed pass makes for that tier.
+    from core.inference.diffusion_autoopt.plan import compile_cache_kwargs
+
+    seen = []
+    orig = ds_mod.vae_decode_compile_allowed
+    try:
+        ds_mod.vae_decode_compile_allowed = lambda pipe, mode: seen.append(mode) or mode == "max"
+        pipe = types.SimpleNamespace(transformer = None)
+        assert (
+            compile_cache_kwargs(pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False)[
+                "vae_decode"
+            ]
+            is True
+        )
+        assert (
+            compile_cache_kwargs(
+                pipe, speed_mode = "max", fullgraph = True, offload_below_hooks = False, deferred = True
+            )["vae_decode"]
+            is False
+        )
+    finally:
+        ds_mod.vae_decode_compile_allowed = orig
+    assert seen == ["max", "default"]
 
 
 def test_stream_merging_dit_compiles_dynamic_once_inductor_proves_the_split(monkeypatch):
@@ -1938,6 +2083,14 @@ def test_settle_fallback_keeps_compiled_while_another_dit_still_compiles(monkeyp
     third.blocks[0](1)
     ds_mod.settle_compile_fallback(state, pipe)
     assert state.speed_optims == ("cuda_graph", "compile_fallback_eager")
+
+
+def test_settle_fallback_drops_a_dequant_compile_that_fell_back(monkeypatch):
+    monkeypatch.setattr(ds_mod.gguf_compile, "compile_error", lambda: "InductorError: hip_utils.c")
+    pipe = types.SimpleNamespace(transformer = _Dit([_Block(lambda x: x)]))
+    state = types.SimpleNamespace(speed_optims = ("compiled_dequant", "cudnn_benchmark"))
+    assert "hip_utils" in ds_mod.settle_compile_fallback(state, pipe)
+    assert state.speed_optims == ("cudnn_benchmark", "compile_fallback_eager")
 
 
 def test_settle_fallback_sees_a_modular_workflows_named_partition(monkeypatch):

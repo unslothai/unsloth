@@ -1003,7 +1003,7 @@ class AudioCppBackend:
         # The route sizes the wait from the full work (extend, continue length); the orchestrator
         # outlasts that same budget.
         timeout = float(music.get("timeout_s") or 0) or cm.timeout_seconds(
-            model.family, seconds, variations, server.backend == "cpu"
+            model.family, seconds, variations, server.backend
         )
         outputs: list[tuple[str, bytes, Optional[int]]] = []
         try:

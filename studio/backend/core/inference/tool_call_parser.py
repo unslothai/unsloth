@@ -442,6 +442,8 @@ _GEMMA_BARE_TC_RE = re.compile(r"(?<!\w)call\s*:\s*([\w\.\-]+)\s*\{")
 _GEMMA_BARE_TC_PREFIX_RE = re.compile(r"(?<!\w)call\s*(?::\s*[\w\.\-]*)?$")
 # Keys start with a letter/underscore so ``10:00, 11:00`` in a value isn't misread as a new key
 _GEMMA_KEY_RE = re.compile(r"\s*([A-Za-z_][\w.\-]*)\s*:")
+# JSON number literals only, as tool_healing decides for the wrapped form (int()/float() take "007", "+1", "nan").
+_GEMMA_JSON_NUMBER_RE = re.compile(r"-?(?:0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?", re.ASCII)
 
 
 def leading_bare_gemma_call_is_promotable(stripped: str, enabled_tool_names) -> bool:
@@ -3838,22 +3840,7 @@ def _gemma_parse_value(
         # Stray delimiter where a value was expected: consume one char so callers always advance (no infinite loop on
         # malformed input).
         return "", i + 1, True
-    raw = text[i:end].strip()
-    if raw == "true":
-        return True, end, True
-    if raw == "false":
-        return False, end, True
-    if raw == "null":
-        return None, end, True
-    try:
-        return int(raw), end, True
-    except ValueError:
-        pass
-    try:
-        return float(raw), end, True
-    except ValueError:
-        pass
-    return raw, end, True
+    return _gemma_coerce_scalar(text[i:end]), end, True
 
 
 def _gemma_parse_array(text: str, start: int):
@@ -3875,9 +3862,26 @@ def _gemma_parse_array(text: str, start: int):
 
 def _gemma_coerce_scalar(raw: str) -> Any:
     """Coerce an unquoted Gemma value to bool/int/float/None, else keep str (quotes stripped first
-    so quoted/unquoted variants compare identical)."""
+    so quoted/unquoted variants compare identical). Numbers are JSON number literals only."""
     raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in "\"'":
+    if not raw:
+        return raw
+    first = raw[0]
+    if first in "-0123456789":
+        # isascii(): int() also accepts non-ASCII digits.
+        digits = raw[1:] if first == "-" else raw
+        if digits.isdigit() and digits.isascii() and (digits[0] != "0" or len(digits) == 1):
+            try:
+                return int(raw)
+            except ValueError:
+                # Past sys.get_int_max_str_digits(); json.loads refuses it too.
+                return raw
+        if _GEMMA_JSON_NUMBER_RE.fullmatch(raw) is None:
+            return raw
+        value = float(raw)
+        # "1e999" -> inf, which json.dumps writes as invalid bare Infinity.
+        return raw if abs(value) == float("inf") else value
+    if len(raw) >= 2 and first == raw[-1] and first in "\"'":
         return raw[1:-1]
     if raw == "true":
         return True
@@ -3885,14 +3889,6 @@ def _gemma_coerce_scalar(raw: str) -> Any:
         return False
     if raw == "null":
         return None
-    try:
-        return int(raw)
-    except ValueError:
-        pass
-    try:
-        return float(raw)
-    except ValueError:
-        pass
     return raw
 
 

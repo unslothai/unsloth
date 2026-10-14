@@ -7,7 +7,9 @@ import { persist } from "zustand/middleware";
 // Adjustable items in the composer "+" menu. The core items and the "More" overflow itself are
 // always shown and are intentionally NOT represented here.
 export type PlusMenuItemId =
+  | "deepResearch"
   | "chatWithFiles"
+  | "browserUse"
   | "mcp"
   | "skills"
   | "savedPrompts"
@@ -15,10 +17,11 @@ export type PlusMenuItemId =
   | "exportChat"
   | "projects";
 
-// Canonical order used both for the pinned items at the top level and for the items that fall
-// into the "More" overflow submenu.
+// Default order; Settings > Chat lets the user reorder it.
 export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
+  "deepResearch",
   "chatWithFiles",
+  "browserUse",
   "mcp",
   "skills",
   "savedPrompts",
@@ -27,11 +30,13 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "projects",
 ];
 
-// Chat with files, MCP and Skills sit at the top level; everything else lives under "More".
-// Projects is a workspace the user opts into, not a per-message attachment.
+// Chat with files and Skills sit at the top level; everything else, MCP included, lives under
+// "More". Projects is a workspace the user opts into, not a per-message attachment.
 const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
+  deepResearch: true,
   chatWithFiles: true,
-  mcp: true,
+  browserUse: true,
+  mcp: false,
   skills: true,
   projects: false,
   savedPrompts: false,
@@ -41,10 +46,44 @@ const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
 
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
 
+/** A saved order with unknown ids dropped and missing ones (added in a later release) placed
+ *  after their default predecessor, so an older order still names every item once. */
+export function normalizePlusMenuOrder(saved: unknown): PlusMenuItemId[] {
+  const known = new Set<string>(PLUS_MENU_ORDER);
+  const order: PlusMenuItemId[] = [];
+  if (Array.isArray(saved)) {
+    for (const id of saved) {
+      if (typeof id === "string" && known.has(id) && !order.includes(id as PlusMenuItemId)) {
+        order.push(id as PlusMenuItemId);
+      }
+    }
+  }
+  PLUS_MENU_ORDER.forEach((id, index) => {
+    if (order.includes(id)) return;
+    const before = PLUS_MENU_ORDER.slice(0, index).reverse().find((prev) => order.includes(prev));
+    order.splice(before ? order.indexOf(before) + 1 : 0, 0, id);
+  });
+  return order;
+}
+
+export function splitPlusMenuItems(
+  order: readonly PlusMenuItemId[],
+  pins: Record<PlusMenuItemId, boolean>,
+): { pinned: PlusMenuItemId[]; overflow: PlusMenuItemId[] } {
+  return {
+    pinned: order.filter((id) => pins[id]),
+    overflow: order.filter((id) => !pins[id]),
+  };
+}
+
 export interface PlusMenuPrefsState {
   pins: Record<PlusMenuItemId, boolean>;
   setPin: (id: PlusMenuItemId, value: boolean) => void;
   togglePin: (id: PlusMenuItemId) => void;
+  order: PlusMenuItemId[];
+  setOrder: (order: PlusMenuItemId[]) => void;
+  /** Default order and pins; saved prompt and list pins are kept. */
+  resetMenu: () => void;
   // Ids of saved prompts the user pinned into the "Saved prompts" submenu. Kept client-side like
   // the menu pins above, since prompts are addressed by their stable server id.
   pinnedPromptIds: string[];
@@ -61,6 +100,9 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
         set((state) => ({ pins: { ...state.pins, [id]: value } })),
       togglePin: (id) =>
         set((state) => ({ pins: { ...state.pins, [id]: !state.pins[id] } })),
+      order: [...PLUS_MENU_ORDER],
+      setOrder: (order) => set({ order: normalizePlusMenuOrder(order) }),
+      resetMenu: () => set({ pins: { ...DEFAULT_PINS }, order: [...PLUS_MENU_ORDER] }),
       pinnedPromptIds: [],
       togglePinnedPrompt: (id) =>
         set((state) => ({
@@ -78,6 +120,14 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
     }),
     {
       name: PLUS_MENU_PINS_STORAGE_KEY,
+      version: 1,
+      // Version 1 moved MCP under "More". Saved pins hold every default, so without this an
+      // existing install would keep it at the top; the user can pin it back from "More".
+      migrate: (persisted, version) => {
+        const saved = (persisted ?? {}) as Partial<PlusMenuPrefsState>;
+        if (version < 1 && saved.pins) return { ...saved, pins: { ...saved.pins, mcp: false } };
+        return saved;
+      },
       // Backfill any ids added in a later release so persisted state from an older version still
       // resolves every menu item. A retired id survives the spread but PLUS_MENU_ORDER no
       // longer names it, so it is inert.
@@ -86,6 +136,7 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
         return {
           ...current,
           pins: { ...DEFAULT_PINS, ...(saved?.pins ?? {}) },
+          order: normalizePlusMenuOrder(saved?.order),
           pinnedPromptIds: saved?.pinnedPromptIds ?? [],
           pinnedListIds: saved?.pinnedListIds ?? [],
         };

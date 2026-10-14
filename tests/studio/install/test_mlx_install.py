@@ -30,6 +30,7 @@ def _run_to_extras(
     shared_base = False,
     mlx_error = None,
     mlx_installable = True,
+    engine_error = None,
 ):
     monkeypatch.setenv("SKIP_STUDIO_BASE", "1" if skip_base else "0")
     for name in ("STUDIO_LOCAL_REPO", "STUDIO_PACKAGE_NAME", "UNSLOTH_CI_SOURCE_OVERLAY"):
@@ -66,6 +67,8 @@ def _run_to_extras(
     def record_install(label, *args, **kwargs):
         if label.startswith("Installing MLX") and mlx_error is not None:
             raise mlx_error
+        if label.startswith("Installing the MLX image engine") and engine_error is not None:
+            raise engine_error
 
     install = Mock(side_effect = record_install)
     monkeypatch.setattr(stack, "pip_install", install)
@@ -84,6 +87,11 @@ def _run_to_extras(
         stack.install_python_stack()
     # Labels reached before the stop, for callers asserting on the step not the install.
     _run_to_extras.steps = steps
+    _run_to_extras.engine_calls = [
+        call
+        for call in install.call_args_list
+        if call.args[0].startswith("Installing the MLX image engine")
+    ]
     return [call for call in install.call_args_list if call.args[0].startswith("Installing MLX")]
 
 
@@ -317,7 +325,7 @@ def test_pin_floor_is_revisited_whenever_the_pins_move():
     assert _repair_specs() == {
         "mlx": "==0.32.3",
         "mlx-lm": "==0.31.3",
-        "mlx-vlm": ">=0.4.4,<=0.7.4",
+        "mlx-vlm": ">=0.4.4,<=0.7.8",
     }
     assert (stack._MLX_MIN_PYTHON, stack._MLX_MIN_MACOS_MAJOR) == ((3, 10), 14)
 
@@ -446,3 +454,85 @@ def test_an_unchanged_zoo_does_not_re_resolve_mlx(monkeypatch):
     calls = _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = False, no_torch = False)
     assert len(calls) == 1
     assert "MLX stack (zoo unchanged, skipped)" in _run_to_extras.steps
+
+
+# ── Opt-in MLX image engine (mflux) ──────────────────────────────────────────
+
+
+def test_mlx_image_engine_pins_leave_the_mlx_stack_alone():
+    assert stack._MLX_PINS == ("mlx==0.32.3", "mlx-metal==0.32.3", "mlx-lm==0.31.3")
+    names = {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_PINS}
+    names |= {Requirement(spec).name.lower() for spec in stack._MLX_DIFFUSION_DEPS}
+    assert names == {"mflux", "piexif", "platformdirs", "toml"}
+    # The heavy declared deps of mflux stay out: --no-deps plus this list is the whole install.
+    assert not names & {
+        "opencv-python",
+        "opencv-python-headless",
+        "matplotlib",
+        "torch",
+        "transformers",
+        "mlx",
+        "mlx-metal",
+        "mlx-lm",
+    }
+    (pin,) = stack._MLX_DIFFUSION_PINS
+    assert pin.startswith("mflux==0.22.")
+
+
+@pytest.mark.parametrize("platform", ["macos_arm", "macos_intel", "linux", "windows"])
+@pytest.mark.parametrize("no_torch", [False, True], ids = ["training", "gguf_only"])
+def test_mlx_image_engine_installs_no_deps_only_where_the_mlx_stack_does(
+    monkeypatch, platform, no_torch
+):
+    monkeypatch.setattr(stack, "_mlx_vlm_spec_for_installed_zoo", lambda: stack._MLX_VLM_SPEC)
+    monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: False)
+    _run_to_extras(monkeypatch, platform = platform, skip_base = True, no_torch = no_torch)
+    calls = _run_to_extras.engine_calls
+    assert len(calls) == int(platform == "macos_arm" and not no_torch)
+    if calls:
+        args = list(calls[0].args[1:])
+        assert "--no-deps" in args
+        specs = [arg for arg in args if not arg.startswith("-")]
+        assert specs == [*stack._MLX_DIFFUSION_PINS, *stack._MLX_DIFFUSION_DEPS]
+        assert not any("opencv" in arg or "matplotlib" in arg for arg in args)
+
+
+def test_mlx_image_engine_skipped_off_the_wheel_floor(monkeypatch):
+    monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: False)
+    _run_to_extras(
+        monkeypatch, platform = "macos_arm", skip_base = True, no_torch = False, mlx_installable = False
+    )
+    assert _run_to_extras.engine_calls == []
+
+
+def test_satisfied_mlx_image_engine_is_not_reinstalled(monkeypatch):
+    monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: True)
+    monkeypatch.setattr(stack, "_full_deps_requested", lambda: False)
+    _run_to_extras(monkeypatch, platform = "macos_arm", skip_base = True, no_torch = False)
+    assert _run_to_extras.engine_calls == []
+
+
+@pytest.mark.parametrize("skip_base", [True, False], ids = ["fresh", "update"])
+def test_failed_mlx_image_engine_install_is_not_fatal(monkeypatch, skip_base):
+    # The MLX stack still installs, and the pass carries on to the extras step.
+    monkeypatch.setattr(stack, "_mlx_diffusion_engine_is_current", lambda: False)
+    noted = Mock()
+    monkeypatch.setattr(stack, "_note", noted)
+    calls = _run_to_extras(
+        monkeypatch,
+        platform = "macos_arm",
+        skip_base = skip_base,
+        no_torch = False,
+        engine_error = SystemExit(1),
+    )
+    assert calls and len(_run_to_extras.engine_calls) == 1
+    assert any("mflux" in str(call.args[0]) for call in noted.call_args_list)
+
+
+def test_mlx_image_engine_is_not_part_of_the_mlx_gate():
+    # The self-heal and the chat-only gate judge mlx / mlx-lm / mlx-vlm only.
+    assert "mflux" not in _repair_specs()
+    source = (Path(stack.SCRIPT_DIR) / "backend" / "utils" / "mlx_repair.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "mflux" not in source

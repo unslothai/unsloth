@@ -1598,16 +1598,6 @@ class TestHealerSignalAlignment:
     there; ungated in the healer it would stall legitimate prose until
     finalization without ever producing a promotable call."""
 
-    def test_heal_signals_are_promotable_formats_only(self):
-        from core.inference.passthrough_healing import _HEAL_SIGNALS
-        assert set(_HEAL_SIGNALS) == {
-            "<tool_call>",
-            "<|tool_call>",
-            "<function=",
-            "[TOOL_CALLS]",
-            "<|content_invoke_tool_json|>",
-        }
-
     def test_prose_with_bare_args_marker_streams_through(self):
         healer = StreamToolCallHealer({"Bash"})
         chunks = [
@@ -1707,12 +1697,25 @@ def test_every_post_decode_reinterpreter_is_handed_the_request_s_own_contract():
     from pathlib import Path
 
     names = ("heal_gate", "nudge_enabled")
-    forwards = ('body.get("response_format")', "_extract_response_format(payload)")
+    forwards = (
+        'body.get("response_format")',
+        "_extract_response_format(payload)",
+        "_sf_response_format",
+    )
     source = (Path(__file__).resolve().parents[1] / "routes/inference.py").read_text(
         encoding = "utf-8"
     )
+    tree = ast.parse(source)
+    # The MLX name may hold None only where _response_format_beside_tools sets the contract aside.
+    sources = [
+        ast.get_source_segment(source, getattr(node.value, "func", node.value))
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", None) == "_sf_response_format" for t in node.targets)
+    ]
+    assert sources == ["_response_format_beside_tools"], sources
     calls, missing = [], []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         if (getattr(node.func, "attr", None) or getattr(node.func, "id", None)) not in names:

@@ -110,6 +110,19 @@ def _run(shim, tool, args):
     return execd, marker
 
 
+def test_host_owned_notebook_pip_restores_root(shim, monkeypatch):
+    calls = []
+    monkeypatch.setenv("UNSLOTH_NB_ROOT_INSTALL", "1")
+    monkeypatch.setattr(shim.os, "setgid", lambda gid: calls.append(("gid", gid)))
+    monkeypatch.setattr(shim.os, "setuid", lambda uid: calls.append(("uid", uid)))
+    monkeypatch.setattr(shim.sys, "argv", ["pip", "--version"])
+
+    with pytest.raises(_Exec):
+        shim.main()
+
+    assert calls == [("gid", 0), ("uid", 0)]
+
+
 UNSLOTH_VCS = "git+https://github.com/unslothai/unsloth.git#egg=unsloth"
 
 KEPT = object()

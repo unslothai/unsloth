@@ -2048,6 +2048,49 @@ def fix_transformers_fully_masked_rows():
         logger.info(f"Unsloth: Failed patching sdpa_mask ({e})")
 
 
+_PACKED_SEQUENCE_PATCH_FLAG = "_unsloth_patched_is_packed_sequence"
+
+
+def _mrope_position_ids_read_as_packed(is_packed_sequence):
+    """Does `_is_packed_sequence` call Qwen3.5's `(3, 1, L)` mRoPE ids packed (transformers#44910)?"""
+    try:
+        import torch
+        positions = torch.arange(4, device = "cpu").view(1, 1, 4).expand(3, 1, 4)
+        return bool(is_packed_sequence(positions, batch_size = 1))
+    except Exception:
+        return False
+
+
+def fix_transformers_flash_attention_mrope_packed_sequence():
+    """Stop transformers 5.3 turning Qwen3.5's `(3, 1, L)` mRoPE ids into out-of-bounds
+    `cu_seqlens = [0, L, 2L, 3L]`: packed ids are flattened 2D `(1, total)`, never more dims.
+    """
+    try:
+        from transformers import modeling_flash_attention_utils as fa_utils
+    except Exception:
+        return
+    current = getattr(fa_utils, "_is_packed_sequence", None)
+    if current is None or getattr(current, _PACKED_SEQUENCE_PATCH_FLAG, False):
+        return
+    original = getattr(current, "__wrapped__", current)
+    if not _mrope_position_ids_read_as_packed(original):
+        return
+
+    @functools.wraps(original)
+    def _is_packed_sequence(position_ids, batch_size):
+        if position_ids is not None and position_ids.dim() > 2:
+            return False
+        return original(position_ids, batch_size)
+
+    _is_packed_sequence.__wrapped__ = original
+    setattr(_is_packed_sequence, _PACKED_SEQUENCE_PATCH_FLAG, True)
+    fa_utils._is_packed_sequence = _is_packed_sequence
+    logger.info(
+        "Unsloth: Patching transformers `_is_packed_sequence` so flash attention never "
+        "reads mRoPE position ids as packed sequences (transformers#44910)"
+    )
+
+
 _CHUNKED_MASK_PATCH_FLAG = "_unsloth_patched_chunked_block_sequence_ids"
 _BLOCK_SEQUENCE_IDS = "block_sequence_ids"
 
@@ -2701,6 +2744,77 @@ def fix_transformers_composite_prefix_renaming():
         )
     except Exception as e:
         logger.info(f"Unsloth: Failed patching get_model_conversion_mapping ({e})")
+
+
+_BNB_PREQUANTIZED_SAVE_FLAG = "_unsloth_skips_bnb_deserialize_on_save"
+
+
+def _bnb_deserialize_ops_without_reverse():
+    """The bitsandbytes deserialize ops on this transformers whose `reverse_op` raises."""
+    try:
+        from transformers.integrations import bitsandbytes as bnb_integration
+    except Exception:
+        return ()
+    broken = []
+    for name in ("Bnb4bitDeserialize", "Bnb8bitDeserialize"):
+        op_class = getattr(bnb_integration, name, None)
+        if not isinstance(op_class, type):
+            continue
+        try:
+            op_class.__new__(op_class).reverse_op
+        except NotImplementedError:
+            broken.append(op_class)
+        except Exception:
+            continue
+    return tuple(broken)
+
+
+def fix_transformers_bnb_prequantized_save():
+    """transformers 5.x: `save_pretrained` reverses the `Bnb{4,8}bitDeserialize` converter a
+    pre-quantized load attaches, and neither op has a `reverse_op` (NotImplementedError, #638;
+    upstream PR #45743 closed unmerged). Quantized modules already emit the checkpoint layout,
+    so skip that converter on save. Probe-gated on `reverse_op` raising."""
+    broken_ops = _bnb_deserialize_ops_without_reverse()
+    if not broken_ops:
+        return
+    try:
+        from transformers import core_model_loading, modeling_utils
+    except Exception as e:
+        logger.info(f"Unsloth: Skipping the bitsandbytes save fix ({e})")
+        return
+    original = getattr(core_model_loading, "revert_weight_conversion", None)
+    if original is None or getattr(original, _BNB_PREQUANTIZED_SAVE_FLAG, False):
+        return
+
+    def _is_bnb_deserialize(conversion):
+        operations = getattr(conversion, "operations", None)
+        return bool(operations) and all(isinstance(op, broken_ops) for op in operations)
+
+    @functools.wraps(original)
+    def revert_weight_conversion(model, *args, **kwargs):
+        conversions = getattr(model, "_weight_conversions", None)
+        if not isinstance(conversions, list) or not any(map(_is_bnb_deserialize, conversions)):
+            return original(model, *args, **kwargs)
+        # An empty list, never None: None makes transformers rebuild the default mapping.
+        model._weight_conversions = [c for c in conversions if not _is_bnb_deserialize(c)]
+        try:
+            return original(model, *args, **kwargs)
+        finally:
+            model._weight_conversions = conversions
+
+    revert_weight_conversion.__wrapped__ = original
+    setattr(revert_weight_conversion, _BNB_PREQUANTIZED_SAVE_FLAG, True)
+    try:
+        core_model_loading.revert_weight_conversion = revert_weight_conversion
+        # modeling_utils binds the function at import (`from .core_model_loading import ...`).
+        if modeling_utils.__dict__.get("revert_weight_conversion") is original:
+            modeling_utils.revert_weight_conversion = revert_weight_conversion
+        logger.info(
+            "Unsloth: Patching transformers `revert_weight_conversion` so a pre-quantized "
+            "bitsandbytes model can be saved"
+        )
+    except Exception as e:
+        logger.info(f"Unsloth: Failed patching revert_weight_conversion ({e})")
 
 
 _ROPE_SCALING_PATCH_FLAG = "_unsloth_patched_rope_scaling_setter"
@@ -4861,6 +4975,37 @@ def patch_enable_input_require_grads():
             return _RequireGrad.apply(output, anchor)
         output.requires_grad_(True)
 
+    def make_inputs_embeds_require_grads(module, args, kwargs):
+        # inputs_embeds skips the embedding hook, so reentrant checkpointing starved the adapters (#2178).
+        inputs_embeds = kwargs.get("inputs_embeds")
+        if (
+            not isinstance(inputs_embeds, torch.Tensor)
+            or inputs_embeds.requires_grad
+            or not torch.is_grad_enabled()
+            or not inputs_embeds.is_floating_point()
+        ):
+            return None
+        if torch.compiler.is_compiling():
+            inputs_embeds = _RequireGrad.apply(inputs_embeds, anchor)
+        else:
+            inputs_embeds = inputs_embeds.detach().requires_grad_(True)
+        return args, {**kwargs, "inputs_embeds": inputs_embeds}
+
+    def register_inputs_embeds_hooks(model):
+        # Replace, not stack: a repeat enable keeps one hook, and disable can remove it.
+        handles = []
+        for module in model.modules():
+            if not isinstance(module, PreTrainedModel):
+                continue
+            for key, hook in list(module._forward_pre_hooks.items()):
+                if getattr(hook, "__name__", None) == make_inputs_embeds_require_grads.__name__:
+                    del module._forward_pre_hooks[key]
+                    module._forward_pre_hooks_with_kwargs.pop(key, None)
+            handles.append(
+                module.register_forward_pre_hook(make_inputs_embeds_require_grads, with_kwargs = True)
+            )
+        return handles
+
     # Older transformers hooks a single embedding (huggingface/transformers#41993 added the loop).
     # wraps keeps inspect.getsource on transformers' source for later source checks.
     original = PreTrainedModel.enable_input_require_grads
@@ -4871,8 +5016,22 @@ def patch_enable_input_require_grads():
             self._require_grads_hook = self.get_input_embeddings().register_forward_hook(
                 make_inputs_require_grads
             )
+            self._require_grads_hooks = [self._require_grads_hook] + register_inputs_embeds_hooks(
+                self
+            )
+
+        original_disable = PreTrainedModel.disable_input_require_grads
+
+        # The old disable only removes _require_grads_hook, which would leave the pre-hooks.
+        @functools.wraps(original_disable)
+        def _patched_single_disable_input_require_grads(self):
+            for hook in getattr(self, "_require_grads_hooks", ()):
+                hook.remove()
+            self._require_grads_hooks = []
+            original_disable(self)
 
         PreTrainedModel.enable_input_require_grads = _patched_single_enable_input_require_grads
+        PreTrainedModel.disable_input_require_grads = _patched_single_disable_input_require_grads
         return
 
     @functools.wraps(original)
@@ -4914,13 +5073,59 @@ def patch_enable_input_require_grads():
             seen_modules.add(embedding_id)
             hooks.append(input_embeddings.register_forward_hook(make_inputs_require_grads))
 
-        self._require_grads_hooks = hooks
+        self._require_grads_hooks = hooks + register_inputs_embeds_hooks(self)
         if hooks:
             self._require_grads_hook = hooks[0]
 
     PreTrainedModel.enable_input_require_grads = _patched_enable_input_require_grads
 
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
+
+
+_VOXTRAL_REALTIME_MODULE = "transformers.models.voxtral_realtime.modeling_voxtral_realtime"
+
+
+def fix_transformers_voxtral_realtime_inplace_audio_add():
+    """VoxtralRealtimeModel.forward does `inputs_embeds += audio_embeds`; with input gradients on that is a
+    leaf requiring grad, so step 1 raises (#3013, transformers <= 5.19). Hand it a non-leaf copy. Lazy: only
+    once transformers imported the module."""
+    cls = getattr(sys.modules.get(_VOXTRAL_REALTIME_MODULE), "VoxtralRealtimeModel", None)
+    if cls is None or getattr(cls.forward, "_unsloth_inplace_audio_fix", False):
+        return
+    try:
+        if "inputs_embeds +=" not in inspect.getsource(cls.forward):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.forward
+
+    @functools.wraps(original)
+    def forward(
+        self,
+        input_ids = None,
+        *args,
+        **kwargs,
+    ):
+        if args or not torch.is_grad_enabled():
+            return original(self, input_ids, *args, **kwargs)
+        inputs_embeds = kwargs.get("inputs_embeds")
+        # input_ids is read only for this lookup, so passing the embeddings instead is equivalent.
+        if inputs_embeds is None and input_ids is not None:
+            inputs_embeds, input_ids = self.get_input_embeddings()(input_ids), None
+        if (
+            isinstance(inputs_embeds, torch.Tensor)
+            and inputs_embeds.is_leaf
+            and inputs_embeds.requires_grad
+        ):
+            inputs_embeds = inputs_embeds.clone()
+        if inputs_embeds is not None:
+            kwargs["inputs_embeds"] = inputs_embeds
+        return original(self, input_ids, **kwargs)
+
+    forward._unsloth_inplace_audio_fix = True
+    cls.forward = forward
 
 
 def patch_unsafe_trainer_rng_load():
@@ -4989,6 +5194,199 @@ def patch_unsafe_trainer_rng_load():
     _unsloth_safe_load_rng_state._unsloth_safe_rng_load = True
     Trainer._load_rng_state = _unsloth_safe_load_rng_state
     logger.info("Unsloth: Hardened Trainer._load_rng_state rng loading (CVE-2026-1839).")
+
+
+def patch_bitsandbytes_paged_optimizer_resume():
+    """Keep paged bitsandbytes optimizer state paged after a checkpoint resume (#2168).
+    Optimizer8bit.load_state_dict moves every state1/state2 into plain CUDA memory, so a resumed
+    paged_* run holds that state in the CUDA allocator (or OOMs loading it), where a fresh run
+    keeps it in paged memory that can spill to CPU. Load it on the host instead and copy each
+    tensor into the buffer a fresh run would allocate (get_state_buffer, or AdEMAMix's doubled
+    state1); everything else still moves to the parameter's device as before."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        from bitsandbytes.optim.optimizer import Optimizer8bit
+    except Exception:
+        return
+    load_state_dict = getattr(Optimizer8bit, "load_state_dict", None)
+    if (
+        load_state_dict is None
+        or not hasattr(Optimizer8bit, "get_state_buffer")
+        or getattr(load_state_dict, "_unsloth_repage", False)
+    ):
+        return
+    try:
+        stages_on_host = "move_to_device" in inspect.signature(load_state_dict).parameters
+    except (TypeError, ValueError):
+        stages_on_host = False
+
+    import torch
+
+    def _paged_buffer(self, p, value):
+        if value.shape == p.shape:
+            buffer = self.get_state_buffer(p, dtype = value.dtype)
+        elif value.shape == (2, *p.shape) and hasattr(self, "_get_state_double_buffer"):
+            buffer = self._get_state_double_buffer(p, dtype = value.dtype)
+        else:
+            return None
+        return buffer if getattr(buffer, "is_paged", False) else None
+
+    @functools.wraps(load_state_dict)
+    def _unsloth_load_state_dict(self, state_dict, *args, **kwargs):
+        if not getattr(self, "is_paged", False):
+            return load_state_dict(self, state_dict, *args, **kwargs)
+        move_to_device = kwargs.pop("move_to_device", args[0] if args else True)
+        if stages_on_host:
+            result = load_state_dict(self, state_dict, False, *args[1:], **kwargs)
+        else:
+            result = load_state_dict(self, state_dict, *args, **kwargs)
+        non_castable = getattr(self, "non_castable_tensor_keys", ("state1", "state2"))
+        for group in self.param_groups:
+            for p in group["params"]:
+                state = self.state.get(p)
+                if not state:
+                    continue
+                for key, value in state.items():
+                    # No is_paged check: torch.save keeps that attribute, so a loaded host copy still claims it.
+                    if key not in non_castable or not isinstance(value, torch.Tensor):
+                        continue
+                    buffer = None
+                    if move_to_device and key in ("state1", "state2") and p.device.type != "cpu":
+                        buffer = _paged_buffer(self, p, value)
+                    if buffer is not None:
+                        buffer.copy_(value)
+                        state[key] = buffer
+                    elif move_to_device and stages_on_host:
+                        state[key] = value.to(p.device)
+        return result
+
+    _unsloth_load_state_dict._unsloth_repage = True
+    Optimizer8bit.load_state_dict = _unsloth_load_state_dict
+
+
+def patch_bitsandbytes_optimizer_step_sync():
+    """Skip Optimizer8bit.step's per-parameter sync_gpu for non-paged optimizers on the default stream.
+    Paged state needs it to order prefetch (bnb 41a9c708); non-paged it only stalls the host, output bit-identical."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        import bitsandbytes.optim.optimizer as bnb_optimizer
+    except Exception:
+        return
+    Optimizer8bit = getattr(bnb_optimizer, "Optimizer8bit", None)
+    step = getattr(Optimizer8bit, "step", None)
+    sync_gpu = getattr(bnb_optimizer, "sync_gpu", None)
+    if step is None or sync_gpu is None or getattr(step, "_unsloth_no_sync", False):
+        return
+    try:
+        if "sync_gpu(p)" not in inspect.getsource(step):
+            return
+    except (OSError, TypeError):
+        return
+    import contextvars
+
+    skip = contextvars.ContextVar("unsloth_bnb_skip_sync", default = False)
+
+    @functools.wraps(sync_gpu)
+    def _unsloth_sync_gpu(t):
+        if skip.get():
+            return None
+        return sync_gpu(t)
+
+    import torch
+
+    def _on_default_streams(optimizer):
+        # bnb kernels run on the legacy default stream; off it the sync is the only ordering.
+        devices = {p.device for group in optimizer.param_groups for p in group["params"]}
+        return bool(devices) and all(
+            d.type == "cuda" and torch.cuda.current_stream(d) == torch.cuda.default_stream(d)
+            for d in devices
+        )
+
+    @functools.wraps(step)
+    def _unsloth_step(self, *args, **kwargs):
+        token = skip.set(not getattr(self, "is_paged", False) and _on_default_streams(self))
+        try:
+            return step(self, *args, **kwargs)
+        finally:
+            skip.reset(token)
+
+    _unsloth_step._unsloth_no_sync = True
+    bnb_optimizer.sync_gpu = _unsloth_sync_gpu
+    Optimizer8bit.step = _unsloth_step
+
+
+def _raised_in_triton_host_build(exc):
+    """Triton builds each kernel's launcher with the host C compiler in triton/runtime/build.py."""
+    seen = set()
+    while exc is not None and id(exc) not in seen:
+        seen.add(id(exc))
+        tb = exc.__traceback__
+        while tb is not None:
+            path = tb.tb_frame.f_code.co_filename.replace("\\", "/")
+            if path.endswith("triton/runtime/build.py"):
+                return True
+            tb = tb.tb_next
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def patch_bitsandbytes_triton_quantize_fallback(device_type = "xpu"):
+    """bitsandbytes' XPU quantize ops are Triton's, whose launchers need a host C compiler that a stock
+    Windows box lacks (#10844). On that build failure use bitsandbytes' PyTorch kernels instead."""
+    if "bitsandbytes" not in sys.modules:
+        return
+    try:
+        import torch
+        from bitsandbytes.backends.utils import triton_available
+
+        if not triton_available:
+            return
+        from bitsandbytes.backends.triton import ops as triton_ops
+    except Exception:
+        return
+    if getattr(triton_ops, "_unsloth_quantize_fallback", None) is not None:
+        return
+    state = {"error": None}
+    # bitsandbytes registers its PyTorch kernels under "default", i.e. this key.
+    default_keys = torch._C.DispatchKeySet(torch._C.DispatchKey.CompositeExplicitAutograd)
+
+    def _wrap(name):
+        triton_kernel = getattr(triton_ops, name)
+        op = getattr(torch.ops.bitsandbytes, name).default
+
+        @functools.wraps(triton_kernel)
+        def kernel(*args, **kwargs):
+            if state["error"] is None:
+                try:
+                    return triton_kernel(*args, **kwargs)
+                except Exception as exc:
+                    if not _raised_in_triton_host_build(exc):
+                        raise
+                    state["error"] = f"{type(exc).__name__}: {str(exc).strip().splitlines()[0]}"
+                    print(
+                        "Unsloth: Triton could not build its kernel launcher, as there is no working "
+                        f"C/C++ compiler ({state['error']}). bitsandbytes 4bit quantization will use "
+                        "its PyTorch kernels instead - only model loading is slower."
+                    )
+            return op.redispatch(default_keys, *args, **kwargs)
+
+        return kernel
+
+    try:
+        kernels = {name: _wrap(name) for name in ("quantize_4bit", "quantize_blockwise")}
+        key = torch._C._dispatch_key_for_device(device_type)
+        lib = torch.library.Library("bitsandbytes", "FRAGMENT")
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for name, kernel in kernels.items():
+                # torch < 2.13 refuses to override a Python-registered kernel unless asked to.
+                lib.impl(name, torch._disable_dynamo(kernel), key, allow_override = True)
+    except Exception:
+        return
+    state["lib"] = lib
+    triton_ops._unsloth_quantize_fallback = state
 
 
 _PT2_UNSAFE_LOAD_ENV = "UNSLOTH_ALLOW_UNSAFE_PT2_LOAD"
@@ -6280,9 +6678,10 @@ def check_triton_py_ssize_t_clean():
     in pyproject.toml would not have prevented this and cannot: torch pins triton
     exactly (torch 2.6.0 requires `triton==3.2.0`), so any floor above what the
     oldest supported torch carries makes that torch unresolvable rather than
-    safe. What is actually broken in these reports is a rebuilt or repackaged
-    triton whose shim lost the macro, which no dependency specifier can describe,
-    so name it here instead. Warns rather than raises: nothing has failed yet,
+    safe. The reported failures come from a stale cached shim built by Python
+    3.13 (fixed by `fix_triton_module_cache_python_key`); this names the rarer
+    rebuilt or repackaged triton whose shim lost the macro, which no dependency
+    specifier can describe. Warns rather than raises: nothing has failed yet,
     and a process that launches no Triton kernel never will.
     """
     if os.environ.get("UNSLOTH_SKIP_TRITON_SHIM_CHECK", "0").lower() in ("1", "true"):
@@ -6312,6 +6711,44 @@ def check_triton_py_ssize_t_clean():
         f"{', '.join(path for _, path in offenders)}. Set "
         f"UNSLOTH_SKIP_TRITON_SHIM_CHECK=1 to silence this."
     )
+
+
+def fix_triton_module_cache_python_key():
+    """#2760: triton 3.2 / 3.3 cache `cuda_utils.so` and launchers by C source hash alone, so
+    Python 3.12 reuses a 3.13 build and the first launch raises `SystemError: PY_SSIZE_T_CLEAN
+    macro must be defined for '#' formats`. Tag the source with EXT_SUFFIX, as triton 3.4 keys it.
+    """
+    try:
+        if importlib.util.find_spec("triton") is None:
+            return
+        from triton.backends import backends
+    except Exception:
+        return
+    tag = f"\n/* unsloth: {sysconfig.get_config_var('EXT_SUFFIX') or sys.implementation.cache_tag} */\n"
+    for backend in backends.values():
+        # Backend drivers load outside sys.modules: patch the defining module via its globals.
+        namespace = getattr(getattr(backend.driver, "__init__", None), "__globals__", None)
+        if not isinstance(namespace, dict):
+            continue
+        original = namespace.get("compile_module_from_src")
+        # 3.4+ imports the EXT_SUFFIX-keyed one from triton.runtime.build.
+        if not callable(original) or getattr(original, "__unsloth_patched__", False):
+            continue
+        if getattr(original, "__module__", None) != namespace.get("__name__"):
+            continue
+
+        def compile_module_from_src(
+            src,
+            name,
+            *args,
+            _original = original,
+            **kwargs,
+        ):
+            return _original(src + tag, name, *args, **kwargs)
+
+        functools.update_wrapper(compile_module_from_src, original)
+        compile_module_from_src.__unsloth_patched__ = True
+        namespace["compile_module_from_src"] = compile_module_from_src
 
 
 def _transformers_rescopes_submodule_prefix_renamings():
@@ -7192,7 +7629,9 @@ def patch_torchcodec_audio_decoder():
     try:
         from unsloth_zoo.dataset_utils import patch_torchcodec_audio_decoder as _patch
         _patch()
-    except (ImportError, AttributeError, RuntimeError):
+    except Exception:
+        # torchcodec 0.12+ built for another torch raises OSError loading its native library;
+        # disable_torchcodec_if_broken runs next and swaps in the fallback decoder.
         pass
 
 
@@ -7476,31 +7915,34 @@ def disable_torchcodec_if_broken():
     their existing except ImportError handlers cleanly.
     """
     mismatch_hint = _torchcodec_version_mismatch_hint()
-    if mismatch_hint is not None:
+
+    def _warn_mismatch():
+        if mismatch_hint is None:
+            return
         try:
             import warnings
-            warnings.warn(mismatch_hint, stacklevel = 2)
+            warnings.warn(mismatch_hint, stacklevel = 3)
         except Exception:
             # Warning filters promoted to errors (PYTHONWARNINGS=error, pytest -W error) must not abort the
             # disable fallback below.
             pass
+
     try:
         import importlib.util
         if importlib.util.find_spec("torchcodec") is None:
+            _warn_mismatch()
             return  # absent or already disabled
 
         # RuntimeError on dlopen failure, OSError on chained libavutil.so misses, and a damaged or
         # version-skewed wheel can raise anything else; the package is present, so every shape is "broken".
         from torchcodec.decoders import AudioDecoder
     except Exception as load_error:
-        if mismatch_hint is None:
+        remedy_hint = mismatch_hint
+        if remedy_hint is None:
             # Versions agree, so the load failed for another reason. A mismatched accelerator
             # build is the one this can still name, and the one pinning the index repairs.
             try:
-                provenance_hint = _torchcodec_provenance_hint()
-                if provenance_hint is not None:
-                    import warnings
-                    warnings.warn(provenance_hint, stacklevel = 2)
+                remedy_hint = _torchcodec_provenance_hint()
             except Exception:
                 pass  # a diagnostic must never abort the disable fallback below
         # transformers: flip the flag (<5) and/or rebind the lru_cache'd func (>=5).
@@ -7551,9 +7993,15 @@ def disable_torchcodec_if_broken():
                 if decodes
                 else "audio datasets will not decode until soundfile and PyAV are installed (pip install soundfile av)"
             )
-            warnings.warn(f"Unsloth: torchcodec is installed but {note}; {tail}.", stacklevel = 2)
+            # One warning per broken codec; the version remedy rides along.
+            remedy = f" {remedy_hint}" if remedy_hint is not None else ""
+            warnings.warn(
+                f"Unsloth: torchcodec is installed but {note}; {tail}.{remedy}", stacklevel = 2
+            )
         except Exception:
             pass  # a report must never abort the disable fallback above
+    else:
+        _warn_mismatch()
 
 
 def _audio_av_open(av, source):

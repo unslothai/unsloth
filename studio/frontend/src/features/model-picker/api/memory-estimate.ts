@@ -81,6 +81,7 @@ export interface MemoryEstimateRequest {
   ctxCheckpoints?: number | null;
   speculativeType?: string | null;
   specDraftNMax?: number | null;
+  specDraftModel?: string | null;
   specDraftCacheType?: string | null;
   tensorParallel?: boolean;
   disableVision?: boolean;
@@ -166,6 +167,7 @@ function estimateRequestBody(
     ctx_checkpoints: payload.ctxCheckpoints ?? null,
     speculative_type: payload.speculativeType ?? null,
     spec_draft_n_max: payload.specDraftNMax ?? null,
+    spec_draft_model: payload.specDraftModel ?? null,
     spec_draft_cache_type: payload.specDraftCacheType ?? null,
     tensor_parallel: payload.tensorParallel ?? false,
     disable_vision: payload.disableVision ?? false,

@@ -54,6 +54,7 @@ from hub.services.models import (
     downloads,
     gguf_variants,
     local_inventory,
+    local_model_actions,
 )
 
 router = APIRouter()
@@ -349,6 +350,30 @@ async def orphan_companions(
     the ordinary guarded delete."""
     return redact_host_paths(
         await companion_cleanup.orphan_companions_response(), via_api_key = via_api_key
+    )
+
+
+@router.post("/local/reveal")
+async def reveal_local_model(
+    path: str = Body(...),
+    id: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Reveal an on-device model outside the HF cache. `id` picks one of several rows sharing a path."""
+    return await local_model_actions.reveal_local_model_response(
+        resolve_host_path_reference(path) or path, resolve_host_path_reference(id) or id
+    )
+
+
+@router.delete("/local/delete")
+async def delete_local_model(
+    path: str = Body(...),
+    id: Optional[str] = Body(None),
+    current_subject: str = Depends(get_current_subject),
+):
+    """Delete an on-device model outside the HF cache listed by /local."""
+    return await local_model_actions.delete_local_model_response(
+        resolve_host_path_reference(path) or path, resolve_host_path_reference(id) or id
     )
 
 

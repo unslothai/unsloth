@@ -9,10 +9,8 @@ ref2va) is not in the tensors, so it comes from the file name."""
 from __future__ import annotations
 
 import functools
-import json
 import os
 import re
-import struct
 from typing import Any, Optional
 
 H3_COMFY_TABLE_KEY = "adaln_t_table"
@@ -111,9 +109,9 @@ def h3_comfy_keep_dtype(key: str, pruned: bool = True) -> Optional[Any]:
 def h3_comfy_curve_metadata(path: str) -> Optional[dict]:
     """``apply_h3_adaln_curve`` metadata for a pruned (curve-form) ComfyUI H3 file, from its header; None for a
     dense one (no ``adaln_t_table``)."""
-    with open(path, "rb") as handle:
-        size = struct.unpack("<Q", handle.read(8))[0]
-        header = json.loads(handle.read(size))
+    from .diffusion_comfy_quant import _read_header
+
+    header, _ = _read_header(path)
     table = header.get(H3_COMFY_TABLE_KEY)
     if not isinstance(table, dict) or len(table.get("shape") or ()) != 2:
         return None

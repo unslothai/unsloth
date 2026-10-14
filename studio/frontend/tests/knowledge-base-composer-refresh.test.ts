@@ -64,6 +64,10 @@ function harness() {
           slots[index] = deps;
           effects.push(effect);
         },
+        // Focus-only; nothing to run here.
+        useLayoutEffect() {
+          cursor++;
+        },
       },
       "react/jsx-runtime": stubJsxRuntime(),
       "lucide-react": {},
@@ -87,6 +91,11 @@ function harness() {
         },
       },
       "./knowledge-base-dialog": { KnowledgeBaseDialog: "KnowledgeBaseDialog" },
+      "./embedding-model-menu-picker": {
+        EmbeddingModelMenuChip: "EmbeddingModelMenuChip",
+        EmbeddingModelMenuList: "EmbeddingModelMenuList",
+      },
+      "@/features/auth": { useIsAccountOwner: () => true },
     },
   );
   function render() {

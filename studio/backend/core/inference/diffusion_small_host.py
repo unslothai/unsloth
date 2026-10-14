@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import json
 import os
-import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -52,14 +51,11 @@ _ST_DTYPES = {"BF16": "bfloat16", "F16": "float16", "F32": "float32"}
 
 
 def _safetensors_bytes_by_dtype(path: Path, keep: tuple[str, ...] = ()) -> dict[str, int]:
+    from .diffusion_component_sizes import read_safetensors_header
+
     out: dict[str, int] = {}
-    try:
-        with open(path, "rb") as fh:
-            (n,) = struct.unpack("<Q", fh.read(8))
-            if not 0 < n <= 256 * _MIB:
-                return out
-            header = json.loads(fh.read(n))
-    except Exception:  # noqa: BLE001 - unreadable header: no claim about this file
+    header = read_safetensors_header(path, max_bytes = 256 * _MIB)
+    if header is None:  # unreadable header: no claim about this file
         return out
     for name, meta in header.items():
         if name == "__metadata__":

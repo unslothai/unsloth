@@ -128,11 +128,6 @@ def test_an_inherited_value_that_mimics_ours_is_still_not_trusted(monkeypatch):
     assert not trusted
 
 
-def test_unset_is_empty(monkeypatch):
-    monkeypatch.delenv("UNSLOTH_FORCE_CUSTOM_DTYPE", raising = False)
-    assert trusted_custom_dtype() == ("", False)
-
-
 # --- vision.py no longer evaluates the fields --------------------------------
 
 

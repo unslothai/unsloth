@@ -33,6 +33,31 @@ test("external models never opt into GGUF compaction", () => {
   );
 });
 
+test("a managed vLLM or SGLang model compacts like a local GGUF", () => {
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf: false,
+      isManagedEngine: true,
+      autoCompactEnabled: true,
+    }),
+    { context_overflow: "truncate_oldest" },
+  );
+  assert.deepEqual(
+    ggufCompactionRequestFields({
+      isGguf: false,
+      isManagedEngine: true,
+      autoCompactEnabled: false,
+    }),
+    { context_overflow: "error" },
+  );
+  const adapter = readSrc("features/chat/api/chat-adapter.ts");
+  // SGLang has no exact count to fit against, so only the vLLM engine asks.
+  assert.match(adapter, /runtime\.loadedEngine === "vllm"/);
+  // A queued turn keeps the engine it was queued against, like loadedIsGguf / loadedIsMlx.
+  assert.match(readSrc("features/chat/utils/queued-chat-run-settings.ts"), /"loadedEngine",/);
+  assert.match(adapter, /isManagedEngine: isManagedEngineForCompaction/);
+});
+
 test("nothing still offers the removed compaction style", () => {
   // The row is gone, so its state, its request fields and its strings should be too: a leftover
   // setter or key is a setting the user cannot reach but the code still carries.
@@ -163,15 +188,36 @@ test("a window past the request ceiling still sends a threshold the server accep
   );
 });
 
-test("an API model sends nothing with auto-compact off or no published window", () => {
+test("an API model sends nothing with auto-compact off", () => {
   assert.deepEqual(
     apiCompactionRequestFields({ autoCompactEnabled: false, contextLength: 200_000 }),
     {},
   );
   assert.deepEqual(
-    apiCompactionRequestFields({ autoCompactEnabled: true, contextLength: null }),
+    apiCompactionRequestFields({ autoCompactEnabled: false, contextLength: null }),
     {},
   );
+});
+
+test("a self-hosted connection with no catalogued window still asks the server to compact", async () => {
+  const { registerBundlerResolver, installLocalStorageFake } = await import(
+    "./helpers/kit.ts"
+  );
+  registerBundlerResolver();
+  installLocalStorageFake();
+  const { resolveModelCatalogEntry } = await import(
+    "../src/features/chat/model-catalog.ts"
+  );
+  for (const providerType of ["custom", "llama_cpp", "vllm"]) {
+    const contextLength = resolveModelCatalogEntry(providerType, "qwen3-next")?.contextLength;
+    assert.equal(contextLength ?? null, null, providerType);
+    // the backend derives the threshold from the self-hosted server's reported window
+    assert.deepEqual(
+      apiCompactionRequestFields({ autoCompactEnabled: true, contextLength }),
+      { context_overflow: "truncate_oldest" },
+      providerType,
+    );
+  }
 });
 
 test("the external request carries the window the model catalog publishes", async () => {

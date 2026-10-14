@@ -12,7 +12,6 @@ import {
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import {
-  isTrackingSttDownload,
   trackSttDownload,
 } from "@/features/settings/lib/stt-download-mirror";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
@@ -24,6 +23,7 @@ import {
   resolveSttResidency,
   type SttDownloadedArtifact,
   sttDownloadedArtifacts,
+  sttEjectSucceeded,
   sttSelectionReady,
 } from "../audio-page-policy";
 import { audioModelLabel } from "../audio-workspace-utils";
@@ -33,6 +33,7 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../catalog";
+import { isAudioSttEngine } from "../stt-artifacts";
 import type { AudioHostState } from "./audio-host-state";
 
 export function useSttSidecar({
@@ -41,6 +42,7 @@ export function useSttSidecar({
 }: Pick<AudioHostState, "setBusy" | "activeRef">) {
   const [lastSttRepo, setLastSttRepoChoice] = usePersistedChoice("unsloth:audio:last-stt-model", "");
   const [lastSttVariant, setLastSttVariant] = usePersistedChoice("unsloth:audio:last-stt-variant", "");
+  const [lastSttEngine, setLastSttEngine] = usePersistedChoice("unsloth:audio:last-stt-engine", "");
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
   const [sttLoadedModel, setSttLoadedModel] = useState<string | null>(null);
   const [sttLoadedEngine, setSttLoadedEngine] = useState<
@@ -62,12 +64,27 @@ export function useSttSidecar({
       lastSttRepo && lastSttVariant ? [[lastSttRepo.toLowerCase(), lastSttVariant]] : [],
     ),
   );
+  // The engine resolved at pick time (a GGUF repo without a -GGUF suffix runs on audio.cpp);
+  // re-deriving it from the id alone sends later status reads and loads to Transformers.
+  const sttEngines = useRef(
+    new Map<string, AudioSttEngine>(
+      lastSttRepo && isAudioSttEngine(lastSttEngine)
+        ? [[lastSttRepo.toLowerCase(), lastSttEngine]]
+        : [],
+    ),
+  );
+  const sttEngineFor = useCallback(
+    (repo: string): AudioSttEngine =>
+      sttEngines.current.get(repo.toLowerCase()) ?? sttEngineForRepoId(repo),
+    [],
+  );
   const setLastSttRepo = useCallback(
     (repo: string) => {
       setLastSttRepoChoice(repo);
       setLastSttVariant(sttGgufVariants.current.get(repo.toLowerCase()) ?? "");
+      setLastSttEngine(sttEngines.current.get(repo.toLowerCase()) ?? "");
     },
-    [setLastSttRepoChoice, setLastSttVariant],
+    [setLastSttRepoChoice, setLastSttVariant, setLastSttEngine],
   );
   const sttLoadingGeneration = useRef<number | null>(null);
   // Residency is not ownership: track the owned model identity, since other surfaces can swap the sidecar.
@@ -84,9 +101,7 @@ export function useSttSidecar({
     try {
       const selectedRepo = selectedSttRepoRef.current;
       const selectedKey = selectedRepo ? sttSidecarKeyFor(selectedRepo) : null;
-      const selectedEngine = selectedRepo
-        ? sttEngineForRepoId(selectedRepo)
-        : null;
+      const selectedEngine = selectedRepo ? sttEngineFor(selectedRepo) : null;
       const stt = await fetchSttStatus(
         undefined,
         selectedEngine === "transformers"
@@ -141,8 +156,15 @@ export function useSttSidecar({
         preservePending,
         sidecarKeyFor: sttSidecarKeyFor,
         repoIdForSidecarKey: sttRepoIdForSidecarKey,
-        engineForRepo: sttEngineForRepoId,
+        engineForRepo: sttEngineFor,
       });
+      // A pick made while this read was in flight owns the selection now.
+      if (selectedSttRepoRef.current !== selectedRepo) return;
+      // The resident engine wins even for the same repo id: another tab can swap a
+      // suffix-less repo onto audio.cpp under the same name.
+      if (reconciled && residency) {
+        sttEngines.current.set(reconciled.toLowerCase(), residency.engine);
+      }
       selectedSttRepoRef.current = reconciled;
       setSelectedSttRepo(reconciled);
     } catch {
@@ -150,16 +172,25 @@ export function useSttSidecar({
       setSttLoadedModel(null);
       setSttLoadedEngine(null);
     }
-  }, []);
+  }, [sttEngineFor]);
 
   const sttSelected = selectedSttRepo !== null;
   const sttReady = sttSelectionReady(
     selectedSttRepo,
     sttLoadedModel,
     sttSidecarKeyFor,
-    selectedSttRepo ? sttEngineForRepoId(selectedSttRepo) : null,
+    selectedSttRepo ? sttEngineFor(selectedSttRepo) : null,
     sttLoadedEngine,
+    sttRepoIdForSidecarKey,
   );
+
+  const forgetSttSelection = useCallback(() => {
+    deferredSttLoad.current = null;
+    selectedSttRepoRef.current = null;
+    sttLoadGeneration.current += 1;
+    sttLoadedByThisPage.current = null;
+    setSelectedSttRepo(null);
+  }, []);
 
   const releaseTranscribeSelection = useCallback(async () => {
     const selected = selectedSttRepoRef.current;
@@ -169,22 +200,40 @@ export function useSttSidecar({
       selected !== null &&
       claim !== null &&
       claim === sttLoadedModel;
-    const forget = () => {
-      deferredSttLoad.current = null;
-      selectedSttRepoRef.current = null;
-      sttLoadGeneration.current += 1;
-      sttLoadedByThisPage.current = null;
-      setSelectedSttRepo(null);
-    };
     if (!owned) {
-      forget();
+      forgetSttSelection();
       return;
     }
     // Forget only once released, else a failed unload leaves the model in VRAM with no Eject.
-    await unloadSttModel(sttEngineForRepoId(selected), claim);
-    forget();
+    await unloadSttModel(sttEngineFor(selected), claim);
+    forgetSttSelection();
     await refreshSttStatus();
-  }, [refreshSttStatus, sttReady, sttLoadedModel]);
+  }, [forgetSttSelection, refreshSttStatus, sttEngineFor, sttReady, sttLoadedModel]);
+
+  /** An explicit Eject releases whatever is resident, whoever loaded it (a reload, Settings > Voice
+   *  or dictation leave no page claim); the backend's expected-model guard keeps a newer model. */
+  const ejectTranscribeModel = useCallback(async (): Promise<
+    "unloaded" | "kept" | "none"
+  > => {
+    if (!sttLoadedModel) {
+      forgetSttSelection();
+      await refreshSttStatus();
+      return "none";
+    }
+    const { released } = await unloadSttModel(
+      sttLoadedEngine ?? undefined,
+      sttLoadedModel,
+    );
+    forgetSttSelection();
+    await refreshSttStatus();
+    return sttEjectSucceeded(released) ? "unloaded" : "kept";
+  }, [forgetSttSelection, refreshSttStatus, sttLoadedEngine, sttLoadedModel]);
+
+  /** Read residency fresh: the sidecar unloads itself after its idle keep-alive. */
+  const readSttResidency = useCallback(async (engine: AudioSttEngine) => {
+    const stt = await fetchSttStatus();
+    return resolveSttResidency(stt, engine, false);
+  }, []);
 
   const ensureSttLoaded = useCallback(
     async (
@@ -221,19 +270,19 @@ export function useSttSidecar({
         } catch (error) {
           if (!(error instanceof SttModelNotDownloadedError)) throw error;
           if (!isCurrent()) return;
-          await startSttDownload(
+          const download = await startSttDownload(
             sidecarKey,
             hfApiToken(getHfToken()),
             engine,
             ggufVariant,
           );
-          if (!isTrackingSttDownload(sidecarKey, engine)) {
-            trackSttDownload(sidecarKey, {
-              warmSelectedVoiceModelOnComplete: false,
-              engine,
-              repoId,
-            });
-          }
+          trackSttDownload(sidecarKey, {
+            warmSelectedVoiceModelOnComplete: false,
+            engine,
+            repoId,
+            ggufVariant,
+            downloadId: download.download_id,
+          });
           toast.dismiss(toastId);
           // Re-check ownership around every await: an old pick could replace a newer sidecar.
           for (;;) {
@@ -312,6 +361,8 @@ export function useSttSidecar({
     runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
+    sttEngines,
+    sttEngineFor,
     setLastSttRepo,
     sttLoadingGeneration,
     sttLoadedByThisPage,
@@ -321,6 +372,8 @@ export function useSttSidecar({
     sttSelected,
     sttReady,
     releaseTranscribeSelection,
+    ejectTranscribeModel,
+    readSttResidency,
     ensureSttLoaded,
   };
 }

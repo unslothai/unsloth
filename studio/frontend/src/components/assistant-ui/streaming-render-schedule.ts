@@ -3,7 +3,10 @@
 
 import remend from "remend";
 import { type BlockProps } from "streamdown";
-import { parseMarkdownIntoBlocks } from "../../lib/parse-markdown-blocks.ts";
+import {
+  parseMarkdownBlockDetails,
+  parseMarkdownIntoBlocks,
+} from "../../lib/parse-markdown-blocks.ts";
 
 // How far behind the live edge a block has to be before it can be retained.
 // The block list interleaves "\n\n" separators, so this is about four
@@ -212,6 +215,52 @@ function hasLinkReference(text: string): boolean {
   }
   return false;
 }
+// A shortcut `[label]` or collapsed `[label][]` resolves against a definition too. Code spans,
+// inline links and the like are deliberately not excluded: that only adds false positives.
+const SHORTCUT_REFERENCE_RE = /\[((?:\\[\s\S]|[^[\]\\]){1,999})\]/gu;
+const DEFINITION_LABEL_RE = /\[((?:\\[\s\S]|[^\]\\]){1,999})\]:/u;
+
+// micromark's `normalizeIdentifier`, so `[SS]` finds `[\u1E9E]:` as the renderer does.
+function normalizeLabel(label: string): string {
+  return label
+    .replace(/[\t\n\r ]+/g, " ")
+    .replace(/^ | $/g, "")
+    .toLowerCase()
+    .toUpperCase();
+}
+
+function hasShortcutReference(
+  prose: string,
+  references: string,
+  definitions: readonly string[],
+): boolean {
+  const labels = new Set<string>();
+  // Marked's tokens as well: an unmatched `[` line before a definition widens the regex's label.
+  for (const definition of [
+    ...definitions,
+    ...(prose.match(LINK_DEFINITION_KEY_RE) ?? []),
+  ]) {
+    const label = DEFINITION_LABEL_RE.exec(definition)?.[1];
+    if (label !== undefined) {
+      labels.add(normalizeLabel(label));
+    }
+  }
+  labels.delete("");
+  if (labels.size === 0) {
+    return false;
+  }
+  // Marked's definitions, not a regex: `[1]: <broken` is prose whose `[1]` is a reference.
+  const uses = normalizeLineEndings(references);
+  for (const match of uses.matchAll(SHORTCUT_REFERENCE_RE)) {
+    if (
+      !isEscaped(uses, match.index) &&
+      labels.has(normalizeLabel(match[1]))
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
 const WORD_CHARACTER_RE = /[\p{L}\p{N}_]/u;
 const HTML_TAG_START_RE = /[a-zA-Z/]/;
 
@@ -221,13 +270,28 @@ const HTML_TAG_START_RE = /[a-zA-Z/]/;
 // paying for exactly the one split it already paid for before any of this existed.
 let splitMarkdown: string | null = null;
 let splitBlocks: readonly string[] = [];
+let splitReferenceProse = "";
+let splitDefinitions: readonly string[] = [];
 
 function blocksOf(markdown: string): readonly string[] {
   if (splitMarkdown !== markdown) {
     splitMarkdown = markdown;
-    splitBlocks = parseMarkdownIntoBlocks(markdown);
+    const details = parseMarkdownBlockDetails(markdown);
+    splitBlocks = details.blocks;
+    splitReferenceProse = details.referenceProse.join("\n\n");
+    splitDefinitions = details.definitions;
   }
   return splitBlocks;
+}
+
+function referenceProseOf(markdown: string): string {
+  blocksOf(markdown);
+  return splitReferenceProse;
+}
+
+function definitionsOf(markdown: string): readonly string[] {
+  blocksOf(markdown);
+  return splitDefinitions;
 }
 
 // Which replies have to be lexed in one piece.
@@ -252,12 +316,9 @@ function blocksOf(markdown: string): readonly string[] {
 // not, so the scope would otherwise follow the reply's line ending. NOT for
 // `blocksOf`, whose one memo slot is shared with `parseMarkdownIntoRenderableBlocks`:
 // a normalised copy misses it and costs a CRLF reply two splits per render.
-// Definition first is a cost decision: both are pure so the conjunction is unchanged, but only
-// the one asked SECOND is skipped, and the reference scan is the dearer. `][` without a `]:` is
-// the shape that separates them.
+// A shortcut reference can be any `[label]`, so a definition alone is enough to pay for the split.
 function documentProse(markdown: string): string | null {
-  const normalized = normalizeLineEndings(markdown);
-  if (!hasLinkDefinition(normalized) || !hasLinkReference(normalized)) {
+  if (!hasLinkDefinition(normalizeLineEndings(markdown))) {
     return null;
   }
   const prose = normalizeLineEndings(
@@ -265,7 +326,13 @@ function documentProse(markdown: string): string | null {
       .filter((block) => !isCodeBlock(block))
       .join("\n"),
   );
-  return LINK_DEFINITION_LINE_RE.test(prose) && hasLinkReference(prose)
+  return LINK_DEFINITION_LINE_RE.test(prose) &&
+    (hasLinkReference(prose) ||
+      hasShortcutReference(
+        prose,
+        referenceProseOf(markdown),
+        definitionsOf(markdown),
+      ))
     ? prose
     : null;
 }
@@ -911,6 +978,33 @@ export type IncrementalMarkdownRender = {
 };
 
 const INCOMPLETE_LINK_REPAIR = "](streamdown:incomplete-link)";
+const LINK_REPAIR_MEMO_ENTRIES = 256;
+const LINK_REPAIR_MEMO_CHARACTERS = 4_194_304;
+const linkRepairMemo = new Map<string, boolean>();
+let linkRepairMemoCharacters = 0;
+
+function addsIncompleteLinkPlaceholder(source: string, after: string): boolean {
+  return (
+    after.split(INCOMPLETE_LINK_REPAIR).length >
+    source.split(INCOMPLETE_LINK_REPAIR).length
+  );
+}
+
+function rememberLinkRepair(source: string, value: boolean): boolean {
+  if (source.length > LINK_REPAIR_MEMO_CHARACTERS) return value;
+  linkRepairMemo.set(source, value);
+  linkRepairMemoCharacters += source.length;
+  while (
+    linkRepairMemo.size > LINK_REPAIR_MEMO_ENTRIES ||
+    linkRepairMemoCharacters > LINK_REPAIR_MEMO_CHARACTERS
+  ) {
+    const oldest = linkRepairMemo.keys().next();
+    if (oldest.done) break;
+    linkRepairMemo.delete(oldest.value);
+    linkRepairMemoCharacters -= oldest.value.length;
+  }
+  return value;
+}
 
 export function hasIncompleteLinkRepair(
   source: string,
@@ -918,10 +1012,18 @@ export function hasIncompleteLinkRepair(
 ): boolean {
   // Only an unclosed `[` gets the placeholder, so bracket-free replies skip the remend pass.
   if (!source.includes("[")) return false;
-  const after = repaired ?? remend(source);
-  return (
-    after.split(INCOMPLETE_LINK_REPAIR).length >
-    source.split(INCOMPLETE_LINK_REPAIR).length
+  if (repaired !== undefined) {
+    return addsIncompleteLinkPlaceholder(source, repaired);
+  }
+  const remembered = linkRepairMemo.get(source);
+  if (remembered !== undefined) {
+    linkRepairMemo.delete(source);
+    linkRepairMemo.set(source, remembered);
+    return remembered;
+  }
+  return rememberLinkRepair(
+    source,
+    addsIncompleteLinkPlaceholder(source, remend(source)),
   );
 }
 
@@ -1572,17 +1674,43 @@ export class IncrementalMarkdownCache {
   }
 }
 
+type RehypePluginList = NonNullable<BlockProps["rehypePlugins"]>;
+
+const samePluginEntry = (
+  a: RehypePluginList[number],
+  b: RehypePluginList[number],
+): boolean =>
+  a === b
+  || (Array.isArray(a)
+    && Array.isArray(b)
+    && a.length === b.length
+    && a.every((value, index) => value === b[index]));
+
+const filteredPluginLists = new WeakMap<RehypePluginList, RehypePluginList>();
+let lastFilteredPluginList: RehypePluginList | null = null;
+
 export function withoutStreamdownAnimationPlugin(
   rehypePlugins: BlockProps["rehypePlugins"],
   animatePlugin: BlockProps["animatePlugin"],
 ): BlockProps["rehypePlugins"] {
   const animationPlugin = animatePlugin?.rehypePlugin;
-  if (!animationPlugin) {
+  if (!animationPlugin || !rehypePlugins) {
     return rehypePlugins;
   }
-
-  return rehypePlugins?.filter((plugin) => {
+  const known = filteredPluginLists.get(rehypePlugins);
+  if (known !== undefined) return known;
+  const filtered = rehypePlugins.filter((plugin) => {
     const pluginFunction = Array.isArray(plugin) ? plugin[0] : plugin;
     return pluginFunction !== animationPlugin;
   });
+  const previous = lastFilteredPluginList;
+  const stable =
+    previous !== null
+    && previous.length === filtered.length
+    && previous.every((plugin, index) => samePluginEntry(plugin, filtered[index]))
+      ? previous
+      : filtered;
+  filteredPluginLists.set(rehypePlugins, stable);
+  lastFilteredPluginList = stable;
+  return stable;
 }

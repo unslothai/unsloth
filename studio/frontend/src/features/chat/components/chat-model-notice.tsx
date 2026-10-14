@@ -1,9 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ArrowTurnBackwardIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { Popover as PopoverPrimitive } from "radix-ui";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { modelDisplayName } from "../../model-picker/model-config/model-identity";
 import {
   CHAT_HISTORY_UPDATED_EVENT,
@@ -53,6 +66,8 @@ export function useChatCreatedModel(
 }
 
 type ChatModelNoticeProps = {
+  /** Keep the history reader mounted while the chat route is hidden. */
+  active: boolean;
   /** The saved chat on screen, or undefined for an unsent New Chat. */
   threadId: string | undefined;
   /** The model the composer will actually send to. */
@@ -67,6 +82,7 @@ type ChatModelNoticeProps = {
  *  automatic switch: for a local model that would evict whatever is resident and spend a
  *  multi-gigabyte load on opening a chat. */
 export function ChatModelNotice({
+  active,
   threadId,
   checkpoint,
   activeGgufVariant,
@@ -74,6 +90,8 @@ export function ChatModelNotice({
   onSwitch,
 }: ChatModelNoticeProps) {
   const createdModel = useChatCreatedModel(threadId);
+  // Drop the portaled UI off-route, retaining the successful read and history subscription.
+  if (!active) return null;
   if (!createdModel) return null;
   if (chatModelIsResident(createdModel, checkpoint, activeGgufVariant)) {
     return null;
@@ -92,26 +110,62 @@ export function ChatModelNotice({
     externalModelLabel(createdModel.modelId) ??
     modelDisplayName(createdModel.modelId);
   return (
-    // Positioned, not in flow. The chat header is `absolute ... z-40` with an opaque `bg-background`,
-    // so an in-flow sibling starts at y=0 UNDER it and the bar is invisible bar the scrollbar gutter
-    // the header leaves uncovered. Offset by the same header height the drop overlay
-    // and the header fade use, above the fade (z-20) and below the header (z-40).
-    <div
-      data-chat-model-notice=""
-      data-side-panel-inset=""
-      className="absolute left-[var(--studio-side-panel-left,0px)] right-[calc(var(--thread-scrollbar-gutter,10px)+var(--studio-side-panel-width,0px))] top-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-height,48px))] z-30 flex h-[var(--studio-chat-notice-height,2.25rem)] items-center gap-2 border-b border-border/60 bg-muted px-4 text-ui-12 text-muted-foreground"
-    >
-      <span className="min-w-0 truncate">
-        This chat was started on <span className="font-medium">{label}</span>.
-      </span>
-      <Button
-        variant="ghost"
-        size="sm"
-        className="ml-auto h-6 shrink-0 px-2 text-ui-12"
-        onClick={() => onSwitch(switchTarget)}
+    <Popover key={threadId}>
+      <Tooltip>
+        <TooltipTrigger asChild={true} disableClickToggle={true}>
+          <PopoverTrigger asChild={true}>
+            <button
+              type="button"
+              data-chat-model-notice=""
+              aria-label={`Original model: ${label}`}
+              className="flex h-[var(--studio-chat-control-height,34px)] min-w-[calc(30px*var(--ui-space-scale,1))] max-w-56 shrink cursor-pointer items-center rounded-[10px] px-2 text-ui-13 text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring aria-expanded:bg-nav-surface-hover aria-expanded:text-black dark:hover:text-white dark:aria-expanded:text-white max-sm:min-w-[calc(22px*var(--ui-space-scale,1))] max-sm:px-1"
+            >
+              <HugeiconsIcon
+                icon={ArrowTurnBackwardIcon}
+                strokeWidth={1.75}
+                className="size-3.5 shrink-0"
+                aria-hidden={true}
+              />
+              {/* Keep the label's spacing inside its clipped box so an icon-only trigger fits. */}
+              <span className="min-w-0 truncate before:inline-block before:w-1.5 before:content-['']">
+                {label}
+              </span>
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" sideOffset={6}>
+          Original model: {label}
+        </TooltipContent>
+      </Tooltip>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        collisionPadding={12}
+        aria-label="Original model"
+        className="menu-soft-surface w-64 gap-1 rounded-[14px] p-1"
       >
-        Switch back
-      </Button>
-    </div>
+        <div className="space-y-1 px-3 py-2">
+          <p className="text-ui-12 text-muted-foreground">Original model</p>
+          <p className="break-words text-ui-13 font-medium">{label}</p>
+        </div>
+        <PopoverPrimitive.Close asChild={true}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-8 justify-start gap-2.5 rounded-[10px] px-3 text-ui-13 font-normal"
+            onClick={() => onSwitch(switchTarget)}
+          >
+            <HugeiconsIcon
+              icon={ArrowTurnBackwardIcon}
+              strokeWidth={1.75}
+              className="size-icon"
+              aria-hidden={true}
+            />
+            Switch back
+          </Button>
+        </PopoverPrimitive.Close>
+      </PopoverContent>
+    </Popover>
   );
 }

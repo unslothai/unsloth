@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { generationFailureLogsAction } from "@/features/settings/lib/view-logs-action";
-import { readImageModel, rememberImageModel, matchesRememberedModel, type RememberedImageModel } from "./image-model-recall";
+import { readImageModel, rememberImageModel, matchesRememberedModel, componentFilesMatch, type RememberedImageModel } from "./image-model-recall";
+import { componentFileFields, splitComponentFileList } from "./component-files";
 import {
   type ReactNode,
   type SetStateAction,
@@ -19,8 +20,10 @@ import {
   Refresh01Icon,
   Delete02Icon,
   Download01Icon,
+  FolderAddIcon,
   Image03Icon,
   ImageAdd02Icon,
+  ImageCropIcon,
   InformationCircleIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
@@ -30,6 +33,7 @@ import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
 import { ImageDropzone } from "@/components/image-dropzone";
+import { useImageCrop } from "@/hooks/use-image-crop";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildImagesTourSteps } from "./tour";
 import { Button } from "@/components/ui/button";
@@ -150,6 +154,7 @@ import {
 } from "@/features/generation-presets";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { OnDeviceFoldersDialog } from "@/features/hub/catalog/on-device-folders-dialog";
 import { generatePhaseLabel, sameGenerateProgress } from "@/lib/media-generate-phase";
 import { ChevronDown } from "lucide-react";
 import { NegativePromptField } from "@/components/negative-prompt-field";
@@ -186,7 +191,15 @@ import {
 import { toast } from "@/lib/toast";
 import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
-import { DEFAULT_GEN, defaultsFor, defaultsKeyFor, residentDefaultsKey, resolutionFor } from "./image-generation-defaults";
+import {
+  DEFAULT_GEN,
+  defaultsFor,
+  defaultsKeyFor,
+  loadedRecipeFor,
+  residentDefaultsKey,
+  residentRecipeFor,
+  resolutionFor,
+} from "./image-generation-defaults";
 import {
   MIN_DIM,
   type SizeLimits,
@@ -221,6 +234,7 @@ import {
   type DiffusionLoadProgress,
   type DiffusionLoadRequest,
   type DiffusionLoraInfo,
+  type DiffusionSamplerOption,
   type DiffusionStatus,
   type LocalizedEditMode,
   type GalleryImage,
@@ -260,6 +274,17 @@ import {
   shouldOfferGenerateAnyway,
   shouldRunQueuedOversizedRetry,
 } from "./lib/memory-refusal";
+import {
+  AUTOMATIC_SCHEDULE,
+  DEFAULT_SAMPLER,
+  normalizeSamplerChoice,
+  readSamplerChoices,
+  type SamplerChoice,
+  samplerRecipeLabel,
+  samplerRequestFields,
+  SCHEDULE_LABELS,
+  withSamplerChoice,
+} from "./lib/sampler-choice";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useStagedDownload, type StagedDownloadEntry } from "@/features/hub/download-manager";
 import { DiffusionTrainPanel } from "./train/diffusion-train-panel";
@@ -269,11 +294,18 @@ import {
 } from "./train/train-base-selector";
 
 function withEngagedFamily(
-  { repoId, kind, filename }: RememberedImageModel,
+  { repoId, kind, filename, textEncoderFiles, vaeFile }: RememberedImageModel,
   status: Pick<DiffusionStatus, "resolved">,
 ): RememberedImageModel {
   const family = explicitFamily(resolvedFamilyOverrideSelection(status.resolved?.family_override));
-  return { repoId, kind, ...(filename ? { filename } : {}), ...(family ? { familyOverride: family } : {}) };
+  return {
+    repoId,
+    kind,
+    ...(filename ? { filename } : {}),
+    ...(family ? { familyOverride: family } : {}),
+    ...(textEncoderFiles?.length ? { textEncoderFiles } : {}),
+    ...(vaeFile ? { vaeFile } : {}),
+  };
 }
 
 /** Whether this pick may receive a transformer precision request. Unknown repos defer to the backend. */
@@ -687,6 +719,8 @@ function loadToastArgs(
   };
 }
 
+const NO_SAMPLERS: DiffusionSamplerOption[] = [];
+
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
   bytes_downloaded: 0,
@@ -784,6 +818,54 @@ function ResolvedBadge({
       <TooltipTrigger asChild={true}>{badge}</TooltipTrigger>
       <TooltipContent>{info.tooltip}</TooltipContent>
     </Tooltip>
+  );
+}
+
+const COMPONENT_FILES_HINT =
+  "Optional. Use separate ComfyUI text encoder / VAE .safetensors files instead of downloading the base model's. Absolute path, or relative to the model folder (e.g. ../text_encoders/clip_l.safetensors). Only for single-file or GGUF transformers.";
+
+function AdvancedTextField({
+  label,
+  hint,
+  placeholder,
+  value,
+  onValueChange,
+  multiline = false,
+}: {
+  label: string;
+  hint?: ReactNode;
+  placeholder?: string;
+  value: string;
+  onValueChange: (v: string) => void;
+  multiline?: boolean;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs font-medium text-muted-foreground">
+        {label}
+        {hint && <InfoHint>{hint}</InfoHint>}
+      </span>
+      {multiline ? (
+        <Textarea
+          aria-label={label}
+          rows={2}
+          spellCheck={false}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="min-h-0 resize-y font-mono text-xs"
+        />
+      ) : (
+        <Input
+          aria-label={label}
+          spellCheck={false}
+          placeholder={placeholder}
+          value={value}
+          onChange={(e) => onValueChange(e.target.value)}
+          className="h-8 font-mono text-xs"
+        />
+      )}
+    </div>
   );
 }
 
@@ -1210,6 +1292,12 @@ function RecipePopover({
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
           <RecipeRow label="Steps" value={String(image.steps)} />
           <RecipeRow label="Guidance" value={String(image.guidance)} />
+          {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
+            <RecipeRow
+              label="Sampler"
+              value={samplerRecipeLabel(image.sampler, image.schedule_type) ?? ""}
+            />
+          ) : null}
           <RecipeRow label="Seed" value={String(image.seed)} mono />
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
@@ -1270,6 +1358,14 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
         }
         badge={<ResolvedBadge status={status} controlKey="text_encoder_quant" />}
       />
+      {status.component_files && Object.keys(status.component_files).length > 0 ? (
+        <BuildRow
+          label="Text encoder / VAE files"
+          value={Object.entries(status.component_files)
+            .map(([component, file]) => `${component}: ${file}`)
+            .join(", ")}
+        />
+      ) : null}
       <BuildRow
         label="Memory"
         value={
@@ -1308,6 +1404,7 @@ function reportLoadFailure(message: string | null | undefined, fallback: string)
 
 type Busy = "loading" | "unloading" | "generating" | null;
 type ImageLoadOptions = { kind: "gguf" | "single_file" | "pipeline"; filename?: string; displayRepoId?: string };
+type LastLoad = { repoId: string } & ImageLoadOptions & Pick<RememberedImageModel, "textEncoderFiles" | "vaeFile">;
 
 // What a pick optimistically replaced, so a load that never takes can put it all back. The
 // quant label and the recipe move together at pick time, so they roll back together.
@@ -1336,6 +1433,8 @@ type LoadAdvanced = Pick<
   | "family_override"
   | "loras"
   | "gpu_ids"
+  | "text_encoder_file"
+  | "vae_file"
 >;
 
 function openImageLabel(t: ReturnType<typeof useT>, prompt: string): string {
@@ -1404,13 +1503,19 @@ export function ImagesPage({
   // Z-Image-Turbo official defaults: 9 steps (= 8 DiT forwards), guidance 0 (distilled, CFG-free).
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
+  const [samplerChoices, setSamplerChoices] = useState(readSamplerChoices);
+  // A recipe restored while unloaded: Generate recalls the model, uses this, and stores it for that model.
+  const [restoredSampler, setRestoredSampler] = useState<Partial<SamplerChoice> | null>(null);
   // Whether the user has taken the recipe since the pick still waiting for its status: a preset
   // selected while the model downloaded is newer than that pick.
   const pickRecipeSuperseded = useRef<(() => boolean) | null>(null);
+  // The recipe the last pick applied, so a load that reveals the family can replace a fallback.
+  const pickDefaults = useRef<{ steps: number; guidance: number } | null>(null);
   // Put back everything a pick optimistically applied. Setters are stable, so this never re-renders on its own.
   const revertPick = useCallback((r: PickRevert) => {
     setQuant(r.prev);
     setPendingModelDefaults(null);
+    pickDefaults.current = null;
     // Equality alone cannot tell "nobody touched this" from "the user chose the same number": a
     // preset selected after the pick owns these fields.
     if (!pickRecipeSuperseded.current?.()) {
@@ -1470,6 +1575,11 @@ export function ImagesPage({
   // LoRA adapters selected for the next generation (id + weight), plus the list the picker offers.
   const [loras, setLoras] = useState<LoraSpecInput[]>([]);
   const [availableLoras, setAvailableLoras] = useState<DiffusionLoraInfo[]>([]);
+  // Fine-tuned (trained in Unsloth) first, for both the suggestions and the Add LoRA prefill.
+  const sortedLoras = useMemo(
+    () => [...availableLoras].sort((a, b) => Number(Boolean(b.fine_tuned)) - Number(Boolean(a.fine_tuned))),
+    [availableLoras],
+  );
   // Page mode: "create" is the generation workspace, "train" the LoRA training workspace.
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const setPageMode = useImageWorkflowStore((s) => s.setPageMode);
@@ -1488,6 +1598,7 @@ export function ImagesPage({
   const [trainBaseChoice, setTrainBaseChoice] = useState("");
   // Bumped when a training run completes, so the LoRA discovery effect rescans without a model reload.
   const [loraRefreshKey, setLoraRefreshKey] = useState(0);
+  const [loraFoldersOpen, setLoraFoldersOpen] = useState(false);
   // ControlNet for the next generation: model id, control image, how to derive the map, and the strength.
   const [controlnetId, setControlnetId] = useState<string>("");
   const [controlImage, setControlImage] = useState<string | null>(null);
@@ -1527,6 +1638,8 @@ export function ImagesPage({
     setTextEncoderQuant((v) => nvfp4SelectionFallback(v, nvfp4DiffusionKnown, nvfp4Diffusion));
   }, [nvfp4Diffusion, nvfp4DiffusionKnown, transformerQuant, textEncoderQuant]);
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
+  const [textEncoderFiles, setTextEncoderFiles] = useState("");
+  const [vaeFile, setVaeFile] = useState("");
   // "auto", or the physical index to pin this load to; offered only on a multi-card CUDA/ROCm
   // host. Persisted, unlike the selects around it: status carries the device a pipeline is on
   // but not which card, so a refresh would reset it to Auto. A stale id is dropped on send.
@@ -1538,7 +1651,7 @@ export function ImagesPage({
   const [transformerCache, setTransformerCache] = useState<"auto" | "off" | "fbcache" | "static">("auto");
   const [cpuOffload, setCpuOffload] = useState(false);
   // The last load descriptor, so "Reapply" can reload the same model with new advanced options without re-picking it.
-  const lastLoad = useRef<({ repoId: string } & ImageLoadOptions) | null>(null);
+  const lastLoad = useRef<LastLoad | null>(null);
   // Render-safe mirror of whether a page-initiated load supplied a complete Reapply target.
   const [canReapply, setCanReapply] = useState(false);
   // Repo id whose defaults were already seeded from a discovered resident model, so we seed
@@ -1634,10 +1747,12 @@ export function ImagesPage({
     [batchSize, count, guidance, height, negativePrompt, steps, width],
   );
   const residentDefaults = residentDefaultsKey(status?.repo_id ?? "", status?.base_repo, status?.resolved?.family_override);
+  const { steps: residentSteps, guidance: residentGuidance } = residentRecipeFor(
+    residentDefaults,
+    status?.generation_defaults,
+  );
   const imageDefaultRecipe = useMemo<ImageGenerationPresetParams>(() => {
-    const recommended =
-      pendingModelDefaults ??
-      defaultsFor(residentDefaults);
+    const recommended = pendingModelDefaults ?? { steps: residentSteps, guidance: residentGuidance };
     // Reset restores the resident build's canvas, the same one the seed above applied. A constant
     // here would quietly undo it and put a 24 GB card back over its budget.
     const size = resolutionFor(status?.base_repo ?? status?.repo_id ?? "", {
@@ -1656,7 +1771,8 @@ export function ImagesPage({
     };
   }, [
     pendingModelDefaults,
-    residentDefaults,
+    residentSteps,
+    residentGuidance,
     status?.base_repo,
     status?.repo_id,
     status?.model_kind,
@@ -1701,6 +1817,7 @@ export function ImagesPage({
       const claimedAt = imageFormClaimId();
       pickRecipeSuperseded.current = () => imageFormClaimId() !== claimedAt;
       const recommended = defaultsFor(defaultsKeyFor(repoId, effectiveFamilyOverride));
+      pickDefaults.current = recommended;
       setPendingModelDefaults(recommended);
       setSteps(recommended.steps);
       setGuidance(recommended.guidance);
@@ -1844,6 +1961,27 @@ export function ImagesPage({
 
   // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
   const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
+  const negativeCapable = status?.supports_negative_prompt !== false;
+  const samplerOptions = (status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
+  // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
+  const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
+  const samplerChoice = normalizeSamplerChoice(
+    samplerOptions,
+    restoredSampler ?? samplerChoices[samplerModelKey],
+  );
+  const changeSamplerChoice = useCallback(
+    (next: Partial<SamplerChoice>) => {
+      setRestoredSampler(null);
+      setSamplerChoices((all) =>
+        withSamplerChoice(
+          all,
+          samplerModelKey,
+          normalizeSamplerChoice(samplerOptions, { ...samplerChoice, ...next }),
+        ),
+      );
+    },
+    [samplerChoice, samplerModelKey, samplerOptions],
+  );
   useEffect(() => {
     if (!controlnetCapable) {
       setAvailableControlNets([]);
@@ -2361,6 +2499,12 @@ export function ImagesPage({
     if (restoredNegative) setNegativeOpen(true);
     setSteps(image.steps);
     setGuidance(image.guidance);
+    const restoredChoice = {
+      sampler: image.sampler ?? DEFAULT_SAMPLER,
+      scheduleType: image.schedule_type ?? AUTOMATIC_SCHEDULE,
+    };
+    if (samplerOptions.length > 0) changeSamplerChoice(restoredChoice);
+    else setRestoredSampler(restoredChoice);
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
     setSeed(String(image.batch_seed ?? image.seed));
@@ -2425,7 +2569,7 @@ export function ImagesPage({
     } else {
       toast.success("Settings restored to inputs", rescaled);
     }
-  }, [setPromptFor, setWorkflow, sizeLimits]);
+  }, [changeSamplerChoice, samplerOptions.length, setPromptFor, setWorkflow, sizeLimits]);
 
   // A locked ratio keeps the paired dimension in step; "custom" frees both, Flip swaps W/H. ratioHW is h/w for [a,b].
   const ratioHW = (a: number, b: number) => (portrait ? a / b : b / a);
@@ -2566,6 +2710,17 @@ export function ImagesPage({
           setRememberedModel(remembered);
         }
         setBusy(null);
+        // A fallback-recipe pick takes the loaded family recipe on an untouched form (else SDXL runs 9 steps, CFG 0).
+        const loadedRecipe = loadedRecipeFor(
+          pickDefaults.current,
+          residentDefaultsKey(loaded.repo_id ?? "", loaded.base_repo, loaded.resolved?.family_override),
+          loaded.generation_defaults,
+        );
+        pickDefaults.current = null;
+        if (loadedRecipe && !pickRecipeSuperseded.current?.()) {
+          setSteps((cur) => (cur === DEFAULT_GEN.steps ? loadedRecipe.steps : cur));
+          setGuidance((cur) => (cur === DEFAULT_GEN.guidance ? loadedRecipe.guidance : cur));
+        }
         // Load succeeded: the optimistic quant is now the real one, so drop the pending revert.
         quantRevert.current?.commitRecipeClaim?.();
         quantRevert.current = null;
@@ -2731,7 +2886,7 @@ export function ImagesPage({
     const repoId = status?.loaded ? status.repo_id : null;
     if (!repoId) return;
     if (lastLoad.current) return;
-    const seedKey = `${repoId}\0${residentDefaults}`;
+    const seedKey = `${repoId}\0${residentDefaults}\0${residentSteps}\0${residentGuidance}`;
     if (seededResident.current === seedKey) return;
     seededResident.current = seedKey;
     // Wire Reapply to the resident model too. Only a full pipeline is reloadable by repo id
@@ -2745,7 +2900,7 @@ export function ImagesPage({
       residentSeeded.current = true;
       if (imagePresets.storedRecipe) return;
     }
-    const d = defaultsFor(residentDefaults);
+    const d = { steps: residentSteps, guidance: residentGuidance };
     setPendingModelDefaults(null);
     setSteps(d.steps);
     setGuidance(d.guidance);
@@ -2765,6 +2920,8 @@ export function ImagesPage({
   }, [
     imagePresets.storedRecipe,
     residentDefaults,
+    residentSteps,
+    residentGuidance,
     status?.display_repo_id,
     status?.loaded,
     status?.repo_id,
@@ -2847,6 +3004,11 @@ export function ImagesPage({
           gpuChoices.some((d) => String(d.index) === selectedGpu)
             ? [Number(selectedGpu)]
             : undefined,
+        text_encoder_file: (() => {
+          const files = splitComponentFileList(textEncoderFiles);
+          return files.length > 0 ? files : undefined;
+        })(),
+        vae_file: vaeFile.trim() || undefined,
       };
     },
     [
@@ -2861,6 +3023,8 @@ export function ImagesPage({
       familyOverride,
       selectedGpu,
       gpuChoices,
+      textEncoderFiles,
+      vaeFile,
     ],
   );
 
@@ -2908,7 +3072,15 @@ export function ImagesPage({
       const bakeLoras = advanced.loras ?? [];
       // Whether THIS load carries the selection into the build, so a quantized load that did not can drop it.
       bakedLorasOnLoad.current = bakeLoras.length > 0;
-      lastLoad.current = { repoId, kind: opts.kind, filename: opts.filename, displayRepoId: opts.displayRepoId };
+      const componentFiles = componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file);
+      lastLoad.current = {
+        repoId,
+        kind: opts.kind,
+        filename: opts.filename,
+        displayRepoId: opts.displayRepoId,
+        textEncoderFiles: componentFiles.text_encoder_file,
+        vaeFile: componentFiles.vae_file,
+      };
       setCanReapply(true);
       // Carry the prior target so the async poll can restore it if the background load fails after starting.
       lastLoadRevert.current = { prev: prevLastLoad };
@@ -2934,6 +3106,7 @@ export function ImagesPage({
           family_override: advanced.family_override,
           loras: bakeLoras.length > 0 ? bakeLoras : undefined,
           gpu_ids: advanced.gpu_ids,
+          ...componentFiles,
         });
         await startRequest;
       } catch (err) {
@@ -2976,6 +3149,11 @@ export function ImagesPage({
     setMaskImage(null);
     setMaskResetKey((k) => k + 1);
   }, []);
+  const { openCrop: openInpaintCrop, cropDialog: inpaintCropDialog } = useImageCrop(
+    initImage,
+    handleInitChange,
+    "Source image",
+  );
 
   // Downloads go through the Hub download manager like every other model, so the load finds a
   // warm cache. In a ref, so the callback is not a render dep.
@@ -3156,6 +3334,7 @@ export function ImagesPage({
         // The plan route preflights precision and sizes the file set against the card the load will
         // use, so a selection the load carries has to reach the plan.
         gpu_ids: advanced.gpu_ids,
+        ...componentFileFields(opts.kind, advanced.text_encoder_file, advanced.vae_file),
       }),
     [],
   );
@@ -3891,6 +4070,7 @@ export function ImagesPage({
                 setReferenceImages((prev) => prev.map((p, j) => (j === i ? (v ?? "") : p)))
               }
               removeLabel={`Remove image ${numberOf(i)}`}
+              cropSubject={`Image ${numberOf(i)}`}
             />
             <Button
               type="button"
@@ -4088,6 +4268,10 @@ export function ImagesPage({
     if (!prompt.trim()) {
       toast.error("Prompt is empty");
       return;
+    }
+    if (restoredSampler && samplerOptions.length > 0) {
+      setRestoredSampler(null);
+      setSamplerChoices((all) => withSamplerChoice(all, samplerModelKey, samplerChoice));
     }
     const isTransform = workflow === "transform";
     const isInpaint = workflow === "inpaint";
@@ -4292,7 +4476,8 @@ export function ImagesPage({
           res = await generateDiffusionImage({
             prompt: prompt.trim(),
             // Only send a negative prompt when guidance uses it, so the recipe does not record one the model ignored.
-            negative_prompt: guidance > 0 ? negativePrompt.trim() || undefined : undefined,
+            negative_prompt:
+              negativeCapable && guidance > 0 ? negativePrompt.trim() || undefined : undefined,
             width: w,
             height: h,
             steps,
@@ -4309,6 +4494,7 @@ export function ImagesPage({
             upscale: condUpscale,
             allow_oversized: allowOversizedSent ? true : undefined,
             live_preview: livePreview,
+            ...samplerRequestFields(samplerOptions, samplerChoice),
             ...condFields,
             // Drop empty and zero-weight rows and trim hand-typed repo ids, so the recipe records only
             // adapters that applied. Gated on loraCapable, since a restore can leave adapters in state.
@@ -4395,7 +4581,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, livePreview, prompt, negativePrompt, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Stop the in-flight generation. Latch FIRST, so a multi-run request stops even if the POST
   // races the run that is already finishing.
@@ -4437,7 +4623,18 @@ export function ImagesPage({
         (kind === "pipeline" ||
           ((kind === "gguf" || kind === "single_file") && status.gguf_filename))
       ) {
-        const model = withEngagedFamily({ repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined }, status);
+        const model = withEngagedFamily(
+          lastLoad.current &&
+            matchesRememberedModel(lastLoad.current, status) &&
+            componentFilesMatch(lastLoad.current, status.component_files)
+            ? lastLoad.current
+            : rememberedModel &&
+                matchesRememberedModel(rememberedModel, status) &&
+                componentFilesMatch(rememberedModel, status.component_files)
+              ? rememberedModel
+              : { repoId: status.repo_id, kind, filename: status.gguf_filename ?? undefined },
+          status,
+        );
         rememberImageModel(model);
         setRememberedModel(model);
       }
@@ -4463,7 +4660,13 @@ export function ImagesPage({
       rememberedModel.repoId,
       { kind: rememberedModel.kind, filename: rememberedModel.filename },
       // Only the family the remembered load engaged; the live selection belongs to whatever is picked next.
-      { ...currentLoadAdvanced(rememberedModel.repoId, false, true), family_override: rememberedModel.familyOverride },
+      {
+        ...currentLoadAdvanced(rememberedModel.repoId, false, true),
+        family_override: rememberedModel.familyOverride,
+        // The recalled build's own encoder / VAE files, not whatever the fields hold now.
+        text_encoder_file: rememberedModel.textEncoderFiles,
+        vae_file: rememberedModel.vaeFile,
+      },
     );
     if (!started) pendingRecalledGeneration.current = null;
   }, [
@@ -4627,6 +4830,21 @@ export function ImagesPage({
           ] as [string, string][],
           nvfp4Diffusion,
         )}
+      />
+      <AdvancedTextField
+        label="Text encoder file(s)"
+        hint={COMPONENT_FILES_HINT}
+        multiline
+        placeholder="../text_encoders/clip_l.safetensors"
+        value={textEncoderFiles}
+        onValueChange={setTextEncoderFiles}
+      />
+      <AdvancedTextField
+        label="VAE file"
+        hint={COMPONENT_FILES_HINT}
+        placeholder="../vae/ae.safetensors"
+        value={vaeFile}
+        onValueChange={setVaeFile}
       />
       <AdvancedSelect
         label="Attention"
@@ -4894,7 +5112,7 @@ export function ImagesPage({
                   label="Source image"
                   hint="The image to transform. Generation redraws it guided by your prompt; the Strength below controls how far."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
                 </Field>
                 <SliderField
                   label="Strength"
@@ -4958,6 +5176,17 @@ export function ImagesPage({
                         variant="secondary"
                         size="sm"
                         className="flex-1"
+                        onClick={openInpaintCrop}
+                      >
+                        <HugeiconsIcon icon={ImageCropIcon} className="size-3.5" />
+                        Crop
+                      </Button>
+                      {inpaintCropDialog}
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
                         onClick={() => handleInitChange(null)}
                       >
                         <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
@@ -4984,7 +5213,7 @@ export function ImagesPage({
                   label="Source image"
                   hint="The image to outpaint. The canvas grows on the selected sides and the new area is filled from your prompt; the original is kept."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
                 </Field>
                 <SliderField
                   label="Expand by"
@@ -5036,7 +5265,7 @@ export function ImagesPage({
                   label="Source image"
                   hint="The image to upscale. It is enlarged by the factor below, then re-detailed at higher resolution guided by your prompt; keep the prompt describing the same content."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
                 </Field>
                 <SliderField
                   label="Scale"
@@ -5065,7 +5294,7 @@ export function ImagesPage({
                   label={unifiedEdit ? "Image 1" : "Reference image"}
                   hint="A reference the model draws on (subject, style, or composition) while generating a NEW image from your prompt at the size below. Unlike Transform, it is not a redraw of this image, so there is no strength."
                 >
-                  <ImageDropzone value={initImage} onChange={handleInitChange} />
+                  <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject={unifiedEdit ? "Image 1" : "Reference image"} />
                 </Field>
                 {renderAdditionalImages(
                   (i) => i + 2,
@@ -5081,7 +5310,7 @@ export function ImagesPage({
                 label="Source image"
                 hint="The image to edit. Describe the change in the prompt below (e.g. 'make it night', 'add a red hat', 'change the background to a beach')."
               >
-                <ImageDropzone value={initImage} onChange={handleInitChange} />
+                <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Source image" />
               </Field>
             )}
 
@@ -5125,7 +5354,7 @@ export function ImagesPage({
                     label="Image 1 (source)"
                     hint="The image to edit. Describe the change in the instruction below; add more images to combine them, and refer to them as Image 2, Image 3 and so on."
                   >
-                    <ImageDropzone value={initImage} onChange={handleInitChange} />
+                    <ImageDropzone value={initImage} onChange={handleInitChange} cropSubject="Image 1" />
                   </Field>
                 )}
                 {conditioning?.localized_edit_modes?.length ? (
@@ -5295,14 +5524,16 @@ export function ImagesPage({
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
-            <NegativePromptField
-              value={negativePrompt}
-              onChange={setNegativePrompt}
-              open={negativeOpen}
-              onOpenChange={setNegativeOpen}
-              hint="What to steer the image away from. Only used when guidance is above 0."
-              textareaClassName={IMAGE_PROMPT_BOX}
-            />
+            {negativeCapable && (
+              <NegativePromptField
+                value={negativePrompt}
+                onChange={setNegativePrompt}
+                open={negativeOpen}
+                onOpenChange={setNegativeOpen}
+                hint="What to steer the image away from. Only used when guidance is above 0."
+                textareaClassName={IMAGE_PROMPT_BOX}
+              />
+            )}
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Each carries a 0-2 weight. */}
             {loraCapable && (
               <Field
@@ -5312,9 +5543,10 @@ export function ImagesPage({
                 <div className="space-y-2">
                   {availableLoras.length > 0 && (
                     <datalist id="diffusion-lora-suggestions">
-                      {availableLoras.map((a) => (
+                      {/* A datalist has no groups, so the label carries the fine-tuned mark. */}
+                      {sortedLoras.map((a) => (
                         <option key={a.id} value={a.id}>
-                          {a.display_name}
+                          {a.fine_tuned ? `${a.display_name} (fine-tuned)` : a.display_name}
                         </option>
                       ))}
                     </datalist>
@@ -5365,27 +5597,44 @@ export function ImagesPage({
                       />
                     </div>
                   ))}
-                  {loras.length < 8 && (
+                  <div className="flex gap-2">
+                    {loras.length < 8 && (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1"
+                        onClick={() => {
+                          // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
+                          const taken = new Set(loras.map((l) => l.id));
+                          const next = sortedLoras.find((a) => !taken.has(a.id));
+                          setLoras((prev) => [
+                            ...prev,
+                            next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
+                          ]);
+                        }}
+                      >
+                        <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
+                        Add LoRA
+                      </Button>
+                    )}
                     <Button
                       type="button"
-                      variant="secondary"
+                      variant="ghost"
                       size="sm"
-                      className="w-full"
-                      onClick={() => {
-                        // Prefill with the first unused suggestion when a curated catalog exists, else an empty row.
-                        const taken = new Set(loras.map((l) => l.id));
-                        const next = availableLoras.find((a) => !taken.has(a.id));
-                        setLoras((prev) => [
-                          ...prev,
-                          next ? { id: next.id, weight: next.weight_default || 1 } : { id: "", weight: 1 },
-                        ]);
-                      }}
+                      title="Add a custom models folder. Image LoRAs exported from Unsloth in it show up here."
+                      onClick={() => setLoraFoldersOpen(true)}
                     >
-                      <HugeiconsIcon icon={ImageAdd02Icon} className="size-3.5" />
-                      Add LoRA
+                      <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />
+                      Folders
                     </Button>
-                  )}
+                  </div>
                 </div>
+                <OnDeviceFoldersDialog
+                  open={loraFoldersOpen}
+                  onOpenChange={setLoraFoldersOpen}
+                  onInventoryChange={() => setLoraRefreshKey((k) => k + 1)}
+                />
               </Field>
             )}
             {/* ControlNet: shown when the model supports it, one is discoverable, and txt2img is active. */}
@@ -5409,7 +5658,7 @@ export function ImagesPage({
                   </Select>
                   {controlnetId && (
                     <>
-                      <ImageDropzone value={controlImage} onChange={setControlImage} />
+                      <ImageDropzone value={controlImage} onChange={setControlImage} cropSubject="Control image" />
                       <div className="flex items-center gap-2">
                         <span className="shrink-0 text-xs text-muted-foreground">Control type</span>
                         <Select value={controlType} onValueChange={setControlType}>
@@ -5481,6 +5730,49 @@ export function ImagesPage({
               onChange={setCount}
             />
             {/* A slider row ends flush with its track, so the label below needs room. */}
+            {samplerOptions.length > 1 && (
+              <Field
+                label="Sampler"
+                hint="How each denoising step is taken. Model default keeps the scheduler the model ships with. Community checkpoints often name one, such as DPM++ 2M with Karras."
+                className="pt-2"
+              >
+                <div className="flex items-center gap-2">
+                  <Select
+                    value={samplerChoice.sampler}
+                    onValueChange={(v) => changeSamplerChoice({ sampler: v })}
+                  >
+                    <SelectTrigger className="h-8 flex-1 text-xs" aria-label="Sampler">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {samplerOptions.map((o) => (
+                        <SelectItem key={o.id} value={o.id}>
+                          {o.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select
+                    value={samplerChoice.scheduleType}
+                    onValueChange={(v) => changeSamplerChoice({ scheduleType: v })}
+                  >
+                    <SelectTrigger className="h-8 w-32 text-xs" aria-label="Schedule type">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(
+                        samplerOptions.find((o) => o.id === samplerChoice.sampler)
+                          ?.schedule_types ?? [AUTOMATIC_SCHEDULE]
+                      ).map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {SCHEDULE_LABELS[t] ?? t}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </Field>
+            )}
             <Field
               label="Seed"
               hint="Leave empty for a fresh random seed each run."

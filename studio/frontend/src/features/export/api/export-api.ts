@@ -89,6 +89,62 @@ export interface ExportOperationResponse {
   details?: { output_path?: string | null } & Record<string, unknown>;
 }
 
+/** GGUF export options for a decision model (Clef / Laya) checkpoint folder. */
+export interface DecisionExportInfo {
+  is_decision: boolean;
+  layout: "clef" | "laya";
+  /** Clef folder with LoRA adapters only; merged at export time. */
+  adapter_only: boolean;
+  /** false: llama.cpp cannot serve it (see reason); null: only the export can tell. */
+  eligible: boolean | null;
+  reason: string | null;
+  /** Allowed lowercase quantizations, default first. */
+  quantizations: string[];
+  default_quantization: string;
+  /** Where the GGUF files land: <run folder>/gguf. */
+  output_dir: string;
+  existing_export: ({ quantizations?: string[] } & Record<string, unknown>) | null;
+}
+
+/** Export limits of a text-diffusion LM checkpoint (LLaDA, Dream, DiffusionGemma, ...). */
+export interface DiffusionLmExportInfo {
+  profile: string;
+  disabled_methods: ("merged" | "lora" | "gguf")[];
+  reason: string | null;
+}
+
+export interface CheckpointExportProbe {
+  decision: DecisionExportInfo | null;
+  diffusionLm: DiffusionLmExportInfo | null;
+}
+
+/** Decision and text-diffusion export info for a local checkpoint folder; nulls for any other model. */
+export async function fetchCheckpointExportProbe(
+  checkpointPath: string,
+  signal?: AbortSignal,
+): Promise<CheckpointExportProbe> {
+  const response = await authFetch(
+    `/api/export/decision-info?checkpoint_path=${encodeURIComponent(checkpointPath)}`,
+    { signal },
+  );
+  const body = await parseJson<{
+    decision: DecisionExportInfo | null;
+    diffusion_lm?: DiffusionLmExportInfo | null;
+  }>(response);
+  return {
+    decision: body.decision ?? null,
+    diffusionLm: body.diffusion_lm ?? null,
+  };
+}
+
+/** Decision export info for a local checkpoint folder; null for any other model. */
+export async function fetchDecisionExportInfo(
+  checkpointPath: string,
+  signal?: AbortSignal,
+): Promise<DecisionExportInfo | null> {
+  return (await fetchCheckpointExportProbe(checkpointPath, signal)).decision;
+}
+
 export async function fetchCheckpoints(): Promise<CheckpointListResponse> {
   const response = await authFetch("/api/models/checkpoints");
   return parseJson<CheckpointListResponse>(response);
@@ -205,6 +261,19 @@ export async function convertGgufToQ4nx(params: {
   return parseJson<ExportOperationResponse>(response);
 }
 
+/** Copy an image-generation LoRA from the Images catalog (weights plus its .json sidecar) to a folder. */
+export async function exportDiffusionLora(params: {
+  lora_id: string;
+  save_directory: string;
+}): Promise<ExportOperationResponse> {
+  const response = await authFetch("/api/export/export/diffusion-lora", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
+  return parseJson<ExportOperationResponse>(response);
+}
+
 export async function exportLoRA(params: {
   save_directory: string;
   push_to_hub?: boolean;
@@ -256,6 +325,8 @@ export interface ExportStatus {
   last_op_status?: "success" | "error" | "cancelled" | null;
   last_op_output_path?: string | null;
   last_op_error?: string | null;
+  /** {layout, adapter_only} when the loaded checkpoint is a decision model. */
+  decision?: { layout: "clef" | "laya"; adapter_only: boolean } | null;
 }
 
 /**

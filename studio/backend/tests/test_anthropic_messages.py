@@ -431,12 +431,49 @@ def test_replayed_thinking_preserved_only_when_requested():
                 {"type": "text", "text": "the answer"},
             ],
         },
+        {"role": "user", "content": "and then?"},
     ]
     dropped = anthropic_messages_to_openai(messages)
-    assert "reasoning_content" not in dropped[-1]
+    assert "reasoning_content" not in dropped[1]
     kept = anthropic_messages_to_openai(messages, preserve_thinking = True)
-    assert kept[-1]["reasoning_content"] == "prior trace"
-    assert kept[-1]["content"] == "the answer"
+    assert kept[1]["reasoning_content"] == "prior trace"
+    assert kept[1]["content"] == "the answer"
+
+
+def test_the_current_turns_thinking_survives_without_preservation():
+    # Templates render reasoning after the last real query, so an agent's tool rounds keep theirs;
+    # dropping it made every round re-read the previous one's reasoning.
+    from core.inference.anthropic_compat import anthropic_messages_to_openai
+
+    def _round(trace, call_id):
+        return {
+            "role": "assistant",
+            "content": [
+                {"type": "thinking", "thinking": trace, "signature": ""},
+                {"type": "tool_use", "id": call_id, "name": "bash", "input": {"cmd": "ls"}},
+            ],
+        }
+
+    def _result(call_id):
+        return {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": call_id, "content": "ok"}],
+        }
+
+    messages = [
+        {"role": "user", "content": "first task"},
+        _round("old trace", "t0"),
+        _result("t0"),
+        {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+        {"role": "user", "content": "second task"},
+        _round("round one", "t1"),
+        _result("t1"),
+        _round("round two", "t2"),
+        _result("t2"),
+    ]
+    out = anthropic_messages_to_openai(messages)
+    traces = [m.get("reasoning_content") for m in out if m.get("role") == "assistant"]
+    assert traces == [None, None, "round one", "round two"]
 
 
 def test_anthropic_emitter_only_leading_think_is_reasoning():
@@ -621,6 +658,29 @@ class TestToolActionNudge:
 
         assert "- guided: Guide this task." in nudge
         assert "create_skill" not in nudge
+        # without python or terminal, a skill's bundled scripts cannot run here.
+        assert "bundled scripts cannot run" in nudge
+        assert "Unsloth Studio's local Tools" in nudge
+
+    @pytest.mark.parametrize("code_tool", ["python", "terminal"])
+    def test_skill_nudge_with_a_code_tool_does_not_warn_about_scripts(self, monkeypatch, code_tool):
+        import routes.inference as inference_routes
+
+        monkeypatch.setattr(
+            inference_routes,
+            "_enabled_agent_skills",
+            lambda: [{"name": "guided", "description": "Guide this task."}],
+        )
+        nudge = _build_tool_action_nudge(
+            tools = [
+                {"type": "function", "function": {"name": "read_skill"}},
+                {"type": "function", "function": {"name": code_tool}},
+            ],
+            model_name = "test",
+        )
+
+        assert "- guided: Guide this task." in nudge
+        assert "bundled scripts cannot run" not in nudge
 
 
 # =====================================================================
@@ -3192,6 +3252,46 @@ class TestAnthropicMessagesToolRouting:
 
         assert captured["seed"] == 3407
 
+    @pytest.mark.parametrize("stream", [False, True])
+    def test_client_tool_passthrough_sends_the_resolved_preserve_thinking(
+        self, monkeypatch, stream
+    ):
+        # Claude Code brings its own tools, so its turns ride the passthrough: a thinking-off
+        # follow-up must replay the empty think blocks generation would, or every turn re-reads.
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(
+            monkeypatch,
+            _replay_preserve_thinking = lambda preserve, messages, enable, effort: (
+                True if enable is False and preserve is not True else preserve
+            ),
+        )
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        helper = (
+            "_anthropic_passthrough_stream" if stream else "_anthropic_passthrough_non_streaming"
+        )
+        monkeypatch.setattr(inf_mod, helper, _passthrough)
+        payload = _basic_payload(
+            stream = stream,
+            messages = [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "user", "content": "again"},
+            ],
+            thinking = {"type": "disabled"},
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured["preserve_thinking"] is True
+
     _BUDGET_CASES = [
         ({"thinking": {"type": "enabled", "budget_tokens": 128}}, 128),
         ({"thinking": {"type": "adaptive", "budget_tokens": 128}}, 128),
@@ -3388,6 +3488,63 @@ class TestAnthropicMessagesToolRouting:
             == 200
         )
 
+    def test_count_tokens_prices_the_preserve_thinking_generation_resolves(self, monkeypatch):
+        from routes.inference import anthropic_count_tokens
+
+        import routes.inference as inf_mod
+
+        seen: list = []
+
+        class _Backend:
+            is_loaded = True
+            is_vision = False
+            model_identifier = "qwen"
+            context_length = 4096
+            supports_tools = False
+            supports_tool_passthrough = False
+
+            def _request_reasoning_kwargs(
+                self, enable_thinking, reasoning_effort, preserve_thinking
+            ):
+                return {"enable_thinking": enable_thinking, "preserve_thinking": preserve_thinking}
+
+            def _replay_preserve_thinking(
+                self,
+                preserve,
+                messages,
+                enable_thinking = None,
+                effort = None,
+            ):
+                return True if preserve is False and enable_thinking is False else preserve
+
+            def count_chat_tokens(
+                self,
+                *args,
+                chat_template_kwargs = None,
+                **kwargs,
+            ):
+                seen.append(chat_template_kwargs)
+                return 2
+
+        monkeypatch.setattr(inf_mod, "current_date_prompt_line", lambda **_kwargs: "")
+        monkeypatch.setattr(inf_mod, "get_llama_cpp_backend", lambda: _Backend())
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "hello"},
+                {"role": "user", "content": "again"},
+            ],
+            thinking = {"type": "disabled"},
+            preserve_thinking = False,
+        )
+
+        response = _drive(
+            anthropic_count_tokens(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert response.status_code == 200
+        assert seen == [{"enable_thinking": False, "preserve_thinking": True}]
+
     def test_count_tokens_rejects_the_catalog_messages_rejects(self, monkeypatch):
         # The template renders no schemas, so the count matched with and without them
         # (27 either way on a real gemma-3-270m) and handed an SDK a budget /messages 400s.
@@ -3472,6 +3629,143 @@ class TestAnthropicMessagesToolRouting:
 
         assert response.status_code == 200
         assert [t["function"]["name"] for t in seen["tools"]] == expected
+
+    def test_replayed_thinking_keeps_the_callers_preserve_setting(self, monkeypatch):
+        # Conversion drops thinking it does not preserve, so the resolver must not read that
+        # history as reasoning-free and swap real thoughts for empty think blocks.
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        _mock_backend(
+            monkeypatch,
+            _replay_preserve_thinking = lambda preserve, messages, enable, effort: True,
+        )
+        captured = {}
+
+        async def _passthrough(*args, **kwargs):
+            captured.update(kwargs)
+            return JSONResponse({"type": "message", "content": []})
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Greet back.", "signature": "s"},
+                        {"type": "text", "text": "hello"},
+                    ],
+                },
+                {"role": "user", "content": "again"},
+            ],
+            thinking = {"type": "disabled"},
+            tools = [{"name": "lookup", "input_schema": {"type": "object"}}],
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        assert captured["preserve_thinking"] is not True
+
+    @pytest.mark.parametrize(
+        ("extra", "expected_path"),
+        [({}, "plain"), ({"enable_tools": True, "permission_mode": "off"}, "tools")],
+        ids = ["plain", "server-tools"],
+    )
+    @pytest.mark.parametrize("replays_thinking", [True, False])
+    def test_generation_skips_the_replay_resolver_only_when_thinking_was_dropped(
+        self, monkeypatch, extra, expected_path, replays_thinking
+    ):
+        # The generator resolves from the converted history, where dropped thinking reads as none.
+        backend = _mock_backend(monkeypatch)
+        answer = [{"type": "text", "text": "hello"}]
+        if replays_thinking:
+            answer.insert(0, {"type": "thinking", "thinking": "Greet back.", "signature": "s"})
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": answer},
+                {"role": "user", "content": "again"},
+            ],
+            thinking = {"type": "disabled"},
+            **extra,
+        )
+
+        _drive(anthropic_messages(payload, request = self._Request(), current_subject = "t"))
+
+        [(path, kwargs)] = backend.calls
+        assert path == expected_path
+        assert kwargs["replay_preserve_thinking"] is (not replays_thinking)
+
+    def test_the_admission_recount_keeps_the_callers_preserve_when_thinking_was_dropped(self):
+        from routes.inference import _replay_preserve_thinking
+
+        class _Backend:
+            def _replay_preserve_thinking(self, preserve, messages, enable, effort):
+                return True
+
+        payload = _basic_payload(
+            messages = [
+                {"role": "user", "content": "hi"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "thinking", "thinking": "Greet back.", "signature": "s"},
+                        {"type": "text", "text": "hello"},
+                    ],
+                },
+                {"role": "user", "content": "again"},
+            ],
+            preserve_thinking = False,
+        )
+        assert _replay_preserve_thinking(_Backend(), payload, []) is False
+
+    def test_server_tool_count_prices_the_restored_failed_result(self, monkeypatch):
+        # The server-tool loop renders a replayed failure with the nudge the model saw, so the
+        # count has to price the same bytes.
+        from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+        from routes.inference import anthropic_count_tokens
+
+        seen = {}
+
+        def _count(messages, system, tools, **kwargs):
+            seen["messages"] = messages
+            return 2
+
+        _mock_backend(monkeypatch, count_chat_tokens = _count)
+        payload = _basic_payload(
+            enable_tools = True,
+            permission_mode = "off",
+            tools = [{"type": "web_search_20250305", "name": "web_search"}],
+            messages = [
+                {"role": "user", "content": "search"},
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "web_search",
+                            "input": {"query": "q"},
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "Error: boom"}
+                    ],
+                },
+            ],
+        )
+
+        response = _drive(
+            anthropic_count_tokens(payload, request = self._Request(), current_subject = "t")
+        )
+
+        assert response.status_code == 200
+        tool = next(m for m in seen["messages"] if m.get("role") == "tool")
+        assert tool["content"].endswith(TOOL_ERROR_NUDGE)
 
     def test_count_tokens_prices_the_catalog_left_when_the_forced_tool_is_dropped(
         self, monkeypatch
@@ -4400,7 +4694,7 @@ class TestAnthropicMessagesToolRouting:
 
 def test_resumed_session_thinking_and_null_content_do_not_400():
     # A resumed session replays assistant turns with `thinking` (and sometimes null)
-    # content. Those must be accepted (thinking dropped by the converter), not 400ed.
+    # content. Those must be accepted, not 400ed.
     from pydantic import ValidationError
 
     req = AnthropicMessagesRequest(
@@ -4427,7 +4721,9 @@ def test_resumed_session_thinking_and_null_content_do_not_400():
     openai = anthropic_messages_to_openai([m.model_dump() for m in req.messages])
     assistant = next(m for m in openai if m["role"] == "assistant" and m.get("content"))
     assert assistant["content"] == "the answer"
-    assert "secret reasoning" not in json.dumps(openai)  # thinking never forwarded
+    # The current turn's thinking rides as reasoning, never as visible content.
+    assert assistant["reasoning_content"] == "secret reasoning"
+    assert all("secret reasoning" not in (m.get("content") or "") for m in openai)
 
     # A malformed KNOWN block still fails cleanly instead of being swallowed.
     with pytest.raises(ValidationError):

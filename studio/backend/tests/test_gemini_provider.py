@@ -410,11 +410,10 @@ def test_gemini25_flash_effort_levels_map_to_budgets(monkeypatch):
             reasoning_effort = effort,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc == {"thinkingBudget": expected}, (effort, tc)
+        assert tc == {"thinkingBudget": expected, "includeThoughts": True}, (effort, tc)
 
 
 def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
-    """Gemini 3 Flash thinkingLevel ladder: minimal/low/medium/high."""
     cases = {
         "minimal": "minimal",
         "low": "low",
@@ -429,13 +428,11 @@ def test_gemini3_flash_effort_levels_map_to_thinking_level(monkeypatch):
             reasoning_effort = effort,
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc == {"thinkingLevel": expected}, (effort, tc)
+        assert tc == {"thinkingLevel": expected, "includeThoughts": True}, (effort, tc)
 
 
 def test_gemini3_pro_passes_medium_through(monkeypatch):
-    """Gemini 3.1+ Pro accepts thinkingLevel="medium" per
-    https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro;
-    forward as-is (medium is the documented mid-tier on Gemini 3.1)."""
+    """https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-1-pro"""
     for model in (
         "gemini-3.1-pro-preview",
         "gemini-pro-latest",
@@ -446,22 +443,21 @@ def test_gemini3_pro_passes_medium_through(monkeypatch):
             reasoning_effort = "medium",
         )
         tc = captured["body"]["generationConfig"].get("thinkingConfig")
-        assert tc == {"thinkingLevel": "medium"}, (model, tc)
+        assert tc == {"thinkingLevel": "medium", "includeThoughts": True}, (model, tc)
 
 
 def test_gemini3_pro_minimal_effort_coerces_to_low(monkeypatch):
-    """Gemini 3 Pro rejects thinkingLevel="minimal"; coerce to "low"."""
+    """Gemini 3 Pro rejects thinkingLevel="minimal", so use "low"."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3.1-pro-preview",
         reasoning_effort = "minimal",
     )
     tc = captured["body"]["generationConfig"].get("thinkingConfig")
-    assert tc == {"thinkingLevel": "low"}, tc
+    assert tc == {"thinkingLevel": "low", "includeThoughts": True}, tc
 
 
 def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
-    """reasoning_effort='none' on Gemini 3 Flash -> thinkingLevel=minimal."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3.5-flash",
@@ -472,17 +468,83 @@ def test_gemini3_flash_effort_none_maps_to_minimal(monkeypatch):
 
 
 def test_thinking_default_omits_thinking_config(monkeypatch):
-    """When neither knob is supplied, thinkingConfig is omitted (Google's
-    server-side default applies)."""
+    """Google's server-side default applies when neither thinking knob is supplied."""
     captured = _capture_body(monkeypatch, model = "gemini-3.5-flash")
     gc = captured["body"]["generationConfig"]
     assert "thinkingConfig" not in gc, gc
 
 
+@pytest.mark.parametrize(
+    ("model", "kwargs"),
+    (
+        ("gemini-3.6-flash", {"reasoning_effort": "high"}),
+        ("gemini-3.1-pro-preview", {"reasoning_effort": "low"}),
+        ("gemini-2.5-flash", {"reasoning_effort": "medium"}),
+        ("gemma-4-31b-it", {"enable_thinking": True}),
+    ),
+)
+def test_thinking_on_asks_gemini_for_its_thoughts(monkeypatch, model, kwargs):
+    tc = _capture_body(monkeypatch, model = model, **kwargs)["body"]["generationConfig"][
+        "thinkingConfig"
+    ]
+    assert tc.get("includeThoughts") is True, (model, tc)
+
+
+@pytest.mark.parametrize(
+    ("model", "kwargs"),
+    (
+        ("gemini-3.6-flash", {"reasoning_effort": "none"}),
+        ("gemini-2.5-flash", {"enable_thinking": False}),
+        ("gemini-2.5-pro", {"enable_thinking": False}),
+        ("gemma-4-31b-it", {"enable_thinking": False}),
+    ),
+)
+def test_thinking_off_does_not_ask_for_thoughts(monkeypatch, model, kwargs):
+    tc = _capture_body(monkeypatch, model = model, **kwargs)["body"]["generationConfig"][
+        "thinkingConfig"
+    ]
+    assert "includeThoughts" not in tc, (model, tc)
+
+
+def test_thought_parts_stream_as_reasoning_not_answer(monkeypatch):
+    sse = [
+        _event(
+            [{"text": "Unsigned preface. ", "thought": True}],
+            finish_reason = None,
+        ),
+        _event(
+            [
+                {
+                    "text": "**Reading the riddle**",
+                    "thought": True,
+                    "thoughtSignature": "SIG-THOUGHT",
+                }
+            ],
+            finish_reason = None,
+        ),
+        _event([{"text": "The man is your son."}], finish_reason = None),
+        _event([{"text": "", "thoughtSignature": "SIG"}]),
+    ]
+    chunks = _parse_chunks(
+        _collect(monkeypatch, sse, model = "gemini-3.6-flash", reasoning_effort = "high")
+    )
+    deltas = [c["choices"][0]["delta"] for c in chunks if c.get("choices")]
+    reasoning = "".join(d.get("reasoning_content", "") for d in deltas)
+    answer = "".join(d.get("content") or "" for d in deltas)
+    assert reasoning == "Unsigned preface. **Reading the riddle**", deltas
+    assert answer == "The man is your son.", deltas
+    thought_extras = [
+        delta["extra_content"]["google"]["thought_part"]
+        for delta in deltas
+        if delta.get("reasoning_content")
+    ]
+    assert thought_extras == [
+        {"text": "Unsigned preface. "},
+        {"text": "**Reading the riddle**", "thought_signature": "SIG-THOUGHT"},
+    ]
+
+
 def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
-    """`nano-banana-pro-preview` aliases the Pro image model; must set
-    responseModalities=[TEXT,IMAGE] when the Images pill is on
-    (enabled_tools includes "image_generation")."""
     captured = _capture_body(
         monkeypatch,
         model = "nano-banana-pro-preview",
@@ -493,11 +555,7 @@ def test_nano_banana_alias_routes_through_image_modalities(monkeypatch):
 
 
 def test_image_capable_model_without_image_pill_stays_text_only(monkeypatch):
-    """When the Images pill is off (no image_generation in enabled_tools), an
-    image-capable model id (gemini-2.5-flash-image) must force
-    responseModalities=["TEXT"]. Google's image models default to text+image
-    when responseModalities is omitted, so omitting it would silently bill
-    image output the UI says is disabled."""
+    """Forcing TEXT avoids billed images because Google image models default to text and image."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-2.5-flash-image",
@@ -807,15 +865,6 @@ def test_boolean_caching_does_not_set_cached_content(monkeypatch):
 
 
 # ── image generation: request modalities + response translation ──────
-
-
-def test_image_model_sets_response_modalities(monkeypatch):
-    captured = _capture_body(
-        monkeypatch,
-        model = "gemini-2.5-flash-image",
-        enabled_tools = ["image_generation"],
-    )
-    assert captured["body"]["generationConfig"]["responseModalities"] == ["TEXT", "IMAGE"]
 
 
 def test_image_generation_tool_sets_response_modalities_on_image_model(monkeypatch):
@@ -1346,9 +1395,42 @@ def test_empty_text_part_with_thought_signature_emits_extra_content(monkeypatch)
         for c in chunks
         if c.get("choices")
         and c["choices"][0]["delta"].get("extra_content")
-        == {"google": {"thought_signature": "SIG-FINAL"}}
+        == {
+            "google": {
+                "thought_signature": "SIG-FINAL",
+                "answer_part": {"text": "", "thought_signature": "SIG-FINAL"},
+            }
+        }
     ]
     assert extra_carriers, chunks
+
+
+def test_answer_part_boundaries_surface_even_when_unsigned(monkeypatch):
+    sse = [
+        _event(
+            [
+                {"text": "first"},
+                {"text": "second", "thoughtSignature": "SIG-SECOND"},
+                {"thoughtSignature": "SIG-EMPTY"},
+            ],
+            usage = {"promptTokenCount": 2, "candidatesTokenCount": 2},
+        ),
+    ]
+    deltas = [
+        chunk["choices"][0]["delta"]
+        for chunk in _parse_chunks(_collect(monkeypatch, sse))
+        if chunk.get("choices") and chunk["choices"][0].get("delta")
+    ]
+    answer_parts = [
+        delta["extra_content"]["google"]["answer_part"]
+        for delta in deltas
+        if (delta.get("extra_content") or {}).get("google", {}).get("answer_part") is not None
+    ]
+    assert answer_parts == [
+        {"text": "first"},
+        {"text": "second", "thought_signature": "SIG-SECOND"},
+        {"text": "", "thought_signature": "SIG-EMPTY"},
+    ]
 
 
 def test_enable_prompt_caching_false_string_coerces_to_bool():
@@ -1787,7 +1869,12 @@ def test_text_chunk_carries_thought_signature(monkeypatch):
     ]
     assert text_chunks, chunks
     extra = text_chunks[0]["choices"][0]["delta"].get("extra_content")
-    assert extra == {"google": {"thought_signature": "SIG-TEXT"}}, text_chunks
+    assert extra == {
+        "google": {
+            "thought_signature": "SIG-TEXT",
+            "answer_part": {"text": "hello", "thought_signature": "SIG-TEXT"},
+        }
+    }, text_chunks
 
 
 def test_openai_tools_translated_into_function_declarations(monkeypatch):
@@ -2021,6 +2108,76 @@ def test_assistant_text_thought_signature_replays_on_outbound_text_part(monkeypa
     text_parts = [p for p in parts if "text" in p]
     assert text_parts, parts
     assert text_parts[-1].get("thoughtSignature") == "SIG-TEXT", text_parts
+
+
+def test_assistant_answer_parts_replay_exact_signed_boundaries(monkeypatch):
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "firstsecond",
+                "extra_content": {
+                    "google": {
+                        "answer_parts": [
+                            {"text": "first"},
+                            {"text": "second", "thought_signature": "SIG-SECOND"},
+                            {"text": "", "thought_signature": "SIG-EMPTY"},
+                        ],
+                    },
+                },
+            },
+            {"role": "user", "content": "again"},
+        ],
+    )
+    assert captured["body"]["contents"][1]["parts"] == [
+        {"text": "first"},
+        {"text": "second", "thoughtSignature": "SIG-SECOND"},
+        {"text": "", "thoughtSignature": "SIG-EMPTY"},
+    ]
+
+
+def test_assistant_thought_parts_replay_exact_boundaries_before_answer(monkeypatch):
+    captured = _capture_body(
+        monkeypatch,
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": "the answer",
+                "extra_content": {
+                    "google": {
+                        "thought_parts": [
+                            {"text": "unsigned preface"},
+                            {
+                                "text": "consider the clues",
+                                "thought_signature": "SIG-THOUGHT-1",
+                            },
+                            {
+                                "text": "check the conclusion",
+                                "thought_signature": "SIG-THOUGHT-2",
+                            },
+                        ]
+                    }
+                },
+            },
+            {"role": "user", "content": "again"},
+        ],
+    )
+    parts = captured["body"]["contents"][1]["parts"]
+    assert parts[0] == {"text": "unsigned preface", "thought": True}
+    assert parts[1] == {
+        "text": "consider the clues",
+        "thought": True,
+        "thoughtSignature": "SIG-THOUGHT-1",
+    }
+    assert parts[2] == {
+        "text": "check the conclusion",
+        "thought": True,
+        "thoughtSignature": "SIG-THOUGHT-2",
+    }
+    assert parts[3] == {"text": "the answer"}
 
 
 def test_function_declarations_strip_openai_only_schema_keys(monkeypatch):
@@ -2470,6 +2627,59 @@ def test_chat_message_extra_content_round_trips_through_validation():
     assert "extra_content" not in built_custom[1], built_custom[1]
 
 
+def test_metadata_only_gemini_assistant_turn_survives_external_message_build():
+    """Gemini can finish with a signed thought summary and no visible answer.
+    Preserve that metadata-only assistant turn for the next native Gemini request."""
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _build_external_messages
+
+    req = ChatCompletionRequest.model_validate(
+        {
+            "model": "gemini-2.5-flash",
+            "messages": [
+                {"role": "user", "content": "think silently"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "extra_content": {
+                        "google": {
+                            "thought_parts": [
+                                {"text": "private summary", "thought_signature": "SIG-ONLY"}
+                            ]
+                        }
+                    },
+                },
+                {"role": "user", "content": "continue"},
+            ],
+            "max_tokens": 64,
+            "stream": True,
+        }
+    )
+
+    built = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "gemini",
+        base_url = "https://generativelanguage.googleapis.com/v1beta",
+    )
+    assert built[1] == {
+        "role": "assistant",
+        "content": "",
+        "extra_content": {
+            "google": {
+                "thought_parts": [{"text": "private summary", "thought_signature": "SIG-ONLY"}]
+            }
+        },
+    }
+
+    built_openai = _build_external_messages(
+        req.messages,
+        supports_vision = True,
+        provider_type = "openai",
+    )
+    assert [message["role"] for message in built_openai] == ["user", "user"]
+
+
 def test_parallel_tool_results_group_into_one_user_block(monkeypatch):
     """Round 14: Gemini docs group parallel functionResponses in a single
     subsequent user content with multiple functionResponse parts. Consecutive
@@ -2876,34 +3086,32 @@ def test_function_schema_anyof_null_variant_flattens_to_nullable(monkeypatch):
 
 
 def test_legacy_gemini3_pro_medium_coerced_to_high(monkeypatch):
-    """Round 17: legacy `gemini-3-pro*` (incl. `-preview`, shut down
-    2026-03-09) only accepted low/high. 3.1+ Pro added medium. The backend
-    must coerce medium → high for the legacy model so stale UI state doesn't
-    400 the request."""
+    """Legacy Gemini 3 Pro accepted only low/high, so stale medium state must map to high."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3-pro-preview",
         reasoning_effort = "medium",
     )
-    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high"}
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "high",
+        "includeThoughts": True,
+    }
 
 
 def test_gemini_3_1_pro_medium_passes_through(monkeypatch):
-    """Round 17 regression: 3.1+ Pro accepts medium; coercion must NOT apply
-    when the model id is gemini-3.1-pro*."""
     captured = _capture_body(
         monkeypatch,
         model = "gemini-3.1-pro-preview",
         reasoning_effort = "medium",
     )
-    assert captured["body"]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "medium"}
+    assert captured["body"]["generationConfig"]["thinkingConfig"] == {
+        "thinkingLevel": "medium",
+        "includeThoughts": True,
+    }
 
 
 def test_tool_calls_extra_content_stripped_for_non_native_gemini():
-    """Round 17: per-tool-call `extra_content` (Gemini thoughtSignature
-    carrier) must not leak through `_build_external_messages` to
-    non-native-Gemini providers; OpenAI / Anthropic / custom Gemini OAI-compat
-    gateways would 400 on the unknown key."""
+    """Strip Gemini thought signatures because non-native providers reject `extra_content`."""
     from models.inference import ChatCompletionRequest
     from routes.inference import _build_external_messages
 
