@@ -1992,7 +1992,9 @@ def _start_peak_probe(state: Any) -> Any:
             return None
         window_pad = stream_window_pad_mib(pipe)
         if window_pad is None:
-            return None  # the streamed baseline is unknown: the peak cannot be put on the common scale
+            return (
+                None  # the streamed baseline is unknown: the peak cannot be put on the common scale
+            )
         probe = PeakProbe(getattr(state, "device", None))
         if probe.device is None:
             return None
@@ -2008,7 +2010,6 @@ def _peak_device_index(state: Any) -> Optional[int]:
     """CUDA ordinal the pipeline renders on (``state.device`` may be un-indexed: the thread's current card)."""
     try:
         import torch
-
         dev = torch.device(getattr(state, "device", None) or "cuda")
         return dev.index if dev.index is not None else torch.cuda.current_device()
     except Exception:  # noqa: BLE001
@@ -2021,7 +2022,9 @@ def _live_peak_identity(state: Any) -> tuple:
     only when this equals the identity."""
     pipe = getattr(state, "pipe", None)
     family, label, _ = tuple(getattr(pipe, "_unsloth_peak_identity", ("", "", None)))[:3]
-    label = with_label_part(str(label), "cache", str(getattr(state, "transformer_cache", None) or "off"))
+    label = with_label_part(
+        str(label), "cache", str(getattr(state, "transformer_cache", None) or "off")
+    )
     label = with_label_part(label, "vae", live_vae_saver_tag(pipe))
     label = with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
     speed = getattr(state, "speed_mode", None)
@@ -2029,7 +2032,6 @@ def _live_peak_identity(state: Any) -> tuple:
         speed = None  # the compiled tier fell back to eager: an execution path no key names
     try:
         from .diffusion_bg_compile import eager_forced
-
         if eager_forced():
             speed = None  # a background compile is still pending: this render runs eager under a compiled tier
     except Exception:  # noqa: BLE001
@@ -2055,7 +2057,14 @@ def _local_weights_digest(path: Any) -> Optional[str]:
             return None
         digest = hashlib.sha256()
         for f in sorted(root.rglob("*")):
-            if f.is_file() and f.suffix in (".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"):
+            if f.is_file() and f.suffix in (
+                ".safetensors",
+                ".bin",
+                ".gguf",
+                ".pt",
+                ".pth",
+                ".ckpt",
+            ):
                 st = f.stat()
                 digest.update(f"{f.relative_to(root)}:{st.st_size}:{st.st_mtime_ns}\0".encode())
         return digest.hexdigest()[:16]
@@ -2160,7 +2169,9 @@ def _record_peak_probe(
         family, quant, speed_mode = identity
         pipe = state.pipe
         # this sample covers the graphs it recorded
-        pipe._unsloth_peak_graphs = cuda_graph.live_graph_count(getattr(probe.device, "index", None))
+        pipe._unsloth_peak_graphs = cuda_graph.live_graph_count(
+            getattr(probe.device, "index", None)
+        )
         peak += int(getattr(probe, "window_pad", 0) or 0)
         if record(
             family = family,
@@ -8364,7 +8375,9 @@ class DiffusionBackend:
                     plan = refined_plan
                     peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base)
                     if getattr(pipe, "_unsloth_loras", None):
-                        peak_model = "unknown"  # adapters baked in at load: a build the key cannot name
+                        peak_model = (
+                            "unknown"  # adapters baked in at load: a build the key cannot name
+                        )
                     try:
                         # the phase-table seed holds only where it was measured
                         pipe._unsloth_phase_seeds = _calibrated_activation(fam, target) is not None

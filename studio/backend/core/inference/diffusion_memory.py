@@ -2645,6 +2645,7 @@ def refine_plan_from_loaded_weights(
         if headroom is None:
             return plan
         from .diffusion_measured_peaks import lookup_bucket
+
         learned, learned_pixels, learned_quadratic = lookup_bucket(
             family = family, quant = quant, speed_mode = speed_mode
         ) or (None, None, False)
@@ -3176,7 +3177,11 @@ def _return_module_tensors(module: Any, onload: Any) -> None:
         torch.cuda.synchronize(onload)
 
 
-def _unwind_group_offload(pipe: Any, snapshots: list, logger: Any = None) -> bool:
+def _unwind_group_offload(
+    pipe: Any,
+    snapshots: list,
+    logger: Any = None,
+) -> bool:
     """Undo a partial ``_apply_group_offload``: group hooks, the prefetchers' torch hooks and attributes, deferred
     pins. The weights stay where the hooks left them (host copies or the card); the caller's retry moves them."""
     try:
@@ -3330,7 +3335,11 @@ def measured_request_extra_mib(
         w = max(64, int(width or DEFAULT_IMAGE_WIDTH))
         h = max(64, int(height or DEFAULT_IMAGE_HEIGHT))
         batch = max(1, int(batch_size or 1))
-        covered = reserve[6] if len(reserve) > 6 and reserve[6] else DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
+        covered = (
+            reserve[6]
+            if len(reserve) > 6 and reserve[6]
+            else DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT
+        )
         # the learned store's own scaling: a request past the covered bucket takes its bucket's ceiling, squared over
         # the image's pixels for a math-attention entry (linear over the batch)
         scale = 1.0
@@ -4679,7 +4688,8 @@ def _apply_group_offload(
     except Exception as exc:  # noqa: BLE001 - fall back to whole-module offload
         # apply_group_offloading can raise after hooking part of a module, before ``installed`` counts it
         if not installed and any(
-            id(comp) not in grouped_before and _has_offload_groups(comp) for comp, _ in hook_snapshots
+            id(comp) not in grouped_before and _has_offload_groups(comp)
+            for comp, _ in hook_snapshots
         ):
             installed = 1
         if installed and _is_oom(exc) and _unwind_group_offload(pipe, hook_snapshots, logger):

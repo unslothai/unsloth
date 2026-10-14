@@ -111,7 +111,6 @@ def runtime_stamp() -> str:
                 parts.append(f"{dist}=?")
         try:
             import torch
-
             parts.append(f"cuda={torch.version.cuda or torch.version.hip or '?'}")
         except Exception:  # noqa: BLE001
             parts.append("cuda=?")
@@ -201,7 +200,13 @@ def record(
     """Keep the max peak seen for this key and bucket, scaled to the bucket's ceiling so a smaller render in the bucket
     still answers a full-size one (squared with ``quadratic``: SDPA math attention grows with pixels squared, and the
     key's entry keeps scaling that way). Returns True when the stored value rose."""
-    if not enabled() or peak_mib is None or int(peak_mib) <= 0 or not family or not identified(quant):
+    if (
+        not enabled()
+        or peak_mib is None
+        or int(peak_mib) <= 0
+        or not family
+        or not identified(quant)
+    ):
         return False
     if quadratic and int(batch_size or 1) > 1:
         return False  # a math-attention entry holds single images: it scales squared in pixels, linearly in batch
@@ -276,7 +281,9 @@ def identified(quant: Optional[str]) -> bool:
     """False when the label or a part of it could not be identified (empty, a bare ``unknown`` format,
     ``name:unknown``): such a load neither reads nor records a learned peak and keeps the static estimate."""
     parts = str(quant or "").split("|")
-    return bool(parts[0]) and not any(part == "unknown" or part.endswith(":unknown") for part in parts)
+    return bool(parts[0]) and not any(
+        part == "unknown" or part.endswith(":unknown") for part in parts
+    )
 
 
 def lookup_bucket(
@@ -318,7 +325,11 @@ def lookup_bucket(
         return peaks[min(above)] * times, min(above), quadratic
     largest = max(peaks)
     power = 2 if quadratic else 1
-    return int(math.ceil(peaks[largest] * (want / float(largest)) ** power)) * times, want, quadratic
+    return (
+        int(math.ceil(peaks[largest] * (want / float(largest)) ** power)) * times,
+        want,
+        quadratic,
+    )
 
 
 def record_work(key: Any, work: int, peak_mib: int) -> bool:

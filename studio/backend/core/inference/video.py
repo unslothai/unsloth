@@ -10836,7 +10836,6 @@ class VideoBackend:
             finally:
                 try:
                     from . import video_stream_residency
-
                     video_stream_residency.discard_request(getattr(state, "pipe", None))
                 finally:
                     i2v_swap.close()
