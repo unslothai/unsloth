@@ -444,6 +444,7 @@ class ClusterServing:
         # A load this planned and has not completed: its after_load / load_failed come here even
         # if the config changed meanwhile.
         self.in_flight: bool = False
+        self._has_projector: bool = False
         # Set when the config went away while workers run: the next committed load stops them.
         self.retire_on_commit: bool = False
         self._pre_load: Optional[Tuple[str, str, Optional[ClusterPlan], List[str]]] = None
@@ -509,7 +510,11 @@ class ClusterServing:
                 argv,
                 log_dir / f"rpc-server-{node.host}-{node.rpc_port}.log" if log_dir else None,
             )
-            await process.start()
+            try:
+                await process.start()
+            except OSError as exc:  # ssh missing, process limit: this node only
+                failed[node.endpoint] = f"could not start ssh to {node.host}: {exc}"
+                continue
             if not await ss.wait_for_own_port(
                 process,
                 node.host,
@@ -644,14 +649,18 @@ class ClusterServing:
         used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
         self.block = split_extra_args(used, plan)
         local = next((d for d in plan.devices if not d.remote), None)
-        if (
-            local is not None
-            and not any(str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in effective)
-            and not os.environ.get("MTMD_BACKEND_DEVICE")
-            and ss.llama_server_supports("--mmproj-device", binary)
-        ):
-            # The projector otherwise follows the first --device, a worker; it was charged here.
-            self.block += ["--mmproj-device", local.name]
+        caller_pinned = any(
+            str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in effective
+        ) or bool(os.environ.get("MTMD_BACKEND_DEVICE"))
+        if local is not None and not caller_pinned:
+            if ss.llama_server_supports("--mmproj-device", binary):
+                # The projector otherwise follows the first --device, a worker; it was charged here.
+                self.block += ["--mmproj-device", local.name]
+            elif self._has_projector:
+                self.plan, self.block = None, []
+                self.topology = "single"
+                self.reason = "this llama-server cannot pin the projector to this machine"
+                return request
         if (
             local is not None
             and not any(str(a).split("=", 1)[0] in _DRAFT_DEVICE_FLAGS for a in effective)
@@ -685,6 +694,10 @@ class ClusterServing:
         from core.inference.llama_server_args import extra_args_disable_mmproj
 
         named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
+        self._has_projector = not extra_args_disable_mmproj(extras) and (
+            any(str(a).split("=", 1)[0] in named for a in extras)
+            or any(os.environ.get(k) for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"))
+        )
         if extra_args_disable_mmproj(extras):
             pass
         elif not any(str(a).split("=", 1)[0] in named for a in extras) and not any(
@@ -694,6 +707,7 @@ class ClusterServing:
                 local_file, disable_vision = bool(getattr(request, "disable_vision", False))
             )
             sidecars += int(ss.gguf_size_bytes(projector) or 0) if projector else 0
+            self._has_projector = bool(projector)
         # Files named through the environment (LLAMA_ARG_MMPROJ, a drafter) load all the same.
         named_files = ss.launch_files_from(extras)
         for path in ss.env_launch_files(dict(os.environ)):
@@ -774,6 +788,12 @@ class ClusterServing:
         else:
             # The failed load got as far as tearing the old one down.
             self.forget_served()
+
+    def serving(self) -> bool:
+        """Whether a split this planned is still what the primary serves, config or not."""
+        return bool(self.workers) or (
+            self._backend is not None and bool(getattr(self._backend, "is_loaded", False))
+        )
 
     def forget_served(self) -> None:
         """A load that bypassed planning replaced the served split; its workers can stay."""

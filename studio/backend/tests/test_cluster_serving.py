@@ -381,6 +381,7 @@ def test_an_endpoint_with_no_device_is_reported(monkeypatch):
 
 def test_an_environment_projector_is_charged_to_this_machine(monkeypatch, tmp_path):
     _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     mmproj = tmp_path / "mmproj.gguf"
     mmproj.write_bytes(b"x")
     request = _request()
@@ -597,6 +598,7 @@ def test_the_projector_is_pinned_to_the_local_device_it_was_charged_to(monkeypat
 
 def test_a_disabled_projector_is_not_charged(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     sizes = {"/models/auto-mmproj.gguf": 15 * GIB}
     monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
     monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: "/models/auto-mmproj.gguf")
@@ -923,3 +925,94 @@ def test_forced_single_starts_and_probes_nothing(monkeypatch):
     request = _request()
     assert run(ss.before_load(request, 4)) is request
     assert started == [] and seen == []
+
+
+def test_a_refused_teardown_rolls_the_cluster_plan_back(monkeypatch):
+    _cluster_env(monkeypatch)
+    legacy = ss.state()
+    legacy.peer_process = object()
+    detached = []
+
+    async def fake_detach():
+        detached.append(1)
+
+    def refuse():
+        raise RuntimeError("409 active generations")
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+    with pytest.raises(RuntimeError):
+        run(ss.before_load(_request(), 4, confirm_teardown = refuse))
+    state = cs.state()
+    assert detached == [] and state.in_flight is False and state.block == []
+
+
+def test_a_ssh_that_cannot_spawn_fails_only_that_node(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    monkeypatch.setenv(cs.ENV_NODES, "10.0.0.2,me@10.0.0.3,10.0.0.4")
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: "/b/ggml-rpc-server")
+
+    async def fake_ssh(target, remote, **kw):
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    async def fake_start(self):
+        if self.peer == "me@10.0.0.3":
+            raise OSError("Resource temporarily unavailable")
+        self.proc = SimpleNamespace(returncode = None)
+
+    async def owns(process, host, port, timeout, **kw):
+        return True
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(ss, "wait_for_own_port", owns)
+    out = run(ss.before_load(_request(), 4))
+    assert (
+        out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
+        == "10.0.0.2:50052,10.0.0.4:50052"
+    )
+    assert "could not start ssh to 10.0.0.3" in ss.status()["last_error"]
+
+
+def test_a_loaded_split_is_still_reported_after_the_config_goes(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    monkeypatch.delenv(cs.ENV_NODES)
+    monkeypatch.setattr(ss, "is_spark", lambda: False)
+    status = ss.status()
+    assert status["topology"] == "layer_split" and status["retiring"] is True
+    assert ss.current_topology() == "layer_split"
+
+
+def test_completion_goes_to_the_planner_that_took_the_load(monkeypatch):
+    _cluster_env(monkeypatch)
+    run(ss.before_load(_request(), 4))
+    run(ss.after_load(SimpleNamespace(_process = SimpleNamespace(args = [])), 4))
+    # A later load planned while the cluster is off is the two-Spark path's, even if the cluster
+    # config comes back before it completes.
+    assert cs.state().in_flight is False
+    legacy_after = []
+
+    async def fake_after(self, backend, n):
+        legacy_after.append(1)
+
+    monkeypatch.setattr(ss.SparkServing, "after_load", fake_after)
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+    run(ss.after_load(SimpleNamespace(), 4))
+    assert legacy_after == [1]
+
+
+def test_a_projector_that_cannot_be_pinned_keeps_the_load_local(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: "/models/mmproj.gguf")
+    sizes = {"/models/mmproj.gguf": 1 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 250 * GIB))
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: False)
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert "cannot pin the projector" in ss.status()["reason"]

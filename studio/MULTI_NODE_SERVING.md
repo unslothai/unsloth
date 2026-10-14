@@ -51,8 +51,9 @@ A node with `"managed": true` (or every node, with `UNSLOTH_CLUSTER_MANAGED=1`) 
 2. A model that fits this machine is served here, as without a cluster.
 3. A larger one is split by layer: `--rpc` lists the workers, `--device` lists their devices
    with this machine's GPU last (so the logits stay local), and `--tensor-split` weights each
-   device by its usable free memory. Projectors, drafters and adapters are charged to this
-   machine, which loads them.
+   device by its usable free memory. Projectors and drafters are charged to (and pinned on) this
+   machine; LoRA adapters and control vectors sit beside their layers, so they are spread with
+   the model.
 4. A load no set of devices can hold is refused with the numbers, instead of failing mid-load.
 
 A worker that does not answer, or a managed one that cannot be started, is left out and named

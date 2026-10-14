@@ -3408,7 +3408,9 @@ def _cluster_active() -> bool:
 def current_topology() -> Optional[str]:
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and _cluster_active():
+    if cluster_serving._STATE is not None and (
+        _cluster_active() or cluster_serving._STATE.serving()
+    ):
         return cluster_serving._STATE.topology
     st = state()
     if st.attached_backend is None and st.peer_process is None and st.router is None:
@@ -3445,8 +3447,12 @@ async def before_load(
         ):
             # A two-Spark split or replica set from before the cluster was configured; only once
             # the cluster has a plan, so a refused one leaves it serving.
-            if confirm_teardown is not None:
-                confirm_teardown()
+            try:
+                if confirm_teardown is not None:
+                    confirm_teardown()
+            except BaseException:
+                await cluster_serving._STATE.load_failed()  # no load follows a refused teardown
+                raise
             await _STATE.detach()
         return out
     if cluster_serving._STATE is not None and (
@@ -3495,9 +3501,7 @@ async def after_load(
     """True when the load was cancelled during the replica startup and must be undone."""
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and (
-        cluster_serving._STATE.in_flight or _cluster_active()
-    ):
+    if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
         await cluster_serving._STATE.after_load(llama_backend)
         return False
     if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
@@ -3519,9 +3523,7 @@ async def after_load(
 async def load_failed() -> None:
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and (
-        cluster_serving._STATE.in_flight or _cluster_active()
-    ):
+    if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
         await cluster_serving._STATE.load_failed()
         return
     if _STATE is None or not enabled():
@@ -3559,6 +3561,9 @@ def status() -> Dict[str, Any]:
 
     if _cluster_active():
         return cluster_serving.state().status()
+    if cluster_serving._STATE is not None and cluster_serving._STATE.serving():
+        # Off for new loads, but the loaded split still runs on its workers until replaced.
+        return dict(cluster_serving._STATE.status(), retiring = True)
     if not enabled():
         return {"enabled": False, "topology": None, "reason": "not a paired DGX Spark"}
     return state().status()
