@@ -93,29 +93,29 @@ def _is_studio_output(path: Path) -> bool:
         return False
 
 
-def _trained_in_4bit(model: str) -> bool:
-    path = Path(model)
-    is_adapter = (path / "adapter_config.json").is_file()
-    name = "adapter_config.json" if is_adapter else "config.json"
+def _read_config(file: Path) -> Optional[dict]:
     try:
-        config = json.loads((path / name).read_text(encoding = "utf-8-sig"))
+        config = json.loads(file.read_text(encoding = "utf-8-sig"))
     except (ValueError, OSError):
-        return True
-    if not isinstance(config, dict):
+        return None
+    return config if isinstance(config, dict) else None
+
+
+def _trained_in_4bit(model: str) -> bool:
+    path = Path(model).absolute()
+    is_adapter = (path / "adapter_config.json").is_file()
+    config = _read_config(path / ("adapter_config.json" if is_adapter else "config.json"))
+    if config is None:
         return True
     if not is_adapter:
         return "quantization_config" in config or not _is_studio_output(path)
+    if "unsloth_training_method" not in config and path.name.startswith("checkpoint-"):
+        # Studio records the precision on the finished run, not on its checkpoint-N folders
+        config = _read_config(path.parent / "adapter_config.json") or config
     recorded = config.get("unsloth_load_in_4bit")
     if isinstance(recorded, bool):
         return recorded
-    method = config.get("unsloth_training_method")
-    if method:
-        return method != "lora"
-    # checkpoint-N folders carry no unsloth_* keys; Studio Chat reads the base name instead
-    base = config.get("base_model_name_or_path")
-    return not (
-        isinstance(base, str) and "-bnb-4bit" not in base.lower() and _is_studio_output(path)
-    )
+    return config.get("unsloth_training_method") != "lora"
 
 
 def _has_tokenizer_files(model: str) -> bool:

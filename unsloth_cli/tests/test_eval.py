@@ -404,6 +404,29 @@ def test_unsloth_backend_reports_missing_bitsandbytes(env, tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize(
+    "run_config, expected",
+    [
+        ({"unsloth_training_method": "lora", "unsloth_load_in_4bit": False}, False),
+        ({"unsloth_training_method": "qlora", "unsloth_load_in_4bit": True}, True),
+        (None, True),
+    ],
+    ids = ["lora_16bit_run", "qlora_run", "unfinished_run"],
+)
+def test_checkpoint_follows_its_run(env, tmp_path, monkeypatch, run_config, expected):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
+    run = tmp_path / "studio" / "outputs" / "run"
+    checkpoint = run / "checkpoint-15"
+    checkpoint.mkdir(parents = True)
+    base = {"base_model_name_or_path": "org/base"}
+    (checkpoint / "adapter_config.json").write_text(json.dumps(base))
+    if run_config is not None:
+        (run / "adapter_config.json").write_text(json.dumps({**base, **run_config}))
+    result = _run(str(checkpoint), "--tasks", "gsm8k", "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
+
+
+@pytest.mark.parametrize(
     "where, expected",
     [
         ("outputs", False),
@@ -439,8 +462,6 @@ def test_full_finetune_in_any_account_outputs_loads_in_16bit(
         ({"adapter_config.json": {"unsloth_load_in_4bit": False}}, [], False, False),
         ({"adapter_config.json": {"unsloth_training_method": "lora"}}, [], False, False),
         ({"adapter_config.json": {"unsloth_load_in_4bit": True}}, [], True, True),
-        ({"adapter_config.json": {}}, [], True, False),
-        ({"adapter_config.json": {"base_model_name_or_path": "org/base-bnb-4bit"}}, [], True, True),
         ({"adapter_config.json": {}}, [], False, True),
         ({"config.json": {"model_type": "llama"}}, ["--load-in-4bit"], True, True),
         (
@@ -458,8 +479,6 @@ def test_full_finetune_in_any_account_outputs_loads_in_16bit(
         "lora_16bit",
         "lora_method_only",
         "qlora",
-        "lora_16bit_checkpoint",
-        "qlora_checkpoint",
         "unknown_adapter",
         "explicit_4bit",
         "explicit_16bit",
