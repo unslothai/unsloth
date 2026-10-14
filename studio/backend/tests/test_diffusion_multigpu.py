@@ -1489,3 +1489,25 @@ def test_force_mode_refines_a_resident_plan(monkeypatch):
     assert refined.secondary_ordinal == 1 and refined.offload_policy == dm.OFFLOAD_NONE
     assert refined.secondary_components == ("text_encoder", "vae")
     assert refined.fallback_plan is plan
+
+
+def test_ltx25_sidecar_encoder_keeps_the_single_card_plan(monkeypatch):
+    import types as _types
+
+    from core.inference import video as vid
+
+    single = _plan()
+    split = dataclasses.replace(
+        single, offload_policy = dm.OFFLOAD_NONE, secondary_ordinal = 1, fallback_plan = single
+    )
+    ltx25 = _types.SimpleNamespace(name = "ltx-2.5")
+    wan = _types.SimpleNamespace(name = "wan2.2")
+    # the planner priced the sidecar encoder as a movable companion: LTX-2.5 falls back to one card
+    assert vid._video_single_card_for_sidecar(ltx25, split) is single
+    assert vid._video_single_card_for_sidecar(wan, split) is split
+    assert vid._video_single_card_for_sidecar(ltx25, single) is single
+    # and the post-load refinement (whose loaded sizes omit the sidecar) never splits it
+    refined = []
+    monkeypatch.setattr(vid, "refine_plan_for_multigpu", lambda pipe, plan, logger = None: refined.append(1) or split)
+    assert vid._video_refine_for_multigpu(ltx25, object(), single) is single
+    assert vid._video_refine_for_multigpu(wan, object(), single) is split and refined == [1]

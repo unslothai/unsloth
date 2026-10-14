@@ -2612,6 +2612,30 @@ def _video_offload_vram_floor_mib(
         return None
 
 
+# Families whose text encoder runs outside ``pipe.components`` (a sidecar worker on the primary): a multi-GPU split
+# cannot move it, so the companion split the planner priced with it would leave it on the primary beside the DiT.
+_VIDEO_SIDECAR_ENCODER_FAMILIES = frozenset({"ltx-2.5"})
+
+
+def _video_single_card_for_sidecar(fam: Any, plan: Any, logger: Any = None) -> Any:
+    """The single-card plan in place of a companion split for a sidecar-encoder family; any other plan unchanged."""
+    if getattr(fam, "name", None) not in _VIDEO_SIDECAR_ENCODER_FAMILIES:
+        return plan
+    fallback = getattr(plan, "fallback_plan", None)
+    if getattr(plan, "secondary_ordinal", None) is None or fallback is None:
+        return plan
+    if logger is not None:
+        logger.info("video.multigpu: one card (the %s text encoder runs in a sidecar a split cannot move)", fam.name)
+    return fallback
+
+
+def _video_refine_for_multigpu(fam: Any, pipe: Any, plan: Any, logger: Any = None) -> Any:
+    """``refine_plan_for_multigpu``, declined for a sidecar-encoder family (its loaded sizes omit the encoder)."""
+    if getattr(fam, "name", None) in _VIDEO_SIDECAR_ENCODER_FAMILIES:
+        return plan
+    return refine_plan_for_multigpu(pipe, plan, logger)
+
+
 def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
     """``((ordinal, resident MiB, runs the decode), ...)`` for a pipeline split across cards, else None. A split plan
     reports no offload policy, so the offload floor is None and the request guard would be skipped; this records what
@@ -7045,7 +7069,12 @@ class VideoBackend:
                             )
                         planned = replanned
                         replanned_for_quant = True
-            return planned, dense_plan, replanned_for_quant
+            # a sidecar-encoder family (LTX-2.5) keeps one card: a split cannot move its encoder
+            return (
+                _video_single_card_for_sidecar(fam, planned, logger if log else None),
+                _video_single_card_for_sidecar(fam, dense_plan),
+                replanned_for_quant,
+            )
 
         denoiser_seed_scheme: Optional[str] = None
         if kind == "pipeline" and _video_auto_denoiser_planned != DENOISER_SEED_DECLINED:
@@ -8049,7 +8078,7 @@ class VideoBackend:
                 logger.info("video.memory: %s", refined.reasons[-1])
                 plan = refined
             # several selected cards: an offloading plan may become a resident split (an MoE expert per card)
-            plan = refine_plan_for_multigpu(pipe, plan, logger)
+            plan = _video_refine_for_multigpu(fam, pipe, plan, logger)
             vram_floor_mib = _video_offload_vram_floor_mib(pipe, plan)
             free_mib = getattr(getattr(plan, "device_memory", None), "free_mib", None)
             if vram_floor_mib is not None and free_mib is not None:
