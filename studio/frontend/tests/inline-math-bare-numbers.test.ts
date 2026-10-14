@@ -143,8 +143,8 @@ test("a trailing numeric closer stays literal while streaming", () => {
 });
 
 test("many unterminated substitutions stay within the streaming budget", () => {
-  const source = "$1$(".repeat(25_600);
+  const source = "$1$(".repeat(51_200);
   const started = performance.now();
   preprocessLaTeX(source, true);
-  assert.ok(performance.now() - started < 1000);
+  assert.ok(performance.now() - started < 250);
 });
