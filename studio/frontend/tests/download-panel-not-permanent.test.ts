@@ -115,7 +115,7 @@ function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
 type Truth = true | false | null;
 
 function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
-  // Queued plans show before their first job exists, so the panel hides only when both are empty.
+  // Queued plans and starts still in their preflight show before their first job exists, so the panel hides only when all of them are empty.
   const declarations = panelComponent().body?.statements.flatMap(statement =>
     ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : []
   ) ?? [];
@@ -130,7 +130,15 @@ function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
   const queued = (combined ?? declarations.find(declaration =>
     declaration.initializer?.getText() === "useQueuedHubEntries()"
   ))?.name.getText();
-  if (isEmptyTest(node, jobKeys) || (queued && isEmptyTest(node, queued))) return true;
+  const pending = declarations.find(declaration =>
+    declaration.initializer && ts.isCallExpression(declaration.initializer) &&
+    declaration.initializer.expression.getText() === "visiblePendingStarts"
+  )?.name.getText();
+  if (
+    isEmptyTest(node, jobKeys) ||
+    (queued && isEmptyTest(node, queued)) ||
+    (pending && isEmptyTest(node, pending))
+  ) return true;
   if (ts.isParenthesizedExpression(node)) {
     return underAnEmptyList(node.expression, jobKeys);
   }

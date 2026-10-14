@@ -33,8 +33,18 @@ import {
 } from "./download-manager-controller";
 import { DownloadProgressBar } from "./download-progress-bar";
 import { presentedProgress } from "./download-presentation";
+import {
+  type PendingStart,
+  usePendingStarts,
+  visiblePendingStarts,
+} from "./pending-starts";
 import { assetLabel } from "./required-assets";
 import { queuedStagedEntries, useStagedDownloadQueues } from "./staged-download-queue";
+
+type RowSubject = Pick<
+  ManagedDownload,
+  "repoId" | "variant" | "presentation" | "checkpoint" | "scopedFiles"
+>;
 
 function createOrderedJobKeysSelector(): (state: {
   jobs: Record<string, ManagedDownload>;
@@ -87,7 +97,7 @@ function repoLabel(repoId: string): string {
   return isAudioCppFolderId(repoId) ? audioCppDisplayName(repoId) : repoId;
 }
 
-function isRequiredAssetJob(job: ManagedDownload): boolean {
+function isRequiredAssetJob(job: RowSubject): boolean {
   if (!job.variant?.startsWith("@")) return false;
   // The staging page tagged the entry it picked, which is the only reliable answer: a checkpoint
   // can be a curated single .safetensors and companion repos carry .safetensors too, so the
@@ -103,7 +113,7 @@ function isRequiredAssetJob(job: ManagedDownload): boolean {
 const REQUIRED_ASSET_NOTE =
   "Required to run this model. Downloaded once, shared across compatible variants.";
 
-function variantSuffix(job: ManagedDownload): string {
+function variantSuffix(job: RowSubject): string {
   if (job.variant?.startsWith("@")) {
     return ` · ${
       isRequiredAssetJob(job)
@@ -115,6 +125,45 @@ function variantSuffix(job: ManagedDownload): string {
     }`;
   }
   return job.variant ? ` · ${job.variant}` : "";
+}
+
+function RowTitle({ job }: { job: RowSubject }) {
+  return (
+    <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
+      {job.presentation?.label ?? repoLabel(job.repoId)}
+      <span className="text-muted-foreground">
+        {job.presentation ? ` · ${repoLabel(job.repoId)}` : variantSuffix(job)}
+      </span>
+    </span>
+  );
+}
+
+function RowDetail({ job }: { job: RowSubject }) {
+  return job.presentation ? (
+    <div className="truncate text-ui-10p5 text-muted-foreground">
+      {job.presentation.filename}
+    </div>
+  ) : isRequiredAssetJob(job) && job.checkpoint === false ? (
+    <div className="text-ui-10p5 text-muted-foreground">
+      {REQUIRED_ASSET_NOTE}
+    </div>
+  ) : null;
+}
+
+function StartingLine() {
+  return <div className="text-ui-11 text-muted-foreground">Starting…</div>;
+}
+
+function PendingStartRow({ start }: { start: PendingStart }) {
+  return (
+    <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
+      <div className="flex items-center gap-2">
+        <RowTitle job={start} />
+      </div>
+      <RowDetail job={start} />
+      <StartingLine />
+    </li>
+  );
 }
 
 function StatusLine({ job }: { job: ManagedDownload }) {
@@ -138,7 +187,13 @@ function StatusLine({ job }: { job: ManagedDownload }) {
   return null;
 }
 
-function DownloadRow({ jobKey }: { jobKey: string }) {
+function DownloadRow({
+  jobKey,
+  starting,
+}: {
+  jobKey: string;
+  starting: boolean;
+}) {
   const job = useDownloadManagerStore((state) => state.jobs[jobKey]);
   if (!job) return null;
   const active = job.state === "running" || job.state === "cancelling";
@@ -150,22 +205,15 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
   return (
     <li className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
       <div className="flex items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-ui-12p5 font-medium text-foreground">
-          {job.presentation?.label ?? repoLabel(job.repoId)}
-          <span className="text-muted-foreground">
-            {job.presentation
-              ? ` · ${repoLabel(job.repoId)}`
-              : variantSuffix(job)}
-          </span>
-        </span>
-        {job.state === "complete" && (
+        <RowTitle job={job} />
+        {job.state === "complete" && !starting && (
           <HugeiconsIcon
             icon={CheckmarkCircle02Icon}
             strokeWidth={2}
             className="size-4 shrink-0 text-status-success"
           />
         )}
-        {job.state === "error" && (
+        {job.state === "error" && !starting && (
           <HugeiconsIcon
             icon={Alert02Icon}
             strokeWidth={2}
@@ -177,7 +225,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
             <button
               type="button"
               aria-label={active ? "Cancel download" : "Dismiss"}
-              disabled={job.state === "cancelling"}
+              disabled={job.state === "cancelling" || starting}
               onClick={() =>
                 active
                   ? void downloadManager.cancel(job.key)
@@ -200,15 +248,7 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           </TooltipContent>
         </Tooltip>
       </div>
-      {job.presentation ? (
-        <div className="truncate text-ui-10p5 text-muted-foreground">
-          {job.presentation.filename}
-        </div>
-      ) : isRequiredAssetJob(job) && job.checkpoint === false ? (
-        <div className="text-ui-10p5 text-muted-foreground">
-          {REQUIRED_ASSET_NOTE}
-        </div>
-      ) : null}
+      <RowDetail job={job} />
       {active ? (
         <DownloadProgressBar
           progress={progress}
@@ -226,7 +266,9 @@ function DownloadRow({ jobKey }: { jobKey: string }) {
           </pre>
         </details>
       ) : null}
-      {terminal || job.state === "cancelling" || job.error ? (
+      {starting ? (
+        <StartingLine />
+      ) : terminal || job.state === "cancelling" || job.error ? (
         <div className="px-0 text-ui-11 text-muted-foreground tabular-nums">
           <StatusLine job={job} />
         </div>
@@ -255,9 +297,21 @@ export function DownloadManagerPanel({
   const stagedQueues = useStagedDownloadQueues((s) => s.queues);
   const jobs = useDownloadManagerStore((s) => s.jobs);
   const queued = [...hubQueued, ...queuedStagedEntries(stagedQueues, jobs)];
-  const activeCount = useDownloadManagerStore(selectActiveJobCount) + queued.length;
+  const pendingStarts = usePendingStarts((s) => s.starts);
+  const pending = visiblePendingStarts(pendingStarts, jobs, queued);
+  const unlistedStarts = pending.filter((start) => !(start.key in jobs));
+  const startingKeys = new Set(pending.map((start) => start.key));
+  const activeCount =
+    useDownloadManagerStore(selectActiveJobCount) +
+    queued.length +
+    pending.length;
 
-  if (!enabled || (jobKeys.length === 0 && queued.length === 0)) return null;
+  if (
+    !enabled ||
+    (jobKeys.length === 0 && queued.length === 0 && pending.length === 0)
+  ) {
+    return null;
+  }
 
   const headerLabel =
     activeCount > 0
@@ -319,12 +373,19 @@ export function DownloadManagerPanel({
           </div>
           <ul className="max-h-[60dvh] divide-y divide-foreground/[0.06] overflow-y-auto [scrollbar-width:thin]">
             {jobKeys.map((jobKey) => (
-              <DownloadRow key={jobKey} jobKey={jobKey} />
+              <DownloadRow
+                key={jobKey}
+                jobKey={jobKey}
+                starting={startingKeys.has(jobKey)}
+              />
             ))}
             {queued.map((entry, i) => <li key={`${entry.planId}:${i}`} className="flex flex-col gap-1.5 py-2.5 pl-4 pr-3">
               <span className="truncate text-ui-12p5 font-medium">{entry.repoId}<span className="text-muted-foreground"> · {entry.checkpoint !== false ? "Model file" : assetLabel(entry, "Required assets")}</span></span>
               <span className="text-ui-11 text-muted-foreground">{entry.checkpoint !== false ? "Queued" : `Queued · ${REQUIRED_ASSET_NOTE}`}</span>
             </li>)}
+            {unlistedStarts.map((start) => (
+              <PendingStartRow key={start.key} start={start} />
+            ))}
           </ul>
         </div>
       )}
