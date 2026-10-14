@@ -200,3 +200,12 @@ def test_a_conversation_that_fits_skips_the_attachment_checks():
     fit_oversized_attachments(messages, context_length = 2048, max_tokens = 512, count_tokens = counting)
 
     assert calls == [len(messages)]
+
+
+def test_a_long_paste_is_cut_inside_its_own_wrapper():
+    pasted = f"<pasted_text name=paste.txt bytes=110000>\n{LINES}\n</pasted_text>"
+    text = _fit(_messages(body = pasted, marker = note("paste.txt")))[-1]["content"]
+
+    assert text.count("<pasted_text name=") == text.count("</pasted_text>") == 1
+    excerpt = text.split("bytes=110000>\n", 1)[1].split("\n</pasted_text>", 1)[0]
+    assert f"only its first {len(excerpt.split(chr(10)))} of 2000 lines are above" in text

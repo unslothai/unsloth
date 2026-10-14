@@ -938,9 +938,8 @@ _SANDBOX_ATTACHMENT_NOTE_RE = re.compile(
     r"\[(?P<name>[^\n]*?): its text is below, so answer from it\. For calculations, the python tool has the "
     r'file at path = (?P<path>"(?:[^"\\\n]|\\.)*")(?:;[^\n]*)?\]\n'
 )
-# attachment-content.ts wraps the text; the cut goes inside so the markup stays balanced.
-_ATTACHMENT_OPEN_RE = re.compile(r"<attachment name=[^\n]*>\n")
-_ATTACHMENT_CLOSE = "\n</attachment>"
+# attachmentContentText (pasted-text.ts) wraps a file or a paste; the cut goes inside so the markup stays balanced.
+_ATTACHMENT_OPEN_RE = re.compile(r"<(?P<tag>attachment|pasted_text) name=[^\n]*>\n")
 # Room left for the fit's own additions (carried block, recall), so a cut turn is not refused one step later.
 _ATTACHMENT_FIT_MARGIN = 0.125
 
@@ -952,14 +951,15 @@ def _attachment_spans(text: str):
         end = notes[index + 1].start() if index + 1 < len(notes) else len(text)
         body = text[note.end() : end]
         opened = _ATTACHMENT_OPEN_RE.match(body)
-        close = body.rfind(_ATTACHMENT_CLOSE) if opened else -1
+        closing = f"\n</{opened.group('tag')}>" if opened else ""
+        close = body.rfind(closing) if opened else -1
         if opened and close >= opened.end():
             yield (
                 note,
                 opened.group(0),
                 body[opened.end() : close],
-                _ATTACHMENT_CLOSE,
-                body[close + len(_ATTACHMENT_CLOSE) :],
+                closing,
+                body[close + len(closing) :],
             )
         else:
             yield note, "", body, "", ""
