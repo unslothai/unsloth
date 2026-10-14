@@ -81,6 +81,12 @@ from utils.models.checkpoints import is_full_finetune_output
 
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
+from utils.first_token_timeout import (
+    finish_first_token_wait,
+    socket_timeout,
+    start_first_token_wait,
+    timeout_seconds as configured_first_token_timeout_s,
+)
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token, get_request_hf_token
 from hub.utils.hf_errors import modelscope_missing
@@ -329,10 +335,14 @@ def _friendly_error(exc: Exception) -> str:
                 "The model stopped producing tokens before the response "
                 "completed. Try stopping and retrying, or reduce max tokens."
             )
+        raise_limit = (
+            "For a local GGUF model, increase the first-token waiting limit in Settings > Chat"
+        )
+        if _finite_positive_float_env(_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, None) is not None:
+            raise_limit += f" (API requests use {_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV} instead while it is set)"
         return (
-            "The model is still processing the prompt but did not produce a "
-            "first token within 20 minutes. Try reducing context length, "
-            "using more GPU offload, or loading a smaller model."
+            "The model did not produce a first token within the waiting limit. "
+            f"{raise_limit}. Otherwise reduce context length, use more GPU offload, or load a smaller model."
         )
     if isinstance(exc, httpx.TimeoutException):
         return "Timed out communicating with the model server. Try again shortly."
@@ -1864,11 +1874,16 @@ except ImportError:
 
 
 def _llama_non_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(_first_token_timeout_s())
+    return httpx.Timeout(
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
+        read = socket_timeout(_first_token_timeout_s(whole_reply = True)),
+    )
 
 
 def _llama_streaming_generation_timeout() -> httpx.Timeout:
-    return httpx.Timeout(_first_token_timeout_s())
+    return httpx.Timeout(
+        _DEFAULT_FIRST_TOKEN_TIMEOUT_S, read = socket_timeout(_first_token_timeout_s())
+    )
 
 
 def _set_stream_response_read_timeout(
@@ -2571,10 +2586,20 @@ def _openai_llama_admission_reserve(
     return reservation, config
 
 
+def _preserve_probe_pending(llama_backend) -> bool:
+    """Whether resolving preserve_thinking may still make the one-off template probe (HTTP)."""
+    if not getattr(llama_backend, "_supports_preserve_thinking", False):
+        return False
+    cached = getattr(llama_backend, "_empty_think_preserve_probe", None)
+    key = getattr(llama_backend, "_empty_think_probe_key", None)
+    return key is not None and (cached is None or cached[0] != key())
+
+
 def _replay_preserve_thinking(llama_backend, payload, messages):
     """The preserve_thinking generation will render with, so counts price the same prompt."""
     resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
-    if resolver is None:
+    # An Anthropic recount: conversion dropped replayed thinking the resolver would miss.
+    if resolver is None or _anthropic_history_has_thinking(payload):
         return payload.preserve_thinking
     return resolver(
         payload.preserve_thinking, messages, payload.enable_thinking, payload.reasoning_effort
@@ -3082,19 +3107,17 @@ def _finite_positive_float_env(env_name: str, default):
     return value
 
 
-def _first_token_timeout_s() -> float:
-    """How long a passthrough waits for llama-server's first token.
+def _first_token_timeout_s(*, whole_reply: bool = False) -> float:
+    """The saved wait limit; a positive UNSLOTH_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT wins.
 
-    Unlike the stall guard, 0 does NOT disable it: the deadline is unconditional
-    downstream, so a non-positive value keeps the default. Raise it, do not lower
-    it: the same value builds the non-streaming timeout, where httpx.Timeout's
-    positional form also covers connect/read/write/pool.
+    ``whole_reply`` is for a read that spans an entire non-streamed generation, which a
+    limit shortened below the default must not cut.
     """
-    value = _finite_positive_float_env(
-        _OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV,
-        _DEFAULT_FIRST_TOKEN_TIMEOUT_S,
-    )
-    return _DEFAULT_FIRST_TOKEN_TIMEOUT_S if value is None else value
+    default = configured_first_token_timeout_s()
+    if whole_reply:
+        default = max(default, _DEFAULT_FIRST_TOKEN_TIMEOUT_S)
+    value = _finite_positive_float_env(_OPENAI_COMPAT_FIRST_TOKEN_TIMEOUT_ENV, default)
+    return default if value is None else value
 
 
 def _openai_passthrough_stream_keepalive_interval():
@@ -3511,7 +3534,9 @@ def _ceiling_for_first_read(
     """
     if post_first_item_read_timeout_s is None:
         return None
-    return max(first_token_deadline - time.monotonic(), post_first_item_read_timeout_s)
+    return socket_timeout(
+        max(first_token_deadline - time.monotonic(), post_first_item_read_timeout_s)
+    )
 
 
 async def _aiter_llama_stream_items(
@@ -3536,7 +3561,7 @@ async def _aiter_llama_stream_items(
     stream on any streaming exception, so a ReadTimeout here is terminal.
     """
     if first_token_deadline is None:
-        first_token_deadline = time.monotonic() + _first_token_timeout_s()
+        first_token_deadline = start_first_token_wait(_first_token_timeout_s())
     last_item_at: Optional[float] = None
     last_prefill_progress: Optional[float] = None
     prefill_buffer = b""
@@ -3592,7 +3617,9 @@ async def _aiter_llama_stream_items(
             )
 
             remaining_s = (
-                None if hard_deadline is None else max(hard_deadline - time.monotonic(), 0.0)
+                None
+                if hard_deadline is None
+                else socket_timeout(max(hard_deadline - time.monotonic(), 0.0))
             )
             if keepalive_interval_s:
                 wait_s = (
@@ -3653,7 +3680,7 @@ async def _aiter_llama_stream_items(
                         last_prefill_progress is None or processed > last_prefill_progress
                     ):
                         last_prefill_progress = processed
-                        first_token_deadline = time.monotonic() + _first_token_timeout_s()
+                        first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                 if not starts_output:
                     if time.monotonic() >= first_token_deadline:
                         raise httpx.ReadTimeout("The model did not produce a first token in time.")
@@ -3664,6 +3691,7 @@ async def _aiter_llama_stream_items(
                 # Before yielding, not before the next read: the consumer may sit
                 # on this item while the first-token deadline is still armed.
                 _set_stream_response_read_timeout(response, _post_first_timeout_s())
+            finish_first_token_wait()
             last_item_at = time.monotonic()
             yield item
     finally:
@@ -4560,8 +4588,11 @@ def _detect_safetensors_features(
     tools through tokenizer channels, not template markup."""
     model_id = getattr(backend, "active_model_name", None)
     if (getattr(backend, "models", {}).get(model_id) or {}).get("engine") in ("vllm", "sglang"):
+        info = backend.models[model_id]
+        if info.get("reasoning_flags"):
+            return {**info["reasoning_flags"], "supports_tools": bool(info.get("supports_tools"))}
         return {
-            "supports_tools": bool(backend.models[model_id].get("supports_tools")),
+            "supports_tools": bool(info.get("supports_tools")),
             "supports_reasoning": False,
             "reasoning_style": "enable_thinking",
             "reasoning_always_on": False,
@@ -5268,7 +5299,10 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
     # web_search prompts once the model supplies a ``url`` (it fetches that page), and the
     # gate can only prompt while streaming. Without this a non-streaming auto request is
     # admitted, then blocks in wait_tool_decision on an approval the client never reads.
-    return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
+    # mcp_tool_search loads MCP tools, which can prompt, into the same turn.
+    return not all(
+        is_always_safe_tool(t) and t not in ("web_search", "mcp_tool_search") for t in enabled
+    )
 
 
 class _AutoPermissionMode:
@@ -5536,9 +5570,46 @@ def _think_parsing_expected(llama_backend, payload) -> bool:
     return _resolved_kwargs_think(llama_backend, resolved)
 
 
-def _anthropic_count_template_kwargs(llama_backend, payload):
-    """Resolved reasoning chat_template_kwargs for prompt-token counting."""
+def _anthropic_history_has_thinking(payload) -> bool:
+    for message in payload.messages or ():
+        role = message.get("role") if isinstance(message, dict) else getattr(message, "role", None)
+        content = (
+            message.get("content")
+            if isinstance(message, dict)
+            else getattr(message, "content", None)
+        )
+        if role != "assistant" or isinstance(content, str):
+            continue
+        for block in content or ():
+            kind = block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
+            if kind in ("thinking", "redacted_thinking"):
+                return True
+    return False
+
+
+async def _resolved_anthropic_reasoning_args_async(llama_backend, payload, messages) -> dict:
+    """Off the loop only while resolving may still probe the template over HTTP."""
+    if _preserve_probe_pending(llama_backend):
+        return await asyncio.to_thread(
+            _resolved_anthropic_reasoning_args, llama_backend, payload, messages
+        )
+    return _resolved_anthropic_reasoning_args(llama_backend, payload, messages)
+
+
+def _resolved_anthropic_reasoning_args(llama_backend, payload, messages) -> dict:
+    """``_anthropic_reasoning_args`` with preserve_thinking resolved as generation resolves it."""
     args = _anthropic_reasoning_args(payload)
+    resolver = getattr(llama_backend, "_replay_preserve_thinking", None)
+    # Conversion drops thinking it does not preserve, so ask the payload whether any was replayed.
+    if resolver is not None and not _anthropic_history_has_thinking(payload):
+        args["preserve_thinking"] = resolver(
+            args["preserve_thinking"], messages, args["enable_thinking"], args["reasoning_effort"]
+        )
+    return args
+
+
+def _anthropic_count_template_kwargs(llama_backend, args):
+    """Reasoning chat_template_kwargs for prompt-token counting, from resolved args."""
     return _reasoning_template_kwargs(
         llama_backend, args["enable_thinking"], args["reasoning_effort"], args["preserve_thinking"]
     )
@@ -8457,6 +8528,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         engine = "auto",
         engine_parallelism = "tensor",
         engine_precision = "auto",
+        **_MANAGED_ENGINE_LAUNCH_DEFAULTS,
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
@@ -10012,6 +10084,16 @@ def _anthropic_request_has_image(payload, *, tool_results: bool = True) -> bool:
     return next(_anthropic_image_blocks(payload, tool_results = tool_results), None) is not None
 
 
+def _anthropic_top_level_image_location(payload) -> Optional[str]:
+    ordinals = getattr(payload, "_message_ordinals", None) or []
+    for i, msg in enumerate(payload.messages):
+        if isinstance(msg.content, list):
+            for j, block in enumerate(msg.content):
+                if block.type == "image":
+                    return f"messages.{ordinals[i] if i < len(ordinals) else i}.content.{j}.image"
+    return None
+
+
 def _anthropic_local_image_payloads(payload) -> list[str]:
     encoded_images = []
     for block in _anthropic_image_blocks(payload):
@@ -10292,6 +10374,7 @@ async def _maybe_auto_download_model(
     require_vision: bool = False,
     require_speech: bool = False,
     current_subject: Optional[str] = None,
+    rejection_prefix: str = "",
 ) -> None:
     """Opt-in: start fetching a named GGUF this server doesn't have.
 
@@ -10325,17 +10408,20 @@ async def _maybe_auto_download_model(
         return
     if refusal is None:
         return
+    message = refusal.message
+    if refusal.code == "invalid_value":
+        message = f"{rejection_prefix}{message}"
     path = getattr(getattr(fastapi_request, "url", None), "path", None)
     detail = (
         error_body_for_path(
             path,
-            refusal.message,
+            message,
             status = refusal.status,
             code = refusal.code,
             param = "model",
         )
         if isinstance(path, str)
-        else refusal.message
+        else message
     )
     _record_refused_request(fastapi_request, requested_model, refusal, current_subject)
     raise HTTPException(
@@ -11027,6 +11113,7 @@ async def _maybe_auto_switch_model(
     require_vision: bool = False,
     require_image: bool = True,
     modality_label: str = "image or audio",
+    rejection_prefix: str = "",
     claim_resident: bool = True,
     require_audio_input: bool = False,
     require_video: bool = False,
@@ -11249,6 +11336,7 @@ async def _maybe_auto_switch_model(
                     require_vision = gguf_requires_vision or require_audio_input,
                     require_speech = require_speech,
                     current_subject = current_subject,
+                    rejection_prefix = rejection_prefix,
                 )
             # Idle-unload may have freed the model; reload exactly what it freed
             # (path + quant + advertised id) so an alias/unknown name stays servable
@@ -11454,7 +11542,7 @@ async def _maybe_auto_switch_model(
             raise HTTPException(
                 status_code = 400,
                 detail = openai_error_body(
-                    f"The requested model does not support the {modality_label} input in this request.",
+                    f"{rejection_prefix}The requested model does not support the {modality_label} input in this request.",
                     status = 400,
                     code = "invalid_value",
                     param = "model",
@@ -15210,9 +15298,15 @@ def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
             return False
         return _complete(directory, shards)
 
+    folder = None if getattr(config, "is_gguf", False) else getattr(config, "gguf_variant", None)
+
+    def _pick(path) -> Optional[str]:
+        target = Path(path) / folder if folder else Path(path)
+        return str(target) if _usable(target) else None
+
     candidate = getattr(config, "path", None)
-    if candidate and _usable(candidate):
-        return str(candidate)
+    if candidate and (found := _pick(candidate)):
+        return found
     identifier = candidate or getattr(config, "identifier", None)
     if not identifier or getattr(config, "is_local", False):
         return None
@@ -15231,8 +15325,8 @@ def _local_mlx_model_dir(config: ModelConfig) -> Optional[str]:
             except Exception:
                 continue
             for snapshot in _the_revision_that_loads(list(snapshots)):
-                if _usable(snapshot):
-                    return str(snapshot)
+                if found := _pick(snapshot):
+                    return found
     return None
 
 
@@ -17464,6 +17558,21 @@ def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> N
         request.load_in_4bit = bool(resident)
 
 
+# Managed-engine launch options a load records and a status echoes; the value is "not set".
+_MANAGED_ENGINE_LAUNCH_DEFAULTS = {
+    "engine_kv_cache_dtype": "auto",
+    "engine_seed": None,
+    "engine_gpu_memory_utilization": None,
+}
+
+
+def _managed_engine_launch_fields(model_info) -> dict:
+    return {
+        field: (model_info or {}).get(field, default)
+        for field, default in _MANAGED_ENGINE_LAUNCH_DEFAULTS.items()
+    }
+
+
 def _non_gguf_runtime_settings_match(backend, request) -> bool:
     """Whether the resident non-GGUF model already runs the request's load settings.
 
@@ -17486,6 +17595,9 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
             request, "engine_parallelism", "tensor"
         ):
             return False
+        for field, default in _MANAGED_ENGINE_LAUNCH_DEFAULTS.items():
+            if entry.get(field, default) != getattr(request, field, default):
+                return False
         if list(request.gpu_ids or [0]) != list(entry.get("gpu_ids_requested") or [0]):
             return False
     if "max_seq_length" in fields_set and int(request.max_seq_length or 0) > 0:
@@ -18221,15 +18333,21 @@ async def _managed_engine_request(request):
     return request.model_copy(update = {"gpu_ids": gpu_ids})
 
 
-def _managed_engine_unsupported_controls(payload) -> bool:
+def _managed_engine_unsupported_controls(payload, model_info = None) -> bool:
     """A spelled-out ``{"type": "text"}`` response_format is the default, not structured output."""
+    reasoning = (model_info or {}).get("reasoning_flags") is not None
     return bool(
         payload.use_adapter is not None
         or _response_format_constrains_decoding(payload)
         or payload.continue_final_message
-        or payload.enable_thinking
-        or payload.preserve_thinking
-        or payload.reasoning_effort not in (None, "none")
+        or (
+            not reasoning
+            and (
+                payload.enable_thinking
+                or payload.preserve_thinking
+                or payload.reasoning_effort not in (None, "none")
+            )
+        )
     )
 
 
@@ -18261,6 +18379,9 @@ async def _managed_engine_options(request, config, hf_token) -> dict:
             request.engine,
             request.engine_precision,
             request.engine_parallelism,
+            kv_cache_dtype = getattr(request, "engine_kv_cache_dtype", "auto"),
+            seed = getattr(request, "engine_seed", None),
+            gpu_memory_utilization = getattr(request, "engine_gpu_memory_utilization", None),
         )
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
@@ -18706,6 +18827,10 @@ async def _load_model_impl(
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
                 == request.engine
+                # A resident precision folder (6-bit/) is not the root checkpoint a variantless request names.
+                and not (backend.models.get(backend.active_model_name) or {}).get(
+                    "precision_folder"
+                )
                 and _mlx_runtime_settings_match(backend, request)
                 and _non_gguf_runtime_settings_match(backend, request)
                 and _resident_context_satisfies(
@@ -18746,6 +18871,7 @@ async def _load_model_impl(
                     engine = request.engine,
                     engine_parallelism = request.engine_parallelism,
                     engine_precision = request.engine_precision,
+                    **_managed_engine_launch_fields(_model_info),
                     gpu_ids = _model_info.get("gpu_ids"),
                     requested_gpu_ids = _model_info.get("gpu_ids_requested"),
                     tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
@@ -19631,6 +19757,7 @@ async def _load_model_impl(
             engine = request.engine,
             engine_parallelism = request.engine_parallelism,
             engine_precision = request.engine_precision,
+            **_managed_engine_launch_fields(_model_info),
             gpu_ids = _model_info.get("gpu_ids"),
             requested_gpu_ids = _model_info.get("gpu_ids_requested"),
             tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
@@ -22457,6 +22584,7 @@ async def _slot_status(current_subject: str):
             engine = model_info.get("engine", "auto"),
             engine_parallelism = model_info.get("engine_parallelism", "tensor"),
             engine_precision = model_info.get("engine_precision", "auto"),
+            **_managed_engine_launch_fields(model_info),
             gpu_ids = model_info.get("gpu_ids"),
             tensor_parallel = bool(model_info.get("tensor_parallel", False)),
             active_model = _active,
@@ -27738,6 +27866,31 @@ def _replay_tool_call_ids(tool_calls: Any, replay_ids: dict[str, str]) -> Any:
     return out
 
 
+def _live_tool_call_ids(messages: list[dict]) -> list[dict]:
+    """GGUF history with each tool-call id as the model generated it: the client suffixes every card id
+    with a minted uuid, which templates that render ids (Kimi, Mistral) would otherwise show, and Mistral
+    rejects outright. Calls and results lose the same suffix, so they stay paired."""
+    out = []
+    for message in messages:
+        calls = message.get("tool_calls")
+        call_id = message.get("tool_call_id")
+        if isinstance(calls, list):
+            calls = [
+                {**call, "id": _MINTED_TOOL_CALL_ID_SUFFIX.sub("", call["id"]) or call["id"]}
+                if isinstance(call, dict) and isinstance(call.get("id"), str)
+                else call
+                for call in calls
+            ]
+            message = {**message, "tool_calls": calls}
+        if isinstance(call_id, str):
+            message = {
+                **message,
+                "tool_call_id": _MINTED_TOOL_CALL_ID_SUFFIX.sub("", call_id) or call_id,
+            }
+        out.append(message)
+    return out
+
+
 def _build_external_messages(
     messages: list,
     supports_vision: bool,
@@ -27747,6 +27900,7 @@ def _build_external_messages(
     promoted_out: "Optional[list]" = None,
     promote_mcp_images: "Optional[bool]" = None,
     model: Optional[str] = None,
+    preserve_thinking: Optional[bool] = None,
 ) -> list[dict]:
     """
     Convert ChatMessage list to OpenAI-compatible dicts for external providers.
@@ -27891,7 +28045,11 @@ def _build_external_messages(
             return {"type": "compaction", "encrypted_content": item.encrypted_content}
         return None
 
-    replays_reasoning = provider_type == "llama_cpp" or _is_kimi_k3(provider_type, model)
+    replays_reasoning = (
+        provider_type == "llama_cpp"
+        or (provider_type == "vllm" and preserve_thinking is True)
+        or _is_kimi_k3(provider_type, model)
+    )
     result = []
     for msg in messages:
         replay = (
@@ -29087,6 +29245,7 @@ async def _proxy_to_external_provider(
             provider_type, _supports_vision, model, _pinfo
         ),
         model = model,
+        preserve_thinking = payload.preserve_thinking,
     )
     monitor_id = None
     if not getattr(request.state, "skip_api_monitor", False):
@@ -30320,6 +30479,14 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
     return (value or "").strip() == "1"
 
 
+def _accepts_keyword(fn, name: str) -> bool:
+    import inspect
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 # The loaded model serves the request, so a caller that cannot use speech says so per request.
 REQUIRE_TEXT_HEADER = "X-Unsloth-Require-Text"
 
@@ -30863,6 +31030,12 @@ async def produce_openai_chat_completions(
                     "route: a waveform admits no grammar, and transcription and audio-input "
                     "answers are decoded without one. Send the request to a text model.",
                 )
+        # Callable client tools set the format aside (_response_format_beside_tools), so nothing
+        # below applies, unless the request asks for Unsloth's own loop, which keeps the format.
+        if _response_format_constrains_decoding(payload) and (
+            _explicit_studio_tool_loop_requested(payload)
+            or not _tools_outrank_response_format(payload, payload.tools)
+        ):
             if not model_info.get("is_mlx"):
                 _raise_unsupported_openai_parameter(
                     "response_format",
@@ -31623,7 +31796,13 @@ async def produce_openai_chat_completions(
         if use_tools:
             from core.inference.tools import set_mcp_listing_context_tokens
 
-            set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
+            set_mcp_listing_context_tokens(
+                getattr(llama_backend, "context_length", None),
+                payload.thread_id,
+                payload.messages,
+                payload.tool_choice,
+                getattr(payload, "mcp_image", None),
+            )
             tools_to_use = await _select_request_tools(
                 payload,
                 supports_vision = bool(getattr(llama_backend, "is_vision", False)),
@@ -33507,10 +33686,14 @@ async def produce_openai_chat_completions(
 
     # Classify capability flags from the loaded template.
     _sf_model_info = backend.models.get(backend.active_model_name, {})
-    # Only MLX can count its own prompt, so only MLX is fitted before it generates.
-    _sf_fit_overflow = _rolling_context_policy(payload) if _sf_model_info.get("is_mlx") else None
+    # Only MLX and managed vLLM count their own prompt exactly, so only they are fitted first.
+    _sf_fit_overflow = (
+        _rolling_context_policy(payload)
+        if _sf_model_info.get("is_mlx") or _sf_model_info.get("engine") == "vllm"
+        else None
+    )
     if _sf_model_info.get("engine") in ("vllm", "sglang"):
-        if _managed_engine_unsupported_controls(payload):
+        if _managed_engine_unsupported_controls(payload, _sf_model_info):
             raise _reject(
                 400,
                 "This engine integration does not support adapters, structured output, continuation or reasoning controls.",
@@ -33795,7 +33978,13 @@ async def produce_openai_chat_completions(
     if _sf_use_tools:
         from core.inference.tools import set_mcp_listing_context_tokens
 
-        set_mcp_listing_context_tokens(_monitor_context_length())
+        set_mcp_listing_context_tokens(
+            _monitor_context_length(),
+            payload.thread_id,
+            payload.messages,
+            payload.tool_choice,
+            getattr(payload, "mcp_image", None),
+        )
         _sf_tools_to_use = await _select_request_tools(
             payload,
             tools_on = _sf_tools_on,
@@ -34469,6 +34658,11 @@ async def produce_openai_chat_completions(
         and _sf_supports_tools
         and ((payload.tools and len(payload.tools) > 0) or _sf_has_tool_msgs)
     )
+    _sf_response_format = _response_format_beside_tools(
+        payload, payload.tools if _sf_client_tools else None
+    )
+    gen_kwargs["response_format"] = _sf_response_format
+    _sf_single_block = _sf_single_block and _sf_response_format is not None
     # apply_chat_template sanitizes the catalog it renders, so a tool dropped for unsafe
     # markup never reached the prompt. Gating the healer on the caller's list instead would
     # promote a dropped tool with a clean NAME out of text-form output, handing the client a
@@ -34520,7 +34714,7 @@ async def produce_openai_chat_completions(
             payload.auto_heal_tool_calls,
             _sf_healing_tools,
             payload.tool_choice,
-            response_format = _extract_response_format(payload),
+            response_format = _sf_response_format,
         )
         if _sf_client_tools
         else None
@@ -34647,6 +34841,16 @@ async def produce_openai_chat_completions(
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
     _sf_context_truncation_holder: dict = {"value": None}
+    # Diffusion canvas frames only for a streaming, single-choice reply to a client rendering Studio events.
+    _sf_ui_events = _ui_stream_events_enabled(request)
+    _sf_frame_kwargs = (
+        {"diffusion_frames": True}
+        if payload.stream
+        and _sf_ui_events
+        and (payload.n or 1) == 1
+        and _accepts_keyword(backend.generate_chat_response, "diffusion_frames")
+        else {}
+    )
 
     if payload.use_adapter is not None:
 
@@ -34655,6 +34859,7 @@ async def produce_openai_chat_completions(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
+                **_sf_frame_kwargs,
                 **kw,
             )
     else:
@@ -34663,6 +34868,7 @@ async def produce_openai_chat_completions(
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
+                **_sf_frame_kwargs,
                 **kw,
             )
 
@@ -34795,6 +35001,12 @@ async def produce_openai_chat_completions(
                                 model_name,
                                 {key: value for key, value in cumulative.items() if key != "type"},
                             )
+                        elif cumulative.get("type") == "diffusion_frame":
+                            # As on the GGUF path: never in the transcript.
+                            if _sf_ui_events:
+                                yield f"data: {json.dumps(cumulative)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if isinstance(cumulative, GenStreamError):
                         backend.reset_generation_state(cancel_event)
@@ -35149,7 +35361,7 @@ async def produce_openai_chat_completions(
                         _finish = "tool_calls"
                     elif nudge_enabled(
                         payload.nudge_tool_calls,
-                        response_format = _extract_response_format(payload),
+                        response_format = _sf_response_format,
                     ):
                         _data = {
                             "choices": [
@@ -37061,7 +37273,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
                     json = upstream_body,
                     headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 )
-                first_token_deadline = time.monotonic() + _first_token_timeout_s()
+                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                 # Same event the relay loop polls, so a forced swap ends the request during prefill
                 # instead of only once headers arrive.
                 resp = await _send_stream_with_preheader_cancel(
@@ -37907,6 +38119,41 @@ def _responses_custom_tool_names(tools: Optional[list[dict]]) -> set[str]:
     return {tool["name"] for tool in tools or [] if _is_responses_apply_patch_tool(tool)}
 
 
+def _responses_namespaced_name(namespace: str, name: str) -> str:
+    return f"{namespace}__{name}"
+
+
+def _responses_namespace_functions(tool: dict) -> list[tuple[str, dict]]:
+    namespace = tool.get("name")
+    if not isinstance(namespace, str) or not namespace:
+        return []
+    return [
+        (_responses_namespaced_name(namespace, inner["name"]), inner)
+        for inner in tool.get("tools") or []
+        if isinstance(inner, dict)
+        and inner.get("type") == "function"
+        and isinstance(inner.get("name"), str)
+    ]
+
+
+def _responses_namespaced_tool_names(tools: Optional[list[dict]]) -> dict[str, tuple[str, str]]:
+    return {
+        flat_name: (tool["name"], inner["name"])
+        for tool in tools or []
+        if isinstance(tool, dict) and tool.get("type") == "namespace"
+        for flat_name, inner in _responses_namespace_functions(tool)
+    }
+
+
+def _responses_function_call_name(
+    name: str, namespaced_tool_names: dict[str, tuple[str, str]]
+) -> dict:
+    if name in namespaced_tool_names:
+        namespace, bare_name = namespaced_tool_names[name]
+        return {"name": bare_name, "namespace": namespace}
+    return {"name": name}
+
+
 def _responses_apply_patch_description(tool: dict) -> str:
     description = (
         "Edit files by passing one complete patch in the input field. "
@@ -37969,19 +38216,29 @@ def _translate_responses_tools_to_chat(tools: Optional[list[dict]]) -> Optional[
                 }
             )
             continue
+        if tool.get("type") == "namespace":
+            out.extend(
+                _responses_function_tool_to_chat({**inner, "name": flat_name})
+                for flat_name, inner in _responses_namespace_functions(tool)
+            )
+            continue
         if tool.get("type") != "function":
             continue
-        fn: dict = {}
-        if "name" in tool:
-            fn["name"] = tool["name"]
-        if tool.get("description") is not None:
-            fn["description"] = tool["description"]
-        if tool.get("parameters") is not None:
-            fn["parameters"] = tool["parameters"]
-        if tool.get("strict") is not None:
-            fn["strict"] = tool["strict"]
-        out.append({"type": "function", "function": fn})
+        out.append(_responses_function_tool_to_chat(tool))
     return out or None
+
+
+def _responses_function_tool_to_chat(tool: dict) -> dict:
+    fn: dict = {}
+    if "name" in tool:
+        fn["name"] = tool["name"]
+    if tool.get("description") is not None:
+        fn["description"] = tool["description"]
+    if tool.get("parameters") is not None:
+        fn["parameters"] = tool["parameters"]
+    if tool.get("strict") is not None:
+        fn["strict"] = tool["strict"]
+    return {"type": "function", "function": fn}
 
 
 def _translate_responses_tool_choice_to_chat(
@@ -38478,7 +38735,11 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
                     "id": item.call_id,
                     "type": "function",
                     "function": {
-                        "name": item.name,
+                        "name": (
+                            _responses_namespaced_name(item.namespace, item.name)
+                            if item.namespace
+                            else item.name
+                        ),
                         "arguments": item.arguments,
                     },
                 }
@@ -38705,6 +38966,7 @@ def _chat_tool_calls_to_responses_output(
     tool_calls: list[dict],
     custom_tool_names: Optional[set[str]] = None,
     status: Literal["completed", "incomplete"] = "completed",
+    namespaced_tool_names: Optional[dict[str, tuple[str, str]]] = None,
 ) -> list[dict]:
     """Map local function calls back into their Responses output item types.
 
@@ -38733,7 +38995,7 @@ def _chat_tool_calls_to_responses_output(
         items.append(
             ResponsesOutputFunctionCall(
                 call_id = tc.get("id", ""),
-                name = name,
+                **_responses_function_call_name(name, namespaced_tool_names or {}),
                 arguments = arguments,
                 status = status,
             ).model_dump()
@@ -38855,6 +39117,7 @@ async def _responses_non_streaming(
                 tool_calls,
                 _responses_custom_tool_names(payload.tools),
                 status = item_status,
+                namespaced_tool_names = _responses_namespaced_tool_names(payload.tools),
             )
         )
 
@@ -38942,6 +39205,7 @@ async def _responses_stream(
 
     chat_req = _build_chat_request(payload, messages, stream = True)
     custom_tool_names = _responses_custom_tool_names(payload.tools)
+    namespaced_tool_names = _responses_namespaced_tool_names(payload.tools)
 
     llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
@@ -39153,7 +39417,7 @@ async def _responses_stream(
                         "id": st["item_id"],
                         "status": "in_progress",
                         "call_id": st["call_id"],
-                        "name": st["name"],
+                        **_responses_function_call_name(st["name"], namespaced_tool_names),
                         "arguments": "",
                     },
                 }
@@ -39405,7 +39669,7 @@ async def _responses_stream(
                         "id": st["item_id"],
                         "status": active_item_status,
                         "call_id": st["call_id"],
-                        "name": st["name"],
+                        **_responses_function_call_name(st["name"], namespaced_tool_names),
                         "arguments": st["arguments"],
                     }
                 indexed_items.append(
@@ -39482,7 +39746,7 @@ async def _responses_stream(
                 json = body,
                 headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
             )
-            first_token_deadline = time.monotonic() + _first_token_timeout_s()
+            first_token_deadline = start_first_token_wait(_first_token_timeout_s())
             try:
                 # Same event the loop below polls: prefill can run for the whole first-token window,
                 # and only the send watcher can end it early.
@@ -39893,7 +40157,7 @@ async def _responses_stream(
                         "id": st["item_id"],
                         "status": "in_progress",
                         "call_id": st["call_id"],
-                        "name": st["name"],
+                        **_responses_function_call_name(st["name"], namespaced_tool_names),
                         "arguments": "",
                     },
                 }
@@ -39914,7 +40178,7 @@ async def _responses_stream(
                 "type": "response.function_call_arguments.done",
                 "item_id": st["item_id"],
                 "output_index": st["output_index"],
-                "name": st["name"],
+                **_responses_function_call_name(st["name"], namespaced_tool_names),
                 "arguments": st["arguments"],
             }
             yield _sse("response.function_call_arguments.done", args_done)
@@ -39927,7 +40191,7 @@ async def _responses_stream(
                     "id": st["item_id"],
                     "status": active_item_status,
                     "call_id": st["call_id"],
-                    "name": st["name"],
+                    **_responses_function_call_name(st["name"], namespaced_tool_names),
                     "arguments": st["arguments"],
                 },
             }
@@ -40960,7 +41224,13 @@ async def _mlx_count_chat_tokens(
             from core.inference.mcp_client import mcp_server_snapshot_guard
             from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
 
-            set_mcp_listing_context_tokens(_monitor_context_length())
+            set_mcp_listing_context_tokens(
+                _monitor_context_length(),
+                getattr(payload, "thread_id", None),
+                payload.messages,
+                getattr(payload, "tool_choice", None),
+                getattr(payload, "mcp_image", None),
+            )
 
             # A database read, so off the loop. Guarded as the GGUF count guards it, or
             # an interleaving edit pairs a new row with the schema cached before it.
@@ -41296,10 +41566,15 @@ async def chat_count_tokens(
 
         # As generation sends them; off the loop since restoring may parse an envelope.
         _count_dumped = await asyncio.to_thread(restore_replayed_tool_results, _count_dumped)
+    _count_kept = _strip_provider_synthetic_tool_history(
+        _drop_empty_assistant_sentinels(_count_dumped)
+    )
+    if not _takes_passthrough:
+        _count_kept = _live_tool_call_ids(_count_kept)
     # Awaited: stripping parses the whole envelope, and this recount runs in the
     # background on every turn, so it must not do that on the shared loop.
     openai_messages = await _promote_mcp_history_images_async(
-        _strip_provider_synthetic_tool_history(_drop_empty_assistant_sentinels(_count_dumped)),
+        _count_kept,
         # Never as pixels: /apply-template prices a media marker, not the image.
         # This drops the base64 the completion path would have promoted, which is
         # the one part a count must not price as text.
@@ -41358,7 +41633,13 @@ async def chat_count_tokens(
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
         from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
 
-        set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
+        set_mcp_listing_context_tokens(
+            getattr(llama_backend, "context_length", None),
+            getattr(payload, "thread_id", None),
+            payload.messages,
+            getattr(payload, "tool_choice", None),
+            getattr(payload, "mcp_image", None),
+        )
         from core.inference.mcp_client import mcp_server_snapshot_guard
 
         # Keep the SQLite read off-loop while coordinating the row/cache snapshot with edits.
@@ -41434,11 +41715,7 @@ async def chat_count_tokens(
         payload.enable_thinking,
         payload.reasoning_effort,
         # Off the loop: first use probes the template.
-        payload.preserve_thinking
-        if _takes_passthrough
-        else await asyncio.to_thread(
-            _replay_preserve_thinking, llama_backend, payload, openai_messages
-        ),
+        await asyncio.to_thread(_replay_preserve_thinking, llama_backend, payload, openai_messages),
     )
 
     # Whose tokenizer this is, in the shape /api/inference/status publishes: another tab's load
@@ -41673,18 +41950,13 @@ async def anthropic_count_tokens(
     # templates thinking / reasoning_effort / preserve_thinking change the
     # rendered prompt, so counting the load-time default would under- or
     # over-count the request the client is about to send.
-    _reasoning_args = _anthropic_reasoning_args(payload)
-    _count_preserve = _reasoning_args["preserve_thinking"]
-    _resolve_preserve = getattr(llama_backend, "_replay_preserve_thinking", None)
-    if _resolve_preserve is not None and not _count_client_tools:
-        # Off the loop: first use probes the template.
-        _count_preserve = await asyncio.to_thread(
-            _resolve_preserve,
-            _count_preserve,
-            openai_messages,
-            _reasoning_args["enable_thinking"],
-            _reasoning_args["reasoning_effort"],
-        )
+    if _count_server_tools:
+        from core.inference.tool_loop_controller import restore_replayed_tool_results
+        openai_messages = await asyncio.to_thread(restore_replayed_tool_results, openai_messages)
+    # Off the loop: first use probes the template.
+    _reasoning_args = await _resolved_anthropic_reasoning_args_async(
+        llama_backend, payload, openai_messages
+    )
     try:
         count = await asyncio.to_thread(
             lambda: llama_backend.count_chat_tokens(
@@ -41692,11 +41964,8 @@ async def anthropic_count_tokens(
                 None,
                 openai_tools,
                 strict = True,
-                chat_template_kwargs = _reasoning_template_kwargs(
-                    llama_backend,
-                    _reasoning_args["enable_thinking"],
-                    _reasoning_args["reasoning_effort"],
-                    _count_preserve,
+                chat_template_kwargs = _anthropic_count_template_kwargs(
+                    llama_backend, _reasoning_args
                 ),
             )
         )
@@ -41788,6 +42057,10 @@ async def anthropic_messages(
     # only top-level images require vision or rule out server tools.
     _anthropic_top_level_image = _anthropic_request_has_image(payload, tool_results = False)
     _anthropic_image_b64s = _anthropic_local_image_payloads(payload)
+    # Anthropic's block path lets clients drop the image instead of resending it every turn.
+    _anthropic_image_prefix = (
+        f"{_anthropic_top_level_image_location(payload)}: " if _anthropic_top_level_image else ""
+    )
 
     # Mixing Anthropic server tools with custom client tools is unsupported (the
     # server-tool loop can't relay client functions back to the caller). Reject
@@ -41884,6 +42157,7 @@ async def anthropic_messages(
         request,
         current_subject,
         require_vision = _anthropic_top_level_image,
+        rejection_prefix = _anthropic_image_prefix,
         # The image normalization below can still 400 after this switch, so defer the claim:
         # the middleware claims on a 2xx, so a rejected request never strands a preview-owned
         # model.
@@ -41913,6 +42187,13 @@ async def anthropic_messages(
     # the local .gguf path (and a legacy raw path in payload.model is sanitized).
     model_name = _llama_public_model_id(llama_backend, payload.model)
     message_id = f"msg_{uuid.uuid4().hex[:24]}"
+
+    if _anthropic_top_level_image and not llama_backend.is_vision:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"{_anthropic_image_prefix}"
+            "Image provided but current GGUF model does not support vision.",
+        )
 
     # ── Translate Anthropic → OpenAI ──────────────────────────
     openai_messages = anthropic_messages_to_openai(
@@ -42346,6 +42627,10 @@ async def anthropic_messages(
             else:
                 reservation.cancel()
 
+    _reasoning_args = await _resolved_anthropic_reasoning_args_async(
+        llama_backend, payload, openai_messages
+    )
+
     # ── Client-side pass-through path ─────────────────────────
     if client_tools or response_format is not None:
         openai_tools = openai_client_tools if client_tools else []
@@ -42376,7 +42661,7 @@ async def anthropic_messages(
                     auto_heal_tool_calls = payload.auto_heal_tool_calls,
                     response_format = response_format,
                     parse_think = _think_parsing_expected(llama_backend, payload),
-                    **_anthropic_reasoning_args(payload),
+                    **_reasoning_args,
                 )
             )
         return await _admitted_anthropic(
@@ -42403,7 +42688,7 @@ async def anthropic_messages(
                 cancel_event = cancel_event,
                 response_format = response_format,
                 parse_think = _think_parsing_expected(llama_backend, payload),
-                **_anthropic_reasoning_args(payload),
+                **_reasoning_args,
             )
         )
 
@@ -42413,6 +42698,10 @@ async def anthropic_messages(
     _think_prov: dict = {"wrapped": 0}
 
     if server_tools:
+        from core.inference.tool_loop_controller import restore_replayed_tool_results
+
+        # As the tool loop does, so the opening usage count prices what it sends.
+        openai_messages = await asyncio.to_thread(restore_replayed_tool_results, openai_messages)
         # Bypass Permissions suppresses confirm, so both flags together is fine.
         if bool(getattr(payload, "confirm_tool_calls", False)) and not bool(
             getattr(payload, "bypass_permissions", False)
@@ -42536,7 +42825,8 @@ async def anthropic_messages(
                     monitor_id,
                     llama_backend.context_length,
                 ),
-                **_anthropic_reasoning_args(payload),
+                replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
+                **_reasoning_args,
             )
 
         if payload.stream:
@@ -42553,7 +42843,9 @@ async def anthropic_messages(
                     disable_parallel_tool_use = _disable_parallel,
                     parse_think = _think_parsing_expected(llama_backend, payload),
                     think_provenance = _think_prov,
-                    count_template_kwargs = _anthropic_count_template_kwargs(llama_backend, payload),
+                    count_template_kwargs = _anthropic_count_template_kwargs(
+                        llama_backend, _reasoning_args
+                    ),
                 ),
                 # Same server-side loop the chat route runs, up to 25 rounds on one lease.
                 tool_loop = True,
@@ -42593,7 +42885,8 @@ async def anthropic_messages(
                 monitor_id,
                 llama_backend.context_length,
             ),
-            **_anthropic_reasoning_args(payload),
+            replay_preserve_thinking = not _anthropic_history_has_thinking(payload),
+            **_reasoning_args,
         )
 
     if payload.stream:
@@ -42608,7 +42901,9 @@ async def anthropic_messages(
                 openai_messages = openai_messages,
                 parse_think = _think_parsing_expected(llama_backend, payload),
                 think_provenance = _think_prov,
-                count_template_kwargs = _anthropic_count_template_kwargs(llama_backend, payload),
+                count_template_kwargs = _anthropic_count_template_kwargs(
+                    llama_backend, _reasoning_args
+                ),
             )
         )
     return await _admitted_anthropic(
@@ -43821,7 +44116,7 @@ async def _anthropic_passthrough_stream(
                     json = body,
                     headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 )
-                first_token_deadline = time.monotonic() + _first_token_timeout_s()
+                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
                 )
@@ -43837,7 +44132,7 @@ async def _anthropic_passthrough_stream(
                     json = body,
                     headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
                 )
-                first_token_deadline = time.monotonic() + _first_token_timeout_s()
+                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                 resp = await _send_stream_with_preheader_cancel(
                     client, req, cancel_event, request = request
                 )
@@ -44652,11 +44947,14 @@ def _openai_messages_for_gguf_chat(
 
     # Coalesce only on the GGUF chat path (strict Jinja template); the tool path
     # reuses this via _set_or_prepend_system_message. Passthrough forwards verbatim.
+    # Ids lose their minted suffix only after the synthetic pass, which drops results by id.
     messages = _coalesce_consecutive_user_turns(
-        _strip_provider_synthetic_tool_history(
-            _drop_empty_assistant_sentinels(
-                restore_replayed_tool_results(
-                    [m.model_dump(exclude_none = True) for m in payload.messages]
+        _live_tool_call_ids(
+            _strip_provider_synthetic_tool_history(
+                _drop_empty_assistant_sentinels(
+                    restore_replayed_tool_results(
+                        [m.model_dump(exclude_none = True) for m in payload.messages]
+                    )
                 )
             )
         )
@@ -44685,7 +44983,10 @@ async def _openai_messages_for_gguf_chat_async(
     is_vision: bool,
     promoted_out: "Optional[list]" = None,
 ) -> tuple[list[dict], bool]:
-    if _request_has_image(payload):
+    # Restoring a tool result may parse its envelope or source map.
+    if _request_has_image(payload) or any(
+        getattr(message, "role", None) == "tool" for message in payload.messages
+    ):
         return await asyncio.to_thread(
             _openai_messages_for_gguf_chat, payload, is_vision, promoted_out
         )
@@ -44742,6 +45043,21 @@ def _reject_unhonorable_response_format(payload) -> None:
         _raise_unsupported_openai_parameter("response_format", str(exc))
 
 
+def _tools_outrank_response_format(payload, tools) -> bool:
+    return bool(tools) and payload.tool_choice != "none"
+
+
+def _response_format_beside_tools(payload, tools):
+    """The request's ``response_format``, or None while ``tools`` can still be called:
+    decoding locked to the document would never emit the call."""
+    if _tools_outrank_response_format(payload, tools) and _response_format_constrains_decoding(
+        payload
+    ):
+        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
+        return None
+    return _extract_response_format(payload)
+
+
 def _build_openai_passthrough_body(
     payload,
     backend_ctx = None,
@@ -44769,15 +45085,14 @@ def _build_openai_passthrough_body(
         llama_backend._request_reasoning_kwargs(
             payload.enable_thinking,
             payload.reasoning_effort,
-            payload.preserve_thinking,
+            _replay_preserve_thinking(llama_backend, payload, messages),
         )
         if llama_backend is not None
         else None
     )
-    response_format = _response_format_for_llama_server(_extract_response_format(payload))
-    if tools and tool_choice != "none" and _response_format_constrains_decoding(payload):
-        logger.warning("Ignoring response_format: callable tools cannot run under a schema")
-        response_format = None
+    response_format = _response_format_for_llama_server(
+        _response_format_beside_tools(payload, tools)
+    )
     body = _build_passthrough_payload(
         messages,
         tools,
@@ -44813,7 +45128,7 @@ async def _build_openai_passthrough_body_async(
     backend_ctx = None,
     llama_backend = None,
 ) -> dict:
-    if _request_has_image(payload):
+    if _request_has_image(payload) or _preserve_probe_pending(llama_backend):
         return await asyncio.to_thread(
             _build_openai_passthrough_body,
             payload,
@@ -45123,7 +45438,7 @@ async def _openai_passthrough_stream_admitted(
         while True:
             try:
                 req = client.build_request("POST", target_url, json = body, headers = upstream_headers)
-                first_token_deadline = time.monotonic() + _first_token_timeout_s()
+                first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                 send_task = asyncio.create_task(
                     _send_stream_with_preheader_cancel(
                         client,
@@ -45504,8 +45819,8 @@ async def _openai_passthrough_stream_admitted(
                                                 mark_cancel_on_cancel = False,
                                             )
                                         )
-                                        first_token_deadline = (
-                                            time.monotonic() + _first_token_timeout_s()
+                                        first_token_deadline = start_first_token_wait(
+                                            _first_token_timeout_s()
                                         )
                                         continue
                                 logger.error(
@@ -45544,7 +45859,7 @@ async def _openai_passthrough_stream_admitted(
                         req = client.build_request(
                             "POST", target_url, json = body, headers = upstream_headers
                         )
-                        first_token_deadline = time.monotonic() + _first_token_timeout_s()
+                        first_token_deadline = start_first_token_wait(_first_token_timeout_s())
                         send_task = asyncio.create_task(
                             _send_stream_with_preheader_cancel(
                                 client,
@@ -46735,6 +47050,7 @@ async def load_diffusion_model_gated(
         annotate_status,
         begin_load_on,
         engine_for,
+        image_install_accelerator,
         off_torch_sd_cpp_device,
         predict_engine,
         select_and_activate_engine,
@@ -46748,6 +47064,12 @@ async def load_diffusion_model_gated(
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.sd_cpp_args import forces_cpu_backend
+    from core.inference.sd_cpp_backend import (
+        managed_sd_cpp_accelerator,
+        preferred_accelerator,
+        sd_cpp_binaries_all_cpu,
+        selected_card_identity,
+    )
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -46828,6 +47150,41 @@ async def load_diffusion_model_gated(
         # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
         if pending_name == ENGINE_MLX:
             needs_gpu = True
+        # So does the Vulkan sd.cpp build a CPU torch is routed to beside an AMD or Arc card,
+        # unless that build has failed here and the ladder runs the CPU one instead.
+        # A retained managed Vulkan build also renders on the card, whatever this load requested.
+        vulkan_on_cpu_torch = (
+            device == "cpu"
+            and off_torch is None
+            and await asyncio.to_thread(
+                lambda: preferred_accelerator(image_install_accelerator("cpu"), None) == "vulkan"
+                or managed_sd_cpp_accelerator() == "vulkan"
+            )
+        )
+        if pending_name == ENGINE_SD_CPP and vulkan_on_cpu_torch:
+            needs_gpu = True
+        # A GPU torch whose GPU builds have all failed here runs the managed CPU bundle: no claim.
+        def _runs_cpu_rung() -> bool:
+            try:
+                torch_backend = getattr(resolve_diffusion_device_target(), "backend", device)
+                return (
+                    preferred_accelerator(
+                        image_install_accelerator(torch_backend),
+                        selected_card_identity(gpu_ordinal),
+                    )
+                    == "cpu"
+                    and sd_cpp_binaries_all_cpu()
+                )
+            except Exception:  # noqa: BLE001 -- unknown keeps the claim
+                return False
+
+        cpu_rung_on_gpu_torch = (
+            device not in ("cpu", "mps")
+            and off_torch is None
+            and await asyncio.to_thread(_runs_cpu_rung)
+        )
+        if pending_name == ENGINE_SD_CPP and cpu_rung_on_gpu_torch:
+            needs_gpu = False
         # Before selection: switching to diffusers would unload the resident off-torch model, then refuse.
         if off_torch is not None and pending_name != ENGINE_SD_CPP:
             _guard_diffusion_load_against_training()
@@ -46946,8 +47303,18 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        if device == "cpu" and off_torch is None:
+            # Re-settled on what selection activated and installed: a CPU diffusers fallback, or a
+            # retained CPU bundle after a failed Vulkan install, takes no GPU.
+            needs_gpu = (
+                activated == ENGINE_SD_CPP
+                and vulkan_on_cpu_torch
+                and not await asyncio.to_thread(sd_cpp_binaries_all_cpu)
+            )
         if activated == ENGINE_MLX:
             needs_gpu = True
+        if activated == ENGINE_SD_CPP and cpu_rung_on_gpu_torch:
+            needs_gpu = False
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
         if (
             activated == ENGINE_SD_CPP

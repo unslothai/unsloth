@@ -61,6 +61,20 @@ class LoadRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Inference engine to use. 'auto' selects Studio's default backend; "
@@ -599,6 +613,20 @@ class ValidateModelRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
@@ -1440,6 +1468,9 @@ class _InferenceRuntimeFields(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = "auto"
+    engine_seed: Optional[int] = None
+    engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Active inference engine. 'auto' denotes Studio's default backend; "
@@ -3684,6 +3715,7 @@ class ResponsesFunctionCallInputItem(BaseModel):
         description = "Correlation id matching a function_call_output on the next turn.",
     )
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Optional[Literal["in_progress", "completed", "incomplete"]] = None
 
@@ -3885,8 +3917,16 @@ class ResponsesOutputFunctionCall(BaseModel):
     id: str = Field(default_factory = lambda: f"fc_{uuid.uuid4().hex[:12]}")
     call_id: str
     name: str
+    namespace: Optional[str] = None
     arguments: str = Field(..., description = "JSON string of the arguments the model produced.")
     status: Literal["completed", "in_progress", "incomplete"] = "completed"
+
+    @model_serializer(mode = "wrap")
+    def _omit_unset_namespace(self, handler):
+        data = handler(self)
+        if isinstance(data, dict) and data.get("namespace") is None:
+            data.pop("namespace", None)
+        return data
 
 
 class ResponsesOutputCustomToolCall(BaseModel):
@@ -4233,6 +4273,7 @@ class AnthropicMessagesRequest(BaseModel):
         description = "[x-unsloth] Opt-in tool-call recovery; mirrors the Chat Completions nudge_tool_calls field and defaults off.",
     )
     model_config = {"extra": "allow"}
+    _message_ordinals: Optional[list[int]] = PrivateAttr(default = None)
 
     @model_validator(mode = "after")
     def _effort_from_output_config(self) -> "AnthropicMessagesRequest":
@@ -4288,6 +4329,20 @@ class AnthropicMessagesRequest(BaseModel):
         normalized["messages"] = normalized_messages
         normalized["system"] = _merge_anthropic_system(normalized.get("system"), system_additions)
         return normalized
+
+    @model_validator(mode = "wrap")
+    @classmethod
+    def _record_message_ordinals(cls, data: Any, handler):
+        # Error paths name the client's own message index, not the one left after system folding.
+        model = handler(data)
+        messages = data.get("messages") if isinstance(data, dict) else None
+        if isinstance(messages, list):
+            model._message_ordinals = [
+                i
+                for i, m in enumerate(messages)
+                if not (isinstance(m, dict) and m.get("role") == "system")
+            ]
+        return model
 
     @field_validator("sandbox_level", mode = "before")
     @classmethod
