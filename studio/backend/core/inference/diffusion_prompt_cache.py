@@ -78,7 +78,21 @@ def _plain(value: Any) -> Any:
     torch = _torch()
     if isinstance(value, (torch.dtype, torch.device)):
         return str(value)
+    image = _image_fingerprint(value)
+    if image is not None:
+        return image
     raise TypeError(type(value).__name__)
+
+
+def _image_fingerprint(value: Any) -> Optional[list]:
+    """Edit / reference images key by pixel content, so a repeat edit reuses the encoder output."""
+    if not (hasattr(value, "tobytes") and hasattr(value, "mode") and hasattr(value, "size")):
+        return None
+    module = type(value).__module__ or ""
+    if not module.startswith("PIL."):
+        return None
+    digest = hashlib.sha256(value.tobytes()).hexdigest()
+    return ["PIL.Image", str(value.mode), list(value.size), digest]
 
 
 def _is_tensor(obj: Any) -> bool:
@@ -269,6 +283,7 @@ def _wrap_encode_prompt(
         return False
 
     def cached_encode_prompt(*args: Any, **kwargs: Any) -> Any:
+        bypass = False
         try:
             bound = signature.bind(*args, **kwargs)
             bound.apply_defaults()
@@ -285,10 +300,13 @@ def _wrap_encode_prompt(
             )
             hit = cache.get(key, bound.arguments.get("device"))
         except TypeError:
+            # Fall through outside the handler so an encoder failure is not chained onto this TypeError.
             cache.stats["bypassed"] += 1
-            return encode(*args, **kwargs)
+            bypass = True
         except Exception as exc:  # noqa: BLE001 - never fail a render over the cache
             _warn(logger, "lookup", exc)
+            return encode(*args, **kwargs)
+        if bypass:
             return encode(*args, **kwargs)
         if hit is not None:
             return hit
@@ -367,6 +385,7 @@ def _make_h3_shim(original: Any, logger: Any) -> Any:
         if registered is None:
             return original(*args, **kwargs)
         cache, load_fp = registered
+        bypass = False
         try:
             if arguments.get("vision_inputs"):
                 raise TypeError("vision inputs")
@@ -381,10 +400,13 @@ def _make_h3_shim(original: Any, logger: Any) -> Any:
             )
             hit = cache.get(key, arguments.get("device"))
         except TypeError:
+            # Fall through outside the handler so an encoder failure is not chained onto this TypeError.
             cache.stats["bypassed"] += 1
-            return original(*args, **kwargs)
+            bypass = True
         except Exception as exc:  # noqa: BLE001
             _warn(logger, "h3 lookup", exc)
+            return original(*args, **kwargs)
+        if bypass:
             return original(*args, **kwargs)
         if hit is not None:
             return hit
