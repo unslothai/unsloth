@@ -101,9 +101,17 @@ on:
       - '.github/workflows/security-audit.yml'
 
 concurrency:
-  # Unique per commit on main, so a merge burst cannot cancel a pending run
-  # before it starts. See the note below for what this is buying.
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || '' }}
+  # One group per workflow, ref and event. On a PR branch a new push cancels the old run.
+  # On main cancel-in-progress is false, so a RUNNING run always finishes, and GitHub keeps
+  # one PENDING run per group, replaced by each newer push: a merge burst runs the commit
+  # already executing plus the tip, never a commit in between. That is the intended trade.
+  # A group per commit ran every workflow on every main commit (about 550 runner-minutes
+  # each at 100-160 commits a day), which is more than the org's runner pool supplies, so
+  # every queue grew for hours. Commits in the middle of a burst were tested as PRs, the
+  # tip's tree contains them, and a red tip is bisected with workflow_dispatch. The event
+  # keeps a nightly or a dispatch from being replaced by a push. The contract is enforced
+  # by tests/studio/test_main_runs_survive_merge_bursts.py.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
@@ -175,6 +183,13 @@ jobs:
 
       - name: Install bubblewrap, so the sandbox tests run instead of skipping
         # Bound apt retries; 25 minutes covers both calls' 1450s worst case.
+        #
+        # Background: apt (system packages) and the pip install below (this job's
+        # Python) touch nothing in common, so the ~10 s of apt overlaps the ~80 s of
+        # pip. Collected right before the first pytest step, which is the first thing
+        # that needs bwrap.
+        id: bubblewrap
+        background: true
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
@@ -230,6 +245,9 @@ jobs:
           # every pre-quant load returns None. CPU-only is fine: it declines its cpp
           # extensions under torch < 2.11 and the pure-Python constructors still import.
           pip install torchao
+
+      - name: Collect the bubblewrap install
+        wait: bubblewrap
 
       - name: Backend tests
         if: matrix.scope == 'full'

@@ -75,8 +75,19 @@ export const BUDGET = {
   // is the token activity Chart view (#13558, +0.7 KB raw / +0.3 KB transfer): its persisted store
   // pulls zustand/middleware into the startup set as a 99th chunk. Raised by that growth so main's
   // margin stays where it was.
-  transferBytes: 2_023_500,
-  rawBytes: 6_734_000,
+  // Six merges since add 2.9 KB raw / 1.4 KB transfer (6,570.7 -> 6,573.6 KB raw, 1,975.5 -> 1,976.9 KB
+  // transfer from b8d76e1696 to 8af12324b0, one machine and build), with the chunk count unchanged and
+  // no single import doing it. The largest step is the audio model selector fix (#13517, +2.9 KB raw /
+  // +0.9 KB transfer); thinking traces (#13545), MLX precision folders (#13565) and vLLM thinking
+  // effort (#13571) add the rest. Raised by that growth so main's margin stays where it was.
+  // The KV cache, GPU memory limit and seed engine options (#13596) add 5.7 KB raw / 1.4 KB transfer
+  // (6,573.5 -> 6,579.2 KB raw, 1,976.9 -> 1,978.3 KB transfer against abfe3142c, one machine and
+  // build), inline in the eager chat and settings chunks like the other engine options; raised by that.
+  // Read aloud's token cap and length warning add 0.2 KB raw / 0.1 KB transfer to the eager chat chunk
+  // (6,739,816 -> 6,740,052 B raw, 2,021,725 -> 2,021,835 B transfer against af9d97837e, one machine
+  // and build), which took main over; raised by that.
+  transferBytes: 2_026_610,
+  rawBytes: 6_743_236,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

@@ -18,6 +18,12 @@ function parseSliceValue(value: string | null): number | null {
   return num;
 }
 
+// The backend takes a whole number in [0, 1000]; a half-typed or out-of-range field must not 422 the Start.
+function normalizeEarlyStoppingPatience(value: number): number {
+  if (!Number.isFinite(value) || value < 1) return 0;
+  return Math.min(Math.floor(value), 1000);
+}
+
 function buildS3PayloadConfig(config: TrainingConfigState) {
   const s3 = config.datasetSource === "s3" ? config.s3Config : null;
   if (!s3) {
@@ -261,6 +267,10 @@ export function buildTrainingStartPayload(
     max_steps: config.maxSteps,
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
+    early_stopping_patience:
+      config.evalSteps > 0 && !isDecision && !isEmbedding
+        ? normalizeEarlyStoppingPatience(config.earlyStoppingPatience)
+        : 0,
     weight_decay: config.weightDecay,
     // max_grad_norm omitted on purpose: the backend now honors an explicit value,
     // so hardcoding 0 here would pin every UI run to "clipping off" and override

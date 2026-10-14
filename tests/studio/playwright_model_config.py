@@ -292,6 +292,10 @@ with sync_playwright() as p:
     def _is_load(req) -> bool:
         return req.method == "POST" and "/api/inference/load" in req.url
 
+    # Short requests whose missing end event is a lost event after 30 s of no progress, never work in progress.
+    def _is_lost_event_candidate(req) -> bool:
+        return "/api/settings/" in req.url or "/api/inference/validate" in req.url
+
     def _commit_started(req):
         try:
             if _is_commit(req):
@@ -358,13 +362,16 @@ with sync_playwright() as p:
             seen = (_commits["started"], len(_commits["inflight"]), len(_commits["loads_ended"]))
             if seen != progress[0]:
                 progress[:] = [seen, time.monotonic()]
-            # 30 s with nothing tracked starting or ending, while only settings writes are open,
-            # is a lost event rather than work in progress. Any open /load, /validate or /unload
-            # keeps the full timeout: the frontend awaits /unload before /load, and a large GGUF
-            # teardown can take minutes.
+            # 30 s with nothing tracked starting or ending, while only settings writes or /validate
+            # are open, is a lost event rather than work in progress. /validate answers in under a
+            # second on CI; on PR #13678's run (and main's 38452407726) one never reported its end,
+            # though the server logged every validate answered within 1 s, and each later step then
+            # sat out the full 180 s on that same stale entry until the 720 s cap killed the script.
+            # Any open /load or /unload keeps the full timeout: the frontend awaits /unload before
+            # /load, and a large GGUF teardown can take minutes.
             if (
                 _commits["inflight"]
-                and all("/api/settings/" in req.url for req in _commits["inflight"])
+                and all(_is_lost_event_candidate(req) for req in _commits["inflight"])
                 and not _pending_loads()
                 and time.monotonic() - progress[1] > 30
             ):
@@ -396,7 +403,7 @@ with sync_playwright() as p:
                 info(f"WARN {what}: the load flow ended without sending /api/inference/load")
             elif outcome == "stalled":
                 info(
-                    f"WARN {what}: nothing changed for 30s with only settings writes open; still counted in "
+                    f"WARN {what}: nothing changed for 30s with only settings writes or /validate open; still counted in "
                     f"flight: {sorted(f'{req.method} {req.url}' for req in _commits['inflight'])}"
                 )
                 # Those events are not coming; carrying them would stall every later wait too.
