@@ -163,10 +163,17 @@ def _caller_placement(args: Sequence[str]) -> Optional[str]:
         if name in _GPU_LAYER_FLAGS and value.strip().lower() in ("auto", "-1"):
             continue  # llama.cpp's own default, which leaves the fitter to place layers
         return name
+    from core.inference.llama_cpp import _LLAMA_ARG_TRUE_VALUES, _is_positive_int
+
     for key in _PLACEMENT_ENV:
         value = (os.environ.get(key) or "").strip().lower()
-        if value and not (key == "LLAMA_ARG_N_GPU_LAYERS" and value in ("auto", "-1")):
-            return key
+        if not value or (key == "LLAMA_ARG_N_GPU_LAYERS" and value in ("auto", "-1")):
+            continue
+        if key == "LLAMA_ARG_CPU_MOE" and value not in _LLAMA_ARG_TRUE_VALUES:
+            continue
+        if key in ("LLAMA_ARG_N_CPU_MOE", "LLAMA_ARG_N_CPU_FFN") and not _is_positive_int(value):
+            continue
+        return key
     return None
 
 
@@ -586,7 +593,6 @@ class ClusterServing:
         # Workers the current load's probe found unusable; a commit without them stops them.
         self._down: set = set()
         self._kv_guessed: bool = False
-        self._native_ctx: bool = False
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
 
@@ -720,11 +726,13 @@ class ClusterServing:
             # The toggle emits --split-mode tensor, which the block's layer split would override.
             self.topology, self.reason = "single", "tensor_parallel owns placement"
             return request
-        model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
-        if self._native_ctx:
-            # Without the fitter llama.cpp opens the model's whole trained context: unsized here.
-            self.topology, self.reason = "single", "the fitter is off and no context size is set"
+        from core.inference.llama_server_args import fit_is_effectively_on
+
+        if not fit_is_effectively_on(flags, os.environ):
+            # Nothing then shrinks the context or its compute buffers, which this does not price.
+            self.topology, self.reason = "single", "the fitter is off; placement is the caller's"
             return request
+        model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
         forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         if forced == "single":
             self.topology, self.reason = "single", f"forced by {ENV_TOPOLOGY}=single"
@@ -898,8 +906,18 @@ class ClusterServing:
             any(str(a).split("=", 1)[0] in named for a in extras)
             or any(os.environ.get(k) for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"))
         )
+        from core.inference.llama_cpp import _resolved_mmproj_offload
+
+        host_projector = _resolved_mmproj_offload(extras, os.environ) is False
         dropped: List[str] = []
-        if self._has_projector and disable_vision:
+        if self._has_projector and host_projector:
+            # --no-mmproj-offload: its bytes are host RAM, still loaded, so it stays a projector.
+            dropped = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
+            env_file = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
+            if env_file:
+                dropped.append(os.path.abspath(env_file))
+            dropped = list(dict.fromkeys(dropped))
+        elif self._has_projector and disable_vision:
             # The vision switch drops a named image projector (and an unread URL); an audio-only
             # one stays, as the backend does.
             files = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
@@ -916,7 +934,8 @@ class ClusterServing:
             projector = ss.auto_projector_file(
                 local_file, disable_vision = bool(getattr(request, "disable_vision", False))
             )
-            sidecars += int(ss.gguf_size_bytes(projector) or 0) if projector else 0
+            if projector and not host_projector:
+                sidecars += int(ss.gguf_size_bytes(projector) or 0)
             self._has_projector = bool(projector)
             if not local_file:
                 # A first load of a Hub repo fetches its projector during the load; with vision off
@@ -924,7 +943,7 @@ class ClusterServing:
                 remote = await asyncio.to_thread(
                     _remote_projector_bytes, model_path, getattr(request, "hf_token", None)
                 )
-                sidecars += remote
+                sidecars += 0 if host_projector else remote
                 self._has_projector = self._has_projector or remote > 0
         # Files named through the environment (LLAMA_ARG_MMPROJ, a drafter) load all the same.
         named_files = ss.launch_files_from(extras)
@@ -949,6 +968,13 @@ class ClusterServing:
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)
             )
         ctx, cache_type, cache_type_v = ss.effective_kv_settings(request, extras)
+        requested = str(getattr(request, "cache_type_kv", None) or "").strip()
+        if requested:
+            # The loader emits the request's type over an inherited env one; only extras beat it.
+            if not ss._last_operand(extras, ss._CACHE_TYPE_K_FLAGS):
+                cache_type = requested
+            if not ss._last_operand(extras, ss._CACHE_TYPE_V_FLAGS):
+                cache_type_v = requested
         if not ctx:
             # llama-server takes the context from its environment when neither argv nor the
             # request sets one.
@@ -956,9 +982,6 @@ class ClusterServing:
                 ctx = max(0, int((os.environ.get("LLAMA_ARG_CTX_SIZE") or "0").strip()))
             except ValueError:
                 ctx = 0
-        from core.inference.llama_server_args import fit_is_effectively_on
-
-        self._native_ctx = not ctx and not fit_is_effectively_on(extras, os.environ)
         kv = None
         if local_file and ctx:
             kv = await asyncio.to_thread(

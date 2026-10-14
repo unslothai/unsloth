@@ -1591,7 +1591,7 @@ def test_a_projector_kept_in_host_ram_is_not_pinned_to_a_gpu(monkeypatch, env):
 
 
 @pytest.mark.parametrize("env", [False, True])
-def test_the_fitter_off_without_a_context_keeps_the_load_local(monkeypatch, env):
+def test_the_fitter_off_keeps_the_load_local(monkeypatch, env):
     seen = _cluster_env(monkeypatch)
     if env:
         monkeypatch.setenv("LLAMA_ARG_FIT", "0")
@@ -1599,8 +1599,8 @@ def test_the_fitter_off_without_a_context_keeps_the_load_local(monkeypatch, env)
     request = _request(llama_extra_args = extra, max_seq_length = 0)
     assert run(ss.before_load(request, 4)) is request and seen == []
     assert "fitter is off" in ss.status()["reason"]
-    run(ss.before_load(_request(llama_extra_args = extra, max_seq_length = 8192), 4))
-    assert ss.status()["topology"] == "layer_split"
+    request = _request(llama_extra_args = extra, max_seq_length = 8192)
+    assert run(ss.before_load(request, 4)) is request and seen == []
 
 
 def test_a_local_fit_over_several_gpus_claims_no_residency(monkeypatch):
@@ -1637,3 +1637,44 @@ def test_a_probe_that_times_out_without_a_name_asks_each_worker_alone(monkeypatc
     assert ss.status()["topology"] == "layer_split"
     rpc = out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
     assert rpc == "10.0.0.2:50052,10.0.0.4:50052"
+
+
+def test_the_requested_cache_type_beats_an_inherited_one(monkeypatch):
+    _cluster_env(monkeypatch)
+    seen = []
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, ctx, k, v: seen.append((k, v)) or 0)
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_K", "q4_0")
+    monkeypatch.setenv("LLAMA_ARG_CACHE_TYPE_V", "q4_0")
+    run(ss.before_load(_request(max_seq_length = 8192, cache_type_kv = "f32"), 4))
+    run(
+        ss.before_load(
+            _request(max_seq_length = 8192, cache_type_kv = "f32", llama_extra_args = ["-ctk", "q8_0"]), 4
+        )
+    )
+    assert seen == [("f32", "f32"), ("q8_0", "f32")]
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [("LLAMA_ARG_CPU_MOE", "0"), ("LLAMA_ARG_N_CPU_MOE", "0"), ("LLAMA_ARG_N_CPU_FFN", "0")],
+)
+def test_cpu_placement_env_that_places_nothing_is_not_placement(monkeypatch, key, value):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setenv(key, value)
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split" and seen
+
+
+def test_a_host_ram_projector_is_not_charged_to_a_gpu(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"x")
+    sizes = {str(mmproj): 15 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
+    run(ss.before_load(_request(llama_extra_args = ["--mmproj", str(mmproj)]), 4))
+    assert ss.status()["topology"] == "layer_split"  # 85 + 15 GiB on the GPUs
+    extra = ["--mmproj", str(mmproj), "--no-mmproj-offload"]
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
