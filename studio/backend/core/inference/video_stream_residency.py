@@ -244,9 +244,19 @@ def arm_request(
         torch.cuda.reset_peak_memory_stats(dev)
         work = int(width) * int(height) * int(frames)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
+        module._unsloth_video_failed_captures = _failed_captures()
         return True
     except Exception:  # noqa: BLE001 -- an unarmed request keeps the estimate
         return False
+
+
+def _failed_captures() -> int:
+    try:
+        from .diffusion_cuda_graph import failed_capture_count
+
+        return failed_capture_count()
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
@@ -273,9 +283,12 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             shared = _key_peaks(key)
             shared[work] = max(extra, shared.get(work, 0))
             try:
+                from .diffusion_cuda_graph import failed_capture_count
                 from .diffusion_measured_peaks import record_work
 
-                record_work(key, work, shared[work])
+                # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of later processes
+                if failed_capture_count() == getattr(module, "_unsloth_video_failed_captures", 0):
+                    record_work(key, work, shared[work])
             except Exception:  # noqa: BLE001 - persistence is best-effort
                 pass
         _COUNTS["recorded"] += 1
@@ -354,6 +367,7 @@ def fit_for_request(
         kept = resident_mib(module)
         torch.cuda.reset_peak_memory_stats(dev)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
+        module._unsloth_video_failed_captures = _failed_captures()
         try:
             # release_resident_groups' restore reads it back; keep it at this request's room
             module._unsloth_resident_room = room if room > 0 else None

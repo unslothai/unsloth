@@ -1973,7 +1973,10 @@ def _start_peak_probe(state: Any) -> Any:
         if not enabled():
             return None
         probe = PeakProbe(getattr(state, "device", None))
-        return probe if probe.device is not None else None
+        if probe.device is None:
+            return None
+        probe.failed_captures = cuda_graph.failed_capture_count()
+        return probe
     except Exception:  # noqa: BLE001 - measurement only
         return None
 
@@ -1990,6 +1993,9 @@ def _record_peak_probe(
 
         peak = probe.finish()
         if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
+            return
+        if cuda_graph.failed_capture_count() != getattr(probe, "failed_captures", 0):
+            # a capture failed (an absorbed OOM): the peak is the failed attempt's, not the render's need
             return
         family, quant, speed_mode = identity
         if record(

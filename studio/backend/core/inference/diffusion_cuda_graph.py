@@ -300,6 +300,12 @@ def captures_exhausted() -> bool:
     return len(_FAILED_GRAPHS) >= MAX_FAILED_CAPTURES
 
 
+def failed_capture_count() -> int:
+    """Captures that failed in this process (an absorbed OOM among them): a render that saw one grow peaked at the
+    failed attempt, not at what it needed."""
+    return len(_FAILED_GRAPHS)
+
+
 def refuse_if_exhausted(logger: Any = None) -> None:
     """Raise (the caller's failed-capture path then runs eager) once the failure budget is spent; log that once."""
     global _EXHAUSTED_LOGGED

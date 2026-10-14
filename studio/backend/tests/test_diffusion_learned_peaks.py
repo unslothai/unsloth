@@ -299,3 +299,32 @@ def test_background_pinner_pins_gguf_host_copies():
     pinner = dm._GroupPinner.__new__(dm._GroupPinner)
     picked = {key for key, _ in pinner._unpinned(group)}
     assert picked == {"w", "b"}
+
+
+# ---------------------------------------------------------------------------------------------------- recording
+
+
+class _Probe:
+    def __init__(self, peak, failed = 0):
+        self.device = "cuda:0"
+        self.failed_captures = failed
+        self._peak = peak
+
+    def finish(self):
+        return self._peak
+
+
+def test_render_records_its_peak_unless_a_capture_failed(store, monkeypatch):
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default"))
+    state = types.SimpleNamespace(pipe = pipe)
+    kw = dict(family = "flux.2-klein", quant = "torchao:Int8Tensor", speed_mode = "default")
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 1)
+    diffusion._record_peak_probe(state, _Probe(5000, failed = 0), width = 1024, height = 1024, batch_size = 1)
+    assert mp.lookup(**kw) is None  # an absorbed capture OOM: the peak is the failed attempt's
+    diffusion._record_peak_probe(state, _Probe(2400, failed = 1), width = 1024, height = 1024, batch_size = 1)
+    assert mp.lookup(**kw) == 2400
+    assert json.loads(store.read_text())["entries"]["flux.2-klein|torchao:Int8Tensor|default|f1"]["device"] == "NVIDIA L4"
