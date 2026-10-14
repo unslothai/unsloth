@@ -413,6 +413,14 @@ def _local_prequant_path_allowed(path: str) -> bool:
     symlink cannot point an allowlisted name at a file outside the allowed roots."""
     import os
 
+    # Studio's own local pre-quant cache (safetensors it wrote itself), and only that exact root.
+    try:
+        from .diffusion_prequant_cache import path_in_cache
+
+        if path_in_cache(path):
+            return True
+    except Exception:  # noqa: BLE001 - an unanswerable check falls back to the operator allowlist
+        pass
     roots = _allowed_prequant_roots()
     if not roots:
         return False
@@ -960,7 +968,8 @@ def resolve_prequant_source(
 
     Priority: an explicit local ``path_override``; then the family's hosted repo for ``scheme``
     (variant-specific when ``base_repo`` names a base with its own baked checkpoint); then None,
-    meaning no pre-quant and the caller quantises dense. Pure: no IO, no torch.
+    meaning no pre-quant and the caller quantises dense. No torch; the only IO is the local pre-quant cache lookup
+    (``diffusion_prequant_cache``: a few KB of safetensors headers, memoised), reached only when nothing is hosted.
 
     ``task`` names the workflow / denoiser PARTITION the load is bringing up, for the families that
     host more than one under a single repo and scheme (MiniMax-H3's keyframe and reference
@@ -1054,6 +1063,21 @@ def resolve_prequant_source(
             fallback_filenames = tuple(names[1:]),
             declared_filenames = declared,
         )
+    # No hosted checkpoint: a build this machine quantized on an earlier load of the same source weights
+    # (diffusion_prequant_cache). Local reads only; the task names the denoiser component (an MoE's transformer_2).
+    try:
+        from .diffusion_prequant_cache import lookup
+
+        cached = lookup(
+            fam,
+            scheme,
+            base_repo = base_repo,
+            component = task if task in ("transformer_2",) else "transformer",
+        )
+    except Exception:  # noqa: BLE001 - a cache problem is a miss, never a failed load
+        cached = None
+    if cached:
+        return PrequantSource(kind = "path", location = cached, filename = None)
     return None
 
 

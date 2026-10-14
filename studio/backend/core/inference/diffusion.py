@@ -8746,6 +8746,10 @@ class DiffusionBackend:
                         self._prequant_fallback_note,
                     )
                 if transformer is not None:
+                    from .diffusion_prequant_cache import note_hit, path_in_cache
+
+                    if source.kind == "path" and path_in_cache(source.location):
+                        note_hit(source.location, logger)
                     if scheme == TQ_NVFP4:
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
                         nvfp4_prewarm(transformer, (1,), logger = logger)
@@ -8847,6 +8851,18 @@ class DiffusionBackend:
         check_cancelled()
         if scheme is None:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
+        if fam is not None and not _has_active_lora(lora_specs):
+            # Keep this build for the next load of the same weights (diffusion_prequant_cache): it then resolves as a
+            # local pre-quant source above and the dense bf16 transformer is never read again. Best-effort.
+            from .diffusion_prequant_cache import save_runtime_quant
+
+            save_runtime_quant(
+                getattr(pipe, "transformer", None),
+                fam,
+                base_repo = base,
+                source_base = base_local_dir or fetch_base,
+                logger = logger,
+            )
         return pipe, scheme
 
     @staticmethod

@@ -2015,6 +2015,18 @@ def _video_auto_denoiser_scheme(
             for s in video_family_prequant_schemes(fam)
             if denoiser_prequant_sources(fam, s, base_repo, hf_token = hf_token) is not None
         )
+        if not hosted and not auto:
+            # No hosted row: an EXPLICIT scheme may still seed from a build this machine quantized on an earlier load
+            # of the same weights (diffusion_prequant_cache). Never under auto, so a cache entry cannot change what an
+            # auto load picks.
+            from .diffusion_prequant_cache import CACHEABLE_SCHEMES
+
+            wanted = normalize_transformer_quant(requested)
+            if (
+                wanted in CACHEABLE_SCHEMES
+                and denoiser_prequant_sources(fam, wanted, base_repo, hf_token = hf_token) is not None
+            ):
+                hosted = (wanted,)
         if not hosted or (not auto and normalize_transformer_quant(requested) not in hosted):
             return None
 
@@ -2039,6 +2051,32 @@ def _video_auto_denoiser_scheme(
         return scheme
     except Exception:  # noqa: BLE001 -- an unanswerable probe keeps the dense denoiser
         return None
+
+
+def _save_runtime_quant_to_cache(
+    fam: Any, views: Any, *, base: Optional[str], source: Optional[str]
+) -> None:
+    """Persist a runtime-quantized single denoiser (diffusion_prequant_cache), so the next explicit load of the same
+    weights seeds it like a hosted checkpoint. An MoE's second expert has no lookup slot here, so MoE is skipped."""
+    try:
+        from .video_denoiser_prequant import denoiser_components
+
+        views = list(views or ())
+        if len(denoiser_components(fam)) != 1 or len(views) != 1:
+            logger.info("diffusion.prequant_cache: skipped (multi-denoiser video family)")
+            return
+        from .diffusion_prequant_cache import save_runtime_quant
+
+        save_runtime_quant(
+            getattr(views[0], "transformer", None),
+            fam,
+            base_repo = base,
+            source_base = source,
+            component = "transformer",
+            logger = logger,
+        )
+    except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
+        logger.warning("diffusion.prequant_cache: skipped (%s)", exc)
 
 
 # The planner DECIDED against the seed (not "never ran"); a load must not re-take it after teardown.
@@ -7675,6 +7713,9 @@ class VideoBackend:
                 )
             if engaged:
                 transformer_quant_engaged = engaged[0]
+                _save_runtime_quant_to_cache(
+                    fam, views, base = base, source = _base_local_dir or base
+                )
             elif transformer_quant_pinned is not None:
                 transformer_quant_decline = (
                     f"'{transformer_quant_pinned}' did not engage on family '{fam.name}' with this "
