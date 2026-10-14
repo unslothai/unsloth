@@ -5,11 +5,14 @@
 
 Wraps the instance ``_decode`` every diffusers VAE routes ``decode`` through, so it sits under the decode-level
 wrappers (fp16 non-finite rerun, compiled decode guard, untiled-when-fits) and over the tiled decode. On an OOM:
-an untiled decode is retried tiled (ComfyUI's one retry); a tiled decode is retried with every spatial tile
-attribute the VAE exposes halved (``tile_sample_min_*``, ``tile_latent_min_*``, ``tile_sample_stride_*``,
-``tile_sample_min_overlap_*``), so the overlap fraction and the stock blended seams are kept, down to a 4-latent
-floor. The attributes are restored after the call; the level that worked is remembered per latent shape so later
-renders of that size do not pay the failed attempts again. Kill switch ``UNSLOTH_VAE_OOM_RETRY=0``.
+an untiled decode is retried tiled (ComfyUI's one retry); a tiled decode is retried with the spatial tile geometry
+the VAE exposes halved (``tile_sample_min_*`` / ``tile_latent_min_*`` / ``tile_sample_stride_*`` /
+``tile_sample_min_overlap_*``, ``tile_overlap_factor`` kept), every size kept a whole number of latents and the
+overlap fraction kept, so the stock blended seams stay; down to a 4-latent floor. A halving whose failed attempt
+peaked no lower than the previous one stops the ladder (that decode's memory is not in its tiles, e.g. a causal video
+decoder's output buffer), and a halved decode whose output size differs from the latent's is discarded. The tile
+attributes are restored after the call; the level that worked is remembered per latent shape. Kill switch
+``UNSLOTH_VAE_OOM_RETRY=0``.
 """
 
 from __future__ import annotations
@@ -20,20 +23,11 @@ from typing import Any, Optional
 
 OOM_RETRY_ENV = "UNSLOTH_VAE_OOM_RETRY"
 MIN_TILE_LATENTS = 4
-MIN_TILE_PIXELS = 32
 MAX_HALVINGS = 6
+# A halving must lower the failing attempt's peak below this fraction of the previous one to be worth another try.
+_PEAK_PROGRESS = 0.9
 
-# Spatial tile attributes diffusers VAEs expose; temporal ones are left alone (causal decoders hold few frames).
-_SAMPLE_MIN = ("tile_sample_min_size", "tile_sample_min_height", "tile_sample_min_width")
-_LATENT_MIN = ("tile_latent_min_size", "tile_latent_min_height", "tile_latent_min_width")
-_SCALED_WITH_MIN = (
-    "tile_sample_stride_height",
-    "tile_sample_stride_width",
-    "tile_sample_min_overlap_height",
-    "tile_sample_min_overlap_width",
-    "tile_latent_stride_height",
-    "tile_latent_stride_width",
-)
+_AXES = ("size", "height", "width")
 
 
 def oom_retry_disabled() -> bool:
@@ -57,19 +51,16 @@ def _int_attr(vae: Any, name: str) -> Optional[int]:
 
 
 def _spatial_ratio(vae: Any) -> int:
-    for name in ("spatial_compression_ratio",):
-        try:
-            r = int(getattr(vae, name))
-            if r > 0:
-                return r
-        except Exception:  # noqa: BLE001
-            pass
+    cfg = getattr(vae, "config", None)
+    for source in (vae.__dict__, cfg if isinstance(cfg, dict) else getattr(cfg, "__dict__", {})):
+        r = source.get("spatial_compression_ratio") if hasattr(source, "get") else None
+        if isinstance(r, int) and r > 0:
+            return r
     try:
-        cfg = vae.config
-        r = getattr(cfg, "spatial_compression_ratio", None)
-        if r:
-            return int(r)
-        boc = getattr(cfg, "block_out_channels", None)
+        r = getattr(type(vae), "spatial_compression_ratio", None)
+        if isinstance(r, int) and r > 0:
+            return r
+        boc = cfg.get("block_out_channels") if hasattr(cfg, "get") else getattr(cfg, "block_out_channels", None)
         if boc:
             return 2 ** (len(boc) - 1)
     except Exception:  # noqa: BLE001
@@ -80,37 +71,61 @@ def _spatial_ratio(vae: Any) -> int:
 def tile_attrs(vae: Any) -> dict:
     """The spatial tile attributes this VAE exposes, name -> int."""
     out = {}
-    for name in (*_SAMPLE_MIN, *_LATENT_MIN, *_SCALED_WITH_MIN):
-        value = _int_attr(vae, name)
-        if value is not None:
-            out[name] = value
+    for axis in _AXES:
+        for kind in ("tile_sample_min", "tile_latent_min", "tile_sample_stride", "tile_sample_min_overlap"):
+            name = f"{kind}_{axis}"
+            value = _int_attr(vae, name)
+            if value is not None:
+                out[name] = value
     return out
 
 
-def halved(attrs: dict, ratio: int, level: int) -> Optional[dict]:
-    """``attrs`` with every spatial tile size divided by 2**level, or None under the floor / nothing to halve."""
+def _overlap_ok(latent: int, sample: int, factor: Optional[float]) -> bool:
+    """``tile_overlap_factor`` VAEs (AutoencoderKL, HunyuanImage) step ``int(L * (1 - f))`` latents and keep
+    ``S - int(S * f)`` pixels per tile; the two only tile the image exactly when both products are whole."""
+    if factor is None:
+        return True
+    step = latent * (1 - factor)
+    blend = sample * factor
+    return abs(step - round(step)) < 1e-9 and abs(blend - round(blend)) < 1e-9 and round(step) > 0
+
+
+def halved(attrs: dict, ratio: int, level: int, overlap_factor: Optional[float] = None) -> Optional[dict]:
+    """``attrs`` with the tile geometry halved ``level`` times, every size a whole number of latents, or None under the
+    4-latent floor / when nothing can be halved."""
     if level <= 0:
         return dict(attrs)
     scale = 2**level
-    sample = [attrs[n] for n in _SAMPLE_MIN if n in attrs]
-    latent = [attrs[n] for n in _LATENT_MIN if n in attrs]
-    if not sample and not latent:
-        return None
-    min_latent = min([*(s // ratio for s in sample), *latent])
-    if min_latent // scale < MIN_TILE_LATENTS:
-        return None
-    if sample and min(sample) // scale < MIN_TILE_PIXELS:
-        return None
-    new = {}
-    for name, value in attrs.items():
-        new[name] = max(1, value // scale)
-    # Keep stride < tile (overlap > 0) so the stock blend still crossfades every seam.
-    for axis in ("height", "width"):
-        tile = new.get(f"tile_sample_min_{axis}")
-        stride = new.get(f"tile_sample_stride_{axis}")
-        if tile is not None and stride is not None and stride >= tile:
-            new[f"tile_sample_stride_{axis}"] = max(1, tile - max(1, tile // 4))
-    return new
+    new = dict(attrs)
+    touched = False
+    for axis in _AXES:
+        s_name, l_name = f"tile_sample_min_{axis}", f"tile_latent_min_{axis}"
+        sample, latent = attrs.get(s_name), attrs.get(l_name)
+        if sample is None and latent is None:
+            continue
+        base_latent = latent if latent is not None else sample // ratio
+        lat = base_latent // scale
+        while lat >= MIN_TILE_LATENTS and not _overlap_ok(lat, lat * ratio, overlap_factor):
+            lat -= 1
+        if lat < MIN_TILE_LATENTS:
+            return None
+        touched = True
+        if sample is not None:
+            new[s_name] = lat * ratio
+        if latent is not None:
+            new[l_name] = lat
+
+        stride_name = f"tile_sample_stride_{axis}"
+        if stride_name in attrs:
+            stride_lat = max(1, attrs[stride_name] // scale // ratio)
+            if stride_lat >= lat:
+                stride_lat = max(1, lat - max(1, lat // 4))
+            new[stride_name] = stride_lat * ratio
+        overlap_name = f"tile_sample_min_overlap_{axis}"
+        if overlap_name in attrs:
+            ov_lat = max(1, attrs[overlap_name] // scale // ratio)
+            new[overlap_name] = min(ov_lat, max(1, lat // 2)) * ratio
+    return new if touched else None
 
 
 def _set_attrs(vae: Any, values: dict) -> None:
@@ -128,6 +143,27 @@ def _release_cache(z: Any) -> None:
         pass
 
 
+def _reset_peak(z: Any) -> None:
+    try:
+        import torch
+
+        if z.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(z.device)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _peak(z: Any) -> Optional[int]:
+    try:
+        import torch
+
+        if z.device.type == "cuda":
+            return int(torch.cuda.max_memory_allocated(z.device))
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _compiling() -> bool:
     try:
         import torch
@@ -142,8 +178,14 @@ def _outer_gate_owns_untiled(vae: Any) -> bool:
     return bool(getattr(vae.__dict__.get("decode"), "_unsloth_untiled_decode", False))
 
 
+def _decoded(out: Any) -> Any:
+    if isinstance(out, (tuple, list)):
+        return out[0] if out else None
+    return getattr(out, "sample", out)
+
+
 def install(vae: Any, logger: Any = None) -> bool:
-    """Wrap ``vae._decode`` with the OOM retry ladder. Idempotent; False when the VAE has no ``_decode``."""
+    """Wrap ``vae._decode`` with the OOM retry ladder. Idempotent; False when the VAE cannot tile."""
     if vae is None or oom_retry_disabled():
         return False
     inner = getattr(vae, "_decode", None)
@@ -156,28 +198,35 @@ def install(vae: Any, logger: Any = None) -> bool:
     if not can_tile or not stock_attrs:
         return False
     ratio = _spatial_ratio(vae)
-    stats = {"calls": 0, "oom": 0, "tiled_retry": 0, "halvings": 0, "recovered": 0, "failed": 0}
+    factor = vae.__dict__.get("tile_overlap_factor")
+    factor = float(factor) if isinstance(factor, (int, float)) and not isinstance(factor, bool) else None
+    stats = {"calls": 0, "oom": 0, "tiled_retry": 0, "halvings": 0, "recovered": 0, "failed": 0, "stopped": 0}
     memo: dict = {}
     depth = [0]
 
     def _key(z: Any) -> tuple:
         return tuple(int(x) for x in getattr(z, "shape", ()))
 
-    def _attempt(level: int, tiled: bool, z: Any, args: tuple, kwargs: dict) -> Any:
+    def _attempt(level: int, z: Any, args: tuple, kwargs: dict) -> Any:
         prev_tiling = bool(getattr(vae, "use_tiling", False))
         current = tile_attrs(vae)
-        values = halved(stock_attrs, ratio, level) if level else None
         vae._unsloth_vae_oom_halvings = level
         try:
-            if tiled and not prev_tiling:
-                vae.use_tiling = True
-            if values:
-                _set_attrs(vae, values)
+            vae.use_tiling = True
+            if level:
+                _set_attrs(vae, halved(stock_attrs, ratio, level, factor) or {})
             return inner(z, *args, **kwargs)
         finally:
             vae.use_tiling = prev_tiling
             _set_attrs(vae, current)
             vae._unsloth_vae_oom_halvings = 0
+
+    def _shape_ok(out: Any, z: Any) -> bool:
+        dec = _decoded(out)
+        shape = getattr(dec, "shape", None)
+        if shape is None or len(shape) < 2:
+            return True
+        return tuple(shape[-2:]) == (int(z.shape[-2]) * ratio, int(z.shape[-1]) * ratio)
 
     @functools.wraps(inner)
     def _decode(z: Any, *args: Any, **kwargs: Any) -> Any:
@@ -194,54 +243,71 @@ def install(vae: Any, logger: Any = None) -> bool:
     def _retrying(z: Any, args: tuple, kwargs: dict) -> Any:
         stats["calls"] += 1
         tiled_now = bool(getattr(vae, "use_tiling", False))
-        level = memo.get(_key(z), 0) if tiled_now else 0
-        if level == 0:
+        start = memo.get(_key(z), 0) if tiled_now else 0
+        if start == 0:
             # The fast path: no wrapper state changes, exactly the stock call.
+            _reset_peak(z)
             try:
                 return inner(z, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001
                 if not is_oom(exc) or (not tiled_now and _outer_gate_owns_untiled(vae)):
                     raise
                 stats["oom"] += 1
-            level = 0 if not tiled_now else 1
-            tiled = True
+            last_peak = _peak(z)
+            # Untiled failed: the stock tiles first (level 0, tiling on). Tiled failed: halve.
+            levels = [0] if not tiled_now else []
+            levels += list(range(1, MAX_HALVINGS + 1))
             if not tiled_now:
                 stats["tiled_retry"] += 1
         else:
-            tiled = True
-        while True:
+            last_peak = None
+            levels = list(range(start, MAX_HALVINGS + 1)) + [0]
+        error = "VAE decode ran out of memory at every tile size; free GPU memory or lower the resolution"
+        for level in levels:
+            if level and halved(stock_attrs, ratio, level, factor) is None:
+                if level > start:
+                    break
+                continue
             _release_cache(z)  # outside the handler: the failed attempt's tensors are gone
-            if level and halved(stock_attrs, ratio, level) is None:
-                stats["failed"] += 1
-                raise RuntimeError(
-                    "VAE decode ran out of memory even at the smallest tile "
-                    f"({MIN_TILE_LATENTS} latents); free GPU memory or lower the resolution"
-                )
-            if level:
-                stats["halvings"] = max(stats["halvings"], level)
             if logger is not None:
                 logger.warning(
                     "diffusion.vae_oom: %s decode ran out of memory; retrying %s",
                     type(vae).__name__,
                     "tiled" if level == 0 else f"with tiles halved {level}x",
                 )
+            _reset_peak(z)
             failed = False
             try:
-                out = _attempt(level, tiled, z, args, kwargs)
+                out = _attempt(level, z, args, kwargs)
             except Exception as exc:  # noqa: BLE001
                 if not is_oom(exc):
                     raise
                 failed = True
-            if not failed:
+            if not failed and _shape_ok(out, z):
                 stats["recovered"] += 1
+                stats["halvings"] = max(stats["halvings"], level)
                 if level:
                     memo[_key(z)] = level
+                else:
+                    memo.pop(_key(z), None)
                 return out
+            if not failed:
+                del out  # this VAE's stock tiling does not cover the latent at that size
+                continue
             stats["oom"] += 1
-            level += 1
-            if level > MAX_HALVINGS:
-                stats["failed"] += 1
-                raise RuntimeError("VAE decode ran out of memory at every tile size")
+            peak = _peak(z)
+            if level and last_peak is not None and peak is not None and peak >= _PEAK_PROGRESS * last_peak:
+                # Smaller tiles did not lower the peak: the memory is not in the tiles.
+                stats["stopped"] += 1
+                error = (
+                    "VAE decode ran out of memory and smaller tiles do not lower its peak; free GPU memory "
+                    "or lower the resolution / frame count"
+                )
+                break
+            last_peak = peak
+        stats["failed"] += 1
+        _release_cache(z)
+        raise RuntimeError(error)
 
     _decode._unsloth_vae_oom_retry = True
     _decode._unsloth_vae_oom_stats = stats

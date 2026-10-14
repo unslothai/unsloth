@@ -41,7 +41,7 @@ class _WanLike(torch.nn.Module):
         self.seen.append((self.use_tiling, self.tile_sample_min_height, self.tile_sample_stride_height))
         if side > self.fits:
             raise _FakeOOM()
-        return (z + 1,)
+        return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
 
 
 def test_halved_keeps_overlap_fraction_and_floor():
@@ -54,12 +54,25 @@ def test_halved_keeps_overlap_fraction_and_floor():
     assert O.halved({}, 8, 1) is None
 
 
+def test_halved_overlap_factor_geometry_tiles_exactly():
+    """HunyuanImage-2.1: 384 px / 12-latent tiles at f=0.25. A plain halving (6 latents) steps 4 latents but keeps
+    144 px per tile, so diffusers' stock tiled decode returns a too-large image; the next whole step is 4 latents."""
+    attrs = {"tile_sample_min_size": 384, "tile_latent_min_size": 12}
+    assert O.halved(attrs, 32, 1, 0.25) == {"tile_sample_min_size": 128, "tile_latent_min_size": 4}
+    assert O.halved(attrs, 32, 2, 0.25) is None
+    kl = {"tile_sample_min_size": 1024, "tile_latent_min_size": 128}
+    assert O.halved(kl, 8, 3, 0.25) == {"tile_sample_min_size": 128, "tile_latent_min_size": 16}
+    # stride-style geometry stays a whole number of latents (LTX-2: 32x)
+    ltx = {"tile_sample_min_height": 512, "tile_sample_stride_height": 448}
+    assert O.halved(ltx, 32, 2) == {"tile_sample_min_height": 128, "tile_sample_stride_height": 96}
+
+
 def test_untiled_oom_retries_tiled_then_halves_and_restores():
     vae = _WanLike(fits = 128)
     assert O.install(vae)
     z = torch.zeros(1, 4, 1, 64, 64)
     out = vae._decode(z)
-    assert torch.equal(out[0], z + 1)
+    assert out[0].shape[-2:] == (512, 512)
     # untiled -> tiled at stock 256 -> halved 128 (stride 96)
     assert vae.seen == [(False, 256, 192), (True, 256, 192), (True, 128, 96)]
     assert vae.use_tiling is False and vae.tile_sample_min_height == 256
@@ -85,7 +98,7 @@ def test_floor_raises_and_non_oom_propagates():
     vae = _WanLike(fits = 1)
     vae.use_tiling = True
     O.install(vae)
-    with pytest.raises(RuntimeError, match = "smallest tile"):
+    with pytest.raises(RuntimeError, match = "every tile size"):
         vae._decode(torch.zeros(1, 4, 1, 64, 64))
     assert vae.tile_sample_min_height == 256
 
