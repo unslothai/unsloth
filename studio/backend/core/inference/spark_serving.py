@@ -241,6 +241,10 @@ def _discover_peer_address() -> Optional[str]:
 def enabled() -> bool:
     if (os.environ.get(ENV_TOGGLE) or "").strip() == "0":
         return False
+    from core.inference import cluster_serving
+
+    if cluster_serving.configured():
+        return True
     if not is_spark():
         return False
     return peer_address() is not None
@@ -602,7 +606,8 @@ def ssh_argv(
     ]
     if keepalive:
         argv += ["-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
-    argv += [f"{_ssh_user()}@{peer}", remote]
+    # A cluster node can name its own login ("me@10.0.0.3"); a Spark peer is a bare address.
+    argv += [peer if "@" in peer else f"{_ssh_user()}@{peer}", remote]
     return argv
 
 
@@ -1969,7 +1974,10 @@ def layer_split_extra_args(
 def strip_layer_split_extra_args(extra: Sequence[str]) -> List[str]:
     """``extra`` without the block ``layer_split_extra_args`` appended to it, so a reload that
     inherits a split's extras is planned afresh instead of reading our own --rpc as the caller's."""
-    tokens = [str(t) for t in extra]
+    from core.inference import cluster_serving
+
+    # An N-node cluster's block is recognised by what that module recorded; empty off a cluster.
+    tokens = cluster_serving.strip_managed_block([str(t) for t in extra])
     fixed = ["--device", "RPC0,CUDA0", "-sm", "layer", "--tensor-split", SPLIT_TENSOR_SPLIT_EVEN]
     fixed += ["--cache-ram", "0"]
     for start in range(len(tokens) - 1, -1, -1):
@@ -3422,6 +3430,10 @@ def tag_conversation(payload: Dict[str, Any], thread_id: Optional[str]) -> None:
 
 
 def current_topology() -> Optional[str]:
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None and cluster_serving.configured():
+        return cluster_serving._STATE.topology
     # Status polls run this constantly and it used to go through enabled(), which does rail
     # discovery: a sysfs walk and an `ip` fork, measured at 16.2 ms per call on a paired Spark,
     # synchronously on the event loop.
@@ -3439,6 +3451,15 @@ async def before_load(
     cancel_event: Any = None,
     confirm_teardown: Any = None,
 ) -> Any:
+    from core.inference import cluster_serving
+
+    if (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured():
+        return await cluster_serving.state().before_load(
+            request,
+            n_parallel,
+            inherited_extra_args = inherited_extra_args,
+            confirm_teardown = confirm_teardown,
+        )
     if not enabled():
         return request
     st = state()
@@ -3469,6 +3490,11 @@ async def after_load(
     cancel_event: Any = None,
 ) -> bool:
     """True when the load was cancelled during the replica startup and must be undone."""
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None and cluster_serving.configured():
+        await cluster_serving._STATE.after_load(llama_backend)
+        return False
     if not enabled():
         return False
     st = state()
@@ -3484,6 +3510,11 @@ async def after_load(
 
 
 async def load_failed() -> None:
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None and cluster_serving.configured():
+        await cluster_serving._STATE.load_failed()
+        return
     if _STATE is None or not enabled():
         return
     if _STATE._passthrough:
@@ -3501,12 +3532,20 @@ async def reconcile_internal_load() -> None:
 
 
 async def shutdown() -> None:
+    from core.inference import cluster_serving
+
+    if cluster_serving._STATE is not None:
+        await cluster_serving._STATE.shutdown()
     if _STATE is None:
         return
     await _STATE.detach()
 
 
 def status() -> Dict[str, Any]:
+    from core.inference import cluster_serving
+
+    if (os.environ.get(ENV_TOGGLE) or "").strip() != "0" and cluster_serving.configured():
+        return cluster_serving.state().status()
     if not enabled():
         return {"enabled": False, "topology": None, "reason": "not a paired DGX Spark"}
     return state().status()

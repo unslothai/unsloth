@@ -1,0 +1,362 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""N-node serving over llama.cpp RPC: config, device listing, placement, launch args, reload
+stripping, and that nothing of it runs (or changes the two-Spark path) without a cluster config."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from types import SimpleNamespace
+
+import pytest
+
+from core.inference import cluster_serving as cs
+from core.inference import spark_serving as ss
+
+GIB = 2**30
+MIB = 2**20
+
+LISTING = """Available devices:
+  RPC0: 10.0.0.2:50052 (122502 MiB, 118000 MiB free)
+  RPC1: 10.0.0.3:50052 (65536 MiB, 60000 MiB free)
+  RPC2: 10.0.0.4:50052 (24576 MiB, 23000 MiB free)
+  CUDA0: NVIDIA GB10 (122502 MiB, 110000 MiB free)
+"""
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+@pytest.fixture(autouse = True)
+def clean(monkeypatch, tmp_path):
+    for name in (cs.ENV_NODES, cs.ENV_MANAGED, cs.ENV_TOPOLOGY, ss.ENV_TOGGLE):
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.setattr(cs, "_config_path", lambda: tmp_path / "cluster.json")
+    cs.reset_for_tests()
+    ss.reset_for_tests()
+    yield
+    cs.reset_for_tests()
+    ss.reset_for_tests()
+
+
+def test_nodes_from_the_env_and_from_json(tmp_path):
+    nodes = cs.parse_nodes_env("10.0.0.2, me@mac-studio.local:50060", managed = True)
+    assert [(n.host, n.rpc_port, n.ssh_user, n.managed) for n in nodes] == [
+        ("10.0.0.2", 50052, None, True),
+        ("mac-studio.local", 50060, "me", True),
+    ]
+    assert (
+        nodes[1].endpoint == "mac-studio.local:50060"
+        and nodes[1].ssh_target == "me@mac-studio.local"
+    )
+    data = {"nodes": [{"host": "10.0.0.3", "rpc_port": 50053, "managed": True}, "10.0.0.4"]}
+    parsed = cs.parse_nodes_json(data)
+    assert [(n.endpoint, n.managed) for n in parsed] == [
+        ("10.0.0.3:50053", True),
+        ("10.0.0.4:50052", False),
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "",
+        "10.0.0.2,10.0.0.2",
+        "host:0",
+        "host:99999",
+        "[::1]:50052",
+        "@host",
+        "bad host",
+        "h;rm -rf",
+    ],
+)
+def test_bad_node_lists_are_refused(bad):
+    with pytest.raises(cs.ClusterConfigError):
+        cs.parse_nodes_env(bad)
+
+
+def test_device_listing_maps_every_rpc_device_to_its_endpoint():
+    endpoints = ["10.0.0.2:50052", "10.0.0.3:50052", "10.0.0.4:50052"]
+    devices = cs.parse_device_list(LISTING, endpoints)
+    assert [(d.name, d.endpoint) for d in devices] == [
+        ("RPC0", "10.0.0.2:50052"),
+        ("RPC1", "10.0.0.3:50052"),
+        ("RPC2", "10.0.0.4:50052"),
+        ("CUDA0", None),
+    ]
+    assert devices[1].free_bytes == 60000 * MIB
+    # Two devices behind one endpoint (a multi-GPU worker) both belong to it.
+    two = cs.parse_device_list(
+        "  RPC0: 10.0.0.2:50052 (10 MiB, 9 MiB free)\n  RPC1: 10.0.0.2:50052 (10 MiB, 9 MiB free)\n",
+        ["10.0.0.2:50052"],
+    )
+    assert [d.endpoint for d in two] == ["10.0.0.2:50052"] * 2
+
+
+def _devices():
+    return cs.parse_device_list(LISTING, ["10.0.0.2:50052", "10.0.0.3:50052", "10.0.0.4:50052"])
+
+
+def test_a_model_that_fits_here_is_not_split():
+    plan = cs.plan_cluster(40 * GIB, 4 * GIB, 0, _devices())
+    assert plan.topology == "single" and not plan.devices
+
+
+def test_a_large_model_is_split_by_usable_memory_with_this_machine_last():
+    plan = cs.plan_cluster(230 * GIB, 20 * GIB, 2 * GIB, _devices())
+    assert plan.topology == "layer_split"
+    assert [d.name for d in plan.devices] == ["RPC0", "RPC1", "RPC2", "CUDA0"]
+    assert abs(sum(plan.weights) - 1.0) < 1e-9
+    usable = [cs.usable_bytes(d) for d in _devices()]
+    usable[-1] -= 2 * GIB  # the coordinator also holds the sidecars
+    for w, u in zip(plan.weights, usable):
+        assert w == pytest.approx(u / sum(usable))
+    # Every device's share of weights + KV fits its own usable memory, the sidecars included.
+    for d, w, u in zip(plan.devices, plan.weights, usable):
+        assert w * 250 * GIB <= u
+
+
+def test_a_load_no_set_of_nodes_holds_is_refused_with_the_numbers():
+    plan = cs.plan_cluster(400 * GIB, 0, 0, _devices())
+    assert plan.topology == "refuse" and "add a node" in plan.reason
+    assert cs.plan_cluster(None, 0, 0, _devices()).topology == "single"
+
+
+def test_forced_topologies():
+    assert (
+        cs.plan_cluster(10 * GIB, 0, 0, _devices(), forced = "layer_split").topology == "layer_split"
+    )
+    assert cs.plan_cluster(250 * GIB, 0, 0, _devices(), forced = "single").topology == "single"
+
+
+def test_a_coordinator_without_an_accelerator_splits_over_the_workers_only():
+    remote_only = [d for d in _devices() if d.remote]
+    plan = cs.plan_cluster(150 * GIB, 0, 0, remote_only)
+    assert plan.topology == "layer_split" and [d.name for d in plan.devices] == [
+        "RPC0",
+        "RPC1",
+        "RPC2",
+    ]
+    assert cs.plan_cluster(150 * GIB, 0, 1 * GIB, remote_only).topology == "refuse"
+
+
+def test_split_args_are_one_rpc_list_with_matching_devices_and_weights():
+    plan = cs.plan_cluster(250 * GIB, 0, 0, _devices())
+    args = cs.split_extra_args(["10.0.0.2:50052", "10.0.0.3:50052", "10.0.0.4:50052"], plan)
+    assert args[:2] == ["--rpc", "10.0.0.2:50052,10.0.0.3:50052,10.0.0.4:50052"]
+    assert args[2:4] == ["--device", "RPC0,RPC1,RPC2,CUDA0"]
+    assert args[4:6] == ["-sm", "layer"] and args[-2:] == ["--cache-ram", "0"]
+    weights = [float(w) for w in args[7].split(",")]
+    assert len(weights) == 4 and abs(sum(weights) - 1.0) < 1e-3
+
+
+def test_only_the_recorded_block_is_stripped_on_inheritance():
+    plan = cs.plan_cluster(250 * GIB, 0, 0, _devices())
+    block = cs.split_extra_args(["10.0.0.2:50052", "10.0.0.3:50052", "10.0.0.4:50052"], plan)
+    cs._remember_block(block)
+    assert cs.strip_managed_block(["--seed", "1"] + block) == ["--seed", "1"]
+    # Through the helper the reload path calls, next to the two-Spark block.
+    assert ss.strip_layer_split_extra_args(["--seed", "1"] + block) == ["--seed", "1"]
+    users = ["--rpc", "10.9.9.9:1", "--device", "RPC0,CUDA0"]
+    assert ss.strip_layer_split_extra_args(users) == users
+    cs.reset_for_tests()
+    assert cs.strip_managed_block(["--seed", "1"] + block) == ["--seed", "1"] + block
+
+
+def test_nothing_changes_without_a_cluster_config(monkeypatch):
+    assert not cs.configured()
+    calls = []
+    monkeypatch.setattr(cs.ClusterServing, "before_load", lambda *a, **k: calls.append(1))
+    request = SimpleNamespace(model_path = "m.gguf", llama_extra_args = None)
+    monkeypatch.setattr(ss, "is_spark", lambda: False)
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status() == {"enabled": False, "topology": None, "reason": "not a paired DGX Spark"}
+    assert calls == [] and cs._STATE is None
+
+
+def test_the_spark_toggle_also_turns_the_cluster_off(monkeypatch):
+    monkeypatch.setenv(cs.ENV_NODES, "10.0.0.2")
+    monkeypatch.setenv(ss.ENV_TOGGLE, "0")
+    monkeypatch.setattr(ss, "is_spark", lambda: False)
+    request = SimpleNamespace(model_path = "m.gguf", llama_extra_args = None)
+    assert run(ss.before_load(request, 4)) is request and cs._STATE is None
+    assert ss.status()["enabled"] is False
+
+
+def _cluster_env(
+    monkeypatch,
+    listing = LISTING,
+    model_bytes = 250 * GIB,
+):
+    monkeypatch.setenv(cs.ENV_NODES, "10.0.0.2,10.0.0.3,10.0.0.4")
+    monkeypatch.setattr(ss, "llama_server_binary", lambda: "/b/llama-server")
+    monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: path)
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: model_bytes if path else None)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: 0)
+    monkeypatch.setattr(ss, "auto_projector_file", lambda *a, **k: None)
+    seen = []
+
+    def fake_list(binary, endpoints):
+        seen.append((binary, list(endpoints)))
+        return cs.parse_device_list(listing, endpoints), ""
+
+    monkeypatch.setattr(cs, "list_devices", fake_list)
+    return seen
+
+
+def _request(**kw):
+    base = dict(
+        model_path = "/models/big.gguf",
+        gguf_variant = None,
+        llama_extra_args = None,
+        max_seq_length = 0,
+        cache_type_kv = None,
+        disable_vision = False,
+    )
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_a_cluster_load_gets_the_split_and_status_describes_it(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(llama_extra_args = ["--seed", "1"]), 4))
+    assert seen == [("/b/llama-server", ["10.0.0.2:50052", "10.0.0.3:50052", "10.0.0.4:50052"])]
+    assert out.llama_extra_args[:2] == ["--seed", "1"]
+    assert out.llama_extra_args[2:4] == ["--rpc", "10.0.0.2:50052,10.0.0.3:50052,10.0.0.4:50052"]
+    assert ss.enabled() is True and ss.current_topology() == "layer_split"
+    status = ss.status()
+    assert status["mode"] == "cluster" and status["topology"] == "layer_split"
+    assert [d["name"] for d in status["plan"]["devices"]] == ["RPC0", "RPC1", "RPC2", "CUDA0"]
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args)
+    )
+    assert run(ss.after_load(backend, 4)) is False
+    assert ss.current_topology() == "layer_split"
+    # The two-Spark state was never created.
+    assert ss._STATE is None or ss._STATE.peer_process is None
+
+
+def test_a_cluster_load_that_fits_here_is_left_alone(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 10 * GIB)
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+
+
+def test_a_cluster_load_nothing_holds_is_refused_and_the_old_state_kept(monkeypatch):
+    _cluster_env(monkeypatch)
+    run(ss.before_load(_request(), 4))
+    _cluster_env(monkeypatch, model_bytes = 900 * GIB)
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+
+
+@pytest.mark.parametrize(
+    "kw, reason",
+    [
+        ({"llama_extra_args": ["--rpc", "10.9.9.9:1"]}, "caller supplied --rpc"),
+        ({"gpu_ids": [1]}, "explicit GPU selection"),
+    ],
+)
+def test_caller_placement_is_left_to_the_caller(monkeypatch, kw, reason):
+    _cluster_env(monkeypatch)
+    request = _request(**kw)
+    assert run(ss.before_load(request, 4)) is request
+    assert reason in ss.status()["reason"]
+
+
+@pytest.mark.parametrize("kw", [{"alongside": True}, {"force_alongside": True}, {"engine": "vllm"}])
+def test_alongside_and_other_engines_pass_through(monkeypatch, kw):
+    seen = _cluster_env(monkeypatch)
+    request = _request(**kw)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+
+
+def test_a_bad_cluster_config_serves_here_and_says_why(monkeypatch, tmp_path):
+    (tmp_path / "cluster.json").write_text(json.dumps({"nodes": "nope"}), encoding = "utf-8")
+    monkeypatch.setattr(ss, "is_spark", lambda: False)
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    status = ss.status()
+    assert status["topology"] == "single" and "nodes" in status["config_error"]
+
+
+def test_a_failed_load_puts_the_previous_topology_back(monkeypatch):
+    _cluster_env(monkeypatch)
+    run(ss.before_load(_request(), 4))
+    _cluster_env(monkeypatch, model_bytes = 10 * GIB)
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "single"
+    run(ss.load_failed())
+    assert ss.status()["topology"] == "layer_split"
+
+
+def test_an_endpoint_with_no_device_is_reported(monkeypatch):
+    listing = "  RPC0: 10.0.0.2:50052 (122502 MiB, 118000 MiB free)\n  CUDA0: GB10 (122502 MiB, 110000 MiB free)\n"
+    _cluster_env(monkeypatch, listing = listing, model_bytes = 150 * GIB)
+    out = run(ss.before_load(_request(), 4))
+    assert "10.0.0.3:50052" in ss.status()["last_error"]
+    assert out.llama_extra_args[1] == "10.0.0.2:50052"
+
+
+def test_managed_workers_are_started_over_ssh_and_a_forced_reload_asks_first(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_NODES, "me@10.0.0.2,10.0.0.3,10.0.0.4")
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    monkeypatch.setattr(
+        ss, "rpc_server_binary", lambda: "/home/me/.unsloth/llama.cpp/build/bin/ggml-rpc-server"
+    )
+    ssh = []
+
+    async def fake_ssh(target, remote, **kw):
+        ssh.append(target)
+        return 0, "$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server\n", ""
+
+    started = []
+
+    async def fake_start(self):
+        started.append((self.peer, list(self.argv)))
+        self.proc = SimpleNamespace(returncode = None)
+
+    async def fake_stop(self, timeout = 10.0):
+        self.proc = SimpleNamespace(returncode = 0)
+
+    async def owns(process, host, port, timeout, **kw):
+        return True
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(ss.PeerProcess, "stop", fake_stop)
+    monkeypatch.setattr(ss, "wait_for_own_port", owns)
+    run(ss.before_load(_request(), 4))
+    assert [p for p, _ in started] == ["me@10.0.0.2", "10.0.0.3", "10.0.0.4"]
+    assert started[0][1] == [
+        "$HOME/.unsloth/llama.cpp/build/bin/ggml-rpc-server",
+        "-H",
+        "10.0.0.2",
+        "-p",
+        "50052",
+    ]
+    run(ss.before_load(_request(), 4))
+    assert len(started) == 3, "running workers are reused"
+
+    def refuse():
+        raise RuntimeError("409 active generations")
+
+    with pytest.raises(RuntimeError):
+        run(ss.before_load(_request(force_reload = True), 4, confirm_teardown = refuse))
+    assert len(started) == 3, "a refused forced reload stops nothing"
+    run(ss.before_load(_request(force_reload = True), 4, confirm_teardown = lambda: None))
+    assert len(started) == 6
+    run(ss.shutdown())
+    assert cs.state().workers == {}
+
+
+def test_ssh_takes_a_nodes_own_login_and_keeps_the_spark_one(monkeypatch):
+    monkeypatch.setattr(ss, "_ssh_user", lambda: "studio")
+    assert ss.ssh_argv("10.0.0.2", "true")[-2] == "studio@10.0.0.2"
+    assert ss.ssh_argv("me@10.0.0.2", "true")[-2] == "me@10.0.0.2"
