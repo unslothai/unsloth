@@ -71,6 +71,29 @@ def _message(turn):
     return None
 
 
+def wrapped_messages(value):
+    if isinstance(value, dict) and len(value) == 1:
+        (inner,) = value.values()
+        if isinstance(inner, list):
+            return inner
+    return value
+
+
+def unwrap_message_column(
+    dataset,
+    column,
+    batch_size = 1000,
+):
+    features = getattr(dataset, "features", None)
+    if column is None or (features and not isinstance(features.get(column), dict)):
+        return dataset
+    return dataset.map(
+        lambda batch: {column: [wrapped_messages(value) for value in batch[column]]},
+        batched = True,
+        batch_size = batch_size,
+    )
+
+
 def message_list_columns(dataset):
     features = getattr(dataset, "features", None) or {}
     columns = set()
@@ -90,7 +113,8 @@ def cell_turns(
     role,
     empty_is_messages = False,
 ):
-    messages = [_message(turn) for turn in value] if isinstance(value, list) else [None]
+    turns = wrapped_messages(value)
+    messages = [_message(turn) for turn in turns] if isinstance(turns, list) else [None]
     if (messages or empty_is_messages) and all(message is not None for message in messages):
         return [
             message

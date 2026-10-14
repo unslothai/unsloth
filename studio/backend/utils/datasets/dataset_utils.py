@@ -24,7 +24,7 @@ from .chat_templates import (
     get_tokenizer_chat_template,
     DEFAULT_ALPACA_TEMPLATE,
 )
-from .cells import cell_text, cell_turns, message_list_columns
+from .cells import cell_text, cell_turns, message_list_columns, unwrap_message_column
 from .raw_text import prepare_raw_text_dataset
 from .vlm_processing import generate_smart_vlm_instruction
 from .data_collators import DeepSeekOCRDataCollator, VLMDataCollator
@@ -449,6 +449,7 @@ def format_dataset(
             }
 
     detected = detect_dataset_format(dataset)
+    dataset = unwrap_message_column(dataset, detected["chat_column"], batch_size)
     warnings = []
 
     if multimodal_info["is_image"]:

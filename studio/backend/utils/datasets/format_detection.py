@@ -5,6 +5,8 @@
 
 import re
 
+from .cells import wrapped_messages
+
 
 def _keyword_in_column(keyword: str, col_name: str) -> bool:
     """Word-boundary keyword match to avoid false positives like 'pic' in 'topic'."""
@@ -52,7 +54,7 @@ def _inspect_conversation_column(rows: list[dict], column_name: str) -> dict | N
     for row in rows:
         if not isinstance(row, dict) or column_name not in row:
             continue
-        chat_data = row[column_name]
+        chat_data = wrapped_messages(row[column_name])
         if not isinstance(chat_data, list) or len(chat_data) == 0:
             continue
         for turn in chat_data:
