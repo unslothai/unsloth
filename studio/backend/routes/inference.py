@@ -17843,9 +17843,16 @@ async def _run_tracked_load_model_impl(
             raise
         finally:
             _load_warnings_reach_user.reset(warnings_token)
-        await spark_serving.after_load(
+        if await spark_serving.after_load(
             get_llama_cpp_backend(), _spark_slots, cancel_event = attempt.cancel_event
-        )
+        ):
+            # The cancel landed while the replica started, after llama-server was healthy, so the
+            # unload route left it for this load to undo, as a cancelled GGUF load is.
+            from core.inference.llama_keepwarm import note_model_unloaded
+
+            await asyncio.to_thread(get_llama_cpp_backend().unload_model)
+            note_model_unloaded()
+            raise HTTPException(status_code = 409, detail = "Model load cancelled")
         response = _with_token_rejected_warning(response, token_rejections)
         _remember_hub_access_warning(response, token_rejections)
         return response

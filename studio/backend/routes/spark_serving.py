@@ -9,13 +9,15 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
 
+from auth import policy
 from auth.authentication import get_current_subject
 from core.inference import spark_serving
 
 router = APIRouter()
 
 
-@router.get("/status")
+# Owner only: the payload carries peer command lines, log tails and host paths.
+@router.get("/status", dependencies = [Depends(policy.require_owner)])
 async def spark_serving_status(
     current_subject: str = Depends(get_current_subject),
 ) -> Dict[str, Any]:

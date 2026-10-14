@@ -3645,7 +3645,9 @@ def test_a_cancel_during_replica_startup_stops_waiting_and_leaves_nothing_behind
     cancel.set()
 
     backend = _FakeBackend(12345, str(model))
-    run(ss.after_load(backend, 16, cancel_event = cancel))
+    assert (
+        run(ss.after_load(backend, 16, cancel_event = cancel)) is True
+    ), "the route has to be told to undo a load cancelled during the replica startup"
 
     assert started, "the peer llama-server was launched before the cancel was noticed"
     assert ss.state().topology == "single"
@@ -4468,6 +4470,60 @@ def test_a_respawned_primary_key_is_recopied_and_the_replica_restarted(monkeypat
     assert state.peer_keys == {str(key): b"new"}
 
 
+def test_a_rotated_key_keeps_the_replica_out_of_rotation_until_it_is_resynced(
+    monkeypatch, tmp_path
+):
+    """Regression: after a respawn rotated the key, the replica stayed in rotation with the old one
+    and answered the primary's new key with 401, which the router does not retry."""
+    from core.inference.spark_router import SparkRouter
+
+    monkeypatch.chdir(tmp_path)
+    key = tmp_path / "llama_api_key_0123"
+    key.write_bytes(b"old")
+    primary = ["/l/llama-server", "-m", "/m.gguf", "--port", "9000", "--api-key-file", str(key)]
+    peer_argv = ss.replica_argv(
+        primary, binary = "/peer/llama-server", host = "192.168.200.13", port = 8081
+    )
+
+    async def scenario():
+        main, peer = await FakeLlama("main").start(), await FakeLlama("peer").start()
+        router = SparkRouter(health_interval = 3600.0)
+        router.add_backend("main", "127.0.0.1", main.port, 4, primary = True)
+        router.add_backend("peer", "127.0.0.1", peer.port, 4)
+        await router.start()
+        try:
+            await router.check_health()
+            assert [b.name for b in router.healthy_backends()] == ["main", "peer"]
+            state, events = _replica_state(peer_argv)
+            state.router, state.peer_keys = router, {str(key): b"old"}
+            copies = []
+
+            async def copy(peer_ip, files):
+                copies.append([Path(f).read_bytes() for f in files])
+                return "ssh refused" if len(copies) == 1 else None
+
+            monkeypatch.setattr(ss, "replicate_secret_files", copy)
+            key.write_bytes(b"new")
+            backend = SimpleNamespace(_process = None, _port = None, _healthy = False)
+            await state._repoint_primary(backend)
+            await router.check_health()
+            assert [b.name for b in router.healthy_backends()] == ["main"]
+            # A failed copy leaves it held; the health loop does not put it back.
+            assert not await state._sync_replica(_primary(primary))
+            await router.check_health()
+            assert [b.name for b in router.healthy_backends()] == ["main"]
+            assert await state._sync_replica(_primary(primary))
+            assert events == ["stop", ("start", peer_argv)]
+            await router.check_health()
+            assert [b.name for b in router.healthy_backends()] == ["main", "peer"]
+        finally:
+            await router.stop()
+            await main.stop()
+            await peer.stop()
+
+    run(scenario())
+
+
 def test_the_replica_drops_the_flags_the_mtp_fallback_dropped(monkeypatch, tmp_path):
     """The MTP crash fallback reloads the primary with speculation off; a replica still running the
     old flags would keep crashing on them."""
@@ -4584,6 +4640,63 @@ def test_the_route_hands_its_reload_gate_to_the_split_teardown(monkeypatch):
     assert raised.value.status_code == 409 and gate_calls == [False]
 
 
+def test_a_load_cancelled_during_the_replica_startup_is_undone_and_refused(monkeypatch):
+    """Regression: the unload route leaves a healthy llama-server for its load to undo, and the load
+    returned success after the cancel was reported, leaving the model resident."""
+    import routes.inference as ri
+    from fastapi import HTTPException
+
+    unloaded = []
+
+    async def _before(request, *a, **k):
+        return request
+
+    async def _impl(*a, **k):
+        return {"status": "loaded"}
+
+    async def _after(*a, **k):
+        return True
+
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+    monkeypatch.setattr(ss, "before_load", _before)
+    monkeypatch.setattr(ss, "after_load", _after)
+    monkeypatch.setattr(ri, "_load_model_impl", _impl)
+    monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(
+        ri,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(unload_model = lambda: unloaded.append(1)),
+    )
+    request = SimpleNamespace(
+        model_path = "org/model-GGUF", engine = "auto", n_parallel = 4, load_request_id = None
+    )
+    with pytest.raises(HTTPException) as raised:
+        run(ri._run_tracked_load_model_impl(request, None, "someone"))
+    assert raised.value.status_code == 409 and unloaded == [1]
+
+
+def test_the_spark_status_route_is_the_owners_only(monkeypatch):
+    """Regression: any signed-in account, managed ones included, read the peer command lines, log
+    tails and host paths in this payload."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import routes.spark_serving as route
+    import utils.account_context as account_context
+    from auth.authentication import get_current_subject
+
+    app = FastAPI()
+    app.include_router(route.router, prefix = "/api/inference/spark")
+    app.dependency_overrides[get_current_subject] = lambda: "someone"
+    monkeypatch.setattr(ss, "status", lambda: {"enabled": True, "peer": {"command": "/home/o/x"}})
+    client = TestClient(app)
+    monkeypatch.setattr(account_context, "current_account", lambda: SimpleNamespace(is_owner = False))
+    assert client.get("/api/inference/spark/status").status_code == 403
+    monkeypatch.setattr(account_context, "current_account", lambda: SimpleNamespace(is_owner = True))
+    response = client.get("/api/inference/spark/status")
+    assert response.status_code == 200 and response.json()["enabled"] is True
+
+
 def test_an_uncached_repo_keeps_pipeline_groups_off_until_vision_is():
     """First load of an uncached repo: no file to inspect yet, and the backend may fetch a projector
     with it, which --pipeline-groups refuses."""
@@ -4607,7 +4720,16 @@ def test_a_failed_replica_sync_is_retried_on_the_next_pass(monkeypatch, tmp_path
     async def _address(name, host, port):
         moved.append(port)
 
-    state.router = SimpleNamespace(set_backend_address = _address)
+    held = []
+
+    async def _hold(name, reason):
+        held.append(("hold", name))
+
+    state.router = SimpleNamespace(
+        set_backend_address = _address,
+        hold = _hold,
+        release = lambda name: held.append(("release", name)),
+    )
     state.attached_port = 9000
     outcomes = iter(["ssh: connection reset", None])
 
@@ -4623,6 +4745,7 @@ def test_a_failed_replica_sync_is_retried_on_the_next_pass(monkeypatch, tmp_path
     run(state._repoint_primary(respawned))
     assert state.attached_port == 9100 and state.peer_keys == {str(key): b"new"}
     assert moved == [9100, 9100]
+    assert held[-1] == ("release", "peer") and ("release", "peer") not in held[:-1]
 
 
 def test_retiring_a_replica_topology_never_unloads_the_primary():

@@ -276,6 +276,8 @@ class SparkRouter:
         self.on_backend_down = on_backend_down
         self.on_backend_up = on_backend_up
         self.backends: List[Backend] = []
+        # Out of rotation until released, whatever /health says.
+        self._held: set = set()
         self._rings: Dict[Tuple[str, ...], List[Tuple[int, Backend]]] = {}
         self._server: Optional[asyncio.AbstractServer] = None
         self._health_task: Optional[asyncio.Task] = None
@@ -467,7 +469,21 @@ class SparkRouter:
         backend.last_check = time.time()
         await self._record_probe(backend, ok, error)
 
+    async def hold(self, name: str, reason: str) -> None:
+        """Keep a backend out of rotation while its server is out of step with the primary."""
+        backend = self.get_backend(name)
+        if backend is None:
+            return
+        self._held.add(name)
+        await self.mark_down(backend, reason)
+
+    def release(self, name: str) -> None:
+        """Let the health loop put a held backend back once it answers."""
+        self._held.discard(name)
+
     async def _record_probe(self, backend: Backend, ok: bool, error: str) -> None:
+        if ok and backend.name in self._held:
+            return
         if ok:
             backend.consecutive_failures = 0
             backend.last_error = ""

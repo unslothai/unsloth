@@ -2740,8 +2740,9 @@ class SparkServing:
         if self.peer_process is not None or self.router is not None:
             await self.detach()
 
-    async def after_load(self, llama_backend: Any, n_parallel: int) -> None:
-        """Reconcile with what actually launched. Runs after every load, no-op reloads too."""
+    async def after_load(self, llama_backend: Any, n_parallel: int) -> Optional[bool]:
+        """Reconcile with what actually launched. Runs after every load, no-op reloads too. True when
+        the load was cancelled while the replica was starting, so the caller must undo it."""
         self.load_in_progress = False
         self._pre_load_state = None
         self._retired_split = None
@@ -2823,6 +2824,7 @@ class SparkServing:
             if self._cancelled():
                 await self.detach()
                 self.topology, self.reason = "single", "the load was cancelled"
+                return True
         except Exception as exc:
             self.last_error = f"after_load: {exc}"[:300]
             logger.warning(
@@ -3165,6 +3167,9 @@ class SparkServing:
         """Follow this node's llama-server to a new port, once its load has finished."""
         if self.router is None or self.load_in_progress:
             return
+        if self.peer_keys and _read_keys(list(self.peer_keys)) != self.peer_keys:
+            # A respawn rotated the key before it is healthy again; the replica would answer 401.
+            await self.router.hold("peer", "the primary's API key changed")
         port = getattr(backend, "_port", None)
         if port and port != self.attached_port and getattr(backend, "_healthy", False):
             await self.router.set_backend_address("main", "127.0.0.1", int(port))
@@ -3193,6 +3198,9 @@ class SparkServing:
         keys = _read_keys(list(self.peer_keys))
         if rebuilt == process.argv and keys == self.peer_keys:
             return True
+        # The primary already answers with the new key: a request sent to the old replica gets 401.
+        if self.router is not None:
+            await self.router.hold("peer", "replica out of step with a relaunched primary")
         if keys != self.peer_keys:
             failed = await replicate_secret_files(peer, list(keys))
             if failed:
@@ -3208,6 +3216,8 @@ class SparkServing:
         except Exception as exc:
             logger.warning("spark serving: peer restart for the new key failed: %s", exc)
             return False
+        if self.router is not None:
+            self.router.release("peer")
         return True
 
     def _argv_names_our_peer(self, argv: Sequence[str]) -> bool:
@@ -3401,17 +3411,18 @@ async def after_load(
     n_parallel: int,
     *,
     cancel_event: Any = None,
-) -> None:
+) -> bool:
+    """True when the load was cancelled during the replica startup and must be undone."""
     if not enabled():
-        return
+        return False
     st = state()
     if st._passthrough:
         st._passthrough = False
-        return
+        return False
     if cancel_event is not None:
         st._cancel_event = cancel_event
     try:
-        await st.after_load(llama_backend, n_parallel)
+        return bool(await st.after_load(llama_backend, n_parallel))
     finally:
         st._cancel_event = None
 
