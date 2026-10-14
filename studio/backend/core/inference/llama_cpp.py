@@ -35335,14 +35335,17 @@ class LlamaCppBackend:
         return pgid if pgid == pid else None
 
     @staticmethod
-    def _got_our_quit_signal(pid) -> bool:
+    def _quit_signal_grace_left(pid) -> float:
         if not _is_signalable_pid(pid) or not hasattr(os, "getpgid"):
-            return False
-        from utils.process_lifetime import is_process_shutting_down
+            return 0.0
+        from utils.process_lifetime import seconds_since_quit_signal
+        elapsed = seconds_since_quit_signal()
         try:
-            return is_process_shutting_down() and os.getpgid(pid) == os.getpgrp()
+            if elapsed is None or os.getpgid(pid) != os.getpgrp():
+                return 0.0
         except OSError:
-            return False
+            return 0.0
+        return max(0.0, _QUIT_SIGNAL_EXIT_GRACE_S - elapsed)
 
     @staticmethod
     def _kill_process_group(pgid):
@@ -35635,10 +35638,11 @@ class LlamaCppBackend:
             self._torn_down_process = self._process
         try:
             if terminable:
-                if self._got_our_quit_signal(_pid):
+                _grace = self._quit_signal_grace_left(_pid)
+                if _grace:
                     # The quit signal already reached it; a second one aborts llama-server on Metal.
                     with contextlib.suppress(subprocess.TimeoutExpired):
-                        self._process.wait(timeout = _QUIT_SIGNAL_EXIT_GRACE_S)
+                        self._process.wait(timeout = _grace)
                 self._process.terminate()
                 self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:

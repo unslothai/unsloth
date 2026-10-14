@@ -13,6 +13,7 @@ _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
 from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
+from utils.process_lifetime import mark_process_shutting_down, mark_quit_signal_received  # noqa: E402
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 
@@ -54,6 +55,7 @@ def test_ctrl_c_shutdown_lets_llama_server_exit_on_its_own():
     proc = _spawn()
     try:
         os.kill(proc.pid, signal.SIGINT)
+        mark_quit_signal_received()
         _backend_holding(proc)._kill_process(teardown = True)
         assert proc.returncode == 0, "llama-server got a second signal mid-shutdown"
     finally:
@@ -73,3 +75,32 @@ def test_unloading_a_model_still_stops_llama_server_at_once():
         proc.kill()
         proc.wait()
         proc.stdout.close()
+
+
+def test_quit_without_a_signal_still_stops_llama_server_at_once():
+    proc = _spawn()
+    try:
+        mark_process_shutting_down()
+        started = time.monotonic()
+        _backend_holding(proc)._kill_process(teardown = True)
+        assert proc.returncode == 0
+        assert time.monotonic() - started < 1.5
+    finally:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
+def test_servers_share_one_grace_period():
+    procs = [_spawn(), _spawn()]
+    try:
+        mark_quit_signal_received()
+        started = time.monotonic()
+        for proc in procs:
+            _backend_holding(proc)._kill_process(teardown = True)
+        assert time.monotonic() - started < 4
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait()
+            proc.stdout.close()
