@@ -30,6 +30,12 @@ WORKFLOWS = REPO / ".github" / "workflows"
 # Kaggle spends an external GPU quota rather than runner minutes.
 QUOTA_BOUND = frozenset({"kaggle-t4-notebook-ci.yml", "kaggle-t4-studio-gpu-ci.yml"})
 
+# Coalesced to the tip on main on purpose. CodeQL analyses the whole tree, so the tip's run
+# covers every commit it supersedes, and each analysed main push saves a ~1.3 GB overlay-base
+# database to the Actions cache; per-commit runs were the churn that kept the repo at its cache
+# ceiling. See the concurrency comment in codeql.yml.
+COALESCED_ON_MAIN = frozenset({"codeql.yml"})
+
 # Phrasings that assert main runs are not cancelled.
 CLAIMS_PROTECTION = re.compile(
     r"never on main|never cancelled on main|not cancelled on main|never cancels on main",
@@ -141,7 +147,7 @@ def _protected() -> dict[str, dict]:
     return {
         name: document
         for name, document in _documents().items()
-        if name not in QUOTA_BOUND and _runs_on_main_push(document)
+        if name not in QUOTA_BOUND | COALESCED_ON_MAIN and _runs_on_main_push(document)
     }
 
 
@@ -199,8 +205,8 @@ def test_this_guard_runs_on_a_workflow_only_pull_request():
 def test_the_quota_bound_exemptions_still_exist():
     """An exemption naming a file that moved would silently widen to nothing."""
     documents = _documents()
-    missing = sorted(name for name in QUOTA_BOUND if name not in documents)
-    assert not missing, f"QUOTA_BOUND names workflows that no longer exist: {missing}"
+    missing = sorted(name for name in QUOTA_BOUND | COALESCED_ON_MAIN if name not in documents)
+    assert not missing, f"the exemptions name workflows that no longer exist: {missing}"
 
 
 def test_a_pull_request_still_gets_latest_only():
