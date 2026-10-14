@@ -25698,25 +25698,41 @@ async def stt_unload(
     convenience must not cost the user a recording that is still being decoded.
     """
     if engine is None:
-        engines = None
+        unload_requests: list[tuple[Optional[list[str]], Optional[str]]] = [(None, model)]
+    elif _resolve_stt_engine(engine) == "gguf":
+        # A retired "gguf" pick is served by whichever engine the host had when it
+        # loaded, and that can change mid-session (audio.cpp installed later), so
+        # free every engine it may have landed on, each scoped to the model the
+        # pick was mapped to there.
+        unload_requests = [
+            ([serving], _serving_stt_model(engine, serving, model))
+            for serving in ("transformers", "audiocpp", "mtmd")
+        ]
     else:
-        # Use the serving resolver: a retired "gguf" pick is served by another
-        # engine, so unload must target that same engine (and the model it was
-        # mapped to) or the resident model is never freed.
-        engines = [_resolve_serving_stt_engine(engine)]
-        if model is not None:
-            model = _serving_stt_model(engine, engines[0], model)
+        unload_requests = [([_resolve_stt_engine(engine)], model)]
     if account_access.managed_account():
-        engines = [
-            candidate
-            for candidate in (engines or ["transformers", "gguf", "mtmd", "audiocpp"])
-            if not account_access.resident_hidden(
-                f"stt:{candidate}", _stt_sidecar_for(candidate).loaded_model
+        unload_requests = [
+            (
+                [
+                    candidate
+                    for candidate in (engines or ["transformers", "gguf", "mtmd", "audiocpp"])
+                    if not account_access.resident_hidden(
+                        f"stt:{candidate}", _stt_sidecar_for(candidate).loaded_model
+                    )
+                ],
+                expected,
             )
+            for engines, expected in unload_requests
         ]
     from core.inference.stt_registry import STT_ENGINES
 
-    targets = list(STT_ENGINES if engines is None else engines)
+    targets = list(
+        dict.fromkeys(
+            name
+            for engines, _ in unload_requests
+            for name in (STT_ENGINES if engines is None else engines)
+        )
+    )
     before = {name: _stt_resident_model(name) for name in targets}
     # Every engine is attempted even if one raises, so failing to free one never
     # skips the other (both can be resident after a switch).
@@ -25726,9 +25742,9 @@ async def stt_unload(
     # is not, and only the former takes it positionally. Registry-side it sits
     # behind a `*`, so passing it positionally raised TypeError, which is the
     # state a fresh process is in before anything has loaded.
-    failed: list[str] = await asyncio.to_thread(
-        unload_stt, engines, expected_model = model, wait = wait
-    )
+    failed: list[str] = []
+    for engines, expected in unload_requests:
+        failed += await asyncio.to_thread(unload_stt, engines, expected_model = expected, wait = wait)
     if failed:
         raise HTTPException(
             status_code = 500,

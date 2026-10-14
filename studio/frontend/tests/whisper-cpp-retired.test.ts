@@ -90,10 +90,10 @@ test("dictation settles a model the user did not pick before it preloads or reco
   assert.ok(microphone > 0 && microphone < awaited, "settles after the microphone opens");
   assert.ok(awaited < repinned && repinned < preload && preload < firstSegment);
   assert.match(adapter, /HOST_SETTLE_WAIT_MS = 2_000/);
-  // the status read is shared by the page and retried after a failure.
+  // the status read is shared per model and retried after a failure.
   assert.match(
     adapter,
-    /hostSttModelSettle \?\?= fetchSttStatus\(\)\.then\([\s\S]*?adoptHostSttModel\(status\)[\s\S]*?hostSttModelSettle = null;/,
+    /if \(hostSttModelSettle\?\.model === model\) return hostSttModelSettle\.promise;[\s\S]*?adoptHostSttModel\(status\)[\s\S]*?hostSttModelSettle = null;/,
   );
   const offer = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
   assert.match(

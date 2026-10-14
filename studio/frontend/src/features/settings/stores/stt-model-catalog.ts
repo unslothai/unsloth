@@ -120,7 +120,7 @@ const LEGACY_DEFAULT_STT_MODEL = "small";
 /** The default from v1 until audio.cpp, written by the v1 migration. */
 const V1_DEFAULT_STT_MODEL = "qwen3-asr-0.6b";
 
-/** Who chose `sttModel`. "default": Unsloth Studio, which may adapt it to the
+/** Who chose `sttModel`. "default": the app, which may adapt it to the
  * host. "user": the picker, never changed automatically. "whisper-cpp": a
  * Whisper pick saved while whisper.cpp served it, settled once by the host. */
 export type SttModelSource = "default" | "user" | "whisper-cpp";

@@ -330,19 +330,33 @@ export function sttEngineStatusFor(
   return status.transformers;
 }
 
-// One status read per page load settles a model the user did not pick; a failed read retries.
-let hostSttModelSettle: Promise<void> | null = null;
+// One status read settles each model the user did not pick; a failed read, or the model
+// changing again later (a settings reset), settles anew.
+type HostSttModelSettle = { model: string; promise: Promise<void> };
+let hostSttModelSettle: HostSttModelSettle | null = null;
 
 /** Switch a model the user did not pick to one this host can run. */
 export function settleSttModelForHost(): Promise<void> {
-  hostSttModelSettle ??= fetchSttStatus().then(
-    (status) => useVoiceSettingsStore.getState().adoptHostSttModel(status),
-    (error: unknown) => {
-      hostSttModelSettle = null;
-      throw error;
-    },
-  );
-  return hostSttModelSettle;
+  const model = useVoiceSettingsStore.getState().sttModel;
+  if (hostSttModelSettle?.model === model) return hostSttModelSettle.promise;
+  const settle: HostSttModelSettle = {
+    model,
+    promise: fetchSttStatus().then(
+      (status) => {
+        useVoiceSettingsStore.getState().adoptHostSttModel(status);
+        // The model it settled on needs no second read.
+        if (hostSttModelSettle === settle) {
+          settle.model = useVoiceSettingsStore.getState().sttModel;
+        }
+      },
+      (error: unknown) => {
+        if (hostSttModelSettle === settle) hostSttModelSettle = null;
+        throw error;
+      },
+    ),
+  };
+  hostSttModelSettle = settle;
+  return settle.promise;
 }
 
 /** Verify a custom Hub repository is a Transformers Whisper checkpoint. */

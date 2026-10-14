@@ -3,7 +3,7 @@
 
 """PR #10648: a release lookup that could not answer must keep an intact install.
 
-Two halves, because the feature is a contract between two programs.
+Two halves, because the feature was a contract between two programs.
 
 PART 1 drives ``install_whisper_prebuilt.main()`` -- the same entrypoint setup.sh
 runs -- with every network failure injected at the module's own primitives, and
@@ -15,10 +15,9 @@ install, or a broken one, every single failure mode must still exit non-zero. An
 offline update reporting success over nothing installed is the outcome this file
 exists to rule out.
 
-PART 2 executes the real ``setup.sh`` and ``setup.ps1`` status blocks, extracted
-from the shipped scripts, and checks the label each exit-code/output pair produces
-in BOTH shells. ``pwsh`` is present on Linux CI, so the Windows arm is measured
-rather than asserted from source text.
+PART 2 used to execute the whisper.cpp status blocks of ``setup.sh`` and
+``setup.ps1``. whisper.cpp is retired and setup no longer installs it, so those
+blocks and their tests are gone; the installer itself stays for one release.
 
 No test here touches the network: every exit is stubbed, and each stub records the
 URLs it was asked for so a test that intercepted nothing fails instead of passing.
@@ -29,11 +28,9 @@ from __future__ import annotations
 import email.message
 import io
 import json
-import os
 import shutil
 import socket
 import subprocess
-import sys
 import tarfile
 import urllib.error
 from pathlib import Path
@@ -41,7 +38,6 @@ from pathlib import Path
 import pytest
 
 from _pr10648_helpers import PACKAGE_ROOT, git, load_studio_module
-from unsloth_pwsh_runner import run_pwsh
 
 
 MODULE_PATH = PACKAGE_ROOT / "studio" / "install_whisper_prebuilt.py"
@@ -688,9 +684,9 @@ def test_the_keep_arm_sits_beside_the_status_arms_it_did_not_replace():
     # own test rather than, say, both scripts growing the sh spelling.
     sh_keeps = [line for line in setup_sh.splitlines() if KEEP_TOKEN in line]
     ps1_keeps = [line for line in setup_ps1.splitlines() if KEEP_TOKEN in line]
-    # llama.cpp, whisper.cpp and audio.cpp.
-    assert len(sh_keeps) == 3, sh_keeps
-    assert len(ps1_keeps) == 3, ps1_keeps
+    # llama.cpp and audio.cpp; whisper.cpp is retired and setup no longer runs it.
+    assert len(sh_keeps) == 2, sh_keeps
+    assert len(ps1_keeps) == 2, ps1_keeps
     assert all("grep -Fq" in line for line in sh_keeps), sh_keeps
     assert all("-match" in line for line in ps1_keeps), ps1_keeps
 
@@ -700,458 +696,8 @@ def test_the_keep_arm_sits_beside_the_status_arms_it_did_not_replace():
     assert f'$prebuiltOutput -match "{MATCH_TOKEN}"' in setup_ps1
     for script in (setup_sh, setup_ps1):
         assert (
-            script.count("update unavailable, existing prebuilt kept") == 3
-        ), "llama, whisper and audio.cpp each have exactly one keep arm"
-
-
-# ══ Part 2: the status contract, executed in both shells ═════════════════════════════
-
-_SH_WHISPER_START = 'if [ "$_WHISPER_STATUS" -eq 0 ]; then'
-_PS1_WHISPER_START = "if ($whisperExit -eq 0) {"
-_SH_LLAMA_START = 'if [ "$_PREBUILT_STATUS" -eq 0 ]; then'
-_PS1_LLAMA_START = "if ($prebuiltExit -eq 0) {"
-
-# Stand-ins for the setup helpers the blocks call. `step` echoes both arguments, which is what
-# distinguishes "llama reported the keep" from "whisper reported it".
-_SH_HARNESS = """
-set -u
-C_OK=""; C_WARN=""; C_ERR=""
-_NEED_LLAMA_SOURCE_BUILD=false
-_LLAMA_CPP_NO_SPACE=false
-_LLAMA_CPP_DEGRADED=false
-_explicit_llama_backend=""
-_STUDIO_HOME_IS_CUSTOM=false
-# The flag the runtime children switched to when UNSLOTH_HOME arrived: the guards inside the
-# extracted block read it, and setup.sh derives it in the section this harness stands in for.
-_RUNTIME_ROOT_IS_CUSTOM=false
-_STUDIO_OWNED_MARKER=".unsloth-owned"
-_WHISPER_RECOVERED=false
-step() { echo "step|$1|$2"; }
-substep() { echo "substep|$1"; }
-verbose_substep() { :; }
-run_quiet_no_exit() { return 1; }
-print_llama_error_log() { :; }
-print_installed_llama_prebuilt_release() { :; }
-_has_local_llama_server() { return 1; }
-setup_fail() { echo "setup_fail|$1"; exit "$1"; }
-"""
-
-_PS1_HARNESS = """
-$ErrorActionPreference = "Stop"
-$NeedLlamaSourceBuild = $false
-$script:LlamaCppDegraded = $false
-$StudioHomeIsCustom = $false
-# Same reason as _RUNTIME_ROOT_IS_CUSTOM in the shell harness above.
-$RuntimeRootIsCustom = $false
-function step { param($a, $b, $c) Write-Output "step|$a|$b" }
-function substep { param($a, $b) Write-Output "substep|$a" }
-function Write-LlamaFailureLog { param($Output) }
-function Mark-StudioOwned { param($Path) }
-function Get-InstalledLlamaPrebuiltRelease { param($InstallDir) return $null }
-function Test-PathQuiet { param($p, $t) return $false }
-function Exit-SetupFailure {
-    param($Message, $Code = 1)
-    Write-Output "setup_fail|$Code"
-    exit $Code
-}
-"""
-
-
-def _extract_block(text: str, start_marker: str, end_marker: str) -> str:
-    start = text.index(start_marker)
-    end = text.index(end_marker, start)
-    return text[start : end + len(end_marker)]
-
-
-def _sh_block(name: str) -> str:
-    setup_sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
-    start = setup_sh.index(_SH_WHISPER_START if name == "whisper" else _SH_LLAMA_START)
-    # Both chains end at the first dedented "    fi"; every nested fi inside is indented deeper.
-    end = setup_sh.index("\n    fi\n", start)
-    return setup_sh[start : end + len("\n    fi\n")]
-
-
-def _ps1_block(name: str) -> str:
-    setup_ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
-    if name == "whisper":
-        # The exit-2 arm ends with the same words followed by "} else {", so the trailing
-        # newline is what pins this to the final closing brace of the chain.
-        return _extract_block(setup_ps1, _PS1_WHISPER_START, 'remain available" "Yellow"\n    }\n')
-    return _extract_block(setup_ps1, _PS1_LLAMA_START, 'retry setup."\n        }')
-
-
-def _run_bash(script: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 60)
-
-
-def _steps(stdout: str) -> dict[str, str]:
-    """The component -> label decision each block reached."""
-    found = {}
-    for line in stdout.splitlines():
-        if line.startswith("step|"):
-            _, component, label = line.split("|", 2)
-            found[component] = label
-    return found
-
-
-def _sh_whisper_script(tmp_path: Path, status: int, output: str) -> str:
-    log_path = tmp_path / "whisper.log"
-    log_path.write_text(output, encoding = "utf-8")
-    return "\n".join(
-        [
-            _SH_HARNESS,
-            f'SCRIPT_DIR="{tmp_path}"',
-            f'UNSLOTH_HOME="{tmp_path}"',
-            f'WHISPER_CPP_DIR="{tmp_path / "whisper.cpp"}"',
-            f'_WHISPER_LOG="{log_path}"',
-            f"_WHISPER_STATUS={status}",
-            _sh_block("whisper"),
-        ]
-    )
-
-
-def _ps1_whisper_script(tmp_path: Path, status: int, output: str) -> str:
-    return "\n".join(
-        [
-            _PS1_HARNESS,
-            f'$WhisperCppDir = "{tmp_path / "whisper.cpp"}"',
-            f'$LlamaCppDir = "{tmp_path / "llama.cpp"}"',
-            f"$whisperExit = {status}",
-            "$whisperOutput = @'",
-            output,
-            "'@",
-            _ps1_block("whisper"),
-        ]
-    )
-
-
-def _run_ps1(
-    tmp_path: Path,
-    script: str,
-    name: str = "status.ps1",
-):
-    script_path = tmp_path / name
-    script_path.write_text(script, encoding = "utf-8")
-    # run_pwsh, not subprocess.run: a pwsh killed at startup returns rc -6 with empty stdout,
-    # which this file would otherwise report as setup.ps1 choosing the wrong label.
-    return run_pwsh(
-        [
-            shutil.which("pwsh") or "pwsh",
-            "-NoProfile",
-            "-NonInteractive",
-            "-File",
-            str(script_path),
-        ],
-        capture_output = True,
-        text = True,
-        timeout = 120,
-    )
-
-
-requires_pwsh = pytest.mark.skipif(
-    shutil.which("pwsh") is None,
-    reason = "pwsh is required to execute the setup.ps1 status block",
-)
-requires_bash = pytest.mark.skipif(
-    shutil.which("bash") is None or os.name == "nt",
-    reason = "setup.sh is the POSIX installer",
-)
-
-# One table, run in both shells: `output` is what the installer printed, `label` what the user
-# must be told. The last three rows are the traps, where the two disagree.
-STATUS_CASES = [
-    (
-        "up-to-date",
-        0,
-        "[whisper-prebuilt] existing whisper.cpp install already matches v1.9.1-unsloth.1 (cpu)",
-        "prebuilt up to date",
-    ),
-    (
-        "kept",
-        0,
-        "[whisper-prebuilt] whisper.cpp update unavailable, existing prebuilt kept; keeping the "
-        "existing complete install of v1.9.1-unsloth.1",
-        "update unavailable, existing prebuilt kept",
-    ),
-    (
-        "installed",
-        0,
-        "[whisper-prebuilt] installed whisper.cpp v1.9.2-unsloth.3 (cpu)",
-        "prebuilt installed",
-    ),
-    (
-        "kept-wins-over-installed-text",
-        0,
-        "[whisper-prebuilt] downloading whisper-v1.9.1-unsloth.1-linux-x64-cpu.tar.gz\n"
-        "[whisper-prebuilt] whisper.cpp update unavailable, existing prebuilt kept; keeping the "
-        "existing complete install of v1.9.1-unsloth.1",
-        "update unavailable, existing prebuilt kept",
-    ),
-]
-
-# Non-zero exits: the label must never claim success, whatever the output says.
-FAILURE_CASES = [
-    ("plain-failure", 1, "[whisper-prebuilt] prebuilt install failed: could not fetch release"),
-    (
-        "failure-carrying-the-match-token",
-        1,
-        "[whisper-prebuilt] checking whether the install already matches\n"
-        "[whisper-prebuilt] prebuilt install failed: checksum mismatch",
-    ),
-    (
-        "failure-carrying-the-keep-token",
-        1,
-        "[whisper-prebuilt] considered keeping the existing complete install\n"
-        "[whisper-prebuilt] prebuilt install failed: archive member escaped destination",
-    ),
-    (
-        "unexpected-exit-carrying-both",
-        137,
-        "[whisper-prebuilt] already matches\n"
-        "[whisper-prebuilt] keeping the existing complete install",
-    ),
-]
-
-_FAILURE_LABEL_PREFIX = "prebuilt install failed"
-
-
-@requires_bash
-@pytest.mark.parametrize(
-    "name, status, output, label", STATUS_CASES, ids = [case[0] for case in STATUS_CASES]
-)
-def test_setup_sh_status_labels(tmp_path, name, status, output, label):
-    result = _run_bash(_sh_whisper_script(tmp_path, status, output))
-    assert result.returncode == 0, result
-    assert _steps(result.stdout).get("whisper.cpp") == label, result.stdout
-
-
-@requires_pwsh
-@pytest.mark.parametrize(
-    "name, status, output, label", STATUS_CASES, ids = [case[0] for case in STATUS_CASES]
-)
-def test_setup_ps1_status_labels(tmp_path, name, status, output, label):
-    result = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, status, output))
-    assert result.returncode == 0, result
-    assert _steps(result.stdout).get("whisper.cpp") == label, (result.stdout, result.stderr)
-
-
-@requires_bash
-@pytest.mark.parametrize(
-    "name, status, output", FAILURE_CASES, ids = [case[0] for case in FAILURE_CASES]
-)
-def test_setup_sh_never_reports_success_for_a_non_zero_exit(tmp_path, name, status, output):
-    """Success TEXT on a failed run must not become a success LABEL.
-
-    The installer writes its progress log and its error to the same stream, so a run that
-    got as far as printing either token and then died is exactly the shape that would turn
-    a broken dictation runtime into a green line if the grep ran before the exit check.
-    """
-    result = _run_bash(_sh_whisper_script(tmp_path, status, output))
-    assert result.returncode == 0, result
-    label = _steps(result.stdout).get("whisper.cpp")
-    assert label is not None, result.stdout
-    assert label.startswith(_FAILURE_LABEL_PREFIX), label
-    assert "up to date" not in label, label
-    assert "existing prebuilt kept" not in label, label
-
-
-@requires_pwsh
-@pytest.mark.parametrize(
-    "name, status, output", FAILURE_CASES, ids = [case[0] for case in FAILURE_CASES]
-)
-def test_setup_ps1_never_reports_success_for_a_non_zero_exit(tmp_path, name, status, output):
-    result = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, status, output))
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    label = _steps(result.stdout).get("whisper.cpp")
-    assert label is not None, (result.stdout, result.stderr)
-    assert label.startswith(_FAILURE_LABEL_PREFIX), label
-    assert "up to date" not in label, label
-    assert "existing prebuilt kept" not in label, label
-
-
-@requires_bash
-@requires_pwsh
-@pytest.mark.parametrize(
-    "name, status, output, label", STATUS_CASES, ids = [case[0] for case in STATUS_CASES]
-)
-def test_both_shells_agree_on_the_label(tmp_path, name, status, output, label):
-    """Windows and POSIX must tell the user the same thing.
-
-    Asserting each side against a constant leaves them free to drift apart via the
-    constant; comparing the two measured labels is what makes "mirrored" a measurement.
-    """
-    sh = _run_bash(_sh_whisper_script(tmp_path, status, output))
-    ps = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, status, output))
-    assert sh.returncode == 0 and ps.returncode == 0, (sh, ps.stdout, ps.stderr)
-    assert _steps(sh.stdout).get("whisper.cpp") == _steps(ps.stdout).get("whisper.cpp") == label
-
-
-@requires_bash
-@requires_pwsh
-def test_a_success_token_inside_an_unrelated_line_still_decides_the_label(tmp_path):
-    """Characterisation, and a real limit of the contract, in both shells.
-
-    The grep is a plain substring on the WHOLE log, so any line that happens to contain
-    "already matches" wins the first arm even when the run actually installed something.
-    No shipped installer line does this today (the only producers are
-    existing_install_current_without_plan and the keep arm), so it is a latent precision
-    limit rather than a live bug -- and it can only ever choose between two SUCCESS labels,
-    never turn a failure into one, which the FAILURE_CASES above pin down.
-
-    This is here so that a future log line containing the token fails loudly instead of
-    silently relabelling a fresh install as "up to date".
-    """
-    output = (
-        "[whisper-prebuilt] no published release already matches this host's runtime; "
-        "downloading\n[whisper-prebuilt] installed whisper.cpp v1.9.2-unsloth.3 (cpu)"
-    )
-    sh = _run_bash(_sh_whisper_script(tmp_path, 0, output))
-    ps = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, 0, output))
-    assert _steps(sh.stdout).get("whisper.cpp") == "prebuilt up to date"
-    assert _steps(ps.stdout).get("whisper.cpp") == "prebuilt up to date"
-
-
-@requires_bash
-@requires_pwsh
-def test_the_two_shells_differ_on_token_case(tmp_path):
-    """Characterisation of a real divergence with no live trigger.
-
-    ``grep -Fq`` is case sensitive; PowerShell's ``-match`` is case INSENSITIVE by default.
-    So a log saying "Already Matches" is reported as a fresh install on Linux and as up to
-    date on Windows. Every line the installer actually emits is lowercase, so nothing
-    triggers it today -- but it is a divergence in the contract, recorded here rather than
-    left to be discovered by the first capitalised log line.
-    """
-    output = "[whisper-prebuilt] existing whisper.cpp install Already Matches v1.9.1-unsloth.1"
-    sh = _run_bash(_sh_whisper_script(tmp_path, 0, output))
-    ps = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, 0, output))
-    assert _steps(sh.stdout).get("whisper.cpp") == "prebuilt installed", sh.stdout
-    assert _steps(ps.stdout).get("whisper.cpp") == "prebuilt up to date", ps.stdout
-
-
-@requires_bash
-def test_setup_sh_routes_the_remaining_whisper_exit_codes(tmp_path):
-    """Exit 2 and exit 3 keep their own labels; neither is the new keep arm."""
-    busy = _run_bash(_sh_whisper_script(tmp_path, 3, "[whisper-prebuilt] install busy"))
-    assert _steps(busy.stdout)["whisper.cpp"] == "install busy; keeping existing runtime"
-
-    skew = _run_bash(
-        _sh_whisper_script(tmp_path, 2, "[whisper-prebuilt] slim bundle requires llama.cpp b9999;")
-    )
-    label = _steps(skew.stdout)["whisper.cpp"]
-    assert label.startswith("no compatible prebuilt ("), label
-    assert "b9999" in label, label
-    assert "existing prebuilt kept" not in label, label
-
-
-@requires_pwsh
-def test_setup_ps1_routes_the_remaining_whisper_exit_codes(tmp_path):
-    busy = _run_ps1(tmp_path, _ps1_whisper_script(tmp_path, 3, "[whisper-prebuilt] install busy"))
-    assert _steps(busy.stdout)["whisper.cpp"] == "install busy; keeping existing runtime"
-
-    skew = _run_ps1(
-        tmp_path,
-        _ps1_whisper_script(
-            tmp_path, 2, "[whisper-prebuilt] slim bundle requires llama.cpp b9999;"
-        ),
-        name = "skew.ps1",
-    )
-    label = _steps(skew.stdout)["whisper.cpp"]
-    assert label.startswith("no compatible prebuilt ("), label
-    assert "b9999" in label, label
-    assert "existing prebuilt kept" not in label, label
-
-
-_LLAMA_KEEP_LOG = (
-    "[llama-prebuilt] llama.cpp update unavailable, existing prebuilt kept; keeping the "
-    "existing complete install of b1000"
-)
-
-
-@requires_bash
-def test_setup_sh_reports_each_component_separately(tmp_path):
-    """llama keeps its install while whisper's update fails: two labels, no cross-talk.
-
-    Both blocks read from their own log file and their own status variable, and llama's
-    keep arm must not leak into whisper's line (or the reverse) just because the same
-    token appears in the same setup run.
-    """
-    llama_log = tmp_path / "prebuilt.log"
-    llama_log.write_text(_LLAMA_KEEP_LOG + "\n", encoding = "utf-8")
-    whisper_log = tmp_path / "whisper.log"
-    whisper_log.write_text(
-        "[whisper-prebuilt] prebuilt install failed: could not fetch release\n", encoding = "utf-8"
-    )
-    script = "\n".join(
-        [
-            _SH_HARNESS,
-            f'SCRIPT_DIR="{tmp_path}"',
-            f'UNSLOTH_HOME="{tmp_path}"',
-            f'LLAMA_CPP_DIR="{tmp_path / "llama.cpp"}"',
-            f'WHISPER_CPP_DIR="{tmp_path / "whisper.cpp"}"',
-            f'_PREBUILT_LOG="{llama_log}"',
-            "_PREBUILT_STATUS=0",
-            '_explicit_llama_source_backend=""',
-            _sh_block("llama"),
-            f'_WHISPER_LOG="{whisper_log}"',
-            "_WHISPER_STATUS=1",
-            _sh_block("whisper"),
-        ]
-    )
-    result = _run_bash(script)
-    assert result.returncode == 0, result
-    steps = _steps(result.stdout)
-    assert steps["llama.cpp"] == "update unavailable, existing prebuilt kept", steps
-    assert steps["whisper.cpp"].startswith(_FAILURE_LABEL_PREFIX), steps
-    # A failed whisper never aborts setup: dictation is fail-open.
-    assert "setup_fail|" not in result.stdout, result.stdout
-
-
-@requires_pwsh
-def test_setup_ps1_reports_each_component_separately(tmp_path):
-    script = "\n".join(
-        [
-            _PS1_HARNESS,
-            f'$LlamaCppDir = "{tmp_path / "llama.cpp"}"',
-            f'$WhisperCppDir = "{tmp_path / "whisper.cpp"}"',
-            "$prebuiltExit = 0",
-            "$prebuiltOutput = @'",
-            _LLAMA_KEEP_LOG,
-            "'@",
-            _ps1_block("llama"),
-            "$whisperExit = 1",
-            "$whisperOutput = @'",
-            "[whisper-prebuilt] prebuilt install failed: could not fetch release",
-            "'@",
-            _ps1_block("whisper"),
-        ]
-    )
-    result = _run_ps1(tmp_path, script, name = "both.ps1")
-    assert result.returncode == 0, (result.stdout, result.stderr)
-    steps = _steps(result.stdout)
-    assert steps["llama.cpp"] == "update unavailable, existing prebuilt kept", steps
-    assert steps["whisper.cpp"].startswith(_FAILURE_LABEL_PREFIX), steps
-    assert "setup_fail|" not in result.stdout, result.stdout
-
-
-@requires_bash
-def test_the_installer_emits_exactly_the_substrings_the_scripts_grep(tmp_path, monkeypatch, capsys):
-    """End to end: the real installer log, fed to the real setup.sh block.
-
-    Every other test in this file asserts one half. This one runs the installer offline over
-    an intact install, takes whatever it printed, and hands it to the shipped shell block --
-    so a reworded log line shows up as the wrong user-facing label, not as a passing test.
-    """
-    host = _host("linux", "x64")
-    install_dir = _seed_install(tmp_path, host)
-    _inject(monkeypatch, "offline")
-    code, log = _run_cli(monkeypatch, capsys, host, install_dir)
-    assert code == M.EXIT_SUCCESS, log
-
-    result = _run_bash(_sh_whisper_script(tmp_path, code, log))
-    assert (
-        _steps(result.stdout)["whisper.cpp"] == "update unavailable, existing prebuilt kept"
-    ), result.stdout
+            script.count("update unavailable, existing prebuilt kept") == 2
+        ), "llama and audio.cpp each have exactly one keep arm"
 
 
 # An untrustworthy release is an ANSWER, not an unavailability

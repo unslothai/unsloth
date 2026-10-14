@@ -2879,23 +2879,19 @@ def test_an_explicit_release_request_is_never_answered_by_keeping(tmp_path, monk
         assert KEPT_LINE not in output, extra
 
 
-def test_both_setup_scripts_report_the_kept_install_as_kept():
-    """The installer's exit status is 0 on the kept path, and a non-verbose run discards
-    its log, so without an arm of their own the shells print "prebuilt installed" for a
-    release nothing fetched. Wording and grep token are the llama arm's, verbatim, so a
-    strictly offline update reads the same for both components and one step matcher
-    covers them."""
+def test_setup_scripts_no_longer_report_a_whisper_install():
+    """whisper.cpp is retired: setup neither runs the installer nor reports its result,
+    so the kept arm it used to need is gone from both shells while llama.cpp keeps its
+    own. The installer still emits the token and the wording for the release it stays."""
     kept = "update unavailable, existing prebuilt kept"
     token = "keeping the existing complete install"
     sh = (PACKAGE_ROOT / "studio" / "setup.sh").read_text(encoding = "utf-8")
     ps1 = (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
-    # Two arms each now: llama's and whisper's.
     assert sh.count(f'step "llama.cpp" "{kept}"') == 1
-    assert sh.count(f'step "whisper.cpp" "{kept}"') == 1
-    assert sh.count(f'grep -Fq "{token}" "$_WHISPER_LOG"') == 1
-    assert ps1.count(f'step "whisper.cpp" "{kept}"') == 1
-    assert ps1.count(f'$whisperOutput -match "{token}"') == 1
-    # ...and the installer really emits the token the shells select on.
+    assert sh.count(f'step "whisper.cpp" "{kept}"') == 0
+    assert "$_WHISPER_LOG" not in sh
+    assert ps1.count(f'step "whisper.cpp" "{kept}"') == 0
+    assert "$whisperOutput" not in ps1
     source = MODULE_PATH.read_text(encoding = "utf-8")
     assert token in source
     assert kept in source

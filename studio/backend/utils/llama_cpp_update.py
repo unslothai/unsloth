@@ -1414,8 +1414,6 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
         )
         if backend_request is not None and llama_spec is not None:
             starting_message = f"Installing the {backend_request} llama.cpp build..."
-        elif backend_request is not None:
-            starting_message = "Re-pairing whisper.cpp with llama.cpp..."
         else:
             starting_message = f"Downloading and installing the latest {running} prebuilt..."
 
