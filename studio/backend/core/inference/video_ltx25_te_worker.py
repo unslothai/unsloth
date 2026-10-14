@@ -154,9 +154,168 @@ def _load(config: dict) -> tuple[Any, Any]:
         )
     model.eval()
     model.requires_grad_(False)
+    if config.get("te_quant") == TE_QUANT_INT8_CONVROT:
+        quantize_int8_convrot_(model, config.get("device") or "cpu", bool(config.get("resident")))
+    elif config.get("te_quant"):
+        raise RuntimeError(f"unsupported text encoder precision '{config.get('te_quant')}'")
     if config.get("resident"):
         model.to(config["device"])
     return tokenizer, model
+
+
+# Matches ComfyUI's gemma4 int8-convrot encoder, built from the bf16 weights on disk (no second 15 GB download).
+TE_QUANT_INT8_CONVROT = "int8"
+CONVROT_GROUP = 256
+_PROJECTIONS = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj")
+
+
+def _decoder_layers(model: Any) -> Any:
+    inner = getattr(model, "model", model)
+    language = getattr(inner, "language_model", inner)
+    layers = getattr(language, "layers", None)
+    if layers is None:
+        raise RuntimeError("the Gemma 4 encoder has no language_model.layers to quantize")
+    return layers
+
+
+_MADV_DONTNEED = 4
+
+
+def _file_mapping_holds(start: int, end: int) -> bool:
+    """Whether ``[start, end)`` lies inside one file-backed mapping (Hub blobs have no suffix, so any file qualifies)."""
+    try:
+        with open("/proc/self/maps", "r", encoding = "utf-8", errors = "replace") as fh:
+            for line in fh:
+                fields = line.split(None, 5)
+                if len(fields) < 6:
+                    continue
+                lo, _, hi = fields[0].partition("-")
+                if int(lo, 16) <= start and end <= int(hi, 16):
+                    return fields[4] != "0" and fields[5].strip().startswith("/")
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _release_mapped_pages(tensor: Any) -> bool:
+    """MADV_DONTNEED file-mapped pages only (DONTNEED zeroes anonymous memory); whether it did."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import ctypes
+        import mmap
+
+        if tensor.device.type != "cpu" or not tensor.is_contiguous():
+            return False
+        start = int(tensor.data_ptr())
+        end = start + tensor.numel() * tensor.element_size()
+        if end <= start or not _file_mapping_holds(start, end):
+            return False
+        page = mmap.PAGESIZE
+        lo = (start + page - 1) // page * page
+        hi = end // page * page
+        if hi <= lo:
+            return True
+        libc = ctypes.CDLL(None, use_errno = True)
+        libc.madvise.argtypes = (ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int)
+        libc.madvise.restype = ctypes.c_int
+        return libc.madvise(lo, hi - lo, _MADV_DONTNEED) == 0
+    except Exception:  # noqa: BLE001 - best effort: the pages then stay mapped until the copy-out below
+        return False
+
+
+def _empty_device_cache(device: Any) -> None:
+    import torch
+    empty = getattr(getattr(torch, device.type, None), "empty_cache", None)
+    if callable(empty):
+        empty()
+
+
+def _quantize_off_card(weight: Any, work: Any) -> tuple[Any, Any, Any]:
+    """``(codes, scale, work)``; the card only speeds this up, so its OOM moves this and later projections to the host."""
+    import torch
+
+    from core.inference.diffusion_convrot import quantize_convrot_int8_weight
+
+    if work.type != "cpu":
+        oom = getattr(torch, "OutOfMemoryError", torch.cuda.OutOfMemoryError)
+        try:
+            return (*quantize_convrot_int8_weight(weight.detach().to(work), CONVROT_GROUP), work)
+        except oom:
+            pass
+        # Outside the handler: the failed attempt's tensors are unreferenced by now.
+        _empty_device_cache(work)
+        work = torch.device("cpu")
+    return (*quantize_convrot_int8_weight(weight.detach(), CONVROT_GROUP), work)
+
+
+def quantize_int8_convrot_(
+    model: Any,
+    device: Any = "cpu",
+    resident: bool = False,
+) -> int:
+    """Swap every decoder-layer projection for the ConvRot INT8 linear in place; the number swapped. ``resident``
+    quantizes layer by layer on the card. Otherwise mapped bf16 pages are released per projection; if any cannot be,
+    host tensors are copied out of the map so it can close."""
+    import torch
+    from torch import nn
+
+    from core.inference.diffusion_convrot import quantize_convrot_int8_weight
+    from core.inference.video_minimax_h3_te import _int8_convrot_linear_class
+
+    cls = _int8_convrot_linear_class()
+    work = torch.device(str(device))
+    if work.type not in ("cuda", "xpu") or not getattr(torch, work.type).is_available():
+        work = torch.device("cpu")
+    on_card = resident and work.type != "cpu"
+    swapped = 0
+    released_all = True
+    quantized: set = set()
+    for layer in _decoder_layers(model):
+        if on_card:
+            layer.to(work)
+        for parent in (getattr(layer, "self_attn", None), getattr(layer, "mlp", None)):
+            if parent is None:
+                continue
+            for name in _PROJECTIONS:
+                linear = getattr(parent, name, None)
+                if not isinstance(linear, nn.Linear):
+                    continue
+                home = linear.weight.device
+                if on_card:
+                    codes, scale = quantize_convrot_int8_weight(
+                        linear.weight.detach().to(work), CONVROT_GROUP
+                    )
+                else:
+                    codes, scale, work = _quantize_off_card(linear.weight, work)
+                if not on_card:
+                    released_all = _release_mapped_pages(linear.weight) and released_all
+                new = cls(
+                    linear.in_features, linear.out_features, linear.bias is not None, CONVROT_GROUP
+                )
+                new.weight = codes.to(home)
+                new.weight_scale = scale.to(home)
+                if linear.bias is not None:
+                    new.bias = linear.bias.detach().to(device = home, dtype = torch.bfloat16)
+                setattr(parent, name, new)
+                quantized.add(id(new))
+                swapped += 1
+                del linear, codes, scale
+    if swapped == 0:
+        raise RuntimeError("no Gemma 4 decoder projection could be quantized")
+    if not on_card and work.type != "cpu":
+        # The plan never priced this transient.
+        _empty_device_cache(work)
+    if not on_card and not released_all:
+        with torch.no_grad():
+            for module in model.modules():
+                if id(module) in quantized:
+                    continue
+                for table in (module._parameters, module._buffers):
+                    for key, tensor in table.items():
+                        if tensor is not None and tensor.device.type == "cpu":
+                            tensor.data = tensor.data.clone()
+    return swapped
 
 
 # Room an onloaded encode needs beyond the weights: every hidden state stacked for the packed embeddings (49 x 1024 x
@@ -171,6 +330,13 @@ def _weights_mib(model: Any) -> int:
     for tensor in list(model.parameters()) + list(model.buffers()):
         total += tensor.numel() * tensor.element_size()
     return total >> 20
+
+
+def _weights_mib_or_none(model: Any) -> Optional[int]:
+    try:
+        return _weights_mib(model)
+    except Exception:  # noqa: BLE001 -- reporting only
+        return None
 
 
 def _encode_device(
@@ -301,6 +467,8 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                     getattr(model.config, "text_config", model.config), "hidden_size", None
                 ),
                 "resident": bool(config.get("resident")),
+                "te_quant": config.get("te_quant") or None,
+                "weights_mib": _weights_mib_or_none(model),
                 **_memory_stats(config.get("device") or ""),
             }
         )

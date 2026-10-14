@@ -99,7 +99,13 @@ def get_device() -> str:
     if device_locked():
         return "gpu" if _env(ENV_DEVICE).lower() in ("gpu", "auto") else "cpu"
     stored = _owner_setting(DEVICE_KEY)
-    return stored if stored in DEVICES else "cpu"
+    if stored in DEVICES:
+        return stored
+    from utils.hardware.hardware import DeviceType, get_device as detected_device
+
+    # Only where unloading gives all of Laya's memory back: its own process, or MLX.
+    gpu = (DeviceType.CUDA, DeviceType.XPU, DeviceType.MLX)
+    return "gpu" if detected_device() in gpu else "cpu"
 
 
 def clef_device() -> str:
