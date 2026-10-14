@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -86,4 +87,31 @@ test("the query reaches the header, whichever tense it is in", () => {
       /""|undefined/,
     );
   }
+});
+
+// A document search can carry a whole page as its query; wrapping it into the open header pushed the
+// icon and chevron to the middle of a tall block and the retrieval summary below it.
+test("the document search header stays one line, with the summary first and the long query below", () => {
+  const kb = readFileSync(
+    new URL(
+      "../src/components/assistant-ui/tool-ui-knowledge-base.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(kb, /singleLine=\{true\}/);
+  assert.match(kb, /icon=\{LibraryGlyph\}/);
+  assert.match(kb, /icon=\{LibrariesIcon\}/);
+  assert.ok(
+    kb.indexOf("Retrieved {citations.length} passage") <
+      kb.indexOf("query.length > QUERY_INLINE_MAX"),
+  );
+  const fallback = readFileSync(
+    new URL(
+      "../src/components/assistant-ui/tool-fallback.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  assert.match(fallback, /const wrapWhenOpen = !singleLine;/);
 });

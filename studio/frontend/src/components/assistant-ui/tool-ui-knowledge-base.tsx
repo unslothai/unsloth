@@ -8,13 +8,14 @@ import {
   useAuiState,
 } from "@assistant-ui/react";
 import { partsHaveNonEmptyText } from "@/components/assistant-ui/message-derived";
-import { LibraryBigIcon } from "lucide-react";
+import { LibrariesIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 
 import { useToolAwaitingApproval } from "@/features/chat";
 import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
-import { memo, useMemo } from "react";
+import { type ComponentProps, memo, useMemo } from "react";
 import { Badge } from "./badge";
 import {
   isToolCallRunning,
@@ -81,6 +82,14 @@ export function CitationBadge({
   );
 }
 
+// The app's Library icon, as in the sidebar.
+const LibraryGlyph = (
+  props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">,
+) => <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} {...props} />;
+
+// Past this the one-line header truncates the query, so the content repeats it in full.
+const QUERY_INLINE_MAX = 80;
+
 const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   args,
   result,
@@ -115,7 +124,8 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
       <ToolFallbackTrigger
         toolName={knowledgeBaseToolName({ isRunning, query })}
         status={status}
-        icon={LibraryBigIcon}
+        icon={LibraryGlyph}
+        singleLine={true}
       />
       <ToolFallbackContent>
         {isRunning ? (
@@ -130,10 +140,20 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             </span>
           </div>
         ) : citations.length > 0 ? (
-          <div className="text-sm text-muted-foreground">
-            Retrieved {citations.length} passage
-            {citations.length === 1 ? "" : "s"} from {docCount} document
-            {docCount === 1 ? "" : "s"}. See Document Sources below.
+          <div className="flex flex-col gap-2 text-sm text-muted-foreground">
+            <div>
+              Retrieved {citations.length} passage
+              {citations.length === 1 ? "" : "s"} from {docCount} document
+              {docCount === 1 ? "" : "s"}. See Document Sources below.
+            </div>
+            {query.length > QUERY_INLINE_MAX ? (
+              <ScrollPane
+                className="rounded bg-muted/50 p-2"
+                scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+              >
+                {query}
+              </ScrollPane>
+            ) : null}
           </div>
         ) : resultText ? (
           <ScrollPane
@@ -143,7 +163,9 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
             {resultText}
           </ScrollPane>
         ) : (
-          <div className="text-sm text-muted-foreground">No matching passages.</div>
+          <div className="text-sm text-muted-foreground">
+            No matching passages.
+          </div>
         )}
       </ToolFallbackContent>
     </ToolFallbackRoot>
