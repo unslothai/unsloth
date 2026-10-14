@@ -157,7 +157,6 @@ export interface FolderSyncJob {
   error?: string | null;
 }
 
-/** Re-encoding documents indexed under a different embedding model than the current one. */
 export interface ReembedJob {
   id: string;
   status: Exclude<JobStatus, "pending">;
@@ -171,7 +170,6 @@ export interface ReembedJob {
 
 export interface ReembedStatus {
   staleDocuments: number;
-  /** Archived conversation turns, re-embedded by the same job. */
   staleArchived: number;
   job: ReembedJob | null;
 }

@@ -161,8 +161,7 @@ def _reembed_document(job: _Job, doc: dict, model: str) -> bool:
 
 
 def _run(job: _Job) -> None:
-    # Per model: a failed document is not retried, and a refused one only once the row it read has
-    # changed, as when another writer's width change dropped its vectors while it encoded.
+    # Per model: a failed document is not retried; a refused one only once the row it read changes.
     failed: set[tuple[str, str]] = set()
     refused: set[tuple[str, str | None, str]] = set()
     failures = 0
@@ -232,8 +231,7 @@ def start() -> dict:
         job.remaining = sum(stale_counts().values())
         job.thread = account_thread(target = _run, args = (job,), daemon = True)
         _jobs[key] = job
-        # Before the worker runs: a job that ends at once must still read as started, so the
-        # client follows it and announces how it ended.
+        # Before the worker runs: a job that ends at once must still read as started to the client.
         started = job.snapshot()
         # Under the lock, so retirement never finds a registered job it cannot join yet.
         job.thread.start()

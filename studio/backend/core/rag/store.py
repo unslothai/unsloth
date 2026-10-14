@@ -557,8 +557,7 @@ def replace_document_vectors(
             or current != list(chunk_ids)
             or len(vectors) != len(current)
             or not current
-            # Under the write lock and uncached, so a switch in any process that has written since is
-            # seen: superseded vectors at another width would drop every row the new model wrote.
+            # Uncached, under the write lock: old-width vectors would drop every row the new model wrote.
             or config.effective_embedding_model(fresh = True) != model_name
         ):
             conn.rollback()

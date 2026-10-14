@@ -179,8 +179,7 @@ export function staleDescription(status: ReembedStatus): string | null {
     : null;
 }
 
-/** Success toast for a saved embedding model, offering Re-embed when existing documents are now stale
- * and the model can index them. Reads the stale counts either way, for the Settings row. */
+/** Offers Re-embed when the save left documents stale; reads the counts either way, for the Settings row. */
 export async function toastEmbeddingModelSaved(
   title: string,
   ready = true,
