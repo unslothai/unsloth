@@ -1372,3 +1372,35 @@ def test_branch_with_a_cache_object_stays_on_the_primary():
     assert not mg._holds_opaque_tensors(((torch.ones(1),), {"a": [torch.ones(1)], "b": None}))
     assert mg._holds_opaque_tensors({"kv_cache": _Cache()})
 
+
+def test_split_video_request_is_guarded_on_every_card():
+    from core.inference import video as vid
+
+    class Pipe:
+        def __init__(self):
+            self.components = {
+                "transformer": torch.nn.Linear(1024, 1024),  # 4 MiB
+                "text_encoder": torch.nn.Linear(1024, 512),  # 2 MiB
+                "vae": torch.nn.Linear(512, 512),  # 1 MiB
+            }
+
+    pipe = Pipe()
+    mg._PLACEMENTS[pipe] = {
+        "placement": {"transformer": "cuda:0", "text_encoder": "cuda:1", "vae": "cuda:1"},
+        "moved": ["text_encoder", "vae"],
+    }
+    cards = vid._video_split_card_floors(pipe)
+    assert cards == ((0, 4, False), (1, 3, True))
+    big = dict(width = 1280, height = 720, frames = 121)
+    clip = vid.estimate_video_runtime_mib(width = 1280, height = 720, num_frames = 121)
+    roomy = {0: 1 << 20, 1: 1 << 20}
+    assert vid.video_split_shortfall_message(cards, family = "f", available_mib = roomy.get, **big) is None
+    # the decode card is priced for the decoded clip; the denoiser card only for its weights + base headroom
+    tight = {0: 4 + dm.DEFAULT_BASE_OVERHEAD_MIB, 1: 3 + dm.DEFAULT_BASE_OVERHEAD_MIB}
+    message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
+    assert clip > 0 and message is not None and "cuda:1" in message
+    tight[0] -= 1
+    message = vid.video_split_shortfall_message(cards, family = "f", available_mib = tight.get, **big)
+    assert "cuda:0" in message
+    del mg._PLACEMENTS[pipe]
+    assert vid._video_split_card_floors(pipe) is None

@@ -106,6 +106,7 @@ from .diffusion_device import (
 )
 from .diffusion_multigpu import (
     install_cfg_parallel,
+    is_split as multigpu_is_split,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
     with_load_selection,
@@ -1358,6 +1359,8 @@ class _VideoLoadState:
     vram_floor_mib: Optional[int] = None
     # MiB still on the device during the VAE decode (the streamed DiT has offloaded by then).
     vram_decode_floor_mib: Optional[int] = None
+    # Several-card split (no offload): ((ordinal, resident MiB, runs the VAE decode), ...) per card the load placed on.
+    vram_split_cards: Optional[tuple] = None
     # MiniMax-H3: the streamed denoiser also holds a full pinned host copy, which the host floor counts twice.
     denoiser_host_copy: bool = False
     # MiniMax-H3: conditioner streamed leaf by leaf (VRAM floor counts its streamed footprint).
@@ -2607,6 +2610,70 @@ def _video_offload_vram_floor_mib(
         return int(held // (1024 * 1024))
     except Exception:  # noqa: BLE001 -- an unreadable pipeline keeps today's unchecked behaviour
         return None
+
+
+def _video_split_card_floors(pipe: Any) -> Optional[tuple]:
+    """``((ordinal, resident MiB, runs the decode), ...)`` for a pipeline split across cards, else None. A split plan
+    reports no offload policy, so the offload floor is None and the request guard would be skipped; this records what
+    each card holds so the guard can run per card."""
+    status = multigpu_placement_status(pipe) if multigpu_is_split(pipe) else None
+    placement = (status or {}).get("placement") or {}
+    if not placement:
+        return None
+    try:
+        from itertools import chain
+
+        import torch
+
+        from .diffusion_prequant import tensor_payload_bytes
+
+        components = getattr(pipe, "components", None) or {}
+        cards: dict[int, list] = {}
+        seen: set[int] = set()
+        for name, where in placement.items():
+            device = torch.device(where)
+            module = components.get(name)
+            if device.type != "cuda" or device.index is None or not isinstance(module, torch.nn.Module):
+                continue
+            card = cards.setdefault(int(device.index), [0, False])
+            for tensor in chain(module.parameters(), module.buffers()):
+                if id(tensor) in seen or getattr(tensor, "is_meta", False):
+                    continue
+                seen.add(id(tensor))
+                card[0] += tensor_payload_bytes(tensor)
+            card[1] = card[1] or str(name) == "vae"
+        if len(cards) < 2:
+            return None
+        return tuple((o, int(b // (1024 * 1024)), bool(d)) for o, (b, d) in sorted(cards.items()))
+    except Exception:  # noqa: BLE001 -- an unreadable placement keeps the unchecked behaviour
+        return None
+
+
+def video_split_shortfall_message(
+    cards: tuple,
+    *,
+    family: str,
+    available_mib: Callable[[int], int],
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    frames: Optional[int] = None,
+) -> Optional[str]:
+    """The offload guard run on every card of a split: each card's resident weights plus the base headroom, and the
+    decoded-clip share on the card that runs the VAE decode. The first refusal, else None."""
+    for ordinal, floor_mib, decodes in cards:
+        shortfall = video_offload_shortfall_message(
+            family = family,
+            floor_mib = int(floor_mib),
+            available_mib = int(available_mib(int(ordinal))),
+            placement = f"split across GPUs, cuda:{int(ordinal)}",
+            width = width if decodes else None,
+            height = height if decodes else None,
+            frames = frames if decodes else None,
+            decode_floor_mib = int(floor_mib) if decodes else None,
+        )
+        if shortfall is not None:
+            return shortfall
+    return None
 
 
 def video_offload_shortfall_message(
@@ -8252,6 +8319,9 @@ class VideoBackend:
                             pipe, dataclasses.replace(plan, offload_policy = offload_policy)
                         )
                     ),
+                    vram_split_cards = (
+                        _video_split_card_floors(pipe) if offload_policy == OFFLOAD_NONE else None
+                    ),
                     vram_decode_floor_mib = _video_offload_vram_floor_mib(
                         pipe,
                         plan
@@ -10225,6 +10295,36 @@ class VideoBackend:
                         )
                         if shortfall is not None:
                             raise RuntimeError(shortfall)
+                elif (
+                    state.engine == "diffusers"
+                    and not fam.modular_workflow
+                    and getattr(state, "vram_split_cards", None)
+                    and hasattr(torch, "cuda")
+                    and hasattr(torch.cuda, "mem_get_info")
+                ):
+                    # A split reports no offload floor; each card it uses is checked for this request instead.
+                    from utils.hardware import trusted_mem_get_info
+
+                    def _available_mib(ordinal: int) -> int:
+                        device_obj = torch.device("cuda", ordinal)
+                        free_bytes, _ = trusted_mem_get_info(device_obj, module = torch.cuda)
+                        reserved_bytes = (
+                            torch.cuda.memory_reserved(device_obj)
+                            if hasattr(torch.cuda, "memory_reserved")
+                            else 0
+                        )
+                        return int((free_bytes + reserved_bytes) // (1024 * 1024))
+
+                    shortfall = video_split_shortfall_message(
+                        state.vram_split_cards,
+                        family = fam.name,
+                        available_mib = _available_mib,
+                        width = width,
+                        height = height,
+                        frames = frames,
+                    )
+                    if shortfall is not None:
+                        raise RuntimeError(shortfall)
                 elif (
                     state.engine == "diffusers"
                     and not fam.modular_workflow
