@@ -45,19 +45,13 @@ test("the flex box survives Expand/Collapse once finished and never flips when a
   const live = { capped: true, streaming: true };
   const liveExpanded = { capped: false, streaming: true };
 
-  // Hand-opened finished trace: flex the whole way, so neither toggle restyles the trace.
   assert.deepEqual(flexBoxTrace([capped, expanded, capped, expanded]), [true, true, true, true]);
-  // Expanded while streaming drops it (block, as before), the stream ending keeps block, and only
-  // the next Collapse restores it; after that the toggles are free again.
   assert.deepEqual(
     flexBoxTrace([live, liveExpanded, expanded, capped, expanded]),
     [true, false, false, true, true],
   );
-  // A live tail that is never expanded stays flex through the end of the stream.
   assert.deepEqual(flexBoxTrace([live, capped, expanded]), [true, true, true]);
-  // A block that first renders already expanded and finished starts without the flex box.
   assert.deepEqual(flexBoxTrace([expanded, expanded]), [false, false]);
-  // A new round re-caps, which restores it even after a live Expand.
   assert.deepEqual(flexBoxTrace([live, liveExpanded, live]), [true, false, true]);
 });
 
@@ -70,8 +64,7 @@ test("the box clips at the top instead of scrolling, and Expand toggles without 
     tail,
     /capped &&\s*"-mx-\[[^\]]+\] min-w-0 max-h-\[[^\]]+\] overflow-hidden px-\[[^\]]+\] supports-\[overflow:clip\]:overflow-x-visible supports-\[overflow:clip\]:overflow-y-clip"/,
   );
-  // Expand/Collapse on a finished box must not toggle the flex box or the child rule: either
-  // restyles every row of the trace.
+  // Toggling the flex box or the child rule on a finished box restyles every row.
   assert.match(tail, /cappable && "\[&>\*\]:shrink-0"/);
   assert.match(
     reasoning,
