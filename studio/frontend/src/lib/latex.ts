@@ -60,7 +60,9 @@ const SHELL_QUOTE_CONTEXT_CANDIDATE_RE = /\$(?:["'!(*\-?_]|\[)/;
 const SHELL_COMMANDS = new Set([
   "awk",
   "bash",
+  "builtin",
   "cat",
+  "command",
   "dash",
   "echo",
   "env",
@@ -77,12 +79,13 @@ const SHELL_COMMANDS = new Set([
   "set",
   "sh",
   "source",
+  "sudo",
   "test",
   "unset",
   "xargs",
   "zsh",
 ]);
-const SHELL_LEADIN_RE = /^(?:Run|Use|Try|Execute|sudo|command|builtin|env)$/i;
+const SHELL_LEADIN_RE = /^(?:Run|Use|Try|Execute)$/i;
 const SHELL_WORD_RE = /^(?:[a-z_][\w.-]*|\.{0,2}\/[^\s]+)$/;
 const SHELL_ARGUMENT_RE =
   /^(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
@@ -122,7 +125,26 @@ function hasShellCommandPrefix(
     previousChar !== 61 &&
     previousChar !== 124
   ) {
-    return false;
+    if (
+      !isWordChar(previousChar) &&
+      previousChar !== 45 &&
+      previousChar !== 46 &&
+      previousChar !== 47
+    ) {
+      return false;
+    }
+    const minimum = Math.max(0, at - 256);
+    let wordStart = at;
+    while (wordStart > minimum) {
+      const char = text.charCodeAt(wordStart - 1);
+      if (!isWordChar(char) && char !== 45 && char !== 46 && char !== 47) break;
+      wordStart--;
+    }
+    return (
+      wordStart > minimum &&
+      wordStart < at &&
+      hasShellCommandPrefix(text, wordStart, true)
+    );
   }
   const minimum = Math.max(0, at - 256);
   let lineStart = at;
@@ -312,6 +334,13 @@ function startsShellExpansion(
       legacyArithmeticCloses,
       isStreaming,
     );
+  if (
+    (char === 42 || char === 95) &&
+    text.charCodeAt(numericOffset - 1) === char &&
+    startsMarkdownEmphasis(text, numericOffset - 1, char)
+  ) {
+    return false;
+  }
   if (
     (char === 42 || char === 95) &&
     startsMarkdownEmphasis(text, at, char) &&
