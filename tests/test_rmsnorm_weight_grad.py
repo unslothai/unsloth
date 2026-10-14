@@ -77,6 +77,23 @@ def test_rmsnorm_trainable_weight_gets_grad(path, gemma, dtype, rows, cols):
     torch.testing.assert_close(dw.double(), exact, rtol = 1e-2, atol = 1e-2 * exact.abs().max().item())
 
 
+# The non-Gemma forward computes W * normed.to(W.dtype), so dW must use the rounded normed.
+@pytest.mark.parametrize("path", ["eager", "traced"])
+@pytest.mark.parametrize("dtype", [torch.float16, torch.bfloat16])
+@pytest.mark.parametrize("cols", [128, 384])
+def test_rmsnorm_dw_uses_the_forward_rounding(path, dtype, cols):
+    torch.manual_seed(3407)
+    inputs = torch.randn(9000, cols, device = "cuda", dtype = dtype)
+    weights = torch.rand(cols, device = "cuda", dtype = dtype)
+    grad = torch.randn(9000, cols, device = "cuda", dtype = dtype)
+    dw = _fast(path, inputs, weights, grad, False)[1].double()
+    x = inputs.float()
+    normed = x * torch.rsqrt(x.square().mean(-1, keepdim = True) + 1e-6)
+    rounded = (grad.double() * normed.to(dtype).double()).sum(0)
+    unrounded = (grad.double() * normed.double()).sum(0)
+    assert (dw - rounded).norm() < (dw - unrounded).norm()
+
+
 @pytest.mark.parametrize("gemma", [False, True])
 @pytest.mark.parametrize("cols", [128, 384])
 def test_rmsnorm_trainable_weight_dx_matches_frozen(gemma, cols):

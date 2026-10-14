@@ -102,7 +102,11 @@ def _rms_backward_row(
     if TRAIN_W:
         # dL/dW for this row, (1 + W) for Gemma included. Added before the row sum so the fp32 dY row
         # is not held across it: fewer registers, so every persistent program stays resident.
-        dW_acc += dY_row * normed
+        if GEMMA:
+            dW_acc += dY_row * normed
+        else:
+            # The forward multiplies W by normed rounded to W's dtype.
+            dW_acc += dY_row * normed.to(W.dtype.element_ty).to(tl.float32)
 
     if GEMMA:
         dY_W = dY_row * (W_row + 1.0)
@@ -361,6 +365,9 @@ def _rms_backward_rows_block(
     else:
         tl.store(dY + rows[:, None] * dY_row_stride + col_offsets[None, :], output, mask = mask)
     # Masked rows load zeros, so they add nothing; dead code unless TRAIN_W.
+    if not GEMMA:
+        # The forward multiplies W by normed rounded to W's dtype.
+        normed = normed.to(W.dtype.element_ty).to(tl.float32)
     return tl.sum(dY_rows * normed, axis = 0)
 
 
