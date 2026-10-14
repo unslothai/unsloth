@@ -296,6 +296,9 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     digests = 'Authorization: Digest username="one", response="firstsecret1", Digest username="two", response="secondsecret2" why'
     assert "secondsecret2" not in _sanitize_public_query(digests)
     assert "czpzandl" not in _sanitize_public_query("Authorization: **Basic czpzandl** why")
+    assert "dXNlcjpwYXNz" not in _sanitize_public_query("**Authorization:** Basic dXNlcjpwYXNz why")
+    serialized = '{"Authorization":"Basic firstsecret1==, Basic secondsecret2=="} why'
+    assert "secondsecret2" not in _sanitize_public_query(serialized)
     assert "YWRtaW46cGFzczI" not in _sanitize_public_query(coalesced)
     escaped_echo = (
         r"Authorization: Basic dXNlcm5hbWU6cGFzc3dvcmQ/ got dXNlcm5hbWU6cGFzc3dvcmQ\/ why"
