@@ -259,13 +259,13 @@ class TestAQueuedChatIsArmedOnceItIsGranted:
         monkeypatch.setattr(inference, "_select_request_tools", _fake_select)
 
         arms: list[bool] = []
-        real_arm = inference._openai_llama_preemption_arm
+        real_arm = inference._openai_llama_preemption_arm_async
 
-        def _recording_arm(*, reservation, **kwargs):
+        async def _recording_arm(*, reservation, **kwargs):
             arms.append(reservation is not None and reservation.lease_nowait() is not None)
-            return real_arm(reservation = reservation, **kwargs)
+            return await real_arm(reservation = reservation, **kwargs)
 
-        monkeypatch.setattr(inference, "_openai_llama_preemption_arm", _recording_arm)
+        monkeypatch.setattr(inference, "_openai_llama_preemption_arm_async", _recording_arm)
 
         app = FastAPI()
         app.include_router(inference.router)

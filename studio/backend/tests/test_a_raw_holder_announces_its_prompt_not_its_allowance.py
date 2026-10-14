@@ -36,7 +36,9 @@ def controller(monkeypatch):
     made.configure(budget = 16384, kv_unified = True, slots = 4)
     monkeypatch.setattr(inference, "get_preemption_controller", lambda key: made)
     monkeypatch.setattr(inference, "_openai_llama_preemption_will_apply", lambda *a, **k: True)
-    monkeypatch.setattr(inference, "_plan_for_unpausable_holder", lambda controller, gen_id: None)
+    monkeypatch.setattr(
+        inference, "_plan_for_unpausable_holder", lambda controller, gen_id, **_kwargs: None
+    )
     return made
 
 
@@ -81,7 +83,7 @@ def test_a_prompt_past_the_charge_is_capped(monkeypatch, controller):
 
 def test_every_raw_surface_hands_over_what_it_was_priced_from():
     source = inspect.getsource(inference)
-    calls = re.findall(r"_openai_llama_count_raw_holder\((.*?)\n\s*\)", source, re.S)
+    calls = re.findall(r"_openai_llama_count_raw_holder_async\((.*?)\n\s*\)", source, re.S)
     calls = [c for c in calls if "llama_backend = llama_backend" in c]
     assert len(calls) == 4, len(calls)
     assert all("payload = " in call for call in calls), calls

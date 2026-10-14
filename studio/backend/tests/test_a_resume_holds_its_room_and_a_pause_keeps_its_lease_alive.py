@@ -302,10 +302,10 @@ class TestARawHolderIsMeasuredOnceItProduces:
 
     def test_no_raw_request_is_measured_at_registration(self):
         source = inspect.getsource(inference)
-        assert "measured = True" not in inspect.getsource(inference._openai_llama_count_raw_holder)
+        assert "measured = True" not in inspect.getsource(inference._openai_llama_enrol_raw_holder)
         assert source.count("_arm_anthropic(reservation, raw = raw)") == 2
         assert "controller.note_measured(gen_id)" not in inspect.getsource(
-            inference._openai_llama_count_raw_holder
+            inference._openai_llama_enrol_raw_holder
         )
 
     def test_the_helper_reaches_the_controller(self, monkeypatch):

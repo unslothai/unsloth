@@ -3145,28 +3145,28 @@ def _openai_llama_publish_round_charge(
         pass
 
 
-def _openai_llama_count_raw_holder(
+def _openai_llama_enrol_raw_holder(
     *,
     llama_backend,
     lease,
     gen_id: str,
     payload = None,
     conversation = None,
-) -> None:
+):
     """Register a surface that occupies the cache but cannot be paused: the raw passthrough and
     Responses stream upstream bytes with no generator, and an unseen holder fires the watermark late.
     Unmeasured until its stream's first data line; a non-streaming request has none and stays
     unmeasured for its answer, since measured at registration a residency sample from before its
     prefill swallowed the charge and a missed pause overran the cache. ``payload`` and
     ``conversation`` priced the reservation: its prompt goes apart from the output allowance, or
-    the whole charge is announced as a prefill."""
+    the whole charge is announced as a prefill. Returns the controller to plan on, or None."""
     try:
         if not _openai_llama_preemption_will_apply(
             llama_backend, _openai_llama_admission_budget(llama_backend)
         ):
-            return
+            return None
         if lease is None:
-            return
+            return None
         charged = int(getattr(lease, "tokens", 0) or 0)
         prompt_tokens = None
         if payload is not None:
@@ -3189,15 +3189,41 @@ def _openai_llama_count_raw_holder(
             state = ParticipantState.STREAMING_RAW,
             prompt_tokens = prompt_tokens,
         )
-        _plan_for_unpausable_holder(controller, gen_id)
+        return controller
     except Exception:
         # Bookkeeping must never fail a request that is otherwise fine.
         logger.debug("could not count the raw holder", exc_info = True)
+    return None
 
 
-def _plan_for_unpausable_holder(controller, gen_id: str) -> None:
+def _openai_llama_count_raw_holder(*, gen_id: str, **kwargs) -> None:
+    """Count a raw holder and plan room for it, for a caller off the event loop."""
+    controller = _openai_llama_enrol_raw_holder(gen_id = gen_id, **kwargs)
+    if controller is None:
+        return
+    try:
+        _plan_for_unpausable_holder(controller, gen_id)
+    except Exception:
+        logger.debug("could not count the raw holder", exc_info = True)
+
+
+async def _openai_llama_count_raw_holder_async(*, gen_id: str, **kwargs) -> None:
+    """``_openai_llama_count_raw_holder`` for a caller on the event loop: the cache read is
+    awaited in a worker, so other requests keep being served while ``/slots`` answers."""
+    controller = _openai_llama_enrol_raw_holder(gen_id = gen_id, **kwargs)
+    if controller is None:
+        return
+    try:
+        await _refresh_residency_before_planning_async(controller)
+        _plan_for_unpausable_holder(controller, gen_id, refresh = False)
+    except Exception:
+        logger.debug("could not count the raw holder", exc_info = True)
+
+
+def _plan_for_unpausable_holder(controller, gen_id: str, *, refresh: bool = True) -> None:
     """Make room for a holder that cannot be paused, before its request goes upstream."""
-    _refresh_residency_before_planning(controller)
+    if refresh:
+        _refresh_residency_before_planning(controller)
     victims = controller.plan_preemptions(needed = 0)
     if victims:
         _llama_preemption_log(
@@ -3343,8 +3369,12 @@ _ARM_RESIDENCY_READ_S = 0.25
 
 
 def _refresh_residency_before_planning(controller) -> None:
-    """Read the cache afresh before arming plans against it, without owning the loop. Skipped when
-    the server parks slots itself: Studio picks no victims, so the reading would go unused."""
+    """Read the cache afresh before arming plans against it. Skipped when the server parks slots
+    itself: Studio picks no victims, so the reading would go unused.
+
+    On the event loop this never waits: joining here stalled every request on the loop while
+    ``/slots`` answered. Loop callers await ``_refresh_residency_before_planning_async``; one that
+    cannot gets the read started and plans on the reading already held."""
     if controller.server_mode:
         return
     try:
@@ -3352,27 +3382,57 @@ def _refresh_residency_before_planning(controller) -> None:
     except RuntimeError:
         controller.refresh_residency()
         return
-    worker = threading.Thread(
+    threading.Thread(
         target = controller.refresh_residency, name = "preempt-arm-residency", daemon = True
-    )
-    worker.start()
-    worker.join(_ARM_RESIDENCY_READ_S)
+    ).start()
 
 
-def _openai_llama_preemption_arm(
+async def _refresh_residency_before_planning_async(controller) -> None:
+    """The same read for a caller on the event loop, awaited in a worker for at most
+    ``_ARM_RESIDENCY_READ_S``; a slower read finishes in the background."""
+    if controller.server_mode:
+        return
+    worker = asyncio.ensure_future(asyncio.to_thread(controller.refresh_residency))
+    try:
+        await asyncio.wait_for(asyncio.shield(worker), _ARM_RESIDENCY_READ_S)
+    except asyncio.TimeoutError:
+        pass
+
+
+def _openai_llama_preemption_arm(*, gen_id: str, signal, loop = None, **kwargs):
+    """Enrol a generation with the preemptor, and pause whoever must make room. Returns the policy
+    the stream calls back on, or None when preemption cannot apply, as before preemption existed.
+    For a caller off the event loop; one on it awaits ``_openai_llama_preemption_arm_async``."""
+    controller = _openai_llama_preemption_enrol(gen_id = gen_id, signal = signal, **kwargs)
+    if controller is None:
+        return None
+    _refresh_residency_before_planning(controller)
+    return _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
+
+
+async def _openai_llama_preemption_arm_async(*, gen_id: str, signal, loop = None, **kwargs):
+    """``_openai_llama_preemption_arm`` with the cache read awaited in a worker, so arming one chat
+    does not hold the event loop for every other request."""
+    controller = _openai_llama_preemption_enrol(gen_id = gen_id, signal = signal, **kwargs)
+    if controller is None:
+        return None
+    await _refresh_residency_before_planning_async(controller)
+    return _openai_llama_preemption_plan(controller, gen_id = gen_id, signal = signal, loop = loop)
+
+
+def _openai_llama_preemption_enrol(
     *,
     request: Optional[Request],
     llama_backend,
     reservation,
     gen_id: str,
     signal,
-    loop = None,
     payload = None,
     conversation = None,
     injected_tools = None,
 ):
-    """Enrol a generation with the preemptor, and pause whoever must make room. Returns the policy
-    the stream calls back on, or None when preemption cannot apply, as before preemption existed."""
+    """Register a generation with the preemptor. Returns its controller, or None when preemption
+    cannot apply."""
     if not preemption_enabled():
         return None
     if not _openai_llama_preemption_will_apply(
@@ -3436,7 +3496,15 @@ def _openai_llama_preemption_arm(
         signal = signal,
         prompt_tokens = prompt_tokens,
     )
-    _refresh_residency_before_planning(controller)
+    return controller
+
+
+def _openai_llama_preemption_plan(controller, *, gen_id: str, signal, loop = None):
+    """Pause whoever must make room for an enrolled generation; returns its policy."""
+    charged = 0
+    participant = controller.participant(gen_id)
+    if participant is not None:
+        charged = int(getattr(participant, "base_tokens", 0) or participant.tokens or 0)
     victims = controller.plan_preemptions(needed = 0)
     snapshot = controller.snapshot()
     _llama_preemption_log(
@@ -33732,7 +33800,7 @@ async def produce_openai_chat_completions(
                 except Exception:
                     logger.debug("could not register the residency probe", exc_info = True)
                 _gguf_preempt_policy_hold.bind(
-                    _openai_llama_preemption_arm(
+                    await _openai_llama_preemption_arm_async(
                         request = request,
                         llama_backend = llama_backend,
                         reservation = reservation,
@@ -34254,7 +34322,7 @@ async def produce_openai_chat_completions(
                             # Arm with the lease in hand: arming beside the reservation returns None
                             # when the lease was not granted.
                             _gguf_preempt_policy_hold.bind(
-                                _openai_llama_preemption_arm(
+                                await _openai_llama_preemption_arm_async(
                                     request = request,
                                     llama_backend = llama_backend,
                                     reservation = reservation,
@@ -34457,7 +34525,7 @@ async def produce_openai_chat_completions(
                     except Exception:
                         logger.debug("could not register the residency probe", exc_info = True)
                     _gguf_preempt_policy_hold.bind(
-                        _openai_llama_preemption_arm(
+                        await _openai_llama_preemption_arm_async(
                             request = request,
                             llama_backend = llama_backend,
                             reservation = reservation,
@@ -35015,7 +35083,7 @@ async def produce_openai_chat_completions(
                         logger.debug("could not register the residency probe", exc_info = True)
                     # Arm with the lease in hand: arming beside the reserve armed one chat of four.
                     _plain_preempt_policy.bind(
-                        _openai_llama_preemption_arm(
+                        await _openai_llama_preemption_arm_async(
                             request = request,
                             llama_backend = llama_backend,
                             reservation = reservation,
@@ -35234,7 +35302,7 @@ async def produce_openai_chat_completions(
                     logger.debug("could not register the residency probe", exc_info = True)
                 # Not beside the admission wait, whose try/except turns errors into a 503 or 499.
                 _plain_preempt_policy.bind(
-                    _openai_llama_preemption_arm(
+                    await _openai_llama_preemption_arm_async(
                         request = request,
                         llama_backend = llama_backend,
                         reservation = reservation,
@@ -42221,7 +42289,7 @@ async def _responses_stream(
                 cancel_event = cancel_event,
             )
             # Counted, never chosen: an unseen holder fires the watermark late by its size.
-            _openai_llama_count_raw_holder(
+            await _openai_llama_count_raw_holder_async(
                 llama_backend = llama_backend,
                 lease = lease,
                 gen_id = resp_id,
@@ -44365,7 +44433,7 @@ async def anthropic_messages(
         )
     )
 
-    def _arm_anthropic(reservation, *, raw: bool = False) -> None:
+    async def _arm_anthropic(reservation, *, raw: bool = False) -> None:
         """Probe first, then arm, both no-ops when preemption cannot apply. ``raw`` is the client-tool
         passthrough: with no generator it never polls the signal, so it must not become a victim.
         Unmeasured: the stream marks itself at its first data line, the non-streaming call never."""
@@ -44379,7 +44447,7 @@ async def anthropic_messages(
         except Exception:
             logger.debug("could not register the residency probe", exc_info = True)
         if raw:
-            _openai_llama_count_raw_holder(
+            await _openai_llama_count_raw_holder_async(
                 llama_backend = llama_backend,
                 lease = reservation.lease_nowait(),
                 gen_id = message_id,
@@ -44388,7 +44456,7 @@ async def anthropic_messages(
             )
             return
         _anthropic_preempt_policy.bind(
-            _openai_llama_preemption_arm(
+            await _openai_llama_preemption_arm_async(
                 request = request,
                 llama_backend = llama_backend,
                 reservation = reservation,
@@ -44442,7 +44510,7 @@ async def anthropic_messages(
                 )
             if lease is None:
                 return
-            _arm_anthropic(reservation, raw = raw)
+            await _arm_anthropic(reservation, raw = raw)
             if raw:
                 await _openai_llama_let_victims_go(llama_backend, message_id)
             body_started = True
@@ -44623,7 +44691,7 @@ async def anthropic_messages(
                 request = request,
                 cancel_event = cancel_event,
             )
-            _arm_anthropic(reservation, raw = raw)
+            await _arm_anthropic(reservation, raw = raw)
             if raw:
                 await _openai_llama_let_victims_go(llama_backend, message_id)
             # Registered only once admitted: a queued request is not holding
@@ -47477,7 +47545,7 @@ async def _openai_passthrough_stream_admitted(
     """
     _tracker = tracker
     # Counted, never chosen: unseen, the controller evicts a chat for room a passthrough holds.
-    _openai_llama_count_raw_holder(
+    await _openai_llama_count_raw_holder_async(
         llama_backend = llama_backend,
         lease = admission_lease,
         gen_id = completion_id,
@@ -48468,7 +48536,7 @@ async def _openai_passthrough_non_streaming(
         )
         # Counted, never chosen: no Studio-side conversation to resume, so it cannot be paused,
         # but it still fills cells.
-        _openai_llama_count_raw_holder(
+        await _openai_llama_count_raw_holder_async(
             llama_backend = llama_backend,
             lease = lease,
             gen_id = _raw_gen_id,
