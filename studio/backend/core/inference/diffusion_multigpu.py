@@ -1184,7 +1184,9 @@ class _ReplicaWorker:
             stack.enter_context(_device_context(self.device))
             return fn()
 
-    def call(self, fn: Callable[[], Any]) -> Any:
+    def submit(self, fn: Callable[[], Any]) -> dict:
+        """Queue ``fn`` with the caller's grad / inference / autocast mode and context variables; returns a handle
+        for :meth:`wait`."""
         torch = _torch()
         autocast = None
         try:
@@ -1199,17 +1201,67 @@ class _ReplicaWorker:
         }
         done: dict[str, Any] = {"event": threading.Event()}
         self._jobs.put((fn, contextvars.copy_context(), modes, done))
+        return done
+
+    @staticmethod
+    def wait(done: dict) -> Any:
         done["event"].wait()
         if "error" in done:
             raise done["error"]
         return done.get("result")
 
+    def call(self, fn: Callable[[], Any]) -> Any:
+        return self.wait(self.submit(fn))
+
     def close(self) -> None:
         self._jobs.put(None)
 
 
+def _leaves(obj: Any, path: tuple = (), depth: int = 0) -> list[tuple[tuple, Any]]:
+    """(path, leaf) pairs of a call's arguments; tuples / lists / dicts are walked, anything else is a leaf."""
+    if depth < 4 and isinstance(obj, (tuple, list)) and not hasattr(obj, "_fields"):
+        out: list = []
+        for i, v in enumerate(obj):
+            out.extend(_leaves(v, path + (i,), depth + 1))
+        return out or [(path, obj)]
+    if depth < 4 and isinstance(obj, dict):
+        out = []
+        for k, v in obj.items():
+            out.extend(_leaves(v, path + (k,), depth + 1))
+        return out or [(path, obj)]
+    return [(path, obj)]
+
+
+def _rebuild(template: Any, values: dict, path: tuple = (), depth: int = 0) -> Any:
+    if depth < 4 and isinstance(template, (tuple, list)) and not hasattr(template, "_fields") and len(template):
+        items = [_rebuild(v, values, path + (i,), depth + 1) for i, v in enumerate(template)]
+        return type(template)(items) if isinstance(template, tuple) else items
+    if depth < 4 and isinstance(template, dict) and template:
+        return type(template)((k, _rebuild(v, values, path + (k,), depth + 1)) for k, v in template.items())
+    return values[path]
+
+
+def _same_value(a: Any, b: Any) -> bool:
+    if a is b:
+        return True
+    torch = _torch()
+    if isinstance(a, torch.Tensor) or isinstance(b, torch.Tensor):
+        return False
+    try:
+        return bool(a == b) and type(a) is type(b)
+    except Exception:  # noqa: BLE001 - incomparable objects must be the same object
+        return False
+
+
 class CfgParallelRouter:
-    """Installed as the denoiser's ``forward``: routes odd branches of a step to the replica."""
+    """Installed as the denoiser's ``forward``: routes odd branches of a step to the replica.
+
+    Once a step has shown two branches, the next step's first odd branch is predicted from the previous one (same
+    structure; the latent, and every tensor the previous odd call shared with its primary call, replaced by this
+    step's; the rest -- negative embeds, masks -- kept) and launched on the replica BEFORE the primary branch runs, so
+    the two cards overlap even when the primary forward blocks the host. The real call must then pass exactly the
+    predicted tensors (identity) and equal plain values, else the prediction is discarded and the branch runs
+    unpredicted."""
 
     def __init__(
         self,
@@ -1245,7 +1297,13 @@ class CfgParallelRouter:
             "steps_parallel": 0,
             "replica_build_s": None,
             "replica_rebuilds": 0,
+            "predicted_hits": 0,
+            "predicted_misses": 0,
         }
+        # the previous step's odd call, classified against its primary call; the launched prediction
+        self.template: Optional[tuple[Any, Any, dict]] = None
+        self.pending: Optional[dict] = None
+        self.b0_leaves: dict = {}
         self.fingerprint: Optional[int] = None
 
     # -- status
@@ -1269,11 +1327,14 @@ class CfgParallelRouter:
         if self.worker is not None:
             self.worker.close()
             self.worker = None
+        self._drop_pending()
         self.replica = None
         self.prefetched.clear()
         self.carry = []
         self.next_carry = []
         self.prev_latent = None
+        self.template = None
+        self.b0_leaves = {}
 
     # -- the forward
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
@@ -1291,18 +1352,27 @@ class CfgParallelRouter:
             self.carry, self.next_carry = self.next_carry, []
             if self.replica is not None and self.disabled_reason is None:
                 self._drop_if_stale()
+            self._drop_pending()
+            self.b0_leaves = dict(_leaves((args, kwargs)))
             if self.cfg_seen and self.replica is not None and self.disabled_reason is None:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
                 self._prefetch(args, kwargs)
+                self._launch_prediction(latent)
         if self.branch % 2 == 1 and self.disabled_reason is None:
             self.singles = 0
             if self.replica is None:
                 self.cfg_seen = True
                 self._build_replica()
+                if self.branch == 1:
+                    self._record_template(args, kwargs, latent)
             elif self.cfg_seen:
+                if self.branch == 1:
+                    self._record_template(args, kwargs, latent)
                 try:
-                    out = self._run_replica(args, kwargs)
+                    out = self._take_prediction(args, kwargs) if self.branch == 1 else None
+                    if out is None:
+                        out = self._run_replica(args, kwargs)
                     self.stats["replica_calls"] += 1
                     if self.branch == 1:
                         self.stats["steps_parallel"] += 1
@@ -1312,6 +1382,87 @@ class CfgParallelRouter:
             self.cfg_seen = True
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
+
+    # -- prediction of the next odd branch
+    def _record_template(self, args: tuple, kwargs: dict, latent: Any) -> None:
+        torch = _torch()
+        b0_by_id = {id(v): p for p, v in self.b0_leaves.items() if isinstance(v, torch.Tensor)}
+        kinds: dict = {}
+        for path, leaf in _leaves((args, kwargs)):
+            if isinstance(leaf, torch.Tensor):
+                if leaf is latent:
+                    kinds[path] = ("latent",)
+                elif id(leaf) in b0_by_id and self.b0_leaves.get(b0_by_id[id(leaf)]) is leaf:
+                    kinds[path] = ("b0", b0_by_id[id(leaf)])
+                else:
+                    kinds[path] = ("const", leaf)
+            else:
+                kinds[path] = ("value", leaf)
+        self.template = ((args, kwargs), kinds)
+
+    def _predict(self, latent: Any) -> Optional[tuple]:
+        if self.template is None or latent is None:
+            return None
+        structure, kinds = self.template
+        values: dict = {}
+        for path, kind in kinds.items():
+            if kind[0] == "latent":
+                values[path] = latent
+            elif kind[0] == "b0":
+                if kind[1] not in self.b0_leaves:
+                    return None
+                values[path] = self.b0_leaves[kind[1]]
+            else:
+                values[path] = kind[1]
+        try:
+            return _rebuild(structure, values)
+        except KeyError:
+            return None
+
+    def _launch_prediction(self, latent: Any) -> None:
+        predicted = self._predict(latent)
+        if predicted is None or self.worker is None:
+            return
+        p_args, p_kwargs = predicted
+        try:
+            r_args = self._to_replica(p_args)
+            r_kwargs = self._to_replica(p_kwargs)
+        except Exception:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
+            return
+        replica = self.replica
+        self.pending = {
+            "leaves": _leaves((p_args, p_kwargs)),
+            "job": self.worker.submit(lambda: replica(*r_args, **r_kwargs)),
+        }
+
+    def _take_prediction(self, args: tuple, kwargs: dict) -> Any:
+        pending, self.pending = self.pending, None
+        if pending is None:
+            return None
+        actual = _leaves((args, kwargs))
+        predicted = pending["leaves"]
+        ok = len(actual) == len(predicted) and all(
+            pa == pp and _same_value(va, vp) for (pa, va), (pp, vp) in zip(actual, predicted)
+        )
+        try:
+            out = _ReplicaWorker.wait(pending["job"])
+        except Exception:
+            if ok:
+                raise
+            out = None
+        if not ok:
+            self.stats["predicted_misses"] += 1
+            return None
+        self.stats["predicted_hits"] += 1
+        return move_to_device(out, self.primary)
+
+    def _drop_pending(self) -> None:
+        pending, self.pending = self.pending, None
+        if pending is not None:
+            # let the replica finish before anything else is queued on it; the result is discarded
+            with contextlib.suppress(Exception):
+                _ReplicaWorker.wait(pending["job"])
+            self.stats["predicted_misses"] += 1
 
     def _drop_if_stale(self) -> None:
         module = self.module_ref()

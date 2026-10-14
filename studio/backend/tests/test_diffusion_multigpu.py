@@ -870,3 +870,41 @@ def test_offload_torch_hooks_are_stripped_from_the_replica():
     assert not replica.proj._forward_pre_hooks
     replica(hidden_states = torch.ones(1, 4), timestep = torch.tensor(1.0), encoder_hidden_states = torch.ones(1, 4))
     assert calls == []
+
+
+def test_predicted_branch_hits_and_stays_exact():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    reference = _cfg_loop(dit, latents.clone(), steps = 6)
+    router, _replicas = _router(dit)
+    out = _cfg_loop(dit, latents.clone(), steps = 6)
+    assert torch.equal(out, reference)
+    # step 0 builds, step 1 learns nothing new (template from step 0), steps 1-5 launch predictions
+    assert router.stats["predicted_hits"] == 5 and router.stats["predicted_misses"] == 0
+    assert router.stats["replica_calls"] == 5
+
+
+def test_mispredicted_branch_is_recomputed_exactly():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    uncond = torch.randn(3, 4)
+
+    def loop(steps):
+        x = latents.clone()
+        cond = torch.randn(3, 4, generator = torch.Generator().manual_seed(1))
+        for i in range(steps):
+            t = torch.tensor(1.0 - i / steps)
+            a = dit(hidden_states = x, timestep = t, encoder_hidden_states = cond)[0]
+            # a fresh negative tensor every step (equal values, new object): the prediction cannot be trusted
+            b = dit(hidden_states = x, timestep = t, encoder_hidden_states = uncond.clone())[0]
+            x = x - 0.1 * (b + 4.0 * (a - b))
+        return x
+
+    reference = loop(5)
+    router, _replicas = _router(dit)
+    out = loop(5)
+    assert torch.equal(out, reference)
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4
+    assert router.stats["replica_calls"] == 4  # still on the replica, just not overlapped
