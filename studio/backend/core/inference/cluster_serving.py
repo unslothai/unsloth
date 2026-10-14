@@ -586,6 +586,7 @@ class ClusterServing:
         # Workers the current load's probe found unusable; a commit without them stops them.
         self._down: set = set()
         self._kv_guessed: bool = False
+        self._native_ctx: bool = False
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
 
@@ -720,6 +721,10 @@ class ClusterServing:
             self.topology, self.reason = "single", "tensor_parallel owns placement"
             return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
+        if self._native_ctx:
+            # Without the fitter llama.cpp opens the model's whole trained context: unsized here.
+            self.topology, self.reason = "single", "the fitter is off and no context size is set"
+            return request
         forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         if forced == "single":
             self.topology, self.reason = "single", f"forced by {ENV_TOPOLOGY}=single"
@@ -750,10 +755,23 @@ class ClusterServing:
         while endpoints and error and not any(d.remote for d in devices):
             # One worker that answers TCP but fails the handshake aborts the whole listing.
             bad = _endpoint_in(error, endpoints)
-            if bad not in endpoints:
+            if bad in endpoints:
+                endpoints.remove(bad)
+                down.append(bad)
+            elif len(endpoints) > 1:
+                # A hung handshake times out without naming anyone: ask each worker alone.
+                alone = await asyncio.gather(
+                    *(asyncio.to_thread(list_devices, binary, [e]) for e in endpoints)
+                )
+                answered = [
+                    e for e, (devs, err) in zip(endpoints, alone) if any(d.remote for d in devs)
+                ]
+                if not answered or len(answered) == len(endpoints):
+                    break
+                down += [e for e in endpoints if e not in answered]
+                endpoints = answered
+            else:
                 break
-            endpoints.remove(bad)
-            down.append(bad)
             devices, error = (
                 await asyncio.to_thread(list_devices, binary, endpoints) if endpoints else ([], "")
             )
@@ -816,8 +834,13 @@ class ClusterServing:
         used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
         self.block = split_extra_args(used, plan)
         local = plan.sidecar_device
-        caller_pinned = any(str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in flags) or bool(
-            os.environ.get("MTMD_BACKEND_DEVICE")
+        from core.inference.llama_cpp import _resolved_mmproj_offload
+
+        caller_pinned = (
+            any(str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in flags)
+            or bool(os.environ.get("MTMD_BACKEND_DEVICE"))
+            # --no-mmproj-offload keeps it in host RAM; a device pin would undo that.
+            or _resolved_mmproj_offload(flags, os.environ) is False
         )
         if local is not None and not caller_pinned:
             if ss.llama_server_supports("--mmproj-device", binary):
@@ -933,6 +956,9 @@ class ClusterServing:
                 ctx = max(0, int((os.environ.get("LLAMA_ARG_CTX_SIZE") or "0").strip()))
             except ValueError:
                 ctx = 0
+        from core.inference.llama_server_args import fit_is_effectively_on
+
+        self._native_ctx = not ctx and not fit_is_effectively_on(extras, os.environ)
         kv = None
         if local_file and ctx:
             kv = await asyncio.to_thread(
@@ -958,7 +984,11 @@ class ClusterServing:
         self._pre_load = None
         self._cancel_event = None
         self._backend = llama_backend
-        self._resident = self.plan.resident() if self.plan is not None else {}
+        plan = self.plan
+        local_count = sum(1 for d in plan.devices if not d.remote) if plan is not None else 0
+        # A local fit on several GPUs sends no device list, so which of them hold it is unknown.
+        enforced = plan is not None and (plan.topology == "layer_split" or local_count <= 1)
+        self._resident = plan.resident() if enforced else {}
         managed = {n.endpoint for n in self.nodes if n.managed}
         in_use = set(self.block[self.block.index("--rpc") + 1].split(",")) if self.block else set()
         down, self._down = self._down, set()

@@ -1576,3 +1576,64 @@ def test_a_vocoder_keeps_the_load_local(monkeypatch):
     request = _request(llama_extra_args = ["-mv", "/models/vocoder.gguf"])
     assert run(ss.before_load(request, 4)) is request and seen == []
     assert "vocoder" in ss.status()["reason"]
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_a_projector_kept_in_host_ram_is_not_pinned_to_a_gpu(monkeypatch, env):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ_OFFLOAD", "0")
+    extra = [] if env else ["--no-mmproj-offload"]
+    out = run(ss.before_load(_request(llama_extra_args = extra), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert "--mmproj-device" not in out.llama_extra_args
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_the_fitter_off_without_a_context_keeps_the_load_local(monkeypatch, env):
+    seen = _cluster_env(monkeypatch)
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_FIT", "0")
+    extra = [] if env else ["--fit", "off"]
+    request = _request(llama_extra_args = extra, max_seq_length = 0)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "fitter is off" in ss.status()["reason"]
+    run(ss.before_load(_request(llama_extra_args = extra, max_seq_length = 8192), 4))
+    assert ss.status()["topology"] == "layer_split"
+
+
+def test_a_local_fit_over_several_gpus_claims_no_residency(monkeypatch):
+    listing = """Available devices:
+  RPC0: 10.0.0.2:50052 (122502 MiB, 118000 MiB free)
+  CUDA0: NVIDIA H100 (81559 MiB, 80000 MiB free)
+  CUDA1: NVIDIA H100 (81559 MiB, 80000 MiB free)
+"""
+    _cluster_env(monkeypatch, listing = listing, model_bytes = 60 * GIB)
+    monkeypatch.setenv(cs.ENV_NODES, "10.0.0.2")
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+    run(ss.after_load(SimpleNamespace(_process = None, is_loaded = True), 4))
+    assert cs.state()._resident == {}
+
+
+def test_a_probe_that_times_out_without_a_name_asks_each_worker_alone(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    calls = []
+
+    def fake_list(binary, endpoints):
+        calls.append(list(endpoints))
+        if "10.0.0.3:50052" in endpoints:
+            return [], "timed out after 30 seconds"
+        return [
+            d
+            for d in cs.parse_device_list(LISTING, endpoints)
+            if not d.remote or d.endpoint in endpoints
+        ], ""
+
+    monkeypatch.setattr(cs, "list_devices", fake_list)
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    rpc = out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
+    assert rpc == "10.0.0.2:50052,10.0.0.4:50052"
