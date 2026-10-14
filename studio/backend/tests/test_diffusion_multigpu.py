@@ -80,7 +80,7 @@ def _split(**overrides):
         runtime_headroom_mib = 2000,
         base_overhead_mib = 1000,
         primary_limit_mib = 14000,
-        secondary_budget_mib = lambda o: 15000,
+        secondary_limit_mib = lambda o: 12750,
         selection = mg.MultiGpuSelection(primary = 0, secondaries = (1,)),
     )
     kwargs.update(overrides)
@@ -98,8 +98,8 @@ def test_split_when_the_denoiser_alone_fits_the_primary():
     "overrides",
     [
         dict(primary_limit_mib = 13000),  # denoiser + headroom do not fit the primary either
-        dict(secondary_budget_mib = lambda o: 12000),  # 12000 * 0.85 < 12000
-        dict(secondary_budget_mib = lambda o: None),  # unreadable secondary
+        dict(secondary_limit_mib = lambda o: 11999),  # companions + headroom = 12000
+        dict(secondary_limit_mib = lambda o: None),  # unreadable secondary
         dict(single_card_policy = "none"),  # one card already holds everything
         dict(companion_dense_mib = None),  # unknown split
         dict(selection = None),
@@ -118,7 +118,7 @@ def test_text_encoders_alone_when_the_decode_needs_the_runtime_room():
         model_dense_mib = 16000,
         runtime_headroom_mib = 4000,
         primary_limit_mib = 12000,
-        secondary_budget_mib = lambda o: 16000,
+        secondary_limit_mib = lambda o: 13600,
     )
     split = _split(**kwargs)
     assert split is not None and split.components == mg.TEXT_ENCODERS_ONLY
@@ -137,7 +137,7 @@ def test_measured_phases_price_each_card_for_what_it_runs():
         runtime_headroom_mib = 8192,
         base_overhead_mib = 2048,
         primary_limit_mib = 14400,
-        secondary_budget_mib = lambda o: 14700,
+        secondary_limit_mib = lambda o: 12495,
     )
     assert _split(**kwargs) is None
     split = _split(**kwargs, phase_headroom_mib = (1516, 1160, 2645))
@@ -154,7 +154,7 @@ def test_force_splits_even_when_one_card_fits(monkeypatch):
 def test_split_picks_the_secondary_with_the_most_room():
     split = _split(
         selection = mg.MultiGpuSelection(primary = 0, secondaries = (1, 2)),
-        secondary_budget_mib = lambda o: {1: 15000, 2: 40000}[o],
+        secondary_limit_mib = lambda o: {1: 12750, 2: 34000}[o],
     )
     assert split.secondary_ordinal == 2
 
@@ -193,7 +193,7 @@ def test_planner_unchanged_without_a_selection():
 
 
 def test_planner_splits_under_a_selection(monkeypatch):
-    monkeypatch.setattr(mg, "secondary_safe_budget_mib", lambda o: 16000)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
     single = _plan()
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         plan = _plan()
@@ -213,7 +213,7 @@ def test_planner_splits_under_a_selection(monkeypatch):
 
 
 def test_planner_split_declined_when_the_secondary_is_small(monkeypatch):
-    monkeypatch.setattr(mg, "secondary_safe_budget_mib", lambda o: 4000)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 3400)
     single = _plan()
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
         plan = _plan()
@@ -221,7 +221,7 @@ def test_planner_split_declined_when_the_secondary_is_small(monkeypatch):
 
 
 def test_planner_split_off_on_unified_memory(monkeypatch):
-    monkeypatch.setattr(mg, "secondary_safe_budget_mib", lambda o: 16000)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 13600)
     unified = dm.DeviceMemory(
         backend = "cuda", device = "cuda", memory_kind = "unified_memory", free_mib = 16000, total_mib = 16384
     )
@@ -302,7 +302,7 @@ def test_refine_plan_for_multigpu(monkeypatch):
     assert plan.offload_policy != dm.OFFLOAD_NONE
     sizes = {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
-    monkeypatch.setattr(mg, "secondary_safe_budget_mib", lambda o: 15000)
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
     assert mg.refine_plan_for_multigpu(object(), plan) is plan  # no selection
     with mg.selection_scope(mg.make_selection(0, [0, 1])):

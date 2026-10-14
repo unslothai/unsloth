@@ -2011,7 +2011,7 @@ def _multigpu_companion_split(
     from .diffusion_multigpu import (
         current_selection,
         plan_companion_split,
-        secondary_safe_budget_mib,
+        secondary_resident_limit_mib,
     )
 
     selection = current_selection()
@@ -2036,7 +2036,7 @@ def _multigpu_companion_split(
         runtime_headroom_mib = runtime_headroom_mib,
         base_overhead_mib = base_overhead_mib,
         primary_limit_mib = limit,
-        secondary_budget_mib = secondary_safe_budget_mib,
+        secondary_limit_mib = lambda ordinal: secondary_resident_limit_mib(ordinal, mode),
         selection = selection,
         text_encoder_dense_mib = text_encoder_dense_mib,
         phase_headroom_mib = (

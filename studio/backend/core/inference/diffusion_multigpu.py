@@ -305,7 +305,7 @@ def plan_companion_split(
     runtime_headroom_mib: int,
     base_overhead_mib: int,
     primary_limit_mib: Optional[int],
-    secondary_budget_mib: Callable[[int], Optional[int]],
+    secondary_limit_mib: Callable[[int], Optional[int]],
     selection: Optional[MultiGpuSelection],
     text_encoder_dense_mib: Optional[int] = None,
     phase_headroom_mib: Optional[tuple[int, int, int]] = None,
@@ -314,8 +314,8 @@ def plan_companion_split(
     under the resident rule, and the moved companions fit a secondary. Tried in order: every companion (text encoders
     + VAE + the rest, the secondary priced with the full runtime headroom since it runs the decode), then the text
     encoders alone (the VAE decodes on the primary; the secondary needs only an encoder forward's room).
-    ``primary_limit_mib`` is the primary's resident limit (already scaled by the caller's rule);
-    ``secondary_budget_mib(ordinal)`` returns a secondary's safe budget. ``phase_headroom_mib`` = measured (encode,
+    ``primary_limit_mib`` / ``secondary_limit_mib(ordinal)`` are each card's resident limit under the caller's memory
+    mode rule (auto: 85% of the safe budget; fast: the fast budget). ``phase_headroom_mib`` = measured (encode,
     denoise, decode) MiB above the weights for families Studio has calibrated: each card is then priced only for the
     phases it runs instead of the flat runtime headroom."""
     mode = multigpu_mode()
@@ -327,9 +327,9 @@ def plan_companion_split(
         return None
     limits: dict[int, int] = {}
     for ordinal in selection.secondaries:
-        budget = secondary_budget_mib(ordinal)
-        if budget is not None:
-            limits[ordinal] = int(int(budget) * _RESIDENT_FRACTION)
+        limit = secondary_limit_mib(ordinal)
+        if limit is not None:
+            limits[ordinal] = int(limit)
     if not limits:
         return None
     runtime = int(runtime_headroom_mib)
@@ -448,8 +448,16 @@ def refine_plan_for_multigpu(pipe: Any, plan: Any, logger: Any = None) -> Any:
     secondary = best_secondary(selection)
     if secondary is None:
         return plan
-    sec_budget = secondary_safe_budget_mib(secondary)
-    if sec_budget is None:
+    mode = getattr(plan, "requested_mode", None)
+    sec_limit = secondary_resident_limit_mib(secondary, mode)
+    if sec_limit is None:
+        return plan
+    from .diffusion_memory import _fast_device_budget_mib
+
+    primary_limit = (
+        _fast_device_budget_mib(memory) if mode == "fast" else int(int(budget) * _RESIDENT_FRACTION)
+    )
+    if primary_limit is None:
         return plan
     # the measured figure when the loaded-weights refinement or the calibration table priced this family
     headroom = int(
@@ -463,8 +471,8 @@ def refine_plan_for_multigpu(pipe: Any, plan: Any, logger: Any = None) -> Any:
         sizes,
         headroom_mib = headroom,
         overhead_mib = overhead,
-        primary_limit_mib = int(int(budget) * _RESIDENT_FRACTION),
-        secondary_limit_mib = int(int(sec_budget) * _RESIDENT_FRACTION),
+        primary_limit_mib = int(primary_limit),
+        secondary_limit_mib = int(sec_limit),
     )
     if moved is None:
         return plan
@@ -489,16 +497,34 @@ def refine_plan_for_multigpu(pipe: Any, plan: Any, logger: Any = None) -> Any:
     )
 
 
-def secondary_safe_budget_mib(ordinal: int) -> Optional[int]:
-    """The single-card planner's safe budget for ``ordinal`` (same reserve rule as the primary)."""
-    from .diffusion_memory import DeviceMemory, _safe_device_budget_mib
+def secondary_device_memory(ordinal: int) -> Any:
+    """A ``DeviceMemory`` reading for a secondary card, or None when unreadable."""
+    from .diffusion_memory import DeviceMemory
 
     free, total = _free_total_mib(int(ordinal))
     if free is None:
         return None
-    return _safe_device_budget_mib(
-        DeviceMemory(backend = "cuda", device = "cuda", memory_kind = "discrete_vram", free_mib = free, total_mib = total)
-    )
+    return DeviceMemory(backend = "cuda", device = "cuda", memory_kind = "discrete_vram", free_mib = free, total_mib = total)
+
+
+def secondary_safe_budget_mib(ordinal: int) -> Optional[int]:
+    """The single-card planner's safe budget for ``ordinal`` (same reserve rule as the primary)."""
+    from .diffusion_memory import _safe_device_budget_mib
+
+    memory = secondary_device_memory(ordinal)
+    return None if memory is None else _safe_device_budget_mib(memory)
+
+
+def secondary_resident_limit_mib(ordinal: int, mode: str) -> Optional[int]:
+    """The resident limit of ``ordinal`` under ``mode``'s rule: ``fast`` = the fast budget, otherwise 85% of the safe
+    budget (the single-card planner's two rules)."""
+    from .diffusion_memory import _fast_device_budget_mib
+
+    if mode == "fast":
+        memory = secondary_device_memory(ordinal)
+        return None if memory is None else _fast_device_budget_mib(memory)
+    budget = secondary_safe_budget_mib(ordinal)
+    return None if budget is None else int(int(budget) * _RESIDENT_FRACTION)
 
 
 # --------------------------------------------------------------------------------------------------------------------
