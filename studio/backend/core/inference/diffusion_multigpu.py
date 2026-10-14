@@ -2272,6 +2272,42 @@ def _as_walkable(out: Any) -> Any:
     return {f.name: getattr(out, f.name, None) for f in dataclasses.fields(out)}
 
 
+# Batch only when the upload is at least this share of a plain call: below it the call is compute-bound, the
+# prefetch stream already hides the upload, and a batched call costs about two plain ones.
+_BATCH_UPLOAD_FRACTION = 0.6
+# The first batched call must beat the two plain calls it replaces by this factor, else batching stops.
+_BATCH_MEASURED_FRACTION = 0.92
+
+
+def price_cfg_batch(
+    *,
+    call_s: Optional[float],
+    upload_s: Optional[float],
+    streamed_bytes: int = 0,
+    h2d_gib_s: Optional[float] = None,
+) -> dict[str, Any]:
+    """One guided step of an offloaded denoiser as two plain calls vs one batched call.
+
+    A plain call costs about ``max(compute, upload)`` (the prefetch stream overlaps them); the batched one about
+    ``max(2 * compute, upload)``. Upload-bound (``upload >= _BATCH_UPLOAD_FRACTION * call``) -> batch: up to 2x.
+    Compute-bound -> one card as before. Unknown upload (unmeasured link) -> batch, and the first batched call's
+    measured time decides."""
+    if call_s is None or upload_s is None:
+        chosen = "cfg_batch"
+    else:
+        chosen = "cfg_batch" if upload_s >= _BATCH_UPLOAD_FRACTION * call_s else "single"
+    share = round(upload_s / call_s, 3) if call_s and upload_s is not None else None
+    return {
+        "strategy": chosen,
+        "plain_call_s": None if call_s is None else round(call_s, 4),
+        "upload_s": None if upload_s is None else round(upload_s, 4),
+        "streamed_mib": streamed_bytes >> 20,
+        "h2d_gib_s": h2d_gib_s,
+        "upload_share_of_call": share,
+        "single_step_s": None if call_s is None else round(2 * call_s, 4),
+    }
+
+
 class _NotBatchable(Exception):
     pass
 
@@ -2382,6 +2418,12 @@ class CfgBatchRouter:
         self.template: Optional[tuple[Any, dict]] = None
         self.kept: Optional[dict] = None
         self.last_skip: Optional[str] = None
+        # Pricing: the first guided step's two plain calls are timed against the bytes the call streams over the
+        # card's measured host link; the first batched call is timed against them too.
+        self.pricing: Optional[dict[str, Any]] = None
+        self.plain_times: list[float] = []
+        self.verify_batched = True
+        self.disabled_pending: Optional[str] = None
         self.stats = {
             "batched_steps": 0,
             "batched_hits": 0,
@@ -2393,6 +2435,7 @@ class CfgBatchRouter:
     def describe(self) -> dict[str, Any]:
         return {
             "strategy": "cfg_batch" if self.disabled_reason is None else "single",
+            "pricing": self.pricing,
             "engaged_for": self.reason,
             "disabled_reason": self.disabled_reason,
             "last_unbatched_reason": self.last_skip,
@@ -2420,11 +2463,15 @@ class CfgBatchRouter:
             self.b0_leaves = dict(_leaves((args, kwargs)))
         if self.disabled_reason is not None or latent is None:
             return self._plain(args, kwargs)
+        timing = self.pricing is None and self._can_time(latent)
         if self.branch == 0:
             if self.template is not None:
                 out = self._batched(args, kwargs, latent)
                 if out is not None:
                     return out
+            if timing:
+                self.plain_times = []
+                return self._timed_plain(args, kwargs)
             return self._plain(args, kwargs)
         if self.branch == 1:
             if self.kept is not None:
@@ -2433,7 +2480,56 @@ class CfgBatchRouter:
                     self._record_template(args, kwargs, latent)
                     return out
             self._record_template(args, kwargs, latent)
+            if timing and len(self.plain_times) == 1:
+                out = self._timed_plain(args, kwargs)
+                self._price()
+                return out
         return self._plain(args, kwargs)
+
+    # -- pricing
+    def _can_time(self, latent: Any) -> bool:
+        return cfg_batch_mode() != "force" and getattr(latent.device, "type", None) == "cuda"
+
+    def _timed_plain(self, args: tuple, kwargs: dict) -> Any:
+        torch = _torch()
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        out = self._plain(args, kwargs)
+        torch.cuda.synchronize()
+        self.plain_times.append(time.perf_counter() - t0)
+        return out
+
+    def _streamed_bytes(self) -> int:
+        """Bytes of denoiser weights held off the card between calls (on the host, or meta under sequential
+        offload): what one call uploads."""
+        module = self.module_ref()
+        if module is None:
+            return 0
+        total = 0
+        for t in (*module.parameters(), *module.buffers()):
+            if t.device.type in ("cpu", "meta"):
+                total += t.numel() * t.element_size()
+        return total
+
+    def _price(self) -> None:
+        call_s = min(self.plain_times) if self.plain_times else None
+        streamed = self._streamed_bytes()
+        h2d = None
+        try:
+            torch = _torch()
+            ordinal = torch.cuda.current_device()
+            h2d = probe_devices((ordinal,)).get(ordinal).h2d_gib_s
+        except Exception:  # noqa: BLE001 - unmeasured link: the batched call's own timing decides
+            h2d = None
+        upload_s = streamed / (h2d * (1 << 30)) if h2d else None
+        self.pricing = price_cfg_batch(call_s = call_s, upload_s = upload_s, streamed_bytes = streamed, h2d_gib_s = h2d)
+        if self.logger is not None:
+            self.logger.info("diffusion.multigpu: CFG-batch priced %s", self.pricing)
+        if self.pricing["strategy"] != "cfg_batch":
+            self.disable(
+                f"priced out: a call takes {call_s:.4f}s, its upload {upload_s:.4f}s (compute-bound; the streamed "
+                "blocks already hide behind compute, so one batched call costs as much as two)"
+            )
 
     def _plain(self, args: tuple, kwargs: dict) -> Any:
         self.stats["plain_calls"] += 1
@@ -2518,8 +2614,15 @@ class CfgBatchRouter:
             (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
         ]
         state = _hook_state([(m, m) for m in module.modules()])
+        verify = self.verify_batched and len(self.plain_times) == 2 and latent.device.type == "cuda"
         try:
+            if verify:
+                torch.cuda.synchronize()
+                t0 = time.perf_counter()
             out = self.orig_forward(*b_args, **b_kwargs)
+            if verify:
+                torch.cuda.synchronize()
+                self._check_batched(time.perf_counter() - t0)
         except torch.OutOfMemoryError:
             del b_args, b_kwargs, merged
             with contextlib.suppress(Exception):
@@ -2535,6 +2638,19 @@ class CfgBatchRouter:
         self.kept = {"out": other, "snapshots": snapshots, "state": state}
         self.stats["batched_steps"] += 1
         return mine
+
+    def _check_batched(self, batched_s: float) -> None:
+        """The first batched call against the two plain calls it replaces: no gain -> stop batching after this step
+        (it is already computed, so its halves are still used)."""
+        self.verify_batched = False
+        plain = sum(self.plain_times)
+        if self.pricing is not None:
+            self.pricing["batched_call_s"] = round(batched_s, 4)
+            self.pricing["two_plain_calls_s"] = round(plain, 4)
+        if batched_s > _BATCH_MEASURED_FRACTION * plain:
+            self.disabled_pending = (
+                f"measured no gain: one batched call {batched_s:.4f}s vs two plain calls {plain:.4f}s"
+            )
 
     def _memory_ok(self, device: Any) -> bool:
         if self.headroom_mib is None or getattr(device, "type", None) != "cuda":
@@ -2571,6 +2687,9 @@ class CfgBatchRouter:
             self.stats["batched_misses"] += 1
             return None
         self.stats["batched_hits"] += 1
+        if self.disabled_pending is not None:
+            reason, self.disabled_pending = self.disabled_pending, None
+            self.disable(reason)
         return kept["out"]
 
 

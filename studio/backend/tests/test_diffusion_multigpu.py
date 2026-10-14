@@ -1708,3 +1708,29 @@ def test_cfg_parallel_router_priced_out_keeps_one_card(monkeypatch):
     assert torch.equal(out, reference)
     assert replicas == [] and "priced out" in router.describe()["disabled_reason"]
     assert router.describe()["pricing"]["strategy"] == "single"
+
+
+def test_price_cfg_batch_declines_a_compute_bound_call():
+    # T4x2 FLUX.2-klein-base: 2.13 s per call, its 7.7 GB stream at 9.2 GiB/s takes 0.84 s -> compute-bound
+    t4 = mg.price_cfg_batch(call_s = 2.13, upload_s = 0.84)
+    assert t4["strategy"] == "single"
+    # upload-bound (a fast card on a narrow link): one upload serves both branches
+    assert mg.price_cfg_batch(call_s = 0.2, upload_s = 0.18)["strategy"] == "cfg_batch"
+    assert mg.price_cfg_batch(call_s = 0.2, upload_s = None)["strategy"] == "cfg_batch"
+
+
+def test_cfg_batch_measured_no_gain_stops_after_the_first_batched_step():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 5, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    router.plain_times = [0.1, 0.1]
+    router._check_batched(0.19)  # 0.19 > 0.92 * 0.2: no gain
+    router.verify_batched = False
+    out = _batch_loop(dit, latents.clone(), 5, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["batched_steps"] == 1
+    assert "measured no gain" in router.describe()["disabled_reason"]
