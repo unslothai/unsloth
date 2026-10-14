@@ -99,6 +99,9 @@ on:
       - '.github/workflows/woa-wheelhouse.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
       - '.github/workflows/security-audit.yml'
+  # Staging repos dispatch this on `upstream-main` to seed their dependency caches
+  # (scripts/pr_review/staging_ci.py); see .github/actions/pip-cache-save.
+  workflow_dispatch:
 
 concurrency:
   # One group per workflow, ref and event. On a PR branch a new push cancels the old run.
@@ -112,7 +115,7 @@ concurrency:
   # keeps a nightly or a dispatch from being replaced by a push. The contract is enforced
   # by tests/studio/test_main_runs_survive_merge_bursts.py.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -183,6 +186,13 @@ jobs:
 
       - name: Install bubblewrap, so the sandbox tests run instead of skipping
         # Bound apt retries; 25 minutes covers both calls' 1450s worst case.
+        #
+        # Background: apt (system packages) and the pip install below (this job's
+        # Python) touch nothing in common, so the ~10 s of apt overlaps the ~80 s of
+        # pip. Collected right before the first pytest step, which is the first thing
+        # that needs bwrap.
+        id: bubblewrap
+        background: true
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
@@ -238,6 +248,9 @@ jobs:
           # every pre-quant load returns None. CPU-only is fine: it declines its cpp
           # extensions under torch < 2.11 and the pure-Python constructors still import.
           pip install torchao
+
+      - name: Collect the bubblewrap install
+        wait: bubblewrap
 
       - name: Backend tests
         if: matrix.scope == 'full'

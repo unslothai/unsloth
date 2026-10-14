@@ -128,6 +128,30 @@ def new_throttled_page(ctx):
     return page
 
 
+def close_page_without_waiting(ctx, page) -> None:
+    """Close a page without waiting on its renderer, on Chromium; page.close() elsewhere.
+
+    page.close() returns only once the page reports itself closed, and has no timeout. On the
+    Windows lane it has sat out a whole 540 s step budget on the persisted-monitor reset, the
+    last line printed being "closing the stale page". Attaching a CDP session, reading the
+    target id and Target.closeTarget are all answered by the browser process, so none of them
+    waits on a busy or throttled renderer, and closeTarget returns as soon as the close is
+    queued. Requests the page sends before it is gone are the caller's to discount.
+    """
+    if PLAYWRIGHT_BROWSER == "chromium":
+        try:
+            target = ctx.new_cdp_session(page).send("Target.getTargetInfo")["targetInfo"][
+                "targetId"
+            ]
+            ctx.browser.new_browser_cdp_session().send("Target.closeTarget", {"targetId": target})
+            return
+        except Exception as exc:
+            info(
+                f"WARN closing the page browser-side failed ({exc!r}); falling back to page.close()"
+            )
+    page.close()
+
+
 def recover_or_replace_page(page, ctx, **kwargs):
     """Emulation.setCPUThrottlingRate is per page target, so a replacement page must be throttled again."""
     replacement = _robust_recover_or_replace_page(page, ctx, **kwargs)
@@ -997,14 +1021,21 @@ with sync_playwright() as p:
     )
     install_view_transition_killer(ctx)
     system_requests: list[str] = []
-    ctx.on(
-        "request",
-        lambda request: (
-            system_requests.append(request.url)
-            if request.url.split("?", 1)[0].endswith("/api/system")
-            else None
-        ),
-    )
+    # Pages closed without waiting (close_page_without_waiting) can still send a request or two while the
+    # browser tears them down; those are not the page the monitor steps observe.
+    stale_pages: set = set()
+
+    def _count_system_request(request) -> None:
+        if not request.url.split("?", 1)[0].endswith("/api/system"):
+            return
+        try:
+            if request.frame.page in stale_pages:
+                return
+        except Exception:
+            pass  # no frame (a worker): counted, as before
+        system_requests.append(request.url)
+
+    ctx.on("request", _count_system_request)
     page = new_throttled_page(ctx)
     page_errors = []
     page.on("pageerror", lambda e: page_errors.append(str(e)))
@@ -2358,11 +2389,20 @@ with sync_playwright() as p:
 
     # 17. Persisted monitor auth boundary, then shutdown. Own step: page.evaluate has no timeout here.
     step("persisted monitor: reset the browser session and open a fresh page")
-    # Never run script in the old page: throttled and revoked, page.evaluate can wedge with no timeout.
-    # Storage writes go through a fresh page parked on a same-origin JSON endpoint.
+    # Start fresh after the CLI rotation invalidates this browser session.
+    # Stay in the SAME context: it keeps the init script and costs nothing to reuse.
+    #
+    # Nothing here runs script in the OLD page. It is CPU-throttled and its auth was
+    # just revoked, so the app can be busy retrying, and page.evaluate waits for its
+    # event loop with no timeout of its own: this step wedged for its whole budget on
+    # Windows and on the Kaggle T4 runner with no line printed. Closing a page and
+    # clearing cookies are browser-side calls, and the storage writes go through the
+    # fresh page parked on a same-origin JSON endpoint where no app code runs. Each call
+    # announces itself first, so a wedge that remains names the call it sits in.
+    stale_pages.add(page)
     info("closing the stale page")
     try:
-        page.close()
+        close_page_without_waiting(ctx, page)
     except Exception as exc:
         info(f"WARN closing the stale page failed: {exc!r}")
     info("clearing stale session cookies")

@@ -56,7 +56,7 @@ export const ja = {
       enable: "モデルにブラウザを使わせる",
       enableDescription: "モデルが専用のブラウザタブでページを開いて読み、代わりにクリックや入力を行います。入力欄の + メニューからも切り替えられます。",
       history: "閲覧履歴",
-      historyDescription: "モデルがブラウザの閲覧履歴を読めるかどうかを選びます",
+      historyDescription: "フルアクセスでは確認を省略します。「許可しない」は引き続きアクセスを禁止します",
       alwaysAsk: "毎回確認",
       alwaysAllow: "常に許可",
       never: "許可しない",

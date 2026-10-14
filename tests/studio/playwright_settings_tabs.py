@@ -10,6 +10,7 @@ import sys
 import time
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -107,6 +108,29 @@ SNAPSHOT_JS = """(sel) => {
         sig: labels.join('|') + '#' + root.querySelectorAll('*').length,
     };
 }"""
+
+
+def until(
+    page,
+    condition: str,
+    arg = None,
+    timeout: int = 5000,
+) -> None:
+    """Wait for the state a check reads, without failing here: a broken build spends the bound and
+    then fails on the same check. Replaces flat sleeps, which also asserted the runner's speed."""
+    try:
+        page.wait_for_function(condition, arg = arg, timeout = timeout)
+    except PlaywrightTimeout:
+        pass
+
+
+DIALOG_GONE = "() => !document.querySelector('div[role=\"dialog\"]')"
+ROWS = "[...document.querySelectorAll('[data-settings-label]')].map(r => r.dataset.settingsLabel)"
+
+
+def close_dialog(page) -> None:
+    page.evaluate("() => window.__settingsSmoke.close()")
+    until(page, DIALOG_GONE)
 
 
 def snapshot(page) -> dict:
@@ -239,8 +263,7 @@ def run_abandoned_deep_open(page) -> None:
         fail("an abandoned archive deep-open reopened the archive on the next visit to Data")
     else:
         log("an abandoned deep-open leaves the next visit to Data on the main page")
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(200)
+    close_dialog(page)
 
     page.evaluate("() => window.__settingsSmoke.openArchived('chats')")
     page.wait_for_selector('div[role="dialog"]', timeout = 15000)
@@ -251,8 +274,7 @@ def run_abandoned_deep_open(page) -> None:
         fail(f"a deep-open the panel did reach no longer opens the archive ({honoured})")
     else:
         log("a deep-open the panel reaches still opens the archive")
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(200)
+    close_dialog(page)
     report["steps"].append("abandoned-deep-open")
 
 
@@ -269,6 +291,8 @@ def run_chunk_fail(page) -> None:
     if nav_before < 2:
         fail(f"the settings nav was already empty before blocking anything ({nav_before})")
     click_forced(page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]'), timeout = 15000)
+    # Observation window: the blocked panel's failure (and the idle prefetch's) must play out
+    # without taking the dialog or the app down, so this watches for a fixed time.
     page.wait_for_timeout(3000)
     state = page.evaluate(
         """() => ({
@@ -426,8 +450,10 @@ def run_keystroke_search(page) -> None:
     box = page.locator(f"{PANEL} input")
     toggle = page.locator(f"{PANEL} button[aria-pressed]")
     click_forced(toggle, timeout = 15000)
-    page.wait_for_timeout(SETTLE_MS)
-    # bindingFromEvent drops Meta chords off macOS, so pick the modifier as isMacPlatform() does.
+    until(page, "el => el?.getAttribute('aria-pressed') === 'true'", arg = toggle.element_handle())
+    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
+    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
+    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
     mac = page.evaluate(
         "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
     )
@@ -435,16 +461,22 @@ def run_keystroke_search(page) -> None:
     state: dict = {"armed": toggle.get_attribute("aria-pressed"), "mod": mod}
 
     page.keyboard.press(f"{mod}+Shift+KeyO")
-    page.wait_for_timeout(SETTLE_MS)
+    until(
+        page,
+        f"() => {{ const rows = {ROWS}; return rows.includes('New chat')"
+        " && !rows.includes('New standalone chat'); }",
+    )
     state["chord"] = box.input_value()
     state["chord_rows"] = page.evaluate(rows_js)
 
     page.keyboard.press("KeyO")
-    page.wait_for_timeout(SETTLE_MS)
+    until(page, f"() => {ROWS}.includes('New standalone chat')")
     state["bare_rows"] = page.evaluate(rows_js)
 
     # A dialog gone here means the press reached Radix before the box.
     page.keyboard.press("Escape")
+    # Observation window, not a readiness guess: the bug is the dialog closing, and a closing
+    # dialog stays mounted through its exit animation, so it needs the time to finish leaving.
     page.wait_for_timeout(SETTLE_MS)
     open_after_first = page.locator('div[role="dialog"]').count()
     state["after_first_escape"] = {
@@ -454,7 +486,9 @@ def run_keystroke_search(page) -> None:
     }
     if open_after_first:
         page.keyboard.press("Escape")
-        page.wait_for_timeout(SETTLE_MS)
+        until(
+            page, "el => el?.getAttribute('aria-pressed') === 'false'", arg = toggle.element_handle()
+        )
         open_after_second = page.locator('div[role="dialog"]').count()
         state["after_second_escape"] = {
             "dialog": open_after_second,
@@ -522,8 +556,7 @@ def run(page) -> None:
 
     run_lan_address_actions(page)
 
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(300)
+    close_dialog(page)
     for tab in ("voice", "api-keys", "data", "about", "connections"):
         open_dialog(page, tab)
         state = page.evaluate("() => window.__settingsSmoke.state()")
@@ -540,8 +573,7 @@ def run(page) -> None:
             )
         else:
             log(f"deep-open {tab}: matches the clicked-to panel")
-        page.evaluate("() => window.__settingsSmoke.close()")
-        page.wait_for_timeout(200)
+        close_dialog(page)
     report["steps"].append("deep-open")
 
     target_tab = "general"
@@ -551,7 +583,12 @@ def run(page) -> None:
     settle_panel(page)
     search = page.locator('div[role="dialog"] aside input').first
     search.fill(query)
-    page.wait_for_timeout(400)
+    until(
+        page,
+        """label => [...document.querySelectorAll('div[role="dialog"] aside button:not([data-testid])')]
+          .some(b => b.innerText.trim() === label)""",
+        arg = target_label,
+    )
     entries = page.locator('div[role="dialog"] aside button:not([data-testid])')
     texts = [entries.nth(i).inner_text().strip() for i in range(entries.count())]
     report["search"] = {"query": query, "target_label": target_label, "result_texts": texts}

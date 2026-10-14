@@ -4854,6 +4854,52 @@ def patch_enable_input_require_grads():
     logger.info("Unsloth: Patched enable_input_require_grads for vision model compatibility")
 
 
+_VOXTRAL_REALTIME_MODULE = "transformers.models.voxtral_realtime.modeling_voxtral_realtime"
+
+
+def fix_transformers_voxtral_realtime_inplace_audio_add():
+    """VoxtralRealtimeModel.forward does `inputs_embeds += audio_embeds`; with input gradients on that is a
+    leaf requiring grad, so step 1 raises (#3013, transformers <= 5.19). Hand it a non-leaf copy. Lazy: only
+    once transformers imported the module."""
+    cls = getattr(sys.modules.get(_VOXTRAL_REALTIME_MODULE), "VoxtralRealtimeModel", None)
+    if cls is None or getattr(cls.forward, "_unsloth_inplace_audio_fix", False):
+        return
+    try:
+        if "inputs_embeds +=" not in inspect.getsource(cls.forward):
+            return
+    except Exception:
+        return
+    import torch
+
+    original = cls.forward
+
+    @functools.wraps(original)
+    def forward(
+        self,
+        input_ids = None,
+        *args,
+        **kwargs,
+    ):
+        if args or not torch.is_grad_enabled():
+            return original(self, input_ids, *args, **kwargs)
+        inputs_embeds = kwargs.get("inputs_embeds")
+        # input_ids is read only for this lookup, so passing the embeddings instead is equivalent.
+        if inputs_embeds is None and input_ids is not None:
+            inputs_embeds, input_ids = self.get_input_embeddings()(input_ids), None
+        if (
+            isinstance(inputs_embeds, torch.Tensor)
+            and inputs_embeds.is_leaf
+            and inputs_embeds.requires_grad
+        ):
+            inputs_embeds = inputs_embeds.clone()
+        if inputs_embeds is not None:
+            kwargs["inputs_embeds"] = inputs_embeds
+        return original(self, input_ids, **kwargs)
+
+    forward._unsloth_inplace_audio_fix = True
+    cls.forward = forward
+
+
 def patch_unsafe_trainer_rng_load():
     """Harden Trainer._load_rng_state against CVE-2026-1839 (RCE from a malicious
     rng_state.pth on resume). Hardens only the rng torch.load, via a thread-local
