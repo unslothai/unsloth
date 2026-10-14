@@ -1,31 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Generic text-encoder dead-tail truncation, decided by the pipeline's own ``encode_prompt``.
-
-Many pipelines read an intermediate hidden state of a decoder-only text encoder and never the rest:
-FLUX.2-klein stacks ``hidden_states[9, 18, 27]`` of a 36-layer Qwen3, Z-Image reads ``hidden_states[-2]``,
-HunyuanVideo-1.5 reads ``hidden_states[-3]``, Qwen-Image reads ``hidden_states[-1]`` and never the ``lm_head``.
-Layers after the last consumed one, and an unread head, cannot influence the conditioning, yet transformers
-runs (and Studio places, casts and offloads) all of them. Instead of a per-family table, one probe asks the
-pipeline which ones it reads:
-
-1. Every slot of each encoder's decoder stack is swapped for a WEIGHTLESS passthrough that is a subclass of the
-   real layer class with the same name, so transformers' hidden-state recorders still fire on it and
-   ``len(hidden_states)`` (hence every negative index) is unchanged. The head becomes a free zero view.
-   One discovery call runs the real slot 0 once to learn the layer's output format (tensor or tuple).
-2. The pipeline's own ``encode_prompt`` runs on a short prompt. Slots are identities, so the call costs the
-   embedding lookup, the final norm and the pipeline's post-processing only.
-3. NaN taint: poisoning slot ``j`` poisons every hidden state after it. If no returned tensor changes, nothing
-   after slot ``j - 1`` is read. Monotone in ``j``, so a bisection finds the last consumed slot ``L``; the head is
-   tainted on its own.
-4. Slots ``L+1..N-1`` become passthroughs (their weights are released) and an unread head becomes
-   :class:`NoLogitsHead`. The kept layers run the same ops on the same inputs, so every hidden state the pipeline
-   reads is bit-identical by construction.
-
-Any surprise (no ``encode_prompt``, a required argument it cannot fill, a non-finite reference, an encoder the
-probe never reached, an exception) keeps the full encoder. Kill switch: ``UNSLOTH_DIFFUSION_TE_TRUNCATE=0``.
-"""
+"""Drop text-encoder decoder layers (and an unread head) after the last hidden state the pipeline's
+``encode_prompt`` reads. A NaN-taint bisection over weightless passthrough slots finds that layer; kept layers
+are untouched, so outputs are bit-identical. Any surprise keeps the full encoder.
+Kill switch: ``UNSLOTH_DIFFUSION_TE_TRUNCATE=0``."""
 
 from __future__ import annotations
 
@@ -66,15 +45,9 @@ _MODULE_INTERNALS = frozenset(
         "forward",
     }
 )
-# Forward-hook registries a passthrough SHARES with the layer it stands in for. transformers >= 5 installs its
-# hidden-state recorders once per model as forward hooks on each decoder layer (``output_capturing.py``) and marks the
-# model hooked; sharing the dicts means a recorder installed on either object is seen by both, so the probe can never
-# leave a restored layer unhooked and a dead-tail slot keeps recording its (passthrough) hidden state.
-_SHARED_HOOK_DICTS = (
-    "_forward_hooks",
-    "_forward_hooks_with_kwargs",
-    "_forward_hooks_always_called",
-)
+# Shared with the replaced layer: transformers >= 5 installs hidden-state recorders once per model as forward hooks,
+# so sharing keeps restored layers and passthrough slots recording.
+_SHARED_HOOK_DICTS = ("_forward_hooks", "_forward_hooks_with_kwargs", "_forward_hooks_always_called")
 
 
 def truncate_enabled() -> bool:
@@ -87,8 +60,8 @@ def is_passthrough(module: Any) -> bool:
 
 @lru_cache(maxsize = None)
 def _passthrough_class(layer_cls: type) -> type:
-    """A weightless subclass of ``layer_cls`` that returns its input. Same ``__name__``/``__qualname__`` so name- and
-    isinstance-based output recorders treat it as the layer; built once per class (stable dynamo type guard)."""
+    """Weightless identity subclass of ``layer_cls`` with the same name, so output recorders treat it as the layer.
+    Cached per class (stable dynamo type guard)."""
     import torch
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
@@ -116,12 +89,7 @@ def _passthrough_class(layer_cls: type) -> type:
     )
 
 
-def _make_passthrough(
-    layer: Any,
-    fmt: dict,
-    *,
-    taint: bool = False,
-) -> Any:
+def _make_passthrough(layer: Any, fmt: dict, *, taint: bool = False) -> Any:
     import torch
 
     cls = _passthrough_class(type(layer))
@@ -190,8 +158,8 @@ def _set_child(root: Any, dotted: str, value: Any) -> None:
 @lru_cache(maxsize = None)
 def _stub_head_class() -> type:
     import torch
+
     class ProbeHead(torch.nn.Module):
-        """Free stand-in head for the probe: an expanded zero (or NaN) view of logits shape."""
 
         def __init__(self, out_features: int) -> None:
             super().__init__()
@@ -200,15 +168,14 @@ def _stub_head_class() -> type:
 
         def forward(self, hidden_states: Any) -> Any:  # noqa: D102
             fill = float("nan") if self.taint else 0.0
-            return hidden_states.new_full((1,), fill).expand(
-                *hidden_states.shape[:-1], self.out_features
-            )
+            return hidden_states.new_full((1,), fill).expand(*hidden_states.shape[:-1], self.out_features)
 
     return ProbeHead
 
 
 def _collect_tensors(value: Any, out: list) -> list:
     import torch
+
     if isinstance(value, torch.Tensor):
         out.append(value)
     elif isinstance(value, dict):
@@ -248,9 +215,7 @@ def _encode_kwargs(pipe: Any, device: Any) -> Optional[dict]:
 
 
 class _Target:
-    def __init__(
-        self, attr: str, encoder: Any, stack_name: str, stack: Any, head: Optional[tuple[str, Any]]
-    ):
+    def __init__(self, attr: str, encoder: Any, stack_name: str, stack: Any, head: Optional[tuple[str, Any]]):
         self.attr = attr
         self.encoder = encoder
         self.stack_name = stack_name
@@ -283,9 +248,7 @@ def _bytes_of(modules: list) -> int:
 
 
 def probe_consumption(pipe: Any, encode_kwargs: Optional[dict] = None) -> dict:
-    """Run the NaN-taint probe; returns ``{attr: {"layers": N, "last_consumed": L, "head_consumed": bool}}``.
-
-    Restores every swapped module before returning, also on failure. Raises on any probe failure."""
+    """Returns ``{attr: {"layers": N, "last_consumed": L, "head_consumed": bool}}``; always restores, raises on failure."""
     import torch
 
     targets: list[_Target] = []
@@ -311,24 +274,14 @@ def probe_consumption(pipe: Any, encode_kwargs: Optional[dict] = None) -> dict:
     swapped = list(targets)
     handles = []
     try:
-        # Discovery: real slot 0 records the layer's output format, every later slot is already a passthrough.
         for target in targets:
             fmt = target.fmt
 
-            def record(
-                _m: Any,
-                _a: Any,
-                output: Any,
-                fmt: dict = fmt,
-            ) -> None:
+            def record(_m: Any, _a: Any, output: Any, fmt: dict = fmt) -> None:
                 fmt["tuple_len"] = len(output) if isinstance(output, tuple) else None
                 fmt["seen"] = True
 
-            def count(
-                _m: Any,
-                _a: Any,
-                target: _Target = target,
-            ) -> None:
+            def count(_m: Any, _a: Any, target: _Target = target) -> None:
                 target.called += 1
 
             handles.append(target.originals[0].register_forward_hook(record))
@@ -356,9 +309,7 @@ def probe_consumption(pipe: Any, encode_kwargs: Optional[dict] = None) -> dict:
         for target in targets:
             target.stack[0] = _make_passthrough(target.originals[0], target.fmt)
         reference = run()
-        if not reference or not all(
-            bool(torch.isfinite(t.float()).all()) for t in reference if t.is_floating_point()
-        ):
+        if not reference or not all(bool(torch.isfinite(t.float()).all()) for t in reference if t.is_floating_point()):
             raise RuntimeError("probe reference is empty or non-finite")
 
         def unchanged() -> bool:
@@ -439,7 +390,7 @@ def apply_truncation(pipe: Any, plan: dict) -> dict:
         n, last = info["layers"], info["last_consumed"]
         dropped_layers: list = []
         if last < 0:
-            # The probe reached the encoder but read nothing from its stack: an unexpected contract, keep it whole.
+            # Read nothing from its stack: unexpected contract, keep whole.
             last = n - 1
         fmt = {"tuple_len": info.get("tuple_len"), "seen": True}
         for i in range(last + 1, n):
@@ -456,17 +407,11 @@ def apply_truncation(pipe: Any, plan: dict) -> dict:
                     embed = encoder.get_input_embeddings()
                 except Exception:  # noqa: BLE001
                     pass
-                tied = (
-                    embed is not None
-                    and getattr(embed, "weight", None) is not None
-                    and (embed.weight is weight or embed.weight.data_ptr() == weight.data_ptr())
+                tied = embed is not None and getattr(embed, "weight", None) is not None and (
+                    embed.weight is weight or embed.weight.data_ptr() == weight.data_ptr()
                 )
                 head_bytes = 0 if tied else _bytes_of([head])
-                setattr(
-                    encoder,
-                    info["head"],
-                    _no_logits_head_class()(int(weight.shape[1]), out_features),
-                )
+                setattr(encoder, info["head"], _no_logits_head_class()(int(weight.shape[1]), out_features))
                 head_dropped = True
         layer_bytes = _bytes_of(dropped_layers)
         entry = {
@@ -482,12 +427,7 @@ def apply_truncation(pipe: Any, plan: dict) -> dict:
     return report
 
 
-def truncate_text_encoders(
-    pipe: Any,
-    *,
-    logger: Any = None,
-    encode_kwargs: Optional[dict] = None,
-) -> dict:
+def truncate_text_encoders(pipe: Any, *, logger: Any = None, encode_kwargs: Optional[dict] = None) -> dict:
     """Probe + apply. Never raises: any failure keeps every encoder whole and returns ``{"skipped": reason}``."""
     if pipe is None:
         return {"skipped": "no pipeline"}
@@ -497,9 +437,7 @@ def truncate_text_encoders(
         plan = probe_consumption(pipe, encode_kwargs)
     except Exception as exc:  # noqa: BLE001
         if logger is not None:
-            logger.info(
-                "diffusion.text_encoder: dead-tail probe declined (%s); encoders kept whole", exc
-            )
+            logger.info("diffusion.text_encoder: dead-tail probe declined (%s); encoders kept whole", exc)
         return {"skipped": f"probe: {exc}"}
     if not plan:
         return {"skipped": "nothing to probe"}
@@ -512,10 +450,7 @@ def truncate_text_encoders(
     if logger is not None:
         for attr in plan:
             if attr not in report:
-                logger.info(
-                    "diffusion.text_encoder: %s has no dead tail (every decoder layer is read); kept whole",
-                    attr,
-                )
+                logger.info("diffusion.text_encoder: %s has no dead tail (every decoder layer is read); kept whole", attr)
         for attr, entry in report.items():
             logger.info(
                 "diffusion.text_encoder: %s runs %d/%d decoder layers%s; %.2f GiB never placed "
@@ -530,7 +465,6 @@ def truncate_text_encoders(
 
 
 def live_slots(stack: Any) -> list[int]:
-    """Indices of a ModuleList that still run real weights (for keep-lists that count from the end)."""
     return [i for i, m in enumerate(stack) if not is_passthrough(m)]
 
 

@@ -154,7 +154,6 @@ def _load(config: dict) -> tuple[Any, Any]:
         )
     model.eval()
     model.requires_grad_(False)
-    # Before the quant and the resident move: what never runs is never quantized or placed.
     _truncate_dead_tail(tokenizer, model)
     if config.get("te_quant") == TE_QUANT_INT8_CONVROT:
         quantize_int8_convrot_(model, config.get("device") or "cpu", bool(config.get("resident")))
@@ -406,10 +405,7 @@ def _pack_hidden_states(model: Any, ids: Any, mask: Any) -> Any:
 
 
 def _truncate_dead_tail(tokenizer: Any, model: Any) -> dict:
-    """Drop what ``_pack_hidden_states`` never reads (generic ``diffusion_te_truncate`` probe on this exact packing).
-
-    Every hidden state is read, so no decoder layer goes; the tied 262k-vocab head does: it costs no resident bytes
-    but computes (and holds) a ``[B, L, 262144]`` logits tensor per encode that nothing consumes."""
+    """All hidden states are read, so only the unused 262k-vocab logits head goes."""
     from core.inference.diffusion_te_truncate import truncate_text_encoders
 
     class _Probe:

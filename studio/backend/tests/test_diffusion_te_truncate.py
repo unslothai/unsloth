@@ -139,8 +139,7 @@ def test_probe_failure_restores_everything(monkeypatch):
     assert out["skipped"].startswith("probe: boom")
     assert list(pipe.text_encoder.model.layers) == originals and pipe.text_encoder.lm_head is head
     pipe.encode_prompt = real
-    # The probe ran the model (installing any once-per-model output recorders) while slots were swapped; the restored
-    # layers must still record every hidden state.
+    # Restored layers must still record hidden states after the probe installed recorders.
     for a, b in zip(_encode_all(ref), _encode_all(pipe)):
         assert torch.equal(a, b)
 

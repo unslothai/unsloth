@@ -7716,8 +7716,6 @@ class VideoBackend:
             from .video_ltx25 import ltx25_te_outcome
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
-            # Generic dead tail (diffusion_te_truncate): layers after the last hidden state the pipeline's
-            # encode_prompt reads, and an unread head, are dropped before the cast and placement. Bit-identical.
             from .diffusion_te_truncate import truncate_text_encoders
             truncate_text_encoders(pipe, logger = logger)
             text_encoder_outcome = quantize_text_encoders(
