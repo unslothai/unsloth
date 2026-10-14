@@ -7,7 +7,7 @@ Opt-in (``RAG_EMBED_BACKEND=llama-server``). Runs a dedicated ``llama-server --e
 subprocess on its own port and calls its OpenAI-style ``/v1/embeddings`` + ``/tokenize``, fully
 isolated from the chat backend.
 
-Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU start fails);
+Device is ``auto`` (GPU when present, else CPU, falling back to CPU if a GPU server fails);
 ``RAG_EMBED_DEVICE`` forces it. We call only llama_cpp's *static* helpers (no torch), copying the
 instance-coupled bits locally, since constructing a ``LlamaCppBackend`` runs an ``__init__`` reaper
 that kills any Unsloth llama-server, so each request re-spawns ours if it died.
@@ -206,8 +206,9 @@ class LlamaServerBackend:
         self._model_repo: str | None = None
         self._binary: str | None = None
         self._binary_path_revision: int | None = None
-        # Sticky after an auto GPU start fails: later spawns stay on CPU.
+        # Sticky after an auto GPU start fails or a GPU server crashes twice on one request.
         self._force_cpu = False
+        self._on_gpu = False
         # trust_env=False skips HTTP(S)_PROXY; full URLs per request survive a respawn.
         self._client = httpx.Client(timeout = config.EMBED_REQUEST_TIMEOUT_S, trust_env = False)
         self._api_key: str | None = None
@@ -991,6 +992,7 @@ class LlamaServerBackend:
             **child_popen_kwargs(),
         )
         self._process = proc
+        self._on_gpu = use_gpu
         # child_popen_kwargs() is empty on macOS, so the crash record is the only thing that can reap it
         # after a force quit.
         adopt_pid(proc.pid)
@@ -1179,15 +1181,48 @@ class LlamaServerBackend:
                     return resp.json()
                 except (*_TRANSPORT_ERRORS, httpx.TimeoutException) as e:
                     last_exc = e
+                    crashed = not isinstance(e, httpx.TimeoutException) and self._server_exited()
                     if attempt == 0:
                         self._restart(model_name)
                         continue
+                    # A second crash on the same request is the GPU build failing on this input, not
+                    # the reaper (#13663): finish on CPU, as a failed GPU start already does.
+                    if crashed and self._fall_back_to_cpu():
+                        self._restart(model_name)
+                        return self._post_active(path, payload, model_name)
                 except httpx.HTTPStatusError as e:
                     body = e.response.text[:500] if e.response is not None else ""
                     raise RuntimeError(
                         f"llama-server embedder POST {path} -> {e.response.status_code}: {body}"
                     ) from e
         raise RuntimeError(f"llama-server embedder POST {path} failed after retry") from last_exc
+
+    def _server_exited(self) -> bool:
+        """Whether the server process died under the request; logs its exit code and last output,
+        which is otherwise only at debug level."""
+        proc = self._process
+        if proc is None:
+            return False
+        try:
+            code = proc.wait(timeout = 2)
+        except subprocess.TimeoutExpired:
+            return False
+        if self._stdout_thread is not None:
+            self._stdout_thread.join(timeout = 2)
+        tail = "\n".join(self._stdout_lines[-30:])
+        logger.warning(
+            "llama-server embedder exited during a request (code %s). Last output:\n%s",
+            code,
+            tail[:2000],
+        )
+        return True
+
+    def _fall_back_to_cpu(self) -> bool:
+        if not self._on_gpu or self._force_cpu or config.embed_device_requires_gpu():
+            return False
+        logger.warning("llama-server embedder crashed twice on the GPU; continuing on CPU")
+        self._force_cpu = True
+        return True
 
     def encode(
         self,
