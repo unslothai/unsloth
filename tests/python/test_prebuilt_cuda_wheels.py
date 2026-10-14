@@ -146,16 +146,14 @@ class TestWorkflowAndResolverAgree:
                     )
                     assert url == f"{OUR_BASE}{built}"
                     checked += 1
-        assert checked == 9
+        assert checked == 18
         extra = {
             (platform, prebuilt_wheels.torch_minor(v))
             for platform in prebuilt_wheels.PLATFORMS
             for v in prebuilt_wheels._platform_torches(platform)
             if v not in prebuilt_wheels.TORCH_VERSIONS
         }
-        # The resolver only asks for cells the workflow builds. A new cell is built and published
-        # before the resolver asks for it, so users never get a 404 in between.
-        assert set(wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS) <= extra
+        assert extra == set(wheel_utils._UNSLOTH_PREBUILT_EXTRA_CELLS)
 
     def test_the_two_torch_tables_are_the_same_set(self):
         built = {prebuilt_wheels.torch_minor(version) for version in prebuilt_wheels.TORCH_VERSIONS}
