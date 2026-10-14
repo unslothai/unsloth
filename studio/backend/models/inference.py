@@ -61,6 +61,20 @@ class LoadRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Inference engine to use. 'auto' selects Studio's default backend; "
@@ -599,6 +613,20 @@ class ValidateModelRequest(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = Field(
+        "auto",
+        description = "Managed engine KV cache dtype; 'fp8' halves KV cache memory (vLLM --kv-cache-dtype).",
+    )
+    engine_seed: Optional[int] = Field(
+        None, ge = 0, le = 2**31 - 1, description = "Managed engine seed (vLLM --seed)."
+    )
+    engine_gpu_memory_utilization: Optional[float] = Field(
+        None,
+        ge = 0.05,
+        le = 0.99,
+        description = "Upper bound on the share of each selected GPU the managed engine may claim "
+        "(vLLM --gpu-memory-utilization). Unset lets Studio size it from free memory.",
+    )
     engine: Literal["auto", "vllm", "sglang"] = "auto"
     model_path: str = Field(..., description = "Model identifier or local path")
     # The same inventory handle the picker was shown; see `resolve_inventory_handle`.
@@ -1440,6 +1468,9 @@ class _InferenceRuntimeFields(BaseModel):
 
     engine_parallelism: Literal["tensor", "pipeline", "data"] = "tensor"
     engine_precision: Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"] = "auto"
+    engine_kv_cache_dtype: Literal["auto", "fp8"] = "auto"
+    engine_seed: Optional[int] = None
+    engine_gpu_memory_utilization: Optional[float] = None
     engine: Literal["auto", "vllm", "sglang"] = Field(
         "auto",
         description = "Active inference engine. 'auto' denotes Studio's default backend; "

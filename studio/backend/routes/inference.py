@@ -8460,6 +8460,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         engine = "auto",
         engine_parallelism = "tensor",
         engine_precision = "auto",
+        **_MANAGED_ENGINE_LAUNCH_DEFAULTS,
         # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         is_npu = False,
@@ -17473,6 +17474,21 @@ def _inherit_resident_load_in_4bit(backend, request, model_identifier: str) -> N
         request.load_in_4bit = bool(resident)
 
 
+# Managed-engine launch options a load records and a status echoes; the value is "not set".
+_MANAGED_ENGINE_LAUNCH_DEFAULTS = {
+    "engine_kv_cache_dtype": "auto",
+    "engine_seed": None,
+    "engine_gpu_memory_utilization": None,
+}
+
+
+def _managed_engine_launch_fields(model_info) -> dict:
+    return {
+        field: (model_info or {}).get(field, default)
+        for field, default in _MANAGED_ENGINE_LAUNCH_DEFAULTS.items()
+    }
+
+
 def _non_gguf_runtime_settings_match(backend, request) -> bool:
     """Whether the resident non-GGUF model already runs the request's load settings.
 
@@ -17495,6 +17511,9 @@ def _non_gguf_runtime_settings_match(backend, request) -> bool:
             request, "engine_parallelism", "tensor"
         ):
             return False
+        for field, default in _MANAGED_ENGINE_LAUNCH_DEFAULTS.items():
+            if entry.get(field, default) != getattr(request, field, default):
+                return False
         if list(request.gpu_ids or [0]) != list(entry.get("gpu_ids_requested") or [0]):
             return False
     if "max_seq_length" in fields_set and int(request.max_seq_length or 0) > 0:
@@ -18276,6 +18295,9 @@ async def _managed_engine_options(request, config, hf_token) -> dict:
             request.engine,
             request.engine_precision,
             request.engine_parallelism,
+            kv_cache_dtype = getattr(request, "engine_kv_cache_dtype", "auto"),
+            seed = getattr(request, "engine_seed", None),
+            gpu_memory_utilization = getattr(request, "engine_gpu_memory_utilization", None),
         )
     except (ValueError, OSError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
@@ -18765,6 +18787,7 @@ async def _load_model_impl(
                     engine = request.engine,
                     engine_parallelism = request.engine_parallelism,
                     engine_precision = request.engine_precision,
+                    **_managed_engine_launch_fields(_model_info),
                     gpu_ids = _model_info.get("gpu_ids"),
                     requested_gpu_ids = _model_info.get("gpu_ids_requested"),
                     tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
@@ -19650,6 +19673,7 @@ async def _load_model_impl(
             engine = request.engine,
             engine_parallelism = request.engine_parallelism,
             engine_precision = request.engine_precision,
+            **_managed_engine_launch_fields(_model_info),
             gpu_ids = _model_info.get("gpu_ids"),
             requested_gpu_ids = _model_info.get("gpu_ids_requested"),
             tensor_parallel = bool(_model_info.get("tensor_parallel", False)),
@@ -22476,6 +22500,7 @@ async def _slot_status(current_subject: str):
             engine = model_info.get("engine", "auto"),
             engine_parallelism = model_info.get("engine_parallelism", "tensor"),
             engine_precision = model_info.get("engine_precision", "auto"),
+            **_managed_engine_launch_fields(model_info),
             gpu_ids = model_info.get("gpu_ids"),
             tensor_parallel = bool(model_info.get("tensor_parallel", False)),
             active_model = _active,
@@ -30345,6 +30370,14 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
     return (value or "").strip() == "1"
 
 
+def _accepts_keyword(fn, name: str) -> bool:
+    import inspect
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+
+
 # The loaded model serves the request, so a caller that cannot use speech says so per request.
 REQUIRE_TEXT_HEADER = "X-Unsloth-Require-Text"
 
@@ -34676,6 +34709,16 @@ async def produce_openai_chat_completions(
     # Request-scoped usage/timings receptacle (filled at gen_done).
     stats_holder: dict = {}
     _sf_context_truncation_holder: dict = {"value": None}
+    # Diffusion canvas frames only for a streaming, single-choice reply to a client rendering Studio events.
+    _sf_ui_events = _ui_stream_events_enabled(request)
+    _sf_frame_kwargs = (
+        {"diffusion_frames": True}
+        if payload.stream
+        and _sf_ui_events
+        and (payload.n or 1) == 1
+        and _accepts_keyword(backend.generate_chat_response, "diffusion_frames")
+        else {}
+    )
 
     if payload.use_adapter is not None:
 
@@ -34684,6 +34727,7 @@ async def produce_openai_chat_completions(
                 use_adapter = payload.use_adapter,
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
+                **_sf_frame_kwargs,
                 **kw,
             )
     else:
@@ -34692,6 +34736,7 @@ async def produce_openai_chat_completions(
             return backend.generate_chat_response(
                 cancel_event = cancel_event,
                 stats_holder = stats_holder,
+                **_sf_frame_kwargs,
                 **kw,
             )
 
@@ -34824,6 +34869,12 @@ async def produce_openai_chat_completions(
                                 model_name,
                                 {key: value for key, value in cumulative.items() if key != "type"},
                             )
+                        elif cumulative.get("type") == "diffusion_frame":
+                            # As on the GGUF path: never in the transcript.
+                            if _sf_ui_events:
+                                yield f"data: {json.dumps(cumulative)}\n\n"
+                            elif _drop_keepalive.due():
+                                yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                         continue
                     if isinstance(cumulative, GenStreamError):
                         backend.reset_generation_state(cancel_event)

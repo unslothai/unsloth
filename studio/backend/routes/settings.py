@@ -996,6 +996,9 @@ class ModelOverridePayload(BaseModel):
     engine_parallelism: Optional[Literal["tensor", "pipeline", "data"]] = None
     engine_precision: Optional[Literal["auto", "bf16", "fp16", "int4", "int8", "fp8"]] = None
     engine: Optional[Literal["auto", "vllm", "sglang"]] = None
+    engine_kv_cache_dtype: Optional[Literal["auto", "fp8"]] = None
+    engine_seed: Optional[int] = Field(default = None, ge = 0, le = 2**31 - 1)
+    engine_gpu_memory_utilization: Optional[float] = Field(default = None, ge = 0.05, le = 0.99)
     # None leaves the stored value alone (the UI has no control for flags); [] clears them.
     llama_extra_args: Optional[list[str]] = None
     # ge=1: the setter drops a falsy value, so reject 0 here instead of discarding it silently.
@@ -2768,6 +2771,16 @@ def update_openai_auto_switch_override(
                 engine = payload.engine
                 if payload.engine is not None or is_removal
                 else get_model_override(target_id).get("engine"),
+                **{
+                    field: getattr(payload, field)
+                    if field in fields_set or is_removal
+                    else get_model_override(target_id).get(field)
+                    for field in (
+                        "engine_kv_cache_dtype",
+                        "engine_seed",
+                        "engine_gpu_memory_utilization",
+                    )
+                },
                 max_seq_length = max_seq_length,
                 custom_context_length = custom_context_length,
                 kv_cache_dtype = payload.kv_cache_dtype,

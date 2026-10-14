@@ -177,6 +177,9 @@ def validate_model(
     engine = "vllm",
     precision = "auto",
     parallelism = "tensor",
+    kv_cache_dtype = "auto",
+    seed = None,
+    gpu_memory_utilization = None,
 ) -> dict:
     """Check plain metadata before releasing the previous resident model."""
     if config.is_local:
@@ -239,6 +242,13 @@ def validate_model(
         or (engine == "vllm" and precision == "int4" and parallelism != "pipeline")
         else "auto",
     }
+    # Unset options stay out of the dict, so a default load keeps today's argv and cache key.
+    if kv_cache_dtype != "auto":
+        options["kv_cache_dtype"] = kv_cache_dtype
+    if seed is not None:
+        options["seed"] = seed
+    if gpu_memory_utilization is not None:
+        options["gpu_memory_utilization"] = gpu_memory_utilization
     if reasoning_parser:
         from .llama_cpp import detect_reasoning_flags
         options["reasoning_parser"] = reasoning_parser
@@ -250,9 +260,9 @@ def validate_model(
             else config.identifier,
             log_source = "managed engine",
         )
-    if precision == "fp8" and profile(engine)["platform"] == "cuda":
-        # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+    if (precision == "fp8" or kv_cache_dtype == "fp8") and profile(engine)["platform"] == "cuda":
         from utils.hardware.nvidia import _nvidia_smi_executable
+
         result = subprocess.run(
             [
                 _nvidia_smi_executable(),
@@ -269,8 +279,23 @@ def validate_model(
             timeout = 60,
             check = True,
         )
-        options["disable_cuda_graph"] = any(float(cap) < 8.9 for cap in result.stdout.splitlines())
+        caps = [float(cap) for cap in result.stdout.splitlines() if cap.strip()]
+        if precision == "fp8":
+            # Eager TorchAO FP8 on Ampere: Triton cannot compile its casts, SGLang online FP8 is invalid.
+            options["disable_cuda_graph"] = any(cap < 8.9 for cap in caps)
+        if kv_cache_dtype == "fp8" and any(cap < 8.0 for cap in caps):
+            # vLLM 0.30 refuses it at startup on Turing ("native FP8 requires SM89+"); Ampere runs it.
+            raise ValueError(
+                "An FP8 KV cache needs an Ampere or newer NVIDIA GPU. "
+                "Choose Model default for KV cache on this GPU."
+            )
     metadata = metadata.get("text_config") or metadata
+    if engine == "sglang" and kv_cache_dtype == "fp8" and metadata.get("kv_lora_rank"):
+        # Studio pins SGLang to the Triton attention backend, whose MLA path has no FP8 KV cache.
+        raise ValueError(
+            "SGLang cannot use an FP8 KV cache with this model's attention. "
+            "Choose Model default for KV cache, or use vLLM."
+        )
     size = len(gpu_ids or [0])
     if size > 1 and parallelism == "tensor":
         for field in ("num_attention_heads", "hidden_size", "intermediate_size"):
@@ -421,6 +446,8 @@ def _rocm_visibility(env: dict, gpu_ids) -> dict:
 
 # SGLang raises when its derived gRPC port (HTTP + 10000) exceeds 65535.
 _PORT_LIMIT = 55535
+# Launch options that change no compiled artifact, so they share the compile cache.
+_UNCACHED_OPTIONS = frozenset(("seed", "gpu_memory_utilization"))
 
 
 def _free_port(limit: int | None = _PORT_LIMIT) -> int:
@@ -737,7 +764,15 @@ class ManagedEngine:
         return hashlib.sha256(
             policy
             + json.dumps(
-                [info.get("profile_digest"), model, self.context, gpu_ids, options],
+                [
+                    info.get("profile_digest"),
+                    model,
+                    self.context,
+                    gpu_ids,
+                    {k: v for k, v in options.items() if k not in _UNCACHED_OPTIONS}
+                    if options
+                    else options,
+                ],
                 sort_keys = True,
             ).encode()
         ).hexdigest()[:16]
