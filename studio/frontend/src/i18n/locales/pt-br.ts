@@ -55,7 +55,7 @@ export const ptBR = {
       enable: "Permitir que os modelos usem o navegador",
       enableDescription: "Os modelos abrem páginas na própria aba do navegador, leem e clicam e digitam por você. Também no menu + do campo de mensagem.",
       history: "Histórico de navegação",
-      historyDescription: "Escolha se os modelos podem ler o histórico do navegador",
+      historyDescription: "Acesso total dispensa aprovação; Nunca continua bloqueando o acesso",
       alwaysAsk: "Sempre perguntar",
       alwaysAllow: "Sempre permitir",
       never: "Nunca",

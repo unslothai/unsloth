@@ -55,7 +55,7 @@ export const ko = {
       enable: "모델이 브라우저를 사용하도록 허용",
       enableDescription: "모델이 전용 브라우저 탭에서 페이지를 열어 읽고, 대신 클릭하고 입력합니다. 입력창의 + 메뉴에서도 켤 수 있습니다.",
       history: "방문 기록",
-      historyDescription: "모델이 브라우저 방문 기록을 읽을 수 있는지 선택합니다",
+      historyDescription: "전체 액세스에서는 승인을 생략합니다. 허용 안 함은 계속 접근을 차단합니다",
       alwaysAsk: "항상 묻기",
       alwaysAllow: "항상 허용",
       never: "허용 안 함",
