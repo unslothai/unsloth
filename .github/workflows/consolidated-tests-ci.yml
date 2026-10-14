@@ -2020,20 +2020,47 @@ jobs:
           unsloth-zoo-ref: ${{ env.UNSLOTH_ZOO_REF }}
 
       - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
-        # Deselected tests: CUDA-only ones, and one that fails everywhere on an unstubbed fixture.
-        # PYTEST_TIMEOUT names and dumps a hung test instead of eating the job cap; 300s is >3x the
-        # slowest test in CI (~80s).
+        # 106 of 111 test_* in unsloth_zoo are CPU-only. The CUDA-skip case
+        # below auto-skips on a GPU-less runner; deselect it explicitly so the
+        # no-CUDA outcome is "deselected", not "skipped", making intent
+        # visible in the report. Env inherited from job block.
+        #
+        # -rs prints every skip reason, so a dependency that goes missing and
+        # turns a module into a skip shows up in the log instead of only in
+        # the skipped count.
+        #
+        # A test that hangs rather than fails used to consume the whole job
+        # budget and report nothing usable: the job ended as "cancelled", with
+        # no test name, no traceback, and every later step marked skipped. That is
+        # how unsloth_zoo's gather_qmm guard walking a chain forever under the mlx
+        # shim presented. PYTEST_TIMEOUT is read by pytest-timeout on every pytest
+        # invocation in this step, so one setting covers the xdist run and each
+        # serial file below, instead of the same flag on six command lines.
+        #
+        # 5 minutes. The slowest honest test in the suite is about 48s locally
+        # (test_fla_hopper_tile.py), and CI runs roughly 1.65x slower than that
+        # box, measured on the one test long enough to compare, so call it 80s
+        # here. That leaves well over 3x headroom, while a genuine hang is now
+        # named and stack-dumped in 5 minutes rather than silently eating the
+        # job's whole 25 minute cap.
+        #
+        # This only became a sane number once unsloth_zoo stopped rebuilding
+        # dir(transformers.models) on every call (unsloth-zoo#1139): before that,
+        # test_every_shipped_model_type_accepted alone ran past 600s, so any
+        # useful timeout would have failed a passing test.
         env:
           PYTEST_TIMEOUT: 300
         working-directory: ${{ runner.temp }}/unsloth-zoo
         run: |
-          # MLX shims contaminate sys.modules, so that family runs separately below.
-          python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
+          # Keep tests within each file on one worker. MLX shims contaminate sys.modules,
+          # so exclude that family from xdist and run it separately below. The other
+          # ignores either leak process state or use timing assertions that need a quiet
+          # process.
+          python -m pytest -q -rs --tb=short -n 4 --dist loadfile tests/ \
             --ignore-glob='tests/test_mlx_*.py' \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
             --ignore=tests/test_hf_xet_fallback.py \
             --ignore=tests/test_gemma3_forced_float32_boundary_dtype.py \
-            --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
 
           # Treat pytest exit 5 as a module-level skip.
@@ -2060,9 +2087,7 @@ jobs:
             echo "::error::the mlx group glob matched no files"
             exit 1
           fi
-          python -m pytest -q --tb=short $mlx_group \
-            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through \
-            || _keep "$?" "the mlx group"
+          python -m pytest -q -rs --tb=short $mlx_group || _keep "$?" "the mlx group"
           exit "$rc"
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
@@ -2098,7 +2123,7 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Core zoo job done. Coverage:"
-          echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
+          echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (GPU-only cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
 
       - name: Save the pip cache
