@@ -4603,8 +4603,18 @@ def _failing_alone(row, processors):
                     row.failure = exc
             return logits
 
-        # A drafted batch drafts only for rows whose processors all read just the history.
+        # A drafted batch drafts only for rows whose processors read just the history or settle.
         _processor.history_only = getattr(processor, "history_only", False)
+        if hasattr(processor, "settle"):
+
+            def _settle(tokens):
+                if row.failure is None:
+                    try:
+                        processor.settle(tokens)
+                    except Exception as exc:
+                        row.failure = exc
+
+            _processor.settle = _settle
         return _processor
 
     return [guarded(processor) for processor in processors]
@@ -8086,11 +8096,14 @@ class MLXInferenceBackend:
             vlm_kwargs.update(self._prefill_step_kwargs())
         session_scope = session if session is not None else nullcontext()
         processors = vlm_kwargs.get("logits_processors") or ()
-        # The draft is told these processors, and takes only ones that read just the history (a grammar's
-        # matcher advances per call).
+        # The draft is told these processors, and takes only ones that read just the history or settle on
+        # what was accepted (a grammar).
         if (
             draft is None
-            or not all(getattr(processor, "history_only", False) for processor in processors)
+            or not all(
+                getattr(processor, "history_only", False) or hasattr(processor, "settle")
+                for processor in processors
+            )
             or _vlm_generation_is_diffusion(self._model)
         ):
             draft = None
