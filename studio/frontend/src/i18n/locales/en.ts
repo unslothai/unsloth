@@ -3076,6 +3076,23 @@ export const en = {
         "Apps using this token immediately lose access. This cannot be undone.",
       revokeAction: 'Revoke "{name}"',
       revoking: "Revoking...",
+      audioApi: {
+        title: "Audio API",
+        description: "Speech, voice cloning, transcription and the Audio page workflows.",
+        speak: "Speak",
+        clone: "Clone",
+        transcribe: "Transcribe",
+        workflows: "Workflows",
+        separate: "Separate",
+        convert: "Convert",
+        music: "Music",
+        edit: "Edit",
+        placeholderModel:
+          "No downloaded model can run this example yet, so the model shown is a stand-in. Download one on the Audio page first.",
+        autoSwitchOff:
+          "The model loads by name only while Model auto-switch is on. Turn it on, or load the model on its Audio page first.",
+        useViaApi: "Use via API",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Docs",
