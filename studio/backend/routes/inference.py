@@ -1252,9 +1252,18 @@ def _apply_measured_overflow_truncation(body: dict, err_text: str, policy: str) 
     return max(0, before - len(body.get("messages") or []))
 
 
-def _passthrough_cut_scope(llama_backend) -> tuple:
-    # The loaded model and window: a cut measured with another tokenizer or template does not carry over.
-    return ("passthrough", llama_backend.model_identifier, llama_backend.context_length)
+def _passthrough_cut_scope(llama_backend, body: dict) -> tuple:
+    # The loaded model, window and tool catalogue: a cut measured with another tokenizer, template or set of
+    # schemas does not carry over.
+    tools = sorted(
+        str(((tool or {}).get("function") or {}).get("name")) for tool in body.get("tools") or []
+    )
+    return (
+        "passthrough",
+        llama_backend.model_identifier,
+        llama_backend.context_length,
+        tuple(tools),
+    )
 
 
 def _replay_passthrough_cut(
@@ -1266,9 +1275,9 @@ def _replay_passthrough_cut(
     if policy != "truncate_oldest" or not context_length:
         return 0
     messages = body.get("messages") or []
-    # Tool schemas render into the prompt too, and an agent's can be most of it.
+    # Tool schemas render into the prompt too, and an agent's can be most of it. Images are media, not prompt text.
     estimate = (
-        _estimate_messages_tokens(messages)
+        _estimate_messages_tokens(messages_without_unpriced_media(messages))
         + len(json.dumps(body.get("tools") or [], default = str)) // 4
     )
     if estimate <= _OVERFLOW_PROMPT_TARGET_FRACTION * context_length:
@@ -45408,7 +45417,7 @@ async def _openai_passthrough_stream_admitted(
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
         _uncut_messages = list(body.get("messages") or [])
         # Hashing the history can mean megabytes of image data, so off the event loop.
-        _cut_scope = _passthrough_cut_scope(llama_backend)
+        _cut_scope = _passthrough_cut_scope(llama_backend, body)
         _truncated_messages = await asyncio.to_thread(
             _replay_passthrough_cut,
             body,
@@ -46338,7 +46347,7 @@ async def _openai_passthrough_non_streaming_upstream(
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
     _uncut_messages = list(body.get("messages") or [])
     # Hashing the history can mean megabytes of image data, so off the event loop.
-    _cut_scope = _passthrough_cut_scope(llama_backend)
+    _cut_scope = _passthrough_cut_scope(llama_backend, body)
     _truncated_messages = await asyncio.to_thread(
         _replay_passthrough_cut, body, _truncate_policy, llama_backend.context_length, _cut_scope
     )

@@ -218,3 +218,30 @@ def test_a_cut_measured_on_another_model_is_not_replayed():
         )
         == 0
     )
+
+
+def test_a_changed_tool_catalogue_gets_its_own_cut():
+    class Backend:
+        model_identifier = "org/model"
+        context_length = 4096
+
+    tools = [{"type": "function", "function": {"name": "read_file"}}]
+    with_tools = routes._passthrough_cut_scope(Backend, {"tools": tools})
+
+    assert with_tools != routes._passthrough_cut_scope(Backend, {"tools": []})
+    assert with_tools == routes._passthrough_cut_scope(Backend, {"tools": list(reversed(tools))})
+
+
+def test_an_image_does_not_count_as_prompt_text_in_the_overflow_check():
+    messages = _transcript(12)
+    routes._remember_passthrough_cut(messages, _cut_body(messages, 6), "truncate_oldest", 6, SCOPE)
+    later = _transcript(13)
+    later[-1] = {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "what is in this picture?"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + "A" * 400_000}},
+        ],
+    }
+
+    assert routes._replay_passthrough_cut({"messages": later}, "truncate_oldest", 4096, SCOPE) == 0
