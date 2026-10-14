@@ -255,17 +255,27 @@ _FRAME_HTML = r"""<!doctype html>
         const refusals = new WeakSet();
         // Other sites' scripts report errors as "Script error." with no error, so IndexedDB's is noted as thrown.
         let indexedDbThrew = false;
-        const openDatabase = IDBFactory.prototype.open;
-        IDBFactory.prototype.open = function (...args) {
-          try { return openDatabase.apply(this, args); } catch (error) {
-            if (error instanceof DOMException && error.name === "SecurityError") {
-              refusals.add(error);
-              indexedDbThrew = true;
-              setTimeout(() => { indexedDbThrew = false; });
-            }
-            throw error;
-          }
+        const refusedByIndexedDb = (error) => {
+          if (!(error instanceof DOMException && error.name === "SecurityError")) return false;
+          refusals.add(error);
+          return true;
         };
+        for (const name of ["open", "deleteDatabase", "databases"]) {
+          const original = IDBFactory.prototype[name];
+          if (typeof original !== "function") continue;
+          IDBFactory.prototype[name] = function (...args) {
+            try {
+              const result = original.apply(this, args);
+              return result instanceof Promise ? result.catch((error) => { refusedByIndexedDb(error); throw error; }) : result;
+            } catch (error) {
+              if (refusedByIndexedDb(error)) {
+                indexedDbThrew = true;
+                setTimeout(() => { indexedDbThrew = false; });
+              }
+              throw error;
+            }
+          };
+        }
         window.addEventListener("error", (event) => { if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused(); });
         window.addEventListener("unhandledrejection", (event) => { if (refusals.has(event.reason)) tellRefused(); });
         for (const type of ["fullscreenerror", "webkitfullscreenerror"]) {
