@@ -15982,6 +15982,21 @@ def _github_repo_readme_api_url(url: str) -> str | None:
     return f"https://api.github.com/repos/{owner}/{repo}/readme"
 
 
+def _github_blob_raw_url(url: str) -> str | None:
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if (parsed.hostname or "").lower() not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 5 or parts[2] != "blob":
+        return None
+    owner, repo = parts[:2]
+    if not (_GITHUB_NAME_RE.match(owner) and _GITHUB_NAME_RE.match(repo)):
+        return None
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/" + "/".join(parts[3:])
+
+
 # A single fetch can chain several steps (README API attempt, HTML fallback, up to five redirect hops, each reading a
 # body). A per-operation socket timeout bounds one stalled step but not their sum, and nothing aborts on client
 # disconnect, so one overall wall-clock deadline (plus a cooperative cancel_event) bounds the whole fetch instead.
@@ -17456,6 +17471,18 @@ def _fetch_page_text(
                     f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
                     max_chars,
                 )
+
+    raw_file_url = _github_blob_raw_url(url)
+    if raw_file_url:
+        err, body, _ctype = _fetch_url_raw(
+            raw_file_url,
+            timeout = timeout,
+            deadline = deadline,
+            cancel_event = cancel_event,
+            **policy_kwargs,
+        )
+        if err is None and body.strip():
+            return _truncate_page_text(body.strip(), max_chars)
 
     err, body, content_type = _fetch_url_raw(
         url,
