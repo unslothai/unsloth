@@ -4112,25 +4112,36 @@ def _block_type(block: Any) -> Any:
     return block.get("type") if isinstance(block, dict) else getattr(block, "type", None)
 
 
-def _with_user_note(message: dict, note: str, *, first: bool) -> dict:
-    """A copy of a user turn with a text block added, keeping its own blocks as sent."""
-    content = message.get("content")
+def _system_note(text: str) -> str:
+    if text.lstrip().startswith("<system-reminder>"):
+        return text
+    return f"<system-reminder>\n{text}\n</system-reminder>"
+
+
+def _as_blocks(content: Any) -> Optional[list]:
     if isinstance(content, str):
-        blocks = [{"type": "text", "text": content}] if content else []
-    else:
-        blocks = list(content or [])
+        return [{"type": "text", "text": content}] if content else []
+    return list(content) if isinstance(content, list) else None
+
+
+def _with_user_note(message: dict, note: str, *, first: bool) -> Optional[dict]:
+    """A copy of a user turn with a text block added, or None when its content is malformed
+    (left as sent, so validation still rejects it)."""
+    blocks = _as_blocks(message.get("content"))
+    if blocks is None:
+        return None
     block = {"type": "text", "text": note}
     if blocks and all(_block_type(b) == "tool_result" for b in blocks):
         # A text block would make this turn a new user query: the converter and the templates
-        # then drop the reasoning before it. Inside the adjacent result it stays a tool turn.
+        # then drop the reasoning before it. Inside the adjacent result it stays a tool turn; at
+        # its start, since an MCP image envelope has to stay at the end of the text.
         index = 0 if first else len(blocks) - 1
         result = blocks[index] if isinstance(blocks[index], dict) else blocks[index].model_dump()
         inner = result.get("content")
-        if isinstance(inner, str):
-            inner = [{"type": "text", "text": inner}] if inner else []
-        else:
-            inner = list(inner or [])
-        blocks[index] = {**result, "content": [block, *inner] if first else [*inner, block]}
+        inner = [] if inner is None else _as_blocks(inner)
+        if inner is None:
+            return None
+        blocks[index] = {**result, "content": [block, *inner]}
         return {**message, "content": blocks}
     return {**message, "content": [block, *blocks] if first else [*blocks, block]}
 
@@ -4336,8 +4347,8 @@ class AnthropicMessagesRequest(BaseModel):
         normalized_messages: list[Any] = []
         system_additions: list[str] = []
         retained_system = [_anthropic_content_to_system_text(data.get("system"))]
-        # Notes after an assistant turn wait for the next user turn.
-        pending_notes: list[str] = []
+        # Text after an assistant turn waits for the next user turn.
+        pending: list[str] = []
         changed = False
 
         for message in messages:
@@ -4347,34 +4358,35 @@ class AnthropicMessagesRequest(BaseModel):
                 if _is_repeated_claude_style_reminder(text, retained_system):
                     continue
                 retained_system.append(text)
-                if not normalized_messages:
+                previous = normalized_messages[-1] if normalized_messages else None
+                if previous is None or not text.strip():
                     system_additions.append(text)
-                elif text.strip():
+                elif isinstance(previous, dict) and previous.get("role") == "user":
                     # Hoisting a later one would put it above the tools: claude's per-session
                     # environment message then breaks the cache for every new session.
-                    note = f"<system-reminder>\n{text}\n</system-reminder>"
-                    previous = normalized_messages[-1]
-                    if isinstance(previous, dict) and previous.get("role") == "user":
-                        normalized_messages[-1] = _with_user_note(previous, note, first = False)
+                    folded = _with_user_note(previous, _system_note(text), first = False)
+                    if folded is None:
+                        system_additions.append(text)
                     else:
-                        pending_notes.append(note)
+                        normalized_messages[-1] = folded
+                else:
+                    pending.append(text)
                 continue
-            if pending_notes and isinstance(message, dict) and message.get("role") == "user":
-                for note in reversed(pending_notes):
-                    message = _with_user_note(message, note, first = True)
-                pending_notes = []
+            if pending and isinstance(message, dict) and message.get("role") == "user":
+                note = "\n".join(_system_note(text) for text in pending)
+                folded = _with_user_note(message, note, first = True)
+                if folded is None:
+                    system_additions.extend(pending)
+                else:
+                    message = folded
+                pending = []
             normalized_messages.append(message)
 
         if not changed:
             return data
 
-        if pending_notes:
-            normalized_messages.append(
-                {
-                    "role": "user",
-                    "content": [{"type": "text", "text": note} for note in pending_notes],
-                }
-            )
+        # Nothing follows a trailing assistant turn, a prefill to continue: a user turn would replace it.
+        system_additions.extend(pending)
 
         normalized = dict(data)
         normalized["messages"] = normalized_messages

@@ -769,7 +769,7 @@ class TestAnthropicModels:
             "Next.",
         ]
 
-    def test_trailing_system_role_message_after_an_assistant_turn_becomes_a_user_turn(self):
+    def test_system_role_message_after_a_trailing_prefill_keeps_the_prefill_last(self):
         req = AnthropicMessagesRequest(
             max_tokens = 50,
             messages = [
@@ -778,8 +778,32 @@ class TestAnthropicModels:
                 {"role": "system", "content": "Note."},
             ],
         )
-        assert [msg.role for msg in req.messages] == ["user", "assistant", "user"]
-        assert req.messages[2].content[0].text == "<system-reminder>\nNote.\n</system-reminder>"
+        assert [msg.role for msg in req.messages] == ["user", "assistant"]
+        assert req.system == "Note."
+
+    @pytest.mark.parametrize(
+        "messages",
+        [
+            [{"role": "user", "content": 5}, {"role": "system", "content": "env"}],
+            [{"role": "user", "content": None}, {"role": "system", "content": "env"}],
+            [
+                {"role": "user", "content": "Hi"},
+                {
+                    "role": "assistant",
+                    "content": [{"type": "tool_use", "id": "t", "name": "R", "input": {}}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "tool_result", "tool_use_id": "t", "content": {"a": 1}}],
+                },
+                {"role": "system", "content": "env"},
+            ],
+        ],
+    )
+    def test_malformed_turns_are_still_rejected_with_a_system_message_after_them(self, messages):
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            AnthropicMessagesRequest(max_tokens = 50, messages = messages)
 
     def test_claude_environment_message_leaves_system_and_tools_identical_across_sessions(self):
         # claude sends its per-session environment (working directory) as a system message after the first
@@ -871,7 +895,7 @@ class TestAnthropicModels:
         assert [m["role"] for m in result] == ["user", "assistant", "tool"]
         assert result[1].get("reasoning_content") == "I should read it."
         assert result[2]["content"] == (
-            "data\n<system-reminder>\n<total_tokens>900 tokens left</total_tokens>\n</system-reminder>"
+            "<system-reminder>\n<total_tokens>900 tokens left</total_tokens>\n</system-reminder>\ndata"
         )
 
     def test_system_role_message_with_null_content_ignored(self):

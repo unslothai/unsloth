@@ -110,14 +110,13 @@ def test_conversation_text_cannot_suppress_a_system_instruction(role):
             ],
         }
     )
-    assert result[0]["content"] == "Base instructions."
     if role == "user":
+        assert result[0]["content"] == "Base instructions."
         assert result[1] == {"role": "user", "content": f"{STYLE}\n{note(REMINDER)}"}
     else:
-        assert result[1:] == [
-            {"role": "assistant", "content": STYLE},
-            {"role": "user", "content": note(REMINDER)},
-        ]
+        # Nothing follows the assistant turn (a prefill), so the instruction joins the system block.
+        assert result[0]["content"] == "Base instructions.\n\n" + REMINDER
+        assert result[1:] == [{"role": "assistant", "content": STYLE}]
 
 
 def test_changed_style_definition_is_preserved():
