@@ -1252,6 +1252,36 @@ def _apply_measured_overflow_truncation(body: dict, err_text: str, policy: str) 
     return max(0, before - len(body.get("messages") or []))
 
 
+def _passthrough_cut_scope(body: dict) -> tuple:
+    return ("passthrough", body.get("model"))
+
+
+def _replay_passthrough_cut(body: dict, policy: Optional[str]) -> int:
+    """Apply the cut this conversation took last request before sending, so the oldest kept turn
+    stays put (and the prompt cache with it) instead of moving on every overflow retry."""
+    if policy != "truncate_oldest":
+        return 0
+    from core.inference import prefix_boundary
+
+    messages = body.get("messages") or []
+    remembered = prefix_boundary.recall(messages, _passthrough_cut_scope(body))
+    if not remembered:
+        return 0
+    cut, dropped = _truncate_oldest_messages(messages, 1.0, min_dropped = remembered)
+    if dropped:
+        body["messages"] = cut
+    return dropped
+
+
+def _remember_passthrough_cut(
+    original: list, body: dict, policy: Optional[str], dropped: int
+) -> None:
+    if policy != "truncate_oldest" or dropped <= 0:
+        return
+    from core.inference import prefix_boundary
+    prefix_boundary.remember(original, dropped, _passthrough_cut_scope(body))
+
+
 def _anthropic_stream_error_event(exc, *, force: bool = False):
     """Return an Anthropic in-band stream error event when one is useful."""
     # Called only from stream except-handlers after the 200 headers, so flag failed up front
@@ -45280,8 +45310,9 @@ async def _openai_passthrough_stream_admitted(
         )
         _truncate_policy = _overflow_truncation_policy(payload)
         _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-        _truncated_messages = 0
-        _context_was_truncated = False
+        _uncut_messages = list(body.get("messages") or [])
+        _truncated_messages = _replay_passthrough_cut(body, _truncate_policy)
+        _context_was_truncated = _truncated_messages > 0
         # One respawn per request: a second unreachable upstream after a successful
         # relaunch is a real failure, not a stale port.
         _respawn_retried = False
@@ -45293,6 +45324,7 @@ async def _openai_passthrough_stream_admitted(
                 return False
             _context_was_truncated = True
             _truncated_messages += dropped
+            _remember_passthrough_cut(_uncut_messages, body, _truncate_policy, _truncated_messages)
             return True
 
         while True:
@@ -46198,8 +46230,9 @@ async def _openai_passthrough_non_streaming_upstream(
 
     _truncate_policy = _overflow_truncation_policy(payload)
     _truncate_budget = _OVERFLOW_TRUNCATE_MAX_RETRIES if _truncate_policy else 0
-    _truncated_messages = 0
-    _context_was_truncated = False
+    _uncut_messages = list(body.get("messages") or [])
+    _truncated_messages = _replay_passthrough_cut(body, _truncate_policy)
+    _context_was_truncated = _truncated_messages > 0
     # One respawn per request, as on the streaming twin.
     _respawn_retried = False
 
@@ -46210,6 +46243,7 @@ async def _openai_passthrough_non_streaming_upstream(
             return False
         _context_was_truncated = True
         _truncated_messages += dropped
+        _remember_passthrough_cut(_uncut_messages, body, _truncate_policy, _truncated_messages)
         return True
 
     async def _post(body_to_send):
