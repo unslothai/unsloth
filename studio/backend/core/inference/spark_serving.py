@@ -3559,6 +3559,9 @@ async def load_failed() -> None:
     _DETACH_LEGACY_ON_COMMIT = False
     if cluster_serving._STATE is not None and cluster_serving._STATE.in_flight:
         await cluster_serving._STATE.load_failed()
+        legacy = _STATE.attached_backend if _STATE is not None else None
+        if legacy is not None and not getattr(legacy, "is_loaded", False):
+            await _STATE.detach()  # an engine load unloaded the two-Spark primary, then failed
         return
     if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
         cluster_serving._STATE.failed_while_retiring()

@@ -74,6 +74,8 @@ _PLACEMENT_FLAGS = frozenset(
         "-cmoe",
         "--n-cpu-moe",
         "-ncmoe",
+        "--n-cpu-ffn",
+        "-ncffn",
     }
 )
 _PLACEMENT_ENV = (
@@ -85,6 +87,7 @@ _PLACEMENT_ENV = (
     "LLAMA_ARG_OVERRIDE_TENSOR",
     "LLAMA_ARG_CPU_MOE",
     "LLAMA_ARG_N_CPU_MOE",
+    "LLAMA_ARG_N_CPU_FFN",
 )
 
 
@@ -708,6 +711,10 @@ class ClusterServing:
         if placed:
             self.topology, self.reason = "single", f"the caller set {placed}; placement is theirs"
             return request
+        if any(str(a).split("=", 1)[0] in ("-mv", "--model-vocoder") for a in flags):
+            # A second model llama.cpp loads beside this one, on devices this does not plan.
+            self.topology, self.reason = "single", "a vocoder model loads beside it"
+            return request
         if getattr(request, "tensor_parallel", False):
             # The toggle emits --split-mode tensor, which the block's layer split would override.
             self.topology, self.reason = "single", "tensor_parallel owns placement"
@@ -843,6 +850,7 @@ class ClusterServing:
             mode in ("", "auto", "default")
             and getattr(request, "spec_draft_n_max", None) is None
             and not ss.extra_args_own_speculation(flags)
+            and not _names_drafter(flags)
         ):
             # An automatically picked drafter is chosen after this plan and is not in its budget.
             updates["speculative_type"] = "off"

@@ -1525,3 +1525,54 @@ def test_the_pre_b8955_drafter_variable_is_sized_and_pinned(monkeypatch, tmp_pat
     out = run(ss.before_load(_request(), 4))
     assert ss.status()["topology"] == "layer_split"  # 90 GiB fits alone, not with the drafter
     assert "--device-draft" in out.llama_extra_args
+
+
+def test_a_pre_b8955_drafter_keeps_speculation_on(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x")
+    sizes = {str(drafter): 1 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 150 * GIB))
+    monkeypatch.setenv("LLAMA_ARG_MODEL_DRAFT", str(drafter))
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert getattr(out, "speculative_type", None) != "off"
+
+
+def test_a_failed_engine_load_detaches_the_two_spark_primary_it_unloaded(monkeypatch):
+    _cluster_env(monkeypatch)
+    detached = []
+    legacy = ss.state()
+    legacy.peer_process = object()
+    legacy.attached_backend = SimpleNamespace(is_loaded = True)
+
+    async def fake_detach():
+        detached.append(1)
+        legacy.peer_process = legacy.attached_backend = None
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+    run(ss.before_load(_request(engine = "vllm"), 4))
+    run(ss.load_failed())
+    assert detached == [], "the primary still serves"
+    run(ss.before_load(_request(engine = "vllm"), 4))
+    legacy.attached_backend.is_loaded = False
+    run(ss.load_failed())
+    assert detached == [1]
+
+
+@pytest.mark.parametrize("extra", [["-ncffn", "4"], ["--n-cpu-ffn=4"], []])
+def test_cpu_ffn_offload_is_caller_placement(monkeypatch, extra):
+    seen = _cluster_env(monkeypatch)
+    if not extra:
+        monkeypatch.setenv("LLAMA_ARG_N_CPU_FFN", "4")
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "placement is theirs" in ss.status()["reason"]
+
+
+def test_a_vocoder_keeps_the_load_local(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    request = _request(llama_extra_args = ["-mv", "/models/vocoder.gguf"])
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "vocoder" in ss.status()["reason"]
