@@ -433,11 +433,17 @@ export async function generateDiffusionImage(
 ): Promise<DiffusionGenerateResponse> {
   let response: Response;
   try {
-    response = await authFetch("/api/inference/images/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    // No network retry: a re-sent POST would run the whole generation again. A dropped reply is surfaced below as
+    // GenerateResponseLostError instead.
+    response = await authFetch(
+      "/api/inference/images/generate",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+      { retryNetworkErrors: false },
+    );
   } catch (err) {
     // fetch itself rejected: the connection dropped, not a backend refusal.
     throw new GenerateResponseLostError(
