@@ -230,7 +230,7 @@ def test_single_gpu_spill_retries_with_auto_offload(monkeypatch, tmp_path):
     assert "offload_layers" not in calls[0]
     assert calls[1]["offload_layers"] == "auto"
     assert "device_map" not in calls[1]
-    # Export trains nothing: a training step's reserve would refuse the plan on the 8 GB card.
+    # Export trains nothing: plan with a merge's reserve, not a training step's.
     assert calls[1]["device_map_planner_kwargs"]["reserve_bytes"] == 1 << 30
 
 
