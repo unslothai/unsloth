@@ -8644,7 +8644,13 @@ def _resolving_utils():
 def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
     monkeypatch, processor, expected_fps
 ):
-    """Read the declared rate from fields on every mlx-vlm release, not only the 0.7.0+ resolver."""
+    """A model's declared rate must not depend on which mlx-vlm is installed.
+
+    Studio pins ``mlx-vlm>=0.4.4,<=0.7.8``, which spans both shapes: releases with no resolver
+    and, from 0.7.0, releases that have one. Reading the rate only through the resolver left
+    every install on the older shape sampling at the library default instead of the rate the
+    checkpoint asked for.
+    """
     from core.inference import mlx_inference
 
     seen = []

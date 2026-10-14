@@ -53,8 +53,11 @@ def test_uv_cmd_targets_this_interpreter_with_mlx_packages(monkeypatch):
     assert cmd is not None
     assert cmd[:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
     assert set(mr.MLX_PACKAGES) <= set(cmd)
-    # Floor blocks a VLM-breaking old mlx-vlm; ceiling stops unattended major upgrades.
-    assert "mlx-vlm>=0.4.4,<=0.7.4" in cmd
+    # mlx-vlm keeps a floor so the resolver cannot backtrack to an old one that
+    # imports but breaks VLM Train/Export, and a ceiling so this unattended
+    # install cannot cross a major line on its own.
+    assert "mlx-vlm>=0.4.4,<=0.7.8" in cmd
+    # Pinned, not floored: see _MLX_INSTALL_SPECS.
     assert "mlx==0.32.3" in cmd
     assert "mlx-lm==0.31.3" in cmd
     # Look up by name: a startswith check passes vacuously once the pin is relaxed.
@@ -117,11 +120,35 @@ def test_no_uv_repair_stays_chat_only_without_pip(monkeypatch):
 
 def test_constraint_pins_installed_transformers(monkeypatch):
     transformers = pytest.importorskip("transformers")
+    datasets = pytest.importorskip("datasets")
     args, path = mr._transformers_constraint_args()
     try:
         assert args[:1] == ["--constraint"]
         assert args[1] == path
-        assert Path(path).read_text().strip() == f"transformers=={transformers.__version__}"
+        assert Path(path).read_text().splitlines() == [
+            f"transformers=={transformers.__version__}",
+            f"datasets=={datasets.__version__}",
+        ]
+    finally:
+        if path:
+            Path(path).unlink(missing_ok = True)
+
+
+def test_constraint_caps_datasets_when_its_metadata_is_missing(monkeypatch):
+    import importlib.metadata as md
+
+    real_version = md.version
+
+    def _version(name):
+        if name == "datasets":
+            raise md.PackageNotFoundError(name)
+        return real_version(name)
+
+    monkeypatch.setattr(md, "version", _version)
+    args, path = mr._transformers_constraint_args()
+    try:
+        assert path is not None
+        assert "datasets<5.0.0" in Path(path).read_text().splitlines()
     finally:
         if path:
             Path(path).unlink(missing_ok = True)
@@ -154,10 +181,11 @@ def test_repair_install_pins_transformers_and_cleans_up(monkeypatch):
     cmd = captured["cmd"]
     # transformers is pinned via a constraint file so the mlx install cannot upgrade it.
     assert "--constraint" in cmd
-    assert "--upgrade" in cmd
+    assert "--upgrade" not in cmd
     reinstall_pairs = set(zip(cmd, cmd[1:]))
     for name in mr._MLX_PACKAGE_NAMES:
         assert ("--reinstall-package", name) in reinstall_pairs
+        assert ("--upgrade-package", name) in reinstall_pairs
     # Not MLX_PACKAGES verbatim: mlx-vlm carries the installed zoo's range appended to ours.
     for pkg in mr._install_packages():
         assert pkg in cmd

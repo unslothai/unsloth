@@ -30,12 +30,11 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-# Pinned install specs (mlx breaks in patch releases); keep in sync with unsloth-zoo.
-# mlx 0.32.3 avoids the 0.32.2 GQA-8 decode bug.
+# What the self-heal INSTALLS (the floors above judge a stack already there). Pinned, not floored: this install is unattended and mlx breaks in patch releases (0.32.1, unslothai/unsloth#9466). Keep in sync with unsloth-zoo's darwin deps. mlx 0.32.3 rather than mlx-vlm's 0.32.2 floor: 0.32.2's GQA-8 decode kernel read the first sequence's KV for every batch row (mlx#4431). mlx-vlm stays a range: 0.7.8 under the installer's transformers override, 0.6.4 under the plain cap.
 _MLX_INSTALL_SPECS = {
     "mlx": "==0.32.3",
     "mlx-lm": "==0.31.3",
-    "mlx-vlm": ">=0.4.4,<=0.7.4",
+    "mlx-vlm": ">=0.4.4,<=0.7.8",
 }
 MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
 
@@ -78,7 +77,9 @@ def _install_packages() -> tuple[str, ...]:
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
-# Wheels only: sdist build hooks run arbitrary code in this unattended install.
+# Per name: a bare --upgrade re-resolves every transitive dependency (pandas, pyarrow) to its newest.
+_MLX_UPGRADE_ARGS = tuple(arg for name in _MLX_PACKAGE_NAMES for arg in ("--upgrade-package", name))
+# Require pre-built wheels for the unattended self-heal: a source distribution's PEP 517 build backend runs arbitrary code at install time, and this install is default-on and runs before the post-install stack check can reject anything. mlx/mlx-metal ship wheels only (no sdist on PyPI) and mlx-lm/mlx-vlm publish py3-none-any wheels, so requiring wheels does not break a healthy self-heal; if a wheel is genuinely unavailable the install fails and Unsloth stays chat-only.
 _ONLY_BINARY_ARG = "--only-binary=:all:"
 # Env allowlist for the unattended install: excludes secrets, index and cache redirects.
 _MLX_ENV_ALLOWLIST = frozenset(
@@ -301,17 +302,21 @@ def _mlx_install_env() -> dict[str, str]:
 
 def _transformers_constraint_args() -> tuple[list[str], str | None]:
     """Pin transformers to the running version for the mlx install. The install must never upgrade transformers underneath a running Unsloth (the single-env install pins a compatible default). With UV_OVERRIDE set this is belt-and-suspenders; on the plain-pip path (no UV_OVERRIDE support) it is the actual guard, since the resolver either finds an mlx build compatible with the pin or fails, leaving us chat-only rather than breaking Unsloth. Returns (pip args, temp file path to clean up). Read the version from installed metadata rather than `import transformers`: transformers can have valid metadata yet fail to import (e.g. an incompatible huggingface_hub), and in that case we still want to pin it so the mlx install cannot quietly upgrade it out from under Unsloth."""
-    from importlib.metadata import PackageNotFoundError, version as _dist_version
+    from importlib.metadata import version as _dist_version
 
-    try:
-        transformers_version = _dist_version("transformers")
-    except PackageNotFoundError:
-        return [], None
-    except Exception:
+    # datasets: mlx-vlm 0.7.8 requires it unbounded, so a moved or absent one would resolve to 5.x, past unsloth's <5.
+    pins = []
+    for name in ("transformers", "datasets"):
+        try:
+            pins.append(f"{name}=={_dist_version(name)}\n")
+        except Exception:
+            if name == "datasets":
+                pins.append("datasets<5.0.0\n")
+    if not pins:
         return [], None
     fd, path = tempfile.mkstemp(prefix = "mlx_repair_", suffix = ".txt")
     with os.fdopen(fd, "w", encoding = "utf-8") as fh:
-        fh.write(f"transformers=={transformers_version}\n")
+        fh.writelines(pins)
     return ["--constraint", path], path
 
 
@@ -324,7 +329,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         constraint_args, constraint_path = _transformers_constraint_args()
         packages = _install_packages()
         cmd = _uv_install_cmd(
-            "--upgrade",
+            *_MLX_UPGRADE_ARGS,
             _ONLY_BINARY_ARG,
             *_MLX_REINSTALL_ARGS,
             *constraint_args,
