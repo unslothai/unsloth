@@ -2577,6 +2577,7 @@ def _diffusion_scan(
     modular_manifest: dict | None = None,
     config_manifest: dict | None = None,
     expect_task_classification: bool = True,
+    download_partial: bool = False,
 ):
     """One cached diffusion repo through _scan_cached_models, with the download-partial signal
     forced off so only the pipeline-shape checks can flag the row.
@@ -2614,7 +2615,7 @@ def _diffusion_scan(
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda *_args, **_kwargs: False,
+        lambda *_args, **_kwargs: download_partial,
     )
     selected_snapshots = []
 
@@ -2655,6 +2656,53 @@ def test_cached_models_scan_marks_a_companion_only_pipeline_partial(monkeypatch,
     assert row["companion_prefetch"] is True
     # A companion-only snapshot arrived intact, so it has no Resume / Redownload story.
     assert row["partial_transport"] is None
+
+
+_TORN_DENOISER_FILES = [
+    _file("model_index.json", 900),
+    _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
+    _file("text_encoder/model.safetensors", 900_000_000),
+    _file("transformer/config.json", 900),
+    _file("transformer/diffusion_pytorch_model.safetensors.index.json", 900),
+    _file("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 4_000_000_000),
+]
+
+
+def test_cached_models_scan_keeps_a_torn_denoiser_out_of_companion_prefetch(monkeypatch, tmp_path):
+    """Shard 1 of 2 with no download manifest: unloadable, so partial, but a stopped denoiser
+    download rather than a GGUF's borrowed companions, so it must not be flagged companion_prefetch
+    (that flag hides the row from the pickers and drops the Hub's Continue)."""
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Pipeline-Torn",
+        _TORN_DENOISER_FILES,
+        task = "text-to-image",
+    )
+
+    assert row["partial"] is True
+    assert row["companion_prefetch"] is False
+
+
+def test_cached_models_scan_keeps_an_interrupted_denoiser_download_resumable(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "partial_resume_available", lambda *_a, **_k: True
+    )
+    monkeypatch.setattr(
+        cache_inventory.hf_cache_scan, "partial_transport_for", lambda *_a, **_k: "hf"
+    )
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        "Org/Pipeline-Interrupted",
+        _TORN_DENOISER_FILES,
+        task = "text-to-image",
+        download_partial = True,
+    )
+
+    assert row["partial"] is True
+    assert row["companion_prefetch"] is False
+    assert row["partial_resumable"] is True
 
 
 def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_path):
@@ -4391,8 +4439,8 @@ def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp
 
 @pytest.mark.parametrize(
     "with_denoiser, download_partial, expected",
-    [(False, False, True), (True, False, False), (False, True, False)],
-    ids = ["companion-only", "complete-pipeline", "interrupted-download"],
+    [(False, False, True), (True, False, False), (False, True, False), ("torn", False, False)],
+    ids = ["companion-only", "complete-pipeline", "interrupted-download", "torn-denoiser"],
 )
 def test_hf_cache_scan_flags_a_companion_only_pipeline(
     monkeypatch, tmp_path, with_denoiser, download_partial, expected
@@ -4406,7 +4454,23 @@ def test_hf_cache_scan_flags_a_companion_only_pipeline(
         (snapshot / rel).write_bytes(b"weights")
     (snapshot / "transformer").mkdir(parents = True, exist_ok = True)
     (snapshot / "transformer" / "config.json").write_text("{}", encoding = "utf-8")
-    if with_denoiser:
+    if with_denoiser == "torn":
+        # Shard 1 of 2 with no manifest to say so: the loader cannot open it, but it is no prefetch.
+        (snapshot / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+            json.dumps(
+                {
+                    "weight_map": {
+                        "a": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                        "b": "diffusion_pytorch_model-00002-of-00002.safetensors",
+                    }
+                }
+            ),
+            encoding = "utf-8",
+        )
+        (snapshot / "transformer" / "diffusion_pytorch_model-00001-of-00002.safetensors").write_bytes(
+            b"weights"
+        )
+    elif with_denoiser:
         (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
     (snapshot / "model_index.json").write_text(
         json.dumps(
@@ -4440,7 +4504,7 @@ def test_hf_cache_scan_flags_a_companion_only_pipeline(
 
     assert rows
     assert all(row.companion_prefetch is expected for row in rows)
-    if expected:
+    if expected or with_denoiser == "torn":
         # Still partial, so no picker loads a pipeline without its denoiser.
         assert all(row.partial for row in rows)
 

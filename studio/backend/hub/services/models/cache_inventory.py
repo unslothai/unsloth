@@ -1290,7 +1290,12 @@ def _scan_cached_models(
                     "audio_type": audio_type,
                     "partial": snapshot_partial,
                     # Still partial so no picker loads it, but the Hub must not offer "Continue": that pulls the denoiser a GGUF replaces.
-                    "companion_prefetch": companion_only and not download_partial,
+                    "companion_prefetch": (
+                        companion_only
+                        and not download_partial
+                        # Some denoiser shards on disk is a torn download, which must stay resumable.
+                        and not hf_cache_scan.snapshot_denoiser_has_weights(load_snapshot)
+                    ),
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
                             "model",

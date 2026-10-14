@@ -1575,6 +1575,23 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
         return False
 
 
+def snapshot_denoiser_has_weights(snapshot: Optional[Path]) -> bool:
+    """Whether any weight file, whole or torn, sits under the pipeline's denoiser dirs. A companion-only prefetch never lands one; a denoiser download that stopped part way does, and stays a resumable partial. Names only, so a dangling shard symlink still counts. Best-effort: a read error reports none."""
+    if snapshot is None:
+        return False
+    try:
+        root = Path(snapshot)
+        declared = _manifest_denoiser_components(root) or _DENOISER_DIRS
+        return any(
+            entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES)
+            for name in declared
+            if (root / name).is_dir()
+            for entry in (root / name).iterdir()
+        )
+    except OSError:
+        return False
+
+
 def repo_has_pipeline_index(repo_info) -> bool:
     """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable as a full diffusers pipeline (from_pretrained reads only the repo root). A nested subdir/model_index.json does not count: loading the repo root still fails, so the row must keep its single_file flag. CachedFileInfo.file_name is the basename, so a name match alone would also claim nested copies; scope by file_path when the scan provides it."""
     try:
