@@ -64,6 +64,11 @@ class OptionRule:
     sources: Mapping[str, str] = field(default_factory = lambda: _EMPTY)
 
 
+# An ACE-Step base/SFT checkpoint: audio.cpp loads one whose GGUF name contains "base" or "sft"
+# (src/models/ace_step/loader.cpp selection_from_request); the published repo keeps base under base/.
+ACE_STEP_BASE_FILE = r"(^|[\s/])base/|(base|sft)[^/\s]*\.gguf"
+
+
 def _opt(name: str, type_: str, description: str, **kw: Any) -> dict:
     return {"name": name, "type": type_, "description": description, **kw}
 
@@ -290,7 +295,7 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
             ),
             # Turbo (anything but base): the runtime caps steps at 8 and skips guidance.
             OptionRule(
-                match = r"^(?!.*(^|[\s/])base(/|\s|$))",
+                match = rf"^(?!.*(?:{ACE_STEP_BASE_FILE}))",
                 defaults = {"num_inference_steps": 8, "shift": 3.0},
                 bounds = {"num_inference_steps": (1, 8)},
                 hidden = {"*": frozenset({"guidance_scale"})},
@@ -301,7 +306,7 @@ OPTION_RULES: Mapping[str, tuple[OptionRule, ...]] = MappingProxyType(
             ),
             # Base takes 1-200 steps, 32-64 recommended, with guidance on.
             OptionRule(
-                match = r"(^|[\s/])base(/|\s|$)",
+                match = ACE_STEP_BASE_FILE,
                 defaults = {"num_inference_steps": 32, "guidance_scale": 7.0, "shift": 1.0},
                 bounds = {"num_inference_steps": (1, 200)},
                 sources = {

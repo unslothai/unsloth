@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Optional, Sequence
 
 from core.inference.audio_cpp_option_table import (
+    ACE_STEP_BASE_FILE,
     ENUM_PRESETS,
     STUDIO_OPTION_LISTS,
     OptionRule,
@@ -2267,7 +2268,7 @@ def request_options(
 def _ace_step_variant(model: "AudioCppModel", variant: AudioCppVariant) -> dict[str, Any]:
     """Base takes the "complete" task and turbo does not (ACE-Step-1.5 acestep/constants.py
     TASK_TYPES_TURBO vs TASK_TYPES_BASE)."""
-    base = bool(re.search(r"(^|/)base(/|$)", f"{variant.key} {variant.primary}".lower()))
+    base = bool(re.search(ACE_STEP_BASE_FILE, variant.primary.lower()))
     music = model.music
     if music is not None:
         modes = []

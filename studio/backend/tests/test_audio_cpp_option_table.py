@@ -250,3 +250,32 @@ def test_each_cached_quantization_offers_its_own_files_options(catalog_hub):
     acm.forget()
     other = acm.resolve(MAGPIE, "orig", network = False)
     assert "speaker" in acm.filled_options(other, "speak", {})
+
+
+ACE_STEP = f"{acm.AUDIO_CPP_REPO}/ACE-Step1.5-GGUF"
+
+
+@pytest.mark.parametrize(
+    "name, base",
+    [
+        ("ace-step-1.5-base-q8_0.gguf", True),
+        ("acestep-v15-xl-sft-q8_0.gguf", True),
+        ("ace-step-1.5-turbo-q8_0.gguf", False),
+        ("base/model-q8_0.gguf", True),
+    ],
+)
+def test_ace_step_variant_follows_the_file_name_like_the_runtime(catalog_hub, tmp_path, name, base):
+    """audio.cpp picks base/SFT from "base" or "sft" in the GGUF name, wherever it is stored."""
+    path = tmp_path / name
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_bytes(_gguf_bytes(family = "ace_step", spec = SPECS[ACE_STEP]["spec"]))
+    model = acm.resolve(str(path), network = False)
+    options = {o["name"]: o for o in acm.workflow_options(model, "music")}
+    filled = acm.filled_options(model, "music", {})
+    if base:
+        assert options["num_inference_steps"]["max"] == 200
+        assert filled["num_inference_steps"] == 32 and filled["guidance_scale"] == 7.0
+        assert filled["shift"] == 1.0
+    else:
+        assert options["num_inference_steps"]["max"] == 8 and "guidance_scale" not in options
+        assert filled["shift"] == 3.0
