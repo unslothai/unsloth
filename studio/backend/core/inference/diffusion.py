@@ -7988,7 +7988,13 @@ class DiffusionBackend:
                     # first compiled forward pays the 25-58s compile once.
                     if (
                         effective_speed in (SPEED_DEFAULT, SPEED_MAX)
-                        and compile_eligible(target, is_gguf = gguf_transformer, family = fam)
+                        # GGUF default compiles only the dequant, which never needs the regional ROCm probe.
+                        and compile_eligible(
+                            target,
+                            is_gguf = gguf_transformer,
+                            family = fam,
+                            probe = not (gguf_transformer and effective_speed == SPEED_DEFAULT),
+                        )
                         and not fp16_unet_offloaded(
                             target, pipe, offload_active = plan.offload_policy != OFFLOAD_NONE
                         )

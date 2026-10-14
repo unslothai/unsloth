@@ -160,7 +160,15 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
             return False, f"compiled block disagrees with eager (rel max err {worst:.3g})"
         return True, f"rel max err {worst:.3g}, {time.perf_counter() - start:.1f}s"
     except Exception as exc:  # noqa: BLE001
-        return False, f"{type(exc).__name__}: {str(exc).splitlines()[0][:300] if str(exc) else ''}"
+        name = type(exc).__name__
+        try:
+            from .diffusion_batched import is_oom_error
+            # Classified before flattening: a compiler error wrapping an OOM, or a bare "HIP out of memory".
+            if is_oom_error(exc) and name != "OutOfMemoryError":
+                name = f"OutOfMemoryError ({name})"
+        except Exception:  # noqa: BLE001, S110
+            pass
+        return False, f"{name}: {str(exc).splitlines()[0][:300] if str(exc) else ''}"
 
 
 def _reset_for_tests() -> None:

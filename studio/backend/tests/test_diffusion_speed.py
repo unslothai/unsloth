@@ -2810,3 +2810,51 @@ def test_rocm_kill_switch_declines_the_planned_dequant_step(monkeypatch):
     monkeypatch.setenv(rc.ENV, "1")
     p = plan_mod.build_plan(pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True)
     assert p.step("compiled_dequant").attempt is True
+
+
+def test_gguf_default_compile_cache_gate_does_not_run_the_rocm_probe():
+    import ast
+
+    calls, parents = _diffusion_calls("compile_eligible")
+    gated = []
+    for c in calls:
+        node = c
+        while node in parents and not isinstance(node, ast.If):
+            node = parents[node]
+        if isinstance(node, ast.If) and "compile_cache.begin(" in ast.unparse(node.body[0]) and "effective_speed" in ast.unparse(node.test):
+            gated.append(c)
+    assert gated
+    for c in gated:
+        probe = [k for k in c.keywords if k.arg == "probe"]
+        assert probe and ast.unparse(probe[0].value) == "not (gguf_transformer and effective_speed == SPEED_DEFAULT)"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        RuntimeError("HIP out of memory. Tried to allocate 2.00 MiB"),
+        type("OutOfMemoryError_", (RuntimeError,), {})("boom"),
+    ],
+)
+def test_rocm_probe_wrapped_oom_stays_transient(monkeypatch, exc):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    wrapped = RuntimeError("backend='inductor' raised: compile failed")
+    wrapped.__cause__ = exc
+
+    class _Boom:
+        def __getattr__(self, name):
+            raise wrapped
+
+    monkeypatch.setattr(torch, "device", lambda *a, **k: _Boom().device)
+    rc._reset_for_tests()
+    ok, why = rc.rocm_block_compile_probe()
+    assert ok is False and "OutOfMemoryError" in why
+    assert rc.rocm_block_compile_known() is None
+    ds_mod.rocm_compile_probe_new_load()
+    assert rc.probe_result(0) is None
+    rc._reset_for_tests()
