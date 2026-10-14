@@ -25,6 +25,7 @@ import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { fitZoomToPage, zoomTab } from "./zoom";
+import { frameNotice } from "./frame-message";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
 import {
@@ -145,7 +146,7 @@ function useFrameMessages(tabId: string, origin: string | null) {
           const entry = tab ? currentEntry(tab) : null;
           const url = tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
           toast(t(`browser.error.${message.type}`), {
-            id: `browser-${message.type}-${tabId}`,
+            ...frameNotice(message.type, tabId),
             action: url ? { label: t("browser.openExternal"), onClick: () => openExternalLink(url) } : undefined,
           });
           break;
@@ -254,6 +255,12 @@ function WebPage({
   const blocked = state.status === "error" && state.resubmit === true;
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
   const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
+  useEffect(() => {
+    const id = frameNotice("needsBrowser", tab.id).id;
+    return () => {
+      toast.dismiss(id);
+    };
+  }, [tab.id]);
   const updateTab = useBrowserStore((store) => store.updateTab);
   const reload = useBrowserStore((store) => store.reload);
 

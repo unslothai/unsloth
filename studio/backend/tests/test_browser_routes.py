@@ -95,13 +95,16 @@ def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
     for guard in (
         "if (refused) return;",
         "IDBFactory.prototype.open = function (...args) {",
-        "if (event.error ? securityError(event.error) : indexedDbThrew) tellRefused();",
-        "if (securityError(event.reason)) tellRefused();",
+        "refusals.add(error);",
+        "if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused();",
+        "if (refusals.has(event.reason)) tellRefused();",
         'for (const type of ["fullscreenerror", "webkitfullscreenerror"])',
         "if (!document.fullscreenEnabled) tellRefused();",
     ):
         assert guard in boot, guard
     assert boot.index("IDBFactory.prototype.open = ") < boot.index("const shellPathname")
+    # A refused service worker or cache alone is no reason to leave the panel.
+    assert "securityError(" not in boot
 
 
 def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
