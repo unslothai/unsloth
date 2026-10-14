@@ -91,11 +91,13 @@ const SHELL_ARGUMENT_RE =
   /^(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
 const MARKDOWN_CONTAINER_PREFIX_RE =
   /^(?:(?: {0,3}>[ \t]?)|(?: {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+))+/;
+const SHELL_PROMPT_PREFIX_RE = /^\$[ \t]+/;
 const MARKDOWN_TABLE_PREFIX_RE = /^[ \t]*\|/;
 const SHELL_ASSIGNMENT_PREFIX_RE = /(?:^|[;&|]\s*)[A-Za-z_]\w*=$/;
+const SHELL_ASSIGNMENT_WORD_RE = /^[A-Za-z_]\w*=\S*$/;
 const SHELL_OPERATOR_PREFIX_RE = /\S\s*[;&|]{1,2}$/;
 const SHELL_QUOTE_BLOCK_START_RE =
-  /^(?: {0,3}(?:#{1,6}(?=[ \t])|[-+*][ \t]+|\d{1,9}[.)][ \t]+)|[ \t]*\|)/;
+  /^(?: {0,3}(?:#{1,6}(?=[ \t])|[-+*][ \t]+|\d{1,9}[.)][ \t]+)|[ \t]*\|| {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)$)/;
 
 function hasCommandArguments(words: string[], at: number): boolean {
   let commandLike = false;
@@ -108,6 +110,16 @@ function hasCommandArguments(words: string[], at: number): boolean {
     if (!commandLike) return false;
   }
   return commandLike;
+}
+
+function isShellPromptMarker(text: string, at: number): boolean {
+  const next = text.charCodeAt(at + 1);
+  if (next !== 9 && next !== 32) return false;
+  const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+  return !text
+    .slice(lineStart, at)
+    .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
+    .trim();
 }
 
 function hasShellCommandPrefix(
@@ -154,7 +166,9 @@ function hasShellCommandPrefix(
   const completeLinePrefix =
     lineStart === 0 || text.charCodeAt(lineStart - 1) === 10;
   const rawPrefix = text.slice(lineStart, at).trimEnd();
-  const prefix = rawPrefix.replace(MARKDOWN_CONTAINER_PREFIX_RE, "");
+  const prefix = rawPrefix
+    .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
+    .replace(SHELL_PROMPT_PREFIX_RE, "");
   if (!prefix) return false;
   if (
     SHELL_ASSIGNMENT_PREFIX_RE.test(prefix) ||
@@ -169,6 +183,12 @@ function hasShellCommandPrefix(
   while (
     commandIndex < words.length - 1 &&
     SHELL_LEADIN_RE.test(words[commandIndex])
+  ) {
+    commandIndex++;
+  }
+  while (
+    commandIndex < words.length - 1 &&
+    SHELL_ASSIGNMENT_WORD_RE.test(words[commandIndex])
   ) {
     commandIndex++;
   }
@@ -337,7 +357,9 @@ function startsShellExpansion(
   if (
     (char === 42 || char === 95) &&
     text.charCodeAt(numericOffset - 1) === char &&
-    startsMarkdownEmphasis(text, numericOffset - 1, char)
+    startsMarkdownEmphasis(text, numericOffset - 1, char) &&
+    quoteState <= 0 &&
+    !hasShellCommandPrefix(text, numericOffset - 1)
   ) {
     return false;
   }
@@ -1125,6 +1147,9 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     if (math) {
       return "$";
     }
+    if (isShellPromptMarker(text, offset)) {
+      return "\\$";
+    }
     const digit = text.charCodeAt(offset + 1) - 48;
     CURRENCY_REGEX.lastIndex = offset + 1;
     const currency = digit >= 0 && digit <= 9 && CURRENCY_REGEX.test(text);
@@ -1217,7 +1242,20 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     if (prev === "\\" || prev === "$" || text[offset + 1] === "$") continue;
     const out = rewrite(offset);
     if (out !== "$") {
-      parts.push(text.slice(last, offset), out);
+      const marker = text.charCodeAt(offset - 1);
+      if (
+        out === "\\$" &&
+        (marker === 42 || marker === 95) &&
+        hasShellCommandPrefix(text, offset - 1)
+      ) {
+        parts.push(
+          text.slice(last, offset - 1),
+          encodeMarkdownLiteral(text[offset - 1]),
+          out,
+        );
+      } else {
+        parts.push(text.slice(last, offset), out);
+      }
       last = offset + 1;
     }
   }

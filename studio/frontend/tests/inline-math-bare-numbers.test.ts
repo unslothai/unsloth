@@ -148,6 +148,10 @@ test("a shell parameter right after a positional one stays text", () => {
     ["echo prefix$1$(date) now.", "$1$(date)"],
     ['sudo -u root echo "$1$?" now.', "$1$?"],
     ['env MODE=fast echo "$1$?" now.', "$1$?"],
+    ['MODE=fast echo "$1$?" now.', "$1$?"],
+    ['$ echo "$1$?" now.', "$1$?"],
+    ["echo *$1$* now.", "*$1$*"],
+    ["echo _$1$_ now.", "_$1$_"],
     ['Run echo "$1$-" to print both.', "$1$-"],
     ['Run echo "$1$!" to print both.', "$1$!"],
     ['Run echo "$1$0" to print both.', "$1$0"],
@@ -260,6 +264,10 @@ test("shell quote state resets at Markdown block boundaries", () => {
     'Run echo "oops\n# The answer is $42$!',
     'Run echo "oops\n> The answer is $42$!',
     'Run echo "oops\n| value |\n| $42$! |',
+    'Run echo "oops\n***\nThe answer is $42$!',
+    'Run echo "oops\n---\nThe answer is $42$!',
+    'Run echo "oops\n_ _ _\nThe answer is $42$!',
+    'Run echo "oops\n===\nThe answer is $42$!',
   ]) {
     const html = render(source);
     assert.deepEqual(renderedMath(html), ["42"], source);
