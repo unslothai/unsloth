@@ -210,19 +210,16 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
             return False
     except Exception:  # noqa: BLE001
         return False
-    # ggml reads this one itself, so a list of ordinals pins the card; anything else selects
-    # nothing or throws.
+    # ggml reads this one itself; anything but a list of ordinals selects nothing or throws. Its
+    # ordinals index the raw Vulkan list, so it never vouches for which card a mixed host gets.
     vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
-    vk_ids: list[int] = []
-    if vk_mask is not None:
-        if not re.fullmatch(r"\s*\d+\s*(,\s*\d+\s*)*", vk_mask):
-            return False
-        vk_ids = [int(part) for part in vk_mask.split(",")]
+    if vk_mask is not None and not re.fullmatch(r"\s*\d+\s*(,\s*\d+\s*)*", vk_mask):
+        return False
     inventory = _physical_inventory()
     if inventory.get("unknown") or "nvidia" in (inventory.get("unanswered") or ()):
         return False
     devices = [d for d in inventory.get("devices") or () if isinstance(d, dict)]
-    if any(d.get("vendor") == "nvidia" for d in devices):
+    if any(d.get("vendor") == "nvidia" for d in devices) or _linux_nvidia_pci_present():
         return False
 
     def _renders(device: dict) -> bool:
@@ -237,20 +234,49 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return "arc" in str(device.get("name") or "").lower().replace("(tm)", " ").split()
 
     gpus = [d for d in devices if d.get("vendor") in ("amd", "intel")]
-    if not gpus or any(index >= len(gpus) for index in vk_ids):
-        return False
     # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
-    if not (all(_renders(d) for d in gpus) or vk_ids):
+    if not gpus or not all(_renders(d) for d in gpus):
         return False
     if sys.platform != "win32" and not _linux_render_node_accessible():
         return False
+    return _hardware_vulkan_driver() and _vulkan_loader_loads()
+
+
+# Software rasterisers: a Vulkan device, but slower than the CPU sd.cpp build.
+_SOFTWARE_ICD_NEEDLES = ("lvp_icd", "lavapipe", "llvmpipe", "swiftshader")
+
+
+def _hardware_vulkan_driver() -> bool:
+    """Whether the loader would load a hardware driver, not only a software one. Windows registers
+    drivers in ways the manifest walk may not read, so an empty walk there is no evidence."""
     try:
-        from utils.hardware.amd import the_vulkan_loader_has_no_usable_driver
-        if the_vulkan_loader_has_no_usable_driver():
-            return False
+        from utils.hardware.amd import _loadable_icd_manifests, _vulkan_icd_manifest_paths
+        if not _vulkan_icd_manifest_paths():
+            return sys.platform == "win32"
+        return any(
+            not any(
+                needle in os.path.basename(str(path)).lower() for needle in _SOFTWARE_ICD_NEEDLES
+            )
+            for path in _loadable_icd_manifests()
+        )
     except Exception:  # noqa: BLE001
-        pass
-    return _vulkan_loader_loads()
+        return False
+
+
+def _linux_nvidia_pci_present() -> bool:
+    """An NVIDIA card nvidia-smi cannot see (Nouveau, no proprietary driver) is still a Vulkan device."""
+    if sys.platform == "win32":
+        return False
+    import glob
+
+    for vendor_file in glob.glob("/sys/class/drm/card*/device/vendor"):
+        try:
+            with open(vendor_file, encoding = "utf-8") as f:
+                if f.read().strip().lower() == "0x10de":
+                    return True
+        except OSError:
+            continue
+    return False
 
 
 def image_install_accelerator(backend: str) -> str:

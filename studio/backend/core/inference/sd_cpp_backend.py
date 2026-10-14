@@ -3177,15 +3177,27 @@ class SdCppDiffusionBackend:
                 device = "cpu"
             torch_device = device
 
-            def _placement(run_accelerator: Optional[str]) -> tuple[str, tuple[str, ...]]:
+            def _running() -> tuple[Optional[str], Optional[str]]:
+                if mode == "server":
+                    return server_accelerator, server_binary
+                return engine_accelerator, getattr(engine, "binary", None)
+
+            def _placement(
+                run_accelerator: Optional[str], binary: Optional[str]
+            ) -> tuple[str, tuple[str, ...]]:
+                # Read off the build this load runs, never the requested one. SD_SERVER_PATH /
+                # SD_CLI_PATH builds carry no install record, so those take the resolution.
+                if run_accelerator is None and binary:
+                    run_accelerator = self._resolved_accelerator(self._loading_card)
+                klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
                 # A CPU torch running the Vulkan build renders on a card torch never measured, so
-                # auto offloads. Read off the build this load runs, never the requested one.
-                vulkan = (
-                    torch_device == "cpu"
-                    and off_torch is None
-                    and _accelerator_class_of(run_accelerator) == "vulkan"
-                )
+                # auto offloads.
+                vulkan = torch_device == "cpu" and off_torch is None and klass == "vulkan"
                 placed = "vulkan" if vulkan else torch_device
+                # The fallback ladder can leave a CUDA / XPU torch running the CPU build. Not
+                # MPS: the macOS bundle is recorded as cpu and still renders on Metal.
+                if klass == "cpu" and off_torch is None and torch_device in ("cuda", "xpu"):
+                    placed = "cpu"
                 # Honor speed everywhere; offload only off-CPU (on CPU weights are resident, so the flags are no-ops)
                 if placed == "cpu":
                     return placed, ()
@@ -3193,9 +3205,7 @@ class SdCppDiffusionBackend:
                     offload_flags(_memory_policy(memory_mode, cpu_offload or vulkan))
                 )
 
-            device, offload = _placement(
-                server_accelerator if mode == "server" else engine_accelerator
-            )
+            device, offload = _placement(*_running())
             spawn_env = off_torch.child_env() if off_torch is not None else None
             # The device pin is NOT folded in here: the binary can still change below, through the deferred
             # accelerator install, the post-download re-resolve, or a server start that falls back to one-shot, and
@@ -3238,9 +3248,7 @@ class SdCppDiffusionBackend:
                     server_accelerator = _installed_accelerator_of(server_binary)
                     engine_accelerator = _installed_accelerator_of(getattr(engine, "binary", None))
                     # The upgrade may have landed or kept the old build; place for whichever runs.
-                    device, offload = _placement(
-                        server_accelerator if mode == "server" else engine_accelerator
-                    )
+                    device, offload = _placement(*_running())
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about
                 # this graph.
                 self._cpu_backend_forced = False
@@ -3279,6 +3287,7 @@ class SdCppDiffusionBackend:
                             engine_accelerator = _installed_accelerator_of(
                                 getattr(engine, "binary", None)
                             )
+                            device, offload = _placement(*_running())
                         elif _installed_accelerator_of(server_binary) != server_accelerator:
                             raise RuntimeError(
                                 "The stable-diffusion.cpp server binary was replaced by an install "
@@ -3368,6 +3377,7 @@ class SdCppDiffusionBackend:
                             getattr(fallback, "binary", None)
                         )
                         mode = "oneshot"
+                        device, offload = _placement(*_running())
                     finally:
                         if not started_ok:
                             with self._lock:

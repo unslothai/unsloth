@@ -67,6 +67,8 @@ def _pinned_host(monkeypatch):
     import utils.hardware.amd as amd
 
     monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda: True)
+    monkeypatch.setattr(r, "_linux_nvidia_pci_present", lambda: False)
 
 
 @pytest.mark.parametrize(
@@ -125,11 +127,10 @@ def test_an_unset_equivalent_ze_mask_is_not_a_mask(monkeypatch, value):
     assert r.image_install_accelerator("cpu") == "vulkan"
 
 
-@pytest.mark.parametrize("value", ["abc", "-1", "0,x", "2"])
-def test_a_ggml_vulkan_mask_naming_no_card_keeps_cpu(monkeypatch, value):
-    # Malformed selects nothing or throws; "2" is past the two GPUs listed.
+@pytest.mark.parametrize("value", ["abc", "-1", "0,x", ""])
+def test_a_malformed_ggml_vulkan_mask_keeps_cpu(monkeypatch, value):
+    # Selects nothing or throws.
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", value)
-    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _VEGA))
     assert r.image_install_accelerator("cpu") == "auto"
 
 
@@ -151,11 +152,39 @@ def test_an_incompatible_vulkan_driver_is_decisive():
     assert not sd_cpp_backend.output_shows_accelerator_failure("VK_ERROR_OUT_OF_DEVICE_MEMORY")
 
 
-def test_a_ggml_vulkan_mask_pins_the_card(monkeypatch):
-    # ggml reads it, so it also settles which device a mixed UHD + Radeon host uses.
+def test_a_ggml_vulkan_mask_is_honoured_but_never_vouches_for_a_mixed_host(monkeypatch):
+    # Its ordinals index the raw Vulkan list, so they cannot say which card a UHD + Radeon host gets.
     monkeypatch.setenv("GGML_VK_VISIBLE_DEVICES", "1")
-    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _VEGA))
     assert r.image_install_accelerator("cpu") == "vulkan"
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _VEGA))
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+def test_an_nvidia_card_nvidia_smi_cannot_see_keeps_cpu(monkeypatch):
+    monkeypatch.setattr(r, "_linux_nvidia_pci_present", lambda: True)
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+@pytest.mark.parametrize(
+    "manifests,expected",
+    [
+        (["/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"], True),
+        (["/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"], False),
+        (
+            ["/usr/share/vulkan/icd.d/lvp_icd.x86_64.json", "/etc/vulkan/icd.d/intel_icd.json"],
+            True,
+        ),
+        ([], False),
+    ],
+)
+def test_only_a_hardware_vulkan_driver_counts(monkeypatch, manifests, expected):
+    import utils.hardware.amd as amd
+
+    monkeypatch.undo()
+    _platform(monkeypatch, "linux", "x86_64")
+    monkeypatch.setattr(amd, "_vulkan_icd_manifest_paths", lambda: list(manifests))
+    monkeypatch.setattr(amd, "_loadable_icd_manifests", lambda paths = None: list(manifests))
+    assert r._hardware_vulkan_driver() is expected
 
 
 def test_an_unmounted_render_node_keeps_cpu(monkeypatch):
@@ -176,9 +205,9 @@ def test_hosts_without_a_vulkan_bundle_keep_cpu(monkeypatch, system, machine):
 def test_no_vulkan_driver_or_loader_keeps_cpu(monkeypatch):
     import utils.hardware.amd as amd
 
-    monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: True)
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda: False)
     assert r.image_install_accelerator("cpu") == "auto"
-    monkeypatch.setattr(amd, "the_vulkan_loader_has_no_usable_driver", lambda: False)
+    monkeypatch.setattr(r, "_hardware_vulkan_driver", lambda: True)
     monkeypatch.setattr(r, "_vulkan_loader_loads", lambda: False)
     assert r.image_install_accelerator("cpu") == "auto"
 

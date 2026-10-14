@@ -1612,6 +1612,29 @@ def test_cpu_torch_placement_follows_a_deferred_vulkan_install(monkeypatch, land
     assert ("--offload-to-cpu" in b._state.offload_flags) is lands
 
 
+def test_an_unowned_vulkan_build_on_cpu_torch_still_places_on_vulkan(monkeypatch):
+    # SD_SERVER_PATH builds carry no install record; the resolution names the build instead.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: None)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_resolved_accelerator", staticmethod(lambda card = None: "vulkan")
+    )
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = "cpu")
+    assert b._state.device == "vulkan"
+
+
+@pytest.mark.parametrize("device,expected", [("cuda", "cpu"), ("xpu", "cpu"), ("mps", "mps")])
+def test_the_cpu_build_on_a_gpu_torch_places_on_cpu(monkeypatch, device, expected):
+    # The ladder can leave a CUDA / XPU torch on the CPU build; the macOS bundle is recorded cpu
+    # but renders on Metal.
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: "cpu")
+    b = SdCppDiffusionBackend()
+    _run_server_load(monkeypatch, b, [], device = device)
+    assert b._state.device == expected
+    if expected == "cpu":
+        assert b._state.offload_flags == ()
+
+
 def test_server_load_spawns_once_and_status_reports_mode(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
