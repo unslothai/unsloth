@@ -906,6 +906,14 @@ def _stitch_mtp_head(model, save_directory):
     return report
 
 
+def _save_pretrained_unstitched(model):
+    """`model.save_pretrained` without the head-saving wrapper, for savers that stitch the head themselves."""
+    save = model.save_pretrained
+    if getattr(save, "_unsloth_saves_mtp_head", False):
+        return save.__wrapped__
+    return save
+
+
 def _save_mtp_head_beside_adapter(model, save_directory):
     """LoRA saves keep the trained head as `mtp_head.safetensors` so a later merge can stitch it."""
     head = _attached_mtp_head(model)
@@ -1321,7 +1329,7 @@ def unsloth_save_model(
         if save_method == "lora":
             save_pretrained_settings["selected_adapters"] = None
 
-        model.save_pretrained(**save_pretrained_settings)
+        _save_pretrained_unstitched(model)(**save_pretrained_settings)
         if save_method == "lora":
             _save_mtp_head_beside_adapter(model, save_pretrained_settings["save_directory"])
         else:
@@ -1625,7 +1633,7 @@ def unsloth_save_model(
                 ignore_patterns = "*.md",
             )
         else:
-            internal_model.save_pretrained(**save_pretrained_settings)
+            _save_pretrained_unstitched(internal_model)(**save_pretrained_settings)
     finally:
         original_model = model
         while hasattr(original_model, "model"):
@@ -4289,7 +4297,7 @@ def unsloth_save_pretrained_gguf(
             os.makedirs(save_directory, exist_ok = True)
             # `gguf_directory` can point anywhere, and freeing bytes on one filesystem does nothing for a quantize pass writing to another: without this the merge could be deleted for a destination it cannot help, data gone and the export still out of space.
             try:
-                self.save_pretrained(save_directory, state_dict = state_dict)
+                _save_pretrained_unstitched(self)(save_directory, state_dict = state_dict)
                 _stitch_mtp_head(self, save_directory)
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
@@ -5853,7 +5861,7 @@ def unsloth_generic_save(
         _written_tensor_names = list(state_dict.keys()) if state_dict is not None else None
 
         print(f"Unsloth: Saving full fine-tuned model to '{save_directory}' ...")
-        model.save_pretrained(save_directory, **_save_kwargs)
+        _save_pretrained_unstitched(model)(save_directory, **_save_kwargs)
         if (
             _stitch_mtp_head(model, save_directory) is not None
             and _written_tensor_names is not None

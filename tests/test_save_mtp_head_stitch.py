@@ -189,6 +189,28 @@ def test_plain_save_pretrained_keeps_the_head(save_module, tmp_path):
     assert set(loaded) == {"fc.weight", "norm.weight"}
 
 
+def test_internal_savers_stitch_once(save_module, tmp_path, monkeypatch):
+    """Savers that stitch after writing bypass the wrapper, so one save writes the head once."""
+    import torch
+    from unsloth.models.speculative import _wrap_save_pretrained
+
+    stitched = []
+    monkeypatch.setattr(save_module, "_stitch_mtp_head", lambda m, d: stitched.append(d))
+
+    class Plain(torch.nn.Module):
+        def save_pretrained(self, save_directory, **kwargs):
+            (Path(save_directory) / "config.json").write_text("{}")
+
+    model = Plain()
+    object.__setattr__(model, "_unsloth_mtp_head", _head(torch))
+    assert save_module._save_pretrained_unstitched(model) == model.save_pretrained
+    _wrap_save_pretrained(model)
+    save_module._save_pretrained_unstitched(model)(str(tmp_path))
+    assert stitched == []
+    model.save_pretrained(str(tmp_path))
+    assert stitched == [str(tmp_path)]
+
+
 def test_reattach_is_a_no_op_without_a_saved_head(tmp_path):
     loader_tree = ast.parse((SAVE_PY.parent / "models" / "loader.py").read_text(encoding = "utf-8"))
     calls = [
