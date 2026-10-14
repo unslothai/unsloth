@@ -791,7 +791,6 @@ export function SharedComposer({
     setText: setCurrentText,
     inputRef: textareaRef,
     composingRef,
-    // Skills off sends no read_skill, so a mention would load nothing.
     enabled: supportsTools && skillsSwitchOn,
   });
   mentionOpenRef.current = skillMentions.inputProps["aria-expanded"];

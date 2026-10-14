@@ -127,8 +127,7 @@ export function listSkills(force = false): Promise<readonly SkillRecord[]> {
   return request;
 }
 
-// An unset switch follows the ticks, so pin it to what it shows before a change can untick the
-// last skill: otherwise that change would turn Skills off and hide the pill.
+// Pin an unset switch first, or unticking the last skill would read as Skills off.
 function pinSkillsSwitch(): void {
   const { on, setOn } = useSkillsSwitchStore.getState();
   if (on !== null) {
@@ -168,7 +167,6 @@ export async function setSkillEnabled(
   });
   channel?.postMessage("changed");
   void refreshContextUsage({ invalidate: true });
-  // Ticking a skill means using it, so it switches Skills back on.
   if (updated.enabled) {
     useSkillsSwitchStore.getState().setOn(true);
   }
@@ -194,7 +192,7 @@ export async function setAllSkillsEnabled(
   publish({ skills, loading: false, initialized: true, error: null });
   channel?.postMessage("changed");
   void refreshContextUsage({ invalidate: true });
-  // Reset to defaults (null) returns the switch to unset too, so it follows the restored ticks.
+  // Reset to defaults (null) unsets it again.
   if (enabled !== false) {
     useSkillsSwitchStore.getState().setOn(enabled);
   }

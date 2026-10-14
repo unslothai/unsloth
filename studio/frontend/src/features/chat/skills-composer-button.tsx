@@ -26,7 +26,6 @@ import {
 import { ChatSkillsDialog } from "./components/chat-skills-dialog";
 import { skillsSwitchedOn, useSkillsSwitchStore } from "./stores/skills-switch-store";
 
-/** Whether Skills is on in the composer, and its setter for the + menu. */
 export function useSkillsSwitch(): [boolean, (on: boolean) => void] {
   const { skills } = useSkillsCatalog();
   const on = useSkillsSwitchStore((s) => s.on);

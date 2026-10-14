@@ -52,7 +52,6 @@ import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
 
-// Skills switched off in the composer offer no skill tools, whatever is ticked.
 const skillsForTools = () =>
   useSkillsSwitchStore.getState().on === false ? [] : getSkillsSnapshot().skills;
 
