@@ -212,10 +212,13 @@ class ClusterPlan:
     extra_bytes: float = 0.0
     # Where the projector / drafter was charged; kept even when it gets no layers.
     sidecar_device: Optional[Device] = None
+    # A KV reserve sized without the model's header: never counted as freed by a replacement.
+    guessed_kv_bytes: float = 0.0
 
     def resident(self) -> Dict[Tuple[str, str], float]:
         """What this plan puts on each device, so a replacement load can count it as freed."""
-        out = {d.key: w * float(self.need_bytes or 0) for d, w in zip(self.devices, self.weights)}
+        held = max(0.0, float(self.need_bytes or 0) - self.guessed_kv_bytes)
+        out = {d.key: w * held for d, w in zip(self.devices, self.weights)}
         local = self.sidecar_device or next((d for d in self.devices if not d.remote), None)
         if local is not None:
             out[local.key] = out.get(local.key, 0.0) + self.extra_bytes
@@ -567,6 +570,7 @@ class ClusterServing:
         self._resident: Dict[Tuple[str, str], float] = {}
         # Workers the current load's probe found unusable; a commit without them stops them.
         self._down: set = set()
+        self._kv_guessed: bool = False
 
     def _cancelled(self) -> bool:
         event = self._cancel_event
@@ -770,6 +774,8 @@ class ClusterServing:
             layer_bytes = layer_bytes,
             margin_bytes = margin,
         )
+        if self._kv_guessed:
+            plan.guessed_kv_bytes = float(kv_bytes or 0)
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -864,8 +870,9 @@ class ClusterServing:
             )
             sidecars += int(ss.gguf_size_bytes(projector) or 0) if projector else 0
             self._has_projector = bool(projector)
-            if not local_file and not getattr(request, "disable_vision", False):
-                # A first load of a Hub repo fetches its projector during the load.
+            if not local_file:
+                # A first load of a Hub repo fetches its projector during the load; with vision off
+                # it may still be audio-only, which the backend keeps.
                 remote = await asyncio.to_thread(
                     _remote_projector_bytes, model_path, getattr(request, "hf_token", None)
                 )
@@ -902,6 +909,7 @@ class ClusterServing:
             kv = await asyncio.to_thread(
                 ss.estimate_kv_bytes, local_file, ctx, cache_type, cache_type_v
             )
+        self._kv_guessed = kv is None
         if kv is None:
             kv = KV_UNKNOWN_FRACTION * float(size) if ctx and size else 0.0
         kv = float(kv)

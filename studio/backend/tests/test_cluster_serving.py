@@ -1421,3 +1421,29 @@ def test_a_rejected_replacement_unloads_a_model_whose_cluster_workers_went(monke
     assert not cs.state().workers
     run(ss.load_failed())  # the route rejected the replacement after the plan
     assert unloaded == [1], "its remote layers are gone, so it cannot answer"
+
+
+def test_a_first_hub_load_with_vision_off_still_reserves_its_projector(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
+    monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
+    request = _request(model_path = "org/audio-GGUF", max_seq_length = 0, disable_vision = True)
+    out = run(ss.before_load(request, 4))
+    assert ss.status()["topology"] == "layer_split"  # an audio-only projector survives the switch
+    assert "--mmproj-device" in out.llama_extra_args
+
+
+def test_a_guessed_kv_reserve_is_not_counted_as_freed(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
+    out = run(ss.before_load(_request(model_path = "org/big-GGUF", max_seq_length = 8192), 4))
+    assert ss.status()["topology"] == "layer_split"  # 90 GiB + a guessed 18 GiB of KV
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    assert sum(cs.state()._resident.values()) == pytest.approx(90 * GIB)
