@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readAudioWorkspaceSource } from "./helpers/audio-workspace.ts";
 
-const source = readSrc("features/audio/audio-page.tsx");
+const source = readAudioWorkspaceSource();
 
 test("uncached remote TTS GGUFs stage the picked quant through the shared manager", () => {
   assert.match(source, /useStagedDownload\(\{\s*scopeId: "audio"/);
@@ -27,7 +27,7 @@ test("uncached remote TTS GGUFs stage the picked quant through the shared manage
 
 test("remote code approval precedes native model staging and survives completion", () => {
   const start = source.indexOf("const loadOrStageTtsModel");
-  const end = source.indexOf("const ensureSttLoaded", start);
+  const end = source.indexOf("// A hidden page may let the shared download continue", start);
   const stagedFlow = source.slice(start, end);
   assert.ok(start >= 0 && end > start);
   assert.ok(
@@ -142,5 +142,12 @@ test("Mac sibling inspection reserves the lifecycle slot before awaiting invento
   assert.match(
     source,
     /ttsInspectionGeneration\.current = selectionGeneration;[\s\S]*busyRef\.current = "loading";[\s\S]*setBusy\("loading"\);[\s\S]*await listGgufVariants/,
+  );
+});
+
+test("a cancelled, failed or session-reset staged TTS download clears the pending load", () => {
+  assert.match(
+    source,
+    /useStagedDownload\(\{\s*scopeId: "audio",[\s\S]*?onCancelled: invalidatePendingStagedTts,\s*onReset: invalidatePendingStagedTts,\s*\}\);/,
   );
 });

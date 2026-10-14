@@ -236,8 +236,9 @@ def convert_chatml_to_alpaca(
         instructions = []
         outputs = []
         inputs = []
+        column_systems = examples.get("system") or [None] * len(chatml_data)
 
-        for convo in chatml_data:
+        for convo, column_system in zip(chatml_data, column_systems):
             turns = []
             for msg in convo or []:
                 role = roles.get(msg.get("role") or msg.get("from"))
@@ -248,6 +249,13 @@ def convert_chatml_to_alpaca(
                     turns[-1][1] = f"{turns[-1][1]}\n\n{content}"
                 else:
                     turns.append([role, content])
+            # A separate system column fills in only when the conversation has no leading system turn.
+            if (
+                isinstance(column_system, str)
+                and column_system.strip()
+                and not (turns and turns[0][0] == "system")
+            ):
+                turns.insert(0, ["system", column_system])
 
             system = ""
             context = []
@@ -441,6 +449,8 @@ def convert_to_vlm_format(
                 image_data = Image.open(local_path).convert("RGB")
             else:
                 image_data = Image.open(image_data).convert("RGB")
+        elif image_data is None:
+            raise ValueError("Row has no image")
 
         text_data = sample[text_column]
         if isinstance(text_data, list) and len(text_data) > 0:
@@ -449,6 +459,8 @@ def convert_to_vlm_format(
 
         if uses_dynamic and instruction_column:
             current_instruction = sample[instruction_column]
+            if not isinstance(current_instruction, str) or not current_instruction.strip():
+                current_instruction = "Describe this image in detail."
         else:
             current_instruction = instruction
 
@@ -466,10 +478,18 @@ def convert_to_vlm_format(
         return {"messages": messages}
 
     total = len(dataset)
-    first_image = next(iter(dataset))[image_column]
+    first_image = next(
+        (row[image_column] for row in dataset if row[image_column] is not None), None
+    )
     has_urls = isinstance(first_image, str) and first_image.startswith(("http://", "https://"))
 
-    # Bare-filename detection: build a basename to repo_path lookup so filename-only images resolve via hf_hub_download during conversion.
+    if has_urls:
+        with_image = [i for i, url in enumerate(dataset[image_column]) if url is not None]
+        if len(with_image) < total:
+            logger.info(f"Skipping {total - len(with_image)}/{total} rows without an image")
+            dataset = dataset.select(with_image)
+            total = len(with_image)
+
     _image_lookup = None
     _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff")
     if (

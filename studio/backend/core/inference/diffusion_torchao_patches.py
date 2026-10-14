@@ -248,10 +248,11 @@ def install_torchao_int_mm_patch():
 # inside ``dispatch_torchao`` for every LoRA target, torchao 0.18 deleted it, and Studio installs torchao
 # 0.18 on torch >= 2.12, so every diffusion LoRA load raised. Both copies mark their wrapper
 # ``__unsloth_patched__``, so whichever runs second leaves the first in place.
-# Matches both spellings a torchao removal produces: the class name, and the module that used to
-# define it. Only these two, so a torchao that is BROKEN rather than newer still raises.
+# The spellings a torchao removal produces (class, its old module, the whole ``torchao.dtypes`` package on main).
+# Only these, so a BROKEN torchao still raises.
 _PEFT_TORCHAO_MISSING_TENSOR_SUBCLASS = re.compile(
-    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor",
+    r"linear_?activation_?quantized_?tensor|affine_?quantized_?tensor"
+    r"|no module named '?torchao\.dtypes'?(?![.\w])",
     re.IGNORECASE | re.DOTALL,
 )
 

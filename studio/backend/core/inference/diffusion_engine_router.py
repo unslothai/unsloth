@@ -17,12 +17,22 @@ Env knobs:
   UNSLOTH_DIFFUSION_SD_CPP_MPS=0|1                  allow native on Apple MPS (default off)
   UNSLOTH_DIFFUSION_SD_CPP_INSTALL=auto|0|1         allow lazy binary install (in sd_cpp_backend)
   UNSLOTH_DIFFUSION_SD_CPP_DEVICE=nvidia[:N]        run native on a card torch cannot see
+  UNSLOTH_DIFFUSION_MLX=0|1|auto                    opt in to the Apple Silicon MLX engine (default 0; auto
+                                                    behaves like 0 until a real-Mac A/B against diffusers MPS
+                                                    and sd.cpp Metal settles the default)
+
+The MLX engine (``mlx_diffusion_backend``) is considered only when UNSLOTH_DIFFUSION_MLX=1, on macOS 14+ on
+Apple Silicon, for a GGUF of a family that declares ``mlx_model_config`` in a quant the converter handles
+(Q4_0 / Q4_1 / Q8_0 / BF16 / F16), with ``mlx`` and ``mflux`` installed. Every refusal is recorded
+(``mlx_fallback_reason`` in the status) and falls through to the choice this module makes without it.
 """
 
 from __future__ import annotations
 
 import functools
+import importlib.util
 import os
+import platform
 import sys
 import threading
 from dataclasses import dataclass
@@ -31,6 +41,7 @@ from typing import Any, Callable, Optional
 from core.inference.diffusion_device import resolve_diffusion_device_target
 from core.inference.diffusion_families import (
     DiffusionFamily,
+    family_mlx_supported,
     family_pipeline_available,
     family_sd_cpp_supported,
     pipeline_available_family_names,
@@ -39,6 +50,7 @@ from core.inference.sd_cpp_backend import (
     _card_lookup_inventory,
     _install_allowed,
     _managed_tree_in_use,
+    _pin_moved,
     _server_binary_runnable,
     ensure_sd_cpp_binary,
     ensure_sd_server_binary,
@@ -50,6 +62,7 @@ from core.inference.sd_cpp_backend import (
 )
 from core.inference.sd_cpp_engine import (
     ENGINE_DIFFUSERS,
+    ENGINE_MLX,
     ENGINE_SD_CPP,
     SdCppEngine,
     select_diffusion_engine,
@@ -162,6 +175,110 @@ _lock = threading.Lock()
 _transition_lock = threading.Lock()
 _active_engine_name: str = ENGINE_DIFFUSERS
 _fallback_reason: Optional[str] = None
+_mlx_fallback_reason: Optional[str] = None
+
+_MLX_MIN_MACOS = (14, 0)
+
+
+def _mlx_requested() -> bool:
+    """``auto`` means off for now."""
+    return os.environ.get("UNSLOTH_DIFFUSION_MLX", "0").strip().lower() in _ENABLE_TOKENS
+
+
+def _mlx_host_refusal() -> Optional[str]:
+    if sys.platform != "darwin":
+        return "the MLX engine runs on macOS only"
+    if platform.machine().lower() not in ("arm64", "aarch64"):
+        return "the MLX engine needs Apple Silicon"
+    release = platform.mac_ver()[0]
+    try:
+        version = tuple(int(part) for part in release.split(".")[:2])
+    except ValueError:
+        version = ()
+    if not version or version < _MLX_MIN_MACOS:
+        return f"the MLX engine needs macOS 14 or newer (found {release or 'unknown'})"
+    return None
+
+
+# mflux's own darwin mlx range plus the light deps install_python_stack.py installs beside it (mflux goes in --no-deps).
+_MLX_RUNTIME_REQUIREMENTS: tuple[str, ...] = (
+    "mlx>=0.32.0,<0.33.0",
+    "piexif>=1.1.3,<2",
+    "platformdirs>=4,<5",
+    "toml>=0.10.2,<1",
+)
+
+
+def _installed_version(name: str) -> Optional[str]:
+    try:
+        from importlib.metadata import PackageNotFoundError, version
+        return version(name)
+    except (PackageNotFoundError, ValueError):
+        return None
+
+
+def _mlx_runtime_refusal() -> Optional[str]:
+    """find_spec and distribution metadata only: never import mlx / mflux here."""
+    missing = [name for name in ("mlx", "mflux") if importlib.util.find_spec(name) is None]
+    if missing:
+        return f"{' and '.join(missing)} not installed"
+    from core.inference.mlx_diffusion_convert import MFLUX_VERSION
+
+    try:
+        from packaging.requirements import Requirement
+        for spec in (f"mflux=={MFLUX_VERSION}", *_MLX_RUNTIME_REQUIREMENTS):
+            requirement = Requirement(spec)
+            installed = _installed_version(requirement.name)
+            if installed is None or not requirement.specifier.contains(installed, prereleases = True):
+                return f"the MLX engine needs {spec} (found {installed or 'none'})"
+    except Exception as exc:  # noqa: BLE001 -- no packaging, or a version it cannot parse
+        return f"could not verify the MLX runtime versions ({exc})"
+    return None
+
+
+def mlx_selection(
+    fam: Optional[DiffusionFamily],
+    *,
+    model_kind: Optional[str],
+    gguf_filename: Optional[str],
+    backend: Optional[str] = None,
+) -> tuple[bool, Optional[str]]:
+    """``(use_mlx, refusal)``. Shared by selection and ``predict_engine`` so the download plan and the load
+    cannot disagree about MLX."""
+    if not _mlx_requested():
+        return False, None
+    forced = os.environ.get("UNSLOTH_DIFFUSION_ENGINE", "auto").strip().lower()
+    if forced in (ENGINE_DIFFUSERS, ENGINE_SD_CPP):
+        return False, f"UNSLOTH_DIFFUSION_ENGINE={forced} overrides UNSLOTH_DIFFUSION_MLX"
+    if model_kind and model_kind != "gguf":
+        return False, f"the MLX engine loads GGUF picks only (got {model_kind})"
+    if fam is None or not family_mlx_supported(fam):
+        name = getattr(fam, "name", None) or "unknown"
+        return False, f"family '{name}' has no MLX implementation"
+    from core.inference.mlx_diffusion_convert import quant_convertible
+
+    convertible, why = quant_convertible(gguf_filename)
+    if not convertible:
+        return False, why or "GGUF quant not convertible to MLX"
+    host = _mlx_host_refusal()
+    if host:
+        return False, host
+    if backend is None:
+        backend = resolve_diffusion_device_target().backend
+    if backend not in ("mps", "cpu"):
+        return False, f"device backend '{backend}' is not Apple MPS"
+    runtime = _mlx_runtime_refusal()
+    if runtime:
+        return False, runtime
+    return True, None
+
+
+def _note_mlx_refusal(reason: Optional[str]) -> None:
+    global _mlx_fallback_reason
+    with _lock:
+        _mlx_fallback_reason = reason
+    if reason:
+        logger.warning("UNSLOTH_DIFFUSION_MLX=1 but the MLX engine is not used: %s", reason)
 
 
 def _engine_config() -> tuple[str, str, bool]:
@@ -177,6 +294,9 @@ def engine_for(name: str) -> Any:
     if name == ENGINE_SD_CPP:
         from core.inference.sd_cpp_backend import get_sd_cpp_backend
         return get_sd_cpp_backend()
+    if name == ENGINE_MLX:
+        from core.inference.mlx_diffusion_backend import get_mlx_diffusion_backend
+        return get_mlx_diffusion_backend()
     from core.inference.diffusion import get_diffusion_backend
 
     return get_diffusion_backend()
@@ -187,16 +307,21 @@ def get_active_diffusion_engine() -> Any:
     return engine_for(_active_engine_name)
 
 
+# (module, singleton attribute) of every image engine, read from sys.modules only.
+_ENGINE_SINGLETONS = (
+    ("core.inference.diffusion", "_diffusion_backend"),
+    ("core.inference.sd_cpp_backend", "_sd_cpp_backend"),
+    ("core.inference.mlx_diffusion_backend", "_mlx_diffusion_backend"),
+)
+
+
 def cancel_generation_for_account(account_id: str) -> bool:
     """Stop an in-flight image generation owned by ``account_id``; True when one was signalled.
 
-    Engines come from ``sys.modules`` (no import, no construction); both are checked because a
+    Engines come from ``sys.modules`` (no import, no construction); all are checked because a
     deselected engine can still be draining."""
     cancelled = False
-    for module_name, attribute in (
-        ("core.inference.diffusion", "_diffusion_backend"),
-        ("core.inference.sd_cpp_backend", "_sd_cpp_backend"),
-    ):
+    for module_name, attribute in _ENGINE_SINGLETONS:
         module = sys.modules.get(module_name)
         engine = getattr(module, attribute, None) if module is not None else None
         if engine is None or engine._active_generate_account != account_id:
@@ -212,10 +337,7 @@ def retire_load_for_account(account_id: str) -> bool:
     from hub.services.models.account_access import retire_media_load
 
     retired = False
-    for module_name, attribute in (
-        ("core.inference.diffusion", "_diffusion_backend"),
-        ("core.inference.sd_cpp_backend", "_sd_cpp_backend"),
-    ):
+    for module_name, attribute in _ENGINE_SINGLETONS:
         module = sys.modules.get(module_name)
         engine = getattr(module, attribute, None) if module is not None else None
         if retire_media_load("diffusion", account_id, engine):
@@ -263,6 +385,8 @@ def _activate(name: str, reason: Optional[str]) -> Any:
                 _fallback_reason = reason if name == ENGINE_DIFFUSERS else None
         if name == ENGINE_SD_CPP:
             logger.info("diffusion engine: sd_cpp")
+        elif name == ENGINE_MLX:
+            logger.info("diffusion engine: mlx")
         else:
             logger.info("diffusion engine: diffusers (%s)", reason or "selected")
         return get_active_diffusion_engine()
@@ -305,6 +429,7 @@ def select_and_activate_engine(
     model_kind: Optional[str] = None,
     gpu_ordinal: Optional[int] = None,
     before_fallback: Optional[Callable[[], None]] = None,
+    gguf_filename: Optional[str] = None,
 ) -> Any:
     """Pick + activate the engine for loading ``fam`` on this host; return the engine.
     ``before_fallback`` may raise to refuse a diffusers fallback before it unloads the resident model.
@@ -312,7 +437,14 @@ def select_and_activate_engine(
     Falls back to diffusers (recording a reason) when the native route is disabled, the device has
     a usable GPU, MPS is not enabled, the family has no native asset, or the binary is unavailable
     -- always BEFORE the slow load, so a fallback never strands a half-native load.
+
+    With UNSLOTH_DIFFUSION_MLX=1 the MLX engine is tried first (``mlx_selection``, which needs
+    ``gguf_filename`` to judge the quant); a refusal is recorded and the choice below runs unchanged.
     """
+    use_mlx, mlx_refusal = mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename)
+    _note_mlx_refusal(mlx_refusal)
+    if use_mlx:
+        return _activate(ENGINE_MLX, None)
     if model_kind and model_kind != "gguf":
         return _activate(ENGINE_DIFFUSERS, f"non-GGUF load ({model_kind}) requires diffusers")
 
@@ -494,11 +626,25 @@ def native_binary_installed(
     return bool(binary and SdCppEngine(binary = binary).version() is not None)
 
 
+def _resident_build_upgrades_on_load(gpu_ordinal: Optional[int]) -> bool:
+    backend = resolve_diffusion_device_target().backend
+    if off_torch_sd_cpp_device(backend) is not None:
+        gpu_ordinal = None
+    accelerator = preferred_accelerator(
+        image_install_accelerator(backend), _selected_card(gpu_ordinal)
+    )
+    resident = ensure_sd_server_binary(
+        allow_install = False, accelerator = accelerator
+    ) or ensure_sd_cpp_binary(allow_install = False, accelerator = accelerator)
+    return bool(resident) and _pin_moved(resident, accelerator)
+
+
 def predict_engine(
     fam: DiffusionFamily,
     *,
     model_kind: Optional[str] = None,
     gpu_ordinal: Optional[int] = None,
+    gguf_filename: Optional[str] = None,
 ) -> str:
     """The engine a load of ``fam`` would select on this host, WITHOUT any side effect.
 
@@ -514,6 +660,8 @@ def predict_engine(
     diffusers for the very first native load, when no binary is on disk yet) would mispredict the
     common case: a fresh CPU host.
     """
+    if mlx_selection(fam, model_kind = model_kind, gguf_filename = gguf_filename)[0]:
+        return ENGINE_MLX
     if model_kind and model_kind != "gguf":
         return ENGINE_DIFFUSERS
 
@@ -535,17 +683,26 @@ def predict_engine(
     # A permitted install counts as available only where selection would actually perform one.
     # ``ensure_*_binary`` keeps a runnable build of the right accelerator untouched, so a resident
     # build that cannot run this family is never upgraded away, and predicting native for it would
-    # stage sd-cli's companions for a load the router sends to diffusers. With nothing resident the
-    # install happens and lands on the pinned prebuilt, which is current by definition.
+    # stage sd-cli's companions for a load the router sends to diffusers. With nothing resident (or
+    # a moved pin) the install lands on the pinned prebuilt, which is current by definition.
     native_available = native_binary_installed(gpu_ordinal = gpu_ordinal, fam = fam) or (
-        _install_allowed() and not native_binary_installed(gpu_ordinal = gpu_ordinal)
+        _install_allowed()
+        and (
+            not native_binary_installed(gpu_ordinal = gpu_ordinal)
+            or _resident_build_upgrades_on_load(gpu_ordinal)
+        )
     )
     return select_diffusion_engine(
         backend, native_available = native_available, prefer_native = prefer_native
     )
 
 
-def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optional[str]) -> bool:
+def family_buildable_here(
+    fam: Optional[DiffusionFamily],
+    *,
+    model_kind: Optional[str],
+    gguf_filename: Optional[str] = None,
+) -> bool:
     """True when THIS host can actually build ``fam`` for a ``model_kind`` load, by either engine.
 
     The two engines need different things. diffusers instantiates ``fam.pipeline_class``, which the
@@ -566,6 +723,12 @@ def family_buildable_here(fam: Optional[DiffusionFamily], *, model_kind: Optiona
         return False
     if family_pipeline_available(fam):
         return True
+    if model_kind == "gguf" and gguf_filename and family_mlx_supported(fam):
+        try:
+            if predict_engine(fam, model_kind = "gguf", gguf_filename = gguf_filename) == ENGINE_MLX:
+                return True
+        except Exception:  # noqa: BLE001 -- a probe failure must not hide/refuse a usable model
+            pass
     # only a GGUF can go native, and only for a family with the single-file assets sd.cpp needs
     if model_kind != "gguf" or not family_sd_cpp_supported(fam):
         return False
@@ -585,6 +748,7 @@ def annotate_status(status: dict[str, Any]) -> dict[str, Any]:
     out = dict(status)
     out["engine"] = _active_engine_name
     out["fallback_reason"] = _fallback_reason
+    out["mlx_fallback_reason"] = _mlx_fallback_reason
     out["supported_families"] = list(_supported_family_capabilities())
     return out
 

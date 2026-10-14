@@ -155,6 +155,10 @@ def _host(
     file_gb = 0.0,
 ):
     gb = 1_000_000_000
+    # A host with no enforcing cgroup: the CI runner's own limit must not leak into these numbers.
+    from utils import host_memory
+
+    monkeypatch.setattr(host_memory, "cgroup_memory_budgets", lambda *a, **k: [])
     monkeypatch.setattr(
         vmh3,
         "_proc_status_kb",

@@ -129,6 +129,7 @@ export interface TrainingRuntimeState {
   rlMetricHistory: RlMetricPoint[];
   resetGeneration: number;
   stopRequested: boolean;
+  configureRequest: number;
   selectedHistoryRunId: string | null;
   // True while the studio "Current Run" tab is the active view, so the sidebar can highlight it.
   currentRunViewActive: boolean;
@@ -192,6 +193,7 @@ export interface TrainingViewData {
   modelName: string;
   projectName: string | null;
   trainingMethod: string;
+  isDecision?: boolean;
 
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];

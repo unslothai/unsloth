@@ -18,7 +18,7 @@ import pytest
 _backend = os.path.join(os.path.dirname(__file__), "..")
 sys.path.insert(0, _backend)
 
-from core.inference.worker import _SLOTS, StopLedger
+from core.inference.worker import _SLOTS, StopLedger, _Stops
 from state import active_generations
 
 
@@ -1353,9 +1353,10 @@ def test_completions_proxy_non_stream_is_visible_to_the_swap_gate(monkeypatch):
 
     request = _CompletionsRequest({"prompt": "hi", "model": "org/M-GGUF", "max_tokens": 8})
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(inf_mod.HTTPException) as exc:
         asyncio.run(inf_mod.openai_completions(request, "tester"))
 
+    assert exc.value.status_code == 499
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
@@ -1426,9 +1427,10 @@ def test_embeddings_proxy_is_visible_to_the_swap_gate(monkeypatch):
 
     request = _EmbeddingsRequest({"input": "hi", "model": "org/M-GGUF"})
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(inf_mod.HTTPException) as exc:
         asyncio.run(inf_mod.openai_embeddings(request, "tester"))
 
+    assert exc.value.status_code == 499
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
@@ -2224,11 +2226,14 @@ def test_anthropic_passthrough_non_stream_is_visible_to_the_swap_gate(monkeypatc
         tools = [{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
     )
 
-    response = asyncio.run(
-        inf_mod.anthropic_messages(payload, request = _MessagesRequest(), current_subject = "tester")
-    )
+    with pytest.raises(inf_mod.HTTPException) as exc:
+        asyncio.run(
+            inf_mod.anthropic_messages(
+                payload, request = _MessagesRequest(), current_subject = "tester"
+            )
+        )
 
-    assert response.status_code == 200
+    assert exc.value.status_code == 499
     assert seen["count"] == 1
     assert seen["snapshot"][0]["model"] == "org/M-GGUF"
     assert seen["cancelled"] == 1
@@ -2269,13 +2274,14 @@ def test_anthropic_passthrough_non_stream_stops_when_the_swap_cancels_it(monkeyp
         tools = [{"name": "lookup", "input_schema": {"type": "object", "properties": {}}}],
     )
 
-    with pytest.raises(asyncio.CancelledError):
+    with pytest.raises(inf_mod.HTTPException) as exc:
         asyncio.run(
             inf_mod.anthropic_messages(
                 payload, request = _MessagesRequest(), current_subject = "tester"
             )
         )
 
+    assert exc.value.status_code == 499
     assert seen["cancelled"] == 1
     # Cancelled or not, the entry must go, or one message 409s every later reload.
     assert active_generations.count() == 0
@@ -2594,6 +2600,8 @@ def test_a_request_reads_as_stopped_once_it_is():
 
     assert _stopped(ledger) == set()
     assert ledger.stop(mine)
+    stops = _Stops(ledger, None, None, [])
+    assert stops.unread() and stops._refresh() is None and mine in stops and not stops.unread()
     assert _stopped(ledger) == {mine}, "a stop names one request and no other"
     assert theirs not in _stopped(ledger)
 

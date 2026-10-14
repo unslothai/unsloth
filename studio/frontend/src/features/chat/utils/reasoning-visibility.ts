@@ -27,6 +27,13 @@ export function resolveReasoningOpen({
   return resolveOpen(visibility, isStreaming, override);
 }
 
+/** Under `auto` a block shows a bounded box (#11703) until its Expand toggle lifts it. */
+export function reasoningTailCapped({
+  visibility,
+}: Pick<ReasoningOpenStateInput, "visibility">): boolean {
+  return visibility === "auto";
+}
+
 /** Whether the block sits where the setting alone would put it. */
 export function reasoningFollowsPreference(
   open: boolean,

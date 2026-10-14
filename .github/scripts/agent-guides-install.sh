@@ -8,7 +8,7 @@
 # install recipes mirror the install_hint strings in
 # unsloth_cli/commands/start.py at HEAD.
 # Usage: agent-guides-install.sh <agent>
-#   agent in: claude codex hermes openclaw opencode pi dsh
+#   agent in: claude codex hermes openclaw opencode pi dsh vibe
 set -uo pipefail
 
 AGENT="${1:?usage: agent-guides-install.sh <agent>}"
@@ -143,6 +143,12 @@ case "$AGENT" in
   dsh)
     # start.py install_hint: npm install -g @deepseek-ai/dsh
     npm_retry "@deepseek-ai/dsh" || install_fail "npm install -g @deepseek-ai/dsh failed"
+    ;;
+  vibe)
+    # start.py install_hint: curl -LsSf https://mistral.ai/vibe/install.sh | PATH="$HOME/.local/bin:$PATH" bash
+    PATH="$HOME/.local/bin:$PATH" curl_bash "https://mistral.ai/vibe/install.sh" \
+      || install_fail "vibe installer failed"
+    echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     ;;
   *)
     install_fail "unknown agent '$AGENT'"

@@ -13,7 +13,6 @@ export type PlusMenuItemId =
   | "savedPrompts"
   | "compareChat"
   | "exportChat"
-  | "canvas"
   | "projects";
 
 // Canonical order used both for the pinned items at the top level and for the items that fall
@@ -25,21 +24,19 @@ export const PLUS_MENU_ORDER: PlusMenuItemId[] = [
   "savedPrompts",
   "compareChat",
   "exportChat",
-  "canvas",
   "projects",
 ];
 
-// Chat with files, MCP and Skills sit at the top level; everything else lives under "More".
-// Projects is a workspace the user opts into, not a per-message attachment.
+// Chat with files and Skills sit at the top level; everything else, MCP included, lives under
+// "More". Projects is a workspace the user opts into, not a per-message attachment.
 const DEFAULT_PINS: Record<PlusMenuItemId, boolean> = {
   chatWithFiles: true,
-  mcp: true,
+  mcp: false,
   skills: true,
   projects: false,
   savedPrompts: false,
   compareChat: false,
   exportChat: false,
-  canvas: false,
 };
 
 export const PLUS_MENU_PINS_STORAGE_KEY = "unsloth_plus_menu_pins";
@@ -81,6 +78,14 @@ export const usePlusMenuPrefsStore = create<PlusMenuPrefsState>()(
     }),
     {
       name: PLUS_MENU_PINS_STORAGE_KEY,
+      version: 1,
+      // Version 1 moved MCP under "More". Saved pins hold every default, so without this an
+      // existing install would keep it at the top; the user can pin it back from "More".
+      migrate: (persisted, version) => {
+        const saved = (persisted ?? {}) as Partial<PlusMenuPrefsState>;
+        if (version < 1 && saved.pins) return { ...saved, pins: { ...saved.pins, mcp: false } };
+        return saved;
+      },
       // Backfill any ids added in a later release so persisted state from an older version still
       // resolves every menu item. A retired id survives the spread but PLUS_MENU_ORDER no
       // longer names it, so it is inert.

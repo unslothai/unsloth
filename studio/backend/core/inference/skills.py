@@ -285,7 +285,7 @@ def _split_skill_markdown(raw: bytes) -> tuple[dict, str]:
     if len(raw) > MAX_SKILL_MD_BYTES:
         raise SkillError("SKILL.md exceeds the 512 KB limit.")
     try:
-        text = raw.decode("utf-8")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
         raise SkillError("SKILL.md must be UTF-8 text.") from exc
     lines = text.splitlines(keepends = True)
@@ -625,6 +625,25 @@ def set_skill_enabled(
         return {**record, "enabled": enabled}
 
 
+def set_all_skills_enabled(enabled: Optional[bool], *, home: Optional[Path] = None) -> list[dict]:
+    """set listed skills, with None clearing overrides to restore fresh-install defaults."""
+    if enabled is not None and not isinstance(enabled, bool):
+        raise SkillError("Skill enabled state must be a boolean or null.")
+    with _LOCK:
+        overrides = {} if enabled is None else _load_overrides()
+        if enabled is not None:
+            # preserve overrides for skills absent from disk, matching single-skill toggles
+            for record, _, _ in _discover(home):
+                if not record["valid"] or record["shadowed"]:
+                    continue
+                if enabled == _default_enabled(record["source"]):
+                    overrides.pop(record["name"], None)
+                else:
+                    overrides[record["name"]] = enabled
+        _save_overrides(overrides)
+        return [record for record, _, _ in _discover(home)]
+
+
 def _validate_draft(description: str, instructions: str) -> str:
     if not isinstance(description, str) or not description.strip() or len(description) > 1024:
         raise SkillError("Skill description must be 1-1024 characters.")
@@ -867,18 +886,12 @@ def _normalize_resource_path(resource: str) -> PurePosixPath:
     return path
 
 
-def read_skill_resource(
+def _read_enabled_skill_text(
     name: str,
-    resource: str = "SKILL.md",
-    offset: int = 0,
+    resource: str,
     *,
-    page_chars: int = MAX_SKILL_PAGE_CHARS,
     home: Optional[Path] = None,
-) -> str:
-    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-        raise SkillError("Skill resource offset must be a non-negative integer.")
-    if isinstance(page_chars, bool) or not isinstance(page_chars, int) or page_chars <= 0:
-        raise SkillError("Skill resource page size must be a positive integer.")
+):
     with _LOCK:
         record, skill_dir, identity = _selected_skill(name, home = home)
         if not record["enabled"]:
@@ -914,17 +927,40 @@ def read_skill_resource(
             raise SkillError("Skill resources must be UTF-8 text.") from exc
         if "\x00" in content:
             raise SkillError("Skill resources must be UTF-8 text, not binary data.")
-        if offset > len(content):
-            raise SkillError("Skill resource offset is past the end of the file.")
-        end = min(offset + min(page_chars, MAX_SKILL_PAGE_CHARS), len(content))
-        normalized = path.as_posix()
-        result = (
-            f"Skill: {record['name']}\nResource: {normalized}\n"
-            f"Characters: {offset}-{end} of {len(content)}\n\n{content[offset:end]}"
+        return record, path.as_posix(), content
+
+
+def read_skill_instructions(name: str, *, home: Optional[Path] = None) -> str:
+    """One secure snapshot, complete or refused; unlike resource reads this is not a page."""
+    _, _, content = _read_enabled_skill_text(name, "SKILL.md", home = home)
+    if len(content.encode("utf-8")) > MAX_SKILL_MD_BYTES:
+        raise SkillError("Skill manifest exceeds the instruction size limit.")
+    return content
+
+
+def read_skill_resource(
+    name: str,
+    resource: str = "SKILL.md",
+    offset: int = 0,
+    *,
+    page_chars: int = MAX_SKILL_PAGE_CHARS,
+    home: Optional[Path] = None,
+) -> str:
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise SkillError("Skill resource offset must be a non-negative integer.")
+    if isinstance(page_chars, bool) or not isinstance(page_chars, int) or page_chars <= 0:
+        raise SkillError("Skill resource page size must be a positive integer.")
+    record, normalized, content = _read_enabled_skill_text(name, resource, home = home)
+    if offset > len(content):
+        raise SkillError("Skill resource offset is past the end of the file.")
+    end = min(offset + min(page_chars, MAX_SKILL_PAGE_CHARS), len(content))
+    result = (
+        f"Skill: {record['name']}\nResource: {normalized}\n"
+        f"Characters: {offset}-{end} of {len(content)}\n\n{content[offset:end]}"
+    )
+    if end < len(content):
+        result += (
+            "\n\nResource continues. Call read_skill again with "
+            f'name="{record["name"]}", resource="{normalized}", offset={end}.'
         )
-        if end < len(content):
-            result += (
-                "\n\nResource continues. Call read_skill again with "
-                f'name="{record["name"]}", resource="{normalized}", offset={end}.'
-            )
-        return result
+    return result

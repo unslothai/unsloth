@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ActiveModelConfigState } from "../src/features/model-picker/hooks/use-active-model-config.ts";
+import * as gpuTensorSplit from "../src/hooks/gpu-tensor-split.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 function activeConfig(patch: Record<string, unknown> = {}) {
@@ -31,6 +32,10 @@ function activeConfig(patch: Record<string, unknown> = {}) {
           select(state),
       },
       "@/config/env": { usePlatformStore: () => ({ deviceType: "cpu" }) },
+      "@/features/npu": {
+        isNpuModelId: (value: string | null | undefined) =>
+          Boolean(value?.startsWith("lemonade:")),
+      },
       react: { useMemo: (factory: () => unknown) => factory() },
       "../model-config/per-model-config": {
         isServedByLlamaCpp: () => !(state.params as { engine?: string }).engine,
@@ -56,6 +61,7 @@ function activeConfig(patch: Record<string, unknown> = {}) {
       "@/features/chat/presets/preset-policy": {},
       "./config-signature": {},
       "./per-model-config": {},
+      "@/hooks/gpu-tensor-split": gpuTensorSplit,
     },
   );
   const snapshot = currentRuntimePerModelConfig();

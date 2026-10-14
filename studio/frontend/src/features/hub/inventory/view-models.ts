@@ -20,6 +20,8 @@ export function localSourceLabel(source: LocalModelInfo["source"]): string {
   switch (source) {
     case "lmstudio":
       return "LM Studio";
+    case "omlx":
+      return "oMLX";
     case "ollama":
       return "Ollama";
     case "hermes":
@@ -161,6 +163,8 @@ export function buildCachedInventoryRow(
     pipeline_tag?: string | null;
     task?: string | null;
     audio_type?: string | null;
+    audio_workflows?: string[] | null;
+    umbrella_folder?: boolean;
     single_file?: boolean;
     companion?: boolean;
     companion_prefetch?: boolean;
@@ -221,6 +225,8 @@ export function buildCachedInventoryRow(
     pipelineTag: row.pipeline_tag ?? null,
     task: row.task ?? null,
     audioType: row.audio_type ?? null,
+    audioWorkflows: row.audio_workflows ?? null,
+    umbrellaFolder: row.umbrella_folder === true,
     singleFile: row.single_file ?? false,
     companion: row.companion ?? false,
     companionPrefetch: row.companion_prefetch ?? false,
@@ -231,6 +237,14 @@ export function buildCachedInventoryRow(
   };
 }
 
+/** Folder rows of the audio.cpp umbrella repo belong to the Audio pages; everyone else sees the one umbrella row. */
+export function withUmbrellaFolderRows(
+  rows: CachedInventoryRow[],
+  include: boolean,
+): CachedInventoryRow[] {
+  return include ? rows : rows.filter((row) => !row.umbrellaFolder);
+}
+
 function sourceSortWeight(source: LocalModelInfo["source"]): number {
   switch (source) {
     case "models_dir":
@@ -238,6 +252,7 @@ function sourceSortWeight(source: LocalModelInfo["source"]): number {
     case "custom":
       return 1;
     case "lmstudio":
+    case "omlx":
       return 2;
     case "ollama":
       return 3;
