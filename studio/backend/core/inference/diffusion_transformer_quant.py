@@ -2066,6 +2066,11 @@ def _quantize_native(
             scale_dtype = scale_dtype,
         ):
             return None
+        if scale_dtype is not None:
+            from .diffusion_native_quant import probe_mps_int8pack
+
+            # Timed on this chip, not assumed from the device type.
+            probe_mps_int8pack(transformer, scale_dtype, logger = logger)
         try:
             transformer._unsloth_runtime_quant = scheme
         except Exception:  # noqa: BLE001 - marker is best-effort

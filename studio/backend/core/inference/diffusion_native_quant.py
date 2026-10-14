@@ -16,10 +16,17 @@ NATIVE_FP8 = "fp8"
 _QMAX = {NATIVE_INT8: 127.0, NATIVE_FP8: 448.0}
 NATIVE_INT8_ACT_ENV = "UNSLOTH_NATIVE_INT8_ACT"
 NATIVE_INT8_ROT_ENV = "UNSLOTH_NATIVE_INT8_ROT"
-# Apple Silicon int8 weight-only via the Metal ``_weight_int8pack_mm`` kernel; ``0`` keeps the dequantise path.
+# Apple Silicon int8 weight-only via the Metal ``_weight_int8pack_mm`` kernel. Unset: a load-time probe decides;
+# ``0`` keeps the dequantise path; ``1`` takes the kernel without probing.
 NATIVE_MPS_INT8PACK_ENV = "UNSLOTH_DIFFUSION_MPS_INT8PACK"
 # The Metal kernel asserts N % 32 == 0 and K % 32 == 0.
 _INT8PACK_ALIGN = 32
+# The kernel runs near fp32 GEMM speed and is not bit-reproducible run to run, so it is taken only where it beats the
+# chip's own bf16 GEMM by this much (M1: about 1.3x; M3 parity; M5 4x behind, as its 16-bit GEMM uses matrix units).
+_INT8PACK_MIN_SPEEDUP = 1.10
+_INT8PACK_PROBE_ROWS = 1024
+# dtype -> probe verdict for this process (one chip per process).
+_INT8PACK_PROBED: dict = {}
 # torch._int_mm needs M > 16 and K, N multiples of 8.
 _INT_MM_MIN_ROWS = 17
 _INT_MM_CHUNK_ELEMS = 1 << 25
@@ -43,6 +50,99 @@ def mps_int8pack_disabled() -> bool:
         "false",
         "no",
     )
+
+
+def mps_int8pack_forced() -> bool:
+    import os
+    return os.environ.get(NATIVE_MPS_INT8PACK_ENV, "").strip().lower() in ("1", "on", "true", "yes")
+
+
+def mps_int8pack_selected(dtype: Any) -> bool:
+    """Whether ``dtype`` forwards may take the Metal kernel: the env override, else this process's probe verdict
+    (no probe yet = dequantise, which is deterministic)."""
+    if mps_int8pack_disabled():
+        return False
+    if mps_int8pack_forced():
+        return True
+    return bool(_INT8PACK_PROBED.get(dtype, False))
+
+
+def _median_call_s(fn: Callable[[], Any], sync: Callable[[], None], reps: int = 5) -> float:
+    import time
+
+    times = []
+    for _ in range(reps):
+        sync()
+        t0 = time.perf_counter()
+        fn()
+        sync()
+        times.append(time.perf_counter() - t0)
+    times.sort()
+    return times[len(times) // 2]
+
+
+def _bench_int8pack_vs_dense(layer: Any, dtype: Any, device: Any) -> tuple:
+    """(kernel s, dense ``dtype`` F.linear s) per call on ``layer``'s real shape, arms interleaved over 3 rounds."""
+    import torch
+
+    w_q = layer.weight_q.detach().to(device)
+    scale = layer.weight_scale.view(torch.float32).to(device).to(dtype).contiguous()
+    w = (w_q.to(dtype) * scale.unsqueeze(1)).contiguous()
+    x = torch.randn(_INT8PACK_PROBE_ROWS, layer.in_features, dtype = dtype, device = device)
+    sync = torch.mps.synchronize if device.type == "mps" else (lambda: None)
+    kernel = lambda: torch._weight_int8pack_mm(x, w_q, scale)
+    dense = lambda: torch.nn.functional.linear(x, w)
+    kernel()
+    dense()
+    k_s, d_s = [], []
+    for _ in range(3):
+        k_s.append(_median_call_s(kernel, sync))
+        d_s.append(_median_call_s(dense, sync))
+    k_s.sort()
+    d_s.sort()
+    return k_s[1], d_s[1]
+
+
+def probe_mps_int8pack(module: Any, dtype: Any, *, device: Any = "mps", logger: Any = None) -> bool:
+    """Time the Metal kernel against a dense ``dtype`` GEMM on ``module``'s largest kernel-eligible layer, once per
+    process and dtype, and record whether forwards take it. The env override skips the probe."""
+    import torch
+
+    if mps_int8pack_disabled() or mps_int8pack_forced():
+        return mps_int8pack_selected(dtype)
+    if dtype in _INT8PACK_PROBED:
+        return _INT8PACK_PROBED[dtype]
+    cls = native_linear_class()
+    layers = [
+        m for m in module.modules()
+        if isinstance(m, cls) and m._int8pack_layer_ok(dtype, probe = True)
+    ]
+    if not layers:
+        return False
+    layer = max(layers, key = lambda m: m.in_features * m.out_features)
+    try:
+        kernel_s, dense_s = _bench_int8pack_vs_dense(layer, dtype, torch.device(device))
+    except Exception as exc:  # noqa: BLE001 -- a failed probe keeps the dequantise path
+        if logger is not None:
+            logger.info("diffusion.native_quant: int8pack probe failed, dequantising: %s", exc)
+        _INT8PACK_PROBED[dtype] = False
+        return False
+    speedup = dense_s / max(kernel_s, 1e-9)
+    verdict = speedup >= _INT8PACK_MIN_SPEEDUP
+    _INT8PACK_PROBED[dtype] = verdict
+    if logger is not None:
+        logger.info(
+            "diffusion.native_quant: int8pack probe %dx%dx%d: kernel %.3f ms, dense %s %.3f ms (%.2fx) -> %s",
+            _INT8PACK_PROBE_ROWS,
+            layer.in_features,
+            layer.out_features,
+            kernel_s * 1e3,
+            str(dtype).replace("torch.", ""),
+            dense_s * 1e3,
+            speedup,
+            "Metal int8 kernel" if verdict else "dequantise",
+        )
+    return verdict
 
 
 def snap_scale_up(scale: Any, dtype: Any) -> Any:
@@ -276,7 +376,8 @@ def native_linear_class():
                 self._int8pack_scales[key] = hit
             return hit[1]
 
-        def _int8pack_layer_ok(self, dtype: Any) -> bool:
+        def _int8pack_layer_ok(self, dtype: Any, probe: bool = False) -> bool:
+            """``probe``: the layer's shape and codes suit the kernel, whatever the probe decided."""
             return (
                 self.scheme == NATIVE_INT8
                 and not self.act_int8
@@ -285,7 +386,11 @@ def native_linear_class():
                 and self.in_features % _INT8PACK_ALIGN == 0
                 and self.out_features % _INT8PACK_ALIGN == 0
                 and hasattr(torch, "_weight_int8pack_mm")
-                and not mps_int8pack_disabled()
+                and (
+                    self._int8pack_scale(dtype, self.weight_q.device) is not None
+                    if probe
+                    else mps_int8pack_selected(dtype)
+                )
             )
 
         def _int8pack_ok(self, x: Any) -> bool:
@@ -444,8 +549,9 @@ def native_quant_reason(module: Any, scheme: str) -> str:
         )
     if layer is not None and _int8pack_reported(layer):
         return (
-            f"weight-only: {scheme} weights through the Apple Silicon int8 kernel "
-            "(torchao-free; half the weight memory)"
+            f"weight-only: {scheme} weights through the Apple Silicon int8 kernel, which measured faster than "
+            "bf16 here (torchao-free; half the weight memory; not bit-reproducible run to run, "
+            f"{NATIVE_MPS_INT8PACK_ENV}=0 for repeatable images)"
         )
     return (
         f"weight-only: {scheme} weights, bf16 compute "

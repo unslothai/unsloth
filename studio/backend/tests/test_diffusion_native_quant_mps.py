@@ -163,6 +163,7 @@ def test_cpu_inputs_never_take_the_mps_kernel(monkeypatch):
 
 @pytest.mark.skipif(not _MPS, reason = "needs an MPS device")
 def test_mps_forward_runs_the_kernel_and_matches_dequantise(monkeypatch):
+    monkeypatch.setenv(nq.NATIVE_MPS_INT8PACK_ENV, "1")
     _, layer = _layer(n_in = 256, n_out = 96)
     layer = layer.to("mps")
     calls = []
@@ -184,6 +185,7 @@ def test_mps_forward_runs_the_kernel_and_matches_dequantise(monkeypatch):
 
 @pytest.mark.skipif(not _MPS, reason = "needs an MPS device")
 def test_mps_kill_switch_and_unaligned_shapes_keep_dequantise(monkeypatch):
+    monkeypatch.setenv(nq.NATIVE_MPS_INT8PACK_ENV, "1")
     monkeypatch.setattr(torch, "_weight_int8pack_mm", lambda *a: pytest.fail("kernel used"))
     _, odd = _layer(n_in = 128, n_out = 40)  # N % 32 != 0
     odd = odd.to("mps")
@@ -262,10 +264,134 @@ def test_reason_names_the_metal_kernel_only_when_it_dispatches(monkeypatch, enga
 
 def test_kill_switch_and_alignment_close_the_kernel_for_the_status_line(monkeypatch):
     _, layer = _layer()
+    monkeypatch.setenv(nq.NATIVE_MPS_INT8PACK_ENV, "1")
     assert layer._int8pack_layer_ok(torch.bfloat16) is _HAS_OP
     monkeypatch.setenv(nq.NATIVE_MPS_INT8PACK_ENV, "0")
     assert not layer._int8pack_layer_ok(torch.bfloat16)
-    monkeypatch.delenv(nq.NATIVE_MPS_INT8PACK_ENV)
+    monkeypatch.setenv(nq.NATIVE_MPS_INT8PACK_ENV, "1")
     _, odd = _layer(n_out = 40)
     assert not odd._int8pack_layer_ok(torch.bfloat16)
     assert not layer.int8pack_engaged(torch.bfloat16)  # stored on CPU
+
+
+@pytest.fixture(autouse = True)
+def _no_probe_state(monkeypatch):
+    monkeypatch.delenv(nq.NATIVE_MPS_INT8PACK_ENV, raising = False)
+    monkeypatch.setattr(nq, "_INT8PACK_PROBED", {})
+
+
+def _toy_native():
+    toy = _Toy().to(torch.bfloat16)
+    nq.apply_native_weight_quant(
+        toy, "int8", filter_fn = lambda m, n: True, act_int8 = False, scale_dtype = torch.bfloat16
+    )
+    return toy
+
+
+def test_unprobed_auto_mode_keeps_dequantise(_no_probe_state):
+    # No verdict yet: the deterministic dequantise path, never the kernel by default.
+    _, layer = _layer()
+    assert not layer._int8pack_layer_ok(torch.bfloat16)
+    assert layer._int8pack_layer_ok(torch.bfloat16, probe = True) is _HAS_OP
+
+
+@pytest.mark.skipif(not _HAS_OP, reason = "torch has no _weight_int8pack_mm")
+@pytest.mark.parametrize(
+    "kernel_s, dense_s, expect",
+    [
+        (0.6, 0.8, True),  # M1-like: bf16 GEMM has no fast path
+        (1.02, 1.0, False),  # M3-like: parity
+        (4.1, 1.0, False),  # M5-like: 16-bit GEMM on the matrix units
+        (0.95, 1.0, False),  # under the margin: not worth a nondeterministic kernel
+    ],
+)
+def test_probe_takes_the_kernel_only_when_it_beats_bf16(
+    _no_probe_state, monkeypatch, kernel_s, dense_s, expect
+):
+    seen = []
+
+    def bench(layer, dtype, device):
+        seen.append((layer.in_features, layer.out_features))
+        return kernel_s, dense_s
+
+    monkeypatch.setattr(nq, "_bench_int8pack_vs_dense", bench)
+    toy = _toy_native()
+    assert nq.probe_mps_int8pack(toy, torch.bfloat16, device = "cpu") is expect
+    assert seen == [(128, 256)]  # the largest eligible layer, probed once
+    assert nq.mps_int8pack_selected(torch.bfloat16) is expect
+    assert nq.probe_mps_int8pack(toy, torch.bfloat16, device = "cpu") is expect
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize("env, expect", [("0", False), ("1", True)])
+def test_env_override_skips_the_probe(_no_probe_state, monkeypatch, env, expect):
+    monkeypatch.setenv(nq.NATIVE_MPS_INT8PACK_ENV, env)
+    monkeypatch.setattr(
+        nq, "_bench_int8pack_vs_dense", lambda *a: pytest.fail("probed despite the override")
+    )
+    assert nq.probe_mps_int8pack(_toy_native(), torch.bfloat16, device = "cpu") is expect
+
+
+@pytest.mark.skipif(not _HAS_OP, reason = "torch has no _weight_int8pack_mm")
+def test_failed_probe_keeps_dequantise(_no_probe_state, monkeypatch):
+    def boom(*a):
+        raise RuntimeError("no Metal device")
+
+    monkeypatch.setattr(nq, "_bench_int8pack_vs_dense", boom)
+    assert nq.probe_mps_int8pack(_toy_native(), torch.bfloat16, device = "cpu") is False
+    assert not nq.mps_int8pack_selected(torch.bfloat16)
+
+
+@pytest.mark.skipif(not _HAS_OP, reason = "torch has no _weight_int8pack_mm")
+def test_bench_times_both_arms_on_the_real_layer_shape(_no_probe_state):
+    toy = _toy_native()
+    try:
+        kernel_s, dense_s = nq._bench_int8pack_vs_dense(toy.ff, torch.bfloat16, torch.device("cpu"))
+    except (RuntimeError, NotImplementedError) as exc:
+        pytest.skip(f"no CPU int8pack kernel: {exc}")
+    assert kernel_s > 0 and dense_s > 0
+
+
+def test_quantize_transformer_on_mps_runs_the_probe(_no_probe_state, monkeypatch):
+    _block_torchao(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        nq, "probe_mps_int8pack", lambda module, dtype, **k: calls.append(dtype) or False
+    )
+    pipe = types.SimpleNamespace(transformer = _Toy().to(torch.bfloat16))
+    assert tq.quantize_transformer(pipe, _mps_target(), mode = "int8", min_features = 64) == "int8"
+    assert calls == [torch.bfloat16]
+
+
+@pytest.mark.parametrize("pinned", ["int8"])
+def test_video_gate_admits_int8_on_mps(monkeypatch, pinned):
+    # video.py shares native_quant_host, so Mac video int8 takes the same native path as images.
+    import core.inference.video as v
+    from core.inference.video_families import _FAMILIES as VIDEO_FAMILIES
+
+    fam = next(f for f in VIDEO_FAMILIES if f.name == "wan2.2-ti2v-5b")
+    monkeypatch.setattr(v, "effective_te_quant", lambda *a, **k: None)
+    v._assert_video_precision_for_target(
+        fam, _mps_target(), model_kind = "pipeline", transformer_quant = pinned
+    )
+
+
+def test_video_gate_still_refuses_fp8_on_mps(monkeypatch):
+    import core.inference.video as v
+    from core.inference.video_families import _FAMILIES as VIDEO_FAMILIES
+
+    fam = next(f for f in VIDEO_FAMILIES if f.name == "wan2.2-ti2v-5b")
+    monkeypatch.setattr(v, "effective_te_quant", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match = "transformer_quant"):
+        v._assert_video_precision_for_target(
+            fam, _mps_target(), model_kind = "pipeline", transformer_quant = "fp8"
+        )
+
+
+@pytest.mark.skipif(not _MPS, reason = "needs an MPS device")
+def test_mps_probe_times_the_real_kernel_and_records_a_verdict():
+    toy = _toy_native().to("mps")
+    verdict = nq.probe_mps_int8pack(toy, torch.bfloat16)
+    assert nq._INT8PACK_PROBED == {torch.bfloat16: verdict}
+    assert nq.mps_int8pack_selected(torch.bfloat16) is verdict
+    assert toy.ff.int8pack_engaged(torch.bfloat16) is verdict
