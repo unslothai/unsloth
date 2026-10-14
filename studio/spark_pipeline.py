@@ -53,7 +53,14 @@ def _scale_embeddings(h, scale):
 
 
 def _softcap_logits(config, logits):
-    # Gemma 2/3 cap logits in ForCausalLM.forward, which a stage never calls.
+    # The head transforms ForCausalLM.forward applies, which a stage never calls: Cohere's
+    # logit_scale, Granite's logits_scaling, Gemma 2/3's soft cap.
+    scale = getattr(config, "logit_scale", None)
+    if scale is not None and scale != 1:
+        logits = logits * scale
+    scaling = getattr(config, "logits_scaling", None)
+    if scaling is not None and scaling != 1:
+        logits = logits / scaling
     cap = getattr(config, "final_logit_softcapping", None)
     if not cap:
         return logits

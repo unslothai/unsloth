@@ -4378,8 +4378,8 @@ def training_memory_estimate(
         # Saved once, but the first stage holds it as the embedding and the last as the head.
         weights += vocab * hidden * 2 / 2**30 * (1 - 1 / world)
     # bf16 parameters straight into AdamW: a gradient and two moments of the same dtype, no fp32
-    # master copy.
-    optimizer_full = weights * 3.0
+    # master copy, plus about one more copy at the peak of the default foreach step.
+    optimizer_full = weights * 4.0
     optimizer_lora = weights * 0.02
     mb_rows = max(batch // max(microbatches, 1), 1)
     own_layers = max(layers // world, 1)
@@ -4959,6 +4959,7 @@ def _rsync_to_peer(
     peer_ip: str,
     user: str,
     dereference: bool = False,
+    delete: bool = False,
 ) -> Optional[str]:
     """Copy `local` (file or directory) to the absolute `remote` on the peer."""
     parent = osp.dirname(remote.rstrip("/")) or "/"
@@ -4968,6 +4969,7 @@ def _rsync_to_peer(
         "rsync",
         "-a",
         *(["--copy-links"] if dereference else []),
+        *(["--delete"] if delete and osp.isdir(local) else []),
         "--rsync-path",
         f"mkdir -p {shlex.quote(parent)} && rsync",
         "-e",
@@ -4997,7 +4999,9 @@ def stage_run_inputs(
         local = osp.expanduser(value)
         if osp.exists(local):
             remote = f"{root}/{osp.basename(local.rstrip('/'))}"
-            error = _rsync_to_peer(local, remote, peer_ip, user, dereference = True)
+            # Our own staging copy: files gone from the source must go here too, or a checkpoint
+            # rewritten from one file to shards keeps loading the old file on the peer.
+            error = _rsync_to_peer(local, remote, peer_ip, user, dereference = True, delete = True)
             if error:
                 failed.append(f"{token} {value}: {error}")
             else:
