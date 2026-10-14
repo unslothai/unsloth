@@ -8288,7 +8288,7 @@ const AssistantMessage: FC = () => {
       onFocus={focusReveal.onFocus}
       onBlur={focusReveal.onBlur}
     >
-      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0d0d0d] dark:text-foreground leading-relaxed">
+      <div className="aui-assistant-message-content wrap-break-word min-w-0 text-black dark:text-foreground leading-relaxed">
         {isEditing ? (
           // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
           // index.css zeroes the margin-bottom of the reply's last descendants.
@@ -9064,7 +9064,7 @@ const UserMessage: FC = () => {
 
       <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
         {hasContent ? (
-          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-[#0d0d0d] dark:text-foreground dark:bg-card">
+          <div className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-[24px] bg-[#f5f5f5] px-4 py-2.5 text-black dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}
