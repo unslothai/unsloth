@@ -58,6 +58,7 @@ import {
   updateToolResultLimit,
 } from "../api/tool-result-limit";
 import { ChatMenuOrderList } from "../components/chat-menu-order-list";
+import { FirstTokenTimeoutRow } from "../components/first-token-timeout-row";
 import { SettingsRow } from "../components/settings-row";
 import { ComposerSettings } from "../components/composer-settings";
 import { SettingsSection } from "../components/settings-section";
@@ -524,6 +525,7 @@ export function ChatTab() {
           />
         </SettingsRow>
         {isOwner ? <ToolResultLimitRow /> : null}
+        {isOwner ? <FirstTokenTimeoutRow /> : null}
         <SettingsRow
           label={t("settings.chat.autoScroll")}
           description={t("settings.chat.autoScrollDescription")}

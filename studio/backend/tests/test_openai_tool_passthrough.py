@@ -3808,7 +3808,7 @@ class TestFriendlyErrorHttpx:
 
     def test_read_timeout_mapped(self):
         exc = httpx.ReadTimeout("timed out", request = self._req())
-        assert "first token within 20 minutes" in _friendly_error(exc)
+        assert "first token within the waiting limit" in _friendly_error(exc)
 
     def test_non_httpx_unchanged(self):
         # Non-httpx exceptions still fall through to the substring heuristics
@@ -9848,11 +9848,11 @@ class TestApiMonitorProviderAndCompletionStreams:
             assert 'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n' in body
             assert '"finish_reason"' not in body.replace(" ", "")
             assert '"type":"api_error"' in body.replace(" ", "")
-            assert "still processing the prompt" in body
+            assert "first token within the waiting limit" in body
             assert body.endswith("data: [DONE]\n\n")
             [entry] = monitor.snapshot()
             assert entry["status"] == "error"
-            assert "still processing the prompt" in entry["error"]
+            assert "first token within the waiting limit" in entry["error"]
             assert entry["reply"] == "hello"
             assert monitor.active_count() == 0
 
