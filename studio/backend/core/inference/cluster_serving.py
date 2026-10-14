@@ -119,7 +119,7 @@ def _remote_projector_bytes(model_path: str, hf_token: Optional[str]) -> int:
 
 
 _DRAFTER_FLAGS = frozenset({"--model-draft", "-md", "--spec-draft-model"})
-_DRAFTER_ENV = ("LLAMA_ARG_SPEC_DRAFT_MODEL",)
+_DRAFTER_ENV = ("LLAMA_ARG_SPEC_DRAFT_MODEL", "LLAMA_ARG_MODEL_DRAFT")  # new, pre-b8955
 
 
 def _names_drafter(args: Sequence[str]) -> bool:
@@ -151,11 +151,23 @@ def _flag_args(args: Sequence[str], flags: frozenset) -> List[str]:
 
 def _caller_placement(args: Sequence[str]) -> Optional[str]:
     """The first device / split setting the caller made, which a cluster block would override."""
-    for token in (str(a) for a in args):
-        name = token.split("=", 1)[0]
-        if name in _PLACEMENT_FLAGS:
-            return name
-    return next((k for k in _PLACEMENT_ENV if os.environ.get(k)), None)
+    tokens = [str(a) for a in args]
+    for i, token in enumerate(tokens):
+        name, sep, inline = token.partition("=")
+        if name not in _PLACEMENT_FLAGS:
+            continue
+        value = inline if sep else (tokens[i + 1] if i + 1 < len(tokens) else "")
+        if name in _GPU_LAYER_FLAGS and value.strip().lower() in ("auto", "-1"):
+            continue  # llama.cpp's own default, which leaves the fitter to place layers
+        return name
+    for key in _PLACEMENT_ENV:
+        value = (os.environ.get(key) or "").strip().lower()
+        if value and not (key == "LLAMA_ARG_N_GPU_LAYERS" and value in ("auto", "-1")):
+            return key
+    return None
+
+
+_GPU_LAYER_FLAGS = frozenset({"--gpu-layers", "--n-gpu-layers", "-ngl"})
 
 
 _DRAFT_DEVICE_FLAGS = frozenset({"--device-draft", "-devd", "--spec-draft-device"})
@@ -571,6 +583,8 @@ class ClusterServing:
         # Workers the current load's probe found unusable; a commit without them stops them.
         self._down: set = set()
         self._kv_guessed: bool = False
+        # Workers this load (re)started: they hold none of the served split's buffers.
+        self._started: set = set()
 
     def _cancelled(self) -> bool:
         event = self._cancel_event
@@ -647,6 +661,7 @@ class ClusterServing:
                 )
                 continue
             self.workers[node.endpoint] = process
+            self._started.add(node.endpoint)
         return failed
 
     async def before_load(
@@ -672,7 +687,7 @@ class ClusterServing:
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         # Every return below that does not plan leaves no plan behind for after_load to record.
         self.plan, self.block = None, []
-        self._down = set()
+        self._down, self._started = set(), set()
         if not self.refresh_nodes():
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
             return request
@@ -741,6 +756,8 @@ class ClusterServing:
         if self._backend is not None and getattr(self._backend, "is_loaded", False):
             # This load tears the current one down first, so what it holds counts as free.
             for d in devices:
+                if d.endpoint in self._started:
+                    continue
                 d.free_bytes = int(min(d.total_bytes, d.free_bytes + self._resident.get(d.key, 0)))
         stray = [d.description for d in devices if d.remote and d.endpoint not in endpoints]
         if stray:
@@ -880,7 +897,11 @@ class ClusterServing:
                 self._has_projector = self._has_projector or remote > 0
         # Files named through the environment (LLAMA_ARG_MMPROJ, a drafter) load all the same.
         named_files = ss.launch_files_from(extras)
-        for path in ss.env_launch_files(dict(os.environ)):
+        env_files = ss.env_launch_files(dict(os.environ))
+        legacy_drafter = (os.environ.get("LLAMA_ARG_MODEL_DRAFT") or "").strip()
+        if legacy_drafter and os.path.isfile(legacy_drafter):
+            env_files.append(os.path.abspath(legacy_drafter))
+        for path in dict.fromkeys(env_files):
             if path in named_files:
                 continue
             file_size = ss.gguf_size_bytes(path)
@@ -913,6 +934,10 @@ class ClusterServing:
         if kv is None:
             kv = KV_UNKNOWN_FRACTION * float(size) if ctx and size else 0.0
         kv = float(kv)
+        from core.inference.llama_cpp import _kv_offload_from_args
+
+        if not _kv_offload_from_args(extras):
+            kv = 0.0  # --no-kv-offload keeps the cache in host RAM
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:

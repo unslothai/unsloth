@@ -1447,3 +1447,71 @@ def test_a_guessed_kv_reserve_is_not_counted_as_freed(monkeypatch):
     )
     run(ss.after_load(backend, 4))
     assert sum(cs.state()._resident.values()) == pytest.approx(90 * GIB)
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_host_resident_kv_is_not_charged_to_the_gpus(monkeypatch, env):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: 30 * GIB)
+    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    assert ss.status()["topology"] == "layer_split"  # 85 GiB + 30 GiB of KV
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_NO_KV_OFFLOAD", "1")
+    extra = [] if env else ["--no-kv-offload"]
+    request = _request(max_seq_length = 8192, llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+
+
+@pytest.mark.parametrize("value", ["auto", "-1", "AUTO"])
+def test_automatic_gpu_layers_are_not_caller_placement(monkeypatch, value):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", value)
+    run(ss.before_load(_request(llama_extra_args = ["-ngl", value]), 4))
+    assert ss.status()["topology"] == "layer_split" and seen
+    monkeypatch.setenv("LLAMA_ARG_N_GPU_LAYERS", "40")
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request
+    assert "LLAMA_ARG_N_GPU_LAYERS" in ss.status()["reason"]
+
+
+def test_a_worker_restarted_by_this_load_gets_no_residency_credit(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    credited = []
+    real_plan = cs.plan_cluster
+
+    def spy(model_bytes, kv_bytes, extra, devices, **kw):
+        credited.extend((d.endpoint, d.free_bytes) for d in devices)
+        return real_plan(model_bytes, kv_bytes, extra, devices, **kw)
+
+    monkeypatch.setattr(cs, "plan_cluster", spy)
+
+    async def restart_one(self):
+        self._started.add("10.0.0.3:50052")
+        return {}
+
+    monkeypatch.setattr(cs.ClusterServing, "_ensure_workers", restart_one)
+    run(ss.before_load(_request(), 4))
+    free = dict(credited)
+    listed = {d.endpoint: d.free_bytes for d in cs.parse_device_list(LISTING, list(free))}
+    assert free["10.0.0.3:50052"] == listed["10.0.0.3:50052"]  # its buffers died with it
+    assert free["10.0.0.2:50052"] > listed["10.0.0.2:50052"]
+
+
+def test_the_pre_b8955_drafter_variable_is_sized_and_pinned(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x")
+    sizes = {str(drafter): 10 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
+    monkeypatch.setenv("LLAMA_ARG_MODEL_DRAFT", str(drafter))
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"  # 90 GiB fits alone, not with the drafter
+    assert "--device-draft" in out.llama_extra_args
