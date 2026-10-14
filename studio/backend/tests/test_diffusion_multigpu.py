@@ -1056,7 +1056,11 @@ def test_failed_split_applies_the_single_card_plan(monkeypatch):
     assert plan.secondary_ordinal == 1
     assert plan.fallback_plan is not None and plan.fallback_plan.offload_policy == dm.OFFLOAD_GROUP
     monkeypatch.setattr(mg, "apply_split_plan", lambda pipe, plan, placement, logger = None: False)
-    monkeypatch.setattr(dm, "_apply_group_offload", lambda pipe, placement, logger, **kw: calls.append(("group", placement)) or True)
+    monkeypatch.setattr(
+        dm,
+        "_apply_group_offload",
+        lambda pipe, placement, logger, **kw: calls.append(("group", placement)) or True,
+    )
     policy, _tiling = dm.apply_memory_plan(Pipe(), plan, device = "cuda", placement_device = "cuda:0")
     # the group policy one card would have used, not a blind whole-module offload
     assert policy == dm.OFFLOAD_GROUP and calls == [("group", "cuda:0")]
@@ -1064,7 +1068,11 @@ def test_failed_split_applies_the_single_card_plan(monkeypatch):
 
 def test_post_load_split_keeps_the_original_plan_as_fallback(monkeypatch):
     plan = _plan()
-    sizes = {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)

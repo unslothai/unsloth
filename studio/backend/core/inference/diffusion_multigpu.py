@@ -994,7 +994,9 @@ def _immutable_capture(value: Any, depth: int) -> bool:
     torch = _torch()
     if depth > 3:
         return False
-    if isinstance(value, (str, bytes, int, float, complex, bool, type(None), torch.dtype, torch.device, type)):
+    if isinstance(
+        value, (str, bytes, int, float, complex, bool, type(None), torch.dtype, torch.device, type)
+    ):
         return True
     if isinstance(value, (tuple, frozenset)):
         return all(_immutable_capture(v, depth + 1) for v in value)
