@@ -1192,7 +1192,7 @@ def tune(index: int, shapes: Any) -> dict:
             slot = (n, k, b)
             choice = stored.get(slot)
             if choice is None:
-                static = tile_for(index, rep_m, n, k)
+                static = tile_for(index, rep_m, n, k) if tiles_enabled() else default
                 tiles = tuple(dict.fromkeys((static, default, *alts)))
                 ms = _measure(index, n, k, rep_m, tiles)
                 timings[f"{n},{k},{b}"] = {str(t): round(v, 4) for t, v in ms.items()}

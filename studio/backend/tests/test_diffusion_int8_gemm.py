@@ -1269,6 +1269,18 @@ def test_latency_gate_first_tune_load_does_not_save_under_the_stale_key(monkeypa
 
 
 @needs_cuda
+def test_latency_gate_stale_plan_stops_further_saves(monkeypatch, tmp_path):
+    cc, begin, first_tune = _plan_cache_env(monkeypatch, tmp_path, "auto")
+    ctx = begin()
+    first_tune()
+    assert not cc.save(ctx)
+    checks, plan = [], ctx.int8_plan
+    ctx.int8_plan = lambda: checks.append(1) or plan()
+    assert not cc.save_async(ctx) and not cc.save(ctx) and not checks  # nothing re-queued or re-checked
+    cc.restore(ctx)
+
+
+@needs_cuda
 def test_latency_gate_first_tune_after_a_hit_does_not_resave(monkeypatch, tmp_path):
     cc, begin, first_tune = _plan_cache_env(monkeypatch, tmp_path, "on")  # "on" resaves after a hit
     ctx = begin()
@@ -1314,6 +1326,18 @@ def test_latency_gate_cublas_slots_key_the_compile_cache(monkeypatch, tmp_path):
     assert fp() == k_fused
     g8._DEVICE_PLAN[index] = {(768, 1024, 2): g8._CUBLAS}  # stock graph for this shape
     assert fp() != k_fused
+
+
+def test_latency_gate_tiles_kill_switch_ignores_cached_shape_tiles(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(12, 0)]
+    n, k = 4096, 8192  # deep-K rule
+    calls = _fake_tune_env(monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: 2.0, **{t: 1.0 for t in tiles}})
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 0))
+    g8._DEVICE_CFG[0] = default
+    g8._DEVICE_TILES[0] = g8._SHAPE_TILES[(12, 0)]  # probed while tiles were on
+    monkeypatch.setenv(g8.INT8_GEMM_TILES_ENV, "0")
+    assert set(g8.tune(0, {(n, k)}).values()) == {default}
+    assert calls and all(c[3] == (default,) for c in calls)
 
 
 @needs_cuda

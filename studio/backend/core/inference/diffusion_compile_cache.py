@@ -572,6 +572,8 @@ class CacheContext:
     last_touch: float = 0.0
     # () -> the int8 latency gate's cuBLAS identity now; it can first tune after begin() (see _int8_plan_stale).
     int8_plan: Any = None
+    # Set once _int8_plan_stale rejected a save: this key can never match again, so later saves stop early.
+    int8_stale: bool = False
 
 
 def begin(
@@ -965,9 +967,10 @@ def _int8_plan_stale(ctx: CacheContext) -> bool:
 
 def _write_bundle(ctx: CacheContext, logger: Any) -> bool:
     """The save itself. Runs on the caller's thread (``save``) or the worker (``save_async``)."""
-    if not _save_enabled(ctx.mode) or ctx.saved:
+    if not _save_enabled(ctx.mode) or ctx.saved or ctx.int8_stale:
         return False
     if _int8_plan_stale(ctx):
+        ctx.int8_stale = True
         _info(logger, f"compile-cache: int8 GEMM plan changed after begin; not saving under key {ctx.key}")
         return False
     # Read BEFORE the artifacts are collected: anything registered from here on is not in `data`, and iterating the
@@ -1097,7 +1100,7 @@ def save_async(ctx: Optional[CacheContext], *, logger: Any = None) -> bool:
     if ctx is None:
         return False
     note_use(ctx)
-    if not _save_enabled(ctx.mode) or ctx.saved:
+    if not _save_enabled(ctx.mode) or ctx.saved or ctx.int8_stale:
         return False
     if sync_saves():
         return _write_bundle(ctx, logger)
