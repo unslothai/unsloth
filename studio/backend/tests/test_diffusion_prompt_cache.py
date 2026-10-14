@@ -391,7 +391,11 @@ def test_controlnet_pipe_gets_the_prompt_cache(monkeypatch):
     assert calls == ["a sloth"] and torch.equal(first, again)
 
 
-def _image(color, size = (8, 6), mode = "RGB"):
+def _image(
+    color,
+    size = (8, 6),
+    mode = "RGB",
+):
     Image = pytest.importorskip("PIL.Image")
     return Image.new(mode, size, color)
 
@@ -438,7 +442,12 @@ def test_an_edited_image_object_misses_after_in_place_change():
 
 def test_bypassed_encoder_error_is_not_chained_onto_the_key_error():
     class Boom(_EncodePipe):
-        def encode_prompt(self, prompt, image = None, device = None):
+        def encode_prompt(
+            self,
+            prompt,
+            image = None,
+            device = None,
+        ):
             raise RuntimeError("encoder failed")
 
     pipe = Boom()
