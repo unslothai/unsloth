@@ -138,6 +138,7 @@ class TestARawRelayParkedBeforeItsFirstToken:
 
         monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", cap)
         monkeypatch.setattr(inference, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", window)
+        monkeypatch.setattr(inference, "configured_first_token_timeout_s", lambda: window)
 
         async def upstream():
             for item in items:
@@ -278,6 +279,7 @@ class TestALineSourceAndABatch:
 
         monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", cap)
         monkeypatch.setattr(inference, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", window)
+        monkeypatch.setattr(inference, "configured_first_token_timeout_s", lambda: window)
 
         async def upstream():
             for item in items:
@@ -369,6 +371,8 @@ class TestAnUnboundedReadGetsNoParkGraceWithoutAPark:
 
         monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", 1.0)
         monkeypatch.setattr(inference, "_DEFAULT_FIRST_TOKEN_TIMEOUT_S", 0.1)
+        # The window now comes from the saved first-token limit, not the default.
+        monkeypatch.setattr(inference, "configured_first_token_timeout_s", lambda: 0.1)
         monkeypatch.setattr(inference, "_install_park_aware_read", lambda response, grace: True)
         monkeypatch.setattr(inference, "_set_stream_response_read_timeout", lambda *a, **k: None)
         monkeypatch.setattr(inference, "_live_read_timeout", lambda response: None)
