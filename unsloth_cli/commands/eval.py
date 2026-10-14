@@ -75,6 +75,24 @@ def resolve_base_model(model: str) -> Optional[str]:
     return data.get("base_model_name_or_path") if isinstance(data, dict) else None
 
 
+def _trained_in_4bit(model: str) -> bool:
+    path = Path(model)
+    is_adapter = (path / "adapter_config.json").is_file()
+    name = "adapter_config.json" if is_adapter else "config.json"
+    try:
+        config = json.loads((path / name).read_text(encoding = "utf-8-sig"))
+    except (ValueError, OSError):
+        return True
+    if not isinstance(config, dict):
+        return True
+    if not is_adapter:
+        return "quantization_config" in config
+    recorded = config.get("unsloth_load_in_4bit")
+    if isinstance(recorded, bool):
+        return recorded
+    return config.get("unsloth_training_method") != "lora"
+
+
 def _has_tokenizer_files(model: str) -> bool:
     path = Path(model)
     if path.is_dir():
@@ -372,8 +390,11 @@ def evaluate(
     max_seq_length: int = typer.Option(
         2048, "--max-seq-length", help = "Max sequence length for the model."
     ),
-    load_in_4bit: bool = typer.Option(
-        True, "--load-in-4bit/--no-load-in-4bit", help = "Load the model in 4-bit."
+    load_in_4bit: Optional[bool] = typer.Option(
+        None,
+        "--load-in-4bit/--no-load-in-4bit",
+        help = "Load the model in 4-bit. Default: the precision a local checkpoint or "
+        "adapter was trained in, 4-bit otherwise.",
     ),
     backend: str = typer.Option(
         "unsloth",
@@ -449,6 +470,13 @@ def evaluate(
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
     effective_base = base_model or resolve_base_model(model)
+    if load_in_4bit is None:
+        load_in_4bit = _trained_in_4bit(model)
+        if not load_in_4bit:
+            typer.echo(
+                "Note: loading in 16-bit, the precision this checkpoint was trained in "
+                "(pass --load-in-4bit to override)."
+            )
 
     tmp_dir = Path(tempfile.mkdtemp(prefix = "unsloth_eval_"))
     try:

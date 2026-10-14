@@ -403,6 +403,39 @@ def test_unsloth_backend_reports_missing_bitsandbytes(env, tmp_path, monkeypatch
     assert env["load_kwargs"]["load_in_4bit"] is False
 
 
+@pytest.mark.parametrize(
+    "files, flags, expected",
+    [
+        ({"config.json": {"model_type": "llama"}}, [], False),
+        ({"config.json": {"quantization_config": {"load_in_4bit": True}}}, [], True),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": False}}, [], False),
+        ({"adapter_config.json": {"unsloth_training_method": "lora"}}, [], False),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": True}}, [], True),
+        ({"adapter_config.json": {}}, [], True),
+        ({"config.json": {"model_type": "llama"}}, ["--load-in-4bit"], True),
+        ({"adapter_config.json": {"unsloth_load_in_4bit": True}}, ["--no-load-in-4bit"], False),
+    ],
+    ids = [
+        "full_finetune",
+        "prequantized",
+        "lora_16bit",
+        "lora_method_only",
+        "qlora",
+        "unknown_adapter",
+        "explicit_4bit",
+        "explicit_16bit",
+    ],
+)
+def test_checkpoint_loads_in_the_precision_it_was_trained_in(env, tmp_path, files, flags, expected):
+    run = tmp_path / "run"
+    run.mkdir()
+    for name, data in files.items():
+        (run / name).write_text(json.dumps({"base_model_name_or_path": "org/base", **data}))
+    result = _run(str(run), "--tasks", "gsm8k", *flags, "-o", str(tmp_path / "out"))
+    assert result.exit_code == 0, result.output
+    assert env["load_kwargs"]["load_in_4bit"] is expected
+
+
 def test_custom_dataset_builds_one_task_manager(env, tmp_path):
     data = tmp_path / "qa.jsonl"
     data.write_text('{"question": "q", "answer": "a"}\n')
