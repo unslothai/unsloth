@@ -28,6 +28,7 @@ def models(rag_home, stub_embeddings, monkeypatch):
     monkeypatch.setattr(embeddings, "encode", encode)
     monkeypatch.setattr(embeddings, "max_tokens", lambda model_name = None: None)
     monkeypatch.setattr(reembed, "_jobs", {})
+    monkeypatch.setattr(reembed, "_RETIRE_JOIN_SECONDS", 0.2)
     current = lambda fresh = False: state["model"] if fresh else state.get("cached", state["model"])
     monkeypatch.setattr(config, "effective_embedding_model", current)
     return state
@@ -140,10 +141,11 @@ def test_cancel_and_retirement_stop_before_the_document_in_flight_is_written(mod
     assert (_run_job()["status"], _row(document_id)) == ("cancelled", original)
     entered, release = threading.Event(), threading.Event()
     models["fail"] = lambda texts: entered.set() or not release.wait(5)
-    assert reembed.start()["remaining"] == 1
-    job = reembed._jobs["reembed"]
-    assert entered.wait(5)
-    threading.Timer(0.2, release.set).start()
+    assert reembed.start()["remaining"] == 1 and entered.wait(5)
+    with pytest.raises(RuntimeError, match = "not stopped"):
+        reembed.retire_account_reembed()
+    job = reembed._jobs["reembed"]  # still registered, so the retry below waits for it
+    release.set()
     reembed.retire_account_reembed()
     assert (job.thread.is_alive(), job.status, reembed.status()) == (False, "cancelled", None)
     assert _row(document_id) == original

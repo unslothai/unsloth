@@ -248,12 +248,16 @@ def cancel() -> dict | None:
 
 def retire_account_reembed() -> None:
     """Stop this account's job before its storage moves."""
+    key = account_key("reembed")
     with _lock:
-        job = _jobs.pop(account_key("reembed"), None)
+        job = _jobs.get(key)
     if job is None or job.thread is None:
         return
     job.stop.set()
     if job.thread is not threading.current_thread():
         job.thread.join(timeout = _RETIRE_JOIN_SECONDS)
         if job.thread.is_alive():
+            # Left registered, so a retried retirement waits for it again.
             raise RuntimeError("Retired account re-embed job has not stopped")
+    with _lock:
+        _jobs.pop(key, None)
