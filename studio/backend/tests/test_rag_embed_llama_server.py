@@ -785,9 +785,7 @@ def test_a_gpu_server_crashing_twice_on_one_request_finishes_on_cpu(monkeypatch)
     fake = _CrashingGpuServer(monkeypatch, b)
     out = b._post("/v1/embeddings", {"input": ["x"]})
     assert out["data"][0]["embedding"] == [1.0, 0.0]
-    # The first crash retries on the GPU (the reaper may have killed it); the second moves to CPU.
     assert fake.spawns == ["gpu", "gpu", "cpu"]
-    # Sticky: the next request goes straight to the CPU server.
     b._post("/v1/embeddings", {"input": ["y"]})
     assert fake.spawns == ["gpu", "gpu", "cpu"]
 

@@ -1185,8 +1185,7 @@ class LlamaServerBackend:
                     if attempt == 0:
                         self._restart(model_name)
                         continue
-                    # A second crash on the same request is the GPU build failing on this input, not
-                    # the reaper (#13663): finish on CPU, as a failed GPU start already does.
+                    # A second crash is the GPU build failing on this input, not the reaper (#13663).
                     if crashed and self._fall_back_to_cpu():
                         self._restart(model_name)
                         return self._post_active(path, payload, model_name)
@@ -1198,8 +1197,7 @@ class LlamaServerBackend:
         raise RuntimeError(f"llama-server embedder POST {path} failed after retry") from last_exc
 
     def _server_exited(self) -> bool:
-        """Whether the server process died under the request; logs its exit code and last output,
-        which is otherwise only at debug level."""
+        """Whether the server died under the request; logs its exit code and output tail."""
         proc = self._process
         if proc is None:
             return False
