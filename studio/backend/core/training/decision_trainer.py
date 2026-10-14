@@ -182,7 +182,6 @@ def _load_rows(
             raise _Stopped("Training cancelled") from None
         try:
             rows = _read_local_rows(download.files, load_dataset, warn)
-            # Only the rows training keeps hold their clips.
             _hold_audio(_sliced(rows, config))
         finally:
             download.cleanup()

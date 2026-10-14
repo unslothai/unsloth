@@ -279,7 +279,6 @@ def _rewritten(value, resolve):
         if replacement is not None:
             value["path"] = replacement
     elif isinstance(value, list):
-        # A row with several clips, as decision rows have.
         return [_rewritten(item, resolve) for item in value]
     return value
 

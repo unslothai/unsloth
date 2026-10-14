@@ -59,8 +59,7 @@ from unsloth._decision_common import (
 
 
 def _row_audio(row: dict) -> list:
-    # A row's "audio": data URLs, decoded {"array": ..., "sampling_rate": 16000} clips, or the
-    # {"bytes": ..., "path": ...} an undecoded audio column holds.
+    # Data URLs, decoded {"array", "sampling_rate"} 16 kHz clips, or an undecoded column's {"bytes", "path"}.
     audio = _parsed(row.get("audio"))
     if audio is None:
         return []

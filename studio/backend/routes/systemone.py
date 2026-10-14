@@ -72,7 +72,6 @@ class SystemOneRequest(BaseModel):
     questions: dict[str, QuestionIn] = Field(min_length = 1)
     # OpenJev's image extension: base64 data URLs, served by a Clef model through llama.cpp.
     images: Optional[list[str]] = None
-    # Base64 data URLs, heard by a Clef with an audio tower through MLX.
     audio: Optional[list[str]] = None
 
 

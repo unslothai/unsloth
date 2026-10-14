@@ -26,7 +26,6 @@ class Checkpoint:
     layout: str = "laya"
     # "pytorch", "llama.cpp" for the GGUF a Clef entry is served from (see laya_runtime._native_target), or
     # "mlx" for the form unsloth-zoo's MLX engine serves on Apple Silicon (see laya_runtime._mlx_target).
-    # A catalog entry that is itself "mlx" has no other form.
     backend: str = "pytorch"
     # The served GGUF files of a local export, so a re-export is a different checkpoint to a resident server.
     revision: str | None = None

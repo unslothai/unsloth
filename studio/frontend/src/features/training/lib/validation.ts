@@ -47,11 +47,7 @@ function isTrainingConfigSupportedOnDevice(
   return !(config.isEmbeddingModel || hasChatAudioRows(config, deviceType));
 }
 
-/**
- * On a Mac the trainer of a Clef, or of an LLM given a Clef head, reads the audio in its own rows
- * and reports the ones the model cannot hear, so the chat audio path's limits do not apply.
- * Elsewhere, and for Laya, audio rows would be trained on as text alone.
- */
+/** A Mac Clef (or Clef-head LLM) trainer reads its own audio rows; elsewhere, and for Laya, they train as text. */
 function hasChatAudioRows(
   config: TrainingConfigState,
   deviceType?: string,
