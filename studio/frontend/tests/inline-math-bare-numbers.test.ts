@@ -13,14 +13,14 @@ import { preprocessLaTeX } from "../src/lib/latex.ts";
 
 const math = createMathPlugin({ singleDollarTextMath: true });
 
-function render(source: string): string {
+function render(source: string, isStreaming = false): string {
   return renderToStaticMarkup(
     React.createElement(
       Streamdown,
       { mode: "streaming", isAnimating: false, plugins: { math } },
       stabilizeStreamingMarkdown(
-        preprocessLaTeX(normalizeEscapedInlineMath(source)),
-        false,
+        preprocessLaTeX(normalizeEscapedInlineMath(source), isStreaming),
+        isStreaming,
       ),
     ),
   );
@@ -47,6 +47,7 @@ test("numbers written as inline maths render as maths", () => {
   const cases: Array<[string, string[]]> = [
     ["There are $3$ red balls and $5$ blue balls.", ["3", "5"]],
     ["The answer is $42$.", ["42"]],
+    ["$$42$$", ["42"]],
     ["The answer is $42$", ["42"]],
     ["The answer is $42$!", ["42"]],
     ["Is it $3$?", ["3"]],
@@ -57,11 +58,17 @@ test("numbers written as inline maths render as maths", () => {
     ['She asked "Is it $3$?"', ["3"]],
     ["a $10$-fold increase", ["10"]],
     ["Range $1$-$2$", ["1", "2"]],
+    ["The number $42$'s factors are 2, 3, and 7.", ["42"]],
+    ["There are $3$**red** balls.", ["3"]],
     ["The answer is $42$[source](https://example.com).", ["42"]],
     ["The answer is $42$[^1].\n\n[^1]: Source.", ["42"]],
     ['He said "The answer is $42$[source](https://example.com)."', ["42"]],
     ['He said "$42$[^1]."\n\n[^1]: Source.', ["42"]],
     ["The answer is $42$[x+1][ref].\n\n[ref]: https://example.com", ["42"]],
+    [
+      "The answer is $42$[source-link].\n\n[source-link]: https://example.com",
+      ["42"],
+    ],
     ["Step 2: $8$ times $2$ is $16$.", ["8", "2", "16"]],
     [
       "Janet has $16$ eggs. She eats $3$ and bakes with $4$, so $16 - 3 - 4 = 9$ remain.",
@@ -74,6 +81,10 @@ test("numbers written as inline maths render as maths", () => {
     assert.deepEqual(renderedMath(html), expected, source);
     assert.ok(!visibleText(html).includes("$"), `${source} showed a dollar`);
   }
+  assert.match(
+    render("There are $3$**red** balls."),
+    /data-streamdown="strong">red<\/span>/,
+  );
 });
 
 test("currency next to numbers stays text", () => {
@@ -98,6 +109,7 @@ test("a shell parameter right after a positional one stays text", () => {
     ['Run echo "$1$_" to print both.', "$1$_"],
     ['Run echo "$1$_name" to print both.', "$1$_name"],
     ['Run echo "$1$?" to print both.', "$1$?"],
+    ['cat "$1$?" to print both.', "$1$?"],
     ['Run echo "$1$#" to print both.', "$1$#"],
     ['Run echo "$1$@" to print both.', "$1$@"],
     ['Run echo "$1$*" to print both.', "$1$*"],
@@ -172,6 +184,17 @@ test("shell quote state carries across long and multiline words", () => {
 test("a trailing numeric closer stays literal while streaming", () => {
   assert.equal(preprocessLaTeX("$1$", true), "\\$1$");
   assert.equal(preprocessLaTeX("$1$", false), "$1$");
+  const source = "Run echo $1$[n+1]";
+  for (
+    let length = source.indexOf("$1$[") + 4;
+    length < source.length;
+    length++
+  ) {
+    const prefix = source.slice(0, length);
+    const html = render(prefix, true);
+    assert.deepEqual(renderedMath(html), [], prefix);
+    assert.ok(visibleText(html).includes("$1$["), prefix);
+  }
 });
 
 test("many unterminated substitutions stay within the streaming budget", () => {

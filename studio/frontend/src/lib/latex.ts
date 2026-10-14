@@ -83,7 +83,22 @@ const SHELL_COMMANDS = new Set([
 const SHELL_LEADIN_RE = /^(?:Run|Use|Try|Execute|sudo|command|builtin|env)$/i;
 const SHELL_WORD_RE = /^(?:[a-z_][\w.-]*|\.{0,2}\/[^\s]+)$/;
 
-function hasShellCommandPrefix(text: string, at: number): boolean {
+function hasShellCommandPrefix(
+  text: string,
+  at: number,
+  allowBareCommand = false,
+): boolean {
+  const previousChar = text.charCodeAt(at - 1);
+  if (
+    at > 0 &&
+    previousChar > 32 &&
+    previousChar !== 38 &&
+    previousChar !== 59 &&
+    previousChar !== 61 &&
+    previousChar !== 124
+  ) {
+    return false;
+  }
   const minimum = Math.max(0, at - 256);
   let lineStart = at;
   while (lineStart > minimum && text.charCodeAt(lineStart - 1) !== 10) {
@@ -94,10 +109,23 @@ function hasShellCommandPrefix(text: string, at: number): boolean {
   if (/[=|&;]$/.test(prefix)) return true;
   if (/\b(?:shell|bash|command) examples?\b[^\n.]*$/i.test(prefix)) return true;
   const words = prefix.match(/[^\s]+/g) ?? [];
-  const last = words.at(-1) ?? "";
-  if (SHELL_COMMANDS.has(last) || /^\.{0,2}\//.test(last)) return true;
-  const previous = words.at(-2) ?? "";
-  if (SHELL_LEADIN_RE.test(previous) && SHELL_WORD_RE.test(last)) return true;
+  let commandIndex = 0;
+  while (
+    commandIndex < words.length - 1 &&
+    SHELL_LEADIN_RE.test(words[commandIndex])
+  ) {
+    commandIndex++;
+  }
+  const command = words[commandIndex] ?? "";
+  if (SHELL_COMMANDS.has(command) || /^\.{0,2}\//.test(command)) return true;
+  if (
+    allowBareCommand &&
+    command.length >= 2 &&
+    commandIndex === words.length - 1 &&
+    SHELL_WORD_RE.test(command)
+  ) {
+    return true;
+  }
   return /[;&|]\s*[a-z_][\w.-]*\s*$/.test(prefix);
 }
 
@@ -114,7 +142,7 @@ function findShellQuoteStates(text: string): Map<number, number> {
       if (char === 39 && isWordChar(text.charCodeAt(index - 1))) {
         continue;
       }
-      quote = hasShellCommandPrefix(text, index) ? char : -char;
+      quote = hasShellCommandPrefix(text, index, true) ? char : -char;
     } else if (char === activeQuote) {
       quote = 0;
     }
@@ -141,14 +169,21 @@ function startsLegacyArithmetic(
   numericOffset: number,
   quoteState: number,
   closes: Int32Array | undefined,
+  isStreaming: boolean,
 ): boolean {
   const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
   const close = (closes?.[at] ?? 0) - 1;
-  if (close === -1 || close >= limit || text[at + 1] === "^") return false;
+  if (close === -1) {
+    return (
+      isStreaming &&
+      quoteState >= 0 &&
+      (quoteState > 0 || hasShellCommandPrefix(text, numericOffset))
+    );
+  }
+  if (close >= limit || text[at + 1] === "^") return false;
   if (text[close + 1] === "(" || text[close + 1] === "[") return false;
   if (quoteState < 0) return false;
-  if (quoteState > 0 || hasShellCommandPrefix(text, numericOffset)) return true;
-  return /[+\-*/%<>&|=~?:()]/.test(text.slice(at + 1, close));
+  return quoteState > 0 || hasShellCommandPrefix(text, numericOffset);
 }
 
 /** valid Bash expansion starts after `$`, disambiguated from prose punctuation and closing quotes. */
@@ -158,11 +193,17 @@ function startsShellExpansion(
   numericOffset: number,
   quoteState: number,
   legacyArithmeticCloses: Int32Array | undefined,
+  isStreaming: boolean,
 ): boolean {
   if (at >= text.length) return false;
   const char = text.charCodeAt(at);
   const quote = Math.abs(quoteState);
-  if (char === 34 || char === 39) return quote !== char;
+  if (char === 34 || char === 39) {
+    return (
+      quote !== char &&
+      (quoteState > 0 || hasShellCommandPrefix(text, numericOffset))
+    );
+  }
   if (char === 33 || char === 45 || char === 63) {
     return quoteState > 0 || hasShellCommandPrefix(text, numericOffset);
   }
@@ -173,8 +214,10 @@ function startsShellExpansion(
       numericOffset,
       quoteState,
       legacyArithmeticCloses,
+      isStreaming,
     );
-  if (char === 42 || char === 64 || char === 35) return true;
+  if (char === 42) return text.charCodeAt(at + 1) !== 42;
+  if (char === 64 || char === 35) return true;
   return isWordChar(char) || char === 123 || char === 40 || char === 36;
 }
 
@@ -185,7 +228,10 @@ function numericShellParameterStart(text: string, at: number): number {
     if (char < 48 || char > 57) break;
     start--;
   }
-  return start < at && text[start - 1] === "$" && text[start - 2] !== "\\"
+  return start < at &&
+    text[start - 1] === "$" &&
+    text[start - 2] !== "\\" &&
+    text[start - 2] !== "$"
     ? start - 1
     : -1;
 }
@@ -742,6 +788,7 @@ function hasInlineMathCloser(
           offset,
           shellQuoteStates.get(offset) ?? 0,
           legacyArithmeticCloses,
+          isStreaming,
         )
       )
         return true;
@@ -1015,6 +1062,7 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
         numericOffset,
         shellQuoteStates.get(numericOffset) ?? 0,
         legacyArithmeticCloses,
+        isStreaming,
       ) &&
       !inCode(offset) &&
       !inLink(offset) &&
