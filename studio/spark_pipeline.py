@@ -139,6 +139,35 @@ LORA_TARGETS_LLAMA = (
 )
 
 
+# The names a config uses to say "this block routes tokens to a subset of experts".
+_CONDITIONAL_EXPERT_KEYS = (
+    "num_experts",
+    "num_local_experts",
+    "n_routed_experts",
+    "num_experts_per_tok",
+    "moe_num_experts",
+    "num_experts_per_token",
+)
+
+
+def has_conditional_experts(config) -> bool:
+    """Whether this architecture routes each token to a subset of its experts."""
+    seen = [config]
+    for name in ("text_config", "llm_config", "decoder"):
+        nested = getattr(config, name, None)
+        if nested is not None:
+            seen.append(nested)
+    for candidate in seen:
+        for key in _CONDITIONAL_EXPERT_KEYS:
+            try:
+                value = int(getattr(candidate, key, 0) or 0)
+            except (TypeError, ValueError):
+                continue
+            if value > 1:
+                return True
+    return False
+
+
 # Gated-delta linear attention in Qwen3-Next / Qwen3.5 hybrids, as unsloth/models/decision.py
 # targets them: their layers also carry the Llama MLP names, so these must be added, not inferred.
 LORA_TARGETS_HYBRID_ATTENTION = ("in_proj_qkvz", "in_proj_qkv", "in_proj_z", "out_proj")
@@ -1694,11 +1723,299 @@ def build_parser() -> argparse.ArgumentParser:
         "--data", default = None, help = "jsonl with {q, a} rows; random token ids if omitted"
     )
     p.add_argument("--save", default = None, help = "directory to save this stage into")
+    p.add_argument(
+        "--data-parallel",
+        action = "store_true",
+        help = "one FULL model per rank, gradients averaged by DDP (or parameters "
+        "sharded with --fsdp). Buys throughput, not capacity: the model must fit "
+        "on one Spark. Same data, loss and LoRA setup as the layer split, so the "
+        "two are directly comparable. WORLD_SIZE=1 is the single-Spark control.",
+    )
+    p.add_argument(
+        "--fsdp",
+        action = "store_true",
+        help = "with --data-parallel: shard the base weights across the ranks "
+        "(torch.distributed.fsdp.fully_shard) instead of replicating them",
+    )
     return p
+
+
+def apply_lora(model, r: int):
+    """The one LoRA configuration every arm trains, so that a layer split and a data parallel replica
+    of the same model train the same adapters."""
+    from peft import LoraConfig, get_peft_model
+    return get_peft_model(
+        model,
+        LoraConfig(
+            r = r,
+            lora_alpha = r,
+            lora_dropout = 0.0,
+            bias = "none",
+            task_type = "CAUSAL_LM",
+            target_modules = lora_target_modules(model),
+        ),
+    )
+
+
+def make_token_batches(tok, args, device):
+    """The training rows for a run as ``(input_ids, labels)``, drawn from a fixed seed on every rank
+    rather than broadcast: the layer split already relies on that (stage 0 draws the inputs and the
+    loss stage the targets, and they have to agree), and it keeps every arm on the same rows."""
+    import torch
+
+    torch.manual_seed(3407)
+    need = args.batch * args.steps
+    if args.data:
+        # `if line.strip()` for the same reason the layer-split reader has it: dataset_problem only
+        # establishes that at least one NONBLANK row exists, so a valid file with a blank separator
+        # line reached json.loads and raised -- after both ranks had allocated a model.
+        rows = [json.loads(line) for line in open(args.data, encoding = "utf-8") if line.strip()]
+        texts = [
+            tok.apply_chat_template(
+                [{"role": "user", "content": r["q"]}, {"role": "assistant", "content": r["a"]}],
+                tokenize = False,
+            )
+            for r in rows
+        ]
+        enc = tok(
+            texts,
+            return_tensors = "pt",
+            padding = "max_length",
+            truncation = True,
+            max_length = args.seq,
+            # apply_chat_template has already rendered the template's own BOS/EOS into the text, so
+            # the default add_special_tokens=True adds a SECOND set -- a duplicated BOS on the
+            # Llama-style templates.
+            add_special_tokens = False,
+        )
+        ids = enc.input_ids
+        # Padded positions are not text.
+        labels = ids.masked_fill(enc.attention_mask == 0, -100)
+        reps = (need + len(ids) - 1) // len(ids)
+        return (
+            ids.repeat(reps, 1)[:need],
+            labels.repeat(reps, 1)[:need],
+        )
+    ids = torch.randint(0, tok.vocab_size, (need, args.seq))
+    return ids, ids
+
+
+def _main_data_parallel(args) -> int:
+    """`--data-parallel`: one whole model per rank; the ranks average gradients."""
+    import contextlib
+
+    import torch
+    import torch.distributed as dist
+
+    rank = int(os.environ.get("RANK", "0"))
+    world = int(os.environ.get("WORLD_SIZE", "1"))
+    if args.shard_load:
+        raise SystemExit(
+            "--shard-load is a layer-split option; a data-parallel replica holds the "
+            "whole model on every rank."
+        )
+    if args.microbatches < 1:
+        raise SystemExit(f"--microbatches must be at least 1, got {args.microbatches}")
+    if args.batch % args.microbatches:
+        raise SystemExit("--batch must be divisible by --microbatches")
+    if args.save and args.fsdp and world > 1:
+        # Refuse up front.
+        raise SystemExit(
+            "--save is not implemented for --fsdp (sharded parameters); drop one of them."
+        )
+    if args.batch % world or args.microbatches % world:
+        raise SystemExit(
+            f"--batch ({args.batch}) and --microbatches ({args.microbatches}) must both "
+            f"be divisible by the world size ({world}) so every rank gets equal rows."
+        )
+    if args.data:
+        # The same preflight the layer-split path runs, and for the same reason: it is reached from
+        # `main` only on that path, below the dispatch to this function, so an empty or blank-only
+        # jsonl got as far as tokenization -- after both ranks had joined the process group and
+        # allocated a full model each.
+        problem = dataset_problem(args.data)
+        if problem:
+            raise SystemExit(problem)
+    use_cpu = os.environ.get("SPARK_PP_CPU", "0") == "1"
+    if use_cpu:
+        dist.init_process_group("gloo")
+        device = torch.device("cpu")
+        dtype = torch.float32
+    else:
+        torch.cuda.set_device(int(os.environ.get("LOCAL_RANK", 0)))
+        dist.init_process_group("nccl")
+        device = torch.device("cuda")
+        dtype = torch.bfloat16
+
+    def log(msg):
+        print(f"[spark-dp {rank}/{world}] {msg}", flush = True)
+
+    mode = "fsdp" if (args.fsdp and world > 1) else ("ddp" if world > 1 else "single")
+    log(f"host={os.uname().nodename} data-parallel mode={mode}")
+
+    from transformers import AutoTokenizer
+
+    tok = AutoTokenizer.from_pretrained(args.model)
+    # The same two lines the layer-split path sets, for the same two reasons.
+    if tok.pad_token is None:
+        # Base decoder-only checkpoints ship without one, and padding then raises before the first
+        # step.
+        tok.pad_token = tok.eos_token
+    # Right padding keeps every real token preceded only by real tokens, so a causal model needs no
+    # padding mask for the representations; only the labels have to exclude pads.
+    tok.padding_side = "right"
+    # And the third: the layer-split path rejects a base checkpoint here, right after the tokenizer
+    # and before the model, precisely because `apply_chat_template` raised only once both ranks had
+    # loaded and materialised a full model each.
+    if args.data and getattr(tok, "chat_template", None) is None:
+        raise SystemExit(
+            f"--data formats each row with the tokenizer's chat template, and {args.model} "
+            f"has none (it is a base checkpoint). Point --model at an instruction-tuned "
+            f"checkpoint, or drop --data to train on synthetic ids."
+        )
+    # Seed BEFORE the adapters exist.
+    torch.manual_seed(TRAIN_SEED)
+    model, cfg, _ = build_stage_model(
+        args.model, 0, 1, device, shard_load = False, dtype = dtype, log = log
+    )
+    if not args.full_finetune:
+        model = apply_lora(model, args.lora_r)
+    model.train()
+    if args.grad_checkpoint:
+        base_model = getattr(model, "base_model", model)
+        inner_model = getattr(base_model, "model", base_model)
+        target = inner_model if hasattr(inner_model, "gradient_checkpointing_enable") else model
+        target.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        log("gradient checkpointing enabled (use_reentrant=False)")
+    model.to(device)
+    if not use_cpu:
+        torch.cuda.empty_cache()
+
+    unwrapped = model
+    no_sync = None
+    if mode == "ddp":
+        from torch.nn.parallel import DistributedDataParallel
+
+        sparse_experts = has_conditional_experts(cfg)
+        if sparse_experts:
+            log("conditional experts: DDP with find_unused_parameters=True")
+        model = DistributedDataParallel(
+            model,
+            device_ids = None if use_cpu else [device.index or 0],
+            find_unused_parameters = sparse_experts,
+        )
+        no_sync = model.no_sync
+    elif mode == "fsdp":
+        try:
+            from torch.distributed.fsdp import fully_shard
+        except ImportError as exc:
+            raise SystemExit(f"--fsdp needs torch.distributed.fsdp.fully_shard: {exc}")
+        from torch.distributed.device_mesh import init_device_mesh
+
+        mesh = init_device_mesh("cpu" if use_cpu else "cuda", (world,))
+        # find_layers' own container: GPT-2 / GPT-J name it `h`, not `layers`.
+        top, _ = unwrap_stack(model)
+        for layer in find_layers(top)[1]:
+            if isinstance(layer, torch.nn.Module) and any(True for _ in layer.parameters()):
+                fully_shard(layer, mesh = mesh)
+        fully_shard(model, mesh = mesh)
+
+        def _sync(on):
+            model.set_requires_gradient_sync(on)
+
+        @contextlib.contextmanager
+        def _no_sync():
+            _sync(False)
+            try:
+                yield
+            finally:
+                _sync(True)
+
+        no_sync = _no_sync
+
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    resident = f"{torch.cuda.memory_allocated()/2**30:.2f} GiB" if not use_cpu else "cpu"
+    log(
+        f"{sum(p.numel() for p in model.parameters())/1e9:.2f} B params resident "
+        f"({resident}), {sum(p.numel() for p in trainable)/1e6:.1f} M trainable"
+    )
+    opt = torch.optim.AdamW(trainable, lr = args.lr)
+
+    ids_all, labels_all = make_token_batches(tok, args, device)
+    per_rank = args.batch // world
+    mb_per_rank = args.microbatches // world
+    mb_rows = per_rank // mb_per_rank
+    mb_tokens = mb_rows * args.seq
+    if mb_tokens < 436:
+        log(
+            f"WARNING: each microbatch is {mb_tokens} tokens, below the ~436-token "
+            f"compute/bandwidth crossover; raise --batch or --seq, or lower --microbatches."
+        )
+    log(
+        f"global batch {args.batch} = {world} rank(s) x {mb_per_rank} microbatch(es) "
+        f"x {mb_rows} rows x {args.seq} tokens"
+    )
+
+    dist.barrier()
+    t0 = time.perf_counter()
+    for step in range(args.steps):
+        opt.zero_grad(set_to_none = True)
+        # On the CPU until its step, as in the layer split.
+        whole = ids_all[step * args.batch : (step + 1) * args.batch].to(device)
+        whole_y = labels_all[step * args.batch : (step + 1) * args.batch].to(device)
+        mine = whole[rank * per_rank : (rank + 1) * per_rank]
+        mine_y = whole_y[rank * per_rank : (rank + 1) * per_rank]
+        # Whole-step token mean: the ranks' gradient average divides by world again.
+        set_pp_batch_tokens(whole_y, world * mb_per_rank)
+        acc = torch.zeros((), device = device, dtype = torch.float32)
+        for m in range(mb_per_rank):
+            x = mine[m * mb_rows : (m + 1) * mb_rows]
+            y = mine_y[m * mb_rows : (m + 1) * mb_rows]
+            last = m == mb_per_rank - 1
+            ctx = contextlib.nullcontext() if (last or no_sync is None) else no_sync()
+            with ctx:
+                logits = model(input_ids = x, use_cache = False).logits
+                loss = pp_loss_fn(logits, y) / mb_per_rank
+                loss.backward()
+            acc += loss.detach().float()
+        opt.step()
+        if (step + 1) % 5 == 0 or args.steps <= 10:
+            if world > 1:
+                dist.all_reduce(acc, op = dist.ReduceOp.AVG)
+            if rank == 0:
+                log(f"step {step+1}/{args.steps} loss={acc.item():.4f}")
+
+    dist.barrier()
+    elapsed = time.perf_counter() - t0
+    if rank == 0:
+        toks = args.batch * args.seq * args.steps
+        log(
+            f"DONE {args.steps} steps in {elapsed:.1f}s | "
+            f"{elapsed/args.steps:.2f}s/step | {toks/elapsed:.0f} tok/s"
+        )
+    if not use_cpu:
+        log(f"peak_mem={torch.cuda.max_memory_allocated()/2**30:.2f} GiB")
+
+    if args.save and rank == 0 and mode != "fsdp":
+        os.makedirs(args.save, exist_ok = True)
+        unwrapped.save_pretrained(args.save)
+        log(f"saved to {args.save}")
+    elif args.save and mode == "fsdp":
+        log("--save is not implemented for --fsdp (sharded parameters); skipped")
+
+    dist.destroy_process_group()
+    return 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+    # Both sides of the merge, in this order on purpose: the data-parallel arm returns before
+    # anything below it, and `schedule` is a pipeline-parallel setting that arm never reads, so
+    # defaulting it first would be work done for a path that does not use it.
+    if args.data_parallel:
+        return _main_data_parallel(args)
     if args.schedule is None:
         args.schedule = default_schedule(args.pp_backend)
 

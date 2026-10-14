@@ -195,6 +195,14 @@
       "reason": "Module name comes from a fixed table or constant in this file, not from a model, request or download."
     },
     {
+      "file": "studio/backend/core/inference/spark_serving.py",
+      "rule": "dynamic-import",
+      "sink": "spec_from_file_location",
+      "digest": "35d098852cae088c",
+      "count": 1,
+      "reason": "Loads studio/spark_cluster.py from this checkout at a path fixed relative to the module, never a user or model path."
+    },
+    {
       "file": "studio/backend/core/inference/video_wan_fused.py",
       "rule": "dynamic-import",
       "sink": "import_module",

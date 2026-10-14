@@ -699,6 +699,10 @@ class GgufLoadIntent:
 
     model_identifier: str
     gguf_path: Optional[str] = None
+    # What the CALLER asked for, kept beside the resolved identifier above rather than derived from
+    # it.
+    requested_identifier: Optional[str] = None
+    requested_variant: Optional[str] = None
     # A cached file and every shard's byte count, already verified for this repo and variant.
     verified_gguf: Optional[tuple[str, str, str, tuple[tuple[str, int], ...]]] = None
     mmproj_path: Optional[str] = None
@@ -8579,6 +8583,7 @@ class LlamaCppBackend:
         # compare requested-vs-requested like _requested_n_ctx does.
         self._requested_extra_args: Optional[List[str]] = None
         self._extra_args_source: Optional[tuple[str, Optional[str]]] = None
+        self._extra_args_requested_source: Optional[tuple[Optional[str], Optional[str]]] = None
         self._requested_n_ctx: int = 0
         # Last healthy caller intent for crash recovery. Memory-only and never logged.
         self._last_load_intent: Optional[GgufLoadIntent] = None
@@ -8723,6 +8728,11 @@ class LlamaCppBackend:
 
     @property
     def base_url(self) -> str:
+        from core.inference.spark_serving import route_base_url
+
+        routed = route_base_url(self)
+        if routed is not None:
+            return routed
         return f"http://127.0.0.1:{self._port}"
 
     @property
@@ -8875,6 +8885,19 @@ class LlamaCppBackend:
         ``None`` if no extras have ever been recorded. Used by the route
         to refuse cross-model inheritance (#5401)."""
         return self._extra_args_source
+
+    @property
+    def extra_args_requested_source(self) -> Optional[tuple[Optional[str], Optional[str]]]:
+        """(requested_identifier, requested_variant) the stored extra_args came from, i.e. what the
+        caller typed rather than what it resolved to."""
+        return self._extra_args_requested_source
+
+    @property
+    def launched_env(self) -> Optional[dict[str, str]]:
+        """The environment the running llama-server was actually spawned with, or ``None`` before any
+        spawn."""
+        env = getattr(self, "_launched_env", None)
+        return dict(env) if env else None
 
     @property
     def context_length(self) -> Optional[int]:
@@ -20293,6 +20316,9 @@ class LlamaCppBackend:
                 # prior GGUF load's record cannot outlive it.
                 self._requested_extra_args = list(extra_args)
                 self._extra_args_source = (model_identifier, hf_variant)
+                # Cleared, not left: the two are written together at the GGUF commit point and must
+                # never disagree.
+                self._extra_args_requested_source = None
             # The visual server logs "MAXTOK=<N>" with the context budget it actually resolved
             # (auto-sized to VRAM). Read it back so the UI context bar shows the real budget.
             chosen = maxtok
@@ -24839,6 +24865,7 @@ class LlamaCppBackend:
                 self._close_attempt_log()
                 self._health_wait_cancelled = True
                 return False
+            self._launched_env = dict(env)
             # PDEATHSIG follows the forking thread; the MTP-crash reload's thread exits.
             _spawned = _spawn_on_lifetime_thread(
                 lambda: subprocess.Popen(
@@ -32235,6 +32262,7 @@ class LlamaCppBackend:
                                 self._close_attempt_log()
                                 self._health_wait_cancelled = True
                                 return False
+                            self._launched_env = dict(env)
                             _spawned = _spawn_on_lifetime_thread(
                                 lambda: subprocess.Popen(
                                     run_cmd,
@@ -34169,6 +34197,10 @@ class LlamaCppBackend:
                         else list(_pv_requested)
                     )
                     self._extra_args_source = (model_identifier, hf_variant)
+                    self._extra_args_requested_source = (
+                        intent.requested_identifier,
+                        intent.requested_variant,
+                    )
                 # A re-fit replay records what launched, which is what the client replays next.
                 self._requested_n_ctx = int(effective_ctx if _replayed_ctx_refit else n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
@@ -38321,6 +38353,9 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
+        from core.inference.spark_serving import tag_conversation
+
+        tag_conversation(payload, thread_id)
         retry_messages = messages
         retry_image_b64 = image_b64
         retry_max_tokens = max_tokens
@@ -39542,6 +39577,10 @@ class LlamaCppBackend:
                 "presence_penalty": presence_penalty,
                 "frequency_penalty": frequency_penalty,
             }
+
+            from core.inference.spark_serving import tag_conversation
+
+            tag_conversation(payload, thread_id)
 
             # Progress events feed the first-token deadline; timings stay opt-in.
             payload["return_progress"] = True
@@ -42351,6 +42390,10 @@ class LlamaCppBackend:
             "presence_penalty": presence_penalty,
             "frequency_penalty": frequency_penalty,
         }
+
+        from core.inference.spark_serving import tag_conversation
+
+        tag_conversation(stream_payload, thread_id)
         if logit_bias:
             stream_payload["logit_bias"] = logit_bias
         if _final_tools:
