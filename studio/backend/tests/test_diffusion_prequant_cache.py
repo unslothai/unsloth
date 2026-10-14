@@ -128,7 +128,7 @@ def _write_base(
 def _quantize(model: Tiny, scheme: str) -> Tiny:
     exclude = exclude_tokens_for_scheme(scheme, FAMILY) + ("lora_",)
     divisible = divisible_for_scheme(scheme)
-    if _SCHEME is not None and _SCHEME[1]:
+    if _SCHEME is not None and _SCHEME[1] and _SCHEME[0] == scheme:
         from torchao.quantization import quantize_
         quantize_(
             model,
