@@ -1536,12 +1536,19 @@ def test_the_contract_reaches_the_backend_and_its_reply_comes_back_whole(monkeyp
     assert not message.get("reasoning_content")
 
 
-def _mlx_format_call(monkeypatch, backend, **fields):
+def _mlx_format_call(
+    monkeypatch,
+    backend,
+    caps = None,
+    **fields,
+):
     import routes.inference as inf
 
     monkeypatch.setattr(inf, "_reject_unhonorable_response_format", lambda payload: None)
     backend.models["sf-model"]["is_mlx"] = True
-    return _call(_request(**{"tools": [LOOKUP_TOOL], **fields}), monkeypatch, backend)
+    return _call(
+        _request(**{"tools": [LOOKUP_TOOL], **fields}), monkeypatch, backend, **(caps or {})
+    )
 
 
 @pytest.mark.parametrize("response_format", [_RF_FORMAT, {"type": "json_object"}])
@@ -1575,6 +1582,38 @@ def test_a_streamed_response_format_does_not_lock_out_callable_tools(monkeypatch
     ]
     assert backend.calls[0]["response_format"] is None
     assert "tool_calls" in finishes
+
+
+def test_a_set_aside_response_format_keeps_reasoning_out_of_the_call(monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_sf_reasoning_prefill_mode", lambda *a, **k: True)
+    backend = _ScriptedBackend(_fixed("weighing</think>" + _CALL_XML))
+    reply = _mlx_format_call(
+        monkeypatch,
+        backend,
+        caps = {"supports_reasoning": True},
+        response_format = _RF_FORMAT,
+        stream = False,
+    )
+    message = _json_body(reply)["choices"][0]["message"]
+    assert message["reasoning_content"] == "weighing"
+    assert not message["content"]
+    assert message["tool_calls"][0]["function"]["name"] == "lookup"
+
+
+def test_a_set_aside_response_format_still_allows_the_nudge(monkeypatch):
+    truncated = '<tool_call>{"name": "lookup"'
+    backend = _ScriptedBackend(
+        lambda messages, tools: [_CALL_XML]
+        if any("native tool-call format" in (m.get("content") or "") for m in messages)
+        else [truncated]
+    )
+    reply = _mlx_format_call(
+        monkeypatch, backend, response_format = _RF_FORMAT, nudge_tool_calls = True, stream = False
+    )
+    assert len(backend.calls) == 2
+    assert _json_body(reply)["choices"][0]["finish_reason"] == "tool_calls"
 
 
 _RF_TOOL_HISTORY = [
