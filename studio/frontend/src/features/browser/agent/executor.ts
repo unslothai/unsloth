@@ -432,7 +432,7 @@ function askInPanel(question: Question, context: ActionContext): Promise<boolean
   return askUser(question, context.signal);
 }
 
-async function observe(tab: BrowserTab, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
+async function observe(tab: BrowserTab, context: ActionContext, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind !== "web") return { ok: false, error: "No web page is open. Use browser_navigate first." };
   if (tab.pageError || tab.nativeError) {
@@ -449,7 +449,7 @@ async function observe(tab: BrowserTab, note?: string, op: Record<string, unknow
   if (fresh.loading || tabUrl(fresh) !== tabUrl(tab)) {
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
-  if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(answer.links ?? []);
+  if (op.op === "snapshot" || op.op === "find") pageLinks = new Set(context.bypassPermissions === true ? [] : answer.links ?? []);
   return {
     ok: true,
     url: tabUrl(fresh),
@@ -576,9 +576,9 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
 
   switch (action.op) {
     case "snapshot":
-      return observe(ready, undefined, { op: "snapshot", fullPage: action.fullPage, ...(action.ref ? { ref: action.ref } : {}) });
+      return observe(ready, context, undefined, { op: "snapshot", fullPage: action.fullPage, ...(action.ref ? { ref: action.ref } : {}) });
     case "find":
-      return observe(ready, undefined, { op: "find", query: action.query ?? "" });
+      return observe(ready, context, undefined, { op: "find", query: action.query ?? "" });
     case "scroll": {
       const since = Date.now();
       const moved = await pageCall(ready, { op: "scroll", direction: action.direction, ...(action.ref ? { ref: action.ref } : {}) });
@@ -588,7 +588,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
       // A page can navigate on scroll: the new address is checked like any other arrival.
       const now = tabUrl(after);
       if (now && now !== here) return arrive(after, here, action, context, since, moved.note);
-      return observe(after, moved.note);
+      return observe(after, context, moved.note);
     }
     case "screenshot":
       return screenshot(ready);
@@ -717,7 +717,7 @@ async function perform(action: BrowserAction, context: ActionContext): Promise<R
   if (!after) return { ok: false, error: "the browser tab closed." };
   const now = tabUrl(after);
   if (now && now !== here) return arrive(after, here, action, context, since, note);
-  return observe(after, note);
+  return observe(after, context, note);
 }
 
 /** `since`: when the action went out, so the wait covers the requests it started. */
@@ -733,7 +733,7 @@ async function afterward(
   if (!after) return { ok: false, error: "the browser tab closed." };
   const now = tabUrl(after);
   if (now && now !== before) return arrive(after, before, action, context, since, note);
-  return observe(after, note);
+  return observe(after, context, note);
 }
 
 // CSS px per screenshot px, per tab; only valid for the page and viewport it was taken of.
@@ -983,7 +983,7 @@ async function arrive(
     if (host && context.bypassPermissions !== true) reachedHosts.add(host);
     record(action.op, url);
   }
-  return observeLoaded(tab, since, note, context.signal);
+  return observeLoaded(tab, context, since, note);
 }
 
 /** The page the tab shows now, before the model reads or acts on it: the page may have moved on
@@ -1002,7 +1002,7 @@ async function stillAllowed(tab: BrowserTab, action: BrowserAction, context: Act
   return null;
 }
 
-async function observeLoaded(tab: BrowserTab, since: number, note?: string, signal?: AbortSignal): Promise<Result> {
+async function observeLoaded(tab: BrowserTab, context: ActionContext, since: number, note?: string): Promise<Result> {
   const entry = currentEntry(tab);
   if (entry.kind === "web" && tab.documentType && !/html/i.test(tab.documentType)) {
     return {
@@ -1012,12 +1012,12 @@ async function observeLoaded(tab: BrowserTab, since: number, note?: string, sign
       note: `${note ? `${note} ` : ""}This address is a file (${tab.documentType}), shown to the user; the browser tools can't read it. web_search with this url can.`,
     };
   }
-  if (entry.kind === "web" && !tab.pageError && !tab.nativeError && (await untilFilled(tab, since, signal))) {
+  if (entry.kind === "web" && !tab.pageError && !tab.nativeError && (await untilFilled(tab, since, context.signal))) {
     note = [note, "The page still had requests open when read; snapshot again if something is missing."].filter(Boolean).join(" ");
   }
   // Read at the address its router (same site, shell-checked) moved to while it filled in.
   const fresh = findTab(tab.id);
-  return observe(fresh && !fresh.loading && currentEntry(fresh) === entry ? fresh : tab, note);
+  return observe(fresh && !fresh.loading && currentEntry(fresh) === entry ? fresh : tab, context, note);
 }
 
 async function screenshot(tab: BrowserTab): Promise<Result> {

@@ -55,7 +55,7 @@ export const es = {
       enable: "Permitir que los modelos usen el navegador",
       enableDescription: "Los modelos abren páginas en su propia pestaña del navegador, las leen y hacen clic y escriben por ti. También en el menú + del compositor.",
       history: "Historial de navegación",
-      historyDescription: "Elige si los modelos pueden leer tu historial del navegador",
+      historyDescription: "Elige si los modelos pueden leer tu historial del navegador. Full access omite la aprobación, pero Nunca sigue bloqueando el acceso",
       alwaysAsk: "Preguntar siempre",
       alwaysAllow: "Permitir siempre",
       never: "Nunca",

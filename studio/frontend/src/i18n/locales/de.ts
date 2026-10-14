@@ -55,7 +55,7 @@ export const de = {
       enable: "Modelle den Browser nutzen lassen",
       enableDescription: "Modelle öffnen Seiten in einem eigenen Browser-Tab, lesen sie und klicken und tippen für dich. Auch im +-Menü des Eingabefelds.",
       history: "Browserverlauf",
-      historyDescription: "Lege fest, ob Modelle deinen Browserverlauf lesen dürfen",
+      historyDescription: "Lege fest, ob Modelle deinen Browserverlauf lesen dürfen. Full access überspringt die Bestätigung, aber Nie sperrt den Zugriff weiterhin",
       alwaysAsk: "Immer fragen",
       alwaysAllow: "Immer erlauben",
       never: "Nie",

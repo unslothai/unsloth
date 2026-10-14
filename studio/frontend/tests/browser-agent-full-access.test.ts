@@ -35,6 +35,7 @@ function fixture(info: ElementInfo = button, onDescribe?: () => void, allowQuest
   const posted: Result[] = [];
   const sent: string[] = [];
   const questions: string[] = [];
+  const links: string[] = [];
   globals.__browserHistory = [{ url, title: "Shop", visitedAt: Date.UTC(2026, 0, 1) }];
   globals.__authFetch = async (_url: string, init: { body: string }) => {
     posted.push(JSON.parse(init.body).result);
@@ -45,7 +46,7 @@ function fixture(info: ElementInfo = button, onDescribe?: () => void, allowQuest
     if (op.op === "describe") onDescribe?.();
     return { installed: true, result: {
       ok: true, quietMs: 1000, requests: 0, doc: "d1", hit: "r1", sig: "control", info,
-      x: 20, y: 20, text: op.op === "evaluated" ? "script result" : "page", links: [],
+      x: 20, y: 20, text: op.op === "evaluated" ? "script result" : "page", links,
     } };
   };
   // Model the panel finishing a navigation; no mounted iframe delivers onLoad in this Node harness.
@@ -68,7 +69,7 @@ function fixture(info: ElementInfo = button, onDescribe?: () => void, allowQuest
     return posted.at(-1)!;
   }
   const unsubscribe = () => { unsubscribeLoad(); unsubscribeQuestion(); };
-  return { act, sent, questions, unsubscribe };
+  return { act, sent, questions, links, unsubscribe };
 }
 
 const approvals: { name: string; action: Partial<BrowserAction>; info?: ElementInfo; ask: string; sent: string }[] = [
@@ -140,6 +141,51 @@ for (const op of ["click", "drag"] as const) {
   });
 }
 
+test("links read on a Full access arrival do not approve later normal navigation", async (t) => {
+  const f = fixture();
+  t.after(f.unsubscribe);
+  const linked = "https://new.example.org/linked";
+  f.links.push(linked);
+  assert.equal((await f.act({ op: "navigate", url: "https://new.example.org/" }, true)).ok, true);
+  assert.equal((await f.act({ op: "navigate", url: linked }, false)).ok, false);
+  assert.deepEqual(f.questions, ["open"]);
+});
+
+for (const op of ["snapshot", "find"] as const) {
+  test(`links from a Full access ${op} do not approve later normal navigation`, async (t) => {
+    const f = fixture();
+    t.after(f.unsubscribe);
+    assert.equal((await f.act({ op: "navigate", url: "https://new.example.org/" }, true)).ok, true);
+    const linked = "https://new.example.org/linked";
+    f.links.push(linked);
+    assert.equal((await f.act({ op, query: "link" }, true)).ok, true);
+    assert.equal((await f.act({ op: "navigate", url: linked }, false)).ok, false);
+    assert.deepEqual(f.questions, ["open"]);
+  });
+}
+
+test("links from a normal approved read still open without a new prompt", async (t) => {
+  const f = fixture();
+  t.after(f.unsubscribe);
+  const linked = "https://linked.example.org/";
+  f.links.push(linked);
+  assert.equal((await f.act({ op: "snapshot" }, false)).ok, true);
+  assert.equal((await f.act({ op: "navigate", url: linked }, false)).ok, true);
+  assert.deepEqual(f.questions, []);
+});
+
+test("a Full access read clears links from an older normal page", async (t) => {
+  const f = fixture();
+  t.after(f.unsubscribe);
+  const linked = "https://linked.example.org/";
+  f.links.push(linked);
+  assert.equal((await f.act({ op: "snapshot" }, false)).ok, true);
+  f.links.length = 0;
+  assert.equal((await f.act({ op: "navigate", url: "https://new.example.org/" }, true)).ok, true);
+  assert.equal((await f.act({ op: "navigate", url: linked }, false)).ok, false);
+  assert.deepEqual(f.questions, ["open"]);
+});
+
 test("entering Full access preserves approvals the user actually granted", async (t) => {
   const f = fixture(button, undefined, true);
   t.after(f.unsubscribe);
@@ -210,6 +256,11 @@ test("a browser action payload cannot grant itself Full access", () => {
 test("script settings disclose that Full access skips script approval", async () => {
   const { en } = await import("../src/i18n/locales/en.ts");
   assert.match(en.browser.agentSettings.scriptsDescription, /Full access/);
+});
+
+test("history settings disclose that Full access skips read approval", async () => {
+  const { en } = await import("../src/i18n/locales/en.ts");
+  assert.match(en.browser.agentSettings.historyDescription, /Full access/);
 });
 
 test("the chat adapter forwards its captured Full access flag to the browser action context", () => {
