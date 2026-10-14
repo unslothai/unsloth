@@ -166,8 +166,9 @@ def native_speed_flags(
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
 
 
-# ggml backends whose direct conv (implicit GEMM) is slower than im2col: Vulkan (sd.cpp #2137, RDNA2 10.9 -> 73.4 s)
-# and HIP (#2085, RDNA3), and on gfx1151 for both (Studio AMD CI). CUDA, CPU and an unknown build keep it.
+# ggml backends whose direct conv (implicit GEMM) loses to im2col: Vulkan (sd.cpp #2137, RDNA2 10.9 -> 73.4 s) and HIP
+# (#2085, RDNA3). On gfx1151 it is never faster: neutral on the DiTs (Z-Image), 4.5-5% slower on an SDXL UNet under
+# HIP. CUDA, CPU and an unknown build keep it.
 _CONV_DIRECT_SLOW_BACKENDS = ("vulkan", "rocm", "hip")
 
 
