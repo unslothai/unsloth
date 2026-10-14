@@ -858,28 +858,23 @@ function ChatFilesPanel({
             {showAll ? (
               <button
                 type="button"
-                className="unsloth-files-panel-more"
+                className="unsloth-files-panel-action justify-self-start"
                 aria-expanded={true}
                 onClick={() => setShowAll(false)}
               >
                 Show less
-                <HugeiconsIcon icon={ChevronUpStandardIcon} strokeWidth={1.75} className="size-3.5" />
               </button>
             ) : null}
           </div>
           {overflowing && !showAll ? (
+            // Over the strip's end, shown on hover or focus: it takes no room from the files.
             <button
               type="button"
-              className="unsloth-files-panel-more"
+              className="unsloth-files-panel-action unsloth-files-panel-show-all"
               aria-expanded={false}
               onClick={() => setShowAll(true)}
             >
               Show all
-              <HugeiconsIcon
-                icon={ChevronDownStandardIcon}
-                strokeWidth={1.75}
-                className="size-3.5"
-              />
             </button>
           ) : null}
         </div>

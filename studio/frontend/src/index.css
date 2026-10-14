@@ -6233,7 +6233,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	opacity: 0 !important;
 }
 .unsloth-files-panel-row {
-	@apply flex items-center gap-2;
+	@apply relative flex items-center;
 }
 .unsloth-files-panel-row:has(.unsloth-files-panel-strip:empty) {
 	display: none;
@@ -6251,16 +6251,28 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel[data-collapsed="true"] {
 	@apply gap-2.5 pt-3 pb-3;
 }
-/* Beside a Show all, the strip ends at the button instead of the panel edge. */
-.unsloth-files-panel-row:has(> .unsloth-files-panel-more) > .unsloth-files-panel-strip {
-	@apply mr-0 pr-0;
-	mask-image: linear-gradient(to left, transparent, black 1.5rem);
+/* Solid, so it reads over the files it floats on. */
+.unsloth-files-panel-show-all {
+	@apply pointer-events-none absolute top-1/2 right-0 z-10 -translate-y-1/2 opacity-0 shadow-sm transition-opacity;
+	background-color: #ffffff;
 }
-.unsloth-files-panel-more {
-	@apply inline-flex h-7 shrink-0 items-center gap-0.5 rounded-full pr-1.5 pl-2.5 text-ui-12 text-muted-foreground transition-colors hover:text-foreground;
+.dark .unsloth-files-panel-show-all {
+	background-color: color-mix(in oklab, var(--foreground) 12%, var(--card));
 }
-.unsloth-files-panel-more:hover {
-	background-color: color-mix(in oklab, var(--foreground) 6%, transparent);
+.unsloth-files-panel-row:is(:hover, :focus-within) > .unsloth-files-panel-show-all,
+.unsloth-files-panel-show-all:focus-visible {
+	@apply pointer-events-auto opacity-100;
+}
+.unsloth-files-panel-show-all:hover {
+	background-color: color-mix(in oklab, var(--foreground) 6%, #ffffff);
+}
+.dark .unsloth-files-panel-show-all:hover {
+	background-color: color-mix(in oklab, var(--foreground) 16%, var(--card));
+}
+@media (pointer: coarse) {
+	.unsloth-files-panel-show-all {
+		@apply pointer-events-auto opacity-100;
+	}
 }
 /* Show all: equal columns across the full width, every pill stretched to its column. */
 .unsloth-files-panel-strip[data-show-all="true"] {
@@ -6273,9 +6285,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .unsloth-files-panel-strip[data-show-all="true"] .unsloth-files-pill {
 	@apply w-full max-w-none;
 }
-.unsloth-files-panel-strip[data-show-all="true"] > .unsloth-files-panel-more {
-	@apply justify-self-start;
-}
+
 .unsloth-files-panel-action {
 	@apply inline-flex h-8 shrink-0 items-center rounded-full border px-3.5 text-ui-13 text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50;
 	border-color: color-mix(in oklab, var(--foreground) 14%, transparent);
