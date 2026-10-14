@@ -85,8 +85,10 @@ import {
 } from "./window-layout";
 import {
   type MeasuredWindowLayout,
+  type MinimumSizeApplier,
   type PixelRatioSource,
   type WindowLayoutGuard,
+  createMinimumSizeApplier,
   finalizeAppWindowLayout,
   measureWindowLayout,
   observeDevicePixelRatio,
@@ -220,6 +222,29 @@ function measureTauriWindowLayout(
   );
 }
 
+let minimumSizeApplier: MinimumSizeApplier | null = null;
+
+// One per app: the main window is the only one sized here.
+function windowMinimumSize(win: TauriWindow): MinimumSizeApplier {
+  minimumSizeApplier ??= createMinimumSizeApplier({
+    isRestored: async () => {
+      const [maximized, fullscreen, minimized] = await Promise.all([
+        win.isMaximized(),
+        win.isFullscreen(),
+        win.isMinimized(),
+      ]);
+      return !maximized && !fullscreen && !minimized;
+    },
+    onResized: (handler) => win.onResized(handler),
+    applyFloor: (minimum) =>
+      win.setSizeConstraints({
+        minWidth: minimum.width,
+        minHeight: minimum.height,
+      }),
+  });
+  return minimumSizeApplier;
+}
+
 async function placeWindow(
   win: TauriWindow,
   { LogicalSize, PhysicalPosition }: WindowModule,
@@ -268,10 +293,7 @@ async function reapplyWindowSizeConstraints(
   if (!measured || !isCurrent()) return;
 
   const { minimum } = measured.bounds;
-  await win.setSizeConstraints({
-    minWidth: minimum.width,
-    minHeight: minimum.height,
-  });
+  await windowMinimumSize(win).apply(minimum);
   if (!isCurrent()) return;
   // No maximum: capping here would fight a user's own larger size.
   await enforceWindowSizeBounds(win, windowModule.LogicalSize, isCurrent, {
@@ -289,7 +311,10 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
     !(await prepareSetupWindow({
       resetLayout: () => invoke("reset_app_window_layout_initialized"),
       unmaximize: () => win.unmaximize(),
-      clearConstraints: () => win.setSizeConstraints(null),
+      clearConstraints: () => {
+        windowMinimumSize(win).cancel();
+        return win.setSizeConstraints(null);
+      },
       enableResize: () => win.setResizable(true),
       resizeForSetup: async () => {
         const measured = await measureTauriWindowLayout(
@@ -413,11 +438,7 @@ async function applyAppWindowLayout(
         ? undefined
         : layoutObserver?.waitForSettled,
       measure: () => measureTauriWindowLayout(windowModule, win, isCurrent),
-      setMinimumConstraints: (minimum) =>
-        win.setSizeConstraints({
-          minWidth: minimum.width,
-          minHeight: minimum.height,
-        }),
+      setMinimumConstraints: (minimum) => windowMinimumSize(win).apply(minimum),
       enforceBounds: (bounds) =>
         enforceWindowSizeBounds(
           win,

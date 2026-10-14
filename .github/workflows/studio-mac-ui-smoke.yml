@@ -258,23 +258,13 @@ jobs:
           key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
           enableCrossOsArchive: true
 
-      - name: Install Unsloth (--local, --no-torch)
-        id: install_unsloth
-        if: ${{ !cancelled() }}
-        uses: ./.github/actions/install-unsloth-local
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-
-      - name: Assert llama.cpp loads on this macOS
-        id: assert_llama
-        # Second half of the bootstrap, and it needs no GGUF: it runs
-        # llama-server --version plus a static vtool minimum-OS check.
-        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
-        run: bash .github/scripts/assert-llama-loads.sh
-
       - name: Install Playwright browsers
+        # A background step, like the two cache restores after it: all three only
+        # fetch into their own directories, so they run while Install Unsloth does.
+        # The `wait-all` after the llama.cpp check settles them before any step reads
+        # their outputs.
+        id: pw_install
+        background: true
         # No --with-deps on Mac: that flag installs Linux apt packages.
         # GitHub-hosted macos-15 ships the system frameworks Chromium
         # needs already.
@@ -291,6 +281,48 @@ jobs:
         run: |
           pip install 'playwright>=1.55,<1.58'
           python -m playwright install chromium webkit
+
+      - name: Restore GGUF model file
+        id: cache-gguf-tools
+        if: ${{ !cancelled() }}
+        background: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        timeout-minutes: 15
+        with:
+          path: gguf-cache-tools
+          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
+          enableCrossOsArchive: true
+
+      - name: Restore GGUF + mmproj files
+        id: cache-gguf-vision
+        if: ${{ !cancelled() }}
+        background: true
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        continue-on-error: true
+        timeout-minutes: 20
+        with:
+          path: gguf-cache-vision
+          key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
+
+      - name: Install Unsloth (--local, --no-torch)
+        id: install_unsloth
+        if: ${{ !cancelled() }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Assert llama.cpp loads on this macOS
+        id: assert_llama
+        # Second half of the bootstrap, and it needs no GGUF: it runs
+        # llama-server --version plus a static vtool minimum-OS check.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
+        run: bash .github/scripts/assert-llama-loads.sh
+
+      - name: Wait for the Playwright install and GGUF cache restores
+        wait-all:
 
       - name: Patch Playwright pipeTransport.js to tolerate malformed JSON
         # In Playwright 1.55-1.58, pipeTransport.js does
@@ -831,16 +863,6 @@ jobs:
       # key ... another job may be creating this cache" -- measured on staging
       # during the Mac consolidation: two consecutive runs both logged "Cache
       # not found for input keys" and both failed to save.
-      - name: Restore GGUF model file
-        id: cache-gguf-tools
-        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        continue-on-error: true
-        timeout-minutes: 15
-        with:
-          path: gguf-cache-tools
-          key: gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v3
-          enableCrossOsArchive: true
 
       - name: Download GGUF if cache miss
         id: download-gguf-tools
@@ -1269,16 +1291,6 @@ jobs:
           echo "GGUF_FILE=gemma-4-E2B-it-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
           echo "MMPROJ_FILE=mmproj-F16.gguf" >> "$GITHUB_ENV"
           echo "STUDIO_PORT=18892" >> "$GITHUB_ENV"
-
-      - name: Restore GGUF + mmproj files
-        id: cache-gguf-vision
-        if: ${{ !cancelled() && steps.assert_llama.outcome == 'success' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        continue-on-error: true
-        timeout-minutes: 20
-        with:
-          path: gguf-cache-vision
-          key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
 
       - name: Verify cache contains BOTH gguf + mmproj
         id: verify-cache

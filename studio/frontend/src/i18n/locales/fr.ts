@@ -55,7 +55,7 @@ export const fr = {
       enable: "Autoriser les modèles à utiliser le navigateur",
       enableDescription: "Les modèles ouvrent des pages dans leur propre onglet du navigateur, les lisent, et cliquent et saisissent pour vous. Aussi dans le menu + de la zone de saisie.",
       history: "Historique de navigation",
-      historyDescription: "Choisissez si les modèles peuvent lire l'historique du navigateur",
+      historyDescription: "Accès complet ignore la confirmation ; Jamais bloque toujours l'accès",
       alwaysAsk: "Toujours demander",
       alwaysAllow: "Toujours autoriser",
       never: "Jamais",

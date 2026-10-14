@@ -7320,6 +7320,7 @@ export function createOpenAIStreamAdapter(
                           // Resolved per action: a first turn is re-keyed from "__default" to its id.
                           scope: liveThreadKey(serverCancel),
                           userText,
+                          fullAccess: bypassPermissions,
                           signal: runSignal,
                         });
                       }

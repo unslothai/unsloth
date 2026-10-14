@@ -54,7 +54,7 @@ export const it = {
       enable: "Consenti ai modelli di usare il browser",
       enableDescription: "I modelli aprono le pagine in una propria scheda del browser, le leggono e fanno clic e scrivono per te. Anche nel menu + del compositore.",
       history: "Cronologia di navigazione",
-      historyDescription: "Scegli se i modelli possono leggere la cronologia del browser",
+      historyDescription: "Accesso completo salta la conferma; Mai blocca comunque l'accesso",
       alwaysAsk: "Chiedi sempre",
       alwaysAllow: "Consenti sempre",
       never: "Mai",

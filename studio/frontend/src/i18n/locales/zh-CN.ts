@@ -55,7 +55,7 @@ export const zhCN = {
       enable: "允许模型使用浏览器",
       enableDescription: "模型会在专属浏览器标签页中打开并阅读网页，并替你点击和输入。也可在输入框的 + 菜单中开关。",
       history: "浏览记录",
-      historyDescription: "选择模型是否可以读取浏览器的浏览记录",
+      historyDescription: "完全访问跳过审批；从不仍会阻止访问",
       alwaysAsk: "每次询问",
       alwaysAllow: "始终允许",
       never: "从不",

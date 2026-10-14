@@ -292,20 +292,30 @@ class TestEveryTestFileLandsInExactlyOneShard:
 
 class TestTheSplitKeepsTheSelectionItInherited:
     def test_every_shard_keeps_the_marker_filter(self):
-        """The environment-specific deselections: live GPU introspection and a real
-        llama.cpp process, none of which exist on a GPU-less runner. The filter is on the
-        shared step rather than per shard, so it is checked there."""
+        """The one environment-specific deselection: a real llama.cpp process, which a
+        GPU-less runner does not have. The filter is on the shared step rather than per
+        shard, so it is checked there."""
         run = _shared_pytest_step()["run"]
-        for fragment in (
-            "not llama_cpp_load_progress_live",
-            "not TestGpuAutoSelection",
-            "not TestPreSpawnGpuResolution",
-            "not TestPerGpuFitGuardAllCounts",
-            "not TestTransformersIntrospection",
-            "not test_returns_cuda_when_cuda_available",
-            "not test_calls_cuda_cache_when_cuda",
+        assert (
+            "not llama_cpp_load_progress_live" in run
+        ), "the -k filter lost the live llama.cpp test"
+
+    def test_mocked_gpu_tests_are_not_deselected(self):
+        """These classes patch torch.cuda and the device probe, so they pass on CPU torch.
+        They were deselected as "needs a real GPU" from May to October 2026 and ran nowhere;
+        a deselection of them here would hide them again."""
+        run = _shared_pytest_step()["run"]
+        for name in (
+            "TestGpuAutoSelection",
+            "TestPreSpawnGpuResolution",
+            "TestPerGpuFitGuardAllCounts",
+            "TestTransformersIntrospection",
+            "test_returns_cuda_when_cuda_available",
+            "test_calls_cuda_cache_when_cuda",
         ):
-            assert fragment in run, f"the -k filter lost {fragment!r}"
+            assert (
+                f"not {name}" not in run
+            ), f"{name} is mocked and must run here, not be deselected"
 
     def test_every_shard_keeps_the_timeouts(self):
         """A shard that loses these reports "cancelled" and names nothing, which is what
