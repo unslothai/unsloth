@@ -82,6 +82,23 @@ const SHELL_COMMANDS = new Set([
 ]);
 const SHELL_LEADIN_RE = /^(?:Run|Use|Try|Execute|sudo|command|builtin|env)$/i;
 const SHELL_WORD_RE = /^(?:[a-z_][\w.-]*|\.{0,2}\/[^\s]+)$/;
+const SHELL_ARGUMENT_RE =
+  /^(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
+const MARKDOWN_CONTAINER_PREFIX_RE =
+  /^(?:(?: {0,3}>[ \t]?)|(?: {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+))+/;
+
+function hasCommandArguments(words: string[], at: number): boolean {
+  let commandLike = false;
+  for (let index = at; index < words.length; index++) {
+    const word = words[index];
+    if (SHELL_ARGUMENT_RE.test(word)) {
+      commandLike = true;
+      continue;
+    }
+    if (!commandLike) return false;
+  }
+  return commandLike;
+}
 
 function hasShellCommandPrefix(
   text: string,
@@ -104,7 +121,10 @@ function hasShellCommandPrefix(
   while (lineStart > minimum && text.charCodeAt(lineStart - 1) !== 10) {
     lineStart--;
   }
-  const prefix = text.slice(lineStart, at).trimEnd();
+  const prefix = text
+    .slice(lineStart, at)
+    .trimEnd()
+    .replace(MARKDOWN_CONTAINER_PREFIX_RE, "");
   if (!prefix) return false;
   if (/[=|&;]$/.test(prefix)) return true;
   if (/\b(?:shell|bash|command) examples?\b[^\n.]*$/i.test(prefix)) return true;
@@ -121,18 +141,39 @@ function hasShellCommandPrefix(
   if (
     allowBareCommand &&
     command.length >= 2 &&
-    commandIndex === words.length - 1 &&
-    SHELL_WORD_RE.test(command)
+    SHELL_WORD_RE.test(command) &&
+    (commandIndex === words.length - 1 ||
+      hasCommandArguments(words, commandIndex + 1))
   ) {
     return true;
   }
   return /[;&|]\s*[a-z_][\w.-]*\s*$/.test(prefix);
 }
 
-function findShellQuoteStates(text: string): Map<number, number> {
+function findShellQuoteStates(
+  text: string,
+  protectedRegions: ReadonlyArray<readonly [number, number]>,
+): Map<number, number> {
   const states = new Map<number, number>();
   let quote = 0;
+  let protectedIndex = 0;
   for (let index = 0; index < text.length; index++) {
+    while (
+      protectedIndex < protectedRegions.length &&
+      protectedRegions[protectedIndex][1] <= index
+    ) {
+      protectedIndex++;
+    }
+    const protectedRegion = protectedRegions[protectedIndex];
+    if (
+      protectedRegion &&
+      index >= protectedRegion[0] &&
+      index < protectedRegion[1]
+    ) {
+      quote = 0;
+      index = protectedRegion[1] - 1;
+      continue;
+    }
     const char = text.charCodeAt(index);
     const activeQuote = Math.abs(quote);
     if (char === 36) states.set(index, quote);
@@ -217,6 +258,7 @@ function startsShellExpansion(
       isStreaming,
     );
   if (char === 42) return text.charCodeAt(at + 1) !== 42;
+  if (char === 95 && text.charCodeAt(at + 1) === 95) return false;
   if (char === 64 || char === 35) return true;
   return isWordChar(char) || char === 123 || char === 40 || char === 36;
 }
@@ -962,7 +1004,10 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
   );
   const rawTextRegions = findRawTextRegions(text);
   const shellQuoteStates = SHELL_QUOTE_CONTEXT_CANDIDATE_RE.test(text)
-    ? findShellQuoteStates(text)
+    ? findShellQuoteStates(
+        text,
+        mergeRegions(mergeRegions(codeRegions, linkRegions), rawTextRegions),
+      )
     : new Map<number, number>();
   const legacyArithmeticCloses = text.includes("$[")
     ? findLegacyArithmeticCloses(text)

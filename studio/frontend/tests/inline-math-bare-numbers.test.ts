@@ -60,6 +60,7 @@ test("numbers written as inline maths render as maths", () => {
     ["Range $1$-$2$", ["1", "2"]],
     ["The number $42$'s factors are 2, 3, and 7.", ["42"]],
     ["There are $3$**red** balls.", ["3"]],
+    ["There are $3$__red__ balls.", ["3"]],
     ["The answer is $42$[source](https://example.com).", ["42"]],
     ["The answer is $42$[^1].\n\n[^1]: Source.", ["42"]],
     ['He said "The answer is $42$[source](https://example.com)."', ["42"]],
@@ -83,6 +84,10 @@ test("numbers written as inline maths render as maths", () => {
   }
   assert.match(
     render("There are $3$**red** balls."),
+    /data-streamdown="strong">red<\/span>/,
+  );
+  assert.match(
+    render("There are $3$__red__ balls."),
     /data-streamdown="strong">red<\/span>/,
   );
 });
@@ -110,6 +115,11 @@ test("a shell parameter right after a positional one stays text", () => {
     ['Run echo "$1$_name" to print both.', "$1$_name"],
     ['Run echo "$1$?" to print both.', "$1$?"],
     ['cat "$1$?" to print both.', "$1$?"],
+    ['cat -n "$1$?" to print both.', "$1$?"],
+    ['widget --mode fast "$1$?" to print both.', "$1$?"],
+    ['- Run echo "$1$?" to print both.', "$1$?"],
+    ['> echo "$1$?" to print both.', "$1$?"],
+    ['> 1. Run echo "$1$?" to print both.', "$1$?"],
     ['Run echo "$1$#" to print both.', "$1$#"],
     ['Run echo "$1$@" to print both.', "$1$@"],
     ['Run echo "$1$*" to print both.', "$1$*"],
@@ -160,6 +170,17 @@ test("raw-text element bodies keep adjacent shell syntax byte-for-byte", () => {
     '<style>var { value: "$1${2}"; }</style>',
   ]) {
     assert.equal(preprocessLaTeX(source), source);
+  }
+});
+
+test("protected regions do not leak shell quote state into later prose", () => {
+  for (const source of [
+    '```sh\necho ok # \'\n```\n\nThe answer is "$42$" and **done**.',
+    '<script>const fragment = "\'";</script>\n\nThe answer is "$42$" and **done**.',
+  ]) {
+    const html = render(source);
+    assert.deepEqual(renderedMath(html), ["42"], source);
+    assert.match(html, /data-streamdown="strong">done<\/span>/, source);
   }
 });
 
