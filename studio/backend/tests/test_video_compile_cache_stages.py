@@ -211,10 +211,10 @@ def test_video_backend_opens_one_context_for_every_stage(cache_dir, fake_megacac
     )
     assert reason is None and ctx is not None
     assert len(ctx.model_fp["stages"]) == 2
-    assert backend._precommit_compile_cache == (7, ctx)
+    assert backend._precommit_compile_caches == {7: ctx}
     # A load that dies before its commit hands the context back.
     backend._release_precommit_compile_cache(7)
-    assert backend._precommit_compile_cache is None
+    assert backend._precommit_compile_caches == {}
 
 
 def test_video_backend_records_why_it_did_not_engage(cache_dir, fake_megacache):
@@ -226,3 +226,60 @@ def test_video_backend_records_why_it_did_not_engage(cache_dir, fake_megacache):
         token = None, roots = (pipe,), speed_optims = (), dtype = None, quant = None, attention_backend = None
     )
     assert ctx is None and "nothing compiled" in reason
+
+
+def test_overlapping_loads_each_release_their_own_context(cache_dir, fake_megacache):
+    """A superseded load that dies before its commit must release ITS context even after a newer load opened one."""
+    from core.inference import video as V
+
+    backend = V.VideoBackend.__new__(V.VideoBackend)
+
+    def begin(token, dim):
+        pipe = types.SimpleNamespace(transformer = _DiT(dim = dim), components = {})
+        ctx, _ = backend._begin_stage_compile_cache(
+            token = token, roots = (pipe,), speed_optims = ("compiled",), dtype = None, quant = None,
+            attention_backend = None,
+        )
+        return ctx
+
+    old, new = begin(1, 8), begin(2, 16)
+    assert str(old.dir) in cc._live_dirs and str(new.dir) in cc._live_dirs
+    backend._release_precommit_compile_cache(1)  # the stale load fails
+    assert str(old.dir) not in cc._live_dirs
+    assert str(new.dir) in cc._live_dirs
+    backend._commit_precommit_compile_cache(2)  # the new load commits: its state owns the context now
+    assert backend._precommit_compile_caches == {}
+    assert str(new.dir) in cc._live_dirs
+    cc.restore(new)
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("UNSLOTH_DIFFUSION_WAN_FUSED_ADALN", "0"),
+        ("UNSLOTH_DIFFUSION_WAN_FUSED_ROPE", "0"),
+        ("UNSLOTH_DIFFUSION_PATCH_WAN_FUSED", "0"),
+    ],
+)
+def test_wan_fusion_switches_key_bundles_apart(monkeypatch, name, value):
+    """The fused Wan block is a class-level forward swap the module tree does not show, so its switches key it."""
+    for env in ("UNSLOTH_DIFFUSION_WAN_FUSED_ADALN", "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE",
+                "UNSLOTH_DIFFUSION_PATCH_WAN_FUSED"):
+        monkeypatch.delenv(env, raising = False)
+    stock = _key([_DiT()])
+    monkeypatch.setenv(name, "1")  # the default value keeps every existing key
+    assert _key([_DiT()]) == stock
+    monkeypatch.setenv(name, value)
+    assert _key([_DiT()]) != stock
+
+
+def test_no_bundle_save_from_a_render_the_background_compile_forced_eager():
+    """Such a render compiled nothing of this load: saving would publish other loads' artifacts and mark it saved."""
+    import inspect
+
+    from core.inference import video as V
+
+    src = inspect.getsource(V.VideoBackend.generate)
+    save = src.index("compile_cache.save_async(compile_ctx")
+    guard = src.rindex("if compile_ctx is not None", 0, save)
+    assert "not bg_eager" in src[guard:save]

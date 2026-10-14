@@ -305,7 +305,13 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
     "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
+    # The fused Wan block forward (class-level swap, which graph_variant cannot see) and its rotary half.
+    "UNSLOTH_DIFFUSION_WAN_FUSED_ADALN": "on",
+    "UNSLOTH_DIFFUSION_WAN_FUSED_ROPE": "on",
 }
+# Every registered patch also answers UNSLOTH_DIFFUSION_PATCH_<NAME>=0 (diffusion_autoopt.patches); turning one off
+# swaps a forward the traced graph depends on, so any that is set off keys the bundle apart.
+_PATCH_SWITCH_PREFIX = "UNSLOTH_DIFFUSION_PATCH_"
 _OFF_WORDS = ("0", "off", "false", "no", "none")
 _ON_WORDS = ("1", "on", "true", "yes", "force")
 _ADDRESS_RE = re.compile(r" at 0x[0-9a-fA-F]+")
@@ -329,6 +335,11 @@ def graph_switches() -> dict[str, str]:
         value = _switch_value(name, default)
         if value is not None:
             out[name] = value
+    for name in sorted(os.environ):
+        if name.startswith(_PATCH_SWITCH_PREFIX) and name not in out:
+            value = _switch_value(name, "on")
+            if value is not None:
+                out[name] = value
     return out
 
 
