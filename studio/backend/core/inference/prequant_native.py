@@ -87,6 +87,12 @@ def _torchao_api() -> Optional[dict]:
         )
     except Exception:  # noqa: BLE001
         return None
+    try:
+        from .diffusion_fp8_unit_scale import install as _install_fp8_unit_scale
+
+        _install_fp8_unit_scale()
+    except Exception:  # noqa: BLE001 - never block a load on a speed path
+        pass
     api = {
         "Float8Tensor": Float8Tensor,
         "Float8MMConfig": Float8MMConfig,
