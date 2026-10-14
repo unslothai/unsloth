@@ -28,10 +28,9 @@ const { RagDocumentTrigger } = loadWithStubs<typeof TriggerModule>(
       useBrowserPrefsStore: (select: (s: { openFilesInBrowser: boolean }) => unknown) =>
         select({ openFilesInBrowser: env.filesInBrowser }),
     },
-    "@/lib/toast": { toast: { error: () => undefined } },
-    "../api/rag-api": { getDocumentFileUrl: async () => "" },
     "../lib/open-document": {
-      openRagDocumentInBrowser: (_id: string, name: string) => opened.push(name),
+      openRagDocumentInBrowser: (_id: string, name: string) => opened.push(`browser:${name}`),
+      openRagDocumentExternally: (_id: string, name: string) => opened.push(`tab:${name}`),
     },
     "./source-file": {
       asViewerFile: (file: File) => file,
@@ -50,14 +49,8 @@ function route(filename: string): "browser" | "viewer" | "tab" {
   }) as unknown as StubElement;
   if (element.type === LocalFileDialog) return "viewer";
   opened.length = 0;
-  const realOpen = globalThis.window;
-  (globalThis as { window?: unknown }).window = { open: () => null };
-  try {
-    (element.props.onClick as () => void)();
-  } finally {
-    (globalThis as { window?: unknown }).window = realOpen;
-  }
-  return opened.length > 0 ? "browser" : "tab";
+  (element.props.onClick as () => void)();
+  return opened[0]?.startsWith("browser:") ? "browser" : "tab";
 }
 
 test("formats the browser can show open there", () => {

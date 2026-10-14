@@ -6,10 +6,11 @@ import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
 import { canShowFile } from "@/features/browser/file-kind";
 import { useBrowserPanelAvailable } from "@/features/browser/panel-availability";
 import { useBrowserPrefsStore } from "@/features/browser/prefs-store";
-import { toast } from "@/lib/toast";
 import { type ReactElement, cloneElement } from "react";
-import { getDocumentFileUrl } from "../api/rag-api";
-import { openRagDocumentInBrowser } from "../lib/open-document";
+import {
+  openRagDocumentExternally,
+  openRagDocumentInBrowser,
+} from "../lib/open-document";
 import { asViewerFile, fetchSourceFile, isViewableSource } from "./source-file";
 
 /**
@@ -55,22 +56,6 @@ export function RagDocumentTrigger({
     );
   }
   return cloneElement(children as ReactElement<{ onClick?: () => void }>, {
-    onClick: () => {
-      // Opened inside the click: popup blockers refuse a tab opened after the URL request.
-      const tab = window.open("about:blank", "_blank");
-      if (tab) {
-        tab.opener = null;
-      }
-      getDocumentFileUrl(documentId)
-        .then((url) => {
-          if (tab) {
-            tab.location.href = url;
-          }
-        })
-        .catch(() => {
-          tab?.close();
-          toast.error(`Could not open ${filename}`);
-        });
-    },
+    onClick: () => openRagDocumentExternally(documentId, filename),
   });
 }

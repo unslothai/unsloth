@@ -140,7 +140,7 @@ test("a document search lists its passages in the card, opening documents in the
   // Browser first; without its panel (mobile) the attachment viewer, else a new tab.
   assert.match(
     trigger,
-    /if \(browser\)[\s\S]*?openRagDocumentInBrowser[\s\S]*?if \(isViewableSource\(filename\)\)[\s\S]*?<LocalFileDialog[\s\S]*?window\.open/,
+    /if \(browser\)[\s\S]*?openRagDocumentInBrowser[\s\S]*?if \(isViewableSource\(filename\)\)[\s\S]*?<LocalFileDialog[\s\S]*?openRagDocumentExternally\(documentId, filename\)/,
   );
   assert.ok(!kb.includes("See Document Sources below"));
   const thread = read("components/assistant-ui/thread.tsx");
