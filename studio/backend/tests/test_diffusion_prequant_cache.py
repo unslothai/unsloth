@@ -576,3 +576,32 @@ def test_source_shards_are_found_in_the_pre_change_hub_root(tmp_path, monkeypatc
     assert found and found[0].endswith("diffusion_pytorch_model.safetensors")
     # An explicit cache_dir is still that root only.
     assert C.source_shards(repo, cache_dir = str(live_root)) is None
+
+
+def _old_entry(root: Path, name: str, nbytes: int, age: float) -> Path:
+    d = root / name
+    d.mkdir(parents = True)
+    (d / C.FILE_NAME).write_bytes(b"\0" * nbytes)
+    stamp = time.time() - age
+    for f in (C.FILE_NAME, C.LAST_USED_NAME):
+        (d / f).touch()
+        os.utime(d / f, (stamp, stamp))
+    return d
+
+
+def test_a_full_volume_rotates_stale_entries_out_before_skipping_the_save(env, tmp_path, scheme, monkeypatch):
+    """Old entries filling the volume must be evicted to make room, not make every new save fail for good."""
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    stale = _old_entry(env, "a" * 32, 4096, age = 7200)
+    disk = {"free": 1 << 20}
+
+    def usage(_p):
+        # Free space comes back once the stale entry is gone.
+        free = disk["free"] if stale.exists() else 1 << 40
+        return types.SimpleNamespace(total = 1 << 41, used = 0, free = free)
+
+    monkeypatch.setattr(C.shutil, "disk_usage", usage)
+    path = C.save_runtime_quant(model, _fam(base), base_repo = str(base))
+    assert path is not None and not stale.exists()
+

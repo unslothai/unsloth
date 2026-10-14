@@ -630,6 +630,10 @@ def save_runtime_quant(
         free = shutil.disk_usage(str(root)).free
         need = nbytes + max(_DISK_MARGIN_BYTES, nbytes // 20)
         if free < need:
+            # Stale entries may be what fills the volume: rotate them out before deciding there is no room.
+            evict(root = root, extra_free_bytes = need - free, keep = key, logger = logger)
+            free = shutil.disk_usage(str(root)).free
+        if free < need:
             _log(
                 logger,
                 "info",
@@ -733,9 +737,11 @@ def evict(
     root: Optional[Path] = None,
     max_bytes: Optional[int] = None,
     keep: Optional[str] = None,
+    extra_free_bytes: int = 0,
     logger: Any = None,
 ) -> list[str]:
-    """Delete least recently used keys until the root fits its budget. Never raises."""
+    """Delete least recently used keys until the root fits its budget, and ``extra_free_bytes`` below what it holds
+    now (room a save needs on a full volume). A disabled budget (0) never evicts. Never raises."""
     removed: list[str] = []
     try:
         root = root if root is not None else cache_root()
@@ -751,6 +757,8 @@ def evict(
             elif _is_key_dir(child):
                 entries.append((_last_used(child), child, _dir_bytes(child)))
         total = sum(e[2] for e in entries)
+        if extra_free_bytes > 0:
+            budget = min(budget, max(0, total - int(extra_free_bytes)))
         cutoff = time.time() - _EVICT_GRACE_SECONDS
         for used, path, size in sorted(entries, key = lambda e: e[0]):
             if total <= budget:
