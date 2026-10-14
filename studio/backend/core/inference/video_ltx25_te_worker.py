@@ -420,9 +420,17 @@ def _truncate_dead_tail(tokenizer: Any, model: Any) -> dict:
             tokenizer.padding_side = "left"
             if tokenizer.pad_token is None:
                 tokenizer.pad_token = tokenizer.eos_token
-            inputs = tokenizer([prompt], padding = "max_length", max_length = 32, truncation = True,
-                               add_special_tokens = True, return_tensors = "pt")
-            return _pack_hidden_states(model, inputs.input_ids.to(device), inputs.attention_mask.to(device))
+            inputs = tokenizer(
+                [prompt],
+                padding = "max_length",
+                max_length = 32,
+                truncation = True,
+                add_special_tokens = True,
+                return_tensors = "pt",
+            )
+            return _pack_hidden_states(
+                model, inputs.input_ids.to(device), inputs.attention_mask.to(device)
+            )
 
     return truncate_text_encoders(_Probe())
 

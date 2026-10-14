@@ -56,7 +56,12 @@ class _Pipe:
         self.text_encoder = encoder
         self._read = read
 
-    def encode_prompt(self, prompt, device = None, num_images_per_prompt = 1):
+    def encode_prompt(
+        self,
+        prompt,
+        device = None,
+        num_images_per_prompt = 1,
+    ):
         out = self.text_encoder(input_ids = _ids(prompt, device), output_hidden_states = True)
         return self._read(out), torch.ones(3)
 
@@ -75,7 +80,12 @@ READERS = {
 }
 
 
-PROMPTS = ("a photo of a cat", "two robots playing chess in a library", "x", "a much longer prompt " * 3)
+PROMPTS = (
+    "a photo of a cat",
+    "two robots playing chess in a library",
+    "x",
+    "a much longer prompt " * 3,
+)
 
 
 def _encode_all(pipe):

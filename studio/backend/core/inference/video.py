@@ -7719,7 +7719,6 @@ class VideoBackend:
             # Generic dead tail (diffusion_te_truncate): layers after the last hidden state the pipeline's
             # encode_prompt reads, and an unread head, are dropped before the cast and placement. Bit-identical.
             from .diffusion_te_truncate import truncate_text_encoders
-
             truncate_text_encoders(pipe, logger = logger)
             text_encoder_outcome = quantize_text_encoders(
                 pipe,
