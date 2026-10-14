@@ -1658,7 +1658,9 @@ def _pre_ampere_cuda_devices(model):
     try:
         indices = {k: _cuda_index(v) for k, v in device_map.items()}
         pre_ampere = {
-            i for i in set(indices.values()) if i is not None and torch.cuda.get_device_capability(i)[0] < 8
+            i
+            for i in set(indices.values())
+            if i is not None and torch.cuda.get_device_capability(i)[0] < 8
         }
     except Exception:
         return []
