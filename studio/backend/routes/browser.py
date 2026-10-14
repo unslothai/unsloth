@@ -65,6 +65,9 @@ _FETCH_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-
 _DISCONNECT_POLL_S = 0.25
 # Pages' requests to their own sites (/request); a pool of their own, so a busy page can't hold up page loads.
 _REQUEST_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-request")
+# Queued plus running; held until the worker ends, which a disconnect does not cut short, so a page
+# that aborts and resends can't pile request bodies up behind a stalled site.
+_PAGE_REQUEST_SLOTS = threading.BoundedSemaphore(64)
 _MAX_PAGE_REQUEST_BODY = 1024 * 1024
 _MAX_PAGE_RESPONSE_BYTES = 10 * 1024 * 1024
 _HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}")
@@ -1845,11 +1848,33 @@ def _fetch_and_build(request: BrowserFetchRequest, cancel_event: threading.Event
     return _build_response(request.url, error, body, content_type, meta, cancel_event)
 
 
-async def _run_in_pool(pool: ThreadPoolExecutor, work, request, http_request: Request):
-    """``work(request, cancel_event)`` in ``pool``, cancelled when the client goes away."""
+async def _run_in_pool(
+    pool: ThreadPoolExecutor,
+    work,
+    request,
+    http_request: Request,
+    slots = None,
+):
+    """``work(request, cancel_event)`` in ``pool``, cancelled when the client goes away; ``slots`` bounds the calls queued or running."""
+    if slots is not None and not slots.acquire(blocking = False):
+        raise HTTPException(status_code = 503, detail = "Too many requests in flight.")
     cancel_event = threading.Event()
     loop = asyncio.get_running_loop()
-    task = loop.run_in_executor(pool, work, request, cancel_event)
+    if slots is not None:
+        held = work
+
+        def work(request, cancel_event):
+            try:
+                return held(request, cancel_event)
+            finally:
+                slots.release()
+
+    try:
+        task = loop.run_in_executor(pool, work, request, cancel_event)
+    except BaseException:
+        if slots is not None:
+            slots.release()
+        raise
     try:
         while True:
             done, _ = await asyncio.wait({task}, timeout = _DISCONNECT_POLL_S)
@@ -1880,7 +1905,9 @@ async def browser_page_request(
     current_subject: str = Depends(get_current_subject),
 ):
     """A page's fetch or XHR to its own site, which its opaque-origin sandbox can't make (browser_network.py)."""
-    return await _run_in_pool(_REQUEST_POOL, _page_request, request, http_request)
+    return await _run_in_pool(
+        _REQUEST_POOL, _page_request, request, http_request, slots = _PAGE_REQUEST_SLOTS
+    )
 
 
 @router.get("/print", include_in_schema = False)

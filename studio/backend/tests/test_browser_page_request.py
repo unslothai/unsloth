@@ -626,3 +626,48 @@ def test_a_body_past_the_cap_is_refused():
             method = "POST",
             body = "A" * (4 * (browser_mod._MAX_PAGE_REQUEST_BODY // 3 + 2)),
         )
+
+
+class _Client:
+    def __init__(self, disconnected = False):
+        self.disconnected = disconnected
+
+    async def is_disconnected(self):
+        return self.disconnected
+
+
+def test_page_requests_hold_a_slot_until_their_worker_ends(monkeypatch):
+    import asyncio
+
+    slots = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(browser_mod, "_PAGE_REQUEST_SLOTS", slots)
+    release, finished = threading.Event(), threading.Event()
+
+    def stalled(request, cancel_event):
+        release.wait(10)
+        finished.set()
+        return {}
+
+    monkeypatch.setattr(browser_mod, "_page_request", stalled)
+    request = browser_mod.BrowserPageRequest(page = PAGE, url = PAGE)
+
+    def call(client):
+        return asyncio.run(
+            browser_mod.browser_page_request(request, client, current_subject = "user")
+        )
+
+    # The page went away, but its worker is still stuck on the site: the slot stays taken.
+    with pytest.raises(HTTPException) as caught:
+        call(_Client(disconnected = True))
+    assert caught.value.status_code == 499
+    with pytest.raises(HTTPException) as caught:
+        call(_Client())
+    assert caught.value.status_code == 503
+    release.set()
+    assert finished.wait(10)
+    for _ in range(100):
+        if slots.acquire(blocking = False):
+            break
+        threading.Event().wait(0.05)
+    else:
+        pytest.fail("the slot was never given back")

@@ -115,6 +115,7 @@ function setup(
     cfg: { url: pageUrl, anyOrigin }, post: (message: Record<string, unknown>) => posted.push(message), resolve, parent,
     document: { baseURI: base }, URL, Request, Headers, Blob, Event, ProgressEvent, DOMException, AbortController,
     setTimeout, clearTimeout, Document: PageDocument, XMLSerializer: PageXMLSerializer, URLSearchParams,
+    FormData, ArrayBuffer,
   });
   /** The panel's answer to request `id`, as the shell relays it. */
   const reply = (id: unknown, answer: Record<string, unknown>, source: unknown = parent) =>
@@ -307,6 +308,23 @@ test("a write never tries the browser first", async () => {
   assert.equal(t.posted.length, 1);
   t.reply(t.posted[0].id, ok("{}"));
   await write;
+});
+
+test("a write past the panel's body limit stays the browser's, as before relaying", async () => {
+  const t = setup(NativeXHR, "https://site.test/", false, () => true);
+  const big = new Uint8Array(1024 * 1024 + 1);
+  const write = t.window.fetch("/upload", { method: "POST", body: big });
+  await tick();
+  await tick();
+  assert.equal(t.posted.length, 0);
+  assert.equal(t.native.length, 1);
+  t.answer(0);
+  await write;
+  const xhr = new t.window.XMLHttpRequest() as PageXHR;
+  xhr.open("POST", "/upload");
+  xhr.send(new Blob([big]));
+  assert.equal(t.posted.length, 0);
+  assert.equal(xhr.calls.at(-1)?.[0], "send");
 });
 
 test("an XHR GET the browser can read loads the browser's answer, with no panel request", async () => {

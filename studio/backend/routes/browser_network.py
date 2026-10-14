@@ -76,6 +76,13 @@ BROWSER_NETWORK_JS = r"""
           }
         };
         const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+        // The panel's limit (frame-message.ts, routes/browser.py); strings counted at 3 bytes a unit.
+        const MAX_RELAY_BODY = 1024 * 1024;
+        const bodySize = (body) => typeof body === "string" ? body.length * 3
+          : body instanceof Blob ? body.size
+          : body instanceof ArrayBuffer || ArrayBuffer.isView(body) ? body.byteLength
+          : body instanceof FormData ? [...body.values()].reduce((total, value) => total + (typeof value === "string" ? value.length * 3 : value.size), 0)
+          : 0;
         const withoutHash = (url) => url.split("#")[0];
         // What a fetched response has and a constructed one lacks, kept through clone(): "basic" on
         // the page's origin, "cors" once a redirect led through another site.
@@ -89,7 +96,9 @@ BROWSER_NETWORK_JS = r"""
           });
         };
         const relayFetch = async (request) => {
-          const body = bodiless(request.method) ? null : await request.arrayBuffer();
+          const body = bodiless(request.method) ? null : await request.clone().arrayBuffer();
+          // Past the relay's body limit a write stays the browser's, as before relaying existed.
+          if (body !== null && body.byteLength > MAX_RELAY_BODY) return nativeFetch(request);
           const reply = await relay(
             { url: request.url, method: request.method, headers: [...request.headers], body, redirect: request.redirect, integrity: request.integrity },
             request.signal,
@@ -172,8 +181,9 @@ BROWSER_NETWORK_JS = r"""
             const done = track();
             // Listening first: a synchronous request fires loadend inside send().
             this.addEventListener("loadend", done, { once: true });
-            if (state) this.#relay(state, body);
+            if (state && bodySize(body) <= MAX_RELAY_BODY) this.#relay(state, body);
             else {
+              relayed.delete(this);
               // A send the browser refuses (one already in flight) leaves that one counted.
               try { super.send(body); } catch (error) { this.removeEventListener("loadend", done); done(); throw error; }
             }
