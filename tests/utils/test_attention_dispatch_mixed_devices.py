@@ -256,3 +256,19 @@ def test_same_class_secondary_cards_are_never_probed():
 
     assert ad._per_device_backends(((12, 0), (12, 0), (12, 0)), probe = probe) is None
     assert calls == []
+
+
+def test_hf_fallback_reads_child_configs_before_rewriting_the_composite(monkeypatch):
+    # T5Gemma shape: only the encoder config softcaps, and a composite write would recurse into it.
+    _capability(monkeypatch, {0: AMPERE, 1: TURING})
+    model = _Model({"a": 0, "b": 1}, model_type = "t5gemma")
+    encoder = SimpleNamespace(
+        _attn_implementation = "flash_attention_2",
+        model_type = "t5gemma_module",
+        attn_logit_softcapping = 50.0,
+    )
+    model.config.sub_configs = {"encoder": None}
+    model.config.encoder = encoder
+    assert mu.fall_back_from_flash_attention_on_pre_ampere(model) is True
+    assert model.config._attn_implementation == "eager"
+    assert encoder._attn_implementation == "eager"

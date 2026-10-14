@@ -1667,22 +1667,39 @@ def fall_back_from_flash_attention_on_pre_ampere(model):
     class_sdpa = getattr(model_class, "_supports_sdpa", False) and not _declares_no_sdpa(
         model_class
     )
-    changed = None
-    seen = set()
-    for module in model.modules():
-        config = getattr(module, "config", None)
+    configs, seen = [], set()
+
+    def _collect(config):
         if config is None or id(config) in seen:
-            continue
+            return
         seen.add(id(config))
-        impl = _config_get(config, "_attn_implementation", None)
-        if isinstance(impl, str) and impl.startswith("flash_attention"):
-            model_type = (_config_get(config, "model_type", "") or "").lower()
-            # SDPA cannot apply an attention-logit softcap (Gemma 2), so those stay exact on eager.
-            softcap = _config_get(config, "attn_logit_softcapping", None)
-            sdpa_ok = class_sdpa and not _is_sdpa_excluded(model_type) and not softcap
-            fallback = "sdpa" if sdpa_ok else "eager"
-            _write_attn_impl(config, fallback)
-            changed = fallback if changed in (None, fallback) else "sdpa / eager"
+        configs.append(config)
+        for key in getattr(config, "sub_configs", None) or ():
+            _collect(getattr(config, key, None))
+
+    for module in model.modules():
+        _collect(getattr(module, "config", None))
+    flash = [
+        config
+        for config in configs
+        if str(_config_get(config, "_attn_implementation", None) or "").startswith(
+            "flash_attention"
+        )
+    ]
+    if not flash:
+        return False
+
+    def _sdpa_ok(config):
+        model_type = (_config_get(config, "model_type", "") or "").lower()
+        # SDPA cannot apply an attention-logit softcap (Gemma 2), so those stay exact on eager.
+        softcap = _config_get(config, "attn_logit_softcapping", None)
+        return not _is_sdpa_excluded(model_type) and not softcap
+
+    # One answer for the whole tree, decided before any write: a composite's setter recurses into
+    # its children, so a parent rewritten to sdpa would carry a softcapped child with it.
+    changed = "sdpa" if class_sdpa and all(_sdpa_ok(c) for c in configs) else "eager"
+    for config in flash:
+        _write_attn_impl(config, changed)
     if changed:
         print(
             f"Unsloth: Layers were placed on cuda:{pre_ampere[0]}, which cannot run Flash Attention 2 "
