@@ -651,7 +651,7 @@ def test_load_passes_the_engaged_attention_backend_to_the_peak_identity():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert 'learned_peak_label(pipe, attention_engaged or "native", peak_model)' in src
+    assert "pipe, attention_engaged or \"native\", peak_model, peak_vae" in src
     assert 'attention = attention_engaged or "native",' in src
     assert 'plan.estimates.get("measured_learned_peak_mib"),' in src
 
@@ -730,7 +730,7 @@ def test_load_passes_the_model_to_the_peak_identity():
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
         encoding = "utf-8"
     )
-    assert 'learned_peak_label(pipe, attention_engaged or "native", peak_model)' in src
+    assert "pipe, attention_engaged or \"native\", peak_model, peak_vae" in src
     assert "model = peak_model," in src
     assert 'plan.estimates.get("measured_learned_peak_pixels"),' in src
 
@@ -760,3 +760,152 @@ def test_request_guard_keeps_the_learned_peaks_source_bucket(klein_pipe):
     )
     # the stored peak already covers 2 MP: a 2 MP request needs nothing beyond the load's reserve
     assert dm.measured_request_extra_mib(klein_pipe, width = 1448, height = 1448) == 0
+
+
+# ---------------------------------------------------------------------------------------------------- review round 4
+
+
+class _FakeCudaTorch:
+    """Allocator-wide peak stats, as torch keeps them: a reset by one render erases another's high-water mark."""
+
+    def __init__(self):
+        self.allocated = 0
+        self.peak = 0
+        torch_self = self
+
+        class _Dev:
+            def __init__(self, *args):
+                self.type = "cuda"
+                self.index = 0
+
+            def __str__(self):
+                return "cuda:0"
+
+        class cuda:  # noqa: N801
+            is_available = staticmethod(lambda: True)
+            current_device = staticmethod(lambda: 0)
+            synchronize = staticmethod(lambda dev = None: None)
+            memory_allocated = staticmethod(lambda dev = None: torch_self.allocated)
+            max_memory_allocated = staticmethod(lambda dev = None: torch_self.peak)
+
+            @staticmethod
+            def reset_peak_memory_stats(dev = None):
+                torch_self.peak = torch_self.allocated
+
+        self.device = _Dev
+        self.cuda = cuda
+
+    def alloc(self, mib):
+        self.allocated += mib << 20
+        self.peak = max(self.peak, self.allocated)
+
+    def free(self, mib):
+        self.allocated -= mib << 20
+
+
+def test_overlapping_peak_probes_on_one_card_record_nothing(monkeypatch):
+    fake = _FakeCudaTorch()
+    monkeypatch.setitem(__import__("sys").modules, "torch", fake)
+    first = mp.PeakProbe("cuda:0")
+    fake.alloc(5000)  # the first render's largest phase
+    fake.free(5000)
+    second = mp.PeakProbe("cuda:0")  # a render on the other executor resets the card's peak
+    fake.alloc(100)
+    fake.free(100)
+    assert first.finish() is None  # would read 100 MiB, not 5000
+    assert second.finish() is None
+    alone = mp.PeakProbe("cuda:0")
+    fake.alloc(700)
+    assert alone.finish() == 700
+    del alone
+    dropped = mp.PeakProbe("cuda:0")  # a failed render never finishes its probe
+    del dropped
+    after = mp.PeakProbe("cuda:0")
+    fake.alloc(300)
+    assert after.finish() == 300  # not spoiled by the abandoned probe
+
+
+def test_partial_hook_failure_in_the_lower_residency_retry_propagates(monkeypatch):
+    calls = []
+
+    def fake_apply(pipe, device, logger, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            dm._set_group_offload_failure(pipe, _OOM("CUDA out of memory"))
+            return False
+        raise RuntimeError("group offload failed after installing hooks on 1 module(s)")
+
+    monkeypatch.setattr(dm, "_apply_group_offload", fake_apply)
+    monkeypatch.setattr(dm, "_pipe_denoisers_hold_torchao", lambda pipe: True)
+    pipe = types.SimpleNamespace(components = {})
+    with pytest.raises(RuntimeError, match = "after installing hooks"):
+        dm.apply_memory_plan(pipe, _resident_dit_plan(), device = "cuda")
+    assert len(calls) == 2
+
+
+def test_learned_peaks_are_keyed_by_vae_savers(klein_pipe):
+    mp.record(
+        family = "some-new-dit",
+        quant = "torchao:Int8Tensor|model:org/dit|vae:tiled+sliced|attn:native",
+        speed_mode = "default",
+        width = 1024,
+        height = 1024,
+        peak_mib = 2600,
+    )
+    plan = _klein_flat_plan()
+    kw = dict(family = "some-new-dit", speed_mode = "default", attention = "native", model = "org/dit")
+    tiled = dm.refine_plan_from_loaded_weights(klein_pipe, plan, vae = "tiled+sliced", **kw)
+    assert tiled.estimates["measured_runtime_headroom_mib"] == 3072
+    # an untiled load never reuses the tiled decode's peak
+    assert dm.refine_plan_from_loaded_weights(klein_pipe, plan, vae = "full", **kw) is plan
+    assert dm.vae_saver_tag(True, True) == "tiled+sliced" and dm.vae_saver_tag(False, False) == "full"
+
+
+def test_render_with_a_vae_saver_the_key_lacks_is_not_probed(monkeypatch):
+    import core.inference.diffusion as diffusion
+
+    class _Probe:
+        def __init__(self, device):
+            self.device = "cuda:0"
+
+    monkeypatch.setattr(mp, "PeakProbe", _Probe)
+    monkeypatch.setattr(mp, "enabled", lambda: True)
+    vae = types.SimpleNamespace(use_tiling = False, use_slicing = False)
+    pipe = types.SimpleNamespace(
+        _unsloth_peak_identity = ("some-new-dit", "q|model:m|vae:full|attn:native", "default"), vae = vae
+    )
+    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0")
+    assert diffusion._start_peak_probe(state) is not None
+    vae.use_tiling = True  # the activation guard tiled this request's decode
+    assert diffusion._start_peak_probe(state) is None
+
+
+def test_load_passes_the_vae_savers_to_the_peak_identity():
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert 'getattr(plan, "vae_tiling", False), getattr(plan, "vae_slicing", False)' in src
+    assert "vae = peak_vae," in src
+
+
+def test_video_request_overlapped_by_another_render_records_nothing(store, monkeypatch):
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    work = 1280 * 704 * 49
+    window = mp.open_window("cuda:0")
+    image = mp.open_window("cuda:0")  # an image render armed on the same card mid-request
+    module = types.SimpleNamespace(
+        _unsloth_video_pending = (work, 0, "cuda:0"),
+        _unsloth_video_window = ("cuda:0", window),
+        _unsloth_video_calibration_key = None,
+    )
+
+    class _Torch:
+        class cuda:  # noqa: N801
+            @staticmethod
+            def max_memory_allocated(dev):
+                return 3000 << 20
+
+    with monkeypatch.context() as m:
+        m.setitem(__import__("sys").modules, "torch", _Torch)
+        assert vsr.record_request_peak(types.SimpleNamespace(transformer = module)) is None
+    assert not mp.close_window("cuda:0", image)

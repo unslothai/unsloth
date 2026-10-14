@@ -23,6 +23,7 @@ import math
 import os
 import tempfile
 import threading
+import weakref
 from pathlib import Path
 from typing import Any, Optional
 
@@ -314,8 +315,43 @@ def work_peaks(key: Any) -> dict[int, int]:
         return {}
 
 
+class _Window:
+    overlapped = False
+
+
+_windows_lock = threading.Lock()
+_windows: dict[str, "weakref.WeakSet[_Window]"] = {}
+
+
+def open_window(device: Any) -> _Window:
+    """Register a peak measurement on ``device``. Resetting the peak is allocator-wide, so a second render arming on
+    the same card (image and video run on separate threads) spoils both: each one's window reads as overlapped. An
+    abandoned window drops out once nothing references it."""
+    window = _Window()
+    with _windows_lock:
+        live = _windows.setdefault(str(device), weakref.WeakSet())
+        if len(live):
+            window.overlapped = True
+            for other in live:
+                other.overlapped = True
+        live.add(window)
+    return window
+
+
+def close_window(device: Any, window: Optional[_Window]) -> bool:
+    """End a measurement; True when no other measurement on the card overlapped it."""
+    if window is None:
+        return True
+    with _windows_lock:
+        live = _windows.get(str(device))
+        if live is not None:
+            live.discard(window)
+    return not window.overlapped
+
+
 class PeakProbe:
-    """CUDA peak above the allocation at ``start``; ``finish`` returns MiB or None (non-CUDA / unreadable)."""
+    """CUDA peak above the allocation at ``start``; ``finish`` returns MiB or None (non-CUDA / unreadable, or another
+    measurement on the card reset the peak meanwhile)."""
 
     def __init__(self, device: Any) -> None:
         self.device = None
@@ -328,6 +364,7 @@ class PeakProbe:
                 return
             if dev.index is None:
                 dev = torch.device("cuda", torch.cuda.current_device())
+            self.window = open_window(dev)
             torch.cuda.synchronize(dev)
             torch.cuda.reset_peak_memory_stats(dev)
             self.base = int(torch.cuda.memory_allocated(dev))
@@ -337,6 +374,8 @@ class PeakProbe:
 
     def finish(self) -> Optional[int]:
         if self.device is None or self.base is None:
+            return None
+        if not close_window(self.device, getattr(self, "window", None)):
             return None
         try:
             import torch

@@ -2330,13 +2330,23 @@ def measured_image_runtime_mib(
     return int(-(-need // step) * step)
 
 
-def learned_peak_label(pipe: Any, attention: Optional[str] = None, model: Optional[str] = None) -> str:
-    """``denoiser_quant_label`` plus the loaded model (variants of one family differ in size) and the engaged attention
-    backend (backends with different workspaces): neither shares a learned peak."""
+def learned_peak_label(
+    pipe: Any, attention: Optional[str] = None, model: Optional[str] = None, vae: Optional[str] = None
+) -> str:
+    """``denoiser_quant_label`` plus the loaded model (variants of one family differ in size), the VAE savers (an
+    untiled decode peaks far above a tiled one) and the engaged attention backend (backends with different
+    workspaces): none shares a learned peak."""
     label = denoiser_quant_label(pipe)
     if model is not None:
         label = f"{label}|model:{model}"
+    if vae is not None:
+        label = f"{label}|vae:{vae}"
     return label if attention is None else f"{label}|attn:{attention}"
+
+
+def vae_saver_tag(tiling: Any, slicing: Any) -> str:
+    """The VAE savers in force, as the learned-peak key names them."""
+    return "+".join(name for name, on in (("tiled", tiling), ("sliced", slicing)) if on) or "full"
 
 
 def denoiser_quant_label(pipe: Any) -> str:
@@ -2501,6 +2511,7 @@ def refine_plan_from_loaded_weights(
     logger: Any = None,
     attention: Optional[str] = None,
     model: Optional[str] = None,
+    vae: Optional[str] = None,
 ) -> MemoryPlan:
     """Re-place a streamed ``auto`` load from its LOADED weights and the family's measured activation peak.
 
@@ -2533,7 +2544,7 @@ def refine_plan_from_loaded_weights(
         if dense_mib is not None and (compute_bytes is None or _pipe_denoisers_hold_packed(pipe)):
             # measured on fp16 / fp32 cards only; bf16 cards can compile later
             return plan
-        quant = learned_peak_label(pipe, attention, model)
+        quant = learned_peak_label(pipe, attention, model, vae)
         try:
             pipe._unsloth_peak_identity = (family, quant, speed_mode)
         except Exception:  # noqa: BLE001 - a pipe refusing attributes only skips recording
@@ -3392,13 +3403,14 @@ def _retry_group_offload_lower(
                 "the transformer and text encoders streamed",
                 str(exc).splitlines()[0][:200] if str(exc) else type(exc).__name__,
             )
-        if not _apply_group_offload(pipe, placement, logger, stream_text_encoders = True):
-            return None
     except Exception as retry_exc:  # noqa: BLE001 - the caller's refusal stands
         if logger is not None:
             logger.warning(
                 "diffusion.memory: lower-residency group offload retry failed (%s)", retry_exc
             )
+        return None
+    # outside the catch: a raise here left hooks on part of the pipe, which the caller's whole-module fallback rejects
+    if not _apply_group_offload(pipe, placement, logger, stream_text_encoders = True):
         return None
     estimates = dict(plan.estimates or {})
     estimates.update(resident_transformer_mib = 0, resident_text_encoder_mib = 0, setup_oom_retry = True)

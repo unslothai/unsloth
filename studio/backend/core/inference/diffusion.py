@@ -161,6 +161,7 @@ from .diffusion_memory import (
     refine_memory_plan_for_components,
     refine_plan_from_loaded_weights,
     learned_peak_label,
+    vae_saver_tag,
     applied_plan,
     release_resident_groups,
     resident_group_mib,
@@ -1965,10 +1966,22 @@ def _quadratic_attention(
 def _start_peak_probe(state: Any) -> Any:
     """Arm the learned-peak measurement for one render (CUDA loads that carry a peak identity), else None."""
     pipe = getattr(state, "pipe", None)
-    if getattr(pipe, "_unsloth_peak_identity", None) is None:
+    identity = getattr(pipe, "_unsloth_peak_identity", None)
+    if identity is None:
         return None
     try:
         from .diffusion_measured_peaks import PeakProbe, enabled
+
+        keyed = str(identity[1]).split("|vae:")
+        if len(keyed) > 1:
+            vae = getattr(pipe, "vae", None)
+            savers = keyed[1].split("|")[0].split("+")
+            if any(
+                bool(getattr(vae, flag, False)) and name not in savers
+                for name, flag in (("tiled", "use_tiling"), ("sliced", "use_slicing"))
+            ):
+                # this request engaged a VAE saver the load's key lacks: its decode peak understates the key's
+                return None
 
         if not enabled():
             return None
@@ -8218,11 +8231,16 @@ class DiffusionBackend:
                         )
                     plan = refined_plan
                     peak_model = f"{repo_id}/{gguf_filename}" if gguf_filename else str(repo_id)
+                    peak_vae = vae_saver_tag(
+                        getattr(plan, "vae_tiling", False), getattr(plan, "vae_slicing", False)
+                    )
                     try:
                         # the learned-peak key: recorded at every completed render, read by later loads
                         pipe._unsloth_peak_identity = (
                             fam.name,
-                            learned_peak_label(pipe, attention_engaged or "native", peak_model),
+                            learned_peak_label(
+                                pipe, attention_engaged or "native", peak_model, peak_vae
+                            ),
                             effective_speed,
                         )
                     except Exception:  # noqa: BLE001 - recording is optional
@@ -8237,6 +8255,7 @@ class DiffusionBackend:
                             logger = logger,
                             attention = attention_engaged or "native",
                             model = peak_model,
+                            vae = peak_vae,
                         )
                         headroom = plan.estimates.get("measured_runtime_headroom_mib")
                         if headroom and (

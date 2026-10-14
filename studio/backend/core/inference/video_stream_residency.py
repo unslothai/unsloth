@@ -254,6 +254,14 @@ def arm_request(
         module._unsloth_video_calibration_key = key
         if not rearm:
             return True
+        if dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        from .diffusion_measured_peaks import close_window, open_window
+
+        stale = getattr(module, "_unsloth_video_window", None)
+        if stale is not None:
+            close_window(stale[0], stale[1])
+        module._unsloth_video_window = (dev, open_window(dev))
         torch.cuda.reset_peak_memory_stats(dev)
         work = int(width) * int(height) * int(frames)
         module._unsloth_video_pending = (work, int(torch.cuda.memory_allocated(dev)), dev)
@@ -282,6 +290,13 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
 
         module._unsloth_video_pending = None
         work, start, dev = pending
+        window = getattr(module, "_unsloth_video_window", None)
+        module._unsloth_video_window = None
+        if window is not None:
+            from .diffusion_measured_peaks import close_window
+
+            if not close_window(window[0], window[1]):
+                return None  # another render on the card reset the peak meanwhile
         extra = (int(torch.cuda.max_memory_allocated(dev)) - int(start)) >> 20
         if extra <= 0:
             return None
