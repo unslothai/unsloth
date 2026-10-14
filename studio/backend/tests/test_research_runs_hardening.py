@@ -307,6 +307,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization: Basic firstsecret1==, SCRAM-SHA-256 data=supersecret2 why",
         'Authorization: Basic firstsecret1==, Signature keyId="two",signature="supersecret2" why',
         "Authorization: RBAC role=admin, Basic supersecret2= why",
+        'Authorization: Hawk id="one", mac="firstsecret1", Hawk id="two", mac="supersecret2" why',
         "Authorization: Basic supersecret2== server echoed supersecret2 why",
         'Authorization: Basic "supersecret2" why',
         '{"name":"Authorization","value":"Basic supersecret2=="} why',
@@ -356,6 +357,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         assert "abcdefghijklmnop" not in cleaned and "YTpi" not in cleaned, text
     spaced = "Authorization: Digest response=abcdefghijklmnop\u202fwhy"
     assert _sanitize_public_query(spaced) == "why"
+    assert "why" in _sanitize_public_query('Authorization: Custom token="abc\ud800defghijk" why')
     public = "Authorization: RBAC cancellationToken=none"
     assert _sanitize_public_query(public) == "cancellationToken=none"
     assert "kzvqmtprxwjyhfn" not in _sanitize_public_query(

@@ -42,7 +42,7 @@ _QUERY_AUTHORIZATION = re.compile(
     (?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token
     |[\w-]*(?:key|token|secret|password|credential|signature))[ \t]+
     (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
-    |(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}})[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
+    |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}})|(?P=scheme))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
         r"[ \t]", _HSPACE
     )
 )
@@ -228,7 +228,10 @@ def _authorization_values(match: re.Match) -> list[str]:
     values = [value for _, value in pairs] + [value for value in raw if "\\" in value]
     # Coalesced duplicates ("Basic a==, Basic b=") are classified on their own.
     coalesced = []
-    for member in _COALESCED_MEMBER.split(match["more"] or "")[1:]:
+    repeated = rf"\s*,\s*(?={re.escape(match['scheme'])}\s)"
+    members = _COALESCED_MEMBER.split(match["more"] or "")
+    members = [piece for member in members for piece in re.split(repeated, member)]
+    for member in members[1:]:
         parsed = _QUERY_AUTHORIZATION.match("Authorization: " + member)
         coalesced += _authorization_values(parsed) if parsed else []
     scheme = re.sub(r"[^a-z0-9]", "", match["scheme"].lower())
@@ -285,7 +288,13 @@ def _sanitize_public_query(query: str) -> str:
         # A log may also drop base64 padding before echoing.
         for variant in {value, trimmed, trimmed.rstrip("=")}:
             # A log may percent-encode the echo (dTo+ -> dTo%2B).
-            exact.update({quote(variant, safe = ""), quote(variant), quote_plus(variant)})
+            exact.update(
+                {
+                    quote(variant, safe = "", errors = "surrogatepass"),
+                    quote(variant, errors = "surrogatepass"),
+                    quote_plus(variant, errors = "surrogatepass"),
+                }
+            )
             # JSON serializers may escape the solidus (a/b -> a\/b).
             exact.update({variant, variant.replace("/", "\\/")})
             credentials.update(piece for piece in [variant, *variant.split()] if len(piece) >= 8)
