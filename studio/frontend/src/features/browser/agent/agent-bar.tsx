@@ -21,10 +21,10 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
     <div
       role={question ? "alertdialog" : "status"}
       aria-live="polite"
-      className="flex shrink-0 items-center gap-2 border-t border-border/70 bg-primary/5 px-3 py-1.5 text-ui-12"
+      className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border/70 bg-primary/5 px-3 py-1.5 text-ui-12"
     >
       {question ? null : <Spinner className="size-3.5 text-primary" />}
-      <div className="min-w-0 flex-1">
+      <div className="min-w-48 flex-1">
         <p className="truncate font-medium text-foreground">
           {question ? t(`browser.agent.ask.${question.ask}`, { host: question.host, name: question.name }) : t("browser.agent.working")}
         </p>
@@ -36,29 +36,31 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
           </p>
         ) : null}
       </div>
-      {question ? (
-        <>
-          <Button type="button" size="xs" variant="ghost" onClick={() => answerQuestion(question.id, false)}>
-            {t("browser.agent.deny")}
-          </Button>
-          {script ? null : (
-            <Button type="button" size="xs" variant="outline" onClick={() => answerQuestion(question.id, true, true)}>
-              {t("browser.agentSettings.alwaysAllow")}
+      <div className="ml-auto flex shrink-0 items-center gap-2">
+        {question ? (
+          <>
+            <Button type="button" size="xs" variant="ghost" onClick={() => answerQuestion(question.id, false)}>
+              {t("browser.agent.deny")}
             </Button>
-          )}
-          <Button
-            type="button"
-            size="xs"
-            disabled={script && readId !== question.id}
-            onClick={() => answerQuestion(question.id, true)}
-          >
-            {t("browser.agent.allow")}
-          </Button>
-        </>
-      ) : null}
-      <Button type="button" size="xs" variant="outline" onClick={stopBrowserAgent}>
-        {t("browser.agent.stop")}
-      </Button>
+            {script ? null : (
+              <Button type="button" size="xs" variant="outline" onClick={() => answerQuestion(question.id, true, true)}>
+                {t("browser.agentSettings.alwaysAllow")}
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="xs"
+              disabled={script && readId !== question.id}
+              onClick={() => answerQuestion(question.id, true)}
+            >
+              {t("browser.agent.allow")}
+            </Button>
+          </>
+        ) : null}
+        <Button type="button" size="xs" variant="outline" onClick={stopBrowserAgent}>
+          {t("browser.agent.stop")}
+        </Button>
+      </div>
     </div>
   );
 }
