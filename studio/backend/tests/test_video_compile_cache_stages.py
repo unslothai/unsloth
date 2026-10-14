@@ -341,7 +341,11 @@ def test_gguf_quant_type_keys_the_stage(monkeypatch):
     class GGUFParameter(torch.nn.Parameter):
         """diffusers' GGUFParameter layout: a uint8 Parameter carrying quant_type (and a per-tensor quant_shape)."""
 
-        def __new__(cls, data, quant_type = None):
+        def __new__(
+            cls,
+            data,
+            quant_type = None,
+        ):
             self = super().__new__(cls, data, requires_grad = False)
             self.quant_type = quant_type
             self.quant_shape = tuple(data.shape)
@@ -350,7 +354,9 @@ def test_gguf_quant_type_keys_the_stage(monkeypatch):
     def gguf_dit(quant_type):
         dit = _DiT()
         for block in dit.blocks:
-            block.proj.weight = GGUFParameter(torch.zeros(8, 8, dtype = torch.uint8), quant_type = quant_type)
+            block.proj.weight = GGUFParameter(
+                torch.zeros(8, 8, dtype = torch.uint8), quant_type = quant_type
+            )
         return dit
 
     assert _key([gguf_dit(12)]) == _key([gguf_dit(12)])
@@ -366,18 +372,25 @@ def test_a_failed_or_cancelled_render_dirties_the_bundle():
     src = inspect.getsource(V.VideoBackend.generate)
     # The render's finally block: from the fallback settle to the success-only tail that starts at _finish_denoise().
     finally_at = src.index("settle_compile_fallback(state, pipe, logger)")
-    block = src[finally_at:src.index("_finish_denoise()", finally_at)]
+    block = src[finally_at : src.index("_finish_denoise()", finally_at)]
     assert "mark_recompiled(compile_ctx)" in block and "not bg_eager" in block
 
 
-def test_a_direct_load_that_raises_releases_its_compile_cache_context(cache_dir, fake_megacache, monkeypatch):
+def test_a_direct_load_that_raises_releases_its_compile_cache_context(
+    cache_dir, fake_megacache, monkeypatch
+):
     """load_pipeline is also called without _run_load, whose rollback would otherwise be the only release."""
     from core.inference import video as V
 
     backend = V.VideoBackend.__new__(V.VideoBackend)
     pipe = types.SimpleNamespace(transformer = _DiT(), components = {})
     ctx, _ = backend._begin_stage_compile_cache(
-        token = None, roots = (pipe,), speed_optims = ("compiled",), dtype = None, quant = None, attention_backend = None
+        token = None,
+        roots = (pipe,),
+        speed_optims = ("compiled",),
+        dtype = None,
+        quant = None,
+        attention_backend = None,
     )
     assert str(ctx.dir) in cc._live_dirs
 
@@ -389,4 +402,3 @@ def test_a_direct_load_that_raises_releases_its_compile_cache_context(cache_dir,
         backend.load_pipeline("org/model")
     assert backend._precommit_compile_caches == {}
     assert str(ctx.dir) not in cc._live_dirs
-
