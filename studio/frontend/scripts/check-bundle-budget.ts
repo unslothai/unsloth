@@ -94,8 +94,12 @@ export const BUDGET = {
   // and #13703 / #13700 the last 61 B. Raised by that growth so main's margin stays where it was.
   // The chat menu's Compact conversation item adds 1.6 KB raw / 0.3 KB transfer to the eager chat chunk
   // (6,741,807 -> 6,743,381 B raw, 2,021,316 -> 2,021,655 B transfer against 2a03c22812), raised by that.
-  transferBytes: 2_027_652,
-  rawBytes: 6_746_927,
+  // Re-embedding documents after an embedding model switch (the save toast's action and the Settings row)
+  // adds 3.0 KB raw / 0.8 KB transfer (6,748,191 -> 6,751,217 B raw, 2,027,948 -> 2,028,806 B transfer
+  // against 81cfe76dd, one machine and build). Lazy-loading its store from both save sites cost 0.3 KB
+  // transfer more in chunk overhead, so the budget is raised by that growth.
+  transferBytes: 2_028_510,
+  rawBytes: 6_749_953,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
