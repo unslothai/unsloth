@@ -1789,8 +1789,14 @@ class _QueuedThenSilentResponse:
 # Queueing is not charged to the request budget, so with no wall clock behind it a backend
 # that queues then goes quiet would hold the run open forever.
 def test_unlimited_still_bounds_silence_after_a_queue_notice(monkeypatch):
+    from core.inference import llama_admission
+
     _install_fake_client(monkeypatch, [_QueuedThenSilentResponse()])
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.2)
+    # The gap allowed between queue notices also clears 3 keepalive heartbeats (5 s each by
+    # default, so 15 s here). A 0.3 s heartbeat makes it the 1 s first-output budget instead;
+    # the bound under test is the same, the test just stops waiting 15 s for it.
+    monkeypatch.setenv(llama_admission.ADMISSION_KEEPALIVE_INTERVAL_ENV, "0.3")
     supervisor = _make_supervisor(_noop_check_active)
     run = _waiting_run(0)
     run["config"]["budgets"]["firstOutputTimeoutSeconds"] = 1
