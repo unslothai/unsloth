@@ -34,6 +34,7 @@ import re
 import sys
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -100,6 +101,23 @@ def info(message: str) -> None:
     print(f"[research-freeze] {message}", flush = True)
 
 
+def until(
+    page,
+    condition: str,
+    timeout: int = 5000,
+) -> None:
+    """Wait for the state a check reads, without failing here: a broken build spends the bound and
+    then fails on the same check. Replaces flat sleeps, which also asserted the runner's speed."""
+    try:
+        page.wait_for_function(condition, timeout = timeout)
+    except PlaywrightTimeout:
+        pass
+
+
+def frames(page) -> None:
+    page.evaluate("() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))")
+
+
 def build_report(sections: int) -> str:
     body = "\n".join(REPORT_SECTION.format(n = n) for n in range(1, sections + 1))
     return f"# Deep research report\n\n{body}\n\n$$\\sum_{{i=1}}^{{n}} x_i^2$$\n"
@@ -146,6 +164,8 @@ LONGTASK_INIT = """
 
 
 SCROLLER = '[aria-label="Research activity timeline"]'
+DIALOG_OPEN = "() => Boolean(document.querySelector('[role=\"dialog\"]'))"
+BODY_LOCKED = "() => document.body.style.pointerEvents === 'none'"
 DISTANCE_FROM_BOTTOM = (
     f"() => {{ const el = document.querySelector('{SCROLLER}');"
     " return Math.round(el.scrollHeight - el.scrollTop - el.clientHeight); }"
@@ -193,7 +213,8 @@ def run() -> dict:
         cdp.send("Performance.enable")
 
         page.evaluate("window.__research.seed()")
-        page.wait_for_timeout(500)
+        until(page, f"() => Boolean(document.querySelector('{SCROLLER}'))")
+        frames(page)
         activities_before_stream = page.evaluate("window.__research.state().activities")
 
         before = metrics(cdp)
@@ -213,7 +234,7 @@ def run() -> dict:
             [DELTA_COUNT, DELTA_GAP_MS],
         )
         # The tail is part of the measurement: re-arming after the last event is the failure mode, so count those
-        # frames rather than stopping the clock.
+        # frames rather than stopping the clock. A measurement window, not a readiness wait.
         page.wait_for_timeout(1200)
         stream_window_ms = DELTA_COUNT * DELTA_GAP_MS + 1200
         stream_raf = page.evaluate("window.__rafCount")
@@ -237,7 +258,7 @@ def run() -> dict:
 
         # Idle after the stream: the follow loop must stop when the list goes quiet.
         page.evaluate("window.__rafCount = 0")
-        page.wait_for_timeout(2000)
+        page.wait_for_timeout(2000)  # measurement window: rAF callbacks counted over 2 s idle
         results["idle_raf_callbacks_per_2s"] = page.evaluate("window.__rafCount")
 
         report = build_report(int(os.environ.get("SMOKE_REPORT_SECTIONS", "40")))
@@ -272,7 +293,7 @@ def run() -> dict:
         except Exception as exc:
             report_click_landed = False
             info(f"the click during the report parse never became actionable: {exc!r}")
-        page.wait_for_timeout(3000)
+        page.wait_for_timeout(3000)  # measurement window: the stall probe samples the whole parse
         # Disarm only after the window closes, so a stall at its very end is still sampled.
         page.evaluate(
             """() => {
@@ -299,22 +320,24 @@ def run() -> dict:
         # under it. Either one stranding `body { pointer-events: none }` leaves the whole window unclickable.
         page.evaluate("window.__research.clearReport()")
         page.evaluate("window.__research.awaitApproval()")
-        page.wait_for_timeout(600)
+        until(page, f"() => ({DIALOG_OPEN})() && ({BODY_LOCKED})()")
         dialog_open = page.evaluate(
             "() => Boolean(document.querySelector('[role=\\\"dialog\\\"]'))"
         )
         body_during = page.evaluate("() => document.body.style.pointerEvents")
         page.evaluate("window.__research.approve()")
-        page.wait_for_timeout(600)
+        until(page, f"() => !({DIALOG_OPEN})() && !({BODY_LOCKED})()")
+        frames(page)
         body_after_approve = page.evaluate("() => document.body.style.pointerEvents")
         clicks_before = page.evaluate("window.__research.clicks()")
         page.click('[data-smoke="click-probe"]', timeout = 5000)
         clicks_after_approve = page.evaluate("window.__research.clicks()")
 
         page.evaluate("window.__research.awaitApproval()")
-        page.wait_for_timeout(600)
+        until(page, f"() => ({DIALOG_OPEN})() && ({BODY_LOCKED})()")
         page.evaluate("window.__research.closePanel()")
-        page.wait_for_timeout(600)
+        until(page, f"() => !document.querySelector('{SCROLLER}') && !({BODY_LOCKED})()")
+        frames(page)
         body_after_close = page.evaluate("() => document.body.style.pointerEvents")
         page.click('[data-smoke="click-probe"]', timeout = 5000)
         clicks_after_close = page.evaluate("window.__research.clicks()")
@@ -333,9 +356,17 @@ def run() -> dict:
         # bottom threshold: a still-pending follow step used to run anyway and reconcile
         # isAtBottom back to true, so "Latest" never appeared and nothing corrected it.
         page.evaluate("window.__research.openPanel()")
-        page.wait_for_timeout(300)
+        until(page, f"() => Boolean(document.querySelector('{SCROLLER}'))")
+        frames(page)
         page.evaluate("() => { for (let i = 100; i < 130; i += 1) window.__research.step(i); }")
-        page.wait_for_timeout(1500)
+        # The state the checks below read: the list overflows and the follow loop has pinned it.
+        until(
+            page,
+            f"() => {{ const el = document.querySelector('{SCROLLER}');"
+            " return el.scrollHeight > el.clientHeight"
+            " && el.scrollHeight - el.scrollTop - el.clientHeight <= 2; }",
+        )
+        frames(page)
         overflowing = page.evaluate(
             f"() => {{ const el = document.querySelector('{SCROLLER}'); return el.scrollHeight > el.clientHeight; }}"
         )
@@ -353,7 +384,8 @@ def run() -> dict:
                 el.dispatchEvent(new Event("scroll"));
             }}"""
         )
-        page.wait_for_timeout(600)
+        until(page, LATEST_BUTTON_VISIBLE, timeout = 2000)
+        frames(page)
         results["detach"] = {
             "overflowing": overflowing,
             "distance_while_following": followed_distance,

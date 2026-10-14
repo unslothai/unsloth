@@ -443,6 +443,34 @@ def test_patch_hybrid_varlen_active_and_idempotent(monkeypatch):
     assert scan_orig.calls[-1] is None
 
 
+def test_patch_hybrid_varlen_survives_accelerate_unwrap(monkeypatch):
+    # TRL runs accelerate's extract_model_from_parallel(keep_fp32_wrapper = False) every step
+    # after a mixed-precision prepare_model; it rebinds the forward it finds with
+    # MethodType(forward, model). A plain-function wrapper then got the model positionally:
+    # "PeftModelForCausalLM.forward() got multiple values for argument 'input_ids'".
+    from types import MethodType
+    from accelerate.utils import extract_model_from_parallel
+    from accelerate.utils.operations import convert_outputs_to_fp32
+
+    monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
+    model = _ShimHybridModel()
+    assert patch_hybrid_linear_attention_varlen(model) is True
+    assert list(inspect.signature(model.forward).parameters)[:3] == [
+        "input_ids",
+        "position_ids",
+        "packed_seq_lengths",
+    ]
+    # Accelerator.prepare_model with native AMP (accelerate/accelerator.py).
+    model._original_forward = model.forward
+    if hasattr(model.forward, "__func__"):
+        model.forward = MethodType(convert_outputs_to_fp32(model.forward.__func__), model)
+    else:
+        model.forward = convert_outputs_to_fp32(model.forward)
+    model = extract_model_from_parallel(model, keep_fp32_wrapper = False)
+    out = model(input_ids = torch.zeros(1, 6, dtype = torch.long), use_cache = False)
+    assert out.shape == (1, 6)
+
+
 def test_patch_hybrid_varlen_torch_fallback_fail_closed(monkeypatch):
     monkeypatch.setenv("UNSLOTH_EXPERIMENTAL_HYBRID_PACKING", "1")
     model = _ShimHybridModel()

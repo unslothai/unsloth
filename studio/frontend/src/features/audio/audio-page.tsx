@@ -16,8 +16,10 @@ import { buildAudioTourSteps } from "./tour";
 import { useSidebar } from "@/components/ui/sidebar";
 import { usePlatformStore } from "@/config/env";
 import { type InferenceStatusResponse, getInferenceStatus } from "@/features/chat";
+import { useHubInventory } from "@/features/hub";
 import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
+import { ggufQuantLabel } from "@/features/model-picker/model-config/model-identity";
 import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
@@ -26,7 +28,10 @@ import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { isTauri } from "@/lib/api-base";
-import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  subscribeModelDeleted,
+  subscribeModelLifecycle,
+} from "@/lib/model-lifecycle-events";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useIsMobileShell } from "@/hooks/use-mobile";
@@ -43,9 +48,13 @@ import {
   type AudioGenerationPhase,
   audioEjectAvailable,
   audioGenerationPresentation,
+  audioLoadedSelection,
+  deleteCoversRememberedModel,
+  rememberedModelIsGone,
+  rememberedModelUnavailable,
+  settledDeleteMarkers,
 } from "./audio-page-policy";
 import { type AudioSourceSelection, clipReference } from "./audio-run-request";
-import { AudioRuntimeUpdateNotice } from "./components/audio-runtime-update-notice";
 import { AudioActiveProvider } from "./components/audio-source-input";
 import {
   audioModelLabel,
@@ -60,6 +69,7 @@ import {
 import type { ClipSendHandlers } from "./components/clip-card";
 import { sendClipToMusic } from "./components/music-send-to";
 import { SaveVoiceDialog } from "./components/save-voice-dialog";
+import { UseViaApiButton } from "./components/use-via-api-button";
 import { WorkflowTitleMenu } from "./components/workflow-title-menu";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
 import { useAudioHandoff } from "./hooks/use-audio-handoff";
@@ -327,7 +337,6 @@ export function AudioPage({
     selectedSttRepoRef,
     sttStatusRefreshGeneration,
     audioCppRuntime,
-    runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
     sttEngines,
@@ -978,9 +987,80 @@ export function AudioPage({
       audioWorkflows: status?.audio_workflows,
       music: musicGeneration,
     });
-  const lastPageModel = useAudioWorkspaceStore(
-    (state) => state.lastModelByWorkflow[pageWorkflow] ?? null,
+  const rememberedModels = useAudioWorkspaceStore(
+    (state) => state.lastModelByWorkflow,
   );
+  const forgetModel = useAudioWorkspaceStore((state) => state.forgetModel);
+  // Folder rows let a single audio.cpp folder delete show the folder is gone.
+  const modelInventory = useHubInventory({
+    kind: "models",
+    includeUmbrellaFolders: true,
+  });
+  // Deleted repo -> delete time, kept until a Hub cache fetch sent after it has settled.
+  const deletedModelsRef = useRef(new Map<string, number>());
+  const [deletedModelsTick, setDeletedModelsTick] = useState(0);
+  useEffect(
+    () =>
+      subscribeModelDeleted((repoId) => {
+        deletedModelsRef.current.set(repoId.toLowerCase(), Date.now());
+        setDeletedModelsTick((tick) => tick + 1);
+      }),
+    [],
+  );
+  useEffect(() => {
+    const deleted = deletedModelsRef.current;
+    if (deleted.size === 0) return;
+    const inventory = {
+      settled: modelInventory.inventorySettled,
+      error: modelInventory.inventoryError,
+      available: modelInventory.availableSet,
+      refreshStartedAt: modelInventory.hubCacheRefreshStartedAt,
+    };
+    for (const id of new Set(Object.values(rememberedModels))) {
+      if (
+        !id ||
+        ![...deleted.keys()].some((repoId) =>
+          deleteCoversRememberedModel(repoId, id),
+        )
+      ) {
+        continue;
+      }
+      if (rememberedModelIsGone(id, inventory)) forgetModel(id);
+    }
+    // A listing newer than the delete was just judged, so the marker is spent; kept, a package
+    // marker would forget a folder downloaded again later.
+    for (const repoId of settledDeleteMarkers(deleted, inventory)) {
+      deleted.delete(repoId);
+    }
+  }, [
+    deletedModelsTick,
+    rememberedModels,
+    modelInventory.inventorySettled,
+    modelInventory.inventoryError,
+    modelInventory.availableSet,
+    modelInventory.hubCacheRefreshStartedAt,
+    forgetModel,
+  ]);
+  const rememberedPageModel = rememberedModels[pageWorkflow] ?? null;
+  const lastPageModel =
+    rememberedPageModel &&
+    !rememberedModelUnavailable(rememberedPageModel, {
+      settled: modelInventory.inventorySettled,
+      error: modelInventory.inventoryError,
+      available: modelInventory.availableSet,
+    })
+      ? rememberedPageModel
+      : null;
+  // Where the loaded model runs, for the "open" action on pages it cannot run.
+  const loadedModelHome = workflowForLoadedModel({
+    current: "speak",
+    audioWorkflows: status?.audio_workflows,
+    music: musicGeneration,
+  });
+  const openLoadedModelHome = {
+    label: `open ${loadedModelHome === "speak" ? "Speak" : audioWorkflowTab(loadedModelHome).label}`,
+    onClick: () => transitionWorkflow(loadedModelHome),
+  };
   const openSelector = useCallback(() => setSelectorOpen(true), []);
   const chooseModelAction = { label: "Choose a model", onClick: openSelector };
   const handlePickRecommended = useCallback(
@@ -1074,10 +1154,7 @@ export function AudioPage({
                 actions: [
                   { label: "Choose a model that can edit", onClick: openSelector },
                   ...recommendedEditActions,
-                  {
-                    label: "open Speak",
-                    onClick: () => transitionWorkflow("speak"),
-                  },
+                  openLoadedModelHome,
                 ],
               }
           : !pageModelLoaded && ttsWorkflow === "separate"
@@ -1105,10 +1182,7 @@ export function AudioPage({
                 actions: [
                   { label: "Choose a model that can clone", onClick: openSelector },
                   ...recommendedCloneActions,
-                  {
-                    label: "open Speak",
-                    onClick: () => transitionWorkflow("speak"),
-                  },
+                  openLoadedModelHome,
                 ],
               }
             : !pageModelLoaded && ttsWorkflow === "convert"
@@ -1161,10 +1235,7 @@ export function AudioPage({
                     actions: [
                       { label: "Choose a music model", onClick: openSelector },
                       ...recommendedMusicActions,
-                      {
-                        label: "open Speak",
-                        onClick: () => transitionWorkflow("speak"),
-                      },
+                      openLoadedModelHome,
                     ],
                   }
             : ttsWorkflow === "separate"
@@ -1523,13 +1594,14 @@ export function AudioPage({
     } satisfies ModelOption;
   });
   // Arriving on a page never loads: the picker shows the page's last model, unloaded, to re-pick.
+  const speakLoaded = audioLoadedSelection(status, ggufQuantLabel);
   const showLastPageModel =
     mode === "speak" && !pageModelLoaded && lastPageModel !== null;
   const selectorValue =
     mode === "speak"
       ? showLastPageModel
         ? lastPageModel
-        : (status?.active_model ?? undefined)
+        : (speakLoaded.id ?? undefined)
       : (transcribeRepo ?? undefined);
 
   const capabilityLine =
@@ -1650,7 +1722,12 @@ export function AudioPage({
               loadedModelIdOverride={
                 mode === "transcribe" && sttReady
                   ? (selectedSttRepo ?? undefined)
-                  : undefined
+                  : mode === "speak"
+                    ? (speakLoaded.id ?? "")
+                    : undefined
+              }
+              loadedGgufVariantOverride={
+                mode === "speak" ? speakLoaded.variant : undefined
               }
               loaded={
                 mode === "transcribe"
@@ -1676,6 +1753,8 @@ export function AudioPage({
               className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
               triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
               task={HUB_TASKS_BY_MODE[mode]}
+              // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
+              hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
               catalog={AUDIO_CATALOG}
               // TTS/ASR come from the checkpoint's own tokenizer, not a curated recipe, so any publisher's
               // audio repo loads here.
@@ -1728,6 +1807,10 @@ export function AudioPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <UseViaApiButton
+                workflow={pageWorkflow}
+                model={selectorValue ?? null}
+              />
               <LibraryPageLink
                 tab="audio"
                 labelClassName="hidden @[50rem]:inline"
@@ -1769,14 +1852,6 @@ export function AudioPage({
                 <p className="text-xs leading-snug text-muted-foreground">
                   {capabilityLine}
                 </p>
-                {runtimeUpdate ? (
-                  <AudioRuntimeUpdateNotice
-                    update={runtimeUpdate}
-                    onUpdated={() =>
-                      Promise.all([refreshStatus(), refreshSttStatus()])
-                    }
-                  />
-                ) : null}
               </div>
 
               {mode === "speak" ? (

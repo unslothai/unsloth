@@ -28,7 +28,8 @@ import {
 // pastedTextMinChars: paste length that becomes a .txt attachment; 0 is off.
 // showInlineEditResponse: on keeps Edit response in each response's action bar instead of its
 // More menu. notifyWhenReplyFinishes: on sends a system notification when a reply ends while the
-// window is hidden or unfocused.
+// window is hidden or unfocused. filesPanelCollapsed: on shrinks Chat with files to a header and
+// a row of pills.
 export interface ChatPreferencesState {
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
@@ -62,6 +63,8 @@ export interface ChatPreferencesState {
   setShowScrollToBottomButton: (value: boolean) => void;
   notifyWhenReplyFinishes: boolean;
   setNotifyWhenReplyFinishes: (value: boolean) => void;
+  filesPanelCollapsed: boolean;
+  setFilesPanelCollapsed: (value: boolean) => void;
 }
 
 // A stale stored value would leave the dropdown blank and unfixable.
@@ -94,7 +97,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
         set({ showModelDisclaimer }),
       showResponseModel: false,
       setShowResponseModel: (showResponseModel) => set({ showResponseModel }),
-      showInlineEditResponse: false,
+      showInlineEditResponse: true,
       setShowInlineEditResponse: (showInlineEditResponse) =>
         set({ showInlineEditResponse }),
       thinkingVisibility: DEFAULT_THINKING_VISIBILITY,
@@ -119,9 +122,18 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
       notifyWhenReplyFinishes: false,
       setNotifyWhenReplyFinishes: (notifyWhenReplyFinishes) =>
         set({ notifyWhenReplyFinishes }),
+      filesPanelCollapsed: false,
+      setFilesPanelCollapsed: (filesPanelCollapsed) =>
+        set({ filesPanelCollapsed }),
     }),
     {
       name: "unsloth_chat_preferences",
+      // v0 stored the old off default for everyone, so it cannot tell a choice from the default.
+      version: 1,
+      migrate: (persisted, version) =>
+        version < 1 && persisted && typeof persisted === "object"
+          ? { ...persisted, showInlineEditResponse: true }
+          : persisted,
       merge: (persisted, current) => {
         const saved = persisted as Partial<ChatPreferencesState> | undefined;
         // Records written before the three-state settings carry the two booleans instead.
@@ -138,7 +150,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,
           showModelDisclaimer: saved?.showModelDisclaimer ?? false,
           showResponseModel: saved?.showResponseModel ?? false,
-          showInlineEditResponse: saved?.showInlineEditResponse ?? false,
+          showInlineEditResponse: saved?.showInlineEditResponse ?? true,
           thinkingVisibility: migrateVisibility(
             saved?.thinkingVisibility,
             legacy?.collapseThinkingByDefault,
@@ -157,6 +169,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           autoScrollWhileGenerating: saved?.autoScrollWhileGenerating ?? true,
           showScrollToBottomButton: saved?.showScrollToBottomButton ?? true,
           notifyWhenReplyFinishes: saved?.notifyWhenReplyFinishes === true,
+          filesPanelCollapsed: saved?.filesPanelCollapsed === true,
         };
       },
     },

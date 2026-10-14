@@ -219,6 +219,10 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     (v) => findMergedFormat(v)?.label ?? v,
   );
   const showProgress = isExporting || isTerminal;
+  const hubRepoMissing =
+    destination === "hub" &&
+    !decisionNote &&
+    (!hfUsername.trim() || !modelName.trim());
 
   return (
     <div className="flex flex-col gap-4 rounded-2xl border border-border/50 bg-muted/20 p-4">
@@ -352,6 +356,11 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                       />
                     </div>
                   </div>
+                  {hubRepoMissing && (
+                    <p className="-mt-2 text-ui-11 text-muted-foreground/70">
+                      Enter a Username / Org and Model Name to push to the Hub.
+                    </p>
+                  )}
 
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center justify-between">
@@ -617,7 +626,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onStart}>Start Export</Button>
+            <Button onClick={onStart} disabled={hubRepoMissing}>
+              Start Export
+            </Button>
           </>
         )}
         {isExporting && (
