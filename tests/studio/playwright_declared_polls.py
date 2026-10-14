@@ -107,6 +107,19 @@ def normalize(url: str) -> str:
     return urlsplit(url).path
 
 
+def studio_path(url: str, base: str) -> str | None:
+    """The path of a request this Studio serves, or None for any other origin.
+
+    The budget is about lines in this server's log. The Hub calls huggingface.co straight from
+    the browser (@huggingface/hub listModels / modelInfo), and Hugging Face's own /api/models
+    shares a path with nothing here; counted by path alone it read as an undeclared Studio poll.
+    """
+    request, studio = urlsplit(url), urlsplit(base)
+    if (request.scheme, request.netloc) != (studio.scheme, studio.netloc):
+        return None
+    return normalize(url)
+
+
 def main() -> int:
     declared = set(ALL_POLLS)
 
@@ -164,8 +177,8 @@ def main() -> int:
         def on_request(request) -> None:
             if not counting:
                 return
-            path = normalize(request.url)
-            if path.startswith("/api/"):
+            path = studio_path(request.url, BASE)
+            if path and path.startswith("/api/"):
                 seen[path] += 1
                 dwell_counts[path] += 1
 
