@@ -29,7 +29,7 @@ signal.signal(signal.SIGTERM, handler)
 print("ready", flush = True)
 while not seen:
     time.sleep(0.01)
-time.sleep(0.5)
+time.sleep(float(sys.argv[1]))
 sys.exit(0)
 """
 
@@ -42,9 +42,11 @@ def _backend_holding(proc) -> LlamaCppBackend:
     return backend
 
 
-def _spawn():
+def _spawn(shutdown_s = 0.5):
     proc = subprocess.Popen(
-        [sys.executable, "-c", _LLAMA_SERVER_LIKE], stdout = subprocess.PIPE, text = True
+        [sys.executable, "-c", _LLAMA_SERVER_LIKE, str(shutdown_s)],
+        stdout = subprocess.PIPE,
+        text = True,
     )
     assert proc.stdout.readline().strip() == "ready"
     assert os.getpgid(proc.pid) == os.getpgrp()
@@ -58,6 +60,19 @@ def test_ctrl_c_shutdown_lets_llama_server_exit_on_its_own():
         mark_quit_signal_received()
         _backend_holding(proc)._kill_process(teardown = True)
         assert proc.returncode == 0, "llama-server got a second signal mid-shutdown"
+    finally:
+        proc.kill()
+        proc.wait()
+        proc.stdout.close()
+
+
+def test_llama_server_stuck_after_ctrl_c_is_killed_not_signalled_twice():
+    proc = _spawn(shutdown_s = 30)
+    try:
+        os.kill(proc.pid, signal.SIGINT)
+        mark_quit_signal_received()
+        _backend_holding(proc)._kill_process(teardown = True)
+        assert proc.returncode == -signal.SIGKILL
     finally:
         proc.kill()
         proc.wait()
