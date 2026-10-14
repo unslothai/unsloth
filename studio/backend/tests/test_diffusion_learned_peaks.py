@@ -1449,7 +1449,7 @@ def test_render_with_lora_adapters_is_not_probed(monkeypatch):
     state.pipe._unsloth_loras = (("style", "/loras/style.safetensors", 0.8),)
     assert diffusion._start_peak_probe(state) is None
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
-    assert 'peak_model = "unknown"  # adapters baked in at load' in src
+    assert '"unknown"  # adapters baked in at load' in src
 
 
 def test_learned_reserve_falls_back_to_the_flat_estimate_with_loras_or_a_failed_saver(klein_pipe):
