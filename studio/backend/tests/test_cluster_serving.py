@@ -1121,3 +1121,30 @@ def test_managed_must_be_a_json_boolean():
     assert (
         cs.parse_nodes_json({"nodes": [{"host": "10.0.0.2", "managed": False}]})[0].managed is False
     )
+
+
+def test_a_sidecar_must_fit_the_first_local_gpu_even_when_the_model_fits_locally():
+    devices = cs.parse_device_list(TWO_LOCAL, ["10.0.0.2:50052"])
+    # 100 GiB fits CUDA0 + CUDA1 together, but a 75 GiB projector does not fit CUDA0 alone.
+    plan = cs.plan_cluster(30 * GIB, 0, 75 * GIB, devices)
+    assert plan.topology == "refuse" and "CUDA0" in plan.reason
+
+
+def test_the_sidecar_stays_pinned_to_the_gpu_it_was_charged_to(monkeypatch):
+    listing = (
+        "  RPC0: 10.0.0.2:50052 (122502 MiB, 118000 MiB free)\n"
+        "  CUDA0: NVIDIA L4 (23034 MiB, 22000 MiB free)\n"
+        "  CUDA1: NVIDIA H100 (81559 MiB, 80000 MiB free)\n"
+    )
+    devices = cs.parse_device_list(listing, ["10.0.0.2:50052"])
+    plan = cs.plan_cluster(150 * GIB, 0, 19 * GIB, devices, layer_bytes = 2 * GIB)
+    assert plan.topology == "layer_split"
+    assert "CUDA0" not in [d.name for d in plan.devices]  # no room for layers beside the sidecar
+    assert plan.sidecar_device.name == "CUDA0"
+
+
+@pytest.mark.parametrize("extra", [["-ot", "blk.*=CUDA0"], ["--n-cpu-moe", "10"], ["--cpu-moe"]])
+def test_tensor_overrides_are_caller_placement(monkeypatch, extra):
+    seen = _cluster_env(monkeypatch)
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []

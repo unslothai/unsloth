@@ -68,6 +68,12 @@ _PLACEMENT_FLAGS = frozenset(
         "--gpu-layers",
         "--n-gpu-layers",
         "-ngl",
+        "--override-tensor",
+        "-ot",
+        "--cpu-moe",
+        "-cmoe",
+        "--n-cpu-moe",
+        "-ncmoe",
     }
 )
 _PLACEMENT_ENV = (
@@ -76,6 +82,9 @@ _PLACEMENT_ENV = (
     "LLAMA_ARG_TENSOR_SPLIT",
     "LLAMA_ARG_MAIN_GPU",
     "LLAMA_ARG_N_GPU_LAYERS",
+    "LLAMA_ARG_OVERRIDE_TENSOR",
+    "LLAMA_ARG_CPU_MOE",
+    "LLAMA_ARG_N_CPU_MOE",
 )
 
 
@@ -180,11 +189,13 @@ class ClusterPlan:
     need_bytes: Optional[float] = None
     usable_bytes: Optional[float] = None
     extra_bytes: float = 0.0
+    # Where the projector / drafter was charged; kept even when it gets no layers.
+    sidecar_device: Optional[Device] = None
 
     def resident(self) -> Dict[Tuple[str, str], float]:
         """What this plan puts on each device, so a replacement load can count it as freed."""
         out = {d.key: w * float(self.need_bytes or 0) for d, w in zip(self.devices, self.weights)}
-        local = next((d for d in self.devices if not d.remote), None)
+        local = self.sidecar_device or next((d for d in self.devices if not d.remote), None)
         if local is not None:
             out[local.key] = out.get(local.key, 0.0) + self.extra_bytes
         return out
@@ -379,6 +390,14 @@ def plan_cluster(
     need = float(model_bytes) + float(kv_bytes or 0)
     local_budgets = [usable_bytes(d) for d in local]
     local_usable = sum(local_budgets)
+    # The projector / drafter is pinned to the first local GPU, so it has to fit there itself.
+    if local and local_extra_bytes > local_budgets[0]:
+        return ClusterPlan(
+            "refuse",
+            f"the projector / drafter ({local_extra_bytes / _GIB:.1f} GiB) does not fit "
+            f"{local[0].name} ({local_budgets[0] / _GIB:.1f} GiB usable), where it loads",
+            need_bytes = need,
+        )
     if forced != "layer_split" and local and need + local_extra_bytes <= local_usable:
         return ClusterPlan(
             "single",
@@ -400,13 +419,6 @@ def plan_cluster(
     ordered = remote + local
     budgets = [usable_bytes(d) for d in remote] + local_budgets
     if local:
-        if local_extra_bytes > budgets[len(remote)]:
-            return ClusterPlan(
-                "refuse",
-                f"the projector / drafter ({local_extra_bytes / _GIB:.1f} GiB) does not fit "
-                f"{local[0].name} ({budgets[len(remote)] / _GIB:.1f} GiB usable), where it loads",
-                need_bytes = need,
-            )
         budgets[len(remote)] -= local_extra_bytes
     if layer_bytes:
         # Layers land whole, so any device can end up with one more than its share: keep that much
@@ -448,6 +460,7 @@ def plan_cluster(
         need_bytes = need,
         usable_bytes = total,
         extra_bytes = float(local_extra_bytes),
+        sidecar_device = local[0] if local else None,
     )
 
 
@@ -713,7 +726,7 @@ class ClusterServing:
         # in it even at zero weight; one that exposed none takes no number and is left out.
         used = [e for e in endpoints if any(d.endpoint == e for d in devices)]
         self.block = split_extra_args(used, plan)
-        local = next((d for d in plan.devices if not d.remote), None)
+        local = plan.sidecar_device
         caller_pinned = any(
             str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in effective
         ) or bool(os.environ.get("MTMD_BACKEND_DEVICE"))
@@ -753,7 +766,7 @@ class ClusterServing:
         variant = getattr(request, "gguf_variant", None)
         local_file = ss.cached_repo_file(model_path, variant)
         size = ss.gguf_size_bytes(local_file)
-        self._n_layers = _gguf_block_count(local_file, ss)
+        self._n_layers = await asyncio.to_thread(_gguf_block_count, local_file, ss)
         sidecars, _unknown = ss.sidecar_bytes(extras)
         # Adapters and control vectors sit beside the layers they modify, on every device.
         adapters, _unknown = ss.sidecar_bytes(_flag_args(extras, _ADAPTER_FLAGS))
