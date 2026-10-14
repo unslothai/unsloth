@@ -3,6 +3,7 @@
 
 import { authFetch, getAuthToken } from "@/features/auth";
 import { refreshHardwareInfo } from "@/hooks/use-hardware-info";
+import { notifyModelLifecycle } from "@/lib/model-lifecycle-events";
 import {
   signalRunningLlamaJob,
   subscribeToLlamaJobStarted,
@@ -493,6 +494,8 @@ export function useLlamaUpdateCheck({
         const presentation = commitStatus(s);
         if (presentation.running) return;
         clearPollTimer();
+        // The update stops a loaded dictation sidecar without asking for a reload: re-read STT either way.
+        notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
         if (s.job.state === "success") {
           void refreshHardwareInfo();
           // The update unloads the running model server-side, so the chat runtime still points at a

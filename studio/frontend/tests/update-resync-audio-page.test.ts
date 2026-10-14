@@ -39,3 +39,11 @@ test("the update card resyncs through that function", () => {
     /onReloadRequired: resyncInferenceStatusAfterServerModelChange/,
   );
 });
+
+test("a settled update job re-reads dictation even without a reload", () => {
+  const hook = readText("../src/hooks/use-llama-update-check.ts");
+  assert.match(
+    hook,
+    /if \(presentation\.running\) return;\s*clearPollTimer\(\);\s*(\/\/[^\n]*\n\s*)?notifyModelLifecycle\(\{ runtime: "stt", loading: false/,
+  );
+});
