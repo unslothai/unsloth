@@ -289,6 +289,12 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         _sanitize_public_query("Authorization: Bearer abcdefghijklmnop, GET /v1/users return 401")
         == "GET /v1/users return 401"
     )
+    assert (
+        _sanitize_public_query(
+            "Authorization: Bearer abcdefghijklmnop, GET api/v1/users returns 401"
+        )
+        == "GET api/v1/users returns 401"
+    )
     assert "YTpi" not in _sanitize_public_query(
         'Authorization: Basic YTpi response {"received":"YTpi"}'
     )
@@ -326,6 +332,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization: Signature custom_signature= supersecret2 why",
         "why did my Authorization header: Basic supersecret2== fail",
         "authorization_header=Basic supersecret2== why",
+        "x-authorization: Basic supersecret2== why",
+        '{"Authorization":"Bearer abcdefghijkl\\/supersecret2=="} why',
         "authorizationHeader: Basic supersecret2== why",
         "Authorization: Custom token=supersecret2%2fx server echoed supersecret2%2Fx why",
         'Authorization: Digest foo1= active, response="supersecret2" why',

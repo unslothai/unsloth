@@ -65,15 +65,15 @@ _AUTH_PARAM = r"""(?:[\w!#$%&'*+.^`|~-]+=(?:[ \t]+(?=\\?["'“‘]|[^\s,"]+[ \t]
     r"[ \t]", _HSPACE
 )
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?aix)(?<![A-Za-z0-9])(?:(?<=proxy-)|(?<!(?-i:[a-z])-))authorization(?:[ \t_-]*header(?:[ \t_-]*value)?)?(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])(?:[ \t]*(?:\r?\n[ \t]*)?\\?["'“‘]value\\?["'”’][ \t]*[:=])?|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`"'“‘]*
-    (?P<credentials>(?:(?<=basic\s)|(?<=bearer\s)|(?<=negotiate\s)|(?<=ntlm\s))[\w.~+/-]+=*(?![\w"'“‘])
+    rf"""(?aix)(?<![A-Za-z0-9])(?:(?<=proxy-)|(?<=x-)|(?<!(?-i:[a-z])-))authorization(?:[ \t_-]*header(?:[ \t_-]*value)?)?(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])(?:[ \t]*(?:\r?\n[ \t]*)?\\?["'“‘]value\\?["'”’][ \t]*[:=])?|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`"'“‘]*
+    (?P<credentials>(?:(?<=basic\s)|(?<=bearer\s)|(?<=negotiate\s)|(?<=ntlm\s))(?:[\w.~+/-]|\\/)+=*(?![\w"'“‘])
     |(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
     (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
     (?:{_SCHEME_ALTERNATION}
     |[\w-]*(?:key|token|secret|password|credential|signature)|(?P=scheme))(?:[ \t]+|[ \t]*\r?\n[ \t]+)
     (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’.;!?—–]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
     |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*
-    |(?-i:[A-Z][A-Za-z0-9-]*[ \t]+(?=[\w.~+-][\w.~+/-]{{7}})(?=[\w.~+/:-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{{2}})|[\w.~+/-]{{16}})[\w.~+/-]+(?::[\w.~+/-]+)*=*)))*)""".replace(
+    |(?!(?:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)[ \t])(?-i:[A-Z][A-Za-z0-9-]*[ \t]+(?=[\w.~+-][\w.~+/-]{{7}})(?=[\w.~+/:-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{{2}})|[\w.~+/-]{{16}})[\w.~+/-]+(?::[\w.~+/-]+)*=*)))*)""".replace(
         r"[ \t]", _HSPACE
     )
 )
@@ -109,7 +109,7 @@ _REGISTERED_SCHEME_NAMES = frozenset(
 _COALESCED_MEMBER = re.compile(
     rf"\s*,\s*(?=(?:{_SCHEME_ALTERNATION}|[\w-]*(?:key|token|secret|password|credential|signature))\s"
     r"|(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{2,})\s+[\w!#$%&'*+.^`|~-]+\s*="
-    r"|(?-i:[A-Z][A-Za-z0-9-]*\s+(?=[\w.~+-][\w.~+/-]{7})(?=[\w.~+/:-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{2})|[\w.~+/-]{16})))",
+    r"|(?!(?-i:GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\s)(?-i:[A-Z][A-Za-z0-9-]*\s+(?=[\w.~+-][\w.~+/-]{7})(?=[\w.~+/:-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{2})|[\w.~+/-]{16})))",
     re.IGNORECASE,
 )
 _TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
@@ -243,7 +243,7 @@ def _escape_echo(text: str) -> str:
 def _authorization_values(match: re.Match) -> list[str]:
     """Decoded credential values of an Authorization match; empty when it reads as prose."""
     found = match["credentials"]
-    if re.fullmatch(r"[\w.~+/-]+(?::[\w.~+/-]+)*=*", found):
+    if re.fullmatch(r"(?:[\w.~+/-]|\\/)+(?::[\w.~+/-]+)*=*", found):
         pairs = [("", found)]
     else:
         pairs = [
