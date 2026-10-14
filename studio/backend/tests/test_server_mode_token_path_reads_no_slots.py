@@ -73,9 +73,12 @@ def _stream(backend, clock):
     )
     controller.set_residency_probe(lambda: refresh(controller, force = True))
     inference._refresh_residency_before_planning(controller)
+    # A server that parks its own slots is handed no token callback at all.
+    assert (observe is None) == bool(backend.server_preempts_kv)
     for generated in range(32, 32 * 40, 32):
         clock["t"] += 2.0
-        observe(generated)
+        if observe is not None:
+            observe(generated)
     inference._openai_llama_preemption_disarm(llama_backend = backend, gen_id = "a")
     return controller
 
