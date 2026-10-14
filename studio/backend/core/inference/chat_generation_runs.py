@@ -20,6 +20,7 @@ from starlette.requests import Request
 from core.inference.llama_keepwarm import InferenceActivityReservation
 from core.training.account_jobs import sweepable_job_accounts
 from utils.account_context import current_account_id, run_as
+from utils.first_token_timeout import FirstTokenWait, track_first_token_wait
 from loggers import get_logger
 from models.inference import ChatCompletionRequest
 from state import active_generations
@@ -786,6 +787,16 @@ class ChatGenerationSupervisor:
         cancel_event: threading.Event | None = None,
         activity: InferenceActivityReservation | None = None,
     ) -> None:
+        with track_first_token_wait() as first_token_wait:
+            await self._produce_run(run_id, cancel_event, activity, first_token_wait)
+
+    async def _produce_run(
+        self,
+        run_id: str,
+        cancel_event: threading.Event | None,
+        activity: InferenceActivityReservation | None,
+        first_token_wait: FirstTokenWait,
+    ) -> None:
         cancel_event = cancel_event or threading.Event()
         if activity is None:
             activity = InferenceActivityReservation()
@@ -881,7 +892,16 @@ class ChatGenerationSupervisor:
                     # is the lease renewed.
                     else _renew_interval_seconds()
                 )
+                # Wake to renew the lease across a first-token wait the backend is still inside its own deadline for.
+                renew_interval = _renew_interval_seconds()
+                timeout = renew_interval if timeout is None else min(timeout, renew_interval)
                 ready, _waiting = await asyncio.wait({next_raw_task}, timeout = timeout)
+                if (
+                    first_token_wait.active()
+                    and time.monotonic() - last_keepalive >= renew_interval
+                ):
+                    await self._try_touch_progress(run_id)
+                    last_keepalive = time.monotonic()
                 if not ready:
                     if pending:
                         await asyncio.to_thread(
