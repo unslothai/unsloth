@@ -520,8 +520,10 @@ def refine_plan_for_multigpu(
     return dataclasses.replace(
         plan,
         offload_policy = "none",
-        vae_tiling = False,
-        vae_slicing = False,
+        # Kept: the fit above may be priced with the tiled decode peak (calibrated_headroom_mib), so the savers the
+        # single-card plan chose must stay on.
+        vae_tiling = plan.vae_tiling,
+        vae_slicing = plan.vae_slicing,
         stream_text_encoders = False,
         stream_transformer = True,
         resident_transformer_mib = None,
