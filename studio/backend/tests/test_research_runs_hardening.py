@@ -308,6 +308,8 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         'Authorization: Basic firstsecret1==, Signature keyId="two",signature="supersecret2" why',
         "Authorization: RBAC role=admin, Basic supersecret2= why",
         'Authorization: Hawk id="one", mac="firstsecret1", Hawk id="two", mac="supersecret2" why',
+        "Authorization: Hawk abcdefghijklmnop, Hawk supersecret2 why",
+        'Authorization: Custom realm="api", custom response="supersecret2" why',
         "Authorization: Basic supersecret2== server echoed supersecret2 why",
         'Authorization: Basic "supersecret2" why',
         '{"name":"Authorization","value":"Basic supersecret2=="} why',

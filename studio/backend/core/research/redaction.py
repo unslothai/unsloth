@@ -40,9 +40,9 @@ _QUERY_AUTHORIZATION = re.compile(
     (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
     (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
     (?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token
-    |[\w-]*(?:key|token|secret|password|credential|signature))[ \t]+
+    |[\w-]*(?:key|token|secret|password|credential|signature)|(?P=scheme))[ \t]+
     (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
-    |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}})|(?P=scheme))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
+    |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
         r"[ \t]", _HSPACE
     )
 )
@@ -230,7 +230,7 @@ def _authorization_values(match: re.Match) -> list[str]:
     coalesced = []
     repeated = rf"\s*,\s*(?={re.escape(match['scheme'])}\s)"
     members = _COALESCED_MEMBER.split(match["more"] or "")
-    members = [piece for member in members for piece in re.split(repeated, member)]
+    members = [piece for member in members for piece in re.split(repeated, member, flags = re.I)]
     for member in members[1:]:
         parsed = _QUERY_AUTHORIZATION.match("Authorization: " + member)
         coalesced += _authorization_values(parsed) if parsed else []
