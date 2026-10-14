@@ -3807,7 +3807,8 @@ def model_dimensions(target: str) -> Optional[Dict[str, int]]:
     vocab = source.get("vocab_size", config.get("vocab_size"))
     if not all(isinstance(v, int) and v > 0 for v in (layers, hidden, vocab)):
         return None
-    return {"layers": layers, "hidden": hidden, "vocab": vocab}
+    tied = bool(source.get("tie_word_embeddings", config.get("tie_word_embeddings", False)))
+    return {"layers": layers, "hidden": hidden, "vocab": vocab, "tied": tied}
 
 
 def _pipeline_retains_outputs() -> bool:
@@ -3833,12 +3834,18 @@ def training_memory_estimate(
     vocab: int,
     checkpointed: bool = True,
     retains_outputs: Optional[bool] = None,
+    tied: bool = False,
 ) -> Dict[str, Any]:
     """Per-node memory for a layer-split training step, before it is attempted."""
     if retains_outputs is None:
         retains_outputs = _pipeline_retains_outputs()
     weights = size_gib / world
-    optimizer_full = weights * 6.0
+    if tied and world > 1:
+        # Saved once, but the first stage holds it as the embedding and the last as the head.
+        weights += vocab * hidden * 2 / 2**30 * (1 - 1 / world)
+    # bf16 parameters straight into AdamW: a gradient and two moments of the same dtype, no fp32
+    # master copy.
+    optimizer_full = weights * 3.0
     optimizer_lora = weights * 0.02
     mb_rows = max(batch // max(microbatches, 1), 1)
     own_layers = max(layers // world, 1)
@@ -3905,6 +3912,7 @@ def _cmd_estimate(
         layers = dims["layers"],
         vocab = dims["vocab"],
         checkpointed = checkpointed,
+        tied = bool(dims.get("tied")),
     )
     fits = est["fits_full"] if full_finetune else est["fits_lora"]
     total = est["total_full_gib"] if full_finetune else est["total_lora_gib"]

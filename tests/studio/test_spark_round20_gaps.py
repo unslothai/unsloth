@@ -294,3 +294,52 @@ def test_a_tied_weight_shared_by_two_stages_on_a_rank_is_scaled_once(pipeline, m
         assert ratio == pytest.approx(1.0, abs = 1e-3), f"tied gradient is {ratio:.3f}x the reference"
     finally:
         dist.destroy_process_group()
+
+
+def test_full_finetune_is_sized_as_bf16_adamw(cluster) -> None:
+    est = cluster.training_memory_estimate(
+        40.0, 2, 8, 4, 512, hidden = 4096, layers = 32, vocab = 32000, retains_outputs = False
+    )
+    # 20 GiB of bf16 weights per node, plus a gradient and two moments of the same size.
+    assert est["optimizer_full_gib"] == pytest.approx(60.0)
+
+
+def test_a_tied_embedding_is_charged_to_both_endpoint_stages(cluster) -> None:
+    kw = dict(hidden = 4096, layers = 32, vocab = 128256, retains_outputs = False)
+    tied = cluster.training_memory_estimate(16.0, 2, 8, 4, 512, tied = True, **kw)
+    untied = cluster.training_memory_estimate(16.0, 2, 8, 4, 512, **kw)
+    assert tied["weights_gib"] - untied["weights_gib"] == pytest.approx(
+        128256 * 4096 * 2 / 2**30 / 2
+    )
+
+
+def test_stages_with_different_projection_sets_merge_into_their_union(tmp_path) -> None:
+    pytest.importorskip("torch")
+    pytest.importorskip("safetensors")
+    import json
+
+    import torch
+    from safetensors.torch import save_file
+
+    merge = _load("spark_merge_for_r20", "studio/spark_merge.py")
+    targets = {0: ["q_proj", "o_proj"], 1: ["in_proj_qkvz", "out_proj", "o_proj"]}
+    for rank, layers in ((0, range(0, 2)), (1, range(2, 4))):
+        d = tmp_path / f"stage{rank}"
+        d.mkdir()
+        save_file(
+            {
+                f"base_model.model.model.layers.{i}.self_attn.o_proj.lora_A.weight": torch.ones(
+                    2, 2
+                )
+                for i in layers
+            },
+            str(d / "adapter_model.safetensors"),
+        )
+        cfg = {"r": 16, "lora_alpha": 32, "target_modules": targets[rank]}
+        (d / "adapter_config.json").write_text(json.dumps(cfg), encoding = "utf-8")
+        meta = {"rank": rank, "world": 2, "n_layers": 4}
+        (d / "unsloth_stage.json").write_text(json.dumps(meta), encoding = "utf-8")
+    out = tmp_path / "merged"
+    merge.merge(str(tmp_path), str(out))
+    written = json.loads((out / "adapter_config.json").read_text(encoding = "utf-8"))
+    assert written["target_modules"] == sorted({"q_proj", "o_proj", "in_proj_qkvz", "out_proj"})
