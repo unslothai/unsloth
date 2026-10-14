@@ -47,6 +47,9 @@ test("numbers written as inline maths render as maths", () => {
   const cases: Array<[string, string[]]> = [
     ["There are $3$ red balls and $5$ blue balls.", ["3", "5"]],
     ["The answer is $42$.", ["42"]],
+    ["The answer is $42$", ["42"]],
+    ["The answer is $42$!", ["42"]],
+    ["Is it $3$?", ["3"]],
     ["Step 2: $8$ times $2$ is $16$.", ["8", "2", "16"]],
     [
       "Janet has $16$ eggs. She eats $3$ and bakes with $4$, so $16 - 3 - 4 = 9$ remain.",
@@ -125,4 +128,23 @@ test("raw-text element bodies keep adjacent shell syntax byte-for-byte", () => {
   ]) {
     assert.equal(preprocessLaTeX(source), source);
   }
+});
+
+test("a closing shell-word quote does not consume later Markdown", () => {
+  const source = 'echo "$1$" and **then** echo "ok"';
+  const html = render(source);
+  assert.deepEqual(renderedMath(html), ["1"]);
+  assert.match(html, /data-streamdown="strong">then<\/span>/);
+});
+
+test("a trailing numeric closer stays literal while streaming", () => {
+  assert.equal(preprocessLaTeX("$1$", true), "\\$1$");
+  assert.equal(preprocessLaTeX("$1$", false), "$1$");
+});
+
+test("many unterminated substitutions stay within the streaming budget", () => {
+  const source = "$1$(".repeat(25_600);
+  const started = performance.now();
+  preprocessLaTeX(source, true);
+  assert.ok(performance.now() - started < 1000);
 });

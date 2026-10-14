@@ -54,28 +54,59 @@ function startsLikeVariable(text: string, at: number): boolean {
   return a === 123 && (isAsciiLetter(b) || b === 95);
 }
 
-/** valid Bash expansion starts after `$`, including substitutions and quoted strings. */
-function startsShellExpansion(text: string, at: number): boolean {
+const MAX_SHELL_EXPANSION_SPAN = 4096;
+const MAX_SHELL_QUOTE_CONTEXT = 256;
+
+function shellQuoteAt(text: string, at: number): number {
+  const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+  const start = Math.max(lineStart, at - MAX_SHELL_QUOTE_CONTEXT);
+  let quote = 0;
+  for (let index = start; index < at; index++) {
+    const char = text.charCodeAt(index);
+    if (char === 92 && quote !== 39) {
+      index++;
+    } else if (quote === 0 && (char === 34 || char === 39)) {
+      quote = char;
+    } else if (char === quote) {
+      quote = 0;
+    }
+  }
+  return quote;
+}
+
+/** valid Bash expansion starts after `$`, disambiguated from prose punctuation and closing quotes. */
+function startsShellExpansion(
+  text: string,
+  at: number,
+  numericOffset: number,
+): boolean {
+  if (at >= text.length) return false;
   const char = text.charCodeAt(at);
+  if (char === 34 || char === 39) {
+    return shellQuoteAt(text, numericOffset) !== char;
+  }
+  if ("*@#?-!".includes(text[at])) {
+    return shellQuoteAt(text, numericOffset) !== 0;
+  }
   return (
     isWordChar(char) ||
     char === 123 ||
     char === 40 ||
     char === 91 ||
-    char === 34 ||
-    char === 39 ||
-    "*@#?-$!".includes(text[at] ?? "")
+    char === 36
   );
 }
 
-function followsNumericShellParameter(text: string, at: number): boolean {
+function numericShellParameterStart(text: string, at: number): number {
   let start = at;
   while (start > 0) {
     const char = text.charCodeAt(start - 1);
     if (char < 48 || char > 57) break;
     start--;
   }
-  return start < at && text[start - 1] === "$" && text[start - 2] !== "\\";
+  return start < at && text[start - 1] === "$" && text[start - 2] !== "\\"
+    ? start - 1
+    : -1;
 }
 
 function balancedShellExpansionEnd(
@@ -86,7 +117,8 @@ function balancedShellExpansionEnd(
 ): number {
   let depth = 1;
   let quote = 0;
-  for (let index = at + 2; index < text.length; index++) {
+  const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
+  for (let index = at + 2; index < limit; index++) {
     const char = text.charCodeAt(index);
     if (quote !== 0) {
       if (char === 92 && quote !== 39) index++;
@@ -104,7 +136,7 @@ function balancedShellExpansionEnd(
     if (char === open) depth++;
     else if (char === close && --depth === 0) return index + 1;
   }
-  return at + 2;
+  return limit;
 }
 
 function quotedShellExpansionEnd(
@@ -112,12 +144,13 @@ function quotedShellExpansionEnd(
   at: number,
   quote: number,
 ): number {
-  for (let index = at + 2; index < text.length; index++) {
+  const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
+  for (let index = at + 2; index < limit; index++) {
     const char = text.charCodeAt(index);
     if (char === 92) index++;
     else if (char === quote) return index + 1;
   }
-  return at + 2;
+  return limit;
 }
 
 function shellExpansionEnd(text: string, at: number): number {
@@ -597,6 +630,7 @@ function hasInlineMathCloser(
   content: string,
   offset: number,
   mathRegions: Array<[number, number]>,
+  isStreaming: boolean,
 ): boolean {
   const maxSpan = 200;
   const limit = Math.min(content.length, offset + 1 + maxSpan);
@@ -616,8 +650,9 @@ function hasInlineMathCloser(
       continue;
     }
     const body = content.slice(offset + 1, i);
-    if (BARE_NUMBER_RE.test(body) && !startsShellExpansion(content, i + 1)) {
-      return true;
+    if (BARE_NUMBER_RE.test(body)) {
+      if (isStreaming && i + 1 === content.length) return false;
+      if (!startsShellExpansion(content, i + 1, offset)) return true;
     }
     if (offset >= 2) {
       const op = content[offset - 1];
@@ -812,7 +847,10 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     const digit = text.charCodeAt(offset + 1) - 48;
     CURRENCY_REGEX.lastIndex = offset + 1;
     const currency = digit >= 0 && digit <= 9 && CURRENCY_REGEX.test(text);
-    if (currency && !hasInlineMathCloser(text, offset, mathRegions)) {
+    if (
+      currency &&
+      !hasInlineMathCloser(text, offset, mathRegions, isStreaming)
+    ) {
       return "\\$";
     }
     if (offset === closer) {
@@ -862,9 +900,11 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     offset = text.indexOf("$", offset + 1)
   ) {
     const prev = text[offset - 1];
+    if (offset === closer) continue;
+    const numericOffset = numericShellParameterStart(text, offset);
     if (
-      followsNumericShellParameter(text, offset) &&
-      startsShellExpansion(text, offset + 1) &&
+      numericOffset !== -1 &&
+      startsShellExpansion(text, offset + 1, numericOffset) &&
       !inCode(offset) &&
       !inLink(offset) &&
       !inMath(offset) &&
