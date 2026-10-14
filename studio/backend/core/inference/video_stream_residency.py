@@ -280,6 +280,24 @@ def _open_window(module: Any, dev: Any) -> Any:
     return dev
 
 
+def discard_request(pipe: Any) -> None:
+    """Drop a request's armed measurement without recording it (cancel, failure, refusal): its window would otherwise
+    mark every later measurement on the card as overlapped. A no-op after ``record_request_peak``."""
+    module = getattr(pipe, "transformer", None)
+    if module is None:
+        return
+    try:
+        module._unsloth_video_pending = None
+        window = getattr(module, "_unsloth_video_window", None)
+        module._unsloth_video_window = None
+        if window is not None:
+            from .diffusion_measured_peaks import close_window
+
+            close_window(window[0], window[1])
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _failed_captures() -> int:
     try:
         from .diffusion_cuda_graph import failed_capture_count
@@ -316,16 +334,14 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
             module._unsloth_video_peaks = peaks
         peaks[work] = max(extra, peaks.get(work, 0))
         key = getattr(module, "_unsloth_video_calibration_key", None)
-        if key is not None:
+        # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of the keyed and persisted peaks
+        if key is not None and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0):
             shared = _key_peaks(key)
             shared[work] = max(extra, shared.get(work, 0))
             try:
-                from .diffusion_cuda_graph import failed_capture_count
                 from .diffusion_measured_peaks import record_work
 
-                # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of later processes
-                if failed_capture_count() == getattr(module, "_unsloth_video_failed_captures", 0):
-                    record_work(_store_key(key), work, shared[work])
+                record_work(_store_key(key), work, extra)
             except Exception:  # noqa: BLE001 - persistence is best-effort
                 pass
         _COUNTS["recorded"] += 1

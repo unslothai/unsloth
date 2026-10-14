@@ -362,7 +362,7 @@ def test_render_records_its_peak_unless_a_capture_failed(store, monkeypatch):
     pipe = types.SimpleNamespace(
         _unsloth_peak_identity = ("flux.2-klein", "torchao:Int8Tensor", "default")
     )
-    state = types.SimpleNamespace(pipe = pipe)
+    state = types.SimpleNamespace(pipe = pipe, speed_mode = "default")
     kw = dict(family = "flux.2-klein", quant = "torchao:Int8Tensor", speed_mode = "default")
     monkeypatch.setattr(cg, "failed_capture_count", lambda: 1)
     diffusion._record_peak_probe(
@@ -502,7 +502,7 @@ def test_render_served_by_a_conditioning_cache_is_not_recorded(store, monkeypatc
         _unsloth_peak_identity = ("some-new-dit", "torchao:Int8Tensor", "default"),
         _unsloth_cond_cache_stats = stats,
     )
-    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0")
+    state = types.SimpleNamespace(pipe = pipe, device = "cuda:0", speed_mode = "default")
     probe = _Probe(1800)
     probe.conditioning_hits = diffusion._conditioning_cache_hits(pipe)
     stats["hits"] += 1  # this render's prompt came from the cache
@@ -1048,7 +1048,7 @@ def test_peak_measured_with_no_streamed_denoiser_is_raised_to_the_streamed_basel
     probe = _Probe(2400)
     probe.window_pad = 900
     diffusion._record_peak_probe(
-        types.SimpleNamespace(pipe = pipe), probe, width = 1024, height = 1024, batch_size = 1
+        types.SimpleNamespace(pipe = pipe, speed_mode = "default"), probe, width = 1024, height = 1024, batch_size = 1
     )
     assert mp.lookup(family = "some-new-dit", quant = "q", speed_mode = "default") == 3300
     src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
@@ -1251,3 +1251,81 @@ def test_deferred_profile_retags_the_speed_tier(monkeypatch):
     deferred = src.index("def _engage_deferred_profile")
     block = src[deferred : deferred + 5000]
     assert 'with_label_part(identity[1], "attn", attention_engaged or "native"),\n                    SPEED_DEFAULT,' in block
+
+
+# ---------------------------------------------------------------------------------------------------- review round 8
+
+
+def test_failed_video_request_closes_its_measurement_window():
+    window = mp.open_window("cuda:0")
+    module = types.SimpleNamespace(_unsloth_video_pending = (1, 0, "cuda:0"), _unsloth_video_window = ("cuda:0", window))
+    vsr.discard_request(types.SimpleNamespace(transformer = module))
+    assert module._unsloth_video_pending is None and module._unsloth_video_window is None
+    later = mp.open_window("cuda:0")  # an image render after the cancelled video
+    assert mp.close_window("cuda:0", later)
+    src = (__import__("pathlib").Path(vsr.__file__).parent / "video.py").read_text(encoding = "utf-8")
+    assert 'video_stream_residency.discard_request(getattr(state, "pipe", None))' in src
+
+
+def test_whole_module_offload_records_no_streamed_baseline_peak(monkeypatch):
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(dm, "_stream_window_mib", lambda pipe: 700)
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: [])
+    dit = torch.nn.Linear(4, 4)  # on the host at render start: whole-module offload onloads it inside the render
+    assert dm.stream_window_pad_mib(types.SimpleNamespace(components = {"transformer": dit})) is None
+    dit._hf_hook = object()
+    assert dm.stream_window_pad_mib(types.SimpleNamespace(components = {"transformer": dit})) is None
+
+
+def test_compile_fallback_during_the_render_records_nothing(store, monkeypatch):
+    import core.inference.diffusion as diffusion
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(mp, "device_name", lambda dev: "NVIDIA L4")
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
+    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"))
+    state = types.SimpleNamespace(pipe = pipe, speed_mode = "default", speed_optims = ("compiled",))
+    state.speed_optims = ("compile_fallback_eager",)  # settle_compile_fallback mid-render
+    diffusion._record_peak_probe(state, _Probe(2400), width = 1024, height = 1024, batch_size = 1)
+    assert mp.lookup(family = "some-new-dit", quant = "q", speed_mode = "default") is None
+    state.speed_optims = ("compiled",)
+    diffusion._record_peak_probe(state, _Probe(2400), width = 1024, height = 1024, batch_size = 1)
+    assert mp.lookup(family = "some-new-dit", quant = "q", speed_mode = "default") == 2400
+
+
+def test_failed_capture_video_peak_never_reaches_the_keyed_or_persisted_peaks(store, monkeypatch):
+    monkeypatch.setattr(vsr, "_PEAKS", {})
+    key = vsr.calibration_key("wan2.2-ti2v-5b", "Wan-AI/x", "group", "cuda:0", speed_mode = "default")
+    work = 1280 * 704 * 49
+    captures = {"n": 0}
+    monkeypatch.setattr(vsr, "_failed_captures", lambda: captures["n"])
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "failed_capture_count", lambda: captures["n"])
+
+    def render(peak_mib):
+        module = types.SimpleNamespace(
+            _unsloth_video_pending = (work, 0, "cuda:0"),
+            _unsloth_video_calibration_key = key,
+            _unsloth_video_failed_captures = captures["n"],
+        )
+
+        class _Torch:
+            class cuda:  # noqa: N801
+                @staticmethod
+                def max_memory_allocated(dev):
+                    return peak_mib << 20
+
+        return module, _Torch
+
+    module, torch_stub = render(15000)
+    captures["n"] += 1  # the capture failed during this render
+    with monkeypatch.context() as m:
+        m.setitem(__import__("sys").modules, "torch", torch_stub)
+        vsr.record_request_peak(types.SimpleNamespace(transformer = module))
+    module, torch_stub = render(3000)
+    with monkeypatch.context() as m:
+        m.setitem(__import__("sys").modules, "torch", torch_stub)
+        vsr.record_request_peak(types.SimpleNamespace(transformer = module))
+    assert mp.work_peaks(vsr._store_key(key)) == {work: 3000}
+    assert vsr.measured_extra_mib(key, work) == 3000

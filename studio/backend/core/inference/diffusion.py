@@ -2004,7 +2004,10 @@ def _live_peak_identity(state: Any) -> tuple:
     label = with_label_part(str(label), "cache", str(getattr(state, "transformer_cache", None) or "off"))
     label = with_label_part(label, "vae", live_vae_saver_tag(pipe))
     label = with_label_part(label, "attn", getattr(state, "attention_backend", None) or "native")
-    return (family, label, getattr(state, "speed_mode", None))
+    speed = getattr(state, "speed_mode", None)
+    if "compile_fallback_eager" in tuple(getattr(state, "speed_optims", ()) or ()):
+        speed = None  # the compiled tier fell back to eager: an execution path no key names
+    return (family, label, speed)
 
 
 def _local_weights_digest(path: Any) -> Optional[str]:
@@ -2109,6 +2112,9 @@ def _record_peak_probe(
 
         peak = probe.finish()
         if peak is None or not isinstance(identity, tuple) or len(identity) != 3:
+            return
+        if _live_peak_identity(state) != tuple(identity):
+            # the configuration moved during the render (a compile fallback, a toggled cache): no key names it
             return
         if cuda_graph.failed_capture_count() != getattr(probe, "failed_captures", 0):
             # a capture failed (an absorbed OOM): the peak is the failed attempt's, not the render's need

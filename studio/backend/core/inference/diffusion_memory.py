@@ -2406,15 +2406,23 @@ def live_vae_saver_tag(pipe: Any) -> str:
 def stream_window_pad_mib(pipe: Any) -> Optional[int]:
     """MiB a learned peak measured with no denoiser group streaming adds to reach the streamed baseline (the prefetch
     window a streamed placement holds above its start allocation), so every placement reads one conservative scale.
-    None when that window cannot be sized (the peak is then not recorded)."""
+    None when that window cannot be sized, or the denoiser is neither group-streamed nor on the card (whole-module /
+    sequential offload onloads it whole inside the render): the peak is then not recorded."""
     for name, module in (getattr(pipe, "components", {}) or {}).items():
         if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
             continue
         try:
-            if any(not getattr(g, "_unsloth_resident", False) for g in _offload_groups(module) or ()):
+            groups = _offload_groups(module) or ()
+            if any(not getattr(g, "_unsloth_resident", False) for g in groups):
                 return 0
+            if not groups:
+                if getattr(module, "_hf_hook", None) is not None:
+                    return None
+                first = next(iter(module.parameters()), None)
+                if first is not None and getattr(first.device, "type", None) != "cuda":
+                    return None
         except Exception:  # noqa: BLE001
-            continue
+            return None
     window = _stream_window_mib(pipe)
     return None if window < 0 else window
 

@@ -10834,7 +10834,12 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
-                i2v_swap.close()
+                try:
+                    from . import video_stream_residency
+
+                    video_stream_residency.discard_request(getattr(state, "pipe", None))
+                finally:
+                    i2v_swap.close()
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:
