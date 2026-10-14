@@ -56,6 +56,8 @@ test("numbers written as inline maths render as maths", () => {
     ['He said "The answer is $42$!"', ["42"]],
     ['He said ("The answer is $42$!")', ["42"]],
     ['She asked "Is it $3$?"', ["3"]],
+    ['the answer is "$42$!"', ["42"]],
+    ['consider this "$3$?"', ["3"]],
     ["a $10$-fold increase", ["10"]],
     ["Range $1$-$2$", ["1", "2"]],
     ["The number $42$'s factors are 2, 3, and 7.", ["42"]],
@@ -65,6 +67,10 @@ test("numbers written as inline maths render as maths", () => {
     ["There are $3$__red__ balls.", ["3"]],
     ["*$3$*", ["3"]],
     ["_$3$_", ["3"]],
+    ["*There are $3$*", ["3"]],
+    ["_There are $3$_", ["3"]],
+    ["**There are $3$**", ["3"]],
+    ["__There are $3$__", ["3"]],
     ["| value |\n| --- |\n| $42$! |", ["42"]],
     ["| value |\n| --- |\n| $10$-fold |", ["10"]],
     ["| case | value |\n| --- | --- |\n| answer | $42$! |", ["42"]],
@@ -108,6 +114,11 @@ test("numbers written as inline maths render as maths", () => {
   );
   assert.match(render("*$3$*"), /<em><span class="katex">/);
   assert.match(render("_$3$_"), /<em><span class="katex">/);
+  assert.match(render("*There are $3$*"), /<em>There are <span class="katex">/);
+  assert.match(
+    render("**There are $3$**"),
+    /data-streamdown="strong">There are <span class="katex">/,
+  );
 });
 
 test("currency next to numbers stays text", () => {
@@ -146,6 +157,11 @@ test("a shell parameter right after a positional one stays text", () => {
     ['echo prefix"$1$?" now.', "$1$?"],
     ["echo prefix'$1$?' now.", "$1$?"],
     ["echo prefix$1$(date) now.", "$1$(date)"],
+    ["echo status:$1$? now.", "$1$?"],
+    ["echo status+$1$? now.", "$1$?"],
+    ["echo status,$1$? now.", "$1$?"],
+    ['git show "$1$?" now.', "$1$?"],
+    ['kubectl get pods "$1$?" now.', "$1$?"],
     ['sudo -u root echo "$1$?" now.', "$1$?"],
     ['env MODE=fast echo "$1$?" now.', "$1$?"],
     ['MODE=fast echo "$1$?" now.', "$1$?"],
@@ -272,6 +288,12 @@ test("shell quote state resets at Markdown block boundaries", () => {
     const html = render(source);
     assert.deepEqual(renderedMath(html), ["42"], source);
   }
+});
+
+test("shell comments do not leak inert quotes into later prose", () => {
+  const source = 'echo ok # "\nThe answer is $42$!';
+  const html = render(source);
+  assert.deepEqual(renderedMath(html), ["42"]);
 });
 
 test("a trailing numeric closer stays literal while streaming", () => {

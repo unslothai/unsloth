@@ -86,6 +86,8 @@ const SHELL_COMMANDS = new Set([
   "zsh",
 ]);
 const SHELL_LEADIN_RE = /^(?:Run|Use|Try|Execute)$/i;
+const PROSE_COMMAND_RE =
+  /^(?:a|an|consider|imagine|note|suppose|the|this|that)$/i;
 const SHELL_WORD_RE = /^(?:[a-z_][\w.-]*|\.{0,2}\/[^\s]+)$/;
 const SHELL_ARGUMENT_RE =
   /^(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
@@ -100,16 +102,31 @@ const SHELL_QUOTE_BLOCK_START_RE =
   /^(?: {0,3}(?:#{1,6}(?=[ \t])|[-+*][ \t]+|\d{1,9}[.)][ \t]+)|[ \t]*\|| {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)$)/;
 
 function hasCommandArguments(words: string[], at: number): boolean {
-  let commandLike = false;
+  if (at >= words.length) return false;
   for (let index = at; index < words.length; index++) {
     const word = words[index];
-    if (SHELL_ARGUMENT_RE.test(word)) {
-      commandLike = true;
-      continue;
-    }
-    if (!commandLike) return false;
+    if (!SHELL_ARGUMENT_RE.test(word) && !SHELL_WORD_RE.test(word))
+      return false;
   }
-  return commandLike;
+  return true;
+}
+
+function isShellWordBoundary(char: number): boolean {
+  return (
+    char <= 32 ||
+    char === 34 ||
+    char === 36 ||
+    char === 38 ||
+    char === 39 ||
+    char === 40 ||
+    char === 41 ||
+    char === 59 ||
+    char === 60 ||
+    char === 61 ||
+    char === 62 ||
+    char === 92 ||
+    char === 124
+  );
 }
 
 function isShellPromptMarker(text: string, at: number): boolean {
@@ -137,20 +154,16 @@ function hasShellCommandPrefix(
     previousChar !== 61 &&
     previousChar !== 124
   ) {
-    if (
-      !isWordChar(previousChar) &&
-      previousChar !== 45 &&
-      previousChar !== 46 &&
-      previousChar !== 47
-    ) {
-      return false;
-    }
+    if (isShellWordBoundary(previousChar)) return false;
     const minimum = Math.max(0, at - 256);
     let wordStart = at;
     while (wordStart > minimum) {
       const char = text.charCodeAt(wordStart - 1);
-      if (!isWordChar(char) && char !== 45 && char !== 46 && char !== 47) break;
+      if (isShellWordBoundary(char)) break;
       wordStart--;
+    }
+    if (wordStart === at - 1 && text.charCodeAt(wordStart - 1) === 36) {
+      return false;
     }
     return (
       wordStart > minimum &&
@@ -198,6 +211,7 @@ function hasShellCommandPrefix(
     allowBareCommand &&
     completeLinePrefix &&
     command.length >= 2 &&
+    !PROSE_COMMAND_RE.test(command) &&
     SHELL_WORD_RE.test(command) &&
     hasCommandArguments(words, commandIndex + 1)
   ) {
@@ -228,6 +242,7 @@ function findShellQuoteStates(
 ): Map<number, number> {
   const states = new Map<number, number>();
   let quote = 0;
+  let comment = false;
   let resetIndex = 0;
   for (let index = 0; index < text.length; index++) {
     while (
@@ -243,12 +258,29 @@ function findShellQuoteStates(
       continue;
     }
     const char = text.charCodeAt(index);
+    if (comment) {
+      if (char === 10 || char === 13) {
+        comment = false;
+      } else {
+        if (char === 36) states.set(index, 34);
+        continue;
+      }
+    }
     if (char === 10 && quote !== 0 && startsNewMarkdownBlock(text, index + 1)) {
       quote = 0;
       continue;
     }
     const activeQuote = Math.abs(quote);
     if (char === 36) states.set(index, quote);
+    if (
+      quote === 0 &&
+      char === 35 &&
+      (index === 0 || text.charCodeAt(index - 1) <= 32) &&
+      hasShellCommandPrefix(text, index)
+    ) {
+      comment = true;
+      continue;
+    }
     if (char === 92 && activeQuote !== 39) {
       index++;
     } else if (quote === 0 && (char === 34 || char === 39)) {
@@ -286,6 +318,31 @@ function startsMarkdownEmphasis(
   );
   const close = text.indexOf(token, bodyStart + 1);
   return close > bodyStart && close < limit && text.charCodeAt(close - 1) > 32;
+}
+
+function enclosingMarkdownEmphasisOpener(
+  text: string,
+  at: number,
+  before: number,
+  marker: number,
+): number {
+  const width = text.charCodeAt(at + 1) === marker ? 2 : 1;
+  const token = width === 2 ? text.slice(at, at + 2) : text[at];
+  const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+  const minimum = Math.max(lineStart, at - MAX_MARKDOWN_EMPHASIS_SPAN);
+  let opener = text.lastIndexOf(token, before - 1);
+  while (opener >= minimum) {
+    const bodyStart = opener + width;
+    if (
+      bodyStart <= before &&
+      startsMarkdownEmphasis(text, opener, marker) &&
+      text.indexOf(token, bodyStart + 1) === at
+    ) {
+      return opener;
+    }
+    opener = text.lastIndexOf(token, opener - 1);
+  }
+  return -1;
 }
 
 function findLegacyArithmeticCloses(text: string): Int32Array {
@@ -354,14 +411,20 @@ function startsShellExpansion(
       legacyArithmeticCloses,
       isStreaming,
     );
-  if (
-    (char === 42 || char === 95) &&
-    text.charCodeAt(numericOffset - 1) === char &&
-    startsMarkdownEmphasis(text, numericOffset - 1, char) &&
-    quoteState <= 0 &&
-    !hasShellCommandPrefix(text, numericOffset - 1)
-  ) {
-    return false;
+  if (char === 42 || char === 95) {
+    const emphasisOpener = enclosingMarkdownEmphasisOpener(
+      text,
+      at,
+      numericOffset,
+      char,
+    );
+    if (
+      emphasisOpener !== -1 &&
+      quoteState <= 0 &&
+      !hasShellCommandPrefix(text, emphasisOpener)
+    ) {
+      return false;
+    }
   }
   if (
     (char === 42 || char === 95) &&
