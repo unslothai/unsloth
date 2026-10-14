@@ -129,6 +129,16 @@ def _read_local_rows(paths: list[str], load_dataset, warn: Callable[[str], None]
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _hold_audio(rows: list[dict]) -> None:
+    # The audio files an S3 download rewrote rows to name are deleted with it, before training reads them.
+    for row in rows:
+        audio = row.get("audio")
+        for clip in audio if isinstance(audio, list) else [audio]:
+            if isinstance(clip, dict) and clip.get("bytes") is None and clip.get("path"):
+                if os.path.isfile(clip["path"]):
+                    clip["bytes"] = Path(clip["path"]).read_bytes()
+
+
 def _eval_sample(rows, seed: int):
     # Every row holds at least one decision, so EVAL_MAX rows can fill the eval set.
     if len(rows) <= EVAL_MAX:
@@ -161,6 +171,7 @@ def _load_rows(
             raise _Stopped("Training cancelled") from None
         try:
             rows = _read_local_rows(download.files, load_dataset, warn)
+            _hold_audio(rows)
         finally:
             download.cleanup()
     elif config.get("hf_dataset"):
