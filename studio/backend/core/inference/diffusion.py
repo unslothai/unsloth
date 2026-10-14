@@ -8748,7 +8748,9 @@ class DiffusionBackend:
                 if transformer is not None:
                     from .diffusion_prequant_cache import note_hit, path_in_cache
 
-                    if source.kind == "path" and path_in_cache(source.location):
+                    if getattr(source, "kind", None) == "path" and path_in_cache(
+                        getattr(source, "location", "")
+                    ):
                         note_hit(source.location, logger)
                     if scheme == TQ_NVFP4:
                         from .diffusion_nvfp4_linear import nvfp4_prewarm
