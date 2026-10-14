@@ -12,8 +12,13 @@ import functools
 from dataclasses import dataclass
 
 import torch
-import torch.nn.functional as F
 
+from .diffusion_loss import (
+    chunked_cross_entropy,
+    compile_loss,
+    fusable_head,
+    head_returns_hidden,
+)
 from .diffusion_profiles import (
     DiffusionProfile,
     register_diffusion_profile,
@@ -170,19 +175,25 @@ class MaskedDiffusionProfile(DiffusionProfile):
         from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
         auto_map = getattr(config, "auto_map", None) or {}
-        class_ref = (
-            auto_map.get(self.auto_class)
-            or auto_map.get("AutoModelForCausalLM")
-            or auto_map.get("AutoModel")
+        auto_class = next(
+            (
+                name
+                for name in (self.auto_class, "AutoModelForCausalLM", "AutoModel")
+                if auto_map.get(name)
+            ),
+            None,
         )
-        if class_ref is None or not trust_remote_code:
+        if auto_class is None or not trust_remote_code:
             return super().model_class(config, trust_remote_code, **hub_kwargs)
         cls = get_class_from_dynamic_module(
-            class_ref,
+            auto_map[auto_class],
             config._name_or_path,
             revision = getattr(config, "_commit_hash", None),
             **hub_kwargs,
         )
+        # transformers < 5.17 reruns a non-Auto hub class's _init_weights over the loaded checkpoint (LLaDA-MoE, Dream).
+        if getattr(cls, "_auto_class", None) is None:
+            cls.register_for_auto_class(auto_class)
         _accept_new_validate_kwargs(cls)
         return _ensure_post_init(cls)
 
@@ -240,6 +251,10 @@ class MaskedDiffusionProfile(DiffusionProfile):
         mask_id, eos_id = self._token_ids(model, args)
         eps = float(self.option(args, "diffusion_eps"))
         weighting = self.option(args, "diffusion_time_weighting")
+        if weighting not in ("inverse_t", "none", None):
+            raise ValueError(
+                f"Unsloth: {self.name} does not support diffusion_time_weighting={weighting!r}."
+            )
 
         maskable = response_mask(inputs)
         forward_mask = attention_mask
@@ -258,33 +273,36 @@ class MaskedDiffusionProfile(DiffusionProfile):
         noisy = torch.where(masked, mask_id, input_ids)
 
         model_inputs = {"input_ids": noisy}
-        if forward_mask is not None and not bool(forward_mask.all()):
+        if forward_mask is not None:
             model_inputs["attention_mask"] = forward_mask
-        logits = model(**model_inputs).logits
+        head = fusable_head(model, unwrap_diffusion_model(model))
+        with head_returns_hidden(head):
+            hidden = model(**model_inputs).logits
         if self.shift_logits:
-            logits = torch.cat([logits[:, :1], logits[:, :-1]], dim = 1)
+            hidden = torch.cat([hidden[:, :1], hidden[:, :-1]], dim = 1)
 
-        if not bool(masked.any()):
-            zero = logits.sum() * 0.0
-            return zero, None, {"masked_fraction": 0.0}
-
-        token_loss = F.cross_entropy(logits[masked].float(), input_ids[masked], reduction = "none")
+        targets = torch.where(masked, input_ids, -100)
+        weights = masked.float()
         if weighting == "inverse_t":
-            token_loss = token_loss / p_mask[masked]
-        elif weighting not in ("none", None):
-            raise ValueError(
-                f"Unsloth: {self.name} does not support diffusion_time_weighting={weighting!r}."
-            )
-
+            weights = weights / torch.where(masked, p_mask, 1.0)
         if self.loss_normalization == "answer_length":
-            answer_length = maskable.sum(dim = 1, keepdim = True).clamp_min(1).expand(batch, length)
-            loss = (token_loss / answer_length[masked]).sum() / batch
+            weights = weights / (maskable.sum(dim = 1, keepdim = True).clamp_min(1) * batch)
+        weighted, ce_sum, count = chunked_cross_entropy(
+            hidden,
+            targets,
+            weights,
+            weight = None if head is None else head.weight,
+            bias = None if head is None else head.bias,
+            compiled = compile_loss(args, device),
+        )
+        if self.loss_normalization == "answer_length":
+            loss = weighted
         else:
-            loss = token_loss.sum() / masked.sum()
+            loss = weighted / count.clamp_min(1)
 
         metrics = {
-            "masked_fraction": (masked.sum() / maskable.sum().clamp_min(1)).item(),
-            "masked_ce": F.cross_entropy(logits[masked].float(), input_ids[masked]).item(),
+            "masked_fraction": (count / maskable.sum().clamp_min(1)).detach(),
+            "masked_ce": (ce_sum / count.clamp_min(1)).detach(),
         }
         return loss, None, metrics
 
@@ -312,6 +330,7 @@ register_diffusion_profile(
         lora_target_modules = r".*\.blocks\.\d+\.(q_proj|k_proj|v_proj|attn_out|ff_proj|up_proj|ff_out)",
         quant_skip_modules = ["transformer.ff_out", "transformer.wte", "lm_head"],
         default_mask_token_id = 126336,
+        compile_backbone = True,
     )
 )
 register_diffusion_profile(
@@ -324,6 +343,7 @@ register_diffusion_profile(
         shift_logits = True,
         loss_normalization = "masked_tokens",
         auto_class = "AutoModel",
+        compile_backbone = True,
         # Dream q_sample draws t ~ U(0, 1) with no floor and weights by 1 / t (time_reweighting "original").
         defaults = {"diffusion_eps": 0.0},
     )
@@ -335,7 +355,10 @@ register_diffusion_profile(
         architectures = ("NemotronLabsDiffusionModel",),
         requires_remote_code = True,
         lora_target_modules = list(_ATTENTION_AND_MLP),
+        # Keep `diffusion_head` 16-bit like every other head, so the loss can take hidden states.
+        quant_skip_modules = ["lm_head", "embed_tokens", "diffusion_head"],
         loss_normalization = "masked_tokens",
         auto_class = "AutoModel",
+        compile_backbone = True,
     )
 )
