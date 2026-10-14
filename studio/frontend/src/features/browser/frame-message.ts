@@ -117,12 +117,6 @@ function annotateEvent(message: Record<string, unknown>): AnnotateEvent | null {
   }
 }
 
-// One notice per tab and kind; needsBrowser comes once per page, so it stays until closed or the page goes.
-export const frameNotice = (type: "upload" | "scriptNavigation" | "needsBrowser", tabId: string) => ({
-  id: `browser-${type}-${tabId}`,
-  ...(type === "needsBrowser" && { duration: Number.POSITIVE_INFINITY }),
-});
-
 /** A message from a page, checked field by field: pages can post anything. */
 export function parseFrameMessage(data: unknown): FrameMessage | null {
   if (!data || typeof data !== "object") return null;
@@ -189,3 +183,9 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
       return null;
   }
 }
+
+// One notice per tab and kind; needsBrowser comes once per page, so it stays until closed or the page goes.
+export const frameNotice = (type: "upload" | "scriptNavigation" | "needsBrowser", tabId: string) => ({
+  id: `browser-${type}-${tabId}`,
+  ...(type === "needsBrowser" && { duration: Number.POSITIVE_INFINITY }),
+});
