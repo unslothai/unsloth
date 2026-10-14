@@ -89,7 +89,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # This workflow triggers on uninstall.ps1; neither test really uninstalls.
+      #
+      # These three unit-test steps run in the background: they read only the
+      # checkout, and together take about 20 s that now overlaps the node/python
+      # setup and the ~90 s uv cache restore. The wait step right before Install
+      # Unsloth collects them, so a failure still stops the job before the install.
       - name: uninstall.ps1 unit tests (argument guard, dual-install icon preserve)
+        id: ps-uninstall-units
+        background: true
         shell: pwsh
         run: |
           pwsh -NoProfile -File tests/studio/test_uninstall_arg_guard.ps1
@@ -99,11 +107,15 @@ jobs:
 
       # Refresh-Environment must not reload PSModulePath over the prepended 5.1 module dir.
       - name: PSModulePath normalization unit tests
+        id: ps-modulepath-units
+        background: true
         shell: pwsh
         run: pwsh -NoProfile -File tests/studio/test_psmodulepath_normalization.ps1
 
       # powershell.exe covers Windows PowerShell 5.1, which differs from pwsh 7 on native stderr.
       - name: uninstall.ps1 argument guard under Windows PowerShell 5.1
+        id: ps51-uninstall-guard
+        background: true
         shell: powershell
         run: |
           powershell -NoProfile -File tests/studio/test_uninstall_arg_guard.ps1
@@ -153,6 +165,9 @@ jobs:
       - name: Restore the built frontend
         id: fe-dist
         uses: ./.github/actions/frontend-dist-restore
+
+      - name: Collect the PowerShell unit tests
+        wait: [ps-uninstall-units, ps-modulepath-units, ps51-uninstall-guard]
 
       - name: Install Unsloth (--local, --no-torch)
         shell: pwsh

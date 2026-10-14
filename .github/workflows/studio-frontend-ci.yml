@@ -83,13 +83,16 @@ on:
       - 'scripts/lockfile_supply_chain_audit.py'
       - '.github/workflows/studio-frontend-ci.yml'
       - '.github/scripts/retry-with-apt-lock.sh'
+  # Staging repos dispatch this on `upstream-main` to seed their dependency caches
+  # (scripts/pr_review/staging_ci.py); see .github/actions/pip-cache-save.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
   # Latest-only on a PR branch. On main, cancel-in-progress is false so a RUNNING run is
   # never killed, and a newer push replaces only the PENDING one: a merge burst runs the
   # commit already executing plus the tip. See studio-backend-ci.yml for the trade.
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -302,7 +305,7 @@ jobs:
       # Main-only, and NOT under always(): keys are immutable, so a failed install must never
       # be saved. test_cache_budget_discipline.py enforces this.
       - name: Save the Playwright browser cache
-        if: github.ref == 'refs/heads/main' && steps.pw-cache.outputs.cache-hit != 'true'
+        if: (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth')) && steps.pw-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:
@@ -310,7 +313,7 @@ jobs:
           key: ${{ steps.pw-cache.outputs.cache-primary-key }}
 
       - name: Save the apt archive cache
-        if: github.ref == 'refs/heads/main' && steps.apt-cache.outputs.cache-hit != 'true'
+        if: (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth')) && steps.apt-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         continue-on-error: true
         with:

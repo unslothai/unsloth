@@ -181,7 +181,9 @@ jobs:
         if: always()
         run: |
           kill "${STUDIO_PID}" 2>/dev/null || true
-          sleep 2
+          # Wait for it to actually exit (was a flat `sleep 2`); SIGKILL after 10 s.
+          for _ in $(seq 1 100); do kill -0 "${STUDIO_PID}" 2>/dev/null || break; sleep 0.1; done
+          kill -9 "${STUDIO_PID}" 2>/dev/null || true
 
       - name: Upload API smoke logs
         if: always()

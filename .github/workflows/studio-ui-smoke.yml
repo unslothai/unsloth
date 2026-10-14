@@ -187,13 +187,6 @@ jobs:
           key: hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v3
           enableCrossOsArchive: true
 
-      - name: Install Unsloth (--local, --no-torch)
-        uses: ./.github/actions/install-unsloth-local
-        with:
-          gh-token: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-
       - name: Pin the Playwright version so the browser cache has a key
         id: pw
         run: |
@@ -220,8 +213,43 @@ jobs:
 
       - name: Install Playwright browsers
         id: pw-install
-        # CDN download and apt are separate helper calls, each with its own retry budget:
-        # 2 x 300s plus lock wait, twice, fits the job's 30.
+        # A background step: it runs alongside Install Unsloth below, which uses its own
+        # venv. If both reach apt, this side goes through retry-with-apt-lock.sh and waits
+        # for the dpkg lock. Its outcome, which the cache saves read, is settled by the
+        # `wait: pw-install` step after the install.
+        background: true
+        # --with-deps stays unconditional: the apt side installs system libraries OUTSIDE
+        # the cached directory, so a restored cache without it gives browsers that cannot
+        # start. Only the download is skipped, which is the part that costs.
+        #
+        # Bounded and retried, because this step stalls. Three times in one day it sat in
+        # apt's download loop until the job's 30-minute timeout killed it: the shards that
+        # hit it took 30 minutes to report nothing, while their siblings finished the whole
+        # job in 4 to 9. GitHub scores that as "cancelled" rather than a failure, prints no
+        # reason, and skips every step after it, so an infrastructure hiccup costs a shard's
+        # entire surface and reads like a mystery.
+        #
+        # A per-attempt `timeout` makes the stall a failure instead of a silent wait, and
+        # the retry is what actually recovers -- both observed stalls cleared on a plain
+        # re-run of the same commit. The healthy time is about 2 minutes, so 8 is 4x
+        # headroom and a merely slow mirror will not trip it. timeout-minutes bounds the
+        # pair in case `timeout` itself is outlived by an unkillable child.
+        # Bounded and retried through the shared helper, which is where the dpkg
+        # lock wait and the exit-code reporting live. This was eight lines of
+        # inline loop and it shipped a bug that made the retry dead: GitHub runs
+        # `run:` as `bash -e`, so `timeout ...; rc=$?` aborted the step on the
+        # first stall and the second attempt never ran. The step exited 124 having
+        # printed nothing at all, which looked exactly like the unbounded stall it
+        # was supposed to replace. One definition, tested, instead of copies.
+        #
+        # Two attempts at 7 minutes, against a healthy ~2: worst case 14 plus the
+        # lock wait, which still leaves the job's 30 room for the work it exists to
+        # do. Three attempts here would not.
+        # Two helper calls now, not one: the CDN download and the apt transaction
+        # are separated, and each carries its own retry budget. 2 x 300s plus a lock
+        # wait, twice over, is 24m of worst case against the job's 30 -- which is
+        # why the per-attempt cap comes down from 420. Healthy is ~2 minutes for the
+        # download and seconds for the probe, so 300 is still 2.5x headroom.
         timeout-minutes: 25
         env:
           RETRY_ATTEMPTS: '2'
@@ -275,11 +303,36 @@ jobs:
             probe ${{ matrix.engines }}
           fi
 
-      # Main only, and only after the install succeeded: the key is immutable, so a partial
-      # download saved once would break every later run.
+      - name: Install Unsloth (--local, --no-torch)
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+
+      - name: Wait for the Playwright browsers
+        wait: pw-install
+
+      # Save on main only, like every model cache in this repo. read-write
+      # `actions/cache` saves from its post-step on EVERY ref, and a PR-scoped entry
+      # can only be restored by re-runs of that same PR while still competing for the
+      # 50 GiB repo budget, measured 99.3% full. At ~470MB per browser set that is how
+      # main's copy -- the one every PR can actually read -- gets evicted, so the next
+      # PR misses and writes its own. This key was measured holding 3 copies for 0.91
+      # GiB of pure duplicate. Same thrash loop the GGUF caches were fixed for.
+      # Gated on the install SUCCEEDING, not merely having run. `playwright install`
+      # downloads three engines from a CDN; a network failure part-way leaves some of
+      # them on disk, and under a bare always() that partial directory is what gets
+      # saved. The key is immutable (version-pinned), so every later run then restores
+      # it, reports cache-hit, skips the download and runs only install-deps -- with
+      # engines that are not there. Every UI job fails until someone deletes the entry
+      # by hand, and nothing in the logs points at the cache.
+      #
+      # always() stays, so an unrelated earlier failure does not throw away browsers
+      # that did download; the outcome check is what narrows it to this step.
       - name: Save the apt archive cache
         if: >-
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.apt-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -289,7 +342,7 @@ jobs:
 
       - name: Save the Playwright browser cache
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -838,7 +891,7 @@ jobs:
       # download saved once would break every later run.
       - name: Save the apt archive cache
         if: >-
-          github.ref == 'refs/heads/main'
+          (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.apt-cache.outputs.cache-hit != 'true'
         continue-on-error: true
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
@@ -848,7 +901,7 @@ jobs:
 
       - name: Save the Playwright browser cache
         if: >-
-          always() && github.ref == 'refs/heads/main'
+          always() && (github.ref == 'refs/heads/main' || (github.ref == 'refs/heads/upstream-main' && github.repository != 'unslothai/unsloth'))
           && steps.pw-cache.outputs.cache-hit != 'true'
           && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
