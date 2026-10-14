@@ -883,6 +883,8 @@ def _swap(
                 n_cublas,
                 time.perf_counter() - t0,
             )
+    else:
+        _DEVICE_PLAN.pop(index, None)  # a plan from an earlier load must not outlive AUTOTUNE=0
     count = 0
     with _LOCK:
         if gemm:
@@ -1118,6 +1120,9 @@ def tune(index: int, shapes: Any) -> dict:
                 if not fused_ms:
                     continue
                 choice = decide(static, fused_ms, ms[_CUBLAS])
+                while choice != _CUBLAS and not _probed(index, choice):
+                    del fused_ms[choice]  # not bit-exact here: decide among the remaining arms
+                    choice = decide(static, fused_ms, ms[_CUBLAS]) if fused_ms else _CUBLAS
                 stored[slot] = choice
                 dirty = True
             if choice != _CUBLAS and not _probed(index, choice):

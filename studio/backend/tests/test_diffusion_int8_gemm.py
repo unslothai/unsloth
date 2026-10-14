@@ -1171,6 +1171,28 @@ def test_latency_gate_small_m_bucket_is_timed_against_the_tile_it_runs(monkeypat
     assert g8.planned(0, 300, n, k) == default and g8.planned(0, 4096, n, k) == shape_tile
 
 
+def test_latency_gate_redecides_when_the_fastest_alt_fails_its_probe(monkeypatch, tmp_path):
+    default = g8._ARCH_CONFIG[(8, 0)]
+    alt = g8._ALT_TILES[(8, 0)][0]
+    # The winning alt is not bit-exact here; the static tile regressed, so cuBLAS (not the 7.8 ms default) must win.
+    ms = lambda tiles: {
+        g8._CUBLAS: 1.45,
+        default: 7.8,
+        **{t: (1.0 if t == alt else 1.6) for t in tiles if t != default},
+    }
+    _fake_tune_env(monkeypatch, tmp_path, ms)
+    monkeypatch.setattr(g8, "_probe", lambda index, cfg: cfg != alt)
+    assert set(g8.tune(0, {(18432, 3072)}).values()) == {g8._CUBLAS}
+
+
+@needs_cuda
+def test_latency_gate_autotune_off_drops_an_earlier_plan(forced, monkeypatch):
+    index = torch.cuda.current_device()
+    g8._DEVICE_PLAN[index] = {(768, 1024, b): g8._CUBLAS for b in range(len(g8._M_BUCKETS))}
+    assert g8.install(torch.nn.Sequential(_int8_linear(1024, 768, True, 2))) == 1
+    assert g8.planned(index, 4096, 768, 1024) is None and g8.fused_for(index, 4096, 768, 1024)
+
+
 @needs_cuda
 def test_latency_gate_timing_leaves_the_cuda_rng_alone():
     torch.cuda.manual_seed(1234)
