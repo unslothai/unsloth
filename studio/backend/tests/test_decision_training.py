@@ -789,6 +789,13 @@ def test_s3_audio_rows_keep_their_clips_after_the_download_is_cleaned_up(monkeyp
         b"RIFF\x01",
     ]
     assert not any(clip.exists() for clip in clips)
+    # A slice reads only the clips of the rows it keeps.
+    for index, clip in enumerate(clips):
+        clip.write_bytes(b"RIFF" + bytes([index]))
+    read, read_bytes = [], Path.read_bytes
+    monkeypatch.setattr(Path, "read_bytes", lambda path: read.append(path.name) or read_bytes(path))
+    loaded, _, _ = _load(s3_config = {"bucket": "b"}, dataset_slice_start = 1, dataset_slice_end = 1)
+    assert [row["audio"][0]["bytes"] for row in loaded] == [b"RIFF\x01"] and read == ["b.wav"]
 
 
 def test_other_accounts_reach_only_the_configured_fine_tune(studio_home, client):

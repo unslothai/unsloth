@@ -171,7 +171,8 @@ def _load_rows(
             raise _Stopped("Training cancelled") from None
         try:
             rows = _read_local_rows(download.files, load_dataset, warn)
-            _hold_audio(rows)
+            # Only the rows training keeps hold their clips.
+            _hold_audio(_sliced(rows, config))
         finally:
             download.cleanup()
     elif config.get("hf_dataset"):
@@ -212,10 +213,14 @@ def _load_rows(
             _read_local_rows(config["local_eval_datasets"], load_dataset, warn), seed
         )
 
+    return _sliced(rows, config), eval_rows
+
+
+def _sliced(rows: list, config: dict) -> list:
     start, end = config.get("dataset_slice_start"), config.get("dataset_slice_end")
-    if start is not None or end is not None:
-        rows = rows[start or 0 : (len(rows) if end is None else end + 1)]
-    return rows, eval_rows
+    if start is None and end is None:
+        return rows
+    return rows[start or 0 : (len(rows) if end is None else end + 1)]
 
 
 def _is_mlx() -> bool:
