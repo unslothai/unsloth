@@ -335,6 +335,19 @@ test("many unterminated substitutions stay within the streaming budget", () => {
   for (const source of ["$1$(".repeat(51_200), "$1$[".repeat(200_000)]) {
     const started = performance.now();
     preprocessLaTeX(source, true);
-    assert.ok(performance.now() - started < 250);
+    // linear runs take ~200 ms on a loaded runner; a quadratic scan takes minutes.
+    assert.ok(performance.now() - started < 2000);
   }
+});
+
+test("spaced inline math at a line start is not a shell prompt", () => {
+  for (const [source, expected] of [
+    ["$ x^2 + 1 $", ["x^2 + 1"]],
+    ["The equation is:\n$ x = 3 $\nDone.", ["x = 3"]],
+  ] as Array<[string, string[]]>) {
+    assert.deepEqual(renderedMath(render(source)), expected, source);
+  }
+  const prompt = render("$ ls -la\n$ cd /tmp");
+  assert.deepEqual(renderedMath(prompt), []);
+  assert.ok(visibleText(prompt).includes("$ ls -la"));
 });
