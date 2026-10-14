@@ -978,3 +978,18 @@ def test_the_freshness_check_of_a_gated_base_carries_the_loads_token(env, monkey
 
     assert load(hf_token = "hf_request_token") == "e" * 64
     assert seen == ["hf_request_token"]
+
+
+def test_an_entry_the_loader_rejected_is_a_miss_until_replaced(env, tmp_path, scheme):
+    base, model = _write_base(tmp_path)
+    _quantize(model, scheme)
+    fam = _fam(base)
+    path = C.save_runtime_quant(model, fam, base_repo = str(base))
+    try:
+        C.note_rejected(path)
+        assert C.lookup(fam, scheme, base_repo = str(base)) is None
+        _corrupt_in_place(path)
+        assert C.save_runtime_quant(model, fam, base_repo = str(base)) == path  # the replacement
+        assert C.lookup(fam, scheme, base_repo = str(base)) == path
+    finally:
+        C._REJECTED.clear()

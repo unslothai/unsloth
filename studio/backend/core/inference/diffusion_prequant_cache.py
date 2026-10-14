@@ -454,6 +454,12 @@ def lookup(
             artifact = _entry(key)
             if artifact is None:
                 return None
+            with _lock:
+                rejected = os.path.realpath(str(artifact)) in _REJECTED
+            if rejected:
+                # The loader already refused it in this process: a miss until a fresh build replaces it, so a load
+                # whose plan allows no dense fallback does not pick the same bad artifact on every retry.
+                return None
             _touch(artifact.parent)
         return str(artifact)
     except Exception as exc:  # noqa: BLE001
