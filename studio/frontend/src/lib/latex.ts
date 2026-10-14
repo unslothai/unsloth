@@ -197,10 +197,7 @@ function isShellPromptMarker(text: string, at: number): boolean {
     Math.max(text.lastIndexOf("\n", at - 1), text.lastIndexOf("\r", at - 1)) +
     1;
   if (
-    text
-      .slice(lineStart, at)
-      .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
-      .trim()
+    text.slice(lineStart, at).replace(MARKDOWN_CONTAINER_PREFIX_RE, "").trim()
   ) {
     return false;
   }
