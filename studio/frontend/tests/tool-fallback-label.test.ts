@@ -121,18 +121,23 @@ test("the document search header stays one line, with the summary first and the 
   assert.match(fallback, /const wrapWhenOpen = !singleLine;/);
 });
 
-// The documents behind a search are listed inside its expanded card, and open in the attachment
-// viewer; the reply no longer carries a separate Document Sources strip or a custom PDF sheet.
-test("a document search lists its documents in the card, opening them in the attachment viewer", () => {
+// The passages behind a search are listed inside its expanded card; their documents open in
+// Studio's browser; the reply no longer carries a separate Document Sources strip or a PDF sheet.
+test("a document search lists its passages in the card, opening documents in the browser", () => {
   const read = (path: string) =>
     readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
   const kb = read("components/assistant-ui/tool-ui-knowledge-base.tsx");
-  assert.match(kb, /documents\.map\(\(citation, i\) => \(\s*<CitationBadge/);
-  assert.match(kb, /<LocalFileDialog/);
-  // Formats the viewer can't render still open, in Studio's browser, rather than going inert.
   assert.match(
     kb,
-    /if \(!isViewableSource\(filename\)\) \{[\s\S]*?openRagDocumentInBrowser\(documentId, filename\)/,
+    /citations\.map\(\(citation, i\) => \(\s*<li[\s\S]*?<CitationBadge/,
+  );
+  assert.match(kb, /<p className="line-clamp-3[^"]*">\s*\{citation\.text\}/);
+  assert.match(kb, /<RagDocumentTrigger/);
+  const trigger = read("features/rag/components/rag-document-trigger.tsx");
+  // Browser first; without its panel (mobile) the attachment viewer, else a new tab.
+  assert.match(
+    trigger,
+    /if \(browser\)[\s\S]*?openRagDocumentInBrowser[\s\S]*?if \(isViewableSource\(filename\)\)[\s\S]*?<LocalFileDialog[\s\S]*?window\.open/,
   );
   assert.ok(!kb.includes("See Document Sources below"));
   const thread = read("components/assistant-ui/thread.tsx");

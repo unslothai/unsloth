@@ -13,6 +13,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { Spinner } from "@/components/ui/spinner";
 
 import { useToolAwaitingApproval } from "@/features/chat";
+import { RagDocumentTrigger } from "@/features/rag/components/rag-document-trigger";
 import { FileGlyph } from "@/lib/file-icon";
 import { stringifyToolResult } from "@/lib/strip-ansi";
 import { type ComponentProps, memo, useMemo } from "react";
@@ -28,14 +29,6 @@ import {
   ToolFallbackTrigger,
 } from "./tool-fallback";
 import { useToolActivityOpen } from "./use-tool-activity-open";
-import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
-import { openRagDocumentInBrowser } from "@/features/rag/lib/open-document";
-import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
-import {
-  asViewerFile,
-  fetchSourceFile,
-  isViewableSource,
-} from "@/features/rag/components/source-file";
 
 import {
   type Citation,
@@ -74,38 +67,15 @@ export function CitationBadge({
     </Badge>
   );
 
-  if (!clickable || !documentId) {
+  if (!documentId) {
     return <span className="inline-block">{badge}</span>;
   }
-  // HTML, EPUB and other indexed formats the attachment viewer can't render open in Studio's browser.
-  if (!isViewableSource(filename)) {
-    return (
-      <button
-        type="button"
-        onClick={() => openRagDocumentInBrowser(documentId, filename)}
-        className="inline-block"
-      >
-        {badge}
-      </button>
-    );
-  }
-  // The attachment viewer, as the chat with files cards open their files.
-  const load = async (): Promise<Blob> => {
-    const file = await fetchSourceFile(
-      { id: documentId, filename },
-      MAX_DOCUMENT_PREVIEW_BYTES,
-    );
-    if (!file) {
-      throw new Error(`Couldn't preview ${filename}`);
-    }
-    return asViewerFile(file);
-  };
   return (
-    <LocalFileDialog name={filename.split("/").pop() ?? filename} load={load}>
-      <button type="button" className="inline-block">
+    <RagDocumentTrigger documentId={documentId} filename={filename}>
+      <button type="button" className="inline-block rounded-full">
         {badge}
       </button>
-    </LocalFileDialog>
+    </RagDocumentTrigger>
   );
 }
 
@@ -177,15 +147,21 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
                   {citations.length === 1 ? "" : "s"} from {docCount} document
                   {docCount === 1 ? "" : "s"}.
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {documents.map((citation, i) => (
-                    <CitationBadge
+                <ol className="flex flex-col gap-2.5">
+                  {citations.map((citation, i) => (
+                    <li
                       key={citation.id}
-                      citation={citation}
-                      index={i}
-                    />
+                      className="flex flex-col items-start gap-1"
+                    >
+                      <CitationBadge citation={citation} index={i} />
+                      {citation.text ? (
+                        <p className="line-clamp-3 whitespace-pre-wrap break-words text-xs">
+                          {citation.text}
+                        </p>
+                      ) : null}
+                    </li>
                   ))}
-                </div>
+                </ol>
               </>
             ) : resultText ? (
               <ScrollPane

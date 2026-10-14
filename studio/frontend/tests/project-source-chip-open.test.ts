@@ -31,23 +31,14 @@ const chip = loadWithStubs<typeof ChipModule>(
   },
 );
 
-const LocalFileDialog = () => null;
+const RagDocumentTrigger = () => null;
 
 const { ProjectSourceChip } = loadWithStubs<typeof SourceChipModule>(
   new URL("../src/features/rag/components/project-source-chip.tsx", import.meta.url),
   {
     "react/jsx-runtime": stubJsxRuntime(),
-    "@/components/assistant-ui/attachment-document-dialog": { LocalFileDialog },
-    "@/components/file-viewer": { MAX_DOCUMENT_PREVIEW_BYTES: 1 },
-    "@/features/chat": {
-      attachmentFileKind: (name: string) => (name.endsWith(".pdf") ? "pdf" : "file"),
-    },
     "./document-status-chip": chip,
-    "./source-file": {
-      asViewerFile: (file: File) => file,
-      fetchSourceFile: async () => null,
-      isViewableSource: (name: string) => /\.(pdf|md|txt|docx)$/.test(name),
-    },
+    "./rag-document-trigger": { RagDocumentTrigger },
   },
 );
 
@@ -59,35 +50,26 @@ function chipProps(doc: Record<string, unknown>): Record<string, unknown> {
   return element.props;
 }
 
-// PDFs used to open a separate preview sheet; every source now opens in the attachment viewer.
-test("an indexed PDF source opens in the attachment viewer", () => {
-  const props = chipProps({ id: "doc-1", filename: "handbook.pdf", status: "completed" });
-  assert.equal(props.onOpen, undefined);
-  const trigger = React.createElement("button");
-  const wrapped = (props.openTrigger as (t: React.ReactElement) => StubElement)(trigger);
-  assert.equal(wrapped.type, LocalFileDialog);
-  assert.equal(wrapped.props.name, "handbook.pdf");
-});
-
-test("an indexed text, markdown or Office source opens in the attachment viewer", () => {
-  for (const filename of ["notes.md", "notes.txt", "Docs/report.docx"]) {
+// Every indexed source opens through the shared trigger: Studio's browser renders every format.
+test("an indexed source of any format opens through the document trigger", () => {
+  for (const filename of ["handbook.pdf", "notes.md", "Docs/report.docx", "archive.epub"]) {
     const props = chipProps({ id: "doc-2", filename, status: "completed" });
     assert.equal(props.onOpen, undefined);
     const trigger = React.createElement("button");
     const wrapped = (props.openTrigger as (t: React.ReactElement) => StubElement)(trigger);
-    assert.equal(wrapped.type, LocalFileDialog);
-    assert.equal(wrapped.props.name, filename.split("/").pop());
+    assert.equal(wrapped.type, RagDocumentTrigger);
+    assert.equal(wrapped.props.documentId, "doc-2");
+    assert.equal(wrapped.props.filename, filename);
     assert.equal(wrapped.props.children, trigger);
   }
 });
 
-test("sources still indexing, failed, optimistic or unviewable stay inert", () => {
+test("sources still indexing, failed or optimistic stay inert", () => {
   for (const doc of [
     { id: "doc-3", filename: "handbook.pdf", status: "running" },
     { id: "doc-3", filename: "notes.md", status: "pending" },
     { id: "doc-3", filename: "notes.md", status: "failed" },
     { id: "pending_1", filename: "notes.md", status: "completed" },
-    { id: "doc-3", filename: "archive.epub", status: "completed" },
   ]) {
     const props = chipProps(doc);
     assert.equal(props.onOpen, undefined, JSON.stringify(doc));

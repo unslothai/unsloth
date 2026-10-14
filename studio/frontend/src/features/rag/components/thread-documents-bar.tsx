@@ -31,8 +31,6 @@ import {
   AttachmentCardPreview,
   attachmentPreview,
 } from "@/components/assistant-ui/attachment-card-preview";
-import { LocalFileDialog } from "@/components/assistant-ui/attachment-document-dialog";
-import { MAX_DOCUMENT_PREVIEW_BYTES } from "@/components/file-viewer";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -104,7 +102,8 @@ import {
   SUPPORTED_SOURCES_HINT,
   isSupportedSourceName,
 } from "./source-drop-policy";
-import { asViewerFile, fetchSourceFile, isViewableSource } from "./source-file";
+import { RagDocumentTrigger } from "./rag-document-trigger";
+import { fetchSourceFile } from "./source-file";
 import { EXPIRY_GRACE_MS } from "./staged-source";
 import {
   type RagUploadItem,
@@ -445,20 +444,8 @@ function DocumentCard({
   const ready = doc.status === "completed" && !pending;
   const [slot, setSlot] = useState<HTMLDivElement | null>(null);
   const thumbnail = useDocumentThumbnail(doc, ready, slot);
-  // Every viewable file, PDFs included, opens in the attachment viewer, read on click.
-  const viewable = isViewableSource(doc.filename);
-  const thumbnailFile = thumbnail?.kind === "file" ? thumbnail.file : null;
-  const loadSource = useCallback(async (): Promise<Blob> => {
-    // The thumbnail's copy when there is one; past its cap, up to the viewer's own limit, the
-    // same one the Library holds to. Past that the viewer says it can't preview.
-    const file =
-      thumbnailFile ?? (await fetchSourceFile(doc, MAX_DOCUMENT_PREVIEW_BYTES));
-    if (!file) throw new Error(`Couldn't preview ${doc.filename}`);
-    return asViewerFile(file);
-    // The id names the stored file; the rest of the row changes with progress frames.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc.id, thumbnailFile]);
-  const canOpen = ready && viewable;
+  // Studio's browser renders every format; RagDocumentTrigger falls back without it.
+  const canOpen = ready;
   const preview =
     thumbnail?.kind === "image" ? (
       <img
@@ -520,10 +507,10 @@ function DocumentCard({
         CARD_SLOT,
       )}
     >
-      {viewable && ready ? (
-        <LocalFileDialog name={doc.filename.split("/").pop() ?? doc.filename} load={loadSource}>
+      {ready ? (
+        <RagDocumentTrigger documentId={doc.id} filename={doc.filename}>
           {card}
-        </LocalFileDialog>
+        </RagDocumentTrigger>
       ) : (
         card
       )}
