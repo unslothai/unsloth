@@ -58,6 +58,8 @@ test("numbers written as inline maths render as maths", () => {
     ['She asked "Is it $3$?"', ["3"]],
     ['the answer is "$42$!"', ["42"]],
     ['consider this "$3$?"', ["3"]],
+    ['- please note "The answer is $42$!"', ["42"]],
+    ["The mass is $42$kg.", ["42"]],
     ["a $10$-fold increase", ["10"]],
     ["Range $1$-$2$", ["1", "2"]],
     ["The number $42$'s factors are 2, 3, and 7.", ["42"]],
@@ -161,7 +163,9 @@ test("a shell parameter right after a positional one stays text", () => {
     ["echo status+$1$? now.", "$1$?"],
     ["echo status,$1$? now.", "$1$?"],
     ['git show "$1$?" now.', "$1$?"],
+    ['git show HEAD "$1$?" now.', "$1$?"],
     ['kubectl get pods "$1$?" now.', "$1$?"],
+    ['widget --mode HEAD "$1$?" now.', "$1$?"],
     ['sudo -u root echo "$1$?" now.', "$1$?"],
     ['env MODE=fast echo "$1$?" now.', "$1$?"],
     ['MODE=fast echo "$1$?" now.', "$1$?"],
@@ -265,6 +269,7 @@ test("shell quote state carries across long and multiline words", () => {
   for (const source of [
     `echo "${"x".repeat(512)}$1$?"`,
     `echo "first line\n${"x".repeat(512)}$1$?"`,
+    `echo "first line\r\n${"x".repeat(512)}$1$?"`,
     '> Run echo "first line\n> $1$?"',
   ]) {
     const html = render(source);
@@ -284,6 +289,7 @@ test("shell quote state resets at Markdown block boundaries", () => {
     'Run echo "oops\n---\nThe answer is $42$!',
     'Run echo "oops\n_ _ _\nThe answer is $42$!',
     'Run echo "oops\n===\nThe answer is $42$!',
+    'Run echo "oops\r\rThe answer is $42$!',
   ]) {
     const html = render(source);
     assert.deepEqual(renderedMath(html), ["42"], source);

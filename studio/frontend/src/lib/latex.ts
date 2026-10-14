@@ -56,7 +56,8 @@ function startsLikeVariable(text: string, at: number): boolean {
 
 const MAX_SHELL_EXPANSION_SPAN = 4096;
 const MAX_MARKDOWN_EMPHASIS_SPAN = 256;
-const SHELL_QUOTE_CONTEXT_CANDIDATE_RE = /\$(?:["'!(*\-?_]|\[)/;
+const SHELL_QUOTE_CONTEXT_CANDIDATE_RE =
+  /\$(?:["'!(*\-?_]|\[)|\$\d+\$[A-Za-z0-9_{$]/;
 const SHELL_COMMANDS = new Set([
   "awk",
   "bash",
@@ -71,8 +72,10 @@ const SHELL_COMMANDS = new Set([
   "export",
   "find",
   "fish",
+  "git",
   "grep",
   "ksh",
+  "kubectl",
   "printf",
   "read",
   "sed",
@@ -89,6 +92,7 @@ const SHELL_LEADIN_RE = /^(?:Run|Use|Try|Execute)$/i;
 const PROSE_COMMAND_RE =
   /^(?:a|an|consider|imagine|note|suppose|the|this|that)$/i;
 const SHELL_WORD_RE = /^(?:[a-z_][\w.-]*|\.{0,2}\/[^\s]+)$/;
+const SHELL_POSITIONAL_WORD_RE = /^[A-Za-z0-9_][\w.-]*$/;
 const SHELL_ARGUMENT_RE =
   /^(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
 const MARKDOWN_CONTAINER_PREFIX_RE =
@@ -103,12 +107,16 @@ const SHELL_QUOTE_BLOCK_START_RE =
 
 function hasCommandArguments(words: string[], at: number): boolean {
   if (at >= words.length) return false;
+  let hasShellShapedArgument = false;
   for (let index = at; index < words.length; index++) {
     const word = words[index];
-    if (!SHELL_ARGUMENT_RE.test(word) && !SHELL_WORD_RE.test(word))
+    if (SHELL_ARGUMENT_RE.test(word)) {
+      hasShellShapedArgument = true;
+    } else if (!SHELL_POSITIONAL_WORD_RE.test(word)) {
       return false;
+    }
   }
-  return true;
+  return hasShellShapedArgument;
 }
 
 function isShellWordBoundary(char: number): boolean {
@@ -132,7 +140,9 @@ function isShellWordBoundary(char: number): boolean {
 function isShellPromptMarker(text: string, at: number): boolean {
   const next = text.charCodeAt(at + 1);
   if (next !== 9 && next !== 32) return false;
-  const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+  const lineStart =
+    Math.max(text.lastIndexOf("\n", at - 1), text.lastIndexOf("\r", at - 1)) +
+    1;
   return !text
     .slice(lineStart, at)
     .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
@@ -173,11 +183,17 @@ function hasShellCommandPrefix(
   }
   const minimum = Math.max(0, at - 256);
   let lineStart = at;
-  while (lineStart > minimum && text.charCodeAt(lineStart - 1) !== 10) {
+  while (
+    lineStart > minimum &&
+    text.charCodeAt(lineStart - 1) !== 10 &&
+    text.charCodeAt(lineStart - 1) !== 13
+  ) {
     lineStart--;
   }
   const completeLinePrefix =
-    lineStart === 0 || text.charCodeAt(lineStart - 1) === 10;
+    lineStart === 0 ||
+    text.charCodeAt(lineStart - 1) === 10 ||
+    text.charCodeAt(lineStart - 1) === 13;
   const rawPrefix = text.slice(lineStart, at).trimEnd();
   const prefix = rawPrefix
     .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
@@ -220,16 +236,50 @@ function hasShellCommandPrefix(
   return /[;&|]\s*[a-z_][\w.-]*\s*$/.test(prefix);
 }
 
+function hasShellParameterContext(
+  text: string,
+  at: number,
+  numericOffset: number,
+  quoteState: number,
+): boolean {
+  if (quoteState > 0 || hasShellCommandPrefix(text, numericOffset)) return true;
+  if (at !== numericOffset + 3) return false;
+  const lineStart =
+    Math.max(
+      text.lastIndexOf("\n", numericOffset - 1),
+      text.lastIndexOf("\r", numericOffset - 1),
+    ) + 1;
+  const prefix = text
+    .slice(lineStart, numericOffset)
+    .trimEnd()
+    .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
+    .replace(SHELL_PROMPT_PREFIX_RE, "");
+  return SHELL_LEADIN_RE.test(prefix);
+}
+
 function startsNewMarkdownBlock(text: string, at: number): boolean {
   const char = text.charCodeAt(at);
   if (at >= text.length || char === 10 || char === 13) return true;
-  const nextEnd = text.indexOf("\n", at);
+  const nextLf = text.indexOf("\n", at);
+  const nextCr = text.indexOf("\r", at);
+  const nextEnd =
+    nextLf === -1 ? nextCr : nextCr === -1 ? nextLf : Math.min(nextLf, nextCr);
   const nextLine = text.slice(at, nextEnd === -1 ? text.length : nextEnd);
   const nextQuotes = quoteDepth(nextLine);
   if (nextQuotes === 0) return SHELL_QUOTE_BLOCK_START_RE.test(nextLine);
 
-  const previousEnd = at - 1;
-  const previousStart = text.lastIndexOf("\n", previousEnd - 1) + 1;
+  let previousEnd = at - 1;
+  if (
+    text.charCodeAt(previousEnd) === 10 &&
+    text.charCodeAt(previousEnd - 1) === 13
+  ) {
+    previousEnd--;
+  }
+  const previousStart =
+    Math.max(
+      text.lastIndexOf("\n", previousEnd - 1),
+      text.lastIndexOf("\r", previousEnd - 1),
+    ) + 1;
   const previousLine = text.slice(previousStart, previousEnd);
   if (quoteDepth(previousLine) !== nextQuotes) return true;
   const content = containerContent(nextLine, EMPTY_LIST_STATE, nextQuotes);
@@ -266,7 +316,11 @@ function findShellQuoteStates(
         continue;
       }
     }
-    if (char === 10 && quote !== 0 && startsNewMarkdownBlock(text, index + 1)) {
+    if (
+      (char === 10 || (char === 13 && text.charCodeAt(index + 1) !== 10)) &&
+      quote !== 0 &&
+      startsNewMarkdownBlock(text, index + 1)
+    ) {
       quote = 0;
       continue;
     }
@@ -310,7 +364,10 @@ function startsMarkdownEmphasis(
   const first = text.charCodeAt(bodyStart);
   if (first <= 32) return false;
   const token = width === 2 ? text.slice(at, at + 2) : text[at];
-  const newline = text.indexOf("\n", bodyStart);
+  const nextLf = text.indexOf("\n", bodyStart);
+  const nextCr = text.indexOf("\r", bodyStart);
+  const newline =
+    nextLf === -1 ? nextCr : nextCr === -1 ? nextLf : Math.min(nextLf, nextCr);
   const limit = Math.min(
     text.length,
     at + MAX_MARKDOWN_EMPHASIS_SPAN,
@@ -328,7 +385,9 @@ function enclosingMarkdownEmphasisOpener(
 ): number {
   const width = text.charCodeAt(at + 1) === marker ? 2 : 1;
   const token = width === 2 ? text.slice(at, at + 2) : text[at];
-  const lineStart = text.lastIndexOf("\n", at - 1) + 1;
+  const lineStart =
+    Math.max(text.lastIndexOf("\n", at - 1), text.lastIndexOf("\r", at - 1)) +
+    1;
   const minimum = Math.max(lineStart, at - MAX_MARKDOWN_EMPHASIS_SPAN);
   let opener = text.lastIndexOf(token, before - 1);
   while (opener >= minimum) {
@@ -439,7 +498,10 @@ function startsShellExpansion(
   if (char === 40) {
     return quoteState > 0 || hasShellCommandPrefix(text, numericOffset);
   }
-  return isWordChar(char) || char === 123 || char === 36;
+  return (
+    (isWordChar(char) || char === 123 || char === 36) &&
+    hasShellParameterContext(text, at, numericOffset, quoteState)
+  );
 }
 
 function numericShellParameterStart(text: string, at: number): number {
