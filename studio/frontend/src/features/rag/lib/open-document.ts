@@ -55,11 +55,19 @@ export function offerRagDocumentOutside(
   });
 }
 
-/** Opens an indexed document's file in Studio's browser; past the preview limit, offers it outside. */
+// Per document, only the latest click opens: downloads can finish out of order.
+const latestOpen = new Map<string, number>();
+let opens = 0;
+
+/** Opens an indexed document's file in Studio's browser, a PDF at `page`; past the preview limit,
+ *  offers it outside. */
 export function openRagDocumentInBrowser(
   documentId: string,
   filename: string,
+  page?: number,
 ): void {
+  const ticket = ++opens;
+  latestOpen.set(documentId, ticket);
   getDocumentFileUrl(documentId)
     // Signed URL: no bearer, so no credentials either.
     .then((url) => fetch(url, { credentials: "omit" }))
@@ -78,6 +86,9 @@ export function openRagDocumentInBrowser(
       return response.blob();
     })
     .then((blob) => {
+      if (latestOpen.get(documentId) !== ticket) {
+        return;
+      }
       if (blob === null || blob.size > MAX_DOCUMENT_PREVIEW_BYTES) {
         offerRagDocumentOutside(documentId, filename);
         return;
@@ -87,7 +98,12 @@ export function openRagDocumentInBrowser(
         name: filename,
         contentType: blob.type,
         key: `rag:${documentId}`,
+        page,
       });
     })
-    .catch(() => toast.error(`Could not open ${filename}`));
+    .catch(() => {
+      if (latestOpen.get(documentId) === ticket) {
+        toast.error(`Could not open ${filename}`);
+      }
+    });
 }

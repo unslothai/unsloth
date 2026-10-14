@@ -29,7 +29,8 @@ const { RagDocumentTrigger } = loadWithStubs<typeof TriggerModule>(
         select({ openFilesInBrowser: env.filesInBrowser }),
     },
     "../lib/open-document": {
-      openRagDocumentInBrowser: (_id: string, name: string) => opened.push(`browser:${name}`),
+      openRagDocumentInBrowser: (_id: string, name: string, page?: number) =>
+        opened.push(page ? `browser:${name}@${page}` : `browser:${name}`),
       openRagDocumentExternally: (_id: string, name: string) => opened.push(`tab:${name}`),
       offerRagDocumentOutside: (_id: string, name: string) => opened.push(`offer:${name}`),
     },
@@ -89,4 +90,22 @@ test("a file too large for the attachment viewer is offered outside Studio", asy
   opened.length = 0;
   await assert.rejects((element.props.load as () => Promise<Blob>)());
   assert.deepEqual(opened, ["offer:scan.pdf"]);
+});
+
+test("a cited page opens the PDF there in the browser and in the attachment viewer", () => {
+  const trigger = (page?: number) =>
+    RagDocumentTrigger({
+      documentId: "doc-1",
+      filename: "handbook.pdf",
+      page,
+      children: React.createElement("button"),
+    }) as unknown as StubElement;
+  Object.assign(env, { panel: true, filesInBrowser: true });
+  opened.length = 0;
+  (trigger(3).props.onClick as () => void)();
+  (trigger().props.onClick as () => void)();
+  assert.deepEqual(opened, ["browser:handbook.pdf@3", "browser:handbook.pdf"]);
+  Object.assign(env, { panel: false, filesInBrowser: true });
+  assert.equal(trigger(3).props.page, 3);
+  assert.equal(trigger().props.page, undefined);
 });

@@ -76,7 +76,11 @@ export function CitationBadge({
     return <span className="inline-block">{badge}</span>;
   }
   return (
-    <RagDocumentTrigger documentId={documentId} filename={filename}>
+    <RagDocumentTrigger
+      documentId={documentId}
+      filename={filename}
+      page={pages?.[0] ?? citation.page ?? undefined}
+    >
       <button type="button" className="inline-block rounded-full">
         {badge}
       </button>

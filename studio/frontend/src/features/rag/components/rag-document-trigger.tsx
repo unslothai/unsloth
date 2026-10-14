@@ -17,14 +17,17 @@ import { asViewerFile, fetchSourceFile, isViewableSource } from "./source-file";
 /**
  * Opens an indexed document from `children` (a button): in Studio's browser when it can show the
  * format and files open there. Otherwise viewable files use the attachment viewer, the rest a new tab.
+ * A PDF opens at `page` (1-based) in either viewer.
  */
 export function RagDocumentTrigger({
   documentId,
   filename,
+  page,
   children,
 }: {
   documentId: string;
   filename: string;
+  page?: number;
   children: ReactElement;
 }) {
   const panel = useBrowserPanelAvailable();
@@ -36,7 +39,7 @@ export function RagDocumentTrigger({
     canShowFile(filename, "application/octet-stream");
   if (browser) {
     return cloneElement(children as ReactElement<{ onClick?: () => void }>, {
-      onClick: () => openRagDocumentInBrowser(documentId, filename),
+      onClick: () => openRagDocumentInBrowser(documentId, filename, page),
     });
   }
   if (isViewableSource(filename)) {
@@ -53,7 +56,11 @@ export function RagDocumentTrigger({
       return asViewerFile(file);
     };
     return (
-      <LocalFileDialog name={filename.split("/").pop() ?? filename} load={load}>
+      <LocalFileDialog
+        name={filename.split("/").pop() ?? filename}
+        load={load}
+        page={page}
+      >
         {children}
       </LocalFileDialog>
     );
