@@ -482,6 +482,22 @@ export function useLlamaUpdateCheck({
     [],
   );
 
+  // The update stops a loaded dictation sidecar and may swap the audio.cpp runtime without asking for a
+  // reload, so the Audio page re-reads STT and runtime status once per finished job, whichever path saw it.
+  const settledNotifiedForRef = useRef<string | null>(null);
+  const notifySettledOnce = useCallback(
+    (job: Pick<LlamaUpdateJob, "state" | "finished_at">) => {
+      if (
+        (job.state === "success" || job.state === "error") &&
+        job.finished_at !== settledNotifiedForRef.current
+      ) {
+        settledNotifiedForRef.current = job.finished_at;
+        notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
+      }
+    },
+    [],
+  );
+
   // Used by apply() and another-tab job tracking.
   const startJobPoll = useCallback(
     (onDone?: (result: LlamaApplyResult) => void) => {
@@ -494,8 +510,7 @@ export function useLlamaUpdateCheck({
         const presentation = commitStatus(s);
         if (presentation.running) return;
         clearPollTimer();
-        // The update stops a loaded dictation sidecar without asking for a reload: re-read STT either way.
-        notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
+        notifySettledOnce(s.job);
         if (s.job.state === "success") {
           void refreshHardwareInfo();
           // The update unloads the running model server-side, so the chat runtime still points at a
@@ -520,7 +535,13 @@ export function useLlamaUpdateCheck({
       }, JOB_POLL_INTERVAL_MS);
       pollTimer.current = timer;
     },
-    [clearPollTimer, readStatus, commitStatus, notifyReloadIfNeeded],
+    [
+      clearPollTimer,
+      readStatus,
+      commitStatus,
+      notifyReloadIfNeeded,
+      notifySettledOnce,
+    ],
   );
 
   const surfaceIfAvailable = useCallback(
@@ -535,8 +556,9 @@ export function useLlamaUpdateCheck({
       // the running window entirely (mounted, or only checks hourly and misses both the running and
       // just-finished moments) still needs to resync here, not just from the poll path above.
       notifyReloadIfNeeded(next.job);
+      notifySettledOnce(next.job);
     },
-    [commitStatus, startJobPoll, notifyReloadIfNeeded],
+    [commitStatus, startJobPoll, notifyReloadIfNeeded, notifySettledOnce],
   );
   useEffect(() => {
     surfaceRef.current = surfaceIfAvailable;
