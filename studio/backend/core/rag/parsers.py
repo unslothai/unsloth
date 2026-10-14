@@ -936,6 +936,14 @@ def _docx_number_lists(document) -> None:
         style.get(_W + "styleId"): style
         for style in (() if styles is None else styles.iterchildren(_W + "style"))
     }
+    default_style = next(
+        (
+            style_id
+            for style_id, style in style_by_id.items()
+            if style.get(_W + "type") == "paragraph" and style.get(_W + "default") in ("1", "true", "on")
+        ),
+        None,
+    )
     abstracts = {a.get(_W + "abstractNumId"): a for a in numbering.iterchildren(_W + "abstractNum")}
     nums = {n.get(_W + "numId"): n for n in numbering.iterchildren(_W + "num")}
 
@@ -1004,7 +1012,7 @@ def _docx_number_lists(document) -> None:
         if mark is not None and (mark.find(_W + "del") is not None or mark.find(_W + "moveFrom") is not None):
             return None
         direct = None if p_pr is None else p_pr.find(_W + "numPr")
-        style = val(p_pr, "pStyle")
+        style = val(p_pr, "pStyle") or default_style
         styled = style_num_pr(style)
         num_id = val(direct, "numId") or val(styled, "numId")
         found = None if num_id is None else instance(num_id)

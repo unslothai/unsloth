@@ -442,6 +442,7 @@ def test_docx_table_vertical_merge_emitted_once(tmp_path):
     assert "SECTION | r0" in text and " | r1" in text and " | r2" in text
 
 
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 _DOCX_XMLNS = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
     'xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" '
@@ -963,6 +964,26 @@ def test_docx_list_numbers_count_placeholders_and_survive_huge_starts(tmp_path):
     text = "\n".join(pg.text for pg in parsers.parse(str(path)))
     assert text.splitlines()[:2] == ["1. First", "3. Third"]
     assert text.splitlines()[-1].endswith(" Bigger")
+
+
+def test_docx_numbers_paragraphs_through_the_default_style(tmp_path):
+    document, docx, parsers = _shared_setup_1()
+    from docx.oxml import parse_xml
+
+    number_style = document.styles["List Number"].element.find(f"{{{_W_NS}}}pPr/{{{_W_NS}}}numPr")
+    normal = document.styles["Normal"].element
+    p_pr = normal.find(f"{{{_W_NS}}}pPr")
+    if p_pr is None:
+        p_pr = parse_xml(f"<w:pPr {_DOCX_XMLNS}/>")
+        normal.append(p_pr)
+    p_pr.append(parse_xml(number_style.xml))
+    document.add_paragraph("Rent")
+    document.add_paragraph("Pets", style = "List Number")
+    path = tmp_path / "default.docx"
+    document.save(str(path))
+
+    text = "\n".join(pg.text for pg in parsers.parse(str(path)))
+    assert text == "1. Rent\n2. Pets"
 
 
 def test_docx_with_unreadable_numbering_still_parses(tmp_path):
