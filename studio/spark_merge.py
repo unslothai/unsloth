@@ -19,6 +19,8 @@ STAGE_META = "unsloth_stage.json"
 # Written per stage and expected to differ: the merged adapter is the union of the stages, so a
 # per-stage module list says nothing about a config mismatch.
 _CFG_IGNORED = frozenset({"base_model_name_or_path"})
+# Each stage lists the projections its own layers have; a hybrid model's stages can differ.
+_CFG_UNIONED = frozenset({"target_modules"})
 # `layers` (Llama, NeoX, OPT) and GPT-J's `transformer.h`, as spark_pipeline.find_layers accepts.
 _LAYER_RE = re.compile(r"\.(?:layers|h)\.(\d+)\.")
 
@@ -195,7 +197,7 @@ def merge(
         differing = sorted(
             k
             for k in set(cfg) | set(cfgs[0][1])
-            if cfg.get(k) != cfgs[0][1].get(k) and k not in _CFG_IGNORED
+            if cfg.get(k) != cfgs[0][1].get(k) and k not in _CFG_IGNORED | _CFG_UNIONED
         )
         if differing:
             raise RuntimeError(
@@ -223,8 +225,17 @@ def merge(
     bin_tmp = osp.join(out, ADAPTER_BIN + ".tmp")
     cfg_tmp = osp.join(out, ADAPTER_CFG + ".tmp")
     save_file(tensors, bin_tmp)
+    merged_cfg = dict(cfgs[0][1])
+    for key in _CFG_UNIONED:
+        values = [c.get(key) for _, c in cfgs]
+        if all(isinstance(v, list) for v in values):
+            merged_cfg[key] = sorted({name for v in values for name in v})
+        elif any(v != values[0] for v in values):
+            raise RuntimeError(
+                f"stages disagree on {key} in a way that cannot be combined: {values}"
+            )
     with open(cfg_tmp, "w", encoding = "utf-8") as f:
-        json.dump(cfgs[0][1], f, indent = 2)
+        json.dump(merged_cfg, f, indent = 2)
     os.replace(bin_tmp, osp.join(out, ADAPTER_BIN))
     os.replace(cfg_tmp, osp.join(out, ADAPTER_CFG))
 
