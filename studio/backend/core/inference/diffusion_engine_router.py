@@ -183,8 +183,20 @@ def _vulkan_loader_loads() -> bool:
         return False
 
 
-# Runtime masks Vulkan does not read: a card hidden by one stays hidden. ZE_AFFINITY_MASK is read separately.
-_MASKS_VULKAN_IGNORES = ("ROCR_VISIBLE_DEVICES", "HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES")
+def _masked_vendors() -> set:
+    """Vendors a set runtime mask applies to (HIP honours CUDA_VISIBLE_DEVICES too). Vulkan reads
+    none of them, so a card hidden by one stays hidden. Unreadable counts as every vendor."""
+    try:
+        from utils.hardware.hardware import _VISIBILITY_MASK_VENDORS, _ze_affinity_mask
+
+        masked = set()
+        for var, vendors in _VISIBILITY_MASK_VENDORS.items():
+            value = _ze_affinity_mask() if var == "ZE_AFFINITY_MASK" else os.environ.get(var)
+            if value is not None:
+                masked |= vendors
+        return masked
+    except Exception:  # noqa: BLE001
+        return {"amd", "intel", "nvidia"}
 
 
 # PCI vendors of the cards this route renders on.
@@ -222,14 +234,6 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return False
     if (sys.platform, platform.machine().lower()) not in _VULKAN_SD_CPP_PLATFORMS:
         return False
-    if any(os.environ.get(var) is not None for var in _MASKS_VULKAN_IGNORES):
-        return False
-    try:
-        from utils.hardware.hardware import _ze_affinity_mask
-        if _ze_affinity_mask() is not None:
-            return False
-    except Exception:  # noqa: BLE001
-        return False
     # ggml reads this one itself; anything but a list of ordinals selects nothing or throws. Its
     # ordinals index the raw Vulkan list, so it never vouches for which card a mixed host gets.
     vk_mask = os.environ.get("GGML_VK_VISIBLE_DEVICES")
@@ -254,16 +258,18 @@ def _vulkan_gpu_for_cpu_torch() -> bool:
         return "arc" in str(device.get("name") or "").lower().replace("(tm)", " ").split()
 
     gpus = [d for d in devices if d.get("vendor") in ("amd", "intel")]
-    # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
-    if not gpus or not all(_renders(d) for d in gpus):
-        return False
-    vendors = {d.get("vendor") for d in gpus}
     if sys.platform != "win32":
-        # The node and the driver must belong to the same vendor.
-        vendors = _accessible_render_vendors(vendors)
-        if not vendors:
-            return False
-    return _hardware_vulkan_driver(vendors) and _vulkan_loader_loads()
+        # Vulkan only sees cards whose render node this process can open (a container may mount
+        # one vendor's), and the node and the driver must belong to the same vendor.
+        reachable = _accessible_render_vendors({d.get("vendor") for d in gpus})
+        gpus = [d for d in gpus if d.get("vendor") in reachable]
+    masked = _masked_vendors()
+    # Unpinned sd.cpp takes the first Vulkan device, which may be a UHD iGPU beside the card.
+    if not gpus or any(d.get("vendor") in masked for d in gpus):
+        return False
+    if not all(_renders(d) for d in gpus):
+        return False
+    return _hardware_vulkan_driver({d.get("vendor") for d in gpus}) and _vulkan_loader_loads()
 
 
 # The ICD manifests that drive each vendor's cards (RADV as radeon_icd or radv_icd, AMDVLK /

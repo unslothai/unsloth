@@ -118,7 +118,33 @@ def test_an_unanswered_nvidia_probe_keeps_cpu(monkeypatch, inventory):
     ],
 )
 def test_a_mask_vulkan_does_not_read_keeps_cpu(monkeypatch, var, value):
+    if var == "ZE_AFFINITY_MASK":
+        monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_ARC_LINUX))
     monkeypatch.setenv(var, value)
+    assert r.image_install_accelerator("cpu") == "auto"
+
+
+@pytest.mark.parametrize(
+    "device,var",
+    [
+        (_ARC_LINUX, "CUDA_VISIBLE_DEVICES"),
+        (_ARC_LINUX, "HIP_VISIBLE_DEVICES"),
+        (_ARC_LINUX, "ROCR_VISIBLE_DEVICES"),
+        (_VEGA, "ZE_AFFINITY_MASK"),
+    ],
+)
+def test_a_mask_for_another_vendor_leaves_the_card_alone(monkeypatch, device, var):
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(device))
+    monkeypatch.setenv(var, "0")
+    assert r.image_install_accelerator("cpu") == "vulkan"
+
+
+def test_an_unmounted_uhd_node_does_not_block_the_amd_card(monkeypatch):
+    monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_UHD_LINUX, _VEGA))
+    monkeypatch.setattr(r, "_accessible_render_vendors", lambda vendors: {"amd"} & set(vendors))
+    assert r.image_install_accelerator("cpu") == "vulkan"
+    # Both nodes mounted: the UHD iGPU could be taken first.
+    monkeypatch.setattr(r, "_accessible_render_vendors", lambda vendors: set(vendors))
     assert r.image_install_accelerator("cpu") == "auto"
 
 

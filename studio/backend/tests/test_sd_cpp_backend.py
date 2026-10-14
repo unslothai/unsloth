@@ -2827,3 +2827,17 @@ def test_a_deferred_cuda_upgrade_keeps_the_selected_card(monkeypatch):
     assert started, "the server must start"
     assert pins and all(p == 1 for p in pins), pins
     assert b._state is not None and b._state.device == "cuda"
+
+
+def test_the_arbiter_preflight_reads_the_cli_behind_an_unowned_server(monkeypatch):
+    # SD_SERVER_PATH names a build the installer does not own; the router can drop it and run
+    # the managed sd-cli, so that CLI's record is the answer.
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/custom/sd-server")
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/managed/sd-cli")
+    records = {"/managed/sd-cli": "vulkan"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: records.get(binary))
+    assert bk.managed_sd_cpp_accelerator() == "vulkan"
+    records["/custom/sd-server"] = "cpu"
+    assert bk.managed_sd_cpp_accelerator() == "cpu"
+    records.clear()
+    assert bk.managed_sd_cpp_accelerator() is None
