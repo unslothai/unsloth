@@ -38,7 +38,8 @@ _AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\
 _QUERY_AUTHORIZATION = re.compile(
     rf"""(?aix)(?<![A-Za-z0-9])authorization(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])|\]?[ \t]*(?:=>|[:=]))(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)
     (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
-    (?P<more>(?:[ \t]*,[ \t]*(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t]+[\w.~+/-]+(?::[\w.~+/-]+)*=*)*)""".replace(
+    (?P<more>(?:[ \t]*,[ \t]*(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token)[ \t]+
+    (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,]|$)(?![ \t]*=)|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
         r"[ \t]", _HSPACE
     )
 )
@@ -70,6 +71,13 @@ _AUTH_SECRET_PARAM_SUFFIXES = (
     "secret",
     "signature",
     "token",
+)
+_REGISTERED_SCHEME_NAMES = frozenset(
+    re.sub(r"[^a-z0-9]", "", name) for name in _REGISTERED_AUTH_SCHEMES
+)
+_COALESCED_MEMBER = re.compile(
+    r"\s*,\s*(?=(?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token)\s)",
+    re.IGNORECASE,
 )
 _TOKEN_PUNCTUATION = "\"'`,;:()[]{}<>“”‘’"
 _QUERY_CREDENTIAL = re.compile(
@@ -215,7 +223,7 @@ def _authorization_values(match: re.Match) -> list[str]:
     values = [value for _, value in pairs] + [value for value in raw if "\\" in value]
     scheme = re.sub(r"[^a-z0-9]", "", match["scheme"].lower())
     if (
-        match["scheme"].lower() in _REGISTERED_AUTH_SCHEMES
+        scheme in _REGISTERED_SCHEME_NAMES
         or (
             scheme.endswith(_AUTH_SECRET_PARAM_SUFFIXES)
             and not scheme.endswith(_QUERY_PUBLIC_ASSIGNMENT_SUFFIXES)
@@ -231,7 +239,10 @@ def _authorization_values(match: re.Match) -> list[str]:
         # "dXNl...= server" also parses as a parameter; keep the padded token68 itself.
         padded = [piece for piece in found.split() if re.fullmatch(r"[\w.~+/-]+=+", piece)]
         # Coalesced duplicates: "Basic a==, Basic b=".
-        coalesced = re.findall(r",\s*\S+\s+(\S+)", match["more"] or "")
+        coalesced = []
+        for member in _COALESCED_MEMBER.split(match["more"] or "")[1:]:
+            parsed = _QUERY_AUTHORIZATION.match("Authorization: " + member)
+            coalesced += _authorization_values(parsed) if parsed else []
         return values + padded + coalesced
     return []
 
