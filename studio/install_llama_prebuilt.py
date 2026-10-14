@@ -120,8 +120,13 @@ WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 # Vulkan beats HIP on these APUs; an allowlist because CDNA ships no Vulkan ICD.
 VULKAN_PREFERRED_GFX_TARGETS = frozenset({"gfx1150", "gfx1151"})
 
-# APUs that lead HIP enumeration and shadow a discrete card. Mirrors install_python_stack.py /
-# setup.ps1 (TestShadowingIntegratedGfxParity); duplicated since this module is vendored standalone.
+# No ROCm torch wheel and no linux-rocm bundle covers these, so a HIP source build has no
+# rocBLAS kernels for them. Mirrors install_python_stack._LINUX_UNCOVERED_AMD_GFX.
+LINUX_NO_ROCM_GFX_TARGETS = frozenset({"gfx1010", "gfx1011", "gfx1012", "gfx803"})
+
+# APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
+# install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
+# duplicated rather than imported because this module is vendored standalone into the backend.
 SHADOWING_INTEGRATED_GFX = frozenset(
     {
         "gfx90c",  # Renoir / Cezanne
@@ -9832,6 +9837,26 @@ def _should_prefer_vulkan_for_amd_igpu(host: HostInfo) -> bool:
     return _amd_vulkan_icd_present()
 
 
+def _should_auto_vulkan_for_amd_linux(host: HostInfo) -> bool:
+    """Linux counterpart of _should_auto_vulkan_for_amd_windows: ROCm userspace is installed
+    but no AMD GPU here has ROCm kernels (RDNA 1, Polaris), so HIP would source-build into a
+    binary that cannot run. Same guards as the integrated-GPU preference, plus an explicit
+    HSA_OVERRIDE_GFX_VERSION, which means the user runs this card on ROCm on purpose."""
+    active = _active_rocm_gfx_target(host)
+    if not active:
+        return False
+    if not (host.is_linux and host.has_rocm and not host.has_physical_nvidia):
+        return False
+    if _hip_visible_device_mask_set() or _vulkan_visible_device_mask_set():
+        return False
+    if os.environ.get("HSA_OVERRIDE_GFX_VERSION"):
+        return False
+    targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
+    if not all(target in LINUX_NO_ROCM_GFX_TARGETS for target in targets):
+        return False
+    return _amd_vulkan_icd_present()
+
+
 def _has_no_vulkan_prebuilt(host: HostInfo) -> bool:
     """Platforms that ship no Vulkan prebuilt at all, so routing there is pointless.
 
@@ -9902,7 +9927,8 @@ def _route_to_vulkan_prebuilt(
     flag (--cpu-fallback or --force-cpu, folded into force_cpu) wins:
       * ``UNSLOTH_LLAMA_CPP_BACKEND=vulkan`` / ``UNSLOTH_FORCE_VULKAN`` /
         ``--llama-backend vulkan`` forces Vulkan over the detected CUDA/ROCm backend;
-      * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357);
+      * Windows AMD with no HIP-prebuilt gfx arch auto-falls back to Vulkan (#7357), and
+        so does Linux AMD whose every gfx has no ROCm kernels;
       * an AMD host whose every GPU is an integrated part Vulkan serves better prefers
         Vulkan over the HIP bundle it could otherwise run;
       * an auto-detected Intel GPU with NO physical NVIDIA/ROCm, the purpose of the
@@ -9915,7 +9941,11 @@ def _route_to_vulkan_prebuilt(
     """
     forced = force_vulkan_requested(llama_backend)
     explicit_backend = resolved_llama_backend(llama_backend)
-    amd_no_hip_host = _should_auto_vulkan_for_amd_windows(host, published_repo)
+    # Host-only test, so a forced Vulkan run can still tell this box would have
+    # routed itself to Vulkan anyway.
+    amd_no_hip_host = _should_auto_vulkan_for_amd_windows(
+        host, published_repo
+    ) or _should_auto_vulkan_for_amd_linux(host)
     amd_igpu_host = _should_prefer_vulkan_for_amd_igpu(host)
     detecting = explicit_backend in (None, "auto")
     auto_no_hip = detecting and amd_no_hip_host
@@ -9941,10 +9971,16 @@ def _route_to_vulkan_prebuilt(
         return host, published_repo, published_release_tag, None
     if auto_no_hip:
         active = _active_rocm_gfx_target(host) or "unknown"
-        log(
-            "Active AMD GPU arch is not supported by the Windows HIP prebuilt "
-            f"({active}); installing the Vulkan llama.cpp prebuilt instead"
-        )
+        if host.is_linux:
+            log(
+                f"AMD GPU arch {active} has no ROCm kernels; installing the Vulkan "
+                "llama.cpp prebuilt instead"
+            )
+        else:
+            log(
+                "Active AMD GPU arch is not supported by the Windows HIP prebuilt "
+                f"({active}); installing the Vulkan llama.cpp prebuilt instead"
+            )
         host = _vulkan_only_host(host)
         persist_backend = "auto"
     elif auto_igpu:
