@@ -606,9 +606,10 @@ class BlockGraph:
             self.stats["recaptures"] += 1
         self.cache[full] = entry
         self.stats["captures"] += 1
-        from .diffusion_cuda_graph import capture_device
+        from .diffusion_cuda_graph import capture_device, note_capture
 
         self._unsloth_capture_device = capture_device()
+        note_capture(self._unsloth_capture_device)
         _LIVE_BLOCKS.add(self)
         while len(self.cache) > self.max_graphs:
             _, evicted = self.cache.popitem(last = False)

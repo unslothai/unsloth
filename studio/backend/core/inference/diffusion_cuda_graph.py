@@ -321,6 +321,20 @@ def live_graph_count(device_index: Optional[int]) -> int:
     return total + live_block_graph_count(device_index)
 
 
+_CAPTURES: dict = {}
+
+
+def note_capture(device_index: Optional[int]) -> None:
+    """Count a recorded graph (whole-step or per-block) on ``device_index``; see ``capture_generation``."""
+    _CAPTURES[device_index] = _CAPTURES.get(device_index, 0) + 1
+
+
+def capture_generation(device_index: Optional[int]) -> int:
+    """Graphs ever recorded on ``device_index``. A full cache evicts before it captures, so a replacement leaves
+    ``live_graph_count`` unchanged; this count still moves."""
+    return _CAPTURES.get(device_index, 0)
+
+
 def failed_capture_count() -> int:
     """Captures that failed in this process (an absorbed OOM among them): a render that saw one grow peaked at the
     failed attempt, not at what it needed."""
@@ -1158,6 +1172,7 @@ class GraphedForward:
             entry = captured
             self.cache[key] = entry
             self._unsloth_capture_device = capture_device()
+            note_capture(self._unsloth_capture_device)
             if self.logger is not None:
                 self.logger.debug(
                     "diffusion.cuda_graph: captured %s graph %d/%d over %d input tensor(s)",

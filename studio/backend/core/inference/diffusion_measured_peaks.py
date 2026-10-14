@@ -96,6 +96,7 @@ def model_key(
 
 
 _runtime: list = []
+_KERNEL_DISTS = ("triton", "torchao", "flash-attn", "flash_attn_3", "xformers", "sageattention", "kernels")
 
 
 def runtime_stamp() -> str:
@@ -109,6 +110,12 @@ def runtime_stamp() -> str:
                 parts.append(f"{dist}={version(dist)}")
             except Exception:  # noqa: BLE001
                 parts.append(f"{dist}=?")
+        # attention and quantization kernels (their workspaces are part of a peak); an absent one is left out
+        for dist in _KERNEL_DISTS:
+            try:
+                parts.append(f"{dist}={version(dist)}")
+            except Exception:  # noqa: BLE001
+                pass
         try:
             import torch
             parts.append(f"cuda={torch.version.cuda or torch.version.hip or '?'}")

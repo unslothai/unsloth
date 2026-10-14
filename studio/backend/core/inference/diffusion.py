@@ -1975,14 +1975,20 @@ def _start_peak_probe(state: Any) -> Any:
     try:
         from .diffusion_measured_peaks import PeakProbe, enabled
 
-        graphs = cuda_graph.live_graph_count(_peak_device_index(state))
+        index = _peak_device_index(state)
+        graphs = cuda_graph.live_graph_count(index)
+        generation = cuda_graph.capture_generation(index)
         accounted = getattr(pipe, "_unsloth_peak_graphs", None)
         if accounted is None or graphs < accounted:
             # the load's own graphs (every render starts above them), or fewer after a reset freed some
             pipe._unsloth_peak_graphs = accounted = graphs
-        if graphs > accounted:
-            # an unrecorded render (cache-served, refused, failed) left graphs allocated: a later peak above that
-            # start omits memory a fresh process allocates on its first render
+            pipe._unsloth_peak_graph_gen = generation
+        if getattr(pipe, "_unsloth_peak_graph_gen", None) is None:
+            pipe._unsloth_peak_graph_gen = generation
+        if graphs > accounted or generation > pipe._unsloth_peak_graph_gen:
+            # an unrecorded render (cache-served, refused, failed) left graphs allocated, or replaced one in a full
+            # cache (same count): a later peak above that start omits memory a fresh process allocates on its first
+            # render
             return None
         if _live_peak_identity(state) != tuple(identity):
             # this render runs a configuration the key does not name (a speed tier or step cache that toggled, a VAE
@@ -2151,9 +2157,9 @@ def _record_peak_probe(
         family, quant, speed_mode = identity
         pipe = state.pipe
         # this sample covers the graphs it recorded
-        pipe._unsloth_peak_graphs = cuda_graph.live_graph_count(
-            getattr(probe.device, "index", None)
-        )
+        index = getattr(probe.device, "index", None)
+        pipe._unsloth_peak_graphs = cuda_graph.live_graph_count(index)
+        pipe._unsloth_peak_graph_gen = cuda_graph.capture_generation(index)
         peak += int(getattr(probe, "window_pad", 0) or 0)
         if record(
             family = family,

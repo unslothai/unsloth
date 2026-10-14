@@ -1530,3 +1530,53 @@ def test_video_peaks_are_persisted_on_the_streamed_baseline(store, monkeypatch):
     render(700)  # every group resident: the prefetch window a streamed load holds is added
     assert mp.work_peaks(vsr._store_key(key)) == {work: 3700}
     assert vsr.measured_extra_mib(key, work) == 3700
+
+
+# --------------------------------------------------------------------------------------------------- review round 12
+
+
+def test_a_graph_replaced_in_a_full_cache_stops_image_sampling(store, monkeypatch):
+    import core.inference.diffusion_cuda_graph as cg
+
+    diffusion, state = _probe_state(monkeypatch, "q|vae:full|attn:native")
+    monkeypatch.setattr(diffusion, "stream_window_pad_mib", lambda pipe: 0)
+    monkeypatch.setattr(diffusion, "_peak_device_index", lambda state: 0)
+    monkeypatch.setattr(cg, "live_graph_count", lambda index: 4)
+    gen = {0: 7, 1: 0}
+    monkeypatch.setattr(cg, "capture_generation", lambda index: gen.get(index, 0))
+    assert diffusion._start_peak_probe(state) is not None  # the load's graphs are the baseline
+    gen[1] = 3  # another card's captures never count
+    assert diffusion._start_peak_probe(state) is not None
+    gen[0] = 8  # a full cache evicted one graph and captured its replacement: same count, new graph
+    assert diffusion._start_peak_probe(state) is None
+
+
+def test_capture_generation_counts_per_device(monkeypatch):
+    import core.inference.diffusion_cuda_graph as cg
+
+    monkeypatch.setattr(cg, "_CAPTURES", {})
+    cg.note_capture(0)
+    cg.note_capture(0)
+    cg.note_capture(1)
+    assert cg.capture_generation(0) == 2 and cg.capture_generation(1) == 1 and cg.capture_generation(2) == 0
+
+
+def test_runtime_stamp_names_installed_kernel_packages(monkeypatch):
+    import importlib.metadata as md
+
+    real = md.version
+
+    def fake(dist):
+        if dist == "sageattention":
+            return "2.2.0"
+        if dist in mp._KERNEL_DISTS:
+            raise md.PackageNotFoundError(dist)
+        return real(dist)
+
+    monkeypatch.setattr(md, "version", fake)
+    monkeypatch.setattr(mp, "_runtime", [])
+    stamp = mp.runtime_stamp()
+    assert "sageattention=2.2.0" in stamp and "xformers" not in stamp
+    monkeypatch.setattr(mp, "_runtime", [])
+    monkeypatch.setattr(md, "version", lambda d: "2.3.0" if d == "sageattention" else fake(d))
+    assert mp.runtime_stamp() != stamp  # a kernel upgrade drops the stored peaks
