@@ -199,3 +199,65 @@ def test_reattach_is_a_no_op_without_a_saved_head(tmp_path):
     assert calls, "loader.py lost _reattach_saved_mtp_head"
     source = (SAVE_PY.parent / "models" / "loader.py").read_text(encoding = "utf-8")
     assert source.count("_reattach_saved_mtp_head(model, old_model_name)") == 2
+
+
+def _tiny_glm(tmp_path, torch):
+    pytest.importorskip("transformers.models.glm4_moe")
+    from transformers import Glm4MoeForCausalLM
+    from transformers.models.glm4_moe.configuration_glm4_moe import Glm4MoeConfig
+
+    torch.manual_seed(0)
+    config = Glm4MoeConfig(
+        vocab_size = 97,
+        hidden_size = 64,
+        intermediate_size = 128,
+        moe_intermediate_size = 32,
+        num_attention_heads = 4,
+        num_key_value_heads = 2,
+        head_dim = 16,
+        num_hidden_layers = 2,
+        n_routed_experts = 4,
+        num_experts_per_tok = 2,
+        n_shared_experts = 1,
+        first_k_dense_replace = 1,
+        num_nextn_predict_layers = 1,
+        partial_rotary_factor = 0.5,
+    )
+    return Glm4MoeForCausalLM(config).eval()
+
+
+def test_nextn_head_round_trips_through_save_pretrained(save_module, tmp_path):
+    """A GLM-style head (model.layers.{N}.*) is appended on a plain save and reloads identically."""
+    import torch
+    from safetensors.torch import load_file
+
+    pytest.importorskip("unsloth_zoo.speculative.nextn")
+    from unsloth.models.speculative import get_mtp_head
+
+    model = _tiny_glm(tmp_path, torch)
+    head = get_mtp_head(model, random_init = True)
+    assert type(head).__name__ == "NextNHead"
+    with torch.no_grad():
+        for p in head.parameters():
+            p.add_(0.01)
+    expected = {k: v.detach().clone() for k, v in head.mtp_state_dict().items()}
+    assert all(name.startswith("model.layers.2.") for name in expected)
+    assert sorted(save_module._mtp_head_tensor_names(model)) == sorted(expected)
+
+    out = tmp_path / "saved"
+    model.save_pretrained(str(out))
+    config = json.loads((out / "config.json").read_text())
+    assert config["num_nextn_predict_layers"] == 1 and "mtp_num_hidden_layers" not in config
+    written = {}
+    for shard in out.glob("*.safetensors"):
+        written.update(load_file(str(shard)))
+    for name, tensor in expected.items():
+        assert torch.equal(written[name], tensor.to(written[name].dtype)), name
+
+    fresh = _tiny_glm(tmp_path, torch)
+    reloaded = get_mtp_head(fresh, source = str(out))
+    assert all(torch.equal(reloaded.mtp_state_dict()[k], v) for k, v in expected.items())
+
+    # Saving again over a checkpoint that now carries the head rewrites it in place.
+    report = save_module._stitch_mtp_head(fresh, str(out))
+    assert report["mode"] == "replaced"

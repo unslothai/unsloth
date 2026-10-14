@@ -860,7 +860,9 @@ def _mtp_head_tensor_names(model):
     head = _attached_mtp_head(model)
     if head is None:
         return []
-    prefix = _mtp_head_info(head).get("prefix") or "mtp."
+    # Qwen3.5 heads use relative names under `mtp.`; NextN heads (prefix "") already use full names.
+    prefix = _mtp_head_info(head).get("prefix")
+    prefix = "mtp." if prefix is None else prefix
     return [prefix + name for name in _mtp_head_state_dict(head)]
 
 
@@ -889,10 +891,13 @@ def _stitch_mtp_head(model, save_directory):
     from unsloth_zoo.speculative.stitch import write_mtp_tensors
 
     info = _mtp_head_info(head)
+    # NextN families (GLM, DeepSeek, Qwen3-Next, ...) say where their tensors live themselves.
+    stitch_kwargs = getattr(head, "stitch_kwargs", None)
     report = write_mtp_tensors(
         save_directory,
         _mtp_head_state_dict(head),
         append_prefix = info.get("prefix") or "mtp.",
+        **(stitch_kwargs() if callable(stitch_kwargs) else {}),
     )
     print(
         f"Unsloth: Wrote the trained MTP head ({len(report['tensors_written'])} tensors, "

@@ -82,8 +82,16 @@ def get_mtp_head(
 
     parts = speculative.resolve_text_parts(model)
     source = source or _checkpoint_source(model)
+    family = speculative.mtp_family_name(parts["config"])
+    if family is None:
+        raise NotImplementedError(
+            f"Unsloth: `{getattr(parts['config'], 'model_type', None)}` has no native MTP head Unsloth can train."
+        )
     if random_init:
-        state_dict, info = None, {"prefix": "mtp.", "num_layers": 1, "source": source}
+        state_dict, info = (
+            None,
+            {"prefix": "mtp." if family == "qwen3_5" else "", "num_layers": 1, "source": source},
+        )
     elif isinstance(source, str) and os.path.isfile(os.path.join(source, "mtp_head.safetensors")):
         # A head trained earlier and saved beside a LoRA adapter.
         from unsloth_zoo.speculative.stitch import load_saved_mtp_head
@@ -93,17 +101,32 @@ def get_mtp_head(
             raise ValueError(
                 "Unsloth: pass `source=` (the repo id or folder that holds the `mtp.*` tensors)."
             )
-        state_dict, info = load_mtp_state_dict(source, revision = revision)
+        state_dict, info = load_mtp_state_dict(source, revision = revision, config = parts["config"])
         # `files` are local cache paths; never write them into a folder that may be pushed.
         info = {k: v for k, v in info.items() if k != "files"}
         info.update(source = source, revision = revision)
     device = parts["embed_tokens"].weight.device
+    extra = {}
+    if family != "qwen3_5":
+        # Head-serialized embedding / lm_head copies equal to the target's are not held twice.
+        extra = dict(
+            target_embed = parts["embed_tokens"].weight,
+            target_lm_head = parts["lm_head"].weight,
+            ckpt_prefix = info.get("ckpt_prefix"),
+        )
     head = build_mtp_head(
         parts["config"],
         state_dict = state_dict,
         dtype = dtype or torch.float32,
         device = device,
+        **extra,
     )
+    status = getattr(getattr(head, "family", None), "llama_cpp", "drafts")
+    if status != "drafts":
+        print(
+            f"Unsloth: llama.cpp support for `{family}` MTP drafting is `{status}`; the trained head "
+            "is still written into merged / GGUF exports."
+        )
     head._unsloth_mtp_info = info
     # Not a submodule: keeps the head out of model.state_dict(), PEFT and the target's optimizer.
     object.__setattr__(model, "_unsloth_mtp_head", head)
