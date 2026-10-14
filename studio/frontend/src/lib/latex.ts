@@ -98,7 +98,8 @@ const SHELL_ARGUMENT_RE =
 const MARKDOWN_CONTAINER_PREFIX_RE =
   /^(?:(?: {0,3}>[ \t]?)|(?: {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?))+/;
 const SHELL_PROMPT_PREFIX_RE = /^\$[ \t]+/;
-const SPACED_MATH_CLOSER_RE = /\s\$(?![\w${(])|[^\\$\s]\$(?=[\s.,;:)\]*]|$)/;
+const SPACED_MATH_CLOSER_RE = /[ \t]\$(?![\w${(])|[^\\$\s]\$(?=[\s.,;:)\]*]|$)/;
+const BLANK_LINE_RE = /\r?\n[ \t]*\r?\n|\r[ \t]*\r/;
 const MARKDOWN_TABLE_PREFIX_RE = /^[ \t]*\|/;
 const SHELL_ASSIGNMENT_PREFIX_RE = /(?:^|[;&|]\s*)[A-Za-z_]\w*=$/;
 const SHELL_ASSIGNMENT_WORD_RE = /^[A-Za-z_]\w*=\S*$/;
@@ -201,13 +202,11 @@ function isShellPromptMarker(text: string, at: number): boolean {
   ) {
     return false;
   }
-  // spaced inline math (`$ x = 3 $`) closes on the same line; a prompt does not.
-  const nextLf = text.indexOf("\n", at);
-  const nextCr = text.indexOf("\r", at);
-  const lineEnd =
-    nextLf === -1 ? nextCr : nextCr === -1 ? nextLf : Math.min(nextLf, nextCr);
-  const rest = text.slice(at + 1, lineEnd === -1 ? text.length : lineEnd);
-  return !SPACED_MATH_CLOSER_RE.test(rest);
+  // spaced inline math (`$ x = 3 $`) closes within its paragraph; a prompt does not.
+  // A `$` opening a later line is the next prompt, so the closer pattern skips it.
+  const rest = text.slice(at + 1, at + 1 + MAX_SHELL_EXPANSION_SPAN);
+  const blank = BLANK_LINE_RE.exec(rest);
+  return !SPACED_MATH_CLOSER_RE.test(blank ? rest.slice(0, blank.index) : rest);
 }
 
 function hasShellCommandPrefix(

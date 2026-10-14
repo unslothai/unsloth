@@ -348,10 +348,11 @@ test("spaced inline math at a line start is not a shell prompt", () => {
     ["$ x = 3 $?", ["x = 3"]],
     ["$ x = 3 $[source](https://example.com)", ["x = 3"]],
     ["$ x = 3 $*", ["x = 3"]],
+    ["$ x +\ny $", ["x +\ny"]],
   ] as Array<[string, string[]]>) {
     assert.deepEqual(renderedMath(render(source)), expected, source);
   }
-  const prompt = render("$ ls -la\n$ cd /tmp");
+  const prompt = render("$ ls -la\n$ cd /tmp\n\nDone $5 later.");
   assert.deepEqual(renderedMath(prompt), []);
   assert.ok(visibleText(prompt).includes("$ ls -la"));
 });
