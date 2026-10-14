@@ -60,3 +60,34 @@ test("Always allow stops asking about that action on that site, in that chat onl
   await third;
   assert.ok(asks.includes("click"), `another chat inherited Always allow: ${asks.join(", ")}`);
 });
+
+test("Always allow on a click covers only the button it named", async () => {
+  globals.__authFetch = async () => new Response(null, { status: 200 });
+  let info: Record<string, unknown> = buy;
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
+    if (op.op === "describe") return { installed: true, result: { ok: true, info, hit: "r5", sig: "s" } };
+    return { installed: true, result: { ok: true, text: "page", links: [] } };
+  };
+  const chat = { runKey: "r", scope: "chat-c", userText: "open https://shop.example.com/" };
+  await runBrowserAction({ id: "d0", sessionId: "s", op: "navigate", url: "https://shop.example.com/", direction: "down", policy }, chat);
+  const askedFor = async (id: string, next: Record<string, unknown>, always: boolean) => {
+    info = next;
+    let finished = false;
+    const done = runBrowserAction({ id, sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat).then(() => {
+      finished = true;
+    });
+    let asked = useBrowserAgentStore.getState().question;
+    while (!finished && !asked) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      asked = useBrowserAgentStore.getState().question;
+    }
+    if (asked) answerQuestion(asked.id, true, always);
+    await done;
+    return asked?.ask ?? null;
+  };
+
+  assert.equal(await askedFor("d1", buy, true), "click");
+  assert.equal(await askedFor("d2", { ...buy, name: "Delete account" }, false), "click");
+  assert.equal(await askedFor("d3", buy, false), null);
+});
