@@ -24,6 +24,15 @@ from packaging.version import InvalidVersion, Version
 
 PACKAGE_NAME = "unsloth"
 PYPI_JSON_URL = "https://pypi.org/pypi/unsloth/json"
+DEFAULT_INDEX_URL = "https://pypi.org/simple"
+# The index environment variables of the two installers, in the order this
+# check consults them. A primary index (uv's default-index / index-url, or
+# pip's index-url) REPLACES PyPI; an extra index is consulted in addition.
+# This module installs nothing itself, so both families are read: whichever
+# tool the operator configured decides where version resolution looks.
+_UV_PRIMARY_INDEX_ENV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL")
+_PIP_PRIMARY_INDEX_ENV_VARS = ("PIP_INDEX_URL",)
+_EXTRA_INDEX_ENV_VARS = ("UV_EXTRA_INDEX_URL", "UV_INDEX", "PIP_EXTRA_INDEX_URL")
 PYPI_TIMEOUT_SECONDS = 3
 PYPI_RESPONSE_MAX_BYTES = 5 * 1024 * 1024
 PYPI_SUCCESS_TTL_SECONDS = 12 * 60 * 60
@@ -246,49 +255,121 @@ def get_latest_pypi_version() -> LatestVersionResult:
     return result
 
 
+def configured_package_index_urls() -> list[str]:
+    """The package index URLs version resolution consults, in order.
+
+    Honors the standard installer environment variables (issue #13737):
+    ``UV_DEFAULT_INDEX`` / ``UV_INDEX_URL`` and ``PIP_INDEX_URL`` name a
+    primary index that replaces PyPI, and ``UV_EXTRA_INDEX_URL`` /
+    ``UV_INDEX`` / ``PIP_EXTRA_INDEX_URL`` name extra indexes consulted in
+    addition. PyPI is the fallback only when none of them are set, so a
+    private mirror or corporate index is never bypassed for pypi.org.
+    """
+    urls: list[str] = []
+    for name in _UV_PRIMARY_INDEX_ENV_VARS + _PIP_PRIMARY_INDEX_ENV_VARS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            urls.append(value)
+            break
+    if not urls:
+        # No primary configured: PyPI is the primary, extras still apply.
+        urls.append(DEFAULT_INDEX_URL)
+    for name in _EXTRA_INDEX_ENV_VARS:
+        for value in os.environ.get(name, "").split():
+            if value.strip() and value.strip() not in urls:
+                urls.append(value.strip())
+    return urls
+
+
+def package_index_url() -> str:
+    """The primary package index URL: the configured one, else PyPI."""
+    return configured_package_index_urls()[0]
+
+
+def _index_metadata_url(index_url: str) -> str:
+    """The version-metadata URL for ``PACKAGE_NAME`` on one index.
+
+    Public PyPI keeps its classic JSON API (``/pypi/<name>/json``); any other
+    index is queried through its PEP 503/691 project page
+    (``<index>/<name>/``), which is the metadata endpoint a configured
+    mirror actually serves.
+    """
+    from urllib.parse import urlsplit
+
+    if urlsplit(index_url).hostname == "pypi.org":
+        return PYPI_JSON_URL
+    return index_url.rstrip("/") + "/" + PACKAGE_NAME + "/"
+
+
+def _latest_version_from_payload(payload: Any) -> str | None:
+    """Latest version from a classic PyPI JSON or PEP 691 payload."""
+    if not isinstance(payload, dict):
+        return None
+    info = payload.get("info")
+    if isinstance(info, dict):
+        version = info.get("version")
+        return version.strip() if isinstance(version, str) and version.strip() else None
+    versions = payload.get("versions")
+    if isinstance(versions, list):
+        parsed = []
+        for value in versions:
+            if not isinstance(value, str):
+                continue
+            try:
+                parsed.append(Version(value))
+            except InvalidVersion:
+                continue
+        stable = [v for v in parsed if not v.is_prerelease]
+        candidates = stable or parsed
+        if candidates:
+            return str(max(candidates))
+    return None
+
+
 def _fetch_latest_pypi_version() -> LatestVersionResult:
     checked_at = _utc_now_iso()
-    request = urllib.request.Request(
-        PYPI_JSON_URL,
-        headers = {"User-Agent": "unsloth-studio-update-check"},
+    last_reason = "offline"
+    last_error = "Could not reach PyPI for update metadata."
+    for index_url in configured_package_index_urls():
+        request = urllib.request.Request(
+            _index_metadata_url(index_url),
+            headers = {
+                "User-Agent": "unsloth-studio-update-check",
+                "Accept": "application/vnd.pypi.simple.v1+json, application/json",
+            },
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout = PYPI_TIMEOUT_SECONDS) as response:
+                body = response.read(PYPI_RESPONSE_MAX_BYTES + 1)
+            if len(body) > PYPI_RESPONSE_MAX_BYTES:
+                last_reason = "malformed_response"
+                last_error = "PyPI returned oversized update metadata."
+                continue
+            payload = json.loads(body.decode("utf-8"))
+        except json.JSONDecodeError:
+            last_reason = "malformed_response"
+            last_error = "PyPI returned malformed update metadata."
+            continue
+        except OSError:
+            last_reason = "offline"
+            last_error = "Could not reach PyPI for update metadata."
+            continue
+
+        latest = _latest_version_from_payload(payload)
+        if latest is None:
+            last_reason = "malformed_response"
+            last_error = "PyPI update metadata did not include a version."
+            continue
+
+        return LatestVersionResult(latest_version = latest, checked_at = checked_at)
+
+    return LatestVersionResult(
+        latest_version = None,
+        checked_at = checked_at,
+        reason = last_reason,
+        error = last_error,
     )
-
-    try:
-        with urllib.request.urlopen(request, timeout = PYPI_TIMEOUT_SECONDS) as response:
-            body = response.read(PYPI_RESPONSE_MAX_BYTES + 1)
-        if len(body) > PYPI_RESPONSE_MAX_BYTES:
-            return LatestVersionResult(
-                latest_version = None,
-                checked_at = checked_at,
-                reason = "malformed_response",
-                error = "PyPI returned oversized update metadata.",
-            )
-        payload = json.loads(body.decode("utf-8"))
-    except json.JSONDecodeError:
-        return LatestVersionResult(
-            latest_version = None,
-            checked_at = checked_at,
-            reason = "malformed_response",
-            error = "PyPI returned malformed update metadata.",
-        )
-    except OSError:
-        return LatestVersionResult(
-            latest_version = None,
-            checked_at = checked_at,
-            reason = "offline",
-            error = "Could not reach PyPI for update metadata.",
-        )
-
-    latest = payload.get("info", {}).get("version") if isinstance(payload, dict) else None
-    if not isinstance(latest, str) or not latest.strip():
-        return LatestVersionResult(
-            latest_version = None,
-            checked_at = checked_at,
-            reason = "malformed_response",
-            error = "PyPI update metadata did not include a version.",
-        )
-
-    return LatestVersionResult(latest_version = latest.strip(), checked_at = checked_at)
 
 
 def _status_response(
