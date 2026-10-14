@@ -25701,13 +25701,20 @@ async def stt_unload(
     if engine is None:
         unload_requests: list[tuple[Optional[list[str]], Optional[str]]] = [(None, model)]
     elif _resolve_stt_engine(engine) == "gguf":
-        # A retired "gguf" pick is served by whichever engine the host had when it
-        # loaded, and that can change mid-session (audio.cpp installed later), so
-        # free every engine it may have landed on, each scoped to the model the
-        # pick was mapped to there.
+        from core.inference import stt_sidecar
+
+        # With PyTorch a retired "gguf" pick always lands on Transformers, so
+        # nothing else is freed: a default ASR loaded directly stays. Without it
+        # the pick lands on audio.cpp or llama.cpp by what was installed at load
+        # time, which can change mid-session, so free each, scoped to the model
+        # the pick was mapped to there.
+        serving_engines = (
+            ("transformers",)
+            if stt_sidecar.is_available()
+            else ("transformers", "audiocpp", "mtmd")
+        )
         unload_requests = [
-            ([serving], _serving_stt_model(engine, serving, model))
-            for serving in ("transformers", "audiocpp", "mtmd")
+            ([serving], _serving_stt_model(engine, serving, model)) for serving in serving_engines
         ]
     else:
         unload_requests = [([_resolve_stt_engine(engine)], model)]

@@ -158,17 +158,19 @@ def test_an_alias_cancels_the_transformers_download(host):
     assert host.cancels == [("stt_sidecar", "transformers", "small")]
 
 
-# Each engine a "gguf" pick can be served by, scoped to the model it was mapped to there.
-ALIAS_UNLOADS = [
+# Without PyTorch, each engine a "gguf" pick can be served by, scoped to the model it was
+# mapped to there.
+ALIAS_UNLOADS_WITHOUT_PYTORCH = [
     (["transformers"], "small"),
     (["audiocpp"], DEFAULT_AUDIO_CPP_STT_MODEL),
     (["mtmd"], DEFAULT_MTMD_STT_MODEL),
 ]
 
 
-def test_an_alias_unloads_every_engine_it_may_be_served_by(host):
+def test_an_alias_unloads_the_transformers_model(host):
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
-    assert host.unloads == ALIAS_UNLOADS
+    # A default ASR loaded directly on audio.cpp or llama.cpp is not the alias's to free.
+    assert host.unloads == [(["transformers"], "small")]
 
 
 def test_an_alias_unload_still_frees_llama_cpp_after_audio_cpp_is_installed(host):
@@ -236,7 +238,7 @@ def test_without_pytorch_an_alias_runs_audio_cpp_default_asr(host, monkeypatch):
     ]
     assert host.transcribed == [(DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp")]
     assert host.downloads == [("stt_audiocpp_sidecar", "audiocpp", DEFAULT_AUDIO_CPP_STT_MODEL)]
-    assert host.unloads == ALIAS_UNLOADS
+    assert host.unloads == ALIAS_UNLOADS_WITHOUT_PYTORCH
     assert seen == [(DEFAULT_AUDIO_CPP_STT_MODEL, "audiocpp")]
     # Managed accounts are checked against the repo the default ASR lives in.
     assert ri._stt_repo_reference("small", "gguf") == "audio-cpp/audio.cpp-gguf"

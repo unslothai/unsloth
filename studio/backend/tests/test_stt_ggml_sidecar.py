@@ -1197,11 +1197,13 @@ def test_process_alive_snapshots_process_against_concurrent_unload():
 
 
 # 3. Unload resolves through the serving engine + attempts every backend ---------
-def test_gguf_unload_frees_every_engine_it_may_be_served_by(monkeypatch):
+def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkeypatch):
     import core.inference.stt_ggml_sidecar as ggml_module
+    import core.inference.stt_sidecar as stt_module
     import routes.inference as ri
 
     monkeypatch.setattr(ggml_module, "is_available", lambda: False)  # no whisper-server
+    monkeypatch.setattr(stt_module, "is_available", lambda: True)
 
     calls: list = []
 
@@ -1222,8 +1224,8 @@ def test_gguf_unload_frees_every_engine_it_may_be_served_by(monkeypatch):
 
     resp = asyncio.run(ri.stt_unload(engine = "gguf", current_subject = "tester"))
     assert resp.status_code == 200
-    # whisper.cpp is retired: gguf frees every engine it may have been served by.
-    assert calls == ["transformers", "audiocpp", "mtmd"]
+    # gguf is served by the Transformers fallback here, so that is what unloads.
+    assert calls == ["transformers"]
 
 
 def test_unload_all_attempts_every_backend_even_when_one_fails(monkeypatch):
