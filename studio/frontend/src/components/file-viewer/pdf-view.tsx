@@ -242,11 +242,14 @@ export default function PdfView({
   scale,
   firstPageOnly = false,
   pageTarget,
+  onPageTargetDone,
 }: {
   file: Blob;
   scale: number;
   firstPageOnly?: boolean;
   pageTarget?: PageTarget;
+  /** The reader moved on from the target: its owner can drop it so a remount doesn't replay it. */
+  onPageTargetDone?: () => void;
 }) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
@@ -269,11 +272,13 @@ export default function PdfView({
   const [asked, setAsked] = useState(pageTarget);
   if (pageTarget !== asked) {
     setAsked(pageTarget);
-    setPending(pageTarget);
+    if (pageTarget) setPending(pageTarget);
   }
   const release = pending
     ? () => {
-        if (applied.current === pending) setPending(undefined);
+        if (applied.current !== pending) return;
+        setPending(undefined);
+        onPageTargetDone?.();
       }
     : undefined;
 

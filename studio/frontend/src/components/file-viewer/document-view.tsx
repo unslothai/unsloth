@@ -16,6 +16,7 @@ export function DocumentView({
   scale = 1,
   thumbnail = false,
   pageTarget,
+  onPageTargetDone,
 }: {
   file: Blob;
   kind: DocumentKind;
@@ -26,11 +27,18 @@ export function DocumentView({
   thumbnail?: boolean;
   /** PDF page to scroll to; a new object asks again. */
   pageTarget?: PageTarget;
+  onPageTargetDone?: () => void;
 }) {
   return (
     <Suspense fallback={<Spinner className="m-auto size-6" />}>
       {kind === "pdf" ? (
-        <PdfView file={file} scale={scale} firstPageOnly={thumbnail} pageTarget={pageTarget} />
+        <PdfView
+          file={file}
+          scale={scale}
+          firstPageOnly={thumbnail}
+          pageTarget={pageTarget}
+          onPageTargetDone={onPageTargetDone}
+        />
       ) : (
         <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} thumbnail={thumbnail} />
       )}

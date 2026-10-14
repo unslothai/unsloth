@@ -202,6 +202,10 @@ export function FileView({
   const src = useObjectUrl(blob, media !== null, svg);
   const [failed, setFailed] = useState(false);
   const pageTarget = useBrowserStore((state) => (tabId ? state.fileViews[tabId]?.pageTarget : undefined));
+  const dropPageTarget = useCallback(
+    () => tabId && useBrowserStore.getState().setFileView(tabId, { pageTarget: null }),
+    [tabId],
+  );
 
   if (docKind) {
     if (blob.size > MAX_DOCUMENT_PREVIEW_BYTES) return <Unavailable message={t("library.preview.cannotPreview")} />;
@@ -214,6 +218,7 @@ export function FileView({
           contentType={contentType}
           scale={scale}
           pageTarget={pageTarget ?? undefined}
+          onPageTargetDone={dropPageTarget}
         />
       </div>
     );

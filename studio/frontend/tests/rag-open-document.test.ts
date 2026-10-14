@@ -76,6 +76,23 @@ test("two quick clicks on one document open the later one, whichever download fi
   assert.deepEqual(opened, [{ name: "handbook.pdf", size: LIMIT, page: 5 }]);
 });
 
+test("a superseded click that fails says nothing once a later click opened the file", async () => {
+  toasts.length = 0;
+  opened.length = 0;
+  const outcomes = [{ delay: 40, ok: false }, { delay: 5, ok: true }];
+  globalThis.fetch = (async () => {
+    const { delay, ok } = outcomes.shift() ?? { delay: 0, ok: false };
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (!ok) throw new Error("network");
+    return { ok: true, headers: new Headers(), blob: async () => new Blob([new Uint8Array(LIMIT)]) };
+  }) as unknown as typeof fetch;
+  openRagDocumentInBrowser("doc-1", "handbook.pdf", 3);
+  openRagDocumentInBrowser("doc-1", "handbook.pdf", 5);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  assert.deepEqual(opened, [{ name: "handbook.pdf", size: LIMIT, page: 5 }]);
+  assert.deepEqual(toasts, []);
+});
+
 test("past the limit the body is never buffered and the file is offered outside Studio", async () => {
   toasts.length = 0;
   opened.length = 0;

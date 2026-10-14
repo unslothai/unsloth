@@ -101,5 +101,9 @@ export function openRagDocumentInBrowser(
         page,
       });
     })
-    .catch(() => toast.error(`Could not open ${filename}`));
+    .catch(() => {
+      if (latestOpen.get(documentId) === ticket) {
+        toast.error(`Could not open ${filename}`);
+      }
+    });
 }
