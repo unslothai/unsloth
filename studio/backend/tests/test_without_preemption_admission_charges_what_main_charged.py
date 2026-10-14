@@ -546,11 +546,58 @@ def test_the_verifiers_case_is_mains_again(charged):
     )
 
 
+_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Search the web for a query",
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+        },
+    }
+]
+_TOOL_MESSAGES = [{"role": "user", "content": "hello there " * 50}]
+
+# Main's reservation for the same request with a client catalogue, an injected one, an injected
+# one in a tool loop, and a top-level system prompt, at four slots.
+MAIN_TOOL_RESERVATION = {
+    2048: (512, 512, 512, 512),
+    4096: (1024, 1024, 1024, 1024),
+    16384: (1241, 1241, 4096, 1279),
+    262144: (1241, 1241, 65536, 1279),
+}
+
+
+def _tool_reservations(budget):
+    def cost(payload, **kwargs):
+        return inf._openai_llama_admission_tokens(payload, budget = budget, capacity = 4, **kwargs)
+
+    return (
+        cost(_Payload(messages = _TOOL_MESSAGES, tools = _TOOLS)),
+        cost(_Payload(messages = _TOOL_MESSAGES), injected_tools = _TOOLS),
+        cost(_Payload(messages = _TOOL_MESSAGES), injected_tools = _TOOLS, tool_loop = True),
+        cost(_Payload(messages = _TOOL_MESSAGES, system = "be brief " * 40)),
+    )
+
+
+@pytest.mark.parametrize("budget", sorted(MAIN_TOOL_RESERVATION))
+def test_a_tool_catalogue_is_charged_what_main_charged(budget):
+    assert _tool_reservations(budget) == MAIN_TOOL_RESERVATION[budget]
+
+
 class TestWithPreemptionOnTheNewPricingApplies:
     @pytest.fixture(autouse = True)
     def _opted_in(self, monkeypatch):
         monkeypatch.setenv(preemption.PREEMPT_ENV, "1")
         assert preemption.preemption_enabled() is True
+
+    def test_a_tool_catalogue_carries_its_template_preamble(self):
+        preamble = inf._OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS
+        assert inf._openai_llama_admission_injected_tool_tokens(_TOOLS) == preamble + (
+            inf.estimate_messages_tokens_dense(
+                [{"role": "system", "content": inf.json.dumps(_TOOLS, default = str)}]
+            )
+        )
 
     def test_an_unpausable_request_is_charged_its_whole_share(self, charged):
         assert (

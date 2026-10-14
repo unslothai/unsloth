@@ -2501,7 +2501,8 @@ _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS = 256
 
 
 def _openai_llama_admission_injected_tool_tokens(injected_tools, *, markup = None) -> int:
-    """Price a client or server catalogue, including its one-off template preamble."""
+    """Price a client or server catalogue, plus its one-off template preamble under the share
+    pricing (preemption on); off, the catalogue alone, as before preemption existed."""
     from core.inference.chat_template_helpers import neutralize_tool_descriptions
 
     injected_tools = neutralize_tool_descriptions(injected_tools, None, markup)
@@ -2513,9 +2514,10 @@ def _openai_llama_admission_injected_tool_tokens(injected_tools, *, markup = Non
         return 0
     if not text:
         return 0
-    return _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS + estimate_messages_tokens_dense(
-        [{"role": "system", "content": text}]
+    preamble = (
+        _OPENAI_LLAMA_ADMISSION_TOOL_PREAMBLE_TOKENS if _openai_llama_admission_fair_share() else 0
     )
+    return preamble + estimate_messages_tokens_dense([{"role": "system", "content": text}])
 
 
 def _openai_llama_admission_prompt_tokens(
