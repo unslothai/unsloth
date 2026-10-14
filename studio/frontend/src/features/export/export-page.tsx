@@ -891,6 +891,8 @@ export function ExportPage() {
     const checkpointPath = selectedCp?.path ?? null;
 
     const pushToHub = destination === "hub";
+    if (pushToHub && !isDecision && (!hfUsername.trim() || !modelName.trim()))
+      return;
     const preparedToken = await prepareHfTokenForUse(hfToken, {
       allowAnonymous: !pushToHub,
     });
@@ -898,8 +900,8 @@ export function ExportPage() {
     const actionHfToken = preparedToken.token ?? "";
 
     const repoId =
-      pushToHub && hfUsername && modelName
-        ? `${hfUsername}/${modelName}`
+      pushToHub && hfUsername.trim() && modelName.trim()
+        ? `${hfUsername.trim()}/${modelName.trim()}`
         : undefined;
     const token = pushToHub && actionHfToken ? actionHfToken : undefined;
     // The GGUF method with the LoRA target reuses the LoRA-adapter export path.

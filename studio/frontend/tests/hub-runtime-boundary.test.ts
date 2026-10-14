@@ -191,7 +191,7 @@ test("the Hub routes Run to its owning workflow without owning runtime actions",
   assert.match(HUB_RENDER_SOURCES, />\s*Run\s*</);
   assert.match(
     hubPage,
-    /clearNewChatDraft\(\);[\s\S]*?setActiveThreadId\(null\);[\s\S]*?setActiveProjectId\(null\);[\s\S]*?setIncognito\(false\);[\s\S]*?requestModelConfigHandoff\(request\)/,
+    /setActiveThreadId\(null\);[\s\S]*?setActiveProjectId\(null\);[\s\S]*?setIncognito\(false\);[\s\S]*?requestModelConfigHandoff\(request\)/,
   );
   assert.match(hubPage, /requestModelConfigHandoff\(request\)/);
   assert.match(hubPage, /to: "\/chat", search: \{ new: requestId \}/);

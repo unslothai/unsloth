@@ -45,6 +45,7 @@ from .lora_init import adapter_used_fast_pissa, fast_lora_init, record_fast_piss
 from ..tokenizers_v1 import tokenizers_v1_on_return
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
+    deepspeed_zero3_device_map,
     OFFLOAD_EMBEDDING_AUTO,
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
@@ -1114,7 +1115,7 @@ class FastLanguageModel(FastLlamaModel):
                 dtype = bnb_compute_dtype
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
-        device_map = requested_device_map(device_map)
+        device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:
@@ -2096,7 +2097,7 @@ class FastModel(FastBaseModel):
             qat_scheme = "int8-int4"
 
         # Distributed-safe placement: under torchrun / accelerate launch each rank must load on its own device. Quantized weights make it mandatory, since Accelerate raises device relocation errors on them, but a 16-bit load needs it just as much: an unchosen placement ends up dispatching to cuda:0, so all the ranks land on card 0 and contend for it while the rest of the cards stay empty (#3459). A device the caller named is left alone.
-        device_map = requested_device_map(device_map)
+        device_map = deepspeed_zero3_device_map(requested_device_map(device_map))
         if is_automatic_device_map(device_map):
             distributed_device_map, is_dist = prepare_device_map()
             if is_dist:

@@ -852,7 +852,8 @@ def fast_rms_layernorm_inference_gemma(
     X,
     out_weight = None,
 ):
-    XX = X.to(torch.float32)
+    # copy: for a float32 X, .to() returns X itself, and the decode loops keep X as the residual.
+    XX = X.to(torch.float32, copy = True)
     variance = XX.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
@@ -1080,6 +1081,27 @@ def _is_left_padded(attention_mask):
     return not bool(attention_mask[:, 0].all())
 
 
+class Gemma2AttentionMaskConverter(AttentionMaskConverter):
+    """Gemma2's window counts the current key as well as the preceding keys."""
+
+    @staticmethod
+    def _make_causal_mask(
+        input_ids_shape,
+        dtype,
+        device,
+        past_key_values_length = 0,
+        sliding_window = None,
+    ):
+        # The legacy converter counts preceding keys; its static helper also accepts zero for a one-key window.
+        return AttentionMaskConverter._make_causal_mask(
+            input_ids_shape,
+            dtype,
+            device,
+            past_key_values_length = past_key_values_length,
+            sliding_window = sliding_window - 1 if sliding_window is not None else None,
+        )
+
+
 # Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -1296,7 +1318,7 @@ def LlamaModel_fast_forward(
             if attention_mask.dim() == 2:
                 # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
                 key_value_length = past_key_values_length + seq_length
-                dynamic_SWA_mask = AttentionMaskConverter(
+                dynamic_SWA_mask = Gemma2AttentionMaskConverter(
                     is_causal = True, sliding_window = self.config.sliding_window
                 ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
                 dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
@@ -1317,7 +1339,7 @@ def LlamaModel_fast_forward(
                 n = self.max_seq_length
                 # masked_fill makes things slower.
                 self.SWA_mask = (
-                    AttentionMaskConverter(
+                    Gemma2AttentionMaskConverter(
                         is_causal = True,
                         sliding_window = self.config.sliding_window,
                     )
@@ -3846,28 +3868,9 @@ class FastLlamaModel:
             model._old_generate = model.generate
             unsloth_fast_generate.__doc__ = model._old_generate.__doc__
             model.generate = types.MethodType(unsloth_fast_generate, model)
-        # Zero weight[padding_idx] only for embeddings NOT tied to lm_head: when tied, zeroing the row
-        # forces pad logit = 0, which beats the negative logits of real tokens (Gemma) and makes the
-        # decoder emit <pad>. Skipped when eos_token == pad_token.
-        eos_token_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
-        pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
-        if tokenizer is not None and eos_token_id != pad_token_id:
-            lm_head = getattr(model, "lm_head", None)
-            lm_head_weight = getattr(lm_head, "weight", None) if lm_head is not None else None
-            with torch.no_grad():
-                for name, module in model.named_modules():
-                    if type(module) is torch.nn.Embedding:
-                        if (
-                            getattr(module, "weight", None) is not None
-                            and getattr(module, "padding_idx", None) is not None
-                        ):
-                            if module.padding_idx < module.weight.shape[0]:
-                                if (
-                                    lm_head_weight is not None
-                                    and module.weight.data_ptr() == lm_head_weight.data_ptr()
-                                ):
-                                    continue
-                                module.weight[module.padding_idx] = 0
+        from ..tokenizer_utils import zero_pad_embedding_rows
+
+        zero_pad_embedding_rows(model, tokenizer)
 
         # LAST: post_patch replaces the embedding modules and the QKV/MLP patching below replaces the
         # forwards a hook wraps, so an earlier attach is lost. Skipped under vLLM, which owns the

@@ -53,7 +53,7 @@ export const sv = {
       enable: "Låt modeller använda webbläsaren",
       enableDescription: "Modeller öppnar sidor i en egen webbläsarflik, läser dem och klickar och skriver åt dig. Finns även i meny + i skrivfältet.",
       history: "Webbhistorik",
-      historyDescription: "Välj om modeller får läsa webbläsarens historik",
+      historyDescription: "Fullständig åtkomst hoppar över godkännande; Aldrig blockerar fortfarande åtkomst",
       alwaysAsk: "Fråga alltid",
       alwaysAllow: "Tillåt alltid",
       never: "Aldrig",
@@ -687,6 +687,10 @@ export const sv = {
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",
+    compact: "Komprimera konversationen",
+    compactQueued: "Komprimering begärd för nästa meddelande",
+    compactEmpty: "Inget att komprimera än",
+    compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
   },
   welcome: {
     goodToSeeYou: "Kul att se dig",
@@ -3226,6 +3230,23 @@ export const sv = {
         "Appar som använder denna token förlorar åtkomsten omedelbart. Det går inte att ångra.",
       revokeAction: "Återkalla ”{name}”",
       revoking: "Återkallar ...",
+      audioApi: {
+        title: "Ljud-API",
+        description: "Tal, röstkloning, transkribering och ljudsidans arbetsflöden.",
+        speak: "Tala",
+        clone: "Klona",
+        transcribe: "Transkribera",
+        workflows: "Arbetsflöden",
+        separate: "Separera",
+        convert: "Konvertera",
+        music: "Musik",
+        edit: "Redigera",
+        placeholderModel:
+          "Ingen nedladdad modell kan köra det här exemplet än, så modellen som visas är en platshållare. Ladda ned en på ljudsidan först.",
+        autoSwitchOff:
+          "Modellen läses in via namn bara när automatiskt modellbyte är på. Slå på det, eller läs in modellen på dess ljudsida först.",
+        useViaApi: "Använd via API",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Dokumentation",
@@ -3851,6 +3872,9 @@ export const sv = {
       evalSteps: "Utvärderingssteg",
       evalStepsTooltip:
         "Andel av totala träningssteg mellan utvärderingar (0–1). Ange 0 för att inaktivera utvärdering. Exempel: 0,01 = utvärdera var 1 % av stegen.",
+      earlyStoppingPatience: "Tålamod för early stopping",
+      earlyStoppingPatienceTooltip:
+        "Stoppar träningen efter så här många utvärderingar i rad utan lägre utvärderingsförlust och behåller vikterna från den bästa utvärderingen. Kräver utvärdering (utvärderingssteg över 0). 0 för att stänga av.",
       seed: "Slumptalets startvärde",
       seedTooltip: "Slumptalets startvärde för reproducerbarhet.",
       offloadLayers: "Avlasta lager",
@@ -4233,6 +4257,7 @@ export const sv = {
     discard: "Ignorera",
     mentions: "Färdigheter",
     manage: "Hantera färdigheter",
+    turnOff: "Stäng av färdigheter",
     bulkActions: "Färdighetsåtgärder",
     enableAll: "Aktivera alla",
     disableAll: "Inaktivera alla",

@@ -55,7 +55,7 @@ export const ko = {
       enable: "모델이 브라우저를 사용하도록 허용",
       enableDescription: "모델이 전용 브라우저 탭에서 페이지를 열어 읽고, 대신 클릭하고 입력합니다. 입력창의 + 메뉴에서도 켤 수 있습니다.",
       history: "방문 기록",
-      historyDescription: "모델이 브라우저 방문 기록을 읽을 수 있는지 선택합니다",
+      historyDescription: "전체 액세스에서는 승인을 생략합니다. 허용 안 함은 계속 접근을 차단합니다",
       alwaysAsk: "항상 묻기",
       alwaysAllow: "항상 허용",
       never: "허용 안 함",
@@ -586,6 +586,10 @@ export const ko = {
   chatMenu: {
     more: "채팅 옵션",
     copy: "복사",
+    compact: "대화 압축",
+    compactQueued: "다음 메시지에 대한 대화 압축을 요청했습니다",
+    compactEmpty: "아직 압축할 내용이 없습니다",
+    compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
   },
   welcome: {
     goodToSeeYou: "반가워요",
@@ -2999,6 +3003,22 @@ export const ko = {
         "이 토큰을 사용하는 앱은 즉시 접근 권한을 잃습니다. 이 작업은 되돌릴 수 없습니다.",
       revokeAction: '"{name}" 폐기',
       revoking: "폐기 중...",
+      audioApi: {
+        title: "오디오 API",
+        description: "음성 합성, 음성 복제, 받아쓰기, 오디오 페이지 워크플로.",
+        speak: "말하기",
+        clone: "복제",
+        transcribe: "받아쓰기",
+        workflows: "워크플로",
+        separate: "분리",
+        convert: "변환",
+        music: "음악",
+        edit: "편집",
+        placeholderModel: "아직 이 예제를 실행할 수 있는 다운로드한 모델이 없어 표시된 모델은 임시 예시입니다. 먼저 오디오 페이지에서 모델을 다운로드하세요.",
+        autoSwitchOff:
+          "모델 자동 전환이 켜져 있을 때만 이름으로 모델을 불러옵니다. 자동 전환을 켜거나 먼저 오디오 페이지에서 모델을 불러오세요.",
+        useViaApi: "API로 사용",
+      },
       decisionApi: {
         title: "판단 API",
         docs: "문서",
@@ -3614,6 +3634,9 @@ export const ko = {
       evalSteps: "평가 스텝",
       evalStepsTooltip:
         "평가 사이의 간격을 전체 학습 스텝 수의 비율로 나타냅니다(0-1). 0으로 설정하면 평가가 비활성화됩니다. 예: 0.01 = 스텝의 1%마다 평가.",
+      earlyStoppingPatience: "조기 종료 인내 횟수",
+      earlyStoppingPatienceTooltip:
+        "평가 손실이 낮아지지 않는 평가가 이 횟수만큼 연속되면 학습을 중단하고 가장 좋았던 평가 시점의 가중치를 유지합니다. 평가가 필요합니다 (평가 스텝이 0보다 커야 함). 0이면 비활성화됩니다.",
       seed: "시드",
       seedTooltip: "재현성을 위한 랜덤 시드입니다.",
       offloadLayers: "레이어 오프로드",
@@ -3975,6 +3998,7 @@ export const ko = {
     discard: "버리기",
     mentions: "스킬",
     manage: "스킬 관리",
+    turnOff: "스킬 끄기",
     bulkActions: "스킬 작업",
     enableAll: "모두 사용",
     disableAll: "모두 사용 안 함",

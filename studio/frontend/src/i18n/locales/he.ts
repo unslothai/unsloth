@@ -56,7 +56,7 @@ export const he = {
       enable: "לאפשר למודלים להשתמש בדפדפן",
       enableDescription: "המודלים פותחים דפים בכרטיסיית דפדפן משלהם, קוראים אותם ולוחצים ומקלידים בשבילך. זמין גם בתפריט + של תיבת הכתיבה.",
       history: "היסטוריית גלישה",
-      historyDescription: "בחירה אם מודלים יכולים לקרוא את היסטוריית הדפדפן",
+      historyDescription: "גישה מלאה מדלגת על האישור; אף פעם עדיין חוסם גישה",
       alwaysAsk: "לשאול תמיד",
       alwaysAllow: "לאפשר תמיד",
       never: "אף פעם",
@@ -671,6 +671,10 @@ export const he = {
   chatMenu: {
     more: "אפשרויות צ'אט",
     copy: "העתקה",
+    compact: "כווץ שיחה",
+    compactQueued: "התבקש כיווץ שיחה עבור ההודעה הבאה",
+    compactEmpty: "אין עדיין מה לכווץ",
+    compactUnsupported: "כיווץ שיחה דורש מודל GGUF או MLX עם תמיכה בכלים",
   },
   welcome: {
     goodToSeeYou: "טוב לראות אותך",
@@ -3126,6 +3130,23 @@ export const he = {
         "יישומים המשתמשים בטוקן זה יאבדו גישה באופן מיידי. לא ניתן לבטל פעולה זו.",
       revokeAction: 'בטל את "{name}"',
       revoking: "מבטל...",
+      audioApi: {
+        title: "API שמע",
+        description: "דיבור, שיבוט קול, תמלול ותהליכי העבודה של דף השמע.",
+        speak: "דיבור",
+        clone: "שיבוט",
+        transcribe: "תמלול",
+        workflows: "תהליכי עבודה",
+        separate: "הפרדה",
+        convert: "המרה",
+        music: "מוזיקה",
+        edit: "עריכה",
+        placeholderModel:
+          "אף מודל שהורד עדיין לא יכול להריץ את הדוגמה הזו, ולכן המודל המוצג הוא ממלא מקום. הורד קודם מודל בדף השמע.",
+        autoSwitchOff:
+          "המודל נטען לפי שם רק כשהחלפת מודל אוטומטית פועלת. הפעל אותה, או טען קודם את המודל בדף השמע שלו.",
+        useViaApi: "שימוש דרך API",
+      },
       decisionApi: {
         title: "ממשק API להחלטות",
         docs: "תיעוד",
@@ -3729,6 +3750,9 @@ export const he = {
       evalSteps: "צעדי הערכה (Eval Steps)",
       evalStepsTooltip:
         "חלק מסך כל צעדי האימון בין הערכות (0-1). הגדר 0 כדי להשבית הערכה. לדוגמה 0.01 = הערכה בכל 1% מהצעדים.",
+      earlyStoppingPatience: "סבלנות לעצירה מוקדמת (Early Stopping)",
+      earlyStoppingPatienceTooltip:
+        "עוצר את האימון אחרי מספר כזה של הערכות ברצף בלי ירידה ב-eval loss, ושומר את המשקלים מההערכה הטובה ביותר. דורש הערכה (צעדי הערכה מעל 0). 0 לביטול.",
       seed: "גרעין אקראיות (Seed)",
       seedTooltip: "גרעין אקראי לשחזור מדויק של תוצאות.",
       offloadLayers: "העברת שכבות לזיכרון המערכת",
@@ -4098,6 +4122,7 @@ export const he = {
     discard: "ביטול שינויים",
     mentions: "מיומנויות",
     manage: "ניהול מיומנויות",
+    turnOff: "כיבוי מיומנויות",
     bulkActions: "פעולות מיומנויות",
     enableAll: "הפעל הכול",
     disableAll: "השבת הכול",
