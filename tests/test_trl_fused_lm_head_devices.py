@@ -160,7 +160,6 @@ def test_split_model_returns_outputs_on_input_device(fake_trl):
     assert out.label_mask.device.type == "meta"
     assert out.loss.device.type == "meta"
     assert out.entropy is None
-    # Without the flag the forward is the original one, untouched.
     assert model(input_ids = input_ids) == "unfused"
     assert utils._ChunkedLogProbFunction.function is _Kernel
     shim = utils._ChunkedLogProbFunction
@@ -178,7 +177,6 @@ def test_kernel_shim_passes_cpu_tensors_through():
 
 @pytest.mark.parametrize("device_type", ["cuda", "xpu"])
 def test_kernel_shim_switches_to_the_hidden_device(monkeypatch, device_type):
-    # No accelerator needed: the hidden states only have to report a device, and the backend is faked.
     ns = _load()
     backend = getattr(torch, device_type)
     entered = []

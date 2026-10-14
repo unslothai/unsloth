@@ -4249,8 +4249,7 @@ def _first_tensor_device(args, kwargs):
 
 
 class _ApplyOnInputDevice:
-    # Triton launches on the current device, not the tensors' one: on the head's card (cuda:1 while cuda:0 is
-    # current) TRL's chunked log-prob kernel returns inf log_probs.
+    # Triton launches on the current device, not the tensors': off it, TRL's chunked log-prob kernel returns inf.
     _unsloth_device_patched = True
 
     def __init__(self, function):
@@ -4266,9 +4265,7 @@ class _ApplyOnInputDevice:
 
 
 def patch_trl_fused_lm_head_devices():
-    # TRL >= 1.15 `add_fused_lm_head` replaces the forward that carried accelerate's io_same_device hook, so on a model
-    # split with device_map (lm_head on the last card, as "balanced" / "auto" place it) log_probs come back on the
-    # head's card and DPO / KTO / SFT crash multiplying them by masks on the input card (#4030).
+    # TRL >= 1.15's fused head drops accelerate's io_same_device hook: on a split model log_probs stay on lm_head's card (#4030).
     try:
         import trl.trainer.utils as _tu
     except ImportError:
