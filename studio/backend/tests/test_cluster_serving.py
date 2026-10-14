@@ -1016,3 +1016,25 @@ def test_a_projector_that_cannot_be_pinned_keeps_the_load_local(monkeypatch):
     request = _request()
     assert run(ss.before_load(request, 4)) is request
     assert "cannot pin the projector" in ss.status()["reason"]
+
+
+def test_an_environment_draft_device_is_left_alone(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setenv("LLAMA_ARG_DEVICE_DRAFT", "none")
+    out = run(ss.before_load(_request(), 4))
+    assert "--device-draft" not in out.llama_extra_args
+
+
+def test_a_failed_engine_load_that_unloaded_the_split_forgets_it(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    run(ss.before_load(_request(engine = "vllm"), 4))
+    backend.is_loaded = False
+    run(ss.load_failed())
+    assert ss.status()["topology"] == "single" and ss.status()["split_args"] is None

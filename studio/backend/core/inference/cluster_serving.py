@@ -664,6 +664,7 @@ class ClusterServing:
         if (
             local is not None
             and not any(str(a).split("=", 1)[0] in _DRAFT_DEVICE_FLAGS for a in effective)
+            and not os.environ.get("LLAMA_ARG_DEVICE_DRAFT")
             and ss.llama_server_supports("--device-draft", binary)
         ):
             # Unpinned, a drafter spreads over every device, workers included; it was charged here.
@@ -779,6 +780,8 @@ class ClusterServing:
         self.in_flight = False
         if self._passthrough:
             self._passthrough = False
+            if not self._alongside and not self.serving():
+                self.forget_served()  # the engine load unloaded our split before failing
             return
         self._cancel_event = None
         pre, self._pre_load = self._pre_load, None
