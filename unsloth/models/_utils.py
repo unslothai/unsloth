@@ -4356,8 +4356,17 @@ if DEVICE_COUNT == 1 and int(os.environ.get("WORLD_SIZE", "1")) <= 1:
     import accelerate.state
 
     accelerate.state.PartialState._prepare_backend = _prepare_backend
+
+    # DeepSpeed keeps its type even on one device: reporting NO turns on accelerate's native AMP, whose
+    # dtype-less autocast under DeepSpeed is float16 and breaks a bfloat16 model (#225).
+    def _single_device_distributed_type(self):
+        real = getattr(self.__dict__.get("state"), "distributed_type", None)
+        return (
+            DistributedType.DEEPSPEED if real == DistributedType.DEEPSPEED else DistributedType.NO
+        )
+
     # Must be a property: a bare function binds as a method, inverting every `!= DistributedType.NO` guard in accelerate (#10016).
-    accelerate.accelerator.Accelerator.distributed_type = property(lambda self: DistributedType.NO)
+    accelerate.accelerator.Accelerator.distributed_type = property(_single_device_distributed_type)
 
 
 _PER_LAYER_DEVICE_MISSING = object()
