@@ -3058,7 +3058,9 @@ def test_external_connection_does_not_hold_local_chat_swaps(client, monkeypatch)
         )
         buf = io.BytesIO()
         Image.new("RGB", (64, 64)).save(buf, format = "PNG")
-        return httpx.Response(200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]})
+        return httpx.Response(
+            200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]}
+        )
 
     _external_image_connection(monkeypatch, handler)
     resp = client.post(
