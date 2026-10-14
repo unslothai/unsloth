@@ -998,7 +998,6 @@ test("a delete marker is spent once a settled listing fetched after the delete w
   );
 });
 
-// Replays the audio page's forget effect over a sequence of inventory renders.
 function deleteForgetReplay(remembered: Record<string, string>, available: Set<string>) {
   const markers = new Map<string, number>();
   const forgotten: string[] = [];

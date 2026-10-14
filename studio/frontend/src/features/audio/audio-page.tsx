@@ -997,8 +997,7 @@ export function AudioPage({
     kind: "models",
     includeUmbrellaFolders: true,
   });
-  // Deleted repos wait here, with the time of the delete, until a settled listing whose Hub
-  // cache fetches started after it shows whether the model is gone.
+  // Deleted repo -> delete time, kept until a Hub cache fetch sent after it has settled.
   const deletedModelsRef = useRef(new Map<string, number>());
   const [deletedModelsTick, setDeletedModelsTick] = useState(0);
   useEffect(
