@@ -127,10 +127,25 @@ export function listSkills(force = false): Promise<readonly SkillRecord[]> {
   return request;
 }
 
+// An unset switch follows the ticks, so pin it to what it shows before a change can untick the
+// last skill: otherwise that change would turn Skills off and hide the pill.
+function pinSkillsSwitch(): void {
+  const { on, setOn } = useSkillsSwitchStore.getState();
+  if (on !== null) {
+    return;
+  }
+  setOn(
+    snapshot.skills.some(
+      (skill) => skill.valid && !skill.shadowed && skill.enabled,
+    ),
+  );
+}
+
 export async function setSkillEnabled(
   name: string,
   enabled: boolean,
 ): Promise<SkillRecord> {
+  pinSkillsSwitch();
   const response = await authFetch(
     `/api/skills/${encodeURIComponent(name)}/enabled`,
     {
@@ -164,6 +179,7 @@ export async function setSkillEnabled(
 export async function setAllSkillsEnabled(
   enabled: boolean | null,
 ): Promise<readonly SkillRecord[]> {
+  pinSkillsSwitch();
   const epoch = sessionEpoch;
   const response = await authFetch("/api/skills", {
     method: "PUT",
@@ -227,6 +243,7 @@ export async function updateSkill(
 }
 
 export async function deleteSkill(name: string): Promise<void> {
+  pinSkillsSwitch();
   const response = await authFetch(`/api/skills/${encodeURIComponent(name)}`, {
     method: "DELETE",
   });

@@ -48,3 +48,11 @@ test("Skills switched off sends no skill tools, and ticking a skill switches it 
   assert.match(ADAPTER, /useSkillsSwitchStore\.getState\(\)\.on === false \? \[\] : getSkillsSnapshot\(\)\.skills/);
   assert.match(API, /if \(updated\.enabled\) \{\s*useSkillsSwitchStore\.getState\(\)\.setOn\(true\);/);
 });
+
+test("an unset switch is pinned before a change can untick, delete or bulk-disable the last skill", async () => {
+  const API = await read("../src/features/chat/api/skills-api.ts");
+  for (const fn of ["setSkillEnabled", "setAllSkillsEnabled", "deleteSkill"]) {
+    assert.match(API, new RegExp(`export async function ${fn}\\([\\s\\S]*?\\{\\s*pinSkillsSwitch\\(\\);`));
+  }
+  assert.match(API, /if \(on !== null\) \{\s*return;\s*\}\s*setOn\(\s*snapshot\.skills\.some\(/);
+});
