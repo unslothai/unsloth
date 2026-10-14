@@ -208,7 +208,7 @@ def test_small_decode_batches_skip_the_dequantize(bsz, monkeypatch):
         X.float().view(bsz, -1)
         @ F.dequantize_4bit(proj.weight.data, proj.weight.quant_state).float().t()
     )
-    monkeypatch.setattr(utils, "_gemv_rows_win", lambda *a: True)
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 4)
     monkeypatch.setattr(utils, "fast_dequantize", lambda *a, **k: pytest.fail("dequantized"))
     first = utils.fast_linear_forward(proj, X)
     assert _rel_err(first.view(bsz, -1), ref) < TOL[torch.bfloat16]
@@ -266,6 +266,18 @@ def test_rows_or_dequantize_is_fixed_per_architecture(monkeypatch, arch, env, wi
         for bsz, win in wins.items():
             X = torch.randn(bsz, 1, 4096, dtype = torch.bfloat16, device = "cuda")
             assert (utils._gemv_rows(X, W, W_quant, None) is not None) is win
+
+
+def test_rows_above_the_cap_skip_straight_to_dequantize(monkeypatch):
+    # A100 batch 4 decoded 10% slower when a strided X was unpacked and copied before the cap said no.
+    utils = _utils_with_kernels()
+    monkeypatch.setattr(utils, "_gemv_rows_cap", lambda device: 2)
+    monkeypatch.setattr(utils, "_unpack_quant_state", lambda *a: pytest.fail("unpacked"))
+    proj = _linear4bit(1024, 4096)
+    W, W_quant = utils.get_lora_parameters_bias(proj)[:2]
+    X = torch.randn(4, 1, 8192, dtype = torch.bfloat16, device = "cuda")[:, :, :4096]
+    assert not X.is_contiguous()
+    assert utils._gemv_rows(X, W, W_quant, None) is None
 
 
 def test_rocm_never_takes_the_rows_gemv_by_default(monkeypatch):

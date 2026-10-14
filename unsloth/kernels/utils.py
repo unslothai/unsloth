@@ -1435,8 +1435,8 @@ _GEMV_ROWS_BY_ARCH = {(7, 5): 4, (8, 0): 2, (8, 9): 4, (12, 0): 4}
 _GEMV_ROWS_CAP = {}
 
 
-def _gemv_rows_win(X, W, quant_state, args):
-    index = X.device.index
+def _gemv_rows_cap(device):
+    index = device.index
     cap = _GEMV_ROWS_CAP.get(index)
     if cap is None:
         if "UNSLOTH_GEMV_MAX_ROWS" in os.environ:
@@ -1444,17 +1444,20 @@ def _gemv_rows_win(X, W, quant_state, args):
         else:
             try:
                 # ROCm reports gfx versions here (gfx1200 is (12, 0)), so the table is CUDA only.
-                arch = None if torch.version.hip else torch.cuda.get_device_capability(X.device)
+                arch = None if torch.version.hip else torch.cuda.get_device_capability(device)
             except Exception:
                 arch = None
             cap = min(_GEMV_MAX_ROWS, _GEMV_ROWS_BY_ARCH.get(arch, 1))
         _GEMV_ROWS_CAP[index] = cap
-    return X.shape[0] <= cap
+    return cap
 
 
 def _gemv_rows(X, W, quant_state, out):
     """One gemv_nf4_rows launch for 2.._GEMV_MAX_ROWS decode rows (#2798); None = dequantize."""
     M = X.shape[0]
+    # Checked first: rows above the cap must cost the dequantize path nothing extra.
+    if M > _gemv_rows_cap(X.device):
+        return None
     eager = (
         not _is_compiling()
         and type(quant_state) is not list
@@ -1464,8 +1467,6 @@ def _gemv_rows(X, W, quant_state, out):
     if eager:
         plans = getattr(quant_state, "_unsloth_gemv_rows", None)
         plan = plans.get(M) if plans is not None else None
-        if plan is False:
-            return None
         if (
             plan
             and out is not None
@@ -1494,10 +1495,6 @@ def _gemv_rows(X, W, quant_state, out):
         X = X.contiguous()
     args = (absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape)
     try:
-        if not _gemv_rows_win(X, W, quant_state, args):
-            if eager and not torch.cuda.is_current_stream_capturing():
-                _rows_plans(quant_state)[M] = False
-            return None
         if out is None:
             out = torch_empty((M, 1, shape[0]), dtype = X.dtype, device = X.device)
         if not eager or out.data_ptr() & 15:
@@ -1515,7 +1512,7 @@ def _gemv_rows(X, W, quant_state, out):
 
 
 class _NF4Plans(dict):
-    # Rows -> _NF4Plan or False (dequantize won); dropped by copies and pickles.
+    # Rows -> _NF4Plan; dropped by copies and pickles.
     def __reduce__(self):
         return (_no_plan, ())
 
