@@ -958,7 +958,28 @@ def _vllm_unavailable_error():
     )
 
 
+def _reattach_saved_mtp_head(model, adapter_dir):
+    """A LoRA folder saved with a trained MTP head gets it back, so a later merge keeps it."""
+    if not isinstance(adapter_dir, str) or not os.path.isfile(
+        os.path.join(adapter_dir, "mtp_head.safetensors")
+    ):
+        return
+    try:
+        from .speculative import attach_saved_mtp_head
+        attach_saved_mtp_head(model, adapter_dir)
+        print(f"Unsloth: Re-attached the trained MTP head saved in '{adapter_dir}'.")
+    except Exception as error:
+        print(
+            f"Unsloth: Could not re-attach the MTP head in '{adapter_dir}' ({error}); merges will keep the stock head."
+        )
+
+
 class FastLanguageModel(FastLlamaModel):
+    @staticmethod
+    def get_mtp_head(model, *args, **kwargs):
+        from .speculative import get_mtp_head
+        return get_mtp_head(model, *args, **kwargs)
+
     @staticmethod
     @tokenizers_v1_on_return
     @_offline_aware_load
@@ -1771,6 +1792,7 @@ class FastLanguageModel(FastLlamaModel):
                 )
             if fast_pissa:
                 record_fast_pissa(model)
+            _reattach_saved_mtp_head(model, old_model_name)
             model = dispatch_model.patch_peft_model(model, use_gradient_checkpointing)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
@@ -1825,6 +1847,11 @@ except:
 
 
 class FastModel(FastBaseModel):
+    @staticmethod
+    def get_mtp_head(model, *args, **kwargs):
+        from .speculative import get_mtp_head
+        return get_mtp_head(model, *args, **kwargs)
+
     @staticmethod
     def _prepare_for_qat(model, qat_scheme):
         model = _prepare_model_for_qat(model, qat_scheme)
@@ -3091,6 +3118,7 @@ class FastModel(FastBaseModel):
             )
             if fast_pissa:
                 record_fast_pissa(model)
+            _reattach_saved_mtp_head(model, old_model_name)
             try:
                 from .vision import _lift_endpoint_hooks_onto_adapters
                 _lift_endpoint_hooks_onto_adapters(model)
