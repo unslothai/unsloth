@@ -542,7 +542,9 @@ def train_defaults(family: str) -> dict[str, Any]:
 
 # Display labels (the registries' ``label``) + a short VRAM/access note per trainable family, surfaced by the Train UI
 # so users pick a base with realistic expectations.
-_FAMILY_LABELS = {fam.name: fam.label for fam in (*_IMAGE_REGISTRY, *_VIDEO_REGISTRY) if fam.label}
+_FAMILY_LABELS = {
+    fam.name: fam.label for fam in (*_IMAGE_REGISTRY, *_VIDEO_REGISTRY) if fam.label
+}
 # params is the transformer size (SDXL is not quoted that way); note is the rest.
 _FAMILY_TRAIN_SPECS: dict[str, dict[str, Any]] = {
     "sdxl": {"params": "", "qlora_vram_gb": 12, "gated": False, "note": "The lightest option."},

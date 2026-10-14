@@ -43,9 +43,9 @@ SAME_ARCH_VARIANTS: dict[str, frozenset[str]] = {
     "wan2.2-t2v-a14b": frozenset({"wan2.2-t2v-a14b", "wan2.1-t2v-14b"}),
 }
 
-
 def _video_family_names() -> frozenset[str]:
     from .video_families import _FAMILIES
+
     return frozenset(fam.name for fam in _FAMILIES)
 
 

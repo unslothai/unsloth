@@ -807,10 +807,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
             nvfp4_zero_row_tokens = _HUNYUAN15_NVFP4_ZERO_ROW_TOKENS,
             preview_factors = "hv15",
             auto_static_skip = (
-                (
-                    "hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v",
-                    (("max", 2), ("steps", 50)),
-                ),
+                ("hunyuanvideo-community/hunyuanvideo-1.5-diffusers-480p_t2v", (("max", 2), ("steps", 50))),
             ),
         ),
         comfy_flow_shift = 7.0,  # ComfyUI model default and template shift 7

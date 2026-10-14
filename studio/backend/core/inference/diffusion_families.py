@@ -279,17 +279,11 @@ _QWENIMAGE_TRAIN_SCHEME_DENY = frozenset({"fp8"})
 # seeding). A family without one has no schedule clearing the bar, so int8 falls back to fp8.
 _QWENIMAGE_TE_INT8_SKIP = (6, 6)
 # Gated NVFP4 auto head (int8 first; nvfp4 only with a passing gate record for this base and device).
-_GATED_AUTO_PREFER = AutoPrefer(
-    floor = (10, 0), schemes = ("int8", "fp8", "nvfp4", "mxfp8"), gated = True
-)
+_GATED_AUTO_PREFER = AutoPrefer(floor = (10, 0), schemes = ("int8", "fp8", "nvfp4", "mxfp8"), gated = True)
 # AUTO keeps bf16 while it fits for these (measured with both sides compiled: INT8 was at most ~5% faster and failed
 # the default-on LPIPS bar); when bf16 would offload, INT8 is still picked.
-_LUMINA2_BF16_WHEN_RESIDENT = (
-    "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
-)
-_HIDREAM_BF16_WHEN_RESIDENT = (
-    "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
-)
+_LUMINA2_BF16_WHEN_RESIDENT = "INT8 is no faster than compiled bf16 on a card that holds bf16 and changes image detail"
+_HIDREAM_BF16_WHEN_RESIDENT = "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
@@ -364,10 +358,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         profile = FamilyProfile(
             preview_factors = "flux2",
             auto_static_skip = (
-                (
-                    "black-forest-labs/flux.2-klein-base-4b",
-                    (("default", 2), ("max", 3), ("steps", 50)),
-                ),
+                ("black-forest-labs/flux.2-klein-base-4b", (("default", 2), ("max", 3), ("steps", 50))),
             ),
         ),
         pipeline_class = "Flux2KleinPipeline",
@@ -655,9 +646,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
             auto_prefer = _GATED_AUTO_PREFER,
             preview_factors = "qwen_image_21",
-            auto_static_skip = (
-                ("qwen/qwen-image-2.1", (("default", 3), ("max", 3), ("steps", 25))),
-            ),
+            auto_static_skip = (("qwen/qwen-image-2.1", (("default", 3), ("max", 3), ("steps", 25))),),
         ),
         # ComfyUI QwenImage21: ModelSamplingFlux fixed mu 0.69, no terminal stretch.
         comfy_flow_shift = flux_mu_shift(0.69),
