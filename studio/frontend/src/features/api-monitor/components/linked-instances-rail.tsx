@@ -142,7 +142,7 @@ function InstanceCard({
                             </span>
                           ) : null}
                         </div>
-                        <span className="h-[3px] overflow-hidden rounded-full bg-foreground/10">
+                        <span className="h-[3px] overflow-hidden rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]">
                           <span
                             className={cn(
                               "block h-full bg-primary/70",
@@ -184,7 +184,7 @@ function InstanceCard({
                               ? ` · ${gpu.vram_used_gb != null ? `${gpu.vram_used_gb.toFixed(1)} / ` : ""}${formatGb(gpu.vram_total_gb)}`
                               : ""
                           }`}
-                          className="h-2 overflow-hidden rounded-[3px] bg-foreground/10"
+                          className="h-2 overflow-hidden rounded-[3px] bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)]"
                         >
                           <span
                             className={cn(
