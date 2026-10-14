@@ -57,7 +57,9 @@ _SCHEME_ALTERNATION = "|".join(
 )
 # Rich-text pastes carry no-break and thin spaces where a header has plain ones.
 _HSPACE = "[ \\t\u00a0\u2000-\u200a\u202f\u205f\u3000]"
-_AUTH_PARAM = r"""[\w!#$%&'*+.^`|~-]+[ \t]*=[ \t]*(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
+# Spaces around "=" only after an identifier-like name (nonce, keyId), so a padded token68
+# followed by prose ("Zm9vYmE= kubernetes") does not read as a parameter.
+_AUTH_PARAM = r"""(?:[\w!#$%&'*+.^`|~-]+=|(?-i:[a-z][a-z_-]*(?:[A-Z][a-z_-]+)*)[ \t]*=[ \t]*)(?:\\"[^"\r\n]*?\\"|"(?:[^"\\\r\n]|\\.)*"|'[^'\r\n]*'|“[^”\r\n]*”|‘[^’\r\n]*’|[^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"=()<>\[\]{}”’][^\s\u00a0\u2000-\u200a\u202f\u205f\u3000,"()<>\[\]{}”’]*)""".replace(
     r"[ \t]", _HSPACE
 )
 _QUERY_AUTHORIZATION = re.compile(

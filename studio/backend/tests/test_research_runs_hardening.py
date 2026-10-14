@@ -364,6 +364,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     assert _sanitize_public_query(spaced) == "why"
     assert "why" in _sanitize_public_query('Authorization: Custom token="abc\ud800defghijk" why')
     assert _sanitize_public_query("why Authorization: GNAP shorttoken failed") == "why failed"
+    assert _sanitize_public_query("Authorization: Basic Zm9vYmE= kubernetes") == "kubernetes"
     public = "Authorization: RBAC cancellationToken=none"
     assert _sanitize_public_query(public) == "cancellationToken=none"
     assert "kzvqmtprxwjyhfn" not in _sanitize_public_query(
