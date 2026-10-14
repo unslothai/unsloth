@@ -1102,6 +1102,22 @@ def _offload_attr_keys(sub: Any) -> list[str]:
 _DROP = object()
 
 
+def _rebind_root_forward(original: Any, source: Any, replica: Any) -> None:
+    """Give ``replica`` the root ``forward`` the source ran before the router took its slot: offload wrappers (math
+    neutral, dropped with the offload state) are peeled off, and a method bound to the source is rebound to the copy.
+    Anything else cannot be reproduced and raises (CFG-parallel then declines)."""
+    seen = 0
+    while original is not None and _is_offload_object(original) and seen < 8:
+        seen += 1
+        original = getattr(original, "__wrapped__", None)
+    if isinstance(original, types.MethodType) and original.__self__ is source:
+        if original.__func__ is getattr(type(source), "forward", None):
+            return  # the class forward: the copy already has it
+        replica.__dict__["forward"] = types.MethodType(original.__func__, replica)
+        return
+    raise RuntimeError(f"the denoiser's root forward override ({original!r}) cannot be reproduced on a replica")
+
+
 def build_replica(module: Any, device: Any) -> Any:
     """A copy of ``module`` whose parameters and buffers are created directly on ``device`` (never staged on the
     source card), with every recorded ``Module.compile`` re-applied to the copy. Raises when it cannot be built."""
@@ -1138,9 +1154,12 @@ def build_replica(module: Any, device: Any) -> Any:
                     memo[id(hook)] = _DROP
     memo[id(memo)] = keep  # deepcopy's own keep-alive convention
     replica = copy.deepcopy(module, memo)
+    router = module.__dict__.get("forward")
     for sub in replica.modules():
         for key in [k for k, v in sub.__dict__.items() if v is _DROP]:
             del sub.__dict__[key]
+    if isinstance(router, CfgParallelRouter) and router.had_override:
+        _rebind_root_forward(router.orig_forward, module, replica)
         for attr in _ROOT_HOOK_DICTS:
             hooks = sub.__dict__.get(attr)
             if hooks:
@@ -1408,6 +1427,8 @@ class CfgParallelRouter:
         torch = _torch()
         self.module_ref = weakref.ref(module)
         self.orig_forward = module.forward
+        # an instance-level forward (bound override, offload wrapper) the replica must reproduce or drop
+        self.had_override = "forward" in module.__dict__
         self.primary = torch.device(primary)
         self.secondary = torch.device(secondary)
         self.logger = logger

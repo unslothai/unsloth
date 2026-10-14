@@ -1124,3 +1124,22 @@ def test_post_load_split_keeps_vae_tiling(monkeypatch):
     assert refined.secondary_ordinal == 1
     # the fit may have been priced with the tiled decode peak: keep the saver it assumed
     assert refined.vae_tiling is True and refined.vae_slicing is True
+
+
+def test_replica_keeps_a_bound_root_forward_override():
+    import types
+
+    torch.manual_seed(0)
+    dit = _Dit()
+
+    def doubled(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        return (2 * type(self).forward(self, hidden_states, timestep, encoder_hidden_states)[0],)
+
+    dit.forward = types.MethodType(doubled, dit)
+    latents = torch.randn(2, 4)
+    reference = _cfg_loop(dit, latents.clone(), steps = 4)
+    router, replicas = _router(dit)
+    out = _cfg_loop(dit, latents.clone(), steps = 4)
+    assert torch.equal(out, reference)
+    assert router.stats["replica_calls"] == 3
+    assert replicas[0].forward.__self__ is replicas[0]
