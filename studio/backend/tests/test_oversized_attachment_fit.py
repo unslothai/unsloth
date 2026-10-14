@@ -225,3 +225,15 @@ def test_a_file_that_fits_the_budget_is_not_trimmed_by_the_margin():
     assert 0.875 * 1536 < count(messages) <= 1536
 
     assert _fit(copy.deepcopy(messages)) == messages
+
+
+def test_a_path_only_turn_that_fits_the_budget_is_served():
+    # The system prompt fills 90% of the prompt budget (1536): no room for an excerpt, room for the path.
+    messages = _messages()
+    messages[0] = {"role": "system", "content": "s" * (4 * 1380)}
+
+    text = _fit(messages)[-1]["content"]
+
+    assert "line 1: " not in text
+    assert "(2000 lines) is too long for the context window to show" in text
+    assert count([messages[0], messages[-1]]) <= 1536

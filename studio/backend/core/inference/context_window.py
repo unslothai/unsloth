@@ -1069,9 +1069,9 @@ def fit_oversized_attachments(
             content = _cut_content(message["content"], keep_chars, excerpt = excerpt)
             return count_tokens([*base, {**message, "content": content}]) <= limit
 
-        if fits(longest, budget) or (excerpt and not fits(0)):
+        if fits(longest, budget) or (excerpt and not fits(0, budget)):
             continue
-        low, high = 0, longest
+        low, high = 0, longest if fits(0) else 0
         while high - low > 64:
             middle = (low + high) // 2
             if fits(middle):
