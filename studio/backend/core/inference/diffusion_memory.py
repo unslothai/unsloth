@@ -2407,24 +2407,71 @@ def stream_window_pad_mib(pipe: Any) -> Optional[int]:
     """MiB a learned peak measured with no denoiser group streaming adds to reach the streamed baseline (the prefetch
     window a streamed placement holds above its start allocation), so every placement reads one conservative scale.
     None when that window cannot be sized, or the denoiser is neither group-streamed nor on the card (whole-module /
-    sequential offload onloads it whole inside the render): the peak is then not recorded."""
+    sequential offload onloads it whole inside the render): the peak is then not recorded. Resident text encoders add
+    their leaf-streaming window the same way (``_encoder_stream_window_mib``)."""
+    encoders = _encoder_stream_window_mib(pipe)
+    if encoders is None:
+        return None
     for name, module in (getattr(pipe, "components", {}) or {}).items():
         if str(name) not in ("transformer", "transformer_2", "unconditional_transformer"):
             continue
-        try:
-            groups = _offload_groups(module) or ()
-            if any(not getattr(g, "_unsloth_resident", False) for g in groups):
-                return 0
-            if not groups:
-                if getattr(module, "_hf_hook", None) is not None:
-                    return None
-                first = next(iter(module.parameters()), None)
-                if first is not None and getattr(first.device, "type", None) != "cuda":
-                    return None
-        except Exception:  # noqa: BLE001
+        state = _streaming_state(module)
+        if state is None:
             return None
+        if state:
+            return encoders
     window = _stream_window_mib(pipe)
-    return None if window < 0 else window
+    return None if window < 0 else window + encoders
+
+
+def _streaming_state(module: Any) -> Optional[bool]:
+    """True when ``module`` streams offload groups, False when it sits on the card, None when neither can be told
+    (whole-module / sequential offload, weights off the card without hooks)."""
+    try:
+        groups = _offload_groups(module) or ()
+        if any(not getattr(g, "_unsloth_resident", False) for g in groups):
+            return True
+        if not groups:
+            if getattr(module, "_hf_hook", None) is not None:
+                return None
+            first = next(iter(module.parameters()), None)
+            if first is not None and getattr(first.device, "type", None) != "cuda":
+                return None
+        return False
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
+    """MiB a load that streams the text encoders (leaf-level groups) holds in flight that a render with them resident
+    did not: ``depth + 1`` of the largest leaf of each resident encoder. None when an encoder's placement is unknown."""
+    try:
+        import torch
+
+        from .diffusion_offload_prefetch import prefetch_depth
+
+        total = 0
+        for name, module in (getattr(pipe, "components", {}) or {}).items():
+            if not str(name).startswith("text_encoder") or not isinstance(module, torch.nn.Module):
+                continue
+            state = _streaming_state(module)
+            if state is None:
+                return None
+            if state:
+                continue  # streamed during the render: its window is in the peak
+            largest = 0
+            for sub in module.modules():
+                seen: set[int] = set()
+                nbytes = 0
+                for t in (*sub.parameters(recurse = False), *sub.buffers(recurse = False)):
+                    if id(t) not in seen:
+                        seen.add(id(t))
+                        nbytes += sum(_storage_nbytes(t))
+                largest = max(largest, nbytes)
+            total += -(-largest * (prefetch_depth() + 1) // (1024 * 1024))
+        return total
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def vae_saver_tag(tiling: Any, slicing: Any) -> str:

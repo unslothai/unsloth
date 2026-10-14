@@ -307,6 +307,7 @@ def discard_request(pipe: Any) -> None:
         module._unsloth_video_window = None
         if window is not None:
             from .diffusion_measured_peaks import close_window
+
             close_window(window[0], window[1])
     except Exception:  # noqa: BLE001
         pass
@@ -349,17 +350,19 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
         peaks[work] = max(extra, peaks.get(work, 0))
         key = getattr(module, "_unsloth_video_calibration_key", None)
         # a failed capture absorbed an OOM: this peak is that attempt's, keep it out of the keyed and persisted peaks
-        if key is not None and _failed_captures() == getattr(
-            module, "_unsloth_video_failed_captures", 0
-        ):
-            module._unsloth_video_graphs = _live_graphs(
-                dev
-            )  # this sample covers the graphs it recorded
+        if key is not None and _failed_captures() == getattr(module, "_unsloth_video_failed_captures", 0):
+            module._unsloth_video_graphs = _live_graphs(dev)  # this sample covers the graphs it recorded
             shared = _key_peaks(key)
             shared[work] = max(extra, shared.get(work, 0))
             try:
                 from .diffusion_measured_peaks import record_work
-                record_work(_store_key(key), work, extra)
+                from .diffusion_memory import stream_window_pad_mib
+
+                # persisted on the streamed baseline, as image peaks: a later load of the key may stream groups this
+                # request kept resident; an unknown placement persists nothing
+                pad = stream_window_pad_mib(pipe)
+                if pad is not None:
+                    record_work(_store_key(key), work, extra + pad)
             except Exception:  # noqa: BLE001 - persistence is best-effort
                 pass
         _COUNTS["recorded"] += 1

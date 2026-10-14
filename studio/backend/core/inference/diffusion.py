@@ -2103,24 +2103,6 @@ def _peak_model_identity(
     return identity
 
 
-def _refresh_learned_reserve(pipe: Any) -> None:
-    """After the peak identity moved (a VAE saver that did not engage, a deferred attention switch), let the request
-    guard size from the new key's learned peak when it exceeds the one the placement reserved."""
-    identity = getattr(pipe, "_unsloth_peak_identity", None)
-    reserve = getattr(pipe, "_unsloth_measured_reserve", None)
-    if not reserve or not isinstance(identity, tuple) or len(identity) != 3:
-        return
-    try:
-        from .diffusion_measured_peaks import lookup_bucket
-
-        found = lookup_bucket(family = identity[0], quant = identity[1], speed_mode = identity[2])
-        reserve = tuple(reserve) + (None,) * max(0, 8 - len(reserve))
-        if found is not None and found[0] > int(reserve[5] or 0):
-            pipe._unsloth_measured_reserve = (*reserve[:5], *found)
-    except Exception:  # noqa: BLE001 - the load-time reserve stands
-        pass
-
-
 def _conditioning_cache_hits(pipe: Any) -> int:
     """Encodes served from the in-memory prompt cache or the persistent conditioning cache so far: a render with a
     hit skipped the text-encoder phase, so its peak covers only part of what a new prompt needs."""
@@ -10579,7 +10561,9 @@ class DiffusionBackend:
                 )
             except Exception:  # noqa: BLE001 - recording is optional
                 pass
-            _refresh_learned_reserve(state.pipe)
+            # the reserve was placed for the load's tier: until a reload re-places it, requests size from the flat
+            # estimate
+            state.pipe._unsloth_peak_static = True
         # Keep the badge in step with the state it describes: the top-level field moved, so leaving `resolved` on the
         # load-time value would make the panel report an attention backend that is no longer the one running.
         if isinstance(state.resolved, dict) and "attention_backend" in state.resolved:
