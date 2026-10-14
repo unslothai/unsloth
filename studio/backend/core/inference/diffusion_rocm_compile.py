@@ -24,6 +24,8 @@ ENV = "UNSLOTH_DIFFUSION_ROCM_COMPILE"
 
 _lock = threading.Lock()
 _result: dict[Any, tuple[bool, str]] = {}
+# Indexes whose cached result is an OOM: held for the rest of the load, dropped by start_load().
+_transient: set[Any] = set()
 
 
 def rocm_compile_setting() -> str:
@@ -48,9 +50,17 @@ def rocm_block_compile_known(device: Any = None) -> Optional[bool]:
     setting = rocm_compile_setting()
     if setting != "auto":
         return setting == "on"
-    with _lock:
-        hit = _result.get(_index(device))
-    return None if hit is None else hit[0]
+    # Lock-free: _lock is held for the whole multi-second probe, and a status read must not wait on it.
+    index = _index(device)
+    hit = _result.get(index)
+    return None if hit is None or index in _transient else hit[0]
+
+
+def start_load() -> None:
+    """A load boundary: an OOM probe from the previous load may be retried now."""
+    for index in list(_transient):
+        _result.pop(index, None)
+        _transient.discard(index)
 
 
 def _index(device: Any) -> Any:
@@ -85,9 +95,10 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
             "ok" if ok else "failed, staying eager",
             why,
         )
-        # An OOM says the card was busy, not that the compiler is broken: ask again next load.
-        if ok or "OutOfMemoryError" not in why:
-            _result[index] = (ok, why)
+        # An OOM says the card was busy, not that the compiler is broken: held for this load, retried at the next.
+        if not ok and "OutOfMemoryError" in why:
+            _transient.add(index)
+        _result[index] = (ok, why)
         return ok, why
 
 
@@ -143,6 +154,7 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
 def _reset_for_tests() -> None:
     with _lock:
         _result.clear()
+        _transient.clear()
 
 
 def probe_result(index: int = 0) -> Optional[tuple[bool, str]]:

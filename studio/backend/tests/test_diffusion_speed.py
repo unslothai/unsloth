@@ -2642,7 +2642,7 @@ def test_rocm_preflight_never_runs_the_allocating_probe(monkeypatch):
     assert len(calls) == 1
 
 
-def test_rocm_probe_oom_is_not_cached(monkeypatch):
+def test_rocm_probe_oom_is_held_for_the_load_and_retried_at_the_next(monkeypatch):
     from core.inference import diffusion_rocm_compile as rc
 
     monkeypatch.delenv(rc.ENV, raising = False)
@@ -2653,9 +2653,30 @@ def test_rocm_probe_oom_is_not_cached(monkeypatch):
     monkeypatch.setattr(rc, "_probe", lambda torch, index: next(answers))
     rc._reset_for_tests()
     assert rc.rocm_block_compile_probe()[0] is False
+    # Same load: no second compile/OOM, and a non-probing read still sees "unprobed".
+    assert rc.rocm_block_compile_probe()[0] is False
     assert rc.rocm_block_compile_known() is None
+    ds_mod.rocm_compile_probe_new_load()
     assert rc.rocm_block_compile_probe()[0] is True
+    ds_mod.rocm_compile_probe_new_load()
+    assert rc.rocm_block_compile_known() is True
     rc._reset_for_tests()
+
+
+def test_rocm_known_read_does_not_wait_for_a_running_probe(monkeypatch):
+    import threading
+
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    rc._reset_for_tests()
+    out = []
+    with rc._lock:  # a probe in progress holds this for seconds
+        t = threading.Thread(target = lambda: out.append(rc.rocm_block_compile_known()), daemon = True)
+        t.start()
+        t.join(2)
+        assert not t.is_alive() and out == [None]
 
 
 def test_rocm_fp16_never_pays_the_probe(monkeypatch):
@@ -2704,3 +2725,68 @@ def test_loader_probes_rocm_only_for_an_engaged_pipeline_quant():
         if isinstance(node, ast.If) and child in node.body:
             guards.append(ast.unparse(node.test))
     assert any("normalize_transformer_quant(transformer_quant) is not None" in g for g in guards)
+
+
+
+def _diffusion_calls(name):
+    import ast
+    import inspect
+
+    from core.inference import diffusion as dmod
+
+    tree = ast.parse(inspect.getsource(dmod))
+    parents = {c: p for p in ast.walk(tree) for c in ast.iter_child_nodes(p)}
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name]
+    return calls, parents
+
+
+def test_deferred_speed_profile_arms_without_running_the_rocm_probe():
+    import ast
+
+    calls, parents = _diffusion_calls("compile_eligible")
+    deferred = []
+    for c in calls:
+        node = c
+        while node in parents and not isinstance(node, ast.Assign):
+            node = parents[node]
+        if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "speed_deferred" for t in node.targets):
+            deferred.append(c)
+    assert deferred and all(
+        any(k.arg == "probe" and getattr(k.value, "value", None) is False for k in c.keywords) for c in deferred
+    )
+
+
+def test_native_quant_never_runs_the_rocm_probe():
+    import ast
+
+    calls, parents = _diffusion_calls("_pipeline_quant_uncompilable_reason")
+    probing = [
+        c for c in calls if any(k.arg == "probe" and getattr(k.value, "value", None) is True for k in c.keywords)
+    ]
+    assert len(probing) == 1
+    node, guarded = probing[0], False
+    while node in parents:
+        child, node = node, parents[node]
+        if isinstance(node, ast.IfExp) and child is node.orelse and ast.unparse(node.test) == "native_scheme is not None":
+            guarded = True
+    assert guarded
+
+
+def test_rocm_kill_switch_declines_the_planned_dequant_step(monkeypatch):
+    import torch
+
+    from core.inference import diffusion_rocm_compile as rc
+    from core.inference.diffusion_autoopt import plan as plan_mod
+
+    pipe = types.SimpleNamespace(transformer = None)
+    fam = types.SimpleNamespace(name = "z-image", supports_torch_compile = True)
+    rocm = types.SimpleNamespace(
+        device = "cuda", backend = "rocm", dtype = torch.bfloat16, supports_default_torch_compile = True
+    )
+    monkeypatch.setenv(rc.ENV, "0")
+    p = plan_mod.build_plan(pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True)
+    assert p.step("compiled_dequant").attempt is False
+    assert p.reason("compiled_dequant") == f"{rc.ENV}=0"
+    monkeypatch.setenv(rc.ENV, "1")
+    p = plan_mod.build_plan(pipe, rocm, family = fam, backend = "image", speed_mode = "default", is_gguf = True)
+    assert p.step("compiled_dequant").attempt is True

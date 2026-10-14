@@ -408,6 +408,15 @@ def rocm_compile_probe_passes(target: Any, *, probe: bool = True) -> bool:
         return False
 
 
+def rocm_compile_probe_new_load() -> None:
+    """Load boundary for the ROCm probe: an OOM result held during the previous load may be retried."""
+    try:
+        from .diffusion_rocm_compile import start_load
+        start_load()
+    except Exception:  # noqa: BLE001, S110 - optimisation only
+        pass
+
+
 def rocm_compile_switched_off(target: Any) -> bool:
     """``UNSLOTH_DIFFUSION_ROCM_COMPILE=0`` on a ROCm target: no compile at all, the GGUF dequant one included."""
     if getattr(target, "backend", None) != "rocm":

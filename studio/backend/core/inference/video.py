@@ -145,6 +145,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    rocm_compile_probe_new_load,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -3446,6 +3447,7 @@ class VideoBackend:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A video load is already in progress.")
             self._load_token += 1
+            rocm_compile_probe_new_load()
             token = self._load_token
             # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds
             # but also drops _loading, so the next begin_load would clear the object that worker watches. A fresh object

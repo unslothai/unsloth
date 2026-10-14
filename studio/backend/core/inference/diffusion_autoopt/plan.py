@@ -207,10 +207,11 @@ def build_plan(
                 step = plan.step("compiled")
                 step.attempt = False
                 step.reason = f"{GRAPH_BREAK_DECLINE} ({p.class_name}: {suspects})"
+    rocm_off = ds.rocm_compile_switched_off(target)
     add(
         "compiled_dequant",
-        bool(is_gguf and on_cuda),
-        None if is_gguf else "not a GGUF transformer",
+        bool(is_gguf and on_cuda and not rocm_off),
+        "not a GGUF transformer" if not is_gguf else ("UNSLOTH_DIFFUSION_ROCM_COMPILE=0" if rocm_off else None),
     )
     add("tf32", mode == SPEED_MAX and on_cuda, None if mode == SPEED_MAX else "max tier only")
     if not getattr(family, "cudnn_benchmark", True):

@@ -191,6 +191,7 @@ from .diffusion_speed import (
     auto_dynamic_active,
     compile_eligible,
     compiled_shapes_are_static,
+    rocm_compile_probe_new_load,
     family_compiles_regionally,
     fp16_compile_explicit_only,
     fp16_unet_offloaded,
@@ -3551,6 +3552,7 @@ class DiffusionBackend:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
             self._load_token += 1
+            rocm_compile_probe_new_load()
             token = self._load_token
             # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker
             # holds but also drops _loading, so clearing here would un-cancel that worker. Download preemption is
@@ -7558,9 +7560,14 @@ class DiffusionBackend:
                         and normalize_transformer_quant(transformer_quant) is not None
                         and (dense_transformer_supported(target) or native_scheme is not None)
                     ):
-                        # The same helper the route preflight asked; probed only for an engaged quant request.
-                        pipeline_quant_uncompilable = _pipeline_quant_uncompilable_reason(
-                            target, fam, speed_mode, model_kind = kind, probe = True
+                        # The same helper the route preflight asked; probed only for an engaged torchao request
+                        # (a native scheme never reads it).
+                        pipeline_quant_uncompilable = (
+                            None
+                            if native_scheme is not None
+                            else _pipeline_quant_uncompilable_reason(
+                                target, fam, speed_mode, model_kind = kind, probe = True
+                            )
                         )
                         # from_pretrained widens a raw fp8/int8 checkpoint to bf16, erasing the one thing the blocker
                         # below reads, so recover it from the shard header (Ideogram's loader stamps its own).
@@ -7800,7 +7807,8 @@ class DiffusionBackend:
                         and effective_speed == SPEED_OFF
                         and transformer_quant_engaged is None
                         and not comfy_compile
-                        and compile_eligible(target, is_gguf = False, family = fam)
+                        # Non-probing: _engage_deferred_profile runs the ROCm probe if the 3rd image arrives.
+                        and compile_eligible(target, is_gguf = False, family = fam, probe = False)
                         and not fp16_compile_explicit_only(target)
                     )
                     # Speed optims run BEFORE placement, so snapshot the global backend flags first for unload restore.
