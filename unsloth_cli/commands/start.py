@@ -7087,7 +7087,7 @@ def opencode(
             )
         return
     opencode_model = f"{_OPENCODE_PROVIDER}/{entry['id']}"
-    # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag. Only add --model for an interactive bare launch, as a convenience so the TUI opens on our model: it is omitted for passthrough, where inserting it before a subcommand can be misparsed, and for --no-launch, where the printed command is consumed by drivers that append a subcommand such as `run <prompt>` and a leading --model would land before it. Those paths rely on the inline pin instead.
+    # The inline OPENCODE_CONFIG_CONTENT below pins the model in the highest-priority layer, so the session model is forced without a --model flag, and no path passes one. Passthrough would misparse it before a subcommand, a --no-launch recipe is consumed by drivers that append `run <prompt>` after it, and OpenCode 2 rejects --model on the root command outright ("Unrecognized flag: --model in command opencode", #13747). A bare launch used to add it on the V1 verdict as a convenience, but a V2 build whose --version probe fails gets that same verdict, so the launch died on the flag.
     native_auto = False
     route_native_auto = yolo and (opencode_v2 or _opencode_supports_native_auto(command_name))
     if ctx.args:
@@ -7099,9 +7099,7 @@ def opencode(
         )
         command = [command_name, *opencode_args]
     elif launch:
-        opencode_args = [] if opencode_v2 else ["--model", opencode_model]
-        if opencode_v2:
-            opencode_args = _opencode_v2_standalone_args(opencode_args)
+        opencode_args = _opencode_v2_standalone_args([]) if opencode_v2 else []
         opencode_args, native_auto = _opencode_native_auto_args(
             opencode_args,
             route_native_auto,

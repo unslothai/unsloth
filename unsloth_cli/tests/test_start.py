@@ -6652,6 +6652,20 @@ def test_connect_opencode_v2_named_opencode_launches_without_model_flag(fake_stu
     assert launched == [["opencode", "--standalone", "--auto"]]
 
 
+def test_opencode_bare_launch_never_passes_root_model_flag(fake_studio, monkeypatch):
+    # OpenCode 2 rejects --model on the root command ("Unrecognized flag: --model in command
+    # opencode", #13747), and a V2 build whose --version probe fails is reported as V1 (see
+    # test_opencode_command_detects_v2_installed_as_opencode). So the V1 verdict must not add
+    # the flag either: the inline OPENCODE_CONFIG_CONTENT pin selects the model on both.
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
+    captured = _capture_launch(monkeypatch, ["opencode"])
+
+    assert captured["command"][1:] == []
+    assert "--model" not in captured["command"]
+    inline = json.loads(captured["env"]["OPENCODE_CONFIG_CONTENT"])
+    assert inline["model"] == f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"
+
+
 def test_connect_opencode_v2_no_launch_uses_resolved_off_path_binary(
     fake_studio, monkeypatch, tmp_path
 ):
@@ -8086,11 +8100,8 @@ def test_yolo_opencode_bare_launch_uses_native_auto(fake_studio, monkeypatch):
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
     monkeypatch.setattr(start, "_opencode_supports_native_auto", lambda *_: True)
     captured = _capture_launch(monkeypatch, ["opencode", "--yolo"])
-    assert captured["command"][1:] == [
-        "--model",
-        f"{start._OPENCODE_PROVIDER}/{MODEL['id']}",
-        "--auto",
-    ]
+    assert captured["command"][1:] == ["--auto"]
+    assert "--model" not in captured["command"]
     assert "permission" not in json.loads(captured["env"]["OPENCODE_CONFIG_CONTENT"])
 
 
@@ -9039,7 +9050,7 @@ def test_persist_bare_opencode_launch_has_no_resume_token(fake_studio, monkeypat
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/opencode")
     captured = _capture_launch(monkeypatch, ["opencode", "--persist"])
     assert "--continue" not in captured["command"]
-    assert captured["command"][1:] == ["--model", f"{start._OPENCODE_PROVIDER}/{MODEL['id']}"]
+    assert captured["command"][1:] == []
 
 
 def test_persist_bare_claude_launch_has_no_resume_token(fake_studio, monkeypatch):
