@@ -22,7 +22,9 @@ import os
 from typing import Any, Optional
 
 OOM_RETRY_ENV = "UNSLOTH_VAE_OOM_RETRY"
-MIN_TILE_LATENTS = 4
+# Under 8 latents a tile's decode is mostly edge: HunyuanImage-2.1 (32x) at 4-latent tiles measured LPIPS 0.46 against
+# the untiled decode, 8-latent LTX-2 (32x) tiles 0.019. A render that cannot fit 8-latent tiles fails as before.
+MIN_TILE_LATENTS = 8
 MAX_HALVINGS = 6
 # A halving must lower the failing attempt's peak below this fraction of the previous one to be worth another try.
 _PEAK_PROGRESS = 0.9
@@ -104,11 +106,12 @@ def halved(attrs: dict, ratio: int, level: int, overlap_factor: Optional[float] 
         if sample is None and latent is None:
             continue
         base_latent = latent if latent is not None else sample // ratio
-        lat = base_latent // scale
+        prev = max(MIN_TILE_LATENTS, base_latent // (scale // 2)) if level > 1 else base_latent
+        lat = max(MIN_TILE_LATENTS, base_latent // scale)  # the last halving lands on the floor
         while lat >= MIN_TILE_LATENTS and not _overlap_ok(lat, lat * ratio, overlap_factor):
             lat -= 1
-        if lat < MIN_TILE_LATENTS:
-            return None
+        if lat < MIN_TILE_LATENTS or lat >= prev or lat >= base_latent:
+            return None  # under the floor, or no smaller than the previous level
         touched = True
         if sample is not None:
             new[s_name] = lat * ratio
@@ -133,7 +136,14 @@ def _set_attrs(vae: Any, values: dict) -> None:
         setattr(vae, name, value)
 
 
-def _release_cache(z: Any) -> None:
+def _release_cache(z: Any, vae: Any = None) -> None:
+    try:
+        # A causal decoder's frame cache (Wan / Qwen-Image) still holds the failed attempt's tensors.
+        clear = getattr(vae, "clear_cache", None)
+        if callable(clear):
+            clear()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         import torch
 
@@ -268,7 +278,7 @@ def install(vae: Any, logger: Any = None) -> bool:
                 if level > start:
                     break
                 continue
-            _release_cache(z)  # outside the handler: the failed attempt's tensors are gone
+            _release_cache(z, vae)  # outside the handler: the failed attempt's tensors are gone
             if logger is not None:
                 logger.warning(
                     "diffusion.vae_oom: %s decode ran out of memory; retrying %s",
@@ -306,7 +316,7 @@ def install(vae: Any, logger: Any = None) -> bool:
                 break
             last_peak = peak
         stats["failed"] += 1
-        _release_cache(z)
+        _release_cache(z, vae)
         raise RuntimeError(error)
 
     _decode._unsloth_vae_oom_retry = True

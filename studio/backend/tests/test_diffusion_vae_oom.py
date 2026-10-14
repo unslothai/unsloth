@@ -49,22 +49,24 @@ def test_halved_keeps_overlap_fraction_and_floor():
     assert O.halved(attrs, 8, 1) == {
         "tile_sample_min_height": 128, "tile_sample_stride_height": 96, "tile_latent_min_size": 16,
     }  # fmt: skip
-    assert O.halved(attrs, 8, 3)["tile_sample_min_height"] == 32
-    assert O.halved(attrs, 8, 4) is None  # under the 4-latent floor
+    assert O.halved(attrs, 8, 2)["tile_sample_min_height"] == 64  # the 8-latent floor
+    assert O.halved(attrs, 8, 3) is None
     assert O.halved({}, 8, 1) is None
 
 
 def test_halved_overlap_factor_geometry_tiles_exactly():
     """HunyuanImage-2.1: 384 px / 12-latent tiles at f=0.25. A plain halving (6 latents) steps 4 latents but keeps
-    144 px per tile, so diffusers' stock tiled decode returns a too-large image; the next whole step is 4 latents."""
+    144 px per tile, so diffusers' stock tiled decode returns a too-large image; it lands on the 8-latent floor."""
     attrs = {"tile_sample_min_size": 384, "tile_latent_min_size": 12}
-    assert O.halved(attrs, 32, 1, 0.25) == {"tile_sample_min_size": 128, "tile_latent_min_size": 4}
+    assert O.halved(attrs, 32, 1, 0.25) == {"tile_sample_min_size": 256, "tile_latent_min_size": 8}
     assert O.halved(attrs, 32, 2, 0.25) is None
     kl = {"tile_sample_min_size": 1024, "tile_latent_min_size": 128}
     assert O.halved(kl, 8, 3, 0.25) == {"tile_sample_min_size": 128, "tile_latent_min_size": 16}
+    assert O.halved(kl, 8, 4, 0.25)["tile_latent_min_size"] == 8 and O.halved(kl, 8, 5, 0.25) is None
     # stride-style geometry stays a whole number of latents (LTX-2: 32x)
     ltx = {"tile_sample_min_height": 512, "tile_sample_stride_height": 448}
-    assert O.halved(ltx, 32, 2) == {"tile_sample_min_height": 128, "tile_sample_stride_height": 96}
+    assert O.halved(ltx, 32, 1) == {"tile_sample_min_height": 256, "tile_sample_stride_height": 224}
+    assert O.halved(ltx, 32, 2) is None
 
 
 def test_untiled_oom_retries_tiled_then_halves_and_restores():
