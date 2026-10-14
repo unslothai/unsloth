@@ -579,7 +579,9 @@ def test_the_projector_is_pinned_to_the_local_device_it_was_charged_to(monkeypat
     _cluster_env(monkeypatch)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
     out = run(ss.before_load(_request(), 4))
-    assert out.llama_extra_args[-2:] == ["--mmproj-device", "CUDA0"]
+    args = out.llama_extra_args
+    assert args[args.index("--mmproj-device") + 1] == "CUDA0"
+    assert args[args.index("--device-draft") + 1] == "CUDA0"
     # The caller's own choice stands, and a build without the flag gets none.
     out = run(ss.before_load(_request(llama_extra_args = ["-mmdev", "none"]), 4))
     assert "--mmproj-device" not in out.llama_extra_args
@@ -630,3 +632,85 @@ def test_a_worker_the_committed_split_uses_is_kept_when_it_turns_unmanaged(monke
     assert "10.0.0.3:50052" in out.llama_extra_args[1]
     run(ss.after_load(SimpleNamespace(_process = SimpleNamespace(args = out.llama_extra_args)), 4))
     assert stopped == [] and "10.0.0.3:50052" in cs.state().workers
+
+
+def test_a_split_turns_automatic_speculation_off_but_keeps_a_chosen_one(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(speculative_type = None), 4))
+    assert out.speculative_type == "off"
+    assert "speculative decoding off" in ss.status()["reason"]
+    out = run(ss.before_load(_request(speculative_type = "mtp"), 4))
+    assert out.speculative_type == "mtp"
+    out = run(
+        ss.before_load(
+            _request(speculative_type = None, llama_extra_args = ["--spec-type", "ngram-mod"]), 4
+        )
+    )
+    assert out.speculative_type is None
+
+
+def test_one_managed_worker_failing_does_not_stop_the_split(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    monkeypatch.setattr(ss, "rpc_server_binary", lambda: "/b/ggml-rpc-server")
+
+    async def fake_ssh(target, remote, **kw):
+        if target == "10.0.0.3":
+            return 1, "MISSING\n", ""
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    async def fake_start(self):
+        self.proc = SimpleNamespace(returncode = None)
+
+    async def owns(process, host, port, timeout, **kw):
+        return True
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    monkeypatch.setattr(ss.PeerProcess, "start", fake_start)
+    monkeypatch.setattr(ss, "wait_for_own_port", owns)
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert (
+        out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
+        == "10.0.0.2:50052,10.0.0.4:50052"
+    )
+    assert "10.0.0.3 has no ggml-rpc-server" in ss.status()["last_error"]
+
+
+def test_configuring_a_cluster_detaches_a_two_spark_topology_first(monkeypatch):
+    _cluster_env(monkeypatch)
+    detached = []
+    legacy = ss.state()
+    legacy.peer_process = object()
+
+    async def fake_detach():
+        detached.append(1)
+        legacy.peer_process = None
+
+    monkeypatch.setattr(legacy, "detach", fake_detach)
+    run(ss.before_load(_request(alongside = True), 4))
+    assert detached == [], "an alongside load leaves the primary's topology alone"
+    run(ss.before_load(_request(), 4))
+    assert detached == [1]
+
+
+def test_dropping_the_cluster_on_a_spark_frees_its_workers_before_the_spark_split(monkeypatch):
+    stopped = []
+
+    class Worker:
+        alive = True
+
+        async def stop(self, timeout = 10.0):
+            stopped.append(1)
+
+    cs.state().workers["10.0.0.2:50052"] = Worker()
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+    seen = []
+
+    async def legacy_before_load(self, request, n_parallel, **kw):
+        seen.append(list(stopped))
+        return request
+
+    monkeypatch.setattr(ss.SparkServing, "before_load", legacy_before_load)
+    run(ss.before_load(_request(), 4))
+    assert seen == [[1]], "the cluster's workers stop before the two-Spark path plans"

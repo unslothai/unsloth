@@ -52,6 +52,7 @@ REACH_TIMEOUT_S = 3.0
 KV_UNKNOWN_FRACTION = 0.2
 
 _MMPROJ_DEVICE_FLAGS = frozenset({"--mmproj-device", "-mmdev"})
+_DRAFT_DEVICE_FLAGS = frozenset({"--device-draft", "-devd", "--spec-draft-device"})
 _DEVICE_LINE = re.compile(r"^\s+(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]*$")
 
@@ -420,8 +421,9 @@ class ClusterServing:
             self.nodes, self.config_error = [], str(exc)
         return self.nodes
 
-    async def _ensure_workers(self) -> Optional[str]:
-        """Start the managed nodes' rpc-servers that are not running. The error text, or None.
+    async def _ensure_workers(self) -> Dict[str, str]:
+        """Start the managed nodes' rpc-servers that are not running: ``{endpoint: why}`` for the
+        ones that could not be, so planning goes on with the rest.
 
         A live worker is kept across reloads, even forced ones: restarting it would drop the buffers
         of the model still being served, and a later failure of this load could not bring them back.
@@ -430,11 +432,12 @@ class ClusterServing:
 
         local_rpc = ss.rpc_server_binary()
         names = ([os.path.basename(local_rpc)] if local_rpc else []) + list(ss.rpc_server_names())
+        failed: Dict[str, str] = {}
         for node in self.nodes:
             if not node.managed:
                 continue
             if self._cancelled():
-                return "the load was cancelled"
+                break
             running = self.workers.get(node.endpoint)
             if running is not None and running.alive:
                 continue
@@ -449,7 +452,8 @@ class ClusterServing:
             rc, out, _err = await ss.ssh_run(node.ssh_target, ss.find_binary_script(candidates))
             binary = out.strip().splitlines()[-1] if out.strip() else "MISSING"
             if rc != 0 or binary == "MISSING":
-                return f"{node.host} has no ggml-rpc-server at the bundle path"
+                failed[node.endpoint] = f"{node.host} has no ggml-rpc-server at the bundle path"
+                continue
             argv = ss.rpc_server_argv(binary, bind = node.host, port = node.rpc_port, cache = False)
             log_dir = ss._log_dir()
             process = ss.PeerProcess(
@@ -468,9 +472,12 @@ class ClusterServing:
             ):
                 tail = list(process.tail)[-3:]
                 await process.stop()
-                return f"ggml-rpc-server did not take {node.endpoint} (last output: {tail})"
+                failed[node.endpoint] = (
+                    f"ggml-rpc-server did not take {node.endpoint} (last output: {tail})"
+                )
+                continue
             self.workers[node.endpoint] = process
-        return None
+        return failed
 
     async def before_load(
         self,
@@ -506,8 +513,8 @@ class ClusterServing:
             self.topology, self.reason = "single", "the caller supplied --rpc; placement is theirs"
             return request
         failed = await self._ensure_workers()
-        if failed:
-            self.topology, self.reason, self.last_error = "single", failed, failed
+        if self._cancelled():
+            self.topology, self.reason = "single", "the load was cancelled"
             return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, effective, ss)
         binary = ss.llama_server_binary()
@@ -515,11 +522,12 @@ class ClusterServing:
             self.topology, self.reason = "single", "no local llama-server to plan with"
             return request
         # One unreachable worker aborts llama.cpp's whole probe, so plan with the ones that answer.
+        live = [n for n in self.nodes if n.endpoint not in failed]
         reachable = await asyncio.gather(
-            *(ss.wait_for_port(n.host, n.rpc_port, REACH_TIMEOUT_S) for n in self.nodes)
+            *(ss.wait_for_port(n.host, n.rpc_port, REACH_TIMEOUT_S) for n in live)
         )
-        down = [n.endpoint for n, ok in zip(self.nodes, reachable) if not ok]
-        endpoints = [n.endpoint for n, ok in zip(self.nodes, reachable) if ok]
+        down = list(failed) + [n.endpoint for n, ok in zip(live, reachable) if not ok]
+        endpoints = [n.endpoint for n, ok in zip(live, reachable) if ok]
         devices, error = (
             await asyncio.to_thread(list_devices, binary, endpoints) if endpoints else ([], "")
         )
@@ -542,6 +550,8 @@ class ClusterServing:
             self.last_error = f"no device from {', '.join(missing)}" + (
                 f": {error}" if error else ""
             )
+            if failed:
+                self.last_error += "; " + "; ".join(failed.values())
             logger.warning("cluster serving: %s", self.last_error)
         forced = (os.environ.get(ENV_TOPOLOGY) or "").strip().lower().replace("-", "_") or None
         plan = plan_cluster(model_bytes, kv_bytes, local_extra, devices, forced = forced)
@@ -567,9 +577,26 @@ class ClusterServing:
         ):
             # The projector otherwise follows the first --device, a worker; it was charged here.
             self.block += ["--mmproj-device", local.name]
+        if (
+            local is not None
+            and not any(str(a).split("=", 1)[0] in _DRAFT_DEVICE_FLAGS for a in effective)
+            and ss.llama_server_supports("--device-draft", binary)
+        ):
+            # Unpinned, a drafter spreads over every device, workers included; it was charged here.
+            self.block += ["--device-draft", local.name]
         _remember_block(self.block)
         logger.info("cluster serving: layer split %s", " ".join(self.block))
-        return ss.SparkServing._request_with(request, {"llama_extra_args": effective + self.block})
+        updates: Dict[str, Any] = {"llama_extra_args": effective + self.block}
+        mode = str(getattr(request, "speculative_type", None) or "").strip().lower()
+        if (
+            mode in ("", "auto", "default")
+            and getattr(request, "spec_draft_n_max", None) is None
+            and not ss.extra_args_own_speculation(effective)
+        ):
+            # An automatically picked drafter is chosen after this plan and is not in its budget.
+            updates["speculative_type"] = "off"
+            self.reason += "; automatic speculative decoding off for the split"
+        return ss.SparkServing._request_with(request, updates)
 
     async def _size(self, request, n_parallel, extras, ss) -> Tuple[Optional[float], float, float]:
         model_path = str(getattr(request, "model_path", "") or "")

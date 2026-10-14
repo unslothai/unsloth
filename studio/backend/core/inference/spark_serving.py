@@ -3458,7 +3458,21 @@ async def before_load(
 ) -> Any:
     from core.inference import cluster_serving
 
+    replacing = not (
+        getattr(request, "alongside", False)
+        or getattr(request, "force_alongside", False)
+        or str(getattr(request, "engine", "auto") or "auto") != "auto"
+    )
     if _cluster_active():
+        if (
+            replacing
+            and _STATE is not None
+            and (_STATE.peer_process is not None or _STATE.router is not None)
+        ):
+            # A two-Spark split or replica set from before the cluster was configured.
+            if confirm_teardown is not None:
+                confirm_teardown()
+            await _STATE.detach()
         return await cluster_serving.state().before_load(
             request,
             n_parallel,
@@ -3473,6 +3487,12 @@ async def before_load(
         cluster_serving._STATE.retire_on_commit = not (
             getattr(request, "alongside", False) or getattr(request, "force_alongside", False)
         )
+        if replacing and cluster_serving._STATE.retire_on_commit and enabled():
+            # The two-Spark path is about to start its own rpc-server, possibly on a port a
+            # cluster worker still holds; this load replaces the model those workers serve.
+            if confirm_teardown is not None:
+                confirm_teardown()
+            await cluster_serving._STATE.shutdown()
     if not enabled():
         return request
     st = state()

@@ -55,6 +55,9 @@ A node with `"managed": true` (or every node, with `UNSLOTH_CLUSTER_MANAGED=1`) 
    machine, which loads them.
 4. A load no set of devices can hold is refused with the numbers, instead of failing mid-load.
 
+A worker that does not answer, or a managed one that cannot be started, is left out and named
+in the status; the load is planned over the rest.
+
 `UNSLOTH_CLUSTER_TOPOLOGY=layer_split` splits even a model that would fit here (useful to test
 a cluster); `=single` never splits.
 
@@ -67,3 +70,6 @@ the plan and the exact arguments used.
   worker, so a split is only chosen when the model does not fit this machine.
 - Copies of the model on several machines (replicas) are only available for two paired Sparks.
 - A worker that restarts loses its share of the model; reload the model afterwards.
+- A split turns automatic speculative decoding off, since an automatically chosen drafter is
+  not in the plan. Ask for a mode explicitly (or pass a drafter) to keep it; the drafter and the
+  projector are pinned to this machine's GPU.
