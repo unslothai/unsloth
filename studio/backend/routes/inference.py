@@ -21924,7 +21924,8 @@ async def get_api_monitor_entry(
 
 def _decode_and_resize_image(backend, encoded: str):
     """Off the event loop. The decode is forced so a truncated picture is a bad request here, and
-    all but RGB/RGBA converts because CMYK, PA, F and LAB decode and none can be saved back."""
+    the result is flattened RGB: CMYK, PA, F and LAB decode and none can be saved back, and a plain
+    convert would turn a transparent background black under dark ink."""
     from PIL import Image
     from io import BytesIO
 
@@ -21933,10 +21934,7 @@ def _decode_and_resize_image(backend, encoded: str):
     image.load()
     image = exif_upright(image)
     # After the resize: converting first resamples interpolated RGB, a different picture.
-    image = _scaled_from_16_bit(backend.resize_image(image))
-    if image.mode not in ("RGB", "RGBA"):
-        image = image.convert("RGB")
-    return image
+    return _mcp_flattened_rgb(backend.resize_image(image))
 
 
 # Serving a whole conversation's images made the retained set grow with the request, where one
