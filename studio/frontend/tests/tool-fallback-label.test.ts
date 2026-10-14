@@ -121,20 +121,20 @@ test("the document search header stays one line, with the summary first and the 
   assert.match(fallback, /const wrapWhenOpen = !singleLine;/);
 });
 
-// The passages behind a search are listed inside its expanded card; their documents open in
-// Studio's browser; the reply no longer carries a separate Document Sources strip or a PDF sheet.
-test("a document search lists its passages in the card, opening documents in the browser", () => {
+// A search lists each document once in its expanded card, with the pages it cited, not every
+// passage; documents open in Studio's browser; no separate Document Sources strip or PDF sheet.
+test("a document search lists each document once in the card, with its cited pages", () => {
   const read = (path: string) =>
     readFileSync(new URL(`../src/${path}`, import.meta.url), "utf8");
   const kb = read("components/assistant-ui/tool-ui-knowledge-base.tsx");
   assert.match(
     kb,
-    /shown\.map\(\(citation, i\) => \(\s*<li[\s\S]*?<CitationBadge/,
+    /shown\.map\(\(citation, i\) => \(\s*<CitationBadge[\s\S]*?pages=\{pagesByDocument\.get\(/,
   );
+  assert.ok(!kb.includes("{citation.text}"), "passage snippets are not shown");
   // A model-chosen top_k has no ceiling: the rest wait behind "Show N more".
-  assert.match(kb, /citations\.slice\(0, PASSAGES_SHOWN\)/);
-  assert.match(kb, /Show \{citations\.length - shown\.length\} more/);
-  assert.match(kb, /<p className="line-clamp-3[^"]*">\s*\{citation\.text\}/);
+  assert.match(kb, /documents\.slice\(0, DOCUMENTS_SHOWN\)/);
+  assert.match(kb, /Show \{documents\.length - shown\.length\} more/);
   assert.match(kb, /<RagDocumentTrigger/);
   const trigger = read("features/rag/components/rag-document-trigger.tsx");
   // Browser first; without its panel (mobile) the attachment viewer, else a new tab.

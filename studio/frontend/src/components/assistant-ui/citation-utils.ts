@@ -128,3 +128,56 @@ export function topCitationPerDocument(
   }
   return Array.from(byDoc.values());
 }
+
+/** The key a citation's document goes by: its id, else its filename. */
+export function documentKey(citation: Citation): string {
+  return citation.documentId ?? citation.filename;
+}
+
+/** Each document's cited pages, ascending and deduplicated, keyed by documentKey. */
+export function citedPagesPerDocument(
+  citations: readonly Citation[],
+): Map<string, number[]> {
+  const pages = new Map<string, Set<number>>();
+  for (const c of citations) {
+    const key = documentKey(c);
+    const set = pages.get(key) ?? new Set<number>();
+    if (c.page != null) {
+      set.add(c.page);
+    }
+    pages.set(key, set);
+  }
+  return new Map(
+    Array.from(pages, ([key, set]) => [key, [...set].sort((a, b) => a - b)]),
+  );
+}
+
+/** "p.3", "p.1–5" or "pp.1–3, 7": runs of consecutive pages collapse into ranges. */
+export function pageLabel(pages: readonly number[]): string {
+  const runs: string[] = [];
+  for (let i = 0; i < pages.length; i++) {
+    let end = i;
+    while (
+      end + 1 < pages.length &&
+      pages[end + 1] === Number(pages[end]) + 1
+    ) {
+      end++;
+    }
+    runs.push(end === i ? `${pages[i]}` : `${pages[i]}–${pages[end]}`);
+    i = end;
+  }
+  return `${runs.length > 1 ? "pp." : "p."}${runs.join(", ")}`;
+}
+
+/** A badge's label: the filename, then the pages it stands for, else the citation's own page. */
+export function citationLabel(
+  citation: Citation,
+  pages?: readonly number[],
+): string {
+  if (pages && pages.length > 0) {
+    return `${citation.filename} · ${pageLabel(pages)}`;
+  }
+  return citation.page != null
+    ? `${citation.filename} · p.${citation.page}`
+    : citation.filename;
+}

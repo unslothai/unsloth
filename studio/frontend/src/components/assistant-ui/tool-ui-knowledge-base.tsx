@@ -33,6 +33,9 @@ import { useToolActivityOpen } from "./use-tool-activity-open";
 import {
   type Citation,
   parseCitations,
+  citationLabel,
+  citedPagesPerDocument,
+  documentKey,
   topCitationPerDocument,
 } from "./citation-utils";
 import { ScrollPane } from "./scroll-pane";
@@ -40,14 +43,14 @@ import { ScrollPane } from "./scroll-pane";
 export function CitationBadge({
   citation,
   index,
+  pages,
 }: {
   citation: Citation;
   index: number;
+  /** Every page cited from this document, when the badge stands for all of them. */
+  pages?: readonly number[];
 }) {
-  const label =
-    citation.page != null
-      ? `${citation.filename} · p.${citation.page}`
-      : citation.filename;
+  const label = citationLabel(citation, pages);
   const { documentId, filename } = citation;
   const clickable = Boolean(documentId);
 
@@ -63,7 +66,9 @@ export function CitationBadge({
     >
       <span className="tabular-nums text-muted-foreground">{index + 1}</span>
       <FileGlyph className="size-3 shrink-0" />
-      <span className="truncate">{label}</span>
+      <span className="truncate" title={label}>
+        {label}
+      </span>
     </Badge>
   );
 
@@ -86,8 +91,8 @@ const LibraryGlyph = (
 
 // Longer queries get a scroll box rather than a line of text.
 const QUERY_INLINE_MAX = 80;
-// The model picks top_k with no ceiling, so a huge search would mount every passage at once.
-const PASSAGES_SHOWN = 20;
+// The model picks top_k with no ceiling, so a huge search could cite very many documents.
+const DOCUMENTS_SHOWN = 20;
 
 const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
   args,
@@ -106,8 +111,12 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
     [citations],
   );
   const docCount = documents.length;
+  const pagesByDocument = useMemo(
+    () => citedPagesPerDocument(citations),
+    [citations],
+  );
   const [showAll, setShowAll] = useState(false);
-  const shown = showAll ? citations : citations.slice(0, PASSAGES_SHOWN);
+  const shown = showAll ? documents : documents.slice(0, DOCUMENTS_SHOWN);
 
   const hasText = useAuiState(({ message }) =>
     partsHaveNonEmptyText(message.content),
@@ -151,28 +160,23 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
                   {citations.length === 1 ? "" : "s"} from {docCount} document
                   {docCount === 1 ? "" : "s"}.
                 </div>
-                <ol className="flex flex-col gap-2.5">
+                <div className="flex flex-wrap gap-1.5">
                   {shown.map((citation, i) => (
-                    <li
+                    <CitationBadge
                       key={citation.id}
-                      className="flex flex-col items-start gap-1"
-                    >
-                      <CitationBadge citation={citation} index={i} />
-                      {citation.text ? (
-                        <p className="line-clamp-3 whitespace-pre-wrap break-words text-xs">
-                          {citation.text}
-                        </p>
-                      ) : null}
-                    </li>
+                      citation={citation}
+                      index={i}
+                      pages={pagesByDocument.get(documentKey(citation))}
+                    />
                   ))}
-                </ol>
-                {shown.length < citations.length ? (
+                </div>
+                {shown.length < documents.length ? (
                   <button
                     type="button"
                     onClick={() => setShowAll(true)}
                     className="self-start text-xs underline-offset-2 hover:text-foreground hover:underline"
                   >
-                    Show {citations.length - shown.length} more
+                    Show {documents.length - shown.length} more
                   </button>
                 ) : null}
               </>
