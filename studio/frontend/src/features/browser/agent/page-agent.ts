@@ -1115,16 +1115,33 @@ export function installPageAgent(): PageAgent {
     let idle = 0;
     let shown = false;
     let masking = false;
-    const styled = <E extends Element>(el: E, css: Record<string, string>): E => {
-      for (const [name, value] of Object.entries(css)) (el as unknown as HTMLElement).style.setProperty(name, value, "important");
+    // Only the host needs !important (page CSS can reach it); inside the closed root it would also
+    // outrank the ripple's animation, which never showed.
+    const styled = <E extends Element>(el: E, css: Record<string, string>, important = false): E => {
+      for (const [name, value] of Object.entries(css)) {
+        (el as unknown as HTMLElement).style.setProperty(name, value, important ? "important" : "");
+      }
       return el;
+    };
+    // A modal dialog, an open popover or a fullscreen element paints above every z-index, and
+    // fullscreen shows only its own subtree, so the cursor moves into the topmost one. Not the top
+    // layer itself: a popover's ::backdrop could take the user's clicks.
+    const layer = (): Element => {
+      let top: Element | null = document.fullscreenElement;
+      try {
+        const open = document.querySelectorAll("dialog:modal, :popover-open");
+        if (open.length > 0) top = open[open.length - 1];
+      } catch {
+        // Selectors this engine doesn't know.
+      }
+      return top && !/^(video|img|canvas|iframe|input|textarea|select)$/i.test(top.tagName) ? top : document.documentElement;
     };
     const build = () => {
       if (box?.isConnected) return;
       box = styled(document.createElement("unsloth-agent-cursor"), {
         all: "initial", display: "block", position: "fixed", left: "0", top: "0", width: "0", height: "0",
         "z-index": "2147483647", "pointer-events": "none", contain: "layout style size",
-      });
+      }, true);
       box.setAttribute("aria-hidden", "true");
       const root = box.attachShadow({ mode: "closed" });
       pointerEl = styled(document.createElement("div"), {
@@ -1154,13 +1171,11 @@ export function installPageAgent(): PageAgent {
       arrow.appendChild(path);
       pointerEl.append(glow, ring, arrow);
       root.appendChild(pointerEl);
-      // Beside body, not in it, so body-level layout and selectors never see it.
-      document.documentElement.appendChild(box);
       shown = false;
     };
     const fade = () => {
       shown = false;
-      if (pointerEl) pointerEl.style.setProperty("opacity", "0", "important");
+      if (pointerEl) pointerEl.style.opacity = "0";
     };
     return {
       /** Glides to `at` (CSS px of the viewport); `press` adds the click ripple. */
@@ -1168,20 +1183,22 @@ export function installPageAgent(): PageAgent {
         try {
           build();
           if (!pointerEl || !box) return;
+          // Beside body when nothing is on top, not in it, so body-level layout and selectors never see it.
+          const parent = layer();
+          if (box.parentNode !== parent) {
+            parent.appendChild(box);
+            shown = false;
+          }
           const to = `translate3d(${Math.round(at.x)}px, ${Math.round(at.y)}px, 0)`;
           if (!shown) {
             // Appears where it acts rather than sliding in from the corner.
-            pointerEl.style.setProperty("transition", "none", "important");
-            pointerEl.style.setProperty("transform", to, "important");
+            pointerEl.style.transition = "none";
+            pointerEl.style.transform = to;
             void pointerEl.offsetWidth;
           }
-          pointerEl.style.setProperty(
-            "transition",
-            `transform ${quick ? 90 : 260}ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease`,
-            "important",
-          );
-          pointerEl.style.setProperty("transform", to, "important");
-          pointerEl.style.setProperty("opacity", masking ? "0" : "1", "important");
+          pointerEl.style.transition = `transform ${quick ? 90 : 260}ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease`;
+          pointerEl.style.transform = to;
+          pointerEl.style.opacity = masking ? "0" : "1";
           shown = true;
           if (press && ring && typeof ring.animate === "function") {
             ring.animate(
@@ -1201,28 +1218,35 @@ export function installPageAgent(): PageAgent {
       /** Out of screenshots while the mask is on. */
       mask(on: boolean) {
         masking = on;
-        if (pointerEl) pointerEl.style.setProperty("opacity", !on && shown ? "1" : "0", "important");
-        if (pointerEl && on) pointerEl.style.setProperty("transition", "none", "important");
+        if (!pointerEl) return;
+        if (on) pointerEl.style.transition = "none";
+        pointerEl.style.opacity = !on && shown ? "1" : "0";
       },
     };
   })();
 
-  /** Where an action happened: its point, or the centre of its element after the action scrolled it. */
-  const actedAt = (command: Record<string, unknown>): Point | null => {
+  /** Where an action will happen, taken before it runs: a click can remove its own target. A ref's
+   *  element is scrolled as its action scrolls it (a repeat is a no-op there); a dropdown, which
+   *  its action doesn't scroll, only if it is off screen. */
+  const aimAt = (command: Record<string, unknown>, scroll: ScrollIntoViewOptions | null): Point | null => {
     const at = pointIn(command);
     if (at) return at;
     if (typeof command.ref !== "string" || !command.ref) return null;
     try {
-      const rect = lookup(command.ref).getBoundingClientRect();
-      if (!sized(rect)) return null;
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      const el = lookup(command.ref);
+      if (scroll) el.scrollIntoView(scroll);
+      let rect = el.getBoundingClientRect();
+      if (!scroll && (rect.bottom < 0 || rect.top > window.innerHeight || rect.right < 0 || rect.left > window.innerWidth)) {
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+        rect = el.getBoundingClientRect();
+      }
+      return sized(rect) ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
     } catch {
       return null;
     }
   };
-  const followed = (command: Record<string, unknown>, result: Record<string, unknown>, press: boolean, quick = false) => {
-    const at = result.ok ? actedAt(command) : null;
-    if (at) cursor.show(at, press, quick);
+  const followed = (aim: Point | null, result: Record<string, unknown>, press: boolean, quick = false) => {
+    if (result.ok && aim) cursor.show(aim, press, quick);
     return result;
   };
 
@@ -1259,8 +1283,9 @@ export function installPageAgent(): PageAgent {
           return describe(ref, command.value, pointIn(command));
         case "click": {
           const at = pointIn(command);
+          // The aim is taken first: arguments run in order.
           return followed(
-            command,
+            aimAt(command, { block: "center", inline: "center" }),
             inOwnTab(() =>
               at ? clickAt(at, command.directLinks === true, command.expect, command.sig) : click(ref, command.directLinks === true),
             ),
@@ -1272,7 +1297,7 @@ export function installPageAgent(): PageAgent {
         case "pointer": {
           const at = pointIn(command);
           return at
-            ? followed(command, inOwnTab(() => pointer(command.phase, at, command.expect, command.sig)), command.phase === "down", command.phase === "move")
+            ? followed(at, inOwnTab(() => pointer(command.phase, at, command.expect, command.sig)), command.phase === "down", command.phase === "move")
             : { ok: false, error: "unknown command" };
         }
         case "evaluate":
@@ -1280,9 +1305,9 @@ export function installPageAgent(): PageAgent {
         case "evaluated":
           return evaluated(String(command.id ?? ""));
         case "type":
-          return followed(command, inOwnTab(() => type(ref, String(command.text ?? ""), command.submit === true)), true);
+          return followed(aimAt(command, { block: "center" }), inOwnTab(() => type(ref, String(command.text ?? ""), command.submit === true)), true);
         case "select":
-          return followed(command, inOwnTab(() => choose(ref, String(command.value ?? ""))), true);
+          return followed(aimAt(command, null), inOwnTab(() => choose(ref, String(command.value ?? ""))), true);
         case "scroll":
           return scrollPage(String(command.direction ?? "down"), ref || undefined);
         case "press":
