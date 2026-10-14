@@ -18,15 +18,17 @@ from utils.process_lifetime import mark_process_shutting_down, mark_quit_signal_
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason = "POSIX process groups")
 
 _LLAMA_SERVER_LIKE = r"""
-import os, signal, sys, time
+import os, signal, socket, sys, time
+listener = socket.create_server(("127.0.0.1", 0))
 seen = []
 def handler(signum, frame):
     if seen:
         os._exit(1)
     seen.append(signum)
+    listener.close()
 signal.signal(signal.SIGINT, handler)
 signal.signal(signal.SIGTERM, handler)
-print("ready", flush = True)
+print(listener.getsockname()[1], flush = True)
 while not seen:
     time.sleep(0.01)
 time.sleep(float(sys.argv[1]))
@@ -37,6 +39,7 @@ sys.exit(0)
 def _backend_holding(proc) -> LlamaCppBackend:
     backend = LlamaCppBackend.__new__(LlamaCppBackend)
     backend._process = proc
+    backend._port = proc.port
     backend._healthy = True
     backend._owns_pidfile = False
     return backend
@@ -48,7 +51,7 @@ def _spawn(shutdown_s = 0.5):
         stdout = subprocess.PIPE,
         text = True,
     )
-    assert proc.stdout.readline().strip() == "ready"
+    proc.port = int(proc.stdout.readline())
     assert os.getpgid(proc.pid) == os.getpgrp()
     return proc
 
@@ -113,6 +116,7 @@ def test_servers_share_one_grace_period():
         started = time.monotonic()
         for proc in procs:
             _backend_holding(proc)._kill_process(teardown = True)
+            assert proc.returncode == 0
         assert time.monotonic() - started < 4
     finally:
         for proc in procs:

@@ -35348,6 +35348,18 @@ class LlamaCppBackend:
             return None
         return max(0.0, _QUIT_SIGNAL_EXIT_GRACE_S - elapsed)
 
+    def _still_listening(self) -> bool:
+        port = getattr(self, "_port", None)
+        if not port:
+            return True
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout = 0.5):
+                return True
+        except ConnectionRefusedError:
+            return False
+        except OSError:
+            return True
+
     @staticmethod
     def _kill_process_group(pgid):
         """Take down what the leader left behind, if anything is still there."""
@@ -35645,7 +35657,10 @@ class LlamaCppBackend:
                     try:
                         self._process.wait(timeout = _grace)
                     except subprocess.TimeoutExpired:
-                        self._process.kill()
+                        # Still listening: our signal never reached it (a stop sent to Studio alone).
+                        if not self._still_listening():
+                            self._process.kill()
+                            self._process.wait(timeout = _SIGKILL_REAP_TIMEOUT_S)
                 self._process.terminate()
                 self._process.wait(timeout = 5)
         except subprocess.TimeoutExpired:
