@@ -606,7 +606,7 @@
       "file": "unsloth/models/diffusion_masked.py",
       "rule": "dynamic-import",
       "sink": "get_class_from_dynamic_module",
-      "digest": "1900c2baf63f723f",
+      "digest": "9fc70fcf03d7ec35",
       "count": 1,
       "reason": "Falls back to the auto class unless the caller passed trust_remote_code; revision pinned to the config commit hash."
     },

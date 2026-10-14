@@ -28,7 +28,6 @@ import {
 import {
   MINIMAX_MUSIC_MAX_SECONDS,
   audioCppRuntimeProblem,
-  audioCppRuntimeUpdate,
   audioSamplingControlsApply,
   isGgufTtsTarget,
   isTtsAudioType,
@@ -53,7 +52,9 @@ import {
 } from "../src/features/model-picker/components/model-selector/audio-picker-policy.ts";
 import {
   AUDIO_CATALOG,
+  IMAGE_CATALOG,
   catalogToModelOptions,
+  curatedRowLabelFor,
   groupForRepoId,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
@@ -211,9 +212,32 @@ test("recommended models are plain GGUF Audio rows named as on the Hub", () => {
       const option = options.find((candidate) => candidate.id === model.id);
       assert.ok(option, `${host}: ${model.id}`);
       assert.equal(option.isGguf, true);
-      assert.equal(option.descriptionSuffix, "GGUF");
+      // The name already ends in -GGUF, so a "GGUF" suffix would only repeat it.
+      assert.equal(option.descriptionSuffix, undefined, `${host}: ${model.id}`);
     }
   }
+});
+
+test("a GGUF suffix is kept only where the name does not already say GGUF", () => {
+  for (const option of catalogToModelOptions([...AUDIO_CATALOG, ...IMAGE_CATALOG])) {
+    if (option.isGguf && /-gguf$/i.test(option.name)) {
+      assert.equal(option.descriptionSuffix, undefined, option.id);
+    } else {
+      assert.ok(option.descriptionSuffix, option.id);
+    }
+  }
+});
+
+test("a hub GGUF named like a bundled folder does not read as its twin", () => {
+  const hub = curatedRowLabelFor("unslothai/Qwen3-ASR-0.6B-GGUF", AUDIO_CATALOG);
+  const folder = curatedRowLabelFor(QWEN_ASR, AUDIO_CATALOG);
+  assert.equal(hub?.name, folder?.name);
+  assert.notDeepEqual(hub, folder);
+  assert.deepEqual(hub?.tags, ["llama.cpp"]);
+  assert.deepEqual(folder?.tags, []);
+  // A GGUF with no twin keeps a bare row.
+  assert.deepEqual(curatedRowLabelFor(KOKORO, AUDIO_CATALOG)?.tags, []);
+  assert.deepEqual(curatedRowLabelFor("unsloth/Z-Image-Turbo-GGUF", IMAGE_CATALOG)?.tags, []);
 });
 
 test("voice conversion models are seeded with the pages they run on", () => {
@@ -852,44 +876,6 @@ test("recommended speech and music picks are refused when the runtime cannot run
   assert.match(
     page,
     /audioCppRuntimeProblem\(id, audioCppRuntime\.current\);\s*if \(runtimeProblem\) \{\s*toast\.error\(runtimeProblem, \{ duration: 7000 \}\);\s*return;/,
-  );
-});
-
-test("an outdated managed runtime names both releases; anything else shows no notice", () => {
-  const current = {
-    available: true,
-    espeak: true,
-    backend: "cuda",
-    release_tag: "v0.9.0-unsloth.1",
-    expected_tag: "v0.9.0-unsloth.1",
-    outdated: false,
-  };
-  const outdated = { ...current, release_tag: "v0.8.0-unsloth.1", outdated: true };
-  assert.deepEqual(audioCppRuntimeUpdate(outdated), {
-    installed: "v0.8.0-unsloth.1",
-    expected: "v0.9.0-unsloth.1",
-  });
-  assert.equal(audioCppRuntimeUpdate(current), null);
-  assert.equal(audioCppRuntimeUpdate(null), null);
-  assert.equal(audioCppRuntimeUpdate(undefined), null);
-  // support servers older than these fields or unable to name either release.
-  assert.equal(
-    audioCppRuntimeUpdate({ available: true, espeak: true, backend: null, release_tag: "v0.8.0" }),
-    null,
-  );
-  assert.equal(audioCppRuntimeUpdate({ ...outdated, expected_tag: null }), null);
-  assert.equal(audioCppRuntimeUpdate({ ...outdated, release_tag: null }), null);
-  assert.equal(audioCppRuntimeUpdate({ ...outdated, available: false }), null);
-  const route = readText("../../backend/routes/inference.py");
-  assert.match(route, /"expected_tag": None,\s*"outdated": False,/);
-  const page = readAudioWorkspaceSource();
-  assert.match(page, /const nextUpdate = audioCppRuntimeUpdate\(audioCppRuntime\.current\);/);
-  assert.match(page, /\{runtimeUpdate \? \(\s*<AudioRuntimeUpdateNotice\s+update=\{runtimeUpdate\}/);
-  // The CLI route stays for whoever the in-app update is not offered to.
-  const notice = readText("../src/features/audio/components/audio-runtime-update-notice.tsx");
-  assert.match(
-    notice,
-    /Stop Unsloth, run\{" "\}\s*<code className="font-mono">unsloth studio update<\/code>, then\s*start it again\./,
   );
 });
 

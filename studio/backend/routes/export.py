@@ -146,6 +146,7 @@ async def load_checkpoint(
             base_model = base_model,
             max_seq_length = request.max_seq_length,
             load_in_4bit = load_in_4bit,
+            offload_layers = request.offload_layers,
             trust_remote_code = request.trust_remote_code,
             approved_remote_code_fingerprint = request.approved_remote_code_fingerprint,
             hf_token = export_hf_token,
@@ -391,6 +392,7 @@ def _decision_export_details(output_path: Optional[str]) -> Optional[Dict[str, A
 async def get_decision_export_info(
     checkpoint_path: str = Query(..., description = "Local checkpoint folder"),
     current_subject: str = Depends(get_current_subject),
+    allow_ambient: bool = Depends(allow_ambient_hf_token),
 ):
     """GGUF export options for a decision model checkpoint (Clef / Laya); decision is null otherwise."""
     validate_job_paths({"checkpoint_path": checkpoint_path})
@@ -401,7 +403,20 @@ async def get_decision_export_info(
     except Exception as e:
         logger.warning(f"Could not inspect {checkpoint_path} for decision export: {e}")
         decision = None
-    return ExportDecisionInfoResponse(checkpoint_path = checkpoint_path, decision = decision)
+    from utils.models.diffusion_lm import diffusion_lm_export_limits
+
+    diffusion_lm = (
+        None
+        if decision is not None
+        else await asyncio.to_thread(
+            diffusion_lm_export_limits,
+            checkpoint_path,
+            hf_token_arg(None, allow_ambient_token = allow_ambient),
+        )
+    )
+    return ExportDecisionInfoResponse(
+        checkpoint_path = checkpoint_path, decision = decision, diffusion_lm = diffusion_lm
+    )
 
 
 @router.post("/export/merged", response_model = ExportOperationResponse)

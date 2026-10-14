@@ -20,7 +20,10 @@ import {
   isBackendDownForDesktopUpdate,
   isSilencedDesktopUpdateFailure,
 } from "@/lib/desktop-update-activity";
-import { subscribeModelLifecycle } from "@/lib/model-lifecycle-events";
+import {
+  notifyModelLifecycle,
+  subscribeModelLifecycle,
+} from "@/lib/model-lifecycle-events";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 import {
   type TransferSample,
@@ -182,6 +185,11 @@ import {
   loadManagedLlamaFlags,
 } from "@/features/model-picker/api/llama-flags";
 import { usePlatformStore } from "@/config/env";
+import {
+  DEFAULT_ENGINE_LAUNCH_FIELDS,
+  engineLaunchFieldsFrom,
+  engineLaunchFieldsFromParams,
+} from "../lib/engine-launch-fields";
 import type {
   ChatLoraSummary,
   ChatModelRow,
@@ -864,6 +872,10 @@ export async function resyncInferenceStatusAfterServerModelChange(): Promise<voi
     useChatRuntimeStore.getState().clearCheckpoint();
   }
   await syncInferenceStatusToStore();
+  // The update also unloads audio.cpp models, and the Audio page holds its own status: a settled
+  // "chat" re-reads its speech slot and "stt" its dictation, else Generate stays enabled and 400s.
+  notifyModelLifecycle({ runtime: "chat", loading: false, model: null });
+  notifyModelLifecycle({ runtime: "stt", loading: false, model: null });
 }
 
 function pickOf(info: {
@@ -2005,6 +2017,9 @@ export function useChatModelRuntime() {
           engine: "auto",
           enginePrecision: "auto",
           engineParallelism: "tensor",
+          engineKvCacheDtype: "auto",
+          engineSeed: null,
+          engineGpuMemoryUtilization: null,
         });
       }
       const requestedEngine =
@@ -2281,6 +2296,7 @@ export function useChatModelRuntime() {
             engine: stateBeforeUnload.params.engine ?? "auto",
             engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
             engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
+            ...engineLaunchFieldsFromParams(stateBeforeUnload.params),
           };
           try {
             // Lightweight pre-flight validation: avoid unloading a working model if the new identifier is
@@ -2378,6 +2394,7 @@ export function useChatModelRuntime() {
               model_path: loadPath,
               engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
               engine_parallelism: stateBeforeUnload.params.engineParallelism ?? "tensor",
+              ...engineLaunchFieldsFromParams(stateBeforeUnload.params),
               engine: isGguf ? "auto" : (stateBeforeUnload.params.engine ?? "auto"),
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
@@ -2463,6 +2480,7 @@ export function useChatModelRuntime() {
                 engine,
                 engine_precision: "auto",
                 engine_parallelism: "tensor",
+                ...DEFAULT_ENGINE_LAUNCH_FIELDS,
               };
               engineSwitched = true;
               downloadComplete = true;
@@ -3105,6 +3123,7 @@ export function useChatModelRuntime() {
               loadedEngine: loadResponse.engine ?? "auto",
               loadedEnginePrecision: loadResponse.engine_precision ?? "auto",
               loadedEngineParallelism: loadResponse.engine_parallelism ?? "tensor",
+              loadedEngineLaunch: engineLaunchFieldsFrom(loadResponse),
             });
             // Remembered so auto-load re-picks what the user ran, not the smallest. Native file-picker paths
             // need a signed, expiring lease, so they stay out.
@@ -3120,7 +3139,9 @@ export function useChatModelRuntime() {
               recordLastLocalModelLoad({
                 id: modelId,
                 kind:
-                  loadResponse.is_gguf || isGguf || ggufVariant
+                  loadResponse.is_gguf ||
+                  isGguf ||
+                  (ggufVariant && loadResponse.is_mlx !== true)
                     ? "gguf"
                     : "model",
                 ggufVariant: ggufVariant ?? null,
@@ -3156,6 +3177,7 @@ export function useChatModelRuntime() {
                   engine: stateBeforeUnload.loadedEngine,
                   engine_precision: stateBeforeUnload.loadedEnginePrecision,
                   engine_parallelism: stateBeforeUnload.loadedEngineParallelism,
+                  ...stateBeforeUnload.loadedEngineLaunch,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,

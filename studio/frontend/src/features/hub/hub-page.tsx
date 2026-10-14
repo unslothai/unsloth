@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { PipelineType } from "@huggingface/hub";
 import { useAppShellReadySignal } from "@/components/app-readiness";
+import { matchesHubAudioTask } from "@/lib/hub-audio-task";
 import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
-  clearNewChatDraft,
   getInferenceStatus,
   isExternalModelId,
   isSpeechOnlyStatus,
@@ -393,6 +394,7 @@ function selectedRepoMatchesRuntime(
   selectedModel: SelectedModelView | null,
   runtimeId: string | null,
   ggufVariant: string | null,
+  runtimeIsMlx = false,
 ): boolean {
   if (!selectedModel || !runtimeId) return false;
   if (
@@ -411,7 +413,8 @@ function selectedRepoMatchesRuntime(
     const localPath = selectedModel.path ?? "";
     return ggufVariant !== null || localPath.toLowerCase().endsWith(".gguf");
   }
-  return ggufVariant === null;
+  // An MLX load of a precision folder (6-bit/) reports the folder as its variant.
+  return ggufVariant === null || runtimeIsMlx;
 }
 
 export function ModelsPage() {
@@ -461,6 +464,7 @@ export function ModelsPage() {
       ? checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
   const loadingModel = useChatRuntimeStore((s) => s.loadingModelPick);
   const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
     useState(false);
@@ -646,6 +650,10 @@ export function ModelsPage() {
   const hasSearchFilters = hasModelSearchFilters(searchFilters);
   const [capabilityFilter, setCapabilityFilter] =
     useState<CapabilityFilter>("all");
+  // Pipeline tasks from an audio page's Search Hub link; they apply while the Audio filter is on.
+  const [linkedAudioTask, setLinkedAudioTask] = useState<
+    PipelineType[] | null
+  >(null);
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
     readAllModelsViewPreference,
   );
@@ -779,12 +787,18 @@ export function ModelsPage() {
   // A capability link opens the sorted Discover list with that filter on (the feed ignores it).
   // The param is consumed so later filter changes stick and a repeat link re-applies.
   const urlCapability = hubSearch.capability ?? null;
+  const urlTaskKey = hubSearch.audioTask?.join("|") ?? "";
   useEffect(() => {
     if (!urlCapability) return;
     setResourceType("models");
     setQuery("");
     setDiscoverFormat("all");
     setCapabilityFilter(urlCapability);
+    setLinkedAudioTask(
+      urlCapability === "audio" && urlTaskKey
+        ? (urlTaskKey.split("|") as PipelineType[])
+        : null,
+    );
     setSortBrowseActive(true);
     // The media pages run curated Unsloth uploads, so start there.
     setOwnerScope("unsloth");
@@ -796,12 +810,17 @@ export function ModelsPage() {
         tab: "discover",
         kind: undefined,
         capability: undefined,
+        audioTask: undefined,
         section: undefined,
         model: undefined,
       }),
       replace: true,
     });
-  }, [urlCapability, navigate, setOwnerScope]);
+  }, [urlCapability, urlTaskKey, navigate, setOwnerScope]);
+  // Picking another filter drops the link's tasks, so returning to Audio shows every audio model.
+  if (capabilityFilter !== "audio" && linkedAudioTask !== null) {
+    setLinkedAudioTask(null);
+  }
 
   const handleSortChange = useCallback(
     (next: HfSortKey) => {
@@ -912,6 +931,8 @@ export function ModelsPage() {
     channel: listChannel,
     ownerScope,
     filters: searchFilters,
+    task:
+      capabilityFilter === "audio" ? (linkedAudioTask ?? undefined) : undefined,
   });
 
   const cachedListEntry = useHubFeedStore((state) =>
@@ -1043,6 +1064,8 @@ export function ModelsPage() {
               effectiveDiscoverFormat,
             )) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
+        (deferredCapabilityFilter !== "audio" ||
+          matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
@@ -1059,6 +1082,7 @@ export function ModelsPage() {
     checkpointQuantFormats,
     diffusionQuantFormats,
     deferredCapabilityFilter,
+    linkedAudioTask,
     activeChannel,
     fitOnDeviceOnly,
   ]);
@@ -1480,8 +1504,9 @@ export function ModelsPage() {
         selectedModel,
         activeCheckpoint,
         activeGgufVariant,
+        loadedIsMlx === true,
       ),
-    [activeCheckpoint, activeGgufVariant, selectedModel],
+    [activeCheckpoint, activeGgufVariant, loadedIsMlx, selectedModel],
   );
 
   const isLoadingThisModel = useMemo(() => {
@@ -1542,7 +1567,6 @@ export function ModelsPage() {
   // A new chat opens with the model's run settings, where Load starts it.
   const openRunSettingsInChat = useCallback(
     (request: ModelConfigHandoffRequest) => {
-      clearNewChatDraft();
       const chatRuntime = useChatRuntimeStore.getState();
       chatRuntime.setActiveThreadId(null);
       chatRuntime.setActiveProjectId(null);

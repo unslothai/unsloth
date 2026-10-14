@@ -16,6 +16,7 @@ const { offerKey } = loadWithStubs<typeof HookModule>(
       getAuthToken: () => null,
     },
     "@/hooks/use-hardware-info": { refreshHardwareInfo: async () => {} },
+    "@/lib/model-lifecycle-events": { notifyModelLifecycle() {} },
     "@/lib/llama-job-events": {
       signalRunningLlamaJob() {},
       subscribeToLlamaJobStarted: () => () => {},
