@@ -2153,6 +2153,16 @@ def managed_sd_cpp_accelerator() -> Optional[str]:
     return None
 
 
+def sd_cpp_binaries_all_cpu() -> bool:
+    """Whether every sd.cpp binary a load could run (server, else CLI) is a managed CPU install.
+    An unowned SD_SERVER_PATH / SD_CLI_PATH build may render on a GPU, so it never counts."""
+    try:
+        binaries = [b for b in (find_sd_server_binary(), find_sd_cpp_binary()) if b]
+        return bool(binaries) and all(_installed_accelerator_of(b) == "cpu" for b in binaries)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _installed_accelerator_of(binary: Optional[str]) -> Optional[str]:
     """The accelerator class recorded for the managed install ``binary`` belongs to.
 

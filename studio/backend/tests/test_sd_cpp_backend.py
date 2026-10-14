@@ -2841,3 +2841,19 @@ def test_the_arbiter_preflight_reads_the_cli_behind_an_unowned_server(monkeypatc
     assert bk.managed_sd_cpp_accelerator() == "cpu"
     records.clear()
     assert bk.managed_sd_cpp_accelerator() is None
+
+
+def test_only_managed_cpu_binaries_count_as_cpu_only(monkeypatch):
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: "/custom/sd-server")
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: "/managed/sd-cli")
+    records = {"/managed/sd-cli": "cpu"}
+    monkeypatch.setattr(bk, "_installed_accelerator_of", lambda binary: records.get(binary))
+    # The unowned SD_SERVER_PATH build may render on a GPU.
+    assert bk.sd_cpp_binaries_all_cpu() is False
+    records["/custom/sd-server"] = "cpu"
+    assert bk.sd_cpp_binaries_all_cpu() is True
+    records["/managed/sd-cli"] = "vulkan"
+    assert bk.sd_cpp_binaries_all_cpu() is False
+    monkeypatch.setattr(bk, "find_sd_server_binary", lambda: None)
+    monkeypatch.setattr(bk, "find_sd_cpp_binary", lambda: None)
+    assert bk.sd_cpp_binaries_all_cpu() is False

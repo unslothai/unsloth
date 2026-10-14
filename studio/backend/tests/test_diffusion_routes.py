@@ -1430,12 +1430,12 @@ def test_gpu_torch_load_on_the_cpu_rung_skips_arbiter(client, monkeypatch):
     acquired = _force_engine(monkeypatch, backend, engine_name = ENGINE_SD_CPP, device = "cuda")
     monkeypatch.setattr(router, "image_install_accelerator", lambda backend: "rocm")
     monkeypatch.setattr(sd_backend, "preferred_accelerator", lambda accelerator, card = None: "cpu")
-    monkeypatch.setattr(sd_backend, "managed_sd_cpp_accelerator", lambda: "cpu")
+    monkeypatch.setattr(sd_backend, "sd_cpp_binaries_all_cpu", lambda: True)
     resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
     assert resp.status_code == 200
     assert acquired == []
-    # Until the CPU bundle is the managed install, the GPU build may still run: keep the claim.
-    monkeypatch.setattr(sd_backend, "managed_sd_cpp_accelerator", lambda: "rocm")
+    # A GPU build, or an unowned binary, may still be what runs: keep the claim.
+    monkeypatch.setattr(sd_backend, "sd_cpp_binaries_all_cpu", lambda: False)
     acquired.clear()
     resp = _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
     assert resp.status_code == 200

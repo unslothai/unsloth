@@ -46902,6 +46902,7 @@ async def load_diffusion_model_gated(
     from core.inference.sd_cpp_backend import (
         managed_sd_cpp_accelerator,
         preferred_accelerator,
+        sd_cpp_binaries_all_cpu,
         selected_card_identity,
     )
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
@@ -47007,7 +47008,7 @@ async def load_diffusion_model_gated(
                         selected_card_identity(gpu_ordinal),
                     )
                     == "cpu"
-                    and managed_sd_cpp_accelerator() == "cpu"
+                    and sd_cpp_binaries_all_cpu()
                 )
             except Exception:  # noqa: BLE001 -- unknown keeps the claim
                 return False
