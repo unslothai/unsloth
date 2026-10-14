@@ -1360,3 +1360,32 @@ def test_a_host_managed_twice_is_a_config_error(monkeypatch):
     monkeypatch.setenv(cs.ENV_MANAGED, "1")
     with pytest.raises(cs.ClusterConfigError, match = "managed"):
         cs.load_nodes()
+
+
+def test_a_hung_managed_worker_is_stopped_once_a_load_without_it_commits(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    stopped = []
+
+    class Worker:
+        alive = True
+
+        def __init__(self, endpoint):
+            self.endpoint = endpoint
+
+        async def stop(self, timeout = 10.0):
+            stopped.append(self.endpoint)
+
+    for e in ("10.0.0.2:50052", "10.0.0.3:50052", "10.0.0.4:50052"):
+        cs.state().workers[e] = Worker(e)
+    DOWN.add("10.0.0.3")  # its ssh lives on, its rpc-server no longer answers
+    out = run(ss.before_load(_request(), 4))
+    rpc = out.llama_extra_args[out.llama_extra_args.index("--rpc") + 1]
+    assert rpc == "10.0.0.2:50052,10.0.0.4:50052"
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    assert stopped == ["10.0.0.3:50052"]
+    assert set(cs.state().workers) == {"10.0.0.2:50052", "10.0.0.4:50052"}

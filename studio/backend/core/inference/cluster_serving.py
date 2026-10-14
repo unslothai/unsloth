@@ -565,6 +565,8 @@ class ClusterServing:
         # the probe's "used", and the load being planned replaces it.
         self._backend: Any = None
         self._resident: Dict[Tuple[str, str], float] = {}
+        # Workers the current load's probe found unusable; a commit without them stops them.
+        self._down: set = set()
 
     def _cancelled(self) -> bool:
         event = self._cancel_event
@@ -666,6 +668,7 @@ class ClusterServing:
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         # Every return below that does not plan leaves no plan behind for after_load to record.
         self.plan, self.block = None, []
+        self._down = set()
         if not self.refresh_nodes():
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
             return request
@@ -742,6 +745,7 @@ class ClusterServing:
             self.last_error = self.reason
             return request
         missing = down + [e for e in endpoints if not any(d.endpoint == e for d in devices)]
+        self._down = set(missing)
         self.last_error = ""
         if missing:
             self.last_error = f"no device from {', '.join(missing)}" + (
@@ -916,9 +920,12 @@ class ClusterServing:
         self._resident = self.plan.resident() if self.plan is not None else {}
         managed = {n.endpoint for n in self.nodes if n.managed}
         in_use = set(self.block[self.block.index("--rpc") + 1].split(",")) if self.block else set()
-        for endpoint in [e for e in self.workers if e not in managed and e not in in_use]:
-            # Dropped from the config (or made unmanaged); the load that just committed does not
-            # use it, so it can go now rather than at shutdown.
+        down, self._down = self._down, set()
+        for endpoint in [
+            e for e in self.workers if (e not in managed or e in down) and e not in in_use
+        ]:
+            # Dropped from the config (or made unmanaged), or hung while its ssh lives on; the load
+            # that just committed does not use it, so it can go now and a later load restarts it.
             process = self.workers.pop(endpoint)
             try:
                 await process.stop()
