@@ -373,6 +373,26 @@ def test_fp8_forced_non_default_accumulate_is_not_cached_under_the_auto_label(en
     assert path is not None and C.lookup(_fam(base), "fp8", base_repo = str(base)) == path
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_a_save_hands_the_flatten_copies_back_to_the_device(env, tmp_path, scheme):
+    from safetensors.torch import save_file
+
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(*[torch.nn.Linear(4096, 4096) for _ in range(4)]).to(torch.bfloat16)
+    base = tmp_path / "big"
+    (base / "transformer").mkdir(parents = True)
+    save_file(
+        {k: v.contiguous() for k, v in model.state_dict().items()},
+        str(base / "transformer" / "diffusion_pytorch_model.safetensors"),
+    )
+    model = _quantize(model.cuda(), scheme)
+    torch.cuda.synchronize()
+    torch.cuda.empty_cache()
+    before = torch.cuda.memory_reserved()
+    assert C.save_runtime_quant(model, _fam(base), base_repo = str(base)) is not None
+    assert torch.cuda.memory_reserved() <= before
+
+
 # ------------------------------------------------------------------------------------------------ eviction
 def test_lru_eviction_spares_recent_and_kept_keys(env):
     env.mkdir(parents = True)

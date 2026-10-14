@@ -1031,6 +1031,20 @@ def save_runtime_quant(
             return None
         _log(logger, "warning", f"skipped (save failed: {type(exc).__name__}: {str(exc)[:200]})")
         return None
+    finally:
+        # torchao's flatten clones every quantized tensor on the device; hand those blocks back.
+        flat = header = state_dict = None
+        _release_device_cache()
+
+
+def _release_device_cache() -> None:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 # ------------------------------------------------------------------------------------------------- eviction
