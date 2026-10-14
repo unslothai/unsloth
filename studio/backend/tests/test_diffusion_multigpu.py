@@ -1143,3 +1143,29 @@ def test_replica_keeps_a_bound_root_forward_override():
     assert torch.equal(out, reference)
     assert router.stats["replica_calls"] == 3
     assert replicas[0].forward.__self__ is replicas[0]
+
+
+def test_in_place_edit_after_launch_rejects_the_prediction():
+    torch.manual_seed(0)
+    dit = _Dit()
+    latents = torch.randn(2, 4)
+    cond = torch.randn(3, 4)
+    uncond = torch.randn(3, 4)
+
+    def loop(steps):
+        x = latents.clone()
+        neg = uncond.clone()
+        for i in range(steps):
+            t = torch.tensor(1.0 - i / steps)
+            a = dit(hidden_states = x, timestep = t, encoder_hidden_states = cond)[0]
+            neg.mul_(1.01)  # same object, new values, after the prediction was launched
+            b = dit(hidden_states = x, timestep = t, encoder_hidden_states = neg)[0]
+            x = x - 0.1 * (b + 4.0 * (a - b))
+        return x
+
+    with torch.inference_mode():  # inference tensors carry no version counter
+        reference = loop(5)
+        router, _replicas = _router(dit)
+        out = loop(5)
+    assert torch.equal(out, reference)
+    assert router.stats["predicted_hits"] == 0 and router.stats["predicted_misses"] == 4

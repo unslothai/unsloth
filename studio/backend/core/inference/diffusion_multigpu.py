@@ -1395,6 +1395,30 @@ def _bitwise_equal(a: Any, b: Any) -> bool:
         return False
 
 
+def _unchanged_since_launch(snapshots: list) -> bool:
+    """True when every (source, launch-time copy) pair still holds the same bytes. One host sync for all pairs, on
+    the replica's card; it waits for the primary branch (the copy is ordered after it), which the guidance combine
+    waits for anyway, while the replica keeps running."""
+    torch = _torch()
+    checks = []
+    for src, snap in snapshots:
+        if src.shape != snap.shape or src.dtype != snap.dtype:
+            return False
+        if src.numel() == 0:
+            continue
+        try:
+            now = src.to(snap.device).reshape(-1).contiguous().view(torch.uint8)
+            checks.append(torch.equal(now, snap.reshape(-1).contiguous().view(torch.uint8))
+                          if snap.device.type == "cpu" else (now == snap.reshape(-1).contiguous().view(torch.uint8)).all())
+        except Exception:  # noqa: BLE001 - an unverifiable tensor never accepts a prediction
+            return False
+    if not checks:
+        return True
+    host = [c for c in checks if isinstance(c, bool)]
+    device = [c for c in checks if not isinstance(c, bool)]
+    return all(host) and (not device or bool(torch.stack(device).all().item()))
+
+
 def _same_value(a: Any, b: Any) -> bool:
     if a is b:
         return True
@@ -1596,11 +1620,20 @@ class CfgParallelRouter:
             r_kwargs = self._to_replica(p_kwargs)
         except Exception:  # noqa: BLE001 - no prediction this step; the branch runs unpredicted
             return
+        torch = _torch()
+        # What the replica consumes, kept per tensor: at the real call the sources are compared bitwise against it, so
+        # an in-place edit between launch and the odd branch (same object, new values) rejects the prediction.
+        # Version counters cannot do this: inference tensors do not track one.
+        snapshots = []
+        for (_path, src), (_rpath, used) in zip(_leaves((p_args, p_kwargs)), _leaves((r_args, r_kwargs))):
+            if isinstance(src, torch.Tensor):
+                snapshots.append((src, used.clone() if used is src else used))
         replica = self.replica
         _structure, kinds = self.template
         self.pending = {
             "leaves": _leaves((p_args, p_kwargs)),
             "by_value": {path for path, kind in kinds.items() if kind[0] == "b0eq"},
+            "snapshots": snapshots,
             "job": self.worker.submit(lambda: replica(*r_args, **r_kwargs)),
         }
 
@@ -1615,6 +1648,7 @@ class CfgParallelRouter:
             pa == pp and (_bitwise_equal(va, vp) if pa in by_value else _same_value(va, vp))
             for (pa, va), (pp, vp) in zip(actual, predicted)
         )
+        ok = ok and _unchanged_since_launch(pending["snapshots"])
         try:
             out = _ReplicaWorker.wait(pending["job"])
         except Exception:
