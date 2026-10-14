@@ -1912,7 +1912,9 @@ def test_unpersisted_image_sample_keeps_its_graphs_dirty(store, monkeypatch):
     monkeypatch.setattr(cg, "failed_capture_count", lambda: 0)
     monkeypatch.setattr(cg, "live_graph_count", lambda index: 4)
     monkeypatch.setattr(cg, "capture_generation", lambda index: 9)
-    pipe = types.SimpleNamespace(_unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0)
+    pipe = types.SimpleNamespace(
+        _unsloth_peak_identity = ("some-new-dit", "q", "default"), _unsloth_peak_graphs = 0
+    )
     state = types.SimpleNamespace(pipe = pipe, speed_mode = "default")
     monkeypatch.setattr(mp, "record", lambda **kw: False)  # the store is unavailable
     diffusion._record_peak_probe(state, _Probe(2400), width = 1024, height = 1024, batch_size = 1)
@@ -1923,7 +1925,9 @@ def test_unpersisted_image_sample_keeps_its_graphs_dirty(store, monkeypatch):
 
 
 def test_unknown_local_video_build_persists_nothing():
-    known = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = "/models/wan@local:ab:cd")
+    known = vsr.calibration_key(
+        "wan", "/models/wan", "group", "cuda:0", revision = "/models/wan@local:ab:cd"
+    )
     unknown = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = "unknown")
     unread = vsr.calibration_key("wan", "/models/wan", "group", "cuda:0", revision = None)
     assert vsr._store_key(known) is not None
@@ -1956,7 +1960,9 @@ def test_learned_peak_label_carries_the_graph_mode(klein_pipe, monkeypatch):
     assert diffusion._live_graph_mode(state) == "off"
     state.speed_optims = ("compiled", "cuda_graph")
     assert diffusion._live_graph_mode(state) == "step"
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
     assert 'label = with_label_part(label, "graphs", _live_graph_mode(state))' in src
     assert "graphs = peak_graphs," in src
 
@@ -1984,8 +1990,10 @@ def test_whole_step_and_block_graphs_record_under_distinct_keys(store):
     assert mp.record(**base, quant = "torchao:Int8Tensor|graphs:blocks", peak_mib = 4200)
     assert mp.lookup(**base, quant = "torchao:Int8Tensor|graphs:on") == 4200
     assert mp.lookup(**base, quant = "torchao:Int8Tensor|graphs:step") == 3000
-    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(encoding = "utf-8")
-    assert '_engaged_graph_mode(pipe, speed_applied)' in src
+    src = (__import__("pathlib").Path(dm.__file__).parent / "diffusion.py").read_text(
+        encoding = "utf-8"
+    )
+    assert "_engaged_graph_mode(pipe, speed_applied)" in src
 
 
 def test_torchao_variants_of_one_weight_class_do_not_share_a_label(monkeypatch):
@@ -2036,9 +2044,7 @@ def test_graph_mode_envelope_covers_either_mode(store):
     assert mp.record(**base, quant = "q|graphs:step", width = 2048, height = 2048, peak_mib = 3000)
     assert mp.record(**base, quant = "q|graphs:blocks", width = 1024, height = 1024, peak_mib = 2900)
     blocks = mp.lookup_bucket(**base, quant = "q|graphs:blocks", width = 1024, height = 1024)
-    peak, pixels, quadratic = mp.lookup_bucket(
-        **base, quant = "q|graphs:on", width = 1024, height = 1024
-    )
+    peak, pixels, quadratic = mp.lookup_bucket(**base, quant = "q|graphs:on", width = 1024, height = 1024)
     assert peak == 3000 and pixels == blocks[1]  # the larger peak over the smaller covered bucket
     assert not quadratic
     # a later 2 MP request scaled from the envelope covers what the block entry alone asks for

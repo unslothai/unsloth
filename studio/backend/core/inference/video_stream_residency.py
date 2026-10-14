@@ -394,7 +394,6 @@ def record_request_peak(pipe: Any, *, logger: Any = None) -> Optional[int]:
                 else:
                     try:
                         from .diffusion_measured_peaks import record_work
-
                         record_work(stored_key, work, extra + pad, held = held)
                     except Exception:  # noqa: BLE001 - persistence is best-effort
                         pass

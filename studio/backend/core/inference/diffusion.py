@@ -8561,9 +8561,11 @@ class DiffusionBackend:
                             logger = logger,
                         )
                     identity = getattr(pipe, "_unsloth_peak_identity", None)
-                    if isinstance(identity, tuple) and len(identity) == 3 and "graphs:on" in str(
-                        identity[1]
-                    ).split("|"):
+                    if (
+                        isinstance(identity, tuple)
+                        and len(identity) == 3
+                        and "graphs:on" in str(identity[1]).split("|")
+                    ):
                         # placed from the larger of both graph modes' peaks: renders record under the one that armed
                         pipe._unsloth_peak_identity = (
                             identity[0],

@@ -2531,7 +2531,11 @@ def _encoder_stream_window_mib(pipe: Any) -> Optional[int]:
                 # some leaves resident: the peak holds the largest STREAMED leaf's window, a fully streamed encoder
                 # the largest of all; pad the difference
                 streamed = max(
-                    (_group_nbytes(g) for g in groups if not getattr(g, "_unsloth_resident", False)),
+                    (
+                        _group_nbytes(g)
+                        for g in groups
+                        if not getattr(g, "_unsloth_resident", False)
+                    ),
                     default = 0,
                 )
                 window = max(0, window - -(-streamed * (prefetch_depth() + 1) // (1024 * 1024)))
