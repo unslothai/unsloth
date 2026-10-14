@@ -19,11 +19,11 @@ import pytest
 from core.inference import audio_cpp_backend, audio_cpp_files
 from core.inference import audio_cpp_models as acm
 from core.inference.audio_cpp_option_table import (
-    AUDIO_CPP_OPTION_TABLE_TAG,
+    AUDIO_CPP_OPTION_TABLE_TAGS,
     OPTION_RULES,
     STUDIO_OPTION_LISTS,
 )
-from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAG
+from core.inference.audio_cpp_spec_families import AUDIO_CPP_SPEC_FAMILIES_TAGS
 
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
@@ -84,7 +84,7 @@ def _wanted(model, workflow):
 
 
 def test_the_table_is_written_for_the_pinned_runtime():
-    assert AUDIO_CPP_OPTION_TABLE_TAG == AUDIO_CPP_SPEC_FAMILIES_TAG
+    assert AUDIO_CPP_OPTION_TABLE_TAGS == AUDIO_CPP_SPEC_FAMILIES_TAGS
 
 
 def test_the_fixture_covers_the_catalog():

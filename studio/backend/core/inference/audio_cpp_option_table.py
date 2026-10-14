@@ -12,7 +12,7 @@ and sent when the user leaves it alone), tighter bounds, and options a workflow 
 Recommended values come from audio.cpp's own web UI table (``webui/configs/model_params.json``),
 else the runtime's default in the C++ loader, else the upstream model card; each one names its source.
 A default of ``None`` sends nothing, for options the runtime works out per request. The table holds
-only for the tag it was written against.
+only for the tags it was checked against.
 """
 
 from __future__ import annotations
@@ -22,7 +22,9 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Optional
 
-AUDIO_CPP_OPTION_TABLE_TAG = "v0.9.0-unsloth.1"
+# The unslothai/audio.cpp releases this table was checked against (v0.9.1-unsloth.1 is the same
+# commit as v0.9.0-unsloth.1).
+AUDIO_CPP_OPTION_TABLE_TAGS = frozenset({"v0.9.0-unsloth.1", "v0.9.1-unsloth.1"})
 
 # Enum domains a spec may name instead of listing (audio.cpp src/framework/model_spec/options.cpp).
 ENUM_PRESETS: Mapping[str, tuple[str, ...]] = MappingProxyType(
