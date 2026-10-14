@@ -451,18 +451,14 @@ export function isInRegion(
   return false;
 }
 
-/** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`, `3.5M`. */
 const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
 
 const BARE_NUMBER_RE = /^\d+(?:,\d{3})*(?:\.\d+)?$/;
 
-/** Body characters that almost always indicate real LaTeX. */
+/** these characters almost always indicate real LaTeX. */
 const LATEX_CHAR_RE = /[\\^_{}]/;
 
-/**
- * Operators that strongly suggest math. Omits `^` and `_` since
- * `LATEX_CHAR_RE` short-circuits on those before this regex runs.
- */
+/** math operators excluding `^` and `_`, which LATEX_CHAR_RE checks first. */
 const MATH_OP_RE = /[=+\-<>/*]/;
 
 /**
@@ -511,15 +507,7 @@ function looksLikeMathBody(body: string): boolean {
   return LONE_LETTER_RE.test(trimmed);
 }
 
-/**
- * True if the `$` at `offset` opens a balanced inline math span (`$...$`)
- * on the same line. The closer must be unescaped, not part of `$$`, and
- * within 200 chars. The body must look like LaTeX so we don't pair two
- * currency tokens on a line (e.g. "$5 to $10"). Bold-wrapped spans
- * (`**$X$**`, `__$X$__`) are always math: LLMs use that for "bold math"
- * and the heuristic would otherwise reject prose-shaped bodies like "90 - x".
- * A bare number (`$3$`) is math unless a shell variable starts at the closer (`$1$HOME`).
- */
+/** accepts bold-wrapped spans to preserve prose-shaped math and bare numbers unless the closer starts a shell parameter. */
 function hasInlineMathCloser(
   content: string,
   offset: number,
@@ -532,16 +520,13 @@ function hasInlineMathCloser(
     if (c === "\n") return false;
     if (c !== "$") continue;
     if (content[i - 1] === "\\") continue;
-    // A `$` opening a generated span (from `\(...\)`) is not a currency closer;
-    // pairing with it would swallow the price into math (`$5 + x \(y\)`).
+    // generated `\(...\)` openers cannot close currency spans because they would consume the price as math.
     if (isInRegion(i, mathRegions)) return false;
     if (content[i + 1] === "$") {
       i++;
       continue;
     }
-    // A `$` followed by a digit is more likely another currency token than
-    // the closer. Keep scanning so prose like `$5 + a $10 add-on` doesn't
-    // pair the two currency markers as a math span.
+    // a digit after `$` likely starts another currency token, so keep scanning.
     if (/\d/.test(content[i + 1] ?? "")) {
       continue;
     }
