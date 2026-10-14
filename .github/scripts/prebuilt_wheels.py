@@ -80,9 +80,9 @@ PLATFORMS = {
         "abi": "TRUE",
         "label": " / win_amd64",
         "pytorch_nvcc": "C:/ccache/ccache.exe C:/cuda/bin/nvcc.exe",
-        # On top of TORCH_VERSIONS: Linux reuses upstream's torch2.10 wheels for 2.11, which have
-        # no Windows build.
-        "extra_torches": ("2.11.0",),
+        # On top of TORCH_VERSIONS: upstream's torch2.10 wheels (which Linux also reuses for 2.11)
+        # have no Windows build.
+        "extra_torches": ("2.10.0", "2.11.0"),
     },
     # Upstream's aarch64 wheels stop at torch 2.10. ubuntu-22.04-arm keeps the glibc 2.35 floor
     # the x86_64 build has, and the build asserts it.
@@ -130,9 +130,14 @@ def _platform(platform: str, key: str):
     return PLATFORMS[platform].get(key, _PLATFORM_DEFAULTS.get(key))
 
 
-# torch 2.11 pins triton==3.6.0, 2.13 triton==3.7.1 and 2.14 triton~=3.8.0 (Linux-only
+# torch 2.10 and 2.11 pin triton==3.6.0, 2.13 triton==3.7.1 and 2.14 triton~=3.8.0 (Linux-only
 # markers); exact pins keep the Windows smoke test reproducible.
-TRITON_WINDOWS = {"2.11": "3.6.0.post26", "2.13": "3.7.1.post27", "2.14": "3.8.0.post29"}
+TRITON_WINDOWS = {
+    "2.10": "3.6.0.post26",
+    "2.11": "3.6.0.post26",
+    "2.13": "3.7.1.post27",
+    "2.14": "3.8.0.post29",
+}
 WINDOWS_SMOKE_EXCLUDE = ("triton", "tilelang", "apache-tvm-ffi", "quack-kernels")
 
 # Source revisions, pinned to a commit rather than a branch or a tag.
@@ -222,7 +227,8 @@ def _platform_torches(platform: str) -> tuple[str, ...]:
     )
 
 
-# Accepted from a dispatch; each platform builds only its own subset (2.11.0 is win_amd64 only).
+# Accepted from a dispatch; each platform builds only its own subset (2.10.0 and 2.11.0 are
+# win_amd64 only).
 ALLOWED_TORCH = tuple(
     sorted(
         {torch for platform in PLATFORMS for torch in _platform_torches(platform)},
@@ -396,8 +402,8 @@ def build_matrix(
     if not include:
         raise SystemExit(
             "no cells: none of the chosen platforms builds that package / torch combination "
-            "(torch 2.11.0 is win_amd64 only; win_arm64 builds causal-conv1d and mamba-ssm for "
-            "torch 2.14.0 only)."
+            "(torch 2.10.0 and 2.11.0 are win_amd64 only; win_arm64 builds causal-conv1d and "
+            "mamba-ssm for torch 2.14.0 only)."
         )
     return include
 

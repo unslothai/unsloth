@@ -2389,17 +2389,14 @@ jobs:
           unsloth-zoo-ref: ${{ env.UNSLOTH_ZOO_REF }}
 
       - name: unsloth_zoo @ ${{ env.UNSLOTH_ZOO_REF }} — full pytest (CPU)
-        # 106 of 111 test_* in unsloth_zoo are CPU-only. The two CUDA-skip
-        # cases below auto-skip on a GPU-less runner; deselect them
-        # explicitly so the no-CUDA outcome is "deselected", not "skipped",
-        # making intent visible in the report. Env inherited from job block.
+        # 106 of 111 test_* in unsloth_zoo are CPU-only. The CUDA-skip case
+        # below auto-skips on a GPU-less runner; deselect it explicitly so the
+        # no-CUDA outcome is "deselected", not "skipped", making intent
+        # visible in the report. Env inherited from job block.
         #
-        # test_get_peft_model_passes_finetune_last_n_layers_through is
-        # deselected because unsloth_zoo/mlx/loader.py at line 2972 calls
-        # model.trainable_parameters() on the fake-model fixture, which
-        # the test never stubbed; this fails on every platform regardless
-        # of CUDA. Tracked upstream as an unsloth_zoo bug; deselecting
-        # here unblocks unsloth CI until the loader fixture is fixed.
+        # -rs prints every skip reason, so a dependency that goes missing and
+        # turns a module into a skip shows up in the log instead of only in
+        # the skipped count.
         #
         # A test that hangs rather than fails used to consume the whole job
         # budget and report nothing usable: the job ended as "cancelled", with
@@ -2428,12 +2425,11 @@ jobs:
           # so exclude that family from xdist and run it separately below. The other
           # ignores either leak process state or use timing assertions that need a quiet
           # process.
-          python -m pytest -q --tb=short -n 4 --dist loadfile tests/ \
+          python -m pytest -q -rs --tb=short -n 4 --dist loadfile tests/ \
             --ignore-glob='tests/test_mlx_*.py' \
             --ignore=tests/test_moe_bnb4bit_per_expert_conversions.py \
             --ignore=tests/test_hf_xet_fallback.py \
             --ignore=tests/test_gemma3_forced_float32_boundary_dtype.py \
-            --deselect tests/test_unsloth_zoo_lora_merge.py::test_active_merge_device_returns_string_on_cuda_host \
             --deselect tests/test_unsloth_zoo_lora_merge.py::test_merge_lora_moves_cpu_inputs_to_active_device
 
           # Run contamination-sensitive files in separate processes. Keep collecting
@@ -2465,9 +2461,7 @@ jobs:
             echo "::error::the mlx group glob matched no files"
             exit 1
           fi
-          python -m pytest -q --tb=short $mlx_group \
-            --deselect tests/test_mlx_finetune_last_n_layers.py::test_get_peft_model_passes_finetune_last_n_layers_through \
-            || _keep "$?" "the mlx group"
+          python -m pytest -q -rs --tb=short $mlx_group || _keep "$?" "the mlx group"
           exit "$rc"
 
       - name: unsloth_zoo — test_apply_fused_lm_head (lives in compiler.py)
@@ -2513,7 +2507,7 @@ jobs:
           pip show unsloth_zoo
           echo "::endgroup::"
           echo "Core zoo job done. Coverage:"
-          echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (5 GPU cases deselected)"
+          echo "  - unsloth_zoo @ ${UNSLOTH_ZOO_REF} pytest tests/ (GPU-only cases deselected)"
           echo "  - unsloth_zoo.compiler.test_apply_fused_lm_head"
 
       - name: Save the pip cache
