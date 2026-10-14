@@ -4989,7 +4989,7 @@ export function ImagesPage({
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 opaqueKind={opaqueKind}
-                hubCapability="diffusion"
+                hubCapability="image-gen"
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}

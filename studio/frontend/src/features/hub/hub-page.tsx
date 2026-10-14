@@ -121,14 +121,14 @@ import {
   registerRefresh,
   supersedingRefresh,
 } from "./lib/superseded-refresh";
-import type { CapabilityKey } from "./lib/model-capabilities";
+import type { HubCapabilityFilter } from "./lib/model-capabilities";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
   detectResultFormat,
   discoveryInventorySignature,
   isUnslothFinetunable,
-  matchesCapability,
+  matchesHubCapability,
   matchesFormat,
   matchesRecommended,
 } from "./lib/view-models";
@@ -649,9 +649,9 @@ export function ModelsPage() {
     hubSource === "modelscope" ? NO_SEARCH_FILTERS : storedSearchFilters;
   const hasSearchFilters = hasModelSearchFilters(searchFilters);
   // Several capabilities show models with any of them; none shows every model.
-  const [capabilityFilters, setCapabilityFilters] = useState<CapabilityKey[]>(
-    [],
-  );
+  const [capabilityFilters, setCapabilityFilters] = useState<
+    HubCapabilityFilter[]
+  >([]);
   // Pipeline tasks from an audio page's Search Hub link; they apply while the Audio filter is on.
   const [linkedAudioTask, setLinkedAudioTask] = useState<
     PipelineType[] | null
@@ -1071,7 +1071,7 @@ export function ModelsPage() {
         (deferredCapabilityFilters.length === 0 ||
           deferredCapabilityFilters.some(
             (key) =>
-              matchesCapability(row.capabilities, key) &&
+              matchesHubCapability(row, key) &&
               (key !== "audio" ||
                 matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)),
           )) &&

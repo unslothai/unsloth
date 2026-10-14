@@ -13,10 +13,8 @@ import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
 import {
-  AiChipIcon,
   ArrowUpDownIcon,
   CancelCircleIcon,
-  Database02Icon,
   Delete02Icon,
   FolderSearchIcon,
   Search01Icon,
@@ -36,12 +34,11 @@ import {
   FORMAT_FILTER_OPTIONS,
 } from "../lib/view-models";
 import type {
-  CapabilityFilter,
   ModelFormatFilter,
   ModelsTab,
   ResourceTypeFilter,
 } from "../types";
-import type { CapabilityKey } from "../lib/model-capabilities";
+import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import { type HubOption, HubOptionMenu } from "./hub-option-menu";
 import type { ModelSearchFilters } from "../lib/model-search-filters";
 import { ModelSearchFiltersControl } from "./model-search-filters";
@@ -99,8 +96,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   formatFilter: ModelFormatFilter;
   onFormatFilterChange: (value: ModelFormatFilter) => void;
   /** None picked means every capability. */
-  capabilityFilters: CapabilityKey[];
-  onCapabilityFiltersChange: (value: CapabilityKey[]) => void;
+  capabilityFilters: HubCapabilityFilter[];
+  onCapabilityFiltersChange: (value: HubCapabilityFilter[]) => void;
   /** Shared with the chat model selector: hide models over the device budget. */
   fitOnDeviceOnly: boolean;
   onFitOnDeviceOnlyChange: (value: boolean) => void;
@@ -217,12 +214,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
     }
     return options;
   }, [tab, npuAvailable]);
-  const capabilityOptions = useMemo<HubOption<CapabilityFilter>[]>(
-    () =>
-      CAPABILITY_FILTER_OPTIONS.map((option) => ({
-        value: option.value,
-        label: option.label,
-      })),
+  const capabilityOptions = useMemo<HubOption<HubCapabilityFilter | "all">[]>(
+    () => [{ value: "all", label: "All capabilities" }, ...CAPABILITY_FILTER_OPTIONS],
     [],
   );
   const hubSource = useHubSource();
@@ -451,7 +444,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             values={capabilityFilters}
             onValuesChange={(next) =>
               onCapabilityFiltersChange(
-                next.filter((key): key is CapabilityKey => key !== "all"),
+                next.filter((key): key is HubCapabilityFilter => key !== "all"),
               )
             }
             ariaLabel="Capability filter"
@@ -459,16 +452,18 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           />
         )}
 
-        {isDiscover && !isDataset && !npuList && hubSource !== "modelscope" && (
-          <ModelSearchFiltersControl
+        <ModelSearchFiltersControl
             value={searchFilters}
             onChange={onSearchFiltersChange}
+            resourceType={resourceType}
+            onResourceTypeChange={onResourceTypeChange}
+            // The size and publisher limits are Hub search parameters, so only where it runs.
+            showModelFilters={isDiscover && !isDataset && !npuList && hubSource !== "modelscope"}
             className={cn(
               triggerBase,
               "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full p-0",
             )}
           />
-        )}
 
         {tab === "discover" && !npuList && (
           <HubOptionMenu
@@ -521,74 +516,6 @@ export const ModelsToolbar = memo(function ModelsToolbar({
           />
         )}
 
-        <div
-          className="hub-menu-trigger hub-tab-toggle relative inline-flex h-8 shrink-0 items-center rounded-full"
-          role="radiogroup"
-          aria-label="Resource type"
-        >
-          <span
-            aria-hidden="true"
-            className={cn(
-              "hub-tab-toggle-pill",
-              // Height-filling circle (matches the 3-view-tab toggle) that slides
-              // one button-width (w-8 = 32px) between the two options.
-              "pointer-events-none absolute inset-y-0 left-0 w-8 rounded-full transition-transform duration-200 ease-out",
-              resourceType === "datasets" ? "translate-x-8" : "translate-x-0",
-            )}
-          />
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={resourceType === "models"}
-                aria-label="Models"
-                onClick={() => onResourceTypeChange("models")}
-                className={cn(
-                  "relative z-10 inline-flex size-8 items-center justify-center rounded-full transition-colors",
-                  resourceType === "models"
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={AiChipIcon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Models
-            </TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={resourceType === "datasets"}
-                aria-label="Datasets"
-                onClick={() => onResourceTypeChange("datasets")}
-                className={cn(
-                  "relative z-10 inline-flex size-8 items-center justify-center rounded-full transition-colors",
-                  resourceType === "datasets"
-                    ? "text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <HugeiconsIcon
-                  icon={Database02Icon}
-                  strokeWidth={1.75}
-                  className="size-4"
-                />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={6}>
-              Datasets
-            </TooltipContent>
-          </Tooltip>
-        </div>
       </div>
     </div>
   );

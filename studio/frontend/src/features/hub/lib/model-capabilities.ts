@@ -19,6 +19,49 @@ export interface Capability {
   label: string;
 }
 
+/** What the Hub's filter picks from. Image and video generation share the "diffusion" capability
+ *  everywhere else (loading, the Images and Video pages) but are different models to look for. */
+export type HubCapabilityFilter =
+  | "reasoning"
+  | "vision"
+  | "audio"
+  | "embedding"
+  | "image-gen"
+  | "video-gen";
+
+export const HUB_CAPABILITY_FILTERS: readonly HubCapabilityFilter[] = [
+  "reasoning",
+  "vision",
+  "audio",
+  "embedding",
+  "image-gen",
+  "video-gen",
+];
+
+const VIDEO_GEN_TAGS = new Set(["text-to-video", "image-to-video", "video-to-video"]);
+const VIDEO_GEN_ID_RE =
+  /wan2|hunyuan[-_]?video|ltx[-_]?video|\bltxv\b|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
+const IMAGE_GEN_TAGS = new Set(["text-to-image", "image-to-image", "unconditional-image-generation"]);
+const IMAGE_GEN_ID_RE =
+  /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?image|z[-_]image|dreamshaper|latent[-_]?consistency|[-_]lcm\b/;
+
+/** Which generation an image/video model does, from its tags and name. A generator with neither
+ *  signal is taken for an image model, as most are. */
+export function generationKinds(
+  tags: string[] | undefined,
+  pipelineTag: string | undefined,
+  modelId: string,
+): { image: boolean; video: boolean } {
+  const tagSet = lower(tags);
+  const pipeline = pipelineTag?.toLowerCase();
+  const lowerId = modelId.toLowerCase();
+  const has = (set: ReadonlySet<string>) =>
+    [...set].some((tag) => tagSet.has(tag)) || (pipeline !== undefined && set.has(pipeline));
+  const video = has(VIDEO_GEN_TAGS) || VIDEO_GEN_ID_RE.test(lowerId);
+  const image = has(IMAGE_GEN_TAGS) || IMAGE_GEN_ID_RE.test(lowerId) || !video;
+  return { image, video };
+}
+
 const VISION_TAGS = new Set([
   "vision",
   "vision-language",
@@ -63,7 +106,7 @@ const REASONING_TAGS = new Set([
   "step-by-step",
 ]);
 
-// Image generation / diffusion (surfaced as "Image/video gen" in filters).
+// Image and video generation (one "diffusion" capability; the Hub filter splits it, generationKinds).
 const DIFFUSION_TAGS = new Set([
   "diffusers",
   "diffusion",
@@ -239,7 +282,11 @@ export function detectCapabilities(
       )
     : hasAny(DIFFUSION_TAGS);
   if (imageGenTagged || imageGenName) {
-    out.push({ key: "diffusion", label: "Image/video gen" });
+    const kinds = generationKinds(tags, pipelineTag, modelId);
+    out.push({
+      key: "diffusion",
+      label: kinds.image && kinds.video ? "Image & video gen" : kinds.video ? "Video gen" : "Image gen",
+    });
   }
   const languageCodes = new Set<string>();
   for (const tag of tags ?? []) {
