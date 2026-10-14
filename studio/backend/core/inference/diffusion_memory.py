@@ -1957,6 +1957,7 @@ def plan_diffusion_memory(
         companion_dense_mib = companion_dense_mib,
         runtime_headroom_mib = runtime_headroom_mib,
         base_overhead_mib = base_overhead_mib,
+        text_encoder_dense_mib = text_encoder_dense_mib,
     )
     if split is not None:
         estimates["multigpu_primary_required_mib"] = split.primary_required_mib
@@ -1970,6 +1971,7 @@ def plan_diffusion_memory(
             estimates = estimates,
             reasons = tuple(reasons) + (split.reason,),
             secondary_ordinal = split.secondary_ordinal,
+            secondary_components = split.components,
         )
     return MemoryPlan(
         requested_mode = mode,
@@ -1999,6 +2001,7 @@ def _multigpu_companion_split(
     companion_dense_mib: Optional[int],
     runtime_headroom_mib: int,
     base_overhead_mib: int,
+    text_encoder_dense_mib: Optional[int] = None,
 ) -> Any:
     """The multi-GPU companion split for this plan, or None (one card: every existing decision unchanged). Only for
     ``auto`` / ``fast`` on a discrete CUDA card that is the primary of a multi-card selection; explicit offload modes
@@ -2033,6 +2036,7 @@ def _multigpu_companion_split(
         primary_limit_mib = limit,
         secondary_budget_mib = secondary_safe_budget_mib,
         selection = selection,
+        text_encoder_dense_mib = text_encoder_dense_mib,
     )
 
 

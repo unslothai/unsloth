@@ -109,6 +109,25 @@ def test_no_split_keeps_single_card_behaviour(overrides):
     assert _split(**overrides) is None
 
 
+def test_text_encoders_alone_when_the_decode_needs_the_runtime_room():
+    # Video-like: the secondary cannot also hold the decode headroom, but the encoders alone fit it, and the denoiser +
+    # VAE fit the primary.
+    kwargs = dict(
+        companion_dense_mib = 11500,
+        text_encoder_dense_mib = 11000,
+        model_dense_mib = 16000,
+        runtime_headroom_mib = 4000,
+        primary_limit_mib = 12000,
+        secondary_budget_mib = lambda o: 16000,
+    )
+    split = _split(**kwargs)
+    assert split is not None and split.components == mg.TEXT_ENCODERS_ONLY
+    assert split.secondary_required_mib == 11000 + mg.TEXT_ENCODER_HEADROOM_MIB + 1000
+    assert split.primary_required_mib == 5000 + 4000 + 1000
+    # without the encoder share the planner cannot price it and keeps one card
+    assert _split(**{**kwargs, "text_encoder_dense_mib": None}) is None
+
+
 def test_force_splits_even_when_one_card_fits(monkeypatch):
     monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
     assert _split(single_card_policy = "none") is not None
@@ -202,6 +221,38 @@ def test_assignment_prefers_moving_the_companions():
         sizes, headroom_mib = 2000, overhead_mib = 1000, primary_limit_mib = 13500, secondary_limit_mib = 13000
     )
     assert moved == ("text_encoder", "vae")
+
+
+def test_assignment_can_move_only_the_text_encoders():
+    sizes = {"transformer": (9000, "dit"), "text_encoder": (11000, "text_encoder"), "vae": (1400, "other")}
+    moved = mg.choose_component_assignment(
+        sizes, headroom_mib = 4000, overhead_mib = 1000, primary_limit_mib = 16000, secondary_limit_mib = 13500
+    )
+    assert moved == ("text_encoder",)
+
+
+def test_place_split_resolves_text_encoders_only(monkeypatch):
+    class Pipe:
+        def __init__(self):
+            self.transformer = torch.nn.Linear(2, 2)
+            self.text_encoder = torch.nn.Linear(2, 2)
+            self.text_encoder_2 = torch.nn.Linear(2, 2)
+            self.vae = _Vae()
+
+        @property
+        def components(self):
+            return dict(vars(self))
+
+    monkeypatch.setattr(mg, "install_execution_device_patch", lambda: True)
+    pipe = Pipe()
+    real_device = torch.device
+    monkeypatch.setattr(torch, "device", lambda *a: real_device("cpu") if a and a[0] == "cuda" else real_device(*a))
+    try:
+        mg.place_split(pipe, primary = "cpu", secondary_ordinal = 1, names = mg.TEXT_ENCODERS_ONLY)
+    finally:
+        monkeypatch.setattr(torch, "device", real_device)
+    assert mg.placement_status(pipe)["moved"] == ["text_encoder", "text_encoder_2"]
+    assert "decode" not in pipe.vae.__dict__
 
 
 def test_assignment_puts_the_second_expert_on_the_secondary():

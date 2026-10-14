@@ -55,6 +55,11 @@ _ENTRY_METHODS: tuple[str, ...] = (
     "get_text_features",
     "get_image_features",
 )
+# Sentinel for ``MemoryPlan.secondary_components``: only the text encoders move (the VAE decodes beside the denoiser).
+TEXT_ENCODERS_ONLY: tuple[str, ...] = ("<text_encoders>",)
+# Activation room for a card that only runs text encoders: one forward over a prompt, far below a denoise step or a
+# VAE decode, which is what the runtime headroom prices.
+TEXT_ENCODER_HEADROOM_MIB = 1024
 # The resident-fit rule of the single-card planner (diffusion_memory.plan_diffusion_memory): weights plus headroom
 # within 85% of the safe budget.
 _RESIDENT_FRACTION = 0.85
@@ -288,6 +293,8 @@ class CompanionSplit:
     secondary_required_mib: int
     secondary_limit_mib: int
     reason: str
+    # None = every companion moves; TEXT_ENCODERS_ONLY = only the encoders (the VAE stays with the denoiser)
+    components: Optional[tuple[str, ...]] = None
 
 
 def plan_companion_split(
@@ -300,10 +307,14 @@ def plan_companion_split(
     primary_limit_mib: Optional[int],
     secondary_budget_mib: Callable[[int], Optional[int]],
     selection: Optional[MultiGpuSelection],
+    text_encoder_dense_mib: Optional[int] = None,
 ) -> Optional[CompanionSplit]:
-    """Pure decision: return a split when the single-card plan offloads (or ``force``), the denoiser alone fits the
-    primary under the resident rule, and the companions fit a secondary. ``primary_limit_mib`` is the primary's resident
-    limit (already scaled by the caller's rule); ``secondary_budget_mib(ordinal)`` returns a secondary's safe budget."""
+    """Pure decision: return a split when the single-card plan offloads (or ``force``), the denoiser fits the primary
+    under the resident rule, and the moved companions fit a secondary. Tried in order: every companion (text encoders
+    + VAE + the rest, the secondary priced with the full runtime headroom since it runs the decode), then the text
+    encoders alone (the VAE decodes on the primary; the secondary needs only an encoder forward's room).
+    ``primary_limit_mib`` is the primary's resident limit (already scaled by the caller's rule);
+    ``secondary_budget_mib(ordinal)`` returns a secondary's safe budget."""
     mode = multigpu_mode()
     if selection is None or mode == "off":
         return None
@@ -311,35 +322,45 @@ def plan_companion_split(
         return None
     if model_dense_mib is None or not companion_dense_mib or primary_limit_mib is None:
         return None
-    companion = int(companion_dense_mib)
-    primary_required = max(0, int(model_dense_mib) - companion) + int(runtime_headroom_mib) + int(base_overhead_mib)
-    if primary_required > int(primary_limit_mib):
-        return None
-    # The secondary runs the encoders and the VAE decode: weights plus the same activation headroom (the decode spike
-    # dominates it) under the same resident rule.
-    secondary_required = companion + int(runtime_headroom_mib) + int(base_overhead_mib)
-    best: Optional[tuple[int, int]] = None
+    limits: dict[int, int] = {}
     for ordinal in selection.secondaries:
         budget = secondary_budget_mib(ordinal)
-        if budget is None:
-            continue
-        limit = int(int(budget) * _RESIDENT_FRACTION)
-        if secondary_required <= limit and (best is None or limit > best[1]):
-            best = (ordinal, limit)
-    if best is None:
+        if budget is not None:
+            limits[ordinal] = int(int(budget) * _RESIDENT_FRACTION)
+    if not limits:
         return None
-    return CompanionSplit(
-        secondary_ordinal = best[0],
-        primary_required_mib = primary_required,
-        primary_limit_mib = int(primary_limit_mib),
-        secondary_required_mib = secondary_required,
-        secondary_limit_mib = best[1],
-        reason = (
-            f"multi-GPU: denoiser resident on cuda:{selection.primary} ({primary_required} of {int(primary_limit_mib)} "
-            f"MiB), text encoders + VAE on cuda:{best[0]} ({secondary_required} of {best[1]} MiB); "
-            f"single card would use '{single_card_policy}'"
-        ),
-    )
+    candidates: list[tuple[int, int, Optional[tuple[str, ...]], str]] = [
+        (int(companion_dense_mib), int(runtime_headroom_mib), None, "text encoders + VAE"),
+    ]
+    if text_encoder_dense_mib and 0 < int(text_encoder_dense_mib) <= int(companion_dense_mib):
+        candidates.append(
+            (int(text_encoder_dense_mib), TEXT_ENCODER_HEADROOM_MIB, TEXT_ENCODERS_ONLY, "text encoders")
+        )
+    for moved_mib, sec_headroom, components, label in candidates:
+        primary_required = (
+            max(0, int(model_dense_mib) - moved_mib) + int(runtime_headroom_mib) + int(base_overhead_mib)
+        )
+        if primary_required > int(primary_limit_mib):
+            continue
+        secondary_required = moved_mib + sec_headroom + int(base_overhead_mib)
+        fits = [o for o, limit in limits.items() if secondary_required <= limit]
+        if not fits:
+            continue
+        best = max(fits, key = lambda o: (limits[o], -o))
+        return CompanionSplit(
+            secondary_ordinal = best,
+            primary_required_mib = primary_required,
+            primary_limit_mib = int(primary_limit_mib),
+            secondary_required_mib = secondary_required,
+            secondary_limit_mib = limits[best],
+            components = components,
+            reason = (
+                f"multi-GPU: denoiser resident on cuda:{selection.primary} ({primary_required} of "
+                f"{int(primary_limit_mib)} MiB), {label} on cuda:{best} ({secondary_required} of {limits[best]} MiB); "
+                f"single card would use '{single_card_policy}'"
+            ),
+        )
+    return None
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -356,8 +377,10 @@ def choose_component_assignment(
     secondary_limit_mib: int,
 ) -> Optional[tuple[str, ...]]:
     """Names to place on the secondary so each card holds its share resident, or None. ``sizes`` maps component name
-    -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. Tried in order: companions only; the second denoiser;
-    the second denoiser plus the companions. The first denoiser always stays on the primary."""
+    -> (MiB, role) with role 'dit' / 'text_encoder' / 'other'. A card running a denoiser or the VAE (any 'other'
+    component) is priced with the runtime headroom; a card holding only text encoders with an encoder forward's room.
+    Tried in order: every companion; the text encoders alone; the second denoiser; the second denoiser plus the
+    companions. The first denoiser always stays on the primary."""
     dits = [n for n, (_m, r) in sizes.items() if r == "dit"]
     if not dits:
         return None
@@ -368,20 +391,25 @@ def choose_component_assignment(
         for n, (_m, r) in sizes.items()
         if r != "dit" and not n.startswith(_KEEP_WITH_DENOISER_PREFIXES)
     ]
+    encoders = [n for n in companions if sizes[n][1] == "text_encoder"]
     candidates: list[tuple[str, ...]] = []
     if companions:
         candidates.append(tuple(companions))
+    if encoders and len(encoders) < len(companions):
+        candidates.append(tuple(encoders))
     if seconds:
         candidates.append(tuple(seconds))
         if companions:
             candidates.append(tuple(seconds + companions))
-    total = sum(m for m, _r in sizes.values())
+
+    def need(names: list) -> int:
+        weights = sum(sizes[n][0] for n in names)
+        busy = any(sizes[n][1] != "text_encoder" for n in names)
+        return weights + (headroom_mib if busy else TEXT_ENCODER_HEADROOM_MIB) + overhead_mib
+
     for moved in candidates:
-        on_secondary = sum(sizes[n][0] for n in moved)
-        on_primary = total - on_secondary
-        need_p = on_primary + headroom_mib + overhead_mib
-        need_s = on_secondary + headroom_mib + overhead_mib
-        if need_p <= primary_limit_mib and need_s <= secondary_limit_mib:
+        on_primary = [n for n in sizes if n not in moved]
+        if need(on_primary) <= primary_limit_mib and need(list(moved)) <= secondary_limit_mib:
             return moved
     return None
 
@@ -673,7 +701,10 @@ def place_split(
     if primary_dev.type == "cuda" and primary_dev.index is None:
         primary_dev = torch.device("cuda", torch.cuda.current_device())
     secondary_dev = torch.device("cuda", int(secondary_ordinal))
-    moved = tuple(names) if names else companion_names(pipe)
+    if names and tuple(names) == TEXT_ENCODERS_ONLY:
+        moved = tuple(n for n in companion_names(pipe) if n.startswith("text_encoder"))
+    else:
+        moved = tuple(names) if names else companion_names(pipe)
     components = {
         str(n): m for n, m in (getattr(pipe, "components", {}) or {}).items() if isinstance(m, torch.nn.Module)
     }
