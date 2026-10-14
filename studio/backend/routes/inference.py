@@ -7104,7 +7104,10 @@ def _confirm_gate_needs_stream(payload, selected_names = None) -> bool:
     # web_search prompts once the model supplies a ``url`` (it fetches that page), and the
     # gate can only prompt while streaming. Without this a non-streaming auto request is
     # admitted, then blocks in wait_tool_decision on an approval the client never reads.
-    return not all(is_always_safe_tool(t) and t != "web_search" for t in enabled)
+    # mcp_tool_search loads MCP tools, which can prompt, into the same turn.
+    return not all(
+        is_always_safe_tool(t) and t not in ("web_search", "mcp_tool_search") for t in enabled
+    )
 
 
 class _AutoPermissionMode:
@@ -33612,7 +33615,13 @@ async def produce_openai_chat_completions(
         if use_tools:
             from core.inference.tools import set_mcp_listing_context_tokens
 
-            set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
+            set_mcp_listing_context_tokens(
+                getattr(llama_backend, "context_length", None),
+                payload.thread_id,
+                payload.messages,
+                payload.tool_choice,
+                getattr(payload, "mcp_image", None),
+            )
             tools_to_use = await _select_request_tools(
                 payload,
                 supports_vision = bool(getattr(llama_backend, "is_vision", False)),
@@ -36072,7 +36081,13 @@ async def produce_openai_chat_completions(
     if _sf_use_tools:
         from core.inference.tools import set_mcp_listing_context_tokens
 
-        set_mcp_listing_context_tokens(_monitor_context_length())
+        set_mcp_listing_context_tokens(
+            _monitor_context_length(),
+            payload.thread_id,
+            payload.messages,
+            payload.tool_choice,
+            getattr(payload, "mcp_image", None),
+        )
         _sf_tools_to_use = await _select_request_tools(
             payload,
             tools_on = _sf_tools_on,
@@ -43383,7 +43398,13 @@ async def _mlx_count_chat_tokens(
             from core.inference.mcp_client import mcp_server_snapshot_guard
             from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
 
-            set_mcp_listing_context_tokens(_monitor_context_length())
+            set_mcp_listing_context_tokens(
+                _monitor_context_length(),
+                getattr(payload, "thread_id", None),
+                payload.messages,
+                getattr(payload, "tool_choice", None),
+                getattr(payload, "mcp_image", None),
+            )
 
             # A database read, so off the loop. Guarded as the GGUF count guards it, or
             # an interleaving edit pairs a new row with the schema cached before it.
@@ -43786,7 +43807,13 @@ async def chat_count_tokens(
     if _mcp_on and not _takes_passthrough and llama_backend.supports_tools:
         from core.inference.tools import cached_mcp_tools, set_mcp_listing_context_tokens
 
-        set_mcp_listing_context_tokens(getattr(llama_backend, "context_length", None))
+        set_mcp_listing_context_tokens(
+            getattr(llama_backend, "context_length", None),
+            getattr(payload, "thread_id", None),
+            payload.messages,
+            getattr(payload, "tool_choice", None),
+            getattr(payload, "mcp_image", None),
+        )
         from core.inference.mcp_client import mcp_server_snapshot_guard
 
         # Keep the SQLite read off-loop while coordinating the row/cache snapshot with edits.
@@ -49534,6 +49561,7 @@ async def load_diffusion_model_gated(
         annotate_status,
         begin_load_on,
         engine_for,
+        image_install_accelerator,
         off_torch_sd_cpp_device,
         predict_engine,
         select_and_activate_engine,
@@ -49547,6 +49575,12 @@ async def load_diffusion_model_gated(
     from core.inference.media_keepwarm import note_load_origin as note_media_load_origin
     from hub.utils.gguf import extract_quant_token
     from core.inference.sd_cpp_args import forces_cpu_backend
+    from core.inference.sd_cpp_backend import (
+        managed_sd_cpp_accelerator,
+        preferred_accelerator,
+        sd_cpp_binaries_all_cpu,
+        selected_card_identity,
+    )
     from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_MLX, ENGINE_SD_CPP
     from utils.native_path_leases import redact_native_paths
 
@@ -49627,6 +49661,41 @@ async def load_diffusion_model_gated(
         # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
         if pending_name == ENGINE_MLX:
             needs_gpu = True
+        # So does the Vulkan sd.cpp build a CPU torch is routed to beside an AMD or Arc card,
+        # unless that build has failed here and the ladder runs the CPU one instead.
+        # A retained managed Vulkan build also renders on the card, whatever this load requested.
+        vulkan_on_cpu_torch = (
+            device == "cpu"
+            and off_torch is None
+            and await asyncio.to_thread(
+                lambda: preferred_accelerator(image_install_accelerator("cpu"), None) == "vulkan"
+                or managed_sd_cpp_accelerator() == "vulkan"
+            )
+        )
+        if pending_name == ENGINE_SD_CPP and vulkan_on_cpu_torch:
+            needs_gpu = True
+        # A GPU torch whose GPU builds have all failed here runs the managed CPU bundle: no claim.
+        def _runs_cpu_rung() -> bool:
+            try:
+                torch_backend = getattr(resolve_diffusion_device_target(), "backend", device)
+                return (
+                    preferred_accelerator(
+                        image_install_accelerator(torch_backend),
+                        selected_card_identity(gpu_ordinal),
+                    )
+                    == "cpu"
+                    and sd_cpp_binaries_all_cpu()
+                )
+            except Exception:  # noqa: BLE001 -- unknown keeps the claim
+                return False
+
+        cpu_rung_on_gpu_torch = (
+            device not in ("cpu", "mps")
+            and off_torch is None
+            and await asyncio.to_thread(_runs_cpu_rung)
+        )
+        if pending_name == ENGINE_SD_CPP and cpu_rung_on_gpu_torch:
+            needs_gpu = False
         # Before selection: switching to diffusers would unload the resident off-torch model, then refuse.
         if off_torch is not None and pending_name != ENGINE_SD_CPP:
             _guard_diffusion_load_against_training()
@@ -49745,8 +49814,18 @@ async def load_diffusion_model_gated(
                 needs_gpu = False
             else:
                 _guard_diffusion_load_against_training()
+        if device == "cpu" and off_torch is None:
+            # Re-settled on what selection activated and installed: a CPU diffusers fallback, or a
+            # retained CPU bundle after a failed Vulkan install, takes no GPU.
+            needs_gpu = (
+                activated == ENGINE_SD_CPP
+                and vulkan_on_cpu_torch
+                and not await asyncio.to_thread(sd_cpp_binaries_all_cpu)
+            )
         if activated == ENGINE_MLX:
             needs_gpu = True
+        if activated == ENGINE_SD_CPP and cpu_rung_on_gpu_torch:
+            needs_gpu = False
         # sd.cpp runs a paravirtual Mac GPU on the CPU backend, so it takes no DIFFUSION claim.
         if (
             activated == ENGINE_SD_CPP

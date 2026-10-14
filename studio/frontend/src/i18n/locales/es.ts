@@ -586,6 +586,10 @@ export const es = {
   chatMenu: {
     more: "Opciones del chat",
     copy: "Copiar",
+    compact: "Compactar conversación",
+    compactQueued: "Se solicitó la compactación para el siguiente mensaje",
+    compactEmpty: "Aún no hay nada que compactar",
+    compactUnsupported: "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
   welcome: {
     goodToSeeYou: "Me alegra verte",
