@@ -2050,7 +2050,12 @@ def _memory_request_forces_offload(memory_mode: Optional[str], cpu_offload: bool
 
 
 def _pipeline_quant_uncompilable_reason(
-    target: Any, fam: Any, speed_mode: Optional[str], *, model_kind: str, probe: bool = False
+    target: Any,
+    fam: Any,
+    speed_mode: Optional[str],
+    *,
+    model_kind: str,
+    probe: bool = False,
 ) -> Optional[str]:
     """Why a PIPELINE load must keep its dense weights rather than quantise them, or None.
 

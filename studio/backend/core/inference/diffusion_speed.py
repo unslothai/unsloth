@@ -268,7 +268,10 @@ def restore_backend_flags(state: Optional[dict]) -> None:
 
 
 def _gguf_dequant_compilable(
-    is_gguf: bool, on_cuda: bool, family_allows_compile: bool, target: Any = None
+    is_gguf: bool,
+    on_cuda: bool,
+    family_allows_compile: bool,
+    target: Any = None,
 ) -> bool:
     return (
         is_gguf
@@ -370,7 +373,13 @@ def torch_compile_runtime_available() -> bool:
         return True
 
 
-def compile_eligible(target: Any, *, is_gguf: bool, family: Any, probe: bool = True) -> bool:
+def compile_eligible(
+    target: Any,
+    *,
+    is_gguf: bool,
+    family: Any,
+    probe: bool = True,
+) -> bool:
     """Whether the denoiser's repeated block should be regionally compiled: CUDA (incl. ROCm) bf16, or fp16 on NVIDIA
     sm_75+, on a compile-friendly family with inductor available. ``is_gguf`` is kept for compat only.
     ``probe=False`` never runs the allocating ROCm probe (preflight / status, before eviction): an unprobed install

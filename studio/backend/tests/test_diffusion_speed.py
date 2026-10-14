@@ -2578,7 +2578,11 @@ def test_compile_eligible_on_rocm_follows_the_probe(monkeypatch):
     monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
     ds_mod.torch_compile_runtime_available.cache_clear()
     rocm = types.SimpleNamespace(
-        device = "cuda", dtype = "bfloat16", backend = "rocm", ordinal = None, supports_default_torch_compile = True
+        device = "cuda",
+        dtype = "bfloat16",
+        backend = "rocm",
+        ordinal = None,
+        supports_default_torch_compile = True,
     )
     monkeypatch.setattr(ds_mod, "_is_bfloat16", lambda d: d == "bfloat16")
     monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: False)
@@ -2586,7 +2590,9 @@ def test_compile_eligible_on_rocm_follows_the_probe(monkeypatch):
     monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: True)
     assert ds_mod.compile_eligible(rocm, is_gguf = False, family = _family()) is True
     monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: 1 / 0)
-    cuda = types.SimpleNamespace(device = "cuda", dtype = "bfloat16", backend = "cuda", supports_default_torch_compile = True)
+    cuda = types.SimpleNamespace(
+        device = "cuda", dtype = "bfloat16", backend = "cuda", supports_default_torch_compile = True
+    )
     assert ds_mod.compile_eligible(cuda, is_gguf = False, family = _family()) is True
 
 
@@ -2602,7 +2608,11 @@ def test_rocm_compile_probe_settings(monkeypatch):
 
 def _rocm_bf16(dtype = "bfloat16"):
     return types.SimpleNamespace(
-        device = "cuda", dtype = dtype, backend = "rocm", ordinal = None, supports_default_torch_compile = True
+        device = "cuda",
+        dtype = dtype,
+        backend = "rocm",
+        ordinal = None,
+        supports_default_torch_compile = True,
     )
 
 
@@ -2615,7 +2625,9 @@ def _probe_must_not_run(monkeypatch):
     monkeypatch.setattr(ds_mod, "_is_bfloat16", lambda d: d == "bfloat16")
     monkeypatch.setattr(ds_mod, "_is_float16", lambda d: d == "float16")
     calls = []
-    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: calls.append(device) or True)
+    monkeypatch.setattr(
+        rc, "rocm_block_compile_works", lambda device = None: calls.append(device) or True
+    )
     rc._reset_for_tests()
     return rc, calls
 
@@ -2626,7 +2638,12 @@ def test_rocm_preflight_never_runs_the_allocating_probe(monkeypatch):
     from core.inference import diffusion_transformer_quant as tq
 
     rc, calls = _probe_must_not_run(monkeypatch)
-    assert dmod._pipeline_quant_uncompilable_reason(_rocm_bf16(), _family(), None, model_kind = "pipeline") is None
+    assert (
+        dmod._pipeline_quant_uncompilable_reason(
+            _rocm_bf16(), _family(), None, model_kind = "pipeline"
+        )
+        is None
+    )
     assert ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = None, probe = False) is True
     monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
     monkeypatch.setattr(tq, "torchao_unavailable_reason", lambda: "stop here")
@@ -2636,9 +2653,12 @@ def test_rocm_preflight_never_runs_the_allocating_probe(monkeypatch):
     rc._result[rc._index(None)] = (False, "boom")
     assert ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = None, probe = False) is False
     rc._reset_for_tests()
-    assert dmod._pipeline_quant_uncompilable_reason(
-        _rocm_bf16(), _family(), None, model_kind = "pipeline", probe = True
-    ) is None
+    assert (
+        dmod._pipeline_quant_uncompilable_reason(
+            _rocm_bf16(), _family(), None, model_kind = "pipeline", probe = True
+        )
+        is None
+    )
     assert len(calls) == 1
 
 

@@ -109,19 +109,27 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
         from torch import nn
 
         class _Block(nn.Module):
-            def __init__(self, dim: int = 128, heads: int = 4) -> None:
+            def __init__(
+                self,
+                dim: int = 128,
+                heads: int = 4,
+            ) -> None:
                 super().__init__()
                 self.heads = heads
                 self.norm1 = nn.LayerNorm(dim, elementwise_affine = False)
                 self.qkv = nn.Linear(dim, 3 * dim)
                 self.out = nn.Linear(dim, dim)
                 self.norm2 = nn.LayerNorm(dim)
-                self.mlp = nn.Sequential(nn.Linear(dim, 4 * dim), nn.GELU(approximate = "tanh"), nn.Linear(4 * dim, dim))
+                self.mlp = nn.Sequential(
+                    nn.Linear(dim, 4 * dim), nn.GELU(approximate = "tanh"), nn.Linear(4 * dim, dim)
+                )
 
             def forward(self, x: Any, scale: Any) -> Any:
                 b, n, d = x.shape
                 h = self.norm1(x) * (1 + scale)
-                q, k, v = self.qkv(h).view(b, n, 3, self.heads, d // self.heads).permute(2, 0, 3, 1, 4)
+                q, k, v = (
+                    self.qkv(h).view(b, n, 3, self.heads, d // self.heads).permute(2, 0, 3, 1, 4)
+                )
                 a = F.scaled_dot_product_attention(q, k, v).transpose(1, 2).reshape(b, n, d)
                 x = x + self.out(a)
                 return x + self.mlp(self.norm2(x))
@@ -134,7 +142,11 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
         patches = {"memory_planning": False} if hasattr(inductor_cfg, "memory_planning") else {}
         compiled = torch.compile(block, dynamic = True, fullgraph = True)
         worst = 0.0
-        with torch.no_grad(), inductor_cfg.patch(patches), torch._dynamo.config.patch(suppress_errors = False):
+        with (
+            torch.no_grad(),
+            inductor_cfg.patch(patches),
+            torch._dynamo.config.patch(suppress_errors = False),
+        ):
             for n in (77, 160):
                 x = torch.randn(1, n, 128, generator = gen).to(device = dev, dtype = dtype)
                 s = torch.randn(1, 1, 128, generator = gen).to(device = dev, dtype = dtype) * 0.1
