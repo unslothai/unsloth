@@ -1591,7 +1591,8 @@ def check_fast_path(
         from transformers import AutoConfig
 
         model_type = getattr(AutoConfig.from_pretrained(model_name), "model_type", None)
-        if not model_type:
+        # The repo's config names the module, so only a plain identifier is looked up.
+        if not isinstance(model_type, str) or not model_type.isidentifier():
             return None
         module = importlib.import_module(f"transformers.models.{model_type}.modeling_{model_type}")
         available = getattr(module, "is_fast_path_available", None)
