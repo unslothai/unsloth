@@ -248,7 +248,7 @@ export default function PdfView({
   scale: number;
   firstPageOnly?: boolean;
   pageTarget?: PageTarget;
-  /** The reader moved on from the target: its owner can drop it so a remount doesn't replay it. */
+  /** The reader moved on from the target, so a remount mustn't replay it. */
   onPageTargetDone?: () => void;
 }) {
   const t = useT();
@@ -262,8 +262,7 @@ export default function PdfView({
   const slot = useParseSlot(firstPageOnly, file);
   const pdfWorker = usePdfWorker(slot.ready && failed !== file);
   const options = useMemo(() => (pdfWorker ? { ...PDF_OPTIONS, worker: pdfWorker.worker } : null), [pdfWorker]);
-  // Held until the reader scrolls after it was shown, so the remounts as the width and page size
-  // settle land on it too, and input while the document loads doesn't drop it.
+  // Kept until input after it was applied: remounts while the layout settles re-apply it.
   const [pending, setPending] = useState(pageTarget);
   const applied = useRef<PageTarget | undefined>(undefined);
   const onApplied = useCallback((target: PageTarget) => {

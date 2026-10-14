@@ -16,9 +16,7 @@ test("a citation chip's page reaches the PDF view in the browser and the attachm
   assert.match(readSrc("components/file-viewer/document-view.tsx"), /<PdfView[^>]*pageTarget=\{pageTarget\}/);
   const pdfView = readSrc("components/file-viewer/pdf-view.tsx");
   assert.match(pdfView, /virtualizer\.scrollToIndex\([^;]*;\s*onApplied\?\.\(target\)/);
-  // Input while the document loads keeps the target: only one already shown is let go.
   assert.match(pdfView, /if \(applied\.current !== pending\) return;\s*setPending\(undefined\);\s*onPageTargetDone\?\.\(\)/);
-  // Once the reader moves on, the browser drops the tab's target, so reopening the panel doesn't replay it.
   assert.match(readSrc("features/browser/file-view.tsx"), /setFileView\(tabId, \{ pageTarget: null \}\)/);
 });
 

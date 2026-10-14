@@ -59,8 +59,7 @@ export function offerRagDocumentOutside(
 const latestOpen = new Map<string, number>();
 let opens = 0;
 
-/** Opens an indexed document's file in Studio's browser, a PDF at `page`; past the preview limit,
- *  offers it outside. */
+/** Opens an indexed document's file in Studio's browser; past the preview limit, offers it outside. */
 export function openRagDocumentInBrowser(
   documentId: string,
   filename: string,
