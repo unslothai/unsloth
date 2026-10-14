@@ -34,7 +34,7 @@ function getSeverityColor(percent: number): {
 const RING_RADIUS = 6.25;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 
-const UsageRing: FC<{ percent: number | null; stroke: string }> = ({
+export const UsageRing: FC<{ percent: number | null; stroke: string }> = ({
   percent,
   stroke,
 }) => (

@@ -585,6 +585,10 @@ export const ko = {
   chatMenu: {
     more: "채팅 옵션",
     copy: "복사",
+    compact: "대화 압축",
+    compactQueued: "다음 메시지에 대한 대화 압축을 요청했습니다",
+    compactEmpty: "아직 압축할 내용이 없습니다",
+    compactUnsupported: "대화 압축에는 도구를 지원하는 GGUF 또는 MLX 모델이 필요합니다",
   },
   welcome: {
     goodToSeeYou: "반가워요",

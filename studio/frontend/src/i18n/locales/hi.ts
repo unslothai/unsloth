@@ -585,6 +585,10 @@ export const hi = {
   chatMenu: {
     more: "चैट विकल्प",
     copy: "कॉपी करें",
+    compact: "बातचीत कॉम्पैक्ट करें",
+    compactQueued: "अगले संदेश के लिए कॉम्पैक्शन का अनुरोध किया गया",
+    compactEmpty: "अभी कॉम्पैक्ट करने के लिए कुछ नहीं है",
+    compactUnsupported: "कॉम्पैक्शन के लिए टूल सपोर्ट वाला GGUF या MLX मॉडल आवश्यक है",
   },
   welcome: {
     goodToSeeYou: "आपको देखकर अच्छा लगा",

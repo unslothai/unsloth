@@ -22,7 +22,6 @@ import {
 import {
   ChatPage,
   type ChatSearch,
-  clearNewChatDraft,
   hydrateModelDisclaimerPreference,
   openFolderAsProject,
   startLlamaCppAutoReload,
@@ -472,7 +471,6 @@ function RootLayout() {
     incognito?: boolean;
     standalone?: boolean;
   }) => {
-    clearNewChatDraft();
     const chatRuntime = useChatRuntimeStore.getState();
     // The project on screen, which on Chat is the runtime's. The page keeps that in step with the
     // route, the inferred ones included: a thread or a compare pair opened without ?project= still

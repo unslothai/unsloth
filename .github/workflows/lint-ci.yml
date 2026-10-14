@@ -258,6 +258,14 @@ jobs:
             # unsloth/models/rl* today). Sub-second.
             run: |
               python <<'PY'
+              import os, pathlib, subprocess
+              def tracked(*patterns):
+                  # Committed files only. A background lane builds a venv under .lanes/ while
+                  # these steps run, and a file pip removes mid-walk crashed an rglob scan.
+                  # fsdecode, as rglob did: a tracked path need not be valid UTF-8.
+                  out = subprocess.run(["git", "ls-files", "-z", "--", *patterns],
+                                       capture_output=True, check=True).stdout
+                  return sorted(pathlib.Path(p) for p in os.fsdecode(out).split("\0") if p)
               import ast, pathlib, sys
 
               SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
@@ -266,7 +274,7 @@ jobs:
 
               bad = []
               scanned = 0
-              for path in sorted(pathlib.Path(".").rglob("*.py")):
+              for path in tracked("*.py"):
                   if any(part in SKIP_PARTS for part in path.parts):
                       continue
                   scanned += 1
@@ -312,6 +320,14 @@ jobs:
             continue-on-error: true
             run: |
               python <<'PY'
+              import os, pathlib, subprocess
+              def tracked(*patterns):
+                  # Committed files only. A background lane builds a venv under .lanes/ while
+                  # these steps run, and a file pip removes mid-walk crashed an rglob scan.
+                  # fsdecode, as rglob did: a tracked path need not be valid UTF-8.
+                  out = subprocess.run(["git", "ls-files", "-z", "--", *patterns],
+                                       capture_output=True, check=True).stdout
+                  return sorted(pathlib.Path(p) for p in os.fsdecode(out).split("\0") if p)
               import pathlib
 
               ACCEPTED = (
@@ -326,7 +342,7 @@ jobs:
 
               studio_missing = []
               other_missing  = []
-              for path in sorted(pathlib.Path(".").rglob("*.py")):
+              for path in tracked("*.py"):
                   if any(part in SKIP_PARTS for part in path.parts):
                       continue
                   text = path.read_text(encoding="utf-8", errors="replace")
@@ -380,6 +396,14 @@ jobs:
             # added shows up immediately.
             run: |
               python <<'PY'
+              import os, pathlib, subprocess
+              def tracked(*patterns):
+                  # Committed files only. A background lane builds a venv under .lanes/ while
+                  # these steps run, and a file pip removes mid-walk crashed an rglob scan.
+                  # fsdecode, as rglob did: a tracked path need not be valid UTF-8.
+                  out = subprocess.run(["git", "ls-files", "-z", "--", *patterns],
+                                       capture_output=True, check=True).stdout
+                  return sorted(pathlib.Path(p) for p in os.fsdecode(out).split("\0") if p)
               import pathlib, sys, yaml
 
               SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
@@ -388,8 +412,7 @@ jobs:
 
               bad = []
               scanned = 0
-              for path in sorted(list(pathlib.Path(".").rglob("*.yml"))
-                                 + list(pathlib.Path(".").rglob("*.yaml"))):
+              for path in tracked("*.yml", "*.yaml"):
                   if any(part in SKIP_PARTS for part in path.parts):
                       continue
                   scanned += 1
@@ -417,6 +440,14 @@ jobs:
             #     `tsc --noEmit` already validates these in Frontend CI.
             run: |
               python <<'PY'
+              import os, pathlib, subprocess
+              def tracked(*patterns):
+                  # Committed files only. A background lane builds a venv under .lanes/ while
+                  # these steps run, and a file pip removes mid-walk crashed an rglob scan.
+                  # fsdecode, as rglob did: a tracked path need not be valid UTF-8.
+                  out = subprocess.run(["git", "ls-files", "-z", "--", *patterns],
+                                       capture_output=True, check=True).stdout
+                  return sorted(pathlib.Path(p) for p in os.fsdecode(out).split("\0") if p)
               import fnmatch, json, pathlib, sys
 
               SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
@@ -427,7 +458,7 @@ jobs:
 
               bad = []
               scanned = 0
-              for path in sorted(pathlib.Path(".").rglob("*.json")):
+              for path in tracked("*.json"):
                   if any(part in SKIP_PARTS for part in path.parts):
                       continue
                   if path.name in SKIP_NAMES:
