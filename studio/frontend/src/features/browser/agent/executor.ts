@@ -105,20 +105,20 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
 const knownHosts = new Set<string>();
 const reachedHosts = new Set<string>();
 const opaqueHosts = new Set<string>();
-const alwaysAllowed = new Set<string>();
 let pageLinks = new Set<string>();
 let scope: string | undefined;
 // Where the agent's own moves in this chat landed: a native view's Back or Forward doesn't say where
 // it goes, so this is how it is checked before it loads.
 let trail: string[] = [];
 let at = -1;
+// Always allow answers, by chat: kept when another chat uses the browser, like Always allow on tool cards.
+const alwaysAllowed = new Map<string, Set<string>>();
 
 function enterScope(next: string | undefined): void {
   if (next === scope) return;
   knownHosts.clear();
   reachedHosts.clear();
   opaqueHosts.clear();
-  alwaysAllowed.clear();
   pageLinks = new Set();
   trail = [];
   at = -1;
@@ -423,11 +423,13 @@ const DECLINED: Record<Question["ask"], string> = {
 async function askInPanel(question: Question, signal?: AbortSignal): Promise<Answer> {
   // A click is asked about by its label, so Always allow covers that button, not every risky one.
   const key = [question.ask, question.host, question.ask === "click" ? question.name : ""].join("\n");
-  if (question.ask !== "script" && alwaysAllowed.has(key)) return "always";
+  // "__default" is a new chat's first turn that hasn't got its id yet, which another new chat can share.
+  const chat = question.ask === "script" || !scope || scope === "__default" ? undefined : scope;
+  if (chat && alwaysAllowed.get(chat)?.has(key)) return "always";
   const store = useBrowserStore.getState();
   if (!store.open) store.openPanel();
   const answer = await askUser(question, signal);
-  if (answer === "always" && question.ask !== "script") alwaysAllowed.add(key);
+  if (answer === "always" && chat) alwaysAllowed.set(chat, (alwaysAllowed.get(chat) ?? new Set()).add(key));
   return answer;
 }
 
