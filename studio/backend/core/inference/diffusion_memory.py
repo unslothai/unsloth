@@ -610,6 +610,10 @@ class MemoryPlan:
     # MiB of the streamed denoiser / encoders kept resident (whole groups); None streams every group.
     resident_transformer_mib: Optional[int] = None
     resident_text_encoder_mib: Optional[int] = None
+    # Multi-GPU split (diffusion_multigpu): when set, ``secondary_components`` (None = every companion: text encoders,
+    # VAE, ...) are placed on cuda:<secondary_ordinal> and the denoiser stays resident on the primary card.
+    secondary_ordinal: Optional[int] = None
+    secondary_components: Optional[tuple[str, ...]] = None
 
     @property
     def engages_offload(self) -> bool:
@@ -628,6 +632,10 @@ class MemoryPlan:
             "stream_transformer": self.stream_transformer,
             "resident_transformer_mib": self.resident_transformer_mib,
             "resident_text_encoder_mib": self.resident_text_encoder_mib,
+            "secondary_ordinal": self.secondary_ordinal,
+            "secondary_components": (
+                list(self.secondary_components) if self.secondary_components is not None else None
+            ),
         }
 
 
@@ -1936,6 +1944,33 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
+    split = _multigpu_companion_split(
+        target = target,
+        device_memory = device_memory,
+        mode = mode,
+        requested_mode = requested_mode,
+        explicit_offload = explicit_offload,
+        can_offload = can_offload,
+        policy = policy,
+        budget = budget,
+        model_dense_mib = model_dense_mib,
+        companion_dense_mib = companion_dense_mib,
+        runtime_headroom_mib = runtime_headroom_mib,
+        base_overhead_mib = base_overhead_mib,
+    )
+    if split is not None:
+        estimates["multigpu_primary_required_mib"] = split.primary_required_mib
+        estimates["multigpu_secondary_required_mib"] = split.secondary_required_mib
+        return MemoryPlan(
+            requested_mode = mode,
+            offload_policy = OFFLOAD_NONE,
+            vae_tiling = False,
+            vae_slicing = False,
+            device_memory = device_memory,
+            estimates = estimates,
+            reasons = tuple(reasons) + (split.reason,),
+            secondary_ordinal = split.secondary_ordinal,
+        )
     return MemoryPlan(
         requested_mode = mode,
         offload_policy = policy,
@@ -1947,6 +1982,57 @@ def plan_diffusion_memory(
         # only ever meaningful under group offload; every other tier already places the encoders
         stream_text_encoders = stream_text_encoders and policy == OFFLOAD_GROUP,
         stream_transformer = stream_transformer or policy != OFFLOAD_GROUP,
+    )
+
+
+def _multigpu_companion_split(
+    *,
+    target: Any,
+    device_memory: DeviceMemory,
+    mode: str,
+    requested_mode: Optional[str],
+    explicit_offload: bool,
+    can_offload: bool,
+    policy: str,
+    budget: Optional[int],
+    model_dense_mib: Optional[int],
+    companion_dense_mib: Optional[int],
+    runtime_headroom_mib: int,
+    base_overhead_mib: int,
+) -> Any:
+    """The multi-GPU companion split for this plan, or None (one card: every existing decision unchanged). Only for
+    ``auto`` / ``fast`` on a discrete CUDA card that is the primary of a multi-card selection; explicit offload modes
+    and the legacy ``cpu_offload`` flag keep their meaning."""
+    from .diffusion_multigpu import (
+        current_selection,
+        plan_companion_split,
+        secondary_safe_budget_mib,
+    )
+
+    selection = current_selection()
+    if selection is None or not can_offload or device_memory.is_unified:
+        return None
+    if getattr(device_memory, "device", None) != "cuda" or budget is None:
+        return None
+    if getattr(target, "ordinal", None) != selection.primary:
+        return None
+    if mode not in (MEMORY_MODE_AUTO, MEMORY_MODE_FAST):
+        return None
+    if explicit_offload and normalize_memory_mode(requested_mode) is None:
+        return None
+    if mode == MEMORY_MODE_FAST:
+        limit = _fast_device_budget_mib(device_memory)
+    else:
+        limit = int(budget * 0.85)
+    return plan_companion_split(
+        single_card_policy = policy,
+        model_dense_mib = model_dense_mib,
+        companion_dense_mib = companion_dense_mib,
+        runtime_headroom_mib = runtime_headroom_mib,
+        base_overhead_mib = base_overhead_mib,
+        primary_limit_mib = limit,
+        secondary_budget_mib = secondary_safe_budget_mib,
+        selection = selection,
     )
 
 
@@ -3149,6 +3235,14 @@ def apply_memory_plan(
                     "falling back to whole-module offload",
                     exc,
                 )
+            _fallback_to_model_offload()
+            policy = OFFLOAD_MODEL
+    elif getattr(plan, "secondary_ordinal", None) is not None:
+        from .diffusion_multigpu import apply_split_plan
+
+        if not apply_split_plan(pipe, plan, placement = placement, logger = logger):
+            # The single-card plan offloaded (that is why the split was chosen), so whole-module offload on the primary
+            # is the safe fallback.
             _fallback_to_model_offload()
             policy = OFFLOAD_MODEL
     else:

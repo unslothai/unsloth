@@ -102,6 +102,15 @@ from .diffusion_device import (
     placed_cuda_ordinal,
     resolve_diffusion_device_target,
     resolve_selected_cuda_ordinal,
+    resolve_selected_cuda_ordinals,
+)
+from .diffusion_multigpu import (
+    install_cfg_parallel,
+    make_selection,
+    placement_status as multigpu_placement_status,
+    refine_plan_for_multigpu,
+    selection_scope,
+    uninstall_cfg_parallel,
 )
 from .diffusion_memory import (
     DEFAULT_BASE_OVERHEAD_MIB,
@@ -3384,6 +3393,12 @@ class VideoBackend:
                 if gpu_ids and resolve_diffusion_device_target().device == "cuda"
                 else None
             )
+        # Every selected card, for the multi-GPU layer (diffusion_multigpu); the ranked one above stays the primary.
+        gpu_ordinals = (
+            resolve_selected_cuda_ordinals(gpu_ids)
+            if gpu_ids and len(set(gpu_ids)) > 1 and resolve_diffusion_device_target().device == "cuda"
+            else []
+        )
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
@@ -3484,13 +3499,21 @@ class VideoBackend:
                 gpu_ordinal = gpu_ordinal,
                 _load_token = token,
                 _cancel_event = cancel_event,
+                _gpu_ordinals = gpu_ordinals,
             ),
             daemon = True,
         ).start()
         return self.status()
 
-    @scoped_local_files_only
     def _run_load(self, **kwargs: Any) -> None:
+        # The multi-GPU selection is visible to this load's planner and placement only (a context variable of this
+        # worker thread); one card or UNSLOTH_DIFFUSION_MULTIGPU=0 leaves it unset and every decision unchanged.
+        selection = make_selection(kwargs.get("gpu_ordinal"), kwargs.pop("_gpu_ordinals", None))
+        with selection_scope(selection):
+            self._run_load_body(**kwargs)
+
+    @scoped_local_files_only
+    def _run_load_body(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
@@ -7963,6 +7986,8 @@ class VideoBackend:
             if refined is not plan:
                 logger.info("video.memory: %s", refined.reasons[-1])
                 plan = refined
+            # several selected cards: an offloading plan may become a resident split (an MoE expert per card)
+            plan = refine_plan_for_multigpu(pipe, plan, logger)
             vram_floor_mib = _video_offload_vram_floor_mib(pipe, plan)
             free_mib = getattr(getattr(plan, "device_memory", None), "free_mib", None)
             if vram_floor_mib is not None and free_mib is not None:
@@ -8166,6 +8191,7 @@ class VideoBackend:
                 },
                 logger = logger,
             )
+            install_cfg_parallel(pipe, offload_policy = offload_policy, logger = logger)
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
 
@@ -11766,6 +11792,7 @@ class VideoBackend:
                 "supports_audio_flow_shift": fam.default_audio_flow_shift is not None
                 and state.engine != "sd_cpp",
             },
+            "multi_gpu": multigpu_placement_status(getattr(state, "pipe", None)),
             "resolved": resolved,
         }
 

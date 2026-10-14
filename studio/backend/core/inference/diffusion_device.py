@@ -351,9 +351,36 @@ def resolve_selected_cuda_ordinal(
     still run -- they read the mask and nvidia-smi -- so the single card the UI sends resolves and
     only a multi-card pick comes back None.
     """
+    ordinals = resolve_selected_cuda_ordinals(gpu_ids)
+    if not ordinals:
+        return None
+    if len(ordinals) == 1:
+        return ordinals[0]
+    if not allow_ranking:
+        return None
+    return rank_cuda_ordinals(ordinals)[0]
+
+
+def rank_cuda_ordinals(ordinals: list[int]) -> list[int]:
+    """``ordinals`` by free VRAM, most first, ties to the lowest ordinal (an unreadable card sorts last)."""
+
+    def _free_vram(ordinal: int) -> int:
+        try:
+            import torch
+            return int(torch.cuda.mem_get_info(ordinal)[0])
+        except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
+            return -1
+
+    return sorted(ordinals, key = lambda ordinal: (-_free_vram(ordinal), ordinal))
+
+
+def resolve_selected_cuda_ordinals(gpu_ids: Optional[list[int]]) -> list[int]:
+    """Every torch ordinal of the selection, in ascending order (validated and translated through the mask exactly as
+    :func:`resolve_selected_cuda_ordinal` does). Empty for no selection; raises ValueError for one this host cannot
+    honour. The multi-GPU layer (diffusion_multigpu) uses the cards beyond the primary."""
     wanted = sorted({int(gpu_id) for gpu_id in gpu_ids or ()})
     if not wanted:
-        return None
+        return []
     try:
         from utils.hardware.hardware import (
             get_parent_visible_gpu_ids,
@@ -371,19 +398,7 @@ def resolve_selected_cuda_ordinal(
             f"Requested GPU {wanted} but none of them are visible to this process "
             f"(visible: {visible}). Clear the GPU selection to use the default device."
         )
-    if len(ordinals) == 1:
-        return ordinals[0]
-    if not allow_ranking:
-        return None
-
-    def _free_vram(ordinal: int) -> int:
-        try:
-            import torch
-            return int(torch.cuda.mem_get_info(ordinal)[0])
-        except Exception:  # noqa: BLE001 -- an unreadable card sorts last rather than failing the load
-            return -1
-
-    return max(ordinals, key = lambda ordinal: (_free_vram(ordinal), -ordinal))
+    return sorted(dict.fromkeys(ordinals))
 
 
 @contextmanager
