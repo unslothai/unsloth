@@ -975,18 +975,17 @@ _ADAPTER_ATTRS = ("scaling", "active_adapters", "merged_adapters", "disable_adap
 
 def weights_fingerprint(module: Any) -> int:
     """Changes whenever the denoiser's weights or adapter state do: a parameter replaced, edited in place (fused
-    LoRA bumps the version counter), added or removed (PEFT injection), or an adapter's scale / activation changed."""
+    LoRA bumps the version counter), added or removed (PEFT injection), or an adapter's scale / activation changed.
+    A ``param.data`` swap to different values is not seen; diffusers' LoRA paths do not do that."""
     parts: list = []
     for name, param in module.named_parameters():
         try:
             version = param._version
         except Exception:  # noqa: BLE001 - inference tensors carry no version
             version = -1
-        try:
-            pointer = param.data_ptr()
-        except Exception:  # noqa: BLE001 - wrapper subclasses (torchao) have no storage of their own
-            pointer = id(param)
-        parts.append((name, pointer, version))
+        # Identity, not the data pointer: an encode-time offload round trip moves the same weights and must not force
+        # a rebuild, while a replaced parameter (new object) or an in-place edit (version) must.
+        parts.append((name, id(param), version))
     for name, sub in module.named_modules():
         for attr in _ADAPTER_ATTRS:
             value = sub.__dict__.get(attr)
@@ -1293,12 +1292,17 @@ def cfg_parallel_decline(pipe: Any, *, offload_policy: str, selection: Optional[
     mode = cfg_parallel_mode()
     if mode == "off":
         return f"{CFG_PARALLEL_ENV}=0"
-    if offload_policy != "none":
-        return f"denoiser is offloaded ({offload_policy})"
     denoiser = getattr(pipe, "transformer", None)
     torch = _torch()
     if not isinstance(denoiser, torch.nn.Module):
         return "no DiT denoiser (a U-Net batches its guidance branches)"
+    # Whole-module / sequential offload page the denoiser per call; a group / streaming plan is fine only when it left
+    # the denoiser itself resident (encoders streamed), which shows as a denoiser without offload hooks.
+    if offload_policy in ("model", "sequential"):
+        return f"denoiser is offloaded ({offload_policy})"
+    hooked = _hooks_present(denoiser)
+    if hooked is not None:
+        return f"denoiser is offloaded or hooked ({offload_policy}: {hooked})"
     if getattr(pipe, "transformer_2", None) is not None:
         return "two-expert denoiser"
     if getattr(denoiser, "_compiled_call_impl", None) is not None:

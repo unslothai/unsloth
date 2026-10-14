@@ -697,7 +697,13 @@ def test_cfg_parallel_decline_reasons(monkeypatch):
 
     sel = mg.MultiGpuSelection(primary = 0, secondaries = (1,))
     assert mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = None) == "one card selected"
-    assert "offloaded" in mg.cfg_parallel_decline(Pipe(), offload_policy = "group", selection = sel)
+    assert "offloaded" in mg.cfg_parallel_decline(Pipe(), offload_policy = "model", selection = sel)
+    # a group plan that left the denoiser resident (encoders streamed) qualifies; a hooked denoiser does not
+    assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "group", selection = sel)
+    hooked = Pipe()
+    hooked.transformer = _Dit()
+    hooked.transformer.proj.register_forward_pre_hook(lambda m, a: None)
+    assert "hooked" in mg.cfg_parallel_decline(hooked, offload_policy = "group", selection = sel)
     assert "CUDA" in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = sel)
 
     class Unet:
@@ -714,7 +720,7 @@ def test_status_reports_a_declined_cfg_parallel():
 
     pipe = Pipe()
     with mg.selection_scope(mg.make_selection(0, [0, 1])):
-        reason = mg.install_cfg_parallel(pipe, offload_policy = "group")
+        reason = mg.install_cfg_parallel(pipe, offload_policy = "model")
     assert "offloaded" in reason
     assert mg.placement_status(pipe) == {"cfg_parallel": {"armed": False, "declined": reason}}
     other = Pipe()
