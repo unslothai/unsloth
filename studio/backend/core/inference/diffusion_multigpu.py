@@ -238,7 +238,11 @@ def _measure_copy_gib_s(src: Any, dst_device: Any) -> Optional[float]:
 def _free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     try:
         import torch
-        free, total = torch.cuda.mem_get_info(ordinal)
+
+        from utils.hardware import trusted_mem_get_info
+
+        # not torch.cuda.mem_get_info: on Windows ROCm its free figure ignores what this process already holds
+        free, total = trusted_mem_get_info(int(ordinal), module = torch.cuda)
         return int(free) // (1 << 20), int(total) // (1 << 20)
     except Exception:  # noqa: BLE001
         return None, None

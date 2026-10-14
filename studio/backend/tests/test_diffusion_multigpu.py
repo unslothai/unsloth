@@ -1434,3 +1434,16 @@ def test_primary_tile_verdict_does_not_tile_a_vae_decoding_elsewhere(monkeypatch
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
     assert D._tile_for_verdict(pipe, primary_verdict, target, kwargs, 1, None, None) == "restore"
     assert engaged == [1]
+
+
+def test_secondary_free_memory_reads_the_trusted_probe(monkeypatch):
+    import utils.hardware as hw
+
+    seen = []
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *a: (80 << 30, 80 << 30))
+    monkeypatch.setattr(
+        hw, "trusted_mem_get_info", lambda device = None, module = None: seen.append(device) or (1 << 30, 80 << 30)
+    )
+    # Windows ROCm over-reports raw free memory; the capped figure is what budgets the secondary
+    assert mg._free_total_mib(1) == (1024, 80 * 1024)
+    assert seen == [1]
