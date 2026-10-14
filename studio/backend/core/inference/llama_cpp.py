@@ -8161,8 +8161,7 @@ def _local_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
-# A killed server cannot refuse to exit, but releasing a large model's GPU memory on a busy driver took over 5 s
-# (a reload then failed with "timed out after 5 seconds"); this only bounds a truly stuck process.
+# Freeing a large model's GPU memory on a busy driver took over 5 s after SIGKILL; this only bounds a stuck process.
 _SIGKILL_REAP_TIMEOUT_S = 30
 
 
