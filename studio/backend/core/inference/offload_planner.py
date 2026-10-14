@@ -2169,7 +2169,20 @@ def _knob_only_gate(
         kv_layer_weights = kv_layer_weights,
     )
     if fallback is None:
-        return None, 0.0, 0.0
+        # The same abstain _cost_gate takes: with nothing to compare to, the knob is not proved
+        # worth giving up.
+        return (
+            Plan(
+                n_ctx = n_ctx,
+                declined_by_gate = True,
+                reason = (
+                    "llama.cpp's own placement for this load could not be modelled, so "
+                    "giving up the knob has nothing to be ranked against; left to --fit on"
+                ),
+            ),
+            0.0,
+            0.0,
+        )
     plan = Placement(host_groups = [])
     window = n_ctx if opts.kv_unified else n_ctx // n_slots
     scored = rank(
@@ -2294,8 +2307,9 @@ def _finish(
     )
 
     # A projector alone can close the deficit, and then nothing below scores the plan: the cost
-    # gate is skipped, and with it the only refusal keeping a host side out of swap.
-    if mmproj_host_bytes:
+    # gate is skipped, and with it the only refusal keeping a host side out of swap. A -nkvo cache
+    # is host RAM the same way on a plan that only changed a knob or the context.
+    if mmproj_host_bytes or (opts.require_cost_win and kv_host_bytes):
         refused = _host_ram_refusal(opts, n_ctx, host_side, host_ram_bytes)
         if refused is not None:
             return refused

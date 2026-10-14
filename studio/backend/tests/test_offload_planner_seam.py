@@ -583,12 +583,17 @@ def test_a_free_reading_above_the_cards_total_is_clamped(monkeypatch):
     assert over.vram_bytes == honest.vram_bytes, "the clamped card is budgeted as itself"
 
     # gpu_usable_mib comes off the same reading, so the budget is capped with it rather than
-    # left as the only unclamped way in.
+    # left as the only unclamped way in, and its reserve comes off the clamped figure: the same
+    # plan as the honest card with that reserve.
     over_usable = _plan(
         _Stub(), free_mib = 64 * 1024, usable_mib = 63 * 1024, gpu_total_mib = {0: 14 * 1024}
     )
-    assert over_usable is not None
-    assert over_usable.ot_patterns == honest.ot_patterns
+    honest_usable = _plan(
+        _Stub(), free_mib = 14 * 1024, usable_mib = 13 * 1024, gpu_total_mib = {0: 14 * 1024}
+    )
+    assert over_usable is not None and honest_usable is not None
+    assert over_usable.ot_patterns == honest_usable.ot_patterns
+    assert over_usable.reason == honest_usable.reason
 
     # Once per device, not once per load.
     warned = _warnings_of(monkeypatch)

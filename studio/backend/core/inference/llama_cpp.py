@@ -30968,9 +30968,15 @@ class LlamaCppBackend:
                     # including ones saying it could not place this at all.
                     # A user ratio, typed or inherited through the env twin, reaches the child
                     # anyway (the extras are appended below), so the plan emits no second one.
+                    # Only under an inherited layer split: any other mode has the env ratio
+                    # popped from the child env below, and the planner ignored it too.
                     _user_split_in_force = bool(
                         _extra_args_set_any_flag(extra_args, _TENSOR_SPLIT_FLAGS)
-                        or str(os.environ.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
+                        or (
+                            str(os.environ.get("LLAMA_ARG_SPLIT_MODE", "")).strip().lower()
+                            in ("", "layer")
+                            and str(os.environ.get("LLAMA_ARG_TENSOR_SPLIT", "")).strip()
+                        )
                     )
                     _spill_flags = self._spill_plan_flags_for(
                         _spill,
@@ -37708,11 +37714,24 @@ class LlamaCppBackend:
                 ", ".join(f"GPU {idx} (sm_{sm})" for idx, sm in _blocked),
             )
             return None
-        # min(), because gpu_usable_mib was computed from the SAME free reading the clamp above
-        # may have just cut: usable is free minus a reserve, so it is never the smaller of the two
-        # on a card that reported itself sanely.
+        # gpu_usable_mib was computed from the SAME free reading the clamp above may have just
+        # cut, as raw free minus a reserve, so the reserve comes off the clamped figure rather than
+        # being lost to a min() against it.
+        raw_free_by_idx = {idx: free for idx, free in (inputs.get("gpus") or ())}
         vram_per_device = [
-            int(min(usable_mib.get(idx, free_mib), free_mib) * 1024 * 1024)
+            int(
+                max(
+                    0.0,
+                    free_mib
+                    - max(
+                        0.0,
+                        raw_free_by_idx.get(idx, free_mib)
+                        - usable_mib.get(idx, raw_free_by_idx.get(idx, free_mib)),
+                    ),
+                )
+                * 1024
+                * 1024
+            )
             for idx, free_mib in kept
         ]
         # llama.cpp sizes its row ranges from RAW free VRAM (llama-model.cpp:1433),
