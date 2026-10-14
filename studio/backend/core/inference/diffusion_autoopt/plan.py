@@ -112,15 +112,14 @@ def compile_ineligible_reason(target: Any, family: Any) -> Optional[str]:
         return "device does not support the default torch.compile profile"
     if not bool(getattr(family, "supports_torch_compile", True)):
         return "family opts out of torch.compile"
-    if not ds.rocm_compile_probe_passes(target):
-        return "ROCm regional compile probe failed on this install"
+    rocm_failed = "ROCm regional compile probe failed on this install"
     dtype = getattr(target, "dtype", None)
     if ds._is_bfloat16(dtype):
-        return None
+        return None if ds.rocm_compile_probe_passes(target) else rocm_failed
     if bool(getattr(family, "fp16_incompatible", False)):
         return "fp16-incompatible family stays eager outside bf16"
     if ds._is_float16(dtype) and ds._fp16_compile_capable(target):
-        return None
+        return None if ds.rocm_compile_probe_passes(target) else rocm_failed
     return f"dtype {str(dtype).replace('torch.', '')} is not compiled on this device"
 
 
@@ -176,6 +175,7 @@ def build_plan(
         and is_gguf
         and on_cuda
         and getattr(family, "supports_torch_compile", True)
+        and not ds.rocm_compile_switched_off(target)
     ):
         compile_reason = "GGUF compiles the dequant op chain instead"
     else:

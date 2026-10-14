@@ -1029,7 +1029,7 @@ def dense_quant_host_capable(target: Any) -> bool:
     # halves of that decision belong to the load, not to a row.
     from .diffusion_speed import compile_eligible
 
-    if not compile_eligible(target, is_gguf = False, family = None):
+    if not compile_eligible(target, is_gguf = False, family = None, probe = False):
         return False
     # Not redundant with the arch floor: `_scheme_supported` rejects every scheme when the torchao
     # import fails, so an ABI skew would advertise a fast path every load then falls back from.

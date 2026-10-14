@@ -43,6 +43,25 @@ def rocm_block_compile_works(device: Any = None) -> bool:
     return rocm_block_compile_probe(device)[0]
 
 
+def rocm_block_compile_known(device: Any = None) -> Optional[bool]:
+    """The probe's answer without running it (None = unprobed): preflight and status paths must not allocate."""
+    setting = rocm_compile_setting()
+    if setting != "auto":
+        return setting == "on"
+    with _lock:
+        hit = _result.get(_index(device))
+    return None if hit is None else hit[0]
+
+
+def _index(device: Any) -> Any:
+    try:
+        import torch
+        index = torch.cuda.current_device() if device is None else torch.device(device).index
+        return torch.cuda.current_device() if index is None else index
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
     setting = rocm_compile_setting()
     if setting == "off":
@@ -55,23 +74,21 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
         return False, f"torch unavailable: {exc}"
     if not getattr(getattr(torch, "version", None), "hip", None):
         return True, "not ROCm"
-    try:
-        index = torch.cuda.current_device() if device is None else torch.device(device).index
-        if index is None:
-            index = torch.cuda.current_device()
-    except Exception:  # noqa: BLE001
-        index = 0
+    index = _index(device)
     with _lock:
-        if index not in _result:
-            _result[index] = _probe(torch, index)
-            ok, why = _result[index]
-            (logger.info if ok else logger.warning)(
-                "diffusion.speed: ROCm regional compile probe on cuda:%s: %s (%s)",
-                index,
-                "ok" if ok else "failed, staying eager",
-                why,
-            )
-        return _result[index]
+        if index in _result:
+            return _result[index]
+        ok, why = _probe(torch, index)
+        (logger.info if ok else logger.warning)(
+            "diffusion.speed: ROCm regional compile probe on cuda:%s: %s (%s)",
+            index,
+            "ok" if ok else "failed, staying eager",
+            why,
+        )
+        # An OOM says the card was busy, not that the compiler is broken: ask again next load.
+        if ok or "OutOfMemoryError" not in why:
+            _result[index] = (ok, why)
+        return ok, why
 
 
 def _probe(torch: Any, index: int) -> tuple[bool, str]:

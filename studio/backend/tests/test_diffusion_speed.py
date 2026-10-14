@@ -2598,3 +2598,83 @@ def test_rocm_compile_probe_settings(monkeypatch):
     assert rc.rocm_block_compile_probe() == (False, f"{rc.ENV}=0") and not rc.rocm_compile_allowed()
     monkeypatch.setenv(rc.ENV, "1")
     assert rc.rocm_block_compile_probe()[0] is True and rc.rocm_compile_allowed()
+
+
+def _rocm_bf16(dtype = "bfloat16"):
+    return types.SimpleNamespace(
+        device = "cuda", dtype = dtype, backend = "rocm", ordinal = None, supports_default_torch_compile = True
+    )
+
+
+def _probe_must_not_run(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    monkeypatch.delenv(rc.ENV, raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    monkeypatch.setattr(ds_mod, "_is_bfloat16", lambda d: d == "bfloat16")
+    monkeypatch.setattr(ds_mod, "_is_float16", lambda d: d == "float16")
+    calls = []
+    monkeypatch.setattr(rc, "rocm_block_compile_works", lambda device = None: calls.append(device) or True)
+    rc._reset_for_tests()
+    return rc, calls
+
+
+def test_rocm_preflight_never_runs_the_allocating_probe(monkeypatch):
+    # The route preflight and the polled status route run before eviction: they read the probe, never run it.
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_transformer_quant as tq
+
+    rc, calls = _probe_must_not_run(monkeypatch)
+    assert dmod._pipeline_quant_uncompilable_reason(_rocm_bf16(), _family(), None, model_kind = "pipeline") is None
+    assert ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = None, probe = False) is True
+    monkeypatch.setattr(tq, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(tq, "torchao_unavailable_reason", lambda: "stop here")
+    assert tq.dense_quant_host_capable(_rocm_bf16()) is False
+    assert calls == []
+    # A recorded failure is honoured without re-probing; the loader (probe=True) runs it.
+    rc._result[rc._index(None)] = (False, "boom")
+    assert ds_mod.compile_eligible(_rocm_bf16(), is_gguf = False, family = None, probe = False) is False
+    rc._reset_for_tests()
+    assert dmod._pipeline_quant_uncompilable_reason(
+        _rocm_bf16(), _family(), None, model_kind = "pipeline", probe = True
+    ) is None
+    assert len(calls) == 1
+
+
+def test_rocm_probe_oom_is_not_cached(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    answers = iter([(False, "OutOfMemoryError: HIP out of memory"), (True, "ok")])
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: next(answers))
+    rc._reset_for_tests()
+    assert rc.rocm_block_compile_probe()[0] is False
+    assert rc.rocm_block_compile_known() is None
+    assert rc.rocm_block_compile_probe()[0] is True
+    rc._reset_for_tests()
+
+
+def test_rocm_fp16_never_pays_the_probe(monkeypatch):
+    from core.inference.diffusion_autoopt.plan import compile_ineligible_reason
+
+    _rc, calls = _probe_must_not_run(monkeypatch)
+    assert ds_mod.compile_eligible(_rocm_bf16("float16"), is_gguf = False, family = _family()) is False
+    assert compile_ineligible_reason(_rocm_bf16("float16"), _family()).startswith("dtype")
+    assert calls == []
+
+
+def test_rocm_kill_switch_also_stops_the_gguf_dequant_compile(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv("TORCHDYNAMO_DISABLE", raising = False)
+    ds_mod.torch_compile_runtime_available.cache_clear()
+    cuda = types.SimpleNamespace(backend = "cuda")
+    monkeypatch.setenv(rc.ENV, "0")
+    assert ds_mod._gguf_dequant_compilable(True, True, True, _rocm_bf16()) is False
+    assert ds_mod._gguf_dequant_compilable(True, True, True, cuda) is True
+    monkeypatch.setenv(rc.ENV, "auto")
+    assert ds_mod._gguf_dequant_compilable(True, True, True, _rocm_bf16()) is True
