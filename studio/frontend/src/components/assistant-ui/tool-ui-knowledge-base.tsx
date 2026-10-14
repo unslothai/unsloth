@@ -87,7 +87,7 @@ const LibraryGlyph = (
   props: Omit<ComponentProps<typeof HugeiconsIcon>, "icon">,
 ) => <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} {...props} />;
 
-// Past this the one-line header truncates the query, so the content repeats it in full.
+// Longer queries get a scroll box rather than a line of text.
 const QUERY_INLINE_MAX = 80;
 
 const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
@@ -139,32 +139,41 @@ const KnowledgeBaseToolUIImpl: ToolCallMessagePartComponent = ({
               )}
             </span>
           </div>
-        ) : citations.length > 0 ? (
+        ) : (
+          // Outcome first, then the full query: the one-line header may clip it in every outcome.
           <div className="flex flex-col gap-2 text-sm text-muted-foreground">
-            <div>
-              Retrieved {citations.length} passage
-              {citations.length === 1 ? "" : "s"} from {docCount} document
-              {docCount === 1 ? "" : "s"}. See Document Sources below.
-            </div>
+            {citations.length > 0 ? (
+              <div>
+                Retrieved {citations.length} passage
+                {citations.length === 1 ? "" : "s"} from {docCount} document
+                {docCount === 1 ? "" : "s"}. See Document Sources below.
+              </div>
+            ) : resultText ? (
+              <ScrollPane
+                className="rounded bg-muted/50 p-2"
+                scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
+              >
+                {resultText}
+              </ScrollPane>
+            ) : (
+              <div>No matching passages.</div>
+            )}
             {query.length > QUERY_INLINE_MAX ? (
               <ScrollPane
+                data-slot="knowledge-base-query"
                 className="rounded bg-muted/50 p-2"
                 scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
               >
                 {query}
               </ScrollPane>
+            ) : query ? (
+              <div
+                data-slot="knowledge-base-query"
+                className="break-words text-xs"
+              >
+                Query: &ldquo;{query}&rdquo;
+              </div>
             ) : null}
-          </div>
-        ) : resultText ? (
-          <ScrollPane
-            className="rounded bg-muted/50 p-2"
-            scrollerClassName="max-h-40 overflow-auto whitespace-pre-wrap break-words text-xs"
-          >
-            {resultText}
-          </ScrollPane>
-        ) : (
-          <div className="text-sm text-muted-foreground">
-            No matching passages.
           </div>
         )}
       </ToolFallbackContent>

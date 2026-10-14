@@ -102,10 +102,15 @@ test("the document search header stays one line, with the summary first and the 
   assert.match(kb, /singleLine=\{true\}/);
   assert.match(kb, /icon=\{LibraryGlyph\}/);
   assert.match(kb, /icon=\{LibrariesIcon\}/);
+  const summary = kb.indexOf("Retrieved {citations.length} passage");
+  const fullQuery = kb.indexOf('data-slot="knowledge-base-query"');
   assert.ok(
-    kb.indexOf("Retrieved {citations.length} passage") <
-      kb.indexOf("query.length > QUERY_INLINE_MAX"),
+    summary >= 0 && fullQuery >= 0,
+    "both the summary and the full query render",
   );
+  assert.ok(summary < fullQuery);
+  // The query renders after every outcome (hits, raw result, no hits), not only with citations.
+  assert.ok(kb.indexOf("No matching passages.") < fullQuery);
   const fallback = readFileSync(
     new URL(
       "../src/components/assistant-ui/tool-fallback.tsx",
