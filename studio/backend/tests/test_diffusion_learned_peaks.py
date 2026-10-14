@@ -181,6 +181,20 @@ def test_request_guard_reads_the_learned_peak(klein_pipe):
         peak_mib = 4000,
     )
     assert new is not plan
+    # seeded family: a peak recorded by this session's own render places the next load, never this one's requests
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
+    # 2048x2048: 4 x 2645 x 1.15 = 12167 -> 12288
+    assert dm.measured_request_extra_mib(klein_pipe, width = 2048, height = 2048) == 12288 - 3072
+
+
+def test_request_guard_of_an_unseeded_family_reads_its_learned_peak(klein_pipe):
+    kw = dict(family = "some-new-dit", quant = "torchao:Int8Tensor", speed_mode = "default")
+    mp.record(**kw, width = 1024, height = 1024, peak_mib = 2600)
+    new = _refine(klein_pipe, _klein_flat_plan(), family = "some-new-dit")
+    assert new.estimates["measured_runtime_headroom_mib"] == 3072
+    klein_pipe._unsloth_measured_reserve = (3072, "some-new-dit", "default", None, None)
+    assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 0
+    mp.record(**kw, width = 1024, height = 1024, peak_mib = 4000)
     assert dm.measured_request_extra_mib(klein_pipe, width = 1024, height = 1024) == 4608 - 3072
 
 

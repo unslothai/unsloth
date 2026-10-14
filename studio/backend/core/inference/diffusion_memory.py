@@ -3105,16 +3105,19 @@ def measured_request_extra_mib(
     dense_mib = reserve[3] if len(reserve) > 3 else None
     compute_bytes = reserve[4] if len(reserve) > 4 and reserve[4] else 2
     identity = getattr(pipe, "_unsloth_peak_identity", None)
-    need = measured_image_runtime_mib(
-        family,
-        speed_mode,
+    sized = dict(
         width = width,
         height = height,
         batch_size = batch_size,
         dense_transformer_mib = dense_mib,
         compute_bytes = compute_bytes,
-        quant = identity[1] if isinstance(identity, tuple) and len(identity) == 3 else None,
     )
+    # A seeded family keeps the seed here: a peak this session's renders recorded after the load only places the
+    # NEXT load, it must not stream resident groups for a request the same size as one that just completed. An
+    # unseeded family was placed from its learned peak, which is all there is to check against.
+    need = measured_image_runtime_mib(family, speed_mode, **sized)
+    if need is None and isinstance(identity, tuple) and len(identity) == 3:
+        need = measured_image_runtime_mib(family, speed_mode, quant = identity[1], **sized)
     if need is None:
         return 0
     cond = max(0, int(condition_pixels or 0)) * max(1, int(batch_size or 1))
