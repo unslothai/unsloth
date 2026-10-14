@@ -82,11 +82,11 @@ function startsLegacyArithmetic(
   at: number,
   quote: number,
 ): boolean {
-  if (quote !== 0) return true;
   const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
   const close = text.indexOf("]", at + 1);
   if (close === -1 || close >= limit || text[at + 1] === "^") return false;
-  if (text[close + 1] === "(") return false;
+  if (text[close + 1] === "(" || text[close + 1] === "[") return false;
+  if (quote !== 0) return true;
   return /[+\-*/%<>&|=~?:()]/.test(text.slice(at + 1, close));
 }
 

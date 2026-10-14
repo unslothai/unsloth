@@ -54,6 +54,9 @@ test("numbers written as inline maths render as maths", () => {
     ["Users' answer is $3$!", ["3"]],
     ["The answer is $42$[source](https://example.com).", ["42"]],
     ["The answer is $42$[^1].\n\n[^1]: Source.", ["42"]],
+    ['He said "The answer is $42$[source](https://example.com)."', ["42"]],
+    ['He said "$42$[^1]."\n\n[^1]: Source.', ["42"]],
+    ["The answer is $42$[x+1][ref].\n\n[ref]: https://example.com", ["42"]],
     ["Step 2: $8$ times $2$ is $16$.", ["8", "2", "16"]],
     [
       "Janet has $16$ eggs. She eats $3$ and bakes with $4$, so $16 - 3 - 4 = 9$ remain.",
