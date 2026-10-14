@@ -52,6 +52,34 @@ REACH_TIMEOUT_S = 3.0
 KV_UNKNOWN_FRACTION = 0.2
 
 _MMPROJ_DEVICE_FLAGS = frozenset({"--mmproj-device", "-mmdev"})
+_ADAPTER_FLAGS = frozenset(
+    {"--lora", "--lora-scaled", "--control-vector", "--control-vector-scaled"}
+)
+_PLACEMENT_FLAGS = frozenset(
+    {"--device", "-dev", "--split-mode", "-sm", "--tensor-split", "-ts", "--main-gpu", "-mg"}
+)
+_PLACEMENT_ENV = ("LLAMA_ARG_DEVICE", "LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT")
+
+
+def _flag_args(args: Sequence[str], flags: frozenset) -> List[str]:
+    tokens = [str(a) for a in args]
+    out: List[str] = []
+    for i, token in enumerate(tokens):
+        name, sep, _ = token.partition("=")
+        if name in flags:
+            out += [token] if sep else tokens[i : i + 2]
+    return out
+
+
+def _caller_placement(args: Sequence[str]) -> Optional[str]:
+    """The first device / split setting the caller made, which a cluster block would override."""
+    for token in (str(a) for a in args):
+        name = token.split("=", 1)[0]
+        if name in _PLACEMENT_FLAGS:
+            return name
+    return next((k for k in _PLACEMENT_ENV if os.environ.get(k)), None)
+
+
 _DRAFT_DEVICE_FLAGS = frozenset({"--device-draft", "-devd", "--spec-draft-device"})
 _DEVICE_LINE = re.compile(r"^\s+(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]*$")
@@ -289,7 +317,8 @@ def plan_cluster(
     """single when this machine holds the load, else a layer split weighted by usable memory.
 
     The split prices weights and KV by share, which is what ``--tensor-split`` hands out, and
-    charges sidecars (projector, drafter, adapters) to the coordinator, which loads them.
+    charges the projector and drafter to the coordinator, which loads them; adapters go with the
+    layers, so the caller adds them to ``model_bytes``.
     """
     if model_bytes is None:
         return ClusterPlan("single", "model size unknown; not guessing, serving on this machine")
@@ -525,6 +554,10 @@ class ClusterServing:
         if ss.argv_or_env_rpc(effective):
             self.topology, self.reason = "single", "the caller supplied --rpc; placement is theirs"
             return request
+        placed = _caller_placement(effective)
+        if placed:
+            self.topology, self.reason = "single", f"the caller set {placed}; placement is theirs"
+            return request
         failed = await self._ensure_workers()
         if self._cancelled():
             self.topology, self.reason = "single", "the load was cancelled"
@@ -627,6 +660,9 @@ class ClusterServing:
         local_file = ss.cached_repo_file(model_path, variant)
         size = ss.gguf_size_bytes(local_file)
         sidecars, _unknown = ss.sidecar_bytes(extras)
+        # Adapters and control vectors sit beside the layers they modify, on every device.
+        adapters, _unknown = ss.sidecar_bytes(_flag_args(extras, _ADAPTER_FLAGS))
+        sidecars -= adapters
         from core.inference.llama_server_args import extra_args_disable_mmproj
 
         named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
@@ -664,13 +700,13 @@ class ClusterServing:
         if kv is None:
             kv = KV_UNKNOWN_FRACTION * float(size) if ctx and size else 0.0
         kv = float(kv)
-        return (None if size is None else float(size)), kv, float(sidecars)
+        return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:
         if self._passthrough:
             self._passthrough = False
             if not self._alongside:
-                self._resident = {}  # an engine load replaced the primary; that was not ours
+                self.forget_served()  # an engine load replaced the primary; that was not ours
             return
         self._pre_load = None
         self._cancel_event = None

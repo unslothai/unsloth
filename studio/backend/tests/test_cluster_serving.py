@@ -814,3 +814,43 @@ def test_a_header_kv_estimate_that_fails_reserves_the_fallback(monkeypatch):
     monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: None)
     run(ss.before_load(_request(max_seq_length = 8192), 4))
     assert ss.status()["topology"] == "layer_split"
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--device", "CUDA1"], ["-sm", "none"], ["--tensor-split=1,0"], ["--main-gpu", "1"]],
+)
+def test_caller_device_or_split_settings_are_left_alone(monkeypatch, extra):
+    seen = _cluster_env(monkeypatch)
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request
+    assert "placement is theirs" in ss.status()["reason"] and seen == []
+
+
+def test_an_engine_load_clears_the_served_split(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    run(ss.before_load(_request(engine = "vllm"), 4))
+    run(ss.after_load(SimpleNamespace(), 4))
+    status = ss.status()
+    assert status["topology"] == "single" and status["split_args"] is None
+
+
+def test_adapters_are_spread_with_the_layers_not_charged_to_this_machine(monkeypatch, tmp_path):
+    lora = tmp_path / "adapter.gguf"
+    lora.write_bytes(b"x")
+    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
+    sizes = {str(lora): 20 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 150 * GIB))
+    run(ss.before_load(_request(llama_extra_args = ["--lora", str(lora)]), 4))
+    plan = ss.status()["plan"]
+    assert plan["need_gib"] == pytest.approx(170.0, abs = 0.01)
+    weights = [d["weight"] for d in plan["devices"]]
+    usable = [cs.usable_bytes(d) for d in _devices()]
+    # No coordinator deduction: the weights follow raw usable memory.
+    assert weights == pytest.approx([u / sum(usable) for u in usable], abs = 1e-3)
