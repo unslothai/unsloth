@@ -295,6 +295,12 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         == "TLS version=1.3"
     )
     assert (
+        _sanitize_public_query(
+            "Authorization: Bearer abcdefghijklmnop, API response=401 Unauthorized"
+        )
+        == "API response=401 Unauthorized"
+    )
+    assert (
         _sanitize_public_query("Authorization: Bearer abcdefghijklmnop, GET /v1/users return 401")
         == "GET /v1/users return 401"
     )
