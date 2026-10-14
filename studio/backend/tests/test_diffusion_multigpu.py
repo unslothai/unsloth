@@ -1115,7 +1115,11 @@ def test_replica_is_dropped_when_the_source_gains_a_cache_hook():
 
 def test_post_load_split_keeps_vae_tiling(monkeypatch):
     plan = dataclasses.replace(_plan(), vae_tiling = True, vae_slicing = True)
-    sizes = {"transformer": (9000, "dit"), "text_encoder": (8000, "text_encoder"), "vae": (300, "other")}
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
     monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
     monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: 12750)
     monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
@@ -1132,7 +1136,13 @@ def test_replica_keeps_a_bound_root_forward_override():
     torch.manual_seed(0)
     dit = _Dit()
 
-    def doubled(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+    def doubled(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        return_dict = False,
+    ):
         return (2 * type(self).forward(self, hidden_states, timestep, encoder_hidden_states)[0],)
 
     dit.forward = types.MethodType(doubled, dit)

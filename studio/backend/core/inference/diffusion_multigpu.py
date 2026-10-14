@@ -1117,7 +1117,9 @@ def _rebind_root_forward(original: Any, source: Any, replica: Any) -> None:
             return  # the class forward: the copy already has it
         replica.__dict__["forward"] = types.MethodType(original.__func__, replica)
         return
-    raise RuntimeError(f"the denoiser's root forward override ({original!r}) cannot be reproduced on a replica")
+    raise RuntimeError(
+        f"the denoiser's root forward override ({original!r}) cannot be reproduced on a replica"
+    )
 
 
 def build_replica(module: Any, device: Any) -> Any:
@@ -1408,8 +1410,11 @@ def _unchanged_since_launch(snapshots: list) -> bool:
             continue
         try:
             now = src.to(snap.device).reshape(-1).contiguous().view(torch.uint8)
-            checks.append(torch.equal(now, snap.reshape(-1).contiguous().view(torch.uint8))
-                          if snap.device.type == "cpu" else (now == snap.reshape(-1).contiguous().view(torch.uint8)).all())
+            checks.append(
+                torch.equal(now, snap.reshape(-1).contiguous().view(torch.uint8))
+                if snap.device.type == "cpu"
+                else (now == snap.reshape(-1).contiguous().view(torch.uint8)).all()
+            )
         except Exception:  # noqa: BLE001 - an unverifiable tensor never accepts a prediction
             return False
     if not checks:
@@ -1625,7 +1630,9 @@ class CfgParallelRouter:
         # an in-place edit between launch and the odd branch (same object, new values) rejects the prediction.
         # Version counters cannot do this: inference tensors do not track one.
         snapshots = []
-        for (_path, src), (_rpath, used) in zip(_leaves((p_args, p_kwargs)), _leaves((r_args, r_kwargs))):
+        for (_path, src), (_rpath, used) in zip(
+            _leaves((p_args, p_kwargs)), _leaves((r_args, r_kwargs))
+        ):
             if isinstance(src, torch.Tensor):
                 snapshots.append((src, used.clone() if used is src else used))
         replica = self.replica
