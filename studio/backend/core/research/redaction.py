@@ -40,7 +40,7 @@ _QUERY_AUTHORIZATION = re.compile(
     (?P<credentials>(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
     (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
     (?:aws4-hmac-sha256|basic|bearer|digest|dpop|negotiate|ntlm|token
-    |[\w-]*(?:key|token|secret|password|credential|signature)|(?P=scheme))[ \t]+
+    |[\w-]*(?:key|token|secret|password|credential|signature)|(?P=scheme))(?:[ \t]+|[ \t]*\r?\n[ \t]+)
     (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
     |(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*))*)""".replace(
         r"[ \t]", _HSPACE
@@ -60,8 +60,27 @@ _AUTH_PARAM_PAIR = re.compile(
 _PUBLIC_AUTH_PARAMS = frozenset(
     {"algorithm", "charset", "domain", "nc", "qop", "realm", "stale", "uri", "userhash"}
 )
+# IANA HTTP Authentication Scheme Registry plus common vendor schemes; OAuth and Mutual are left
+# out because "OAuth 2.0" and "Mutual TLS" are far more often prose than a header.
 _REGISTERED_AUTH_SCHEMES = frozenset(
-    {"aws4-hmac-sha256", "basic", "bearer", "digest", "dpop", "negotiate", "ntlm", "token"}
+    {
+        "aws4-hmac-sha256",
+        "basic",
+        "bearer",
+        "concealed",
+        "digest",
+        "dpop",
+        "gnap",
+        "hawk",
+        "hoba",
+        "negotiate",
+        "ntlm",
+        "privatetoken",
+        "scram-sha-1",
+        "scram-sha-256",
+        "token",
+        "vapid",
+    }
 )
 # Prose after "Authorization:" ("design patterns", "RBAC role=admin") is not a credential.
 _CREDENTIAL_SHAPE = re.compile(r"(?=.{4})(?:.*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{2})|.{16})")

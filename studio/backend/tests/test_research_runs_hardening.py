@@ -309,6 +309,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
         "Authorization: RBAC role=admin, Basic supersecret2= why",
         'Authorization: Hawk id="one", mac="firstsecret1", Hawk id="two", mac="supersecret2" why',
         "Authorization: Hawk abcdefghijklmnop, Hawk supersecret2 why",
+        "Authorization: Basic firstsecret1==,\r\n Basic\r\n supersecret2== why",
         'Authorization: Custom realm="api", custom response="supersecret2" why',
         "Authorization: Basic supersecret2== server echoed supersecret2 why",
         'Authorization: Basic "supersecret2" why',
@@ -360,6 +361,7 @@ def test_sanitize_query_keeps_scheme_grammar_to_authorization_fields():
     spaced = "Authorization: Digest response=abcdefghijklmnop\u202fwhy"
     assert _sanitize_public_query(spaced) == "why"
     assert "why" in _sanitize_public_query('Authorization: Custom token="abc\ud800defghijk" why')
+    assert _sanitize_public_query("why Authorization: GNAP shorttoken failed") == "why failed"
     public = "Authorization: RBAC cancellationToken=none"
     assert _sanitize_public_query(public) == "cancellationToken=none"
     assert "kzvqmtprxwjyhfn" not in _sanitize_public_query(
