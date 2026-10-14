@@ -2619,10 +2619,6 @@ export function ImagesPage({
       ? state.instances.find((i) => i.id === imagesMachine)?.name
       : undefined,
   );
-  useEffect(() => {
-    if (imagesMachine) void refreshLinkedMachines();
-  }, [imagesMachine]);
-
   const refreshStatus = useCallback(async () => {
     const ticket = ++statusTicket.current;
     try {
@@ -2631,6 +2627,18 @@ export function ImagesPage({
       // Status is best-effort; a failed poll should not surface an error toast.
     }
   }, [setStatusIfNewest]);
+
+  // A machine removed since it was picked would leave every Images request on a 404 proxy.
+  useEffect(() => {
+    if (!imagesMachine) return;
+    void refreshLinkedMachines().then(() => {
+      const { instances, loadedAt } = useLinkedMachinesStore.getState();
+      if (loadedAt === 0 || instances.some((i) => i.id === imagesMachine)) return;
+      setImagesMachine(null);
+      setImagesMachineState(null);
+      void refreshStatus();
+    });
+  }, [imagesMachine, refreshStatus]);
 
   // Track mount so a long generate run stops issuing GPU work only on a true unmount; the page
   // stays mounted across tab switches, so a batch keeps generating off-tab.
@@ -3707,11 +3715,6 @@ export function ImagesPage({
       // A pick from a linked instance loads and generates there; its load fetches what is missing,
       // so it skips this machine's download manager.
       const machine = pickMeta.linkedInstanceId ?? null;
-      if (machine !== getImagesMachine()) {
-        setImagesMachine(machine);
-        setImagesMachineState(machine);
-        void refreshStatus();
-      }
       const meta: ModelSelectorChangeMeta = machine
         ? { ...pickMeta, source: "local" }
         : pickMeta;
@@ -3723,6 +3726,18 @@ export function ImagesPage({
       // with a 409. A download-only pick submits no load, so that cannot happen, and the selector
       // stays interactive during a generation: refusing it there was a silent dead click.
       if (busy !== null && !downloadOnlyPick) return;
+      // The download manager writes to this machine's cache; a linked model fetches what it
+      // needs when it loads there.
+      if (downloadOnlyPick && machine) {
+        toast.error("Download only fetches to this machine. Load a linked model to get it there.");
+        return;
+      }
+      // After the guard: a refused pick must leave status and gallery on the machine still working.
+      if (machine !== getImagesMachine()) {
+        setImagesMachine(machine);
+        setImagesMachineState(machine);
+        void refreshStatus();
+      }
       if (!downloadOnlyPick) beginPick();
       // This pick owns the page now, so one still awaiting a listing or a plan drops out. Before any
       // branch, since staging never sets `busy`.

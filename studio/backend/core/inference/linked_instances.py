@@ -74,8 +74,9 @@ _http_client: Optional[httpx.AsyncClient] = None
 def _client() -> httpx.AsyncClient:
     global _http_client
     if _http_client is None:
-        from core.inference.external_provider import _create_shared_http_client
-        _http_client = _create_shared_http_client()
+        # The remote's key rides on every request and plain http is allowed on a LAN, so an
+        # env proxy must not see it.
+        _http_client = httpx.AsyncClient(trust_env = False)
     return _http_client
 
 

@@ -877,3 +877,11 @@ def test_a_linked_embedding_model_is_forwarded(monkeypatch):
     request = _request({"model": "@wsl/unsloth/embed", "input": "hi"})
     asyncio.run(endpoint(request, current_subject = "unsloth"))
     assert seen["path"] == "embeddings"
+
+
+def test_linked_requests_ignore_environment_proxies(monkeypatch):
+    # The remote's Bearer key rides on every request, and plain http is allowed on a LAN.
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+    monkeypatch.setattr(linked_instances, "_http_client", None)
+    assert linked_instances._client().trust_env is False
