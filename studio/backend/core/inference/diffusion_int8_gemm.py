@@ -28,7 +28,7 @@ LATENCY GATE: a static tile table goes stale with the toolchain (A100 on Triton 
 the DiT shapes at ~59 TOPS vs ~430 on Triton 3.6 / 3.7, while cuBLAS ``_int_mm`` holds ~420). At install, every swapped
 (N, K) is timed once per M bucket on this device: the probed tile, the per-shape tile and a few arch candidates against
 cuBLAS ``_int_mm`` plus one int32 -> bf16 pass (the bytes the stock epilogue moves once Inductor fuses it into the
-consumer). The fastest fused tile wins unless cuBLAS beats it (``_CUBLAS_MARGIN``); a cuBLAS bucket keeps the stock
+consumer). A challenger must beat the status quo by ``_CUBLAS_MARGIN`` (``decide``); a cuBLAS bucket keeps the stock
 torchao forward for that call (traced, so Inductor still fuses its epilogue). A chosen alternative tile still has to
 pass the bit-exact probe. Results persist per toolchain (GPU name, capability, torch, Triton, CUDA, kernel source) as
 JSON under the Studio cache (``UNSLOTH_DIFFUSION_INT8_GEMM_TUNE_DIR`` overrides), so a later load only reads them.
@@ -114,10 +114,12 @@ _ALT_TILES: dict = {
 }
 # M buckets: (upper bound exclusive, M timed). Text-stream / small images, then image and video token grids.
 _M_BUCKETS = ((2048, 1024), (None, 4096))
-# cuBLAS must beat the best fused tile by this factor. Its arm already pays a full int32 -> bf16 pass (6 B / element),
-# more than the stock path's real extra traffic once Inductor fuses the epilogue (4 B), so a tie stays fused. 0.92
-# kept A100 / Triton 3.8 klein on fused tiles 1.7% slower end to end than the kill switch.
-_CUBLAS_MARGIN = 1.0
+# Whoever replaces the status quo (the static tile ``tile_for`` picks) must beat it by this factor: cuBLAS over the
+# static tile, and a new fused tile over cuBLAS. The cuBLAS arm pays a full int32 -> bf16 pass, yet near-ties of a new
+# tile still lost end to end (a swapped Linear also changes what Inductor fuses around it): A100 / Triton 3.8 klein
+# with near-tie buckets on new tiles ran 1.7% slower than all cuBLAS, Z-Image 3% (1.249 vs 1.256 ms, 1.041 vs 1.092).
+# The static tiles were measured end to end on their toolchain, so they too only leave on a clear loss.
+_CUBLAS_MARGIN = 1.1
 # Alternative tiles must beat the probed default by this factor (timing noise must not churn the tile).
 _ALT_MARGIN = 0.97
 # Timing scratch cap (int32 accumulator of the cuBLAS arm); a bigger bucket is timed at fewer rows.
@@ -1081,6 +1083,17 @@ def _probed(index: int, tile: tuple) -> bool:
     return seen[tile]
 
 
+def decide(static: Any, fused_ms: dict, cublas_ms: float) -> Any:
+    """The tile or ``_CUBLAS`` for one bucket from its timings (ms per arm); ``static`` is the status quo."""
+    fastest = min(fused_ms, key = fused_ms.get)
+    stays = static in fused_ms and cublas_ms * _CUBLAS_MARGIN >= fused_ms[static]
+    if static in fused_ms and fused_ms[fastest] >= _ALT_MARGIN * fused_ms[static]:
+        return static if stays else _CUBLAS
+    if fused_ms[fastest] * _CUBLAS_MARGIN <= cublas_ms:
+        return fastest  # a new tile, clearly faster than both the static tile and cuBLAS
+    return static if stays else _CUBLAS
+
+
 def tune(index: int, shapes: Any) -> dict:
     """Latency gate for ``(n, k)`` shapes on device ``index`` (fused GEMM already probed on): fills ``_DEVICE_PLAN``
     from the toolchain's file, times what is missing, writes it back. Must run eagerly (not under capture / trace)."""
@@ -1110,12 +1123,7 @@ def tune(index: int, shapes: Any) -> dict:
                 fused_ms = {t: v for t, v in ms.items() if t != _CUBLAS}
                 if not fused_ms:
                     continue
-                choice = static if static in fused_ms else min(fused_ms, key = fused_ms.get)
-                fastest = min(fused_ms, key = fused_ms.get)
-                if fused_ms[fastest] < _ALT_MARGIN * fused_ms[choice]:
-                    choice = fastest
-                if ms[_CUBLAS] < _CUBLAS_MARGIN * fused_ms[choice]:
-                    choice = _CUBLAS
+                choice = decide(static, fused_ms, ms[_CUBLAS])
                 stored[slot] = choice
                 dirty = True
             if choice != _CUBLAS and not _probed(index, choice):
