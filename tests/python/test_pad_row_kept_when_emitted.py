@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The loaders zero weight[padding_idx], but not for a token the tokenizer adds to every input.
-
-microsoft/harrier-oss-v1-0.6b sets pad_token_id = <|endoftext|> (151643), and its tokenizer.json
-post_processor appends that same token to every text; last-token pooling then reads its row.
-Zeroing it turned every FastSentenceTransformer embedding into a different vector (cosine ~0.5
-vs stock sentence-transformers). See unslothai/unsloth#4984.
-"""
+"""Pad-row zeroing at load must spare EOS ids and tokens the tokenizer adds itself (#4984)."""
 
 import json
 
@@ -179,7 +173,6 @@ def test_plain_pad_row_is_zeroed():
 
 
 def test_pad_equal_to_eos_is_never_zeroed():
-    # pad == eos: zeroing would wipe the EOS row the model needs to learn to stop.
     model = _model(2)
     tu.zero_pad_embedding_rows(model, _PadTok(2, 2))
     assert _zeroed(model) == []

@@ -171,13 +171,8 @@ def _as_id_set(ids):
 
 
 def zero_pad_embedding_rows(model, tokenizer):
-    """Zero the input embedding row of the token the tokenizer pads with.
-
-    Skipped for any EOS id (tokenizer, config or generation config): zeroing it breaks learning to
-    stop. Skipped for an id the tokenizer adds to every input (#4984: harrier-oss-v1-0.6b pools its
-    <|endoftext|> pad row). Skipped for embeddings tied to lm_head: a zero row forces pad logit = 0,
-    which beats real tokens' negative logits (Gemma) and makes the decoder emit <pad>.
-    """
+    """Zero the tokenizer's pad row, except for an EOS id (stopping), an id the tokenizer adds to every
+    input (#4984, harrier pools it) or an lm_head-tied embedding (pad logit 0 beats Gemma's negatives)."""
     pad_token_id = getattr(tokenizer, "pad_token_id", None) if tokenizer is not None else None
     if not isinstance(pad_token_id, int):
         return
