@@ -31,17 +31,20 @@ test("resident sidecar keys restore canonical repo casing", () => {
   );
 });
 
-test("Whisper artifacts retain distinct runtime identities", () => {
+test("Whisper artifacts resolve to Transformers, retired GGML ids included", () => {
   assert.equal(
     sttRepoIdForSidecarKey("small", "transformers"),
     "unsloth/whisper-small",
   );
   assert.equal(
     sttRepoIdForSidecarKey("small", "gguf"),
-    "unslothai/whisper-small-GGUF",
+    "unsloth/whisper-small",
   );
   assert.equal(sttEngineForRepoId("unsloth/whisper-small"), "transformers");
-  assert.equal(sttEngineForRepoId("unslothai/whisper-small-GGUF"), "gguf");
+  assert.equal(
+    sttEngineForRepoId("unslothai/whisper-small-GGUF"),
+    "transformers",
+  );
   assert.equal(sttEngineForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF"), "mtmd");
   assert.equal(sttSidecarKeyFor("unslothai/whisper-small-GGUF"), "small");
   assert.match(catalogSource, /isKnownSttArtifactRepoId\(repoId\)/);

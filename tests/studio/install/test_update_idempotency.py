@@ -110,9 +110,8 @@ GITHUB_PER_PREBUILT = 4
 MACOS_LLAMA_GITHUB = 2 * 16
 MAX_GITHUB_DESKTOP = (
     (MACOS_LLAMA_GITHUB if IS_MACOS else GITHUB_PER_PREBUILT)  # llama.cpp
-    + GITHUB_PER_PREBUILT  # whisper.cpp, fast path on every platform
     + GITHUB_PER_PREBUILT  # an AMD iGPU host resolves llama twice (:8597)
-    + 2  # the whisper/llama ggml_tree pairing (install_whisper_prebuilt.py:381)
+    + 2  # audio.cpp: HEAD /releases/latest and the 302 urllib re-issues (install_audio_cpp_prebuilt.py:464)
     + 2  # slack for a retried fetch
 )
 # --local adds the triton kernels ref probe (one git ls-remote, Linux only) and uv's git fetch for
@@ -145,11 +144,6 @@ ICON_FETCH_CEILING = 64 * 1024
 # "already matches" and prints its own line).
 NO_WORK_MARKERS = ("dependencies up to date", "prebuilt up to date", "sidecar current")
 
-# whisper.cpp installs only when its release is paired with the llama.cpp release the install
-# picked. Between the two publishes (llama.cpp out, whisper.cpp not yet) a fresh install has no
-# whisper.cpp at all, and every run says so on this line (setup.sh / setup.ps1). That is the
-# pairing gate working, not a prebuilt being re-validated.
-WHISPER_UNPAIRED = re.compile(r"whisper\.cpp\s+no compatible prebuilt \(")
 # audio.cpp's step line (setup.sh / setup.ps1): printed whenever its installer ran, so a run that
 # shows it must also answer from the install record. Skipped installs (UNSLOTH_SKIP_AUDIO_CPP_INSTALL,
 # a user-configured server) print only a verbose substep and owe no answer.
@@ -227,7 +221,7 @@ def _studio_home() -> pathlib.Path:
 
 
 def _unsloth_home() -> pathlib.Path:
-    """Where the prebuilts (llama.cpp, whisper.cpp, node) live: setup.sh's UNSLOTH_HOME
+    """Where the prebuilts (llama.cpp, audio.cpp, node) live: setup.sh's UNSLOTH_HOME
     rule, which nests them under a CUSTOM Studio home and keeps ~/.unsloth otherwise."""
     if os.environ.get("UNSLOTH_IDEMPOTENCY_STUDIO_HOME"):
         return _studio_home()
@@ -668,13 +662,10 @@ def diff(before: dict, after: dict) -> list[str]:
 
 
 def expected_prebuilt_answers(log: str) -> int:
-    """How many prebuilts must answer "prebuilt up to date": llama.cpp always, and whisper.cpp
-    unless this run reported its release unpaired. Read from the run, not the disk: an install
-    that had a paired whisper.cpp keeps its binary when llama.cpp moves ahead, and the pairing
-    gate rejects it all the same. Without the unpaired line a whisper.cpp that re-validated or
-    silently went missing leaves one answer short of two, and the count fails. audio.cpp adds one
-    whenever its step line shows its installer ran: "prebuilt installed" there is a re-download."""
-    return (1 if WHISPER_UNPAIRED.search(log) else 2) + (1 if AUDIO_CPP_STEP.search(log) else 0)
+    """How many prebuilts must answer "prebuilt up to date": llama.cpp always, and audio.cpp
+    whenever its step line shows its installer ran: "prebuilt installed" there is a re-download.
+    Setup no longer installs whisper.cpp, so it owes no answer."""
+    return 1 + (1 if AUDIO_CPP_STEP.search(log) else 0)
 
 
 # ── run 1 and run 2 ──
@@ -745,7 +736,7 @@ def test_a_second_local_update_reuses_everything_it_can(install, settled):
     assert run.log.count("sidecar current") == 3, (
         "a settled transformers sidecar was rebuilt:\n" + run.log[-8000:]
     )
-    # One line each from llama.cpp and whisper.cpp: a single match would let one re-validate.
+    # One line each from llama.cpp and audio.cpp: a single match would let one re-validate.
     assert run.log.count("prebuilt up to date") >= expected_prebuilt_answers(run.log), (
         "a prebuilt was re-validated instead of answered from its marker:\n" + run.log[-8000:]
     )
@@ -1189,7 +1180,7 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     log rather than a separate request to PyPI made earlier (which can fail or see another
     release than the one the update saw). With a version
     mismatch this run IS an upgrade to PyPI's release, whose Node, sidecar, llama.cpp and
-    whisper.cpp pins can differ from the checkout's, and an upgrade that rebuilds or
+    audio.cpp pins can differ from the checkout's, and an upgrade that rebuilds or
     downloads those is behaving correctly; a version bump would otherwise fail this
     smoke test for doing its job. The run still has to succeed on that branch, and the
     checkout is put back for the workflow steps after this harness.
@@ -1247,32 +1238,20 @@ def test_the_desktop_update_path_does_no_network_work(install, settled):
     assert diff(before, snapshot(install)) == []
 
 
-# ── the whisper.cpp pairing gate (no install needed) ──
-
-# Verbatim from the Update CI log on 2026-09-24, run between the two publishes.
-UNPAIRED_SH = (
-    "  whisper.cpp    no compatible prebuilt (installed llama.cpp b11139-mix-a6922cc; whisper "
-    "requires b11115-mix-a6922cc); curated whisper.cpp dictation is unavailable"
-)
+# ── the prebuilt answer count (no install needed) ──
 
 
-def test_an_unpaired_whisper_release_lowers_the_count_to_llama_alone():
-    assert expected_prebuilt_answers(UNPAIRED_SH) == 1
-
-
-def test_without_the_unpaired_line_both_prebuilts_must_answer():
-    # A run with no unpaired line and one "prebuilt up to date" is a whisper.cpp that
-    # re-validated or went missing: the count of two is what catches it.
-    assert expected_prebuilt_answers("  llama.cpp      prebuilt up to date") == 2
+def test_llama_alone_owes_one_answer():
+    assert expected_prebuilt_answers("  llama.cpp      prebuilt up to date") == 1
 
 
 def test_an_installed_audio_cpp_owes_one_more_answer():
-    log = "  llama.cpp      prebuilt up to date\n  whisper.cpp    prebuilt up to date\n"
-    assert expected_prebuilt_answers(log + "  audio.cpp      prebuilt up to date\n") == 3
+    log = "  llama.cpp      prebuilt up to date\n"
+    assert expected_prebuilt_answers(log + "  audio.cpp      prebuilt up to date\n") == 2
     # A re-download still owes the answer it failed to give.
-    assert expected_prebuilt_answers(log + "  audio.cpp      prebuilt installed\n") == 3
+    assert expected_prebuilt_answers(log + "  audio.cpp      prebuilt installed\n") == 2
     # "audio.cpp" inside another line (a path, a skip substep) is not its step line.
-    assert expected_prebuilt_answers(log + "  [verbose] audio.cpp: install skipped\n") == 2
+    assert expected_prebuilt_answers(log + "  [verbose] audio.cpp: install skipped\n") == 1
 
 
 def test_the_audio_cpp_step_pattern_matches_both_installers():
@@ -1281,10 +1260,3 @@ def test_the_audio_cpp_step_pattern_matches_both_installers():
         text = (root / script).read_text(encoding = "utf-8")
         assert 'step "audio.cpp" "prebuilt up to date"' in text, script
         assert 'step "audio.cpp" "update unavailable, existing prebuilt kept"' in text, script
-
-
-def test_the_unpaired_pattern_matches_both_installers():
-    root = pathlib.Path(__file__).resolve().parents[3]
-    for script in ("studio/setup.sh", "studio/setup.ps1"):
-        text = (root / script).read_text(encoding = "utf-8")
-        assert re.search(r'step "whisper\.cpp" "no compatible prebuilt \(', text), script

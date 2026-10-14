@@ -294,9 +294,9 @@ export interface SttDownloadedArtifact {
   engine: SttEngine;
 }
 
-/** Engine-qualified picker artifacts for every locally loadable checkpoint. Whisper uses one
- *  short key for distinct Transformers and whisper.cpp downloads, so engine provenance must
- *  survive this boundary. */
+/** Engine-qualified picker artifacts for every locally loadable checkpoint. Short keys are shared
+ *  across engines, so engine provenance must survive this boundary. whisper.cpp is retired, so its
+ *  GGML caches are no longer offered. */
 export function sttDownloadedArtifacts(
   status: SttDownloadedStatus,
   repoIdForSidecarKey: (sidecarKey: string, engine: SttEngine) => string,
@@ -306,7 +306,6 @@ export function sttDownloadedArtifacts(
   const blocks: readonly [SttEngine, SttDownloadedStatus | undefined][] = [
     ["transformers", status],
     ["transformers", status.transformers],
-    ["gguf", status.gguf],
     ["mtmd", status.mtmd],
     ["audiocpp", status.audiocpp],
   ];

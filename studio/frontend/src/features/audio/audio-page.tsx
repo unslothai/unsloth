@@ -1580,12 +1580,7 @@ export function AudioPage({
         description: "Speech-to-text",
       }),
       isGguf: artifact.engine !== "transformers",
-      deviceQuant:
-        artifact.engine === "mtmd"
-          ? "Q8_0"
-          : artifact.engine === "gguf"
-            ? "F16"
-            : undefined,
+      deviceQuant: artifact.engine === "mtmd" ? "Q8_0" : undefined,
       deviceSize: size || undefined,
       deviceSizeBytes: size ? deviceSizeBytes(size) : undefined,
       deviceLoaded:

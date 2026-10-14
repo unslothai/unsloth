@@ -828,10 +828,10 @@ class TestShadowingPreferenceIsApplied:
 
     # The argv-append sites, not a bare "--rocm-gfx", which matches an earlier comment
     # and so cannot be satisfied by any correct placement.
-    _ROCM_GFX_FORWARDS = ("_PREBUILT_CMD+=(--rocm-gfx", "_WHISPER_CMD+=(--rocm-gfx")
+    _ROCM_GFX_FORWARDS = ("_PREBUILT_CMD+=(--rocm-gfx",)
 
     def test_setup_sh_applies_the_preference_before_forwarding_rocm_gfx(self):
-        """Both consumers read $_setup_gfx, so the repick must precede both."""
+        """The prebuilt install reads $_setup_gfx, so the repick must precede it."""
         source = _SETUP_SH.read_text(encoding = "utf-8")
         calls = _sh_call_site_offsets(source, "_amd_prefer_discrete_gfx")
         assert calls, "studio/setup.sh never calls _amd_prefer_discrete_gfx"

@@ -56,6 +56,8 @@ const MAX_SEGMENT_MS = 28_000;
 const SILENCE_CUT_MS = 280;
 // Raw RMS (0..1) above which a frame counts as speech (well above the room floor after noise suppression).
 const VOICE_RMS = 0.015;
+// How long dictation waits for the host to settle the model before recording with the saved one.
+const HOST_SETTLE_WAIT_MS = 2_000;
 
 // Prefer Opus (small, widely supported); fall back to whatever the browser records. The
 // backend decodes any of these with PyAV.
@@ -80,9 +82,10 @@ const stopStream = (stream: MediaStream | null) => {
   }
 };
 
-/** Backend STT engine, decided by the model: Whisper ids run GGML through whisper.cpp, mtmd
- *  ids run through llama.cpp, the GGUF audio runtime's ids (saved keys, package folders and
- *  other GGUF repos) run through audiocpp, and a custom HF repo is safetensors on Transformers. */
+/** Backend STT engine, decided by the model: mtmd ids run through llama.cpp, the GGUF audio
+ *  runtime's ids (saved keys, package folders and other GGUF repos) run through audiocpp, and
+ *  Whisper ids and custom HF repos are safetensors on Transformers. "gguf" is the retired
+ *  whisper.cpp engine, still read from older servers' status. */
 export type SttEngine = "transformers" | "gguf" | "mtmd" | "audiocpp";
 
 export function sttEngineFor(model: string): SttEngine {
@@ -93,9 +96,8 @@ export function sttEngineFor(model: string): SttEngine {
     (!isCuratedSttModel(id) && /-GGUF\/?$/i.test(id))
   )
     return "audiocpp";
-  // whisper.cpp is Whisper-only, so the newer ASR models go to llama.cpp.
-  if (MTMD_STT_MODELS.has(model.trim())) return "mtmd";
-  return isCuratedSttModel(model) ? "gguf" : "transformers";
+  if (MTMD_STT_MODELS.has(id)) return "mtmd";
+  return "transformers";
 }
 
 function externalSttLanguage(language: string): string | undefined {
@@ -314,9 +316,8 @@ export async function fetchSttStatus(
   return (await response.json()) as SttStatus;
 }
 
-/** The engine block that owns `model`. A curated Whisper prefers whisper.cpp, but without
- *  whisper-server the backend serves it through Transformers, so that is the fallback.
- *  mtmd and audiocpp models run nowhere else. */
+/** The engine block that owns `model`. Whisper runs on Transformers; an older server may still
+ *  report it under an available whisper.cpp block. mtmd and audiocpp models run nowhere else. */
 export function sttEngineStatusFor(
   status: SttStatus,
   model: string,
@@ -327,6 +328,21 @@ export function sttEngineStatusFor(
   if (engine === "audiocpp") return status.audiocpp;
   if (engine === "gguf" && status.gguf?.available) return status.gguf;
   return status.transformers;
+}
+
+// One status read per page load settles a model the user did not pick; a failed read retries.
+let hostSttModelSettle: Promise<void> | null = null;
+
+/** Switch a model the user did not pick to one this host can run. */
+export function settleSttModelForHost(): Promise<void> {
+  hostSttModelSettle ??= fetchSttStatus().then(
+    (status) => useVoiceSettingsStore.getState().adoptHostSttModel(status),
+    (error: unknown) => {
+      hostSttModelSettle = null;
+      throw error;
+    },
+  );
+  return hostSttModelSettle;
 }
 
 /** Verify a custom Hub repository is a Transformers Whisper checkpoint. */
@@ -532,7 +548,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const sessionProviderId = usesExternalEndpoint
       ? settings.sttProviderId.trim()
       : undefined;
-    const sessionModel = usesExternalEndpoint
+    let sessionModel = usesExternalEndpoint
       ? settings.sttProviderModel.trim()
       : settings.sttModel;
     if (usesExternalEndpoint && (!sessionProviderId || !sessionModel)) {
@@ -541,16 +557,21 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       );
     }
     beginDictationSession();
-    const sessionLanguage = usesExternalEndpoint
+    let sessionLanguage = usesExternalEndpoint
       ? settings.dictationLanguage
       : resolveModelDictationLanguage(sessionModel, settings.dictationLanguage);
-    const sessionEngine = usesExternalEndpoint
+    let sessionEngine = usesExternalEndpoint
       ? undefined
       : sttEngineFor(sessionModel);
-    const sessionVariant = usesExternalEndpoint
+    let sessionVariant = usesExternalEndpoint
       ? null
       : sttModelVariant(sessionModel, settings.sttGgufVariant);
     const sessionChatId = resolveDictationChatId(this.chatId);
+    // A model the user did not pick may change for this host; nothing is recorded until it settles.
+    const hostSettle =
+      !usesExternalEndpoint && settings.sttModelSource !== "user"
+        ? settleSttModelForHost().catch(() => {})
+        : null;
 
     const speechStartCallbacks = new Set<() => void>();
     const speechEndCallbacks = new Set<
@@ -901,6 +922,30 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           stopStream(stream);
           stream = null;
           return;
+        }
+        if (hostSettle) {
+          await Promise.race([
+            hostSettle,
+            new Promise((resolve) => setTimeout(resolve, HOST_SETTLE_WAIT_MS)),
+          ]);
+          if (ended || cancelled) {
+            stopStream(stream);
+            stream = null;
+            return;
+          }
+          const settled = useVoiceSettingsStore.getState();
+          if (settled.sttModel !== sessionModel) {
+            sessionModel = settled.sttModel;
+            sessionLanguage = resolveModelDictationLanguage(
+              sessionModel,
+              settled.dictationLanguage,
+            );
+            sessionEngine = sttEngineFor(sessionModel);
+            sessionVariant = sttModelVariant(
+              sessionModel,
+              settled.sttGgufVariant,
+            );
+          }
         }
         if (!usesExternalEndpoint && sessionEngine) {
           // warm the model only after mic access; the backend never downloads here

@@ -410,9 +410,9 @@ test("ASR repos and folders run on the audiocpp engine; saved keys still resolve
   assert.equal(sttRepoIdForSidecarKey(QWEN_ASR, "audiocpp"), QWEN_ASR);
   assert.equal(sttEngineForRepoId("audiocpp-moonshine-small"), "audiocpp");
   assert.equal(isKnownSttArtifactRepoId(KOKORO), false);
-  // The curated Whisper and Qwen3-ASR GGUFs keep their own engines and keys.
+  // The curated Qwen3-ASR GGUFs keep llama.cpp; the retired Whisper GGUFs run on Transformers.
   assert.equal(sttEngineForRepoId("unslothai/Qwen3-ASR-0.6B-GGUF"), "mtmd");
-  assert.equal(sttEngineForRepoId("unslothai/whisper-small-GGUF"), "gguf");
+  assert.equal(sttEngineForRepoId("unslothai/whisper-small-GGUF"), "transformers");
   assert.equal(sttRepoIdForSidecarKey("qwen3-asr-0.6b", "mtmd"), "unslothai/Qwen3-ASR-0.6B-GGUF");
 });
 
@@ -440,9 +440,14 @@ test("dictation settings list the saved keys by their Hub name", () => {
     AUDIO_CPP_STT_KEYS,
     AUDIO_CPP_DICTATION_MODELS.map((model) => model.key),
   );
-  assert.deepEqual(STT_MODELS.slice(-AUDIO_CPP_STT_KEYS.length), AUDIO_CPP_STT_KEYS);
-  assert.equal(STT_MODELS[0], "qwen3-asr-0.6b");
-  assert.equal(DEFAULT_STT_MODEL, "qwen3-asr-0.6b");
+  // The audio.cpp Qwen3-ASR keys lead; the other saved keys follow in catalog order.
+  assert.deepEqual(STT_MODELS.slice(0, 2), AUDIO_CPP_STT_KEYS.slice(0, 2));
+  assert.deepEqual(
+    STT_MODELS.slice(-(AUDIO_CPP_STT_KEYS.length - 2)),
+    AUDIO_CPP_STT_KEYS.slice(2),
+  );
+  assert.equal(STT_MODELS[0], "audiocpp-qwen3-asr-0.6b");
+  assert.equal(DEFAULT_STT_MODEL, "audiocpp-qwen3-asr-0.6b");
   for (const key of AUDIO_CPP_STT_KEYS) {
     const model = audioCppDictationModelFor(key);
     assert.ok(model, key);
@@ -602,7 +607,7 @@ test("the saved quant is cleared with its model and rehydrated only beside it", 
   const store = readSrc("features/settings/stores/voice-settings-store.ts");
   assert.match(
     store,
-    /return sttModel === state\.sttModel\s*\?\s*\{ sttModel \}\s*:\s*\{ sttModel, sttGgufVariant: "" \};/,
+    /return sttModel === state\.sttModel\s*\?\s*\{ sttModel, sttModelSource \}\s*:\s*\{ sttModel, sttModelSource, sttGgufVariant: "" \};/,
   );
   assert.match(store, /sttModel: DEFAULT_STT_MODEL,\s*sttGgufVariant: "",/);
   assert.match(
@@ -620,7 +625,7 @@ test("every Settings dictation path carries the saved quant", () => {
   );
   assert.match(adapter, /sttModelVariant\(model, settings\.sttGgufVariant\)/);
   // the session pins the quant for preload and every segment.
-  assert.match(adapter, /const sessionVariant = usesExternalEndpoint\s*\?\s*null\s*:\s*sttModelVariant\(sessionModel, settings\.sttGgufVariant\);/);
+  assert.match(adapter, /let sessionVariant = usesExternalEndpoint\s*\?\s*null\s*:\s*sttModelVariant\(sessionModel, settings\.sttGgufVariant\);/);
   assert.match(adapter, /ggufVariant: sessionVariant,/);
   assert.match(adapter, /sessionEngine,\s*undefined,\s*undefined,\s*sessionVariant,/);
 

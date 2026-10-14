@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""In-app llama.cpp prebuilt update: the *apply* half over utils.llama_cpp_freshness, running install_llama_prebuilt.py to download the newest bundle for this host and atomically swap it in. ``update_available`` (installed_tag != latest_tag) is laxer than freshness' ``stale`` (which also requires the install to be >= 3 days old); the UI shows the update affordance on update_available. The install is slow, so it runs on a daemon thread and callers poll get_update_status(). Everything fails open: a missing marker, offline GitHub or a source build reports update_available=False and never blocks the app. Mechanics (managed-root resolution, local-link detection, the resolve probe, the streamed installer run) live in utils.prebuilt.update_flow; this module keeps the llama policy and the job dict. whisper.cpp piggybacks on this single update item: status folds in a whisper sub-status (update_available becomes the union) and apply chains a whisper phase when whisper is behind (update_flow.run_chained_update, whisper_cpp_update.chained_phase_plan). audio.cpp rides along the same way as a third phase (audio_cpp_update.chained_phase_plan)."""
+"""In-app llama.cpp prebuilt update: the *apply* half over utils.llama_cpp_freshness, running install_llama_prebuilt.py to download the newest bundle for this host and atomically swap it in. ``update_available`` (installed_tag != latest_tag) is laxer than freshness' ``stale`` (which also requires the install to be >= 3 days old); the UI shows the update affordance on update_available. The install is slow, so it runs on a daemon thread and callers poll get_update_status(). Everything fails open: a missing marker, offline GitHub or a source build reports update_available=False and never blocks the app. Mechanics (managed-root resolution, local-link detection, the resolve probe, the streamed installer run) live in utils.prebuilt.update_flow; this module keeps the llama policy and the job dict. audio.cpp rides along on this single update item: status folds in an audio.cpp sub-status (update_available becomes the union) and apply chains an audio.cpp phase when it is behind (update_flow.run_chained_update, audio_cpp_update.chained_phase_plan). whisper.cpp is retired: its status slot is always None and its phase is always skipped as "retired", so Unsloth Studio never updates or re-pairs it."""
 
 from __future__ import annotations
 
@@ -317,20 +317,12 @@ def _local_link_status() -> dict:
 def _whisper_chain_status(
     *, force_refresh: bool = False, paired_llama_will_update: bool = False
 ) -> Optional[dict]:
-    """Whisper's piggyback plan for the combined update item (whisper_cpp_update.chained_phase_plan). None disables the piggyback: fail-open so whisper can never break the llama status or apply."""
-    try:
-        from utils import whisper_cpp_update
-        return whisper_cpp_update.chained_phase_plan(
-            force_refresh = force_refresh,
-            paired_llama_will_update = paired_llama_will_update,
-        )
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("llama update: whisper piggyback probe failed", error = str(exc))
-        return None
+    """Always None: whisper.cpp is retired, so the combined update item never offers, probes or chains it."""
+    return None
 
 
 def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
-    """Fold the whisper sub-status into the llama payload: the llama update item is the single UI surface, so update_available becomes the union (llama behind OR whisper behind) while llama_update_available keeps the llama-only flag. All pre-existing top-level fields are preserved."""
+    """Fold the whisper sub-status into the llama payload. whisper.cpp is retired, so this always reports ``whisper: None`` and a llama-or-None update_component; llama_update_available keeps the llama-only flag and the shape stays for old clients. All pre-existing top-level fields are preserved."""
     status["llama_update_available"] = bool(status.get("update_available"))
     plan = _whisper_chain_status(
         force_refresh = force_refresh,
@@ -362,7 +354,7 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
 
 
 def _audio_chain_status(*, force_refresh: bool = False) -> Optional[dict]:
-    """audio.cpp's plan for the combined update item. None disables it: fail-open like the whisper probe."""
+    """audio.cpp's plan for the combined update item. None disables it: fail-open, so audio.cpp can never break the llama status or apply."""
     try:
         from utils import audio_cpp_update
         return audio_cpp_update.chained_phase_plan(force_refresh = force_refresh)
@@ -372,7 +364,7 @@ def _audio_chain_status(*, force_refresh: bool = False) -> Optional[dict]:
 
 
 def _merge_audio_status(status: dict, *, force_refresh: bool = False) -> dict:
-    """Fold the audio.cpp sub-status in after whisper's: it joins the update_available union and names the component only when neither llama.cpp nor whisper.cpp is pending."""
+    """Fold the audio.cpp sub-status in after whisper's: it joins the update_available union and names the component only when llama.cpp is not pending."""
     plan = _audio_chain_status(force_refresh = force_refresh)
     if plan is None:
         status["audio"] = None
@@ -394,7 +386,7 @@ def _merge_audio_status(status: dict, *, force_refresh: bool = False) -> dict:
 
 
 def get_update_status(*, force_refresh: bool = False) -> dict:
-    """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper and audio.cpp phases are folded in (_merge_whisper_status, _merge_audio_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
+    """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the audio.cpp phase is folded in (_merge_audio_status); the retired whisper.cpp slot is always None (_merge_whisper_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
     status = _llama_only_status(force_refresh = force_refresh)
     status = _merge_whisper_status(status, force_refresh = force_refresh)
     return _merge_audio_status(status, force_refresh = force_refresh)
@@ -1128,7 +1120,7 @@ def _plan_llama_phase(backend_request: Optional[str] = None) -> dict:
 
 
 def start_update() -> dict:
-    """Kick off a background update job chaining the llama phase with whisper and audio.cpp phases that run only when their component is behind; each phase no-ops cleanly when its component is current or unmanaged. Idempotent: a second call while one is running returns the in-flight job."""
+    """Kick off a background update job chaining the llama phase with an audio.cpp phase that runs only when audio.cpp is behind; each phase no-ops cleanly when its component is current or unmanaged, and the retired whisper.cpp phase never runs. Idempotent: a second call while one is running returns the in-flight job."""
     if update_checks_disabled():
         with _job_lock:
             job = dict(_job)
@@ -1202,21 +1194,8 @@ def _whisper_phase_plan(
     llama_skip_reason: Optional[str] = None,
     migration: bool = False,
 ) -> dict:
-    """Whisper's half of the chained job: catch up on releases for an update, or re-pair with the new backend for a switch. A switch that installs nothing leaves llama's ggml where it was, so there is nothing to re-pair and a refused switch stays refused instead of becoming a whisper-only job. The exception is what a failed re-pair leaves behind: llama runs first and records the new backend, so a retryable whisper failure ends with llama on the requested backend and dictation still hardlinked to the old runtime, making a retry ``already_selected`` and stranding the user unless they switch away and back. So allow a repair-only job for that one refusal, and only while the pairing is genuinely stale."""
-    # A migration is switch-shaped but update-behaved, so whisper needs the chained plan: the repair-only branch has no phase for a self-contained install and drops updates.
-    if backend_request is None or migration:
-        chained = (
-            _whisper_chain_status(force_refresh = True, paired_llama_will_update = llama_will_run) or {}
-        )
-        if chained.get("phase") is not None:
-            return chained
-        if backend_request is None:
-            if not _update_can_move_the_backend(llama_will_run):
-                return chained
-            # Whisper has nothing to catch up on, so the chained answer stands unless a re-pair is owed.
-            repair = _repair_pairing_plan_or_empty(llama_will_run, llama_skip_reason)
-            return repair if repair.get("phase") is not None else chained
-    return _repair_pairing_plan_or_empty(llama_will_run, llama_skip_reason)
+    """Whisper's half of the chained job. whisper.cpp is retired, so an update, migration or backend switch never installs or re-pairs it: the phase stays listed and is skipped as "retired"."""
+    return {"skip_reason": "retired"}
 
 
 def _claim_operation(backend_request: Optional[str]) -> bool:

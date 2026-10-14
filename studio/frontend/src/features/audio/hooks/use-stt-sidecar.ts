@@ -32,16 +32,21 @@ import {
   sttRepoIdForSidecarKey,
   sttSidecarKeyFor,
 } from "../catalog";
-import { isAudioSttEngine } from "../stt-artifacts";
+import { canonicalSttChoice, isAudioSttEngine } from "../stt-artifacts";
 import type { AudioHostState } from "./audio-host-state";
 
 export function useSttSidecar({
   setBusy,
   activeRef,
 }: Pick<AudioHostState, "setBusy" | "activeRef">) {
-  const [lastSttRepo, setLastSttRepoChoice] = usePersistedChoice("unsloth:audio:last-stt-model", "");
+  const [savedSttRepo, setLastSttRepoChoice] = usePersistedChoice("unsloth:audio:last-stt-model", "");
   const [lastSttVariant, setLastSttVariant] = usePersistedChoice("unsloth:audio:last-stt-variant", "");
-  const [lastSttEngine, setLastSttEngine] = usePersistedChoice("unsloth:audio:last-stt-engine", "");
+  const [savedSttEngine, setLastSttEngine] = usePersistedChoice("unsloth:audio:last-stt-engine", "");
+  // a retired whisper.cpp pick reads as its Transformers twin; the next pick saves that form.
+  const { repo: lastSttRepo, engine: lastSttEngine } = canonicalSttChoice(
+    savedSttRepo,
+    savedSttEngine,
+  );
   const [selectedSttRepo, setSelectedSttRepo] = useState<string | null>(null);
   const [sttLoadedModel, setSttLoadedModel] = useState<string | null>(null);
   const [sttLoadedEngine, setSttLoadedEngine] = useState<

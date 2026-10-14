@@ -42,8 +42,8 @@ BeforeAll {
 
     $script:LlamaBusy = Get-BlockSource -Path $script:SetupPs1 `
         -Marker '$prebuiltExit -eq 3' -ClosePattern '^\s*\}\s*(elseif|else)\b'
-    $script:WhisperBusy = Get-BlockSource -Path $script:SetupPs1 `
-        -Marker '$whisperExit -eq 3' -ClosePattern '^\s*\}\s*(elseif|else)\b'
+    $script:AudioCppBusy = Get-BlockSource -Path $script:SetupPs1 `
+        -Marker '$audioCppExit -eq 3' -ClosePattern '^\s*\}\s*(elseif|else)\b'
     $script:LocalLinkBusy = Get-BlockSource -Path $script:SetupPs1 `
         -Marker '(Get-PathState -Path $LlamaCppDir) -ne "Absent"' -ClosePattern '^\s*\}\s*$'
     # The whole if/elseif chain on the Node installer's exit code, and nothing after it. Anchored on the chain,
@@ -119,13 +119,13 @@ Describe 'the local-directory link path mirrors it, as its comment claims' {
     }
 }
 
-Describe 'the whisper.cpp exit-3 branch remains the cause-neutral precedent' {
+Describe 'the audio.cpp exit-3 branch remains the cause-neutral precedent' {
     It 'is present in setup.ps1' {
-        $script:WhisperBusy | Should -Not -BeNullOrEmpty
+        $script:AudioCppBusy | Should -Not -BeNullOrEmpty
     }
 
     It 'names no process and no scanner' {
-        $script:WhisperBusy | Should -Not -Match '(?i)process|scanner'
+        $script:AudioCppBusy | Should -Not -Match '(?i)process|scanner'
     }
 }
 

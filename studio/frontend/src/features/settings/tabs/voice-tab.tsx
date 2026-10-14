@@ -80,7 +80,6 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 import {
   AUDIO_CPP_STT_FOLDER_IDS,
   AUDIO_CPP_STT_MODELS,
-  MTMD_STT_MODELS,
   RECOMMENDED_STT_MODELS,
   STT_PICKER_MODELS,
   type SttModel,
@@ -126,17 +125,13 @@ const DICTATION_LANGUAGES: { value: string; label: string }[] = [
 const TTS_PREVIEW_TEXT =
   "Hello from Unsloth! This is a preview of the selected voice.";
 
-/** Source repository shown under a model row. Curated Whisper models download
- * from the Unsloth GGUF repos, mirrored by the backend (stt_ggml_sidecar.py).
- * A package of the shared GGUF repo is already named after its folder, so its
- * row shows the name alone. */
+/** Source repository shown under a model row. A package of the shared GGUF
+ * repo is already named after its folder, so its row shows the name alone. */
 function sttModelSource(model: SttModel): string {
   if (AUDIO_CPP_STT_MODELS.has(model) || isAudioCppFolderId(model)) {
     return sttModelName(model);
   }
-  return isCuratedSttModel(model) && !MTMD_STT_MODELS.has(model)
-    ? `unslothai/whisper-${model}-GGUF`
-    : getSttModelRepo(model);
+  return getSttModelRepo(model);
 }
 
 /**
@@ -627,8 +622,8 @@ export function VoiceTab() {
   const [sttUnloading, setSttUnloading] = useState(false);
   const isLocalEngine = dictationEngine === "model";
   const isCustomEngine = dictationEngine === "custom";
-  // The model decides the backend: curated ids run GGML through whisper.cpp,
-  // custom repos run through Transformers.
+  // The model decides the backend: Whisper ids and custom repos run through
+  // Transformers.
   // Progress of the selected engine's model download, from /stt/status.
   const [sttDownload, setSttDownload] = useState<SttDownloadStatus | null>(
     null,
@@ -732,6 +727,9 @@ export function VoiceTab() {
       try {
         const status = await fetchSttStatus(statusNonce, sttModel);
         if (cancelled) return;
+        // a model the user did not pick may switch for this host; the effect reruns for it.
+        useVoiceSettingsStore.getState().adoptHostSttModel(status);
+        if (useVoiceSettingsStore.getState().sttModel !== sttModel) return;
         setDownloadedSttModels(
           new Set(
             [
@@ -742,10 +740,8 @@ export function VoiceTab() {
             ].flatMap((engine) => engine?.downloaded_models ?? []),
           ),
         );
-        // A curated model prefers the GGUF (whisper.cpp) engine, but without whisper-server the
-        // backend serves it through Transformers instead of failing. Fall back to the Transformers
-        // status here too, or the model shows as unavailable and download is blocked even though it
-        // works. mtmd and audio.cpp models run nowhere else, so they never fall back.
+        // Whisper reads the Transformers block, or an older server's available whisper.cpp
+        // block. mtmd and audio.cpp models run nowhere else, so they never fall back.
         const engineStatus = sttEngineStatusFor(status, sttModel);
         if (!engineStatus?.available) {
           setSttPhase("unavailable");

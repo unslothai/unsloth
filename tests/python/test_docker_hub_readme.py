@@ -297,9 +297,10 @@ def test_the_sync_fails_without_a_token(sync_job: dict, tmp_path: Path):
 
 def test_the_hub_readme_matches_what_each_image_ships():
     text = HUB_README.read_text(encoding = "utf-8")
-    # whisper.cpp comes from Studio's setup, so only that image has it
-    assert "The `latest` image adds whisper.cpp" in text
-    # audio.cpp too, and the CUDA bundle only where Dockerfile.studio names it (no GPU at build time)
+    # Unsloth Studio's setup no longer installs whisper.cpp, so no image ships it
+    assert "whisper.cpp" not in text
+    # audio.cpp comes from Unsloth Studio's setup, and the CUDA bundle only where Dockerfile.studio
+    # names it (no GPU at build time)
     assert "audio.cpp (CUDA build on `linux/amd64`)" in text
     studio_df = (HUB_README.parent / "Dockerfile.studio").read_text(encoding = "utf-8")
     assert 'amd64) TORCH_FAMILY="cu128"; AUDIO_CPP_ACCELERATOR="cuda"' in studio_df

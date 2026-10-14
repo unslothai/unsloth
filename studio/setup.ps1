@@ -6331,7 +6331,7 @@ function Assert-StudioOwnedOrAbsent {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Label,
-        # whisper.cpp is non-fatal by contract, so it needs the denial handed back
+        # audio.cpp is non-fatal by contract, so it needs the denial handed back
         # rather than exited on. Only this mode returns a value.
         [switch]$NonFatal,
         # The runtime children pass $RuntimeRootIsCustom; everything under the
@@ -10418,91 +10418,13 @@ if ($LocalLlamaCppLinked) {
 }
 
 # ==========================================================================
-#  PHASE 3.4: Install the whisper.cpp prebuilt (dictation runtime)
+#  PHASE 3.4a: whisper.cpp (retired)
 # ==========================================================================
-# Mirrors the llama.cpp prebuilt install above; current whisper releases are
-# slim bundles that reuse the llama install's ggml runtime, so this runs after
-# llama. Failure is never fatal: local dictation falls back to Transformers STT.
-$WhisperCppDir = Join-Path $UnslothHome "whisper.cpp"
-$WhisperInstaller = Join-Path $PSScriptRoot "install_whisper_prebuilt.py"
-# Same opt-outs as setup.sh: a user-configured binary/dir or an explicit skip
-# disables the managed install entirely.
-if ($env:WHISPER_SERVER_PATH -or $env:UNSLOTH_WHISPER_CPP_PATH) {
-    substep "whisper.cpp: using a user-configured binary/dir; skipping managed install"
-} elseif ($env:UNSLOTH_SKIP_WHISPER_INSTALL -eq "1") {
-    substep "whisper.cpp: install skipped (UNSLOTH_SKIP_WHISPER_INSTALL=1)"
-} elseif ($RuntimeRootIsCustom -and (Test-Path -LiteralPath $WhisperInstaller) -and
-        (Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied") {
-    # Never fatal, per the phase header: the guard below would exit the whole run
-    # on an unreadable tree, taking llama.cpp down with it. Only the denial is
-    # caught here; an unowned tree still stops.
-    step "whisper.cpp" "install directory cannot be read: access is denied; curated whisper.cpp dictation is unavailable; restore access to $WhisperCppDir or move it aside, then re-run setup; browser and Transformers dictation remain available" "Yellow"
-} elseif (Test-Path -LiteralPath $WhisperInstaller) {
-    # The installer replaces the whole directory during activation, so the
-    # custom-home ownership guard must run first (mirrors the llama block).
-    if ($RuntimeRootIsCustom) {
-        Assert-StudioOwnedOrAbsent -Path $WhisperCppDir -Label "whisper.cpp install" -IsCustom $RuntimeRootIsCustom
-    }
-    $whisperArgs = @($WhisperInstaller, "--install-dir", $WhisperCppDir)
-    if ($env:UNSLOTH_WHISPER_RELEASE_TAG) {
-        $whisperArgs += @("--published-release-tag", $env:UNSLOTH_WHISPER_RELEASE_TAG)
-    }
-    if ($script:ROCmGfxArch) {
-        $whisperArgs += @("--rocm-gfx", $script:ROCmGfxArch)
-    } elseif ($HasROCm) {
-        $whisperArgs += "--has-rocm"
-    }
-    $prevEAPWhisper = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    $previousNativeErrorPreferenceW = $null
-    $restoreNativeErrorPreferenceW = $false
-    if ($PSVersionTable.PSVersion.Major -ge 7) {
-        $previousNativeErrorPreferenceW = $PSNativeCommandUseErrorActionPreference
-        $PSNativeCommandUseErrorActionPreference = $false
-        $restoreNativeErrorPreferenceW = $true
-    }
-    try {
-        $whisperOutput = & python @whisperArgs 2>&1 | Show-DownloadProgress | Out-String
-        $whisperExit = $LASTEXITCODE
-    } finally {
-        if ($restoreNativeErrorPreferenceW) {
-            $PSNativeCommandUseErrorActionPreference = $previousNativeErrorPreferenceW
-        }
-    }
-    $ErrorActionPreference = $prevEAPWhisper
-    if ($whisperExit -eq 0) {
-        if ($whisperOutput -match "already matches") {
-            step "whisper.cpp" "prebuilt up to date"
-        } elseif ($whisperOutput -match "keeping the existing complete install") {
-            # Exit 0 can also mean a kept tree after a lookup that could not answer; "prebuilt
-            # installed" would name a release nothing fetched. Same wording and token as llama's
-            # arm.
-            step "whisper.cpp" "update unavailable, existing prebuilt kept" "Yellow"
-        } else {
-            step "whisper.cpp" "prebuilt installed"
-        }
-        if ($RuntimeRootIsCustom -and (Test-PathQuiet $WhisperCppDir "Container")) {
-            Mark-StudioOwned -Path $WhisperCppDir
-        }
-    } elseif ($whisperExit -eq 3) {
-        step "whisper.cpp" "install busy; keeping existing runtime" "Yellow"
-    } elseif ($whisperExit -eq 2) {
-        $requiredWhisperLlamaTag = "unknown"
-        if ($whisperOutput -match "slim bundle requires llama\.cpp ([^;\s]+)") {
-            $requiredWhisperLlamaTag = $Matches[1]
-        }
-        $installedWhisperLlamaTag = "unknown"
-        $llamaMarker = Join-Path $LlamaCppDir "UNSLOTH_PREBUILT_INFO.json"
-        if (Test-PathQuiet $llamaMarker "Leaf") {
-            try {
-                $markerPayload = Get-Content -LiteralPath $llamaMarker -Raw | ConvertFrom-Json
-                if ($markerPayload.release_tag) { $installedWhisperLlamaTag = $markerPayload.release_tag }
-            } catch {}
-        }
-        step "whisper.cpp" "no compatible prebuilt (installed llama.cpp $installedWhisperLlamaTag; whisper requires $requiredWhisperLlamaTag); curated whisper.cpp dictation is unavailable; publish paired releases in llama.cpp then whisper.cpp order; browser and Transformers dictation remain available" "Yellow"
-    } else {
-        step "whisper.cpp" "prebuilt install failed; curated whisper.cpp dictation is unavailable; retry setup or inspect verbose output; browser and Transformers dictation remain available" "Yellow"
-    }
+# Unsloth Studio no longer installs or updates whisper.cpp: Whisper dictation runs on
+# Transformers, and audio.cpp serves the default dictation model. An existing tree is
+# left in place for the uninstall script to remove.
+if (Test-Path -LiteralPath (Join-Path $UnslothHome "whisper.cpp") -PathType Container) {
+    Write-SetupVerboseDetail "whisper.cpp: retired; Unsloth Studio no longer installs or updates it (existing files are left in place)"
 }
 
 # ==========================================================================
@@ -10551,7 +10473,7 @@ if ($env:AUDIOCPP_SERVER_PATH -or $env:UNSLOTH_AUDIO_CPP_PATH) {
             step "audio.cpp" "prebuilt up to date"
         } elseif ($audioCppOutput -match "keeping the existing complete install") {
             # The release lookup could not answer and the install on disk is complete; "prebuilt
-            # installed" would name a release nothing fetched. whisper.cpp's wording.
+            # installed" would name a release nothing fetched. Same wording as llama.cpp's arm.
             step "audio.cpp" "update unavailable, existing prebuilt kept" "Yellow"
         } else {
             step "audio.cpp" "prebuilt installed"

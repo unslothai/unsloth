@@ -25018,28 +25018,53 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
         return "audiocpp"
     raise HTTPException(
         status_code = 422,
-        detail = (
-            f"Unknown STT engine '{engine}'. Use 'transformers', 'gguf', 'mtmd', or 'audiocpp'."
-        ),
+        detail = (f"Unknown STT engine '{engine}'. Use 'transformers', 'mtmd', or 'audiocpp'."),
     )
 
 
 def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
     """Resolve the engine that will actually serve a model.
 
-    whisper.cpp (gguf) only accepts curated ids, which Transformers serves too,
-    so when whisper-server is not installed (the common case: `unsloth studio
-    update` does not yet build it) fall back to Transformers instead of 501-ing
-    on every recording. Used for download/load/transcribe; unload targets a
-    specific engine via _resolve_stt_engine.
+    whisper.cpp is retired, but old clients, MCP and API callers still send its
+    aliases (``gguf``). Those requests go to Transformers, which serves the same
+    curated Whisper keys; without PyTorch they go to audio.cpp's default ASR,
+    then llama.cpp's Qwen3-ASR, and only then to Transformers' "needs PyTorch"
+    501. _serving_stt_model maps the model to match. Used for download, load,
+    unload and transcribe.
     """
     resolved = _resolve_stt_engine(engine)
     if resolved == "gguf":
-        from core.inference import stt_ggml_sidecar
-        if not stt_ggml_sidecar.is_available():
+        from core.inference import stt_audiocpp_sidecar, stt_mtmd_sidecar, stt_sidecar
+
+        if stt_sidecar.is_available():
             return "transformers"
+        if stt_audiocpp_sidecar.is_available():
+            return "audiocpp"
+        if stt_mtmd_sidecar.is_available():
+            return "mtmd"
+        return "transformers"
     # mtmd models exist in no other engine, so there is nothing to fall back to.
     return resolved
+
+
+def _serving_stt_model(
+    requested_engine: Optional[str], serving_engine: str, model: Optional[str]
+) -> Optional[str]:
+    """The model to hand ``serving_engine`` for a request that named ``requested_engine``.
+
+    A Whisper key sent with the retired whisper.cpp alias keeps its key on
+    Transformers; audio.cpp and llama.cpp have no Whisper, so they get their
+    default Qwen3-ASR 0.6B instead.
+    """
+    if _resolve_stt_engine(requested_engine) != "gguf":
+        return model
+    if serving_engine == "audiocpp":
+        from core.inference.audio_cpp_models import DEFAULT_AUDIO_CPP_STT_MODEL
+        return DEFAULT_AUDIO_CPP_STT_MODEL
+    if serving_engine == "mtmd":
+        from core.inference.stt_mtmd_sidecar import DEFAULT_MTMD_STT_MODEL
+        return DEFAULT_MTMD_STT_MODEL
+    return model
 
 
 def _prepare_runtime_fallback_checkpoint(
@@ -25260,6 +25285,7 @@ def _stt_repo_reference(model, engine):
     from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
 
     selected = _resolve_serving_stt_engine(engine)
+    model = _serving_stt_model(engine, selected, model)
     if selected == "gguf":
         return stt_ggml_sidecar.GGML_STT_REPOS.get(
             model or stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL, model
@@ -25448,20 +25474,17 @@ async def stt_status(
                 ],
                 "download": stt_mtmd_sidecar.download_status(),
             },
-            # whisper.cpp (GGUF) engine.
+            # whisper.cpp (GGUF) engine: retired, so never offered even when whisper-server and
+            # its .bin caches are still on disk. The keys stay so old clients still parse it.
             "gguf": {
-                "available": stt_ggml_sidecar.is_available(),
+                "available": False,
                 "loaded_model": ggml.loaded_model,
                 "loading": ggml.is_loading(),
                 "device": ggml.device,
                 "keep_alive_seconds": ggml.keep_alive_seconds,
-                "default_model": stt_ggml_sidecar.DEFAULT_GGML_STT_MODEL,
-                "models": list(stt_ggml_sidecar.GGML_STT_MODELS.keys()),
-                "downloaded_models": [
-                    model_id
-                    for model_id in stt_ggml_sidecar.GGML_STT_MODELS
-                    if stt_ggml_sidecar._cached_model_path(model_id) is not None
-                ],
+                "default_model": None,
+                "models": [],
+                "downloaded_models": [],
                 "download": stt_ggml_sidecar.download_status(),
             },
             # audio.cpp engine: any audio.cpp ASR GGUF. ``models`` is the recommended list plus
@@ -25514,6 +25537,7 @@ async def stt_download(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    model = _serving_stt_model(payload.engine, engine, payload.model)
     module = _stt_download_module(engine)
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
@@ -25521,20 +25545,20 @@ async def stt_download(
         # possibly-large non-STT repo into the shared cache. Curated ids
         # short-circuit; GGUF and mtmd accept curated ids only, so they skip it.
         if engine == "transformers":
-            validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
+            validated = await asyncio.to_thread(validate_remote_model, model, hf_token)
             # Pin the download to the commit that was just validated so the
             # repo cannot be swapped between validation and snapshot_download.
             download_id = await asyncio.to_thread(
                 _start_account_stt_download,
                 module,
                 engine,
-                payload.model,
+                model,
                 hf_token,
                 validated.get("revision"),
             )
         else:
             download_id = await asyncio.to_thread(
-                _start_account_stt_download, module, engine, payload.model, hf_token
+                _start_account_stt_download, module, engine, model, hf_token
             )
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
@@ -25560,7 +25584,7 @@ async def stt_download_cancel(
         _cancel_account_stt_download,
         module,
         engine,
-        payload.model if payload else None,
+        _serving_stt_model(payload.engine, engine, payload.model) if payload else None,
         payload.download_id if payload else None,
     )
     return JSONResponse(content = status)
@@ -25589,11 +25613,12 @@ async def stt_load(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    model = _serving_stt_model(payload.engine, engine, payload.model)
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
         payload.engine,
         engine,
-        payload.model,
+        model,
     )
     sidecar = _stt_sidecar_for(engine)
     load_stt, _ = _stt_lifecycle()
@@ -25603,7 +25628,7 @@ async def stt_load(
     )
     try:
         await asyncio.to_thread(
-            functools.partial(load_stt, payload.model, engine, cancel_event, device = payload.device)
+            functools.partial(load_stt, model, engine, cancel_event, device = payload.device)
         )
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
@@ -25624,7 +25649,7 @@ async def stt_load(
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
     # The load lock is released and another account may have switched engines, so claim only ours.
     loaded = sidecar.loaded_model
-    if loaded is not None and loaded == _stt_resolved_model_id(payload.model, engine):
+    if loaded is not None and loaded == _stt_resolved_model_id(model, engine):
         account_access.note_resident_account(f"stt:{engine}", loaded)
     else:
         loaded = None
@@ -25675,10 +25700,12 @@ async def stt_unload(
     if engine is None:
         engines = None
     else:
-        # Use the serving resolver: a "gguf" pick without whisper-server is
-        # actually served by the Transformers fallback, so unload must target
-        # that same engine or the resident model is never freed.
+        # Use the serving resolver: a retired "gguf" pick is served by another
+        # engine, so unload must target that same engine (and the model it was
+        # mapped to) or the resident model is never freed.
         engines = [_resolve_serving_stt_engine(engine)]
+        if model is not None:
+            model = _serving_stt_model(engine, engines[0], model)
     if account_access.managed_account():
         engines = [
             candidate
@@ -25774,6 +25801,7 @@ async def _transcribe_audio_result(
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
     serving_engine = _resolve_serving_stt_engine(engine)
+    model = _serving_stt_model(engine, serving_engine, model)
     if source_path is not None and serving_engine != "audiocpp":
         # Prepared WAVs are capped at 30 min; the encoded-upload cap would refuse past ~13 min.
         raw = await asyncio.to_thread(source_path.read_bytes)
@@ -26031,7 +26059,11 @@ async def transcribe_audio_source(
 
     engine = body.engine or await asyncio.to_thread(_stt_engine_for_model, body.model)
     serving_engine = _resolve_serving_stt_engine(engine)
-    caps = await asyncio.to_thread(stt_capabilities.capabilities_for, body.model, serving_engine)
+    caps = await asyncio.to_thread(
+        stt_capabilities.capabilities_for,
+        _serving_stt_model(engine, serving_engine, body.model),
+        serving_engine,
+    )
     _refuse_stt_caps(caps, timestamps = body.timestamps, speakers = body.speakers)
     rate = stt_details.FIXED_SPAN_RATES.get(caps["family"], 16000)
 

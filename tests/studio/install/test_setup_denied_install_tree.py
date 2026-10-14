@@ -165,12 +165,6 @@ def test_metadata_reads_are_literal_like_the_probes_that_gate_them():
     assert not offenders, offenders
 
 
-def test_whisper_phase_stays_non_fatal_on_a_denied_llama_tree():
-    """whisper.cpp failures degrade to Transformers dictation by contract, so
-    its read of the llama.cpp marker must not be able to terminate setup."""
-    assert 'if (Test-PathQuiet $llamaMarker "Leaf")' in SETUP_PS1
-
-
 def test_reporting_helpers_tolerate_an_empty_path():
     """These run while a failure is being reported. A mandatory [string] rejects
     null and empty, so without these attributes the reporter would throw a
@@ -348,14 +342,14 @@ def _slice(start: str, end: str) -> str:
     return SETUP_PS1.split(start, 1)[1].split(end, 1)[0]
 
 
-def _whisper_phase() -> str:
-    """The whisper phase body. Both anchors are asserted so a phase renumbering
+def _audio_cpp_phase() -> str:
+    """The audio.cpp phase body. Both anchors are asserted so a phase renumbering
     fails as an assertion instead of an IndexError, and cannot silently widen
     the window to end-of-file."""
-    return _slice("Install the whisper.cpp prebuilt", "PHASE 3.5")
+    return _slice("Install the audio.cpp prebuilt", "PHASE 3.5")
 
 
-def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
+def test_the_audio_cpp_phase_survives_an_unreadable_audio_cpp_tree():
     """The phase header promises failure is never fatal, but the ownership guard
     exits the whole run, which would take llama.cpp inference down with it."""
     guard = SETUP_PS1.split("function Assert-StudioOwnedOrAbsent", 1)[1].split("\nfunction ", 1)[0]
@@ -370,38 +364,36 @@ def test_the_whisper_phase_survives_an_unreadable_whisper_tree():
     assert len(paired) >= 3, guard
     # Only the denial is handed back; an unowned tree must still stop.
     assert 'Exit-SetupFailure "$Label path is not an Unsloth-owned install' in guard
-    whisper = _whisper_phase()
+    phase = _audio_cpp_phase()
     assert (
-        '-Label "whisper.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied"'
-        in whisper
-    ), whisper
+        '-Label "audio.cpp install" -NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied"' in phase
+    ), phase
     # Scoped to the new branch: both phrases occur elsewhere in the phase, so a
     # phase-wide match proves nothing about this branch.
     marker = '-NonFatal -IsCustom $RuntimeRootIsCustom) -eq "Denied") {'
-    assert marker in whisper, whisper
-    denial = whisper.split(marker, 1)[1].split("\n} elseif", 1)[0]
-    assert re.search(r'^\s*step "whisper\.cpp" ', denial, re.M), denial
+    assert marker in phase, phase
+    denial = phase.split(marker, 1)[1].split("\n} elseif", 1)[0]
+    assert re.search(r'^\s*step "audio\.cpp" ', denial, re.M), denial
     assert "install directory cannot be read: access is denied" in denial, denial
-    assert "browser and Transformers dictation remain available" in denial, denial
     # The whole point is that this stays non-fatal.
     assert "Exit-SetupFailure" not in denial, denial
     assert not re.search(r"\bexit \d", denial), denial
     # The skip must precede the branch whose guard would exit.
-    body = "$whisperArgs = @("
-    assert body in whisper, whisper
-    assert whisper.index("-NonFatal") < whisper.index(body)
+    body = "$audioCppArgs = @("
+    assert body in phase, phase
+    assert phase.index("-NonFatal") < phase.index(body)
 
 
-def test_the_whisper_skip_stays_behind_the_installer_gate():
+def test_the_audio_cpp_skip_stays_behind_the_installer_gate():
     """The guard used to live inside the installer branch, so a tree without the
     installer was a no-op. Hoisting it must not make that case fatal."""
     marker = "-NonFatal -IsCustom $RuntimeRootIsCustom) -eq"
-    whisper = _whisper_phase()
-    assert marker in whisper, whisper
-    head = whisper.split(marker, 1)[0]
+    phase = _audio_cpp_phase()
+    assert marker in phase, phase
+    head = phase.split(marker, 1)[0]
     assert "} elseif" in head, head
     branch = head.rsplit("} elseif", 1)[1]
     # A conjunct, not merely present: -or or a negation reopens this case.
-    assert re.search(r"-and\s*\([^\n]*\$WhisperInstaller[^\n]*\)\s*-and", branch), branch
+    assert re.search(r"-and\s*\([^\n]*\$AudioCppInstaller[^\n]*\)\s*-and", branch), branch
     assert "-not (Test-Path" not in branch, branch
     assert " -or " not in branch, branch

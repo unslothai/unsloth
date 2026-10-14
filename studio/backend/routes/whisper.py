@@ -1,25 +1,22 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""whisper.cpp prebuilt status endpoint.
+"""whisper.cpp prebuilt status endpoint, kept for old clients.
 
-GET  /api/whisper/update-status  -> is a newer prebuilt available + job state
+GET  /api/whisper/update-status  -> always ``supported: False`` with no update
 
-Detection reuses utils.whisper_cpp_freshness and fails open so the UI never blocks on a missing marker /
-offline GitHub. There is no whisper-only update trigger: whisper updates piggyback on the single main update
-item (POST /api/llama/update chains a whisper phase when whisper is behind).
+whisper.cpp is retired: Unsloth Studio no longer installs, updates or re-pairs it, so this answers without
+probing the install or GitHub. The response shape is unchanged so older frontends still parse it.
 """
 
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 from auth.authentication import get_current_subject
-from utils.whisper_cpp_update import get_update_status
 
 router = APIRouter()
 
@@ -68,6 +65,4 @@ async def whisper_update_status(
     ),
     current_subject: str = Depends(get_current_subject),
 ) -> WhisperUpdateStatusResponse:
-    # Off the event loop: detection may probe the host and read GitHub.
-    status = await asyncio.to_thread(get_update_status, force_refresh = force_refresh)
-    return WhisperUpdateStatusResponse(**status)
+    return WhisperUpdateStatusResponse()
