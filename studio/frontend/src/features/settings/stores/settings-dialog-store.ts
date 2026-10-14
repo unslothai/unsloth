@@ -42,6 +42,7 @@ export type SettingsScrollTarget =
   | "general-permissions"
   | "library-storage"
   | "resources-caches"
+  | "sandbox-os"
   | "sandbox-permissions";
 
 /** Which archive the Data tab should open straight into. */
@@ -150,6 +151,7 @@ const SCROLL_TARGET_TAB: Record<SettingsScrollTarget, SettingsTab> = {
   "general-permissions": "sandbox",
   "library-storage": "library",
   "resources-caches": "resources",
+  "sandbox-os": "sandbox",
   "sandbox-permissions": "sandbox",
 };
 

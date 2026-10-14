@@ -314,13 +314,7 @@ function PermissionsSection() {
         </div>
       </SettingsRow>
       {/* Its own instance: the chat-page root dialog is not mounted on every page. */}
-      <SandboxSetupDialog
-        open={setupOpen}
-        onOpenChange={setSetupOpen}
-        onLearnMore={() =>
-          permissionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" })
-        }
-      />
+      <SandboxSetupDialog open={setupOpen} onOpenChange={setSetupOpen} />
     </SettingsSection>
   );
 }
@@ -372,6 +366,9 @@ export function SandboxTab() {
 
 function OsSandboxSections() {
   const t = useT();
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
+  const consumeScrollTarget = useSettingsDialogStore((s) => s.consumeScrollTarget);
   const [status, setStatus] = useState<SandboxStatus | null>(null);
   const [job, setJob] = useState<HostPrepJob | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -394,6 +391,16 @@ function OsSandboxSections() {
       mounted.current = false;
     };
   }, []);
+
+  // The High popup's Learn more: the status and setup steps live here, not under Permissions.
+  useEffect(() => {
+    if (scrollTarget !== "sandbox-os") return;
+    const frame = window.requestAnimationFrame(() => {
+      sectionRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+      consumeScrollTarget("sandbox-os");
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [consumeScrollTarget, scrollTarget]);
 
   // Callers set `loading`: a synchronous setState from the mount effect would cascade a render.
   const refresh = useCallback(
@@ -613,6 +620,7 @@ function OsSandboxSections() {
       ) : (
         <>
           <SettingsSection
+            ref={sectionRef}
             title={t("settings.sandbox.toolsSection")}
             action={
               <Button
