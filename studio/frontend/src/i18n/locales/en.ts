@@ -52,7 +52,7 @@ export const en = {
       enable: "Let models use the browser",
       enableDescription: "Models open pages in their own browser tab, read them, and click and type for you. Also in the composer's + menu.",
       history: "Browsing history",
-      historyDescription: "Choose whether models can read your browser history",
+      historyDescription: "Full access skips approval; Never still blocks access",
       alwaysAsk: "Always ask",
       alwaysAllow: "Always allow",
       never: "Never",
