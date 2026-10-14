@@ -313,8 +313,7 @@ function SandboxSetupContent({
           onClick={() => {
             // Closing does not stop a running setup; its result shows in Settings > Sandbox.
             onOpenChange(false);
-            // Deferred past the dialog's focus restore. Inside Settings this only scrolls: the
-            // OS sandbox status and setup, since Permissions is where High was picked.
+            // Deferred past the dialog's focus restore; inside Settings it only scrolls.
             setTimeout(
               () => openSettings("sandbox", { scrollTarget: "sandbox-os" }),
               0,

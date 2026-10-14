@@ -392,7 +392,6 @@ function OsSandboxSections() {
     };
   }, []);
 
-  // The High popup's Learn more: the status and setup steps live here, not under Permissions.
   useEffect(() => {
     if (scrollTarget !== "sandbox-os") return;
     const frame = window.requestAnimationFrame(() => {

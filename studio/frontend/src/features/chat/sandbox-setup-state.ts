@@ -101,7 +101,6 @@ export function sandboxSetupView({
     result,
     outputLines: jobOutputLines(job),
     note,
-    // e.g. MXC on ARM64 or a pre-24H2 build: no install exists, so say why instead of nothing.
     reason: deadEnd ? capability.reason : "",
   };
 }
