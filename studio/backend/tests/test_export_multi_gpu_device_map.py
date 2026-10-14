@@ -178,7 +178,6 @@ def _offload_backend(
 
 
 def _unsloth_spill_error():
-    """What unsloth raises for a 4-bit load that spills to the CPU (#13696)."""
     try:
         raise ValueError(
             "Some modules are dispatched on the CPU or the disk. Make sure you have enough GPU RAM."
@@ -230,7 +229,6 @@ def test_single_gpu_spill_retries_with_auto_offload(monkeypatch, tmp_path):
     assert "offload_layers" not in calls[0]
     assert calls[1]["offload_layers"] == "auto"
     assert "device_map" not in calls[1]
-    # Export trains nothing: plan with a merge's reserve, not a training step's.
     assert calls[1]["device_map_planner_kwargs"]["reserve_bytes"] == 1 << 30
 
 

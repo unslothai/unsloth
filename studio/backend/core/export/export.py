@@ -96,7 +96,6 @@ _EXPORT_AUTO_OFFLOAD_KWARGS = {
 
 
 def _offload_layers_kwargs(offload_layers, device_map_kw: Optional[dict] = None) -> dict:
-    """A fixed offload_layers count, passed as Training does; "auto" only applies on a spill retry."""
     if not offload_layers or offload_layers == "auto":
         return {}
     # A fixed count loads onto one card; core raises on a multi-GPU map.
@@ -800,8 +799,7 @@ class ExportBackend:
         the token the worker used for the security preflight (otherwise a gated repo passes scanning
         then 401s at from_pretrained).
 
-        ``offload_layers`` keeps decoder layers in host RAM (same kwarg as Training). ``"auto"``
-        loads as before and only retries a single-GPU 4-bit load that spilled to the CPU (#13696).
+        ``offload_layers = "auto"`` only retries a single-GPU 4-bit load that spilled to the CPU (#13696).
 
         ``False`` (denied the ambient token) must travel all the way down: ``None`` reads as "go and
         find a credential" (``if token is None: get_token()`` in ``save.py`` and ``hf_login``), and
