@@ -1721,6 +1721,7 @@ class TestBothPassthroughsPriceTheirRetry:
     def _backend():
         return SimpleNamespace(
             base_url = "http://llama.test",
+            model_identifier = "test-gguf",
             context_length = 16384,
             _kv_cache_context_total = 16384,
             effective_parallel_slots = 4,

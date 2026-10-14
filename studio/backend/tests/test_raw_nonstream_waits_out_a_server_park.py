@@ -32,6 +32,7 @@ _BODY = {
 class _Backend:
     def __init__(self, port: int, *, server: bool, parked: bool):
         self.base_url = f"http://127.0.0.1:{port}"
+        self.model_identifier = "test-gguf"
         self.context_length = 4096
         self.server_may_park = server
         self._parked = parked
