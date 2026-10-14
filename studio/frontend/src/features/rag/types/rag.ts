@@ -157,6 +157,25 @@ export interface FolderSyncJob {
   error?: string | null;
 }
 
+/** Re-encoding documents indexed under a different embedding model than the current one. */
+export interface ReembedJob {
+  id: string;
+  status: Exclude<JobStatus, "pending">;
+  done: number;
+  failed: number;
+  remaining: number;
+  clippedChunks: number;
+  progress: number;
+  error: string | null;
+}
+
+export interface ReembedStatus {
+  staleDocuments: number;
+  /** Archived conversation turns, re-embedded by the same job. */
+  staleArchived: number;
+  job: ReembedJob | null;
+}
+
 /** Missing counts (older backends) count as a change. */
 export function jobChangedSources(job: FolderSyncJob): boolean {
   if (

@@ -1865,7 +1865,23 @@ export const fr = {
           "Modèle Hugging Face ou chemin local utilisé pour indexer et rechercher vos documents. La valeur par défaut est {defaultModel}.",
         searchPlaceholder: "Rechercher n'importe quel modèle sur HF",
         reindexWarning:
-          "N'affecte que les documents nouvellement indexés. Téléversez à nouveau les documents existants après avoir changé de modèle.",
+          "N'affecte que les documents nouvellement indexés. Ré-encodez les documents existants après avoir changé de modèle.",
+        reembed: {
+          label: "Ré-encoder les documents",
+          staleOne:
+            "1 document a été indexé avec un autre modèle d'embedding, la recherche sémantique l'ignore donc.",
+          staleMany:
+            "{count} documents ont été indexés avec un autre modèle d'embedding, la recherche sémantique les ignore donc.",
+          staleArchived:
+            "L'historique de chat antérieur a été indexé avec un autre modèle d'embedding, la recherche sémantique l'ignore donc.",
+          running: "Ré-encodage : {done} sur {total}",
+          action: "Ré-encoder",
+          stop: "Arrêter",
+          startFailed: "Impossible de lancer le ré-encodage",
+          stopped: "Ré-encodage interrompu",
+          finished: "Documents ré-encodés",
+          finishedWithFailures: "{count} n'ont pas pu être ré-encodés",
+        },
         emptyError:
           "Saisissez un identifiant de modèle Hugging Face ou un chemin local.",
         loadError: "Échec du chargement du paramètre du modèle d'embedding.",
