@@ -1389,3 +1389,35 @@ def test_a_hung_managed_worker_is_stopped_once_a_load_without_it_commits(monkeyp
     run(ss.after_load(backend, 4))
     assert stopped == ["10.0.0.3:50052"]
     assert set(cs.state().workers) == {"10.0.0.2:50052", "10.0.0.4:50052"}
+
+
+def test_a_rejected_replacement_unloads_a_model_whose_cluster_workers_went(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    unloaded = []
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+        unload_model = lambda: unloaded.append(1),
+    )
+    run(ss.after_load(backend, 4))
+
+    class Worker:
+        alive = True
+
+        async def stop(self, timeout = 10.0):
+            pass
+
+    cs.state().workers["10.0.0.2:50052"] = Worker()
+    monkeypatch.delenv(cs.ENV_NODES)  # the cluster config goes; this is a paired Spark
+    monkeypatch.setattr(ss, "enabled", lambda: True)
+
+    async def legacy_before_load(self, request, n_parallel, **kw):
+        await self._on_plan_accepted()
+        return request
+
+    monkeypatch.setattr(ss.SparkServing, "before_load", legacy_before_load)
+    run(ss.before_load(_request(), 4))
+    assert not cs.state().workers
+    run(ss.load_failed())  # the route rejected the replacement after the plan
+    assert unloaded == [1], "its remote layers are gone, so it cannot answer"

@@ -3485,7 +3485,15 @@ async def before_load(
             async def retire_cluster() -> None:
                 if confirm_teardown is not None:
                     confirm_teardown()
-                await cluster_serving._STATE.shutdown()
+                cluster = cluster_serving._STATE
+                if cluster._backend is not None and cluster.block and cluster.workers:
+                    # Its remote layers go with the workers: a replacement the route then rejects
+                    # unloads it, as for a torn-down two-Spark split.
+                    state()._retired_split = (
+                        cluster._backend,
+                        getattr(cluster._backend, "_process", None),
+                    )
+                await cluster.shutdown()
 
             state()._on_plan_accepted = retire_cluster
     if not enabled():
