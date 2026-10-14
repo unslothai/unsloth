@@ -778,9 +778,8 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
   );
 };
 
-// ComposerPrimitive.Attachments keys cards by index, so removing one shifts every later card to a
-// new attachment id: each remounts (the id key below it) with no blob URL yet, a blank tile, and
-// decodes its image again. Keyed and scoped by id, the remaining cards keep their DOM.
+// Not ComposerPrimitive.Attachments: its index keys remount every card after a removed one,
+// and each remount blanks its preview and decodes the image again.
 const ComposerAttachmentCardList: FC = () => {
   const ids = useAuiState(
     useShallow(({ composer }) =>

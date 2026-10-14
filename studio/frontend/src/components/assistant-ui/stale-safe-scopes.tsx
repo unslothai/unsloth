@@ -39,11 +39,7 @@ export const MessageByIndexProvider: FC<
   return <AuiProvider value={aui}>{children}</AuiProvider>;
 };
 
-/**
- * A composer attachment scope addressed by id, not index. Index scopes apply a new index a step
- * after the list re-renders, so a card moved down by a removal reads its old index past the end
- * and throws. A surviving card's id never changes, and the list unmounts the removed one.
- */
+/** Composer attachment scope by id: an index scope reads a moved card's old index past the end and throws. */
 export const ComposerAttachmentByIdProvider: FC<
   PropsWithChildren<{ id: string }>
 > = ({ id, children }) => {
