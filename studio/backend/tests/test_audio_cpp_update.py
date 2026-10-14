@@ -154,9 +154,28 @@ def test_the_size_adds_the_cuda_runtime_zip(managed, monkeypatch):
         accelerator_request = "cuda",
     )
     assert aupd.chained_phase_plan()["status"]["update_size_bytes"] == 700_000_000
+    # A release without the runtime zip: the installer downloads the bundle alone.
     del managed.state.assets[f"audio-{_LATEST}-cudart-windows-x64-cuda12.8.zip"]
     plan = aupd.chained_phase_plan()
-    assert plan["status"]["update_size_bytes"] is None and plan["update_available"] is True
+    assert plan["status"]["update_size_bytes"] == 400_000_000 and plan["update_available"] is True
+
+
+@pytest.mark.parametrize("torch_has_runtime", [False, True])
+def test_the_cuda_runtime_zip_follows_the_current_torch(managed, monkeypatch, torch_has_runtime):
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(
+        aupd._installer(), "torch_provides_cuda_runtime", lambda major: torch_has_runtime
+    )
+    # The record says nothing about the runtime zip: what the installer does now decides the size.
+    _write_record(
+        managed.tree,
+        asset = "audio-v0.9.0-unsloth.1-bin-windows-x64-cuda12.8.zip",
+        accelerator = "cuda",
+        accelerator_request = "cuda",
+    )
+    size = aupd.chained_phase_plan()["status"]["update_size_bytes"]
+    assert size == (400_000_000 if torch_has_runtime else 700_000_000)
 
 
 def test_unknown_assets_size_nothing_but_still_offer(managed):

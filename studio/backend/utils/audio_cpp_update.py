@@ -153,11 +153,14 @@ def _update_size_bytes(
     if bundle is None or bundle not in assets:
         return None
     size = assets[bundle]
-    if record.get("cudart_asset"):
-        cudart = installer.cudart_asset_for(names, bundle)
-        if cudart is None or cudart not in assets:
-            return None
-        size += assets[cudart]
+    cudart = installer.cudart_asset_for(names, bundle)
+    if cudart is not None:
+        # The installer's own call: the runtime zip is skipped only when torch ships that CUDA major now.
+        line = installer._CUDA_LINE.search(bundle)
+        if not (line and installer.torch_provides_cuda_runtime(int(line.group(1)))):
+            if cudart not in assets:
+                return None
+            size += assets[cudart]
     return size
 
 
