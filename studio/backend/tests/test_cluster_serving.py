@@ -854,3 +854,49 @@ def test_adapters_are_spread_with_the_layers_not_charged_to_this_machine(monkeyp
     usable = [cs.usable_bytes(d) for d in _devices()]
     # No coordinator deduction: the weights follow raw usable memory.
     assert weights == pytest.approx([u / sum(usable) for u in usable], abs = 1e-3)
+
+
+def test_the_main_gpu_environment_pin_is_caller_placement(monkeypatch):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "1")
+    request = _request()
+    assert run(ss.before_load(request, 4)) is request and seen == []
+
+
+def test_a_load_completes_through_the_cluster_even_if_the_config_went_away(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    monkeypatch.delenv(cs.ENV_NODES)  # removed while the load was running
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    assert cs.state()._backend is backend and not cs.state().in_flight
+
+
+def test_an_inherited_context_size_is_budgeted(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, ctx, *a, **k: ctx * 2 * 2**20)
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "single"
+    monkeypatch.setenv("LLAMA_ARG_CTX_SIZE", "16384")  # 16384 * 2 MiB = 32 GiB of KV
+    run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "layer_split"
+
+
+def test_no_worker_is_started_for_a_model_that_is_not_a_sizable_gguf(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setenv(cs.ENV_MANAGED, "1")
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: None)
+    started = []
+
+    async def fake_ssh(target, remote, **kw):
+        started.append(target)
+        return 0, "/b/ggml-rpc-server\n", ""
+
+    monkeypatch.setattr(ss, "ssh_run", fake_ssh)
+    request = _request(model_path = "org/some-safetensors-model")
+    assert run(ss.before_load(request, 4)) is request
+    assert started == []

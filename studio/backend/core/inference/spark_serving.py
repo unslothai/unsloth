@@ -3527,7 +3527,9 @@ async def after_load(
     """True when the load was cancelled during the replica startup and must be undone."""
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and _cluster_active():
+    if cluster_serving._STATE is not None and (
+        cluster_serving._STATE.in_flight or _cluster_active()
+    ):
         await cluster_serving._STATE.after_load(llama_backend)
         return False
     if cluster_serving._STATE is not None and cluster_serving._STATE.retire_on_commit:
@@ -3549,7 +3551,9 @@ async def after_load(
 async def load_failed() -> None:
     from core.inference import cluster_serving
 
-    if cluster_serving._STATE is not None and _cluster_active():
+    if cluster_serving._STATE is not None and (
+        cluster_serving._STATE.in_flight or _cluster_active()
+    ):
         await cluster_serving._STATE.load_failed()
         return
     if _STATE is None or not enabled():

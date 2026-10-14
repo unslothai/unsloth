@@ -58,7 +58,12 @@ _ADAPTER_FLAGS = frozenset(
 _PLACEMENT_FLAGS = frozenset(
     {"--device", "-dev", "--split-mode", "-sm", "--tensor-split", "-ts", "--main-gpu", "-mg"}
 )
-_PLACEMENT_ENV = ("LLAMA_ARG_DEVICE", "LLAMA_ARG_SPLIT_MODE", "LLAMA_ARG_TENSOR_SPLIT")
+_PLACEMENT_ENV = (
+    "LLAMA_ARG_DEVICE",
+    "LLAMA_ARG_SPLIT_MODE",
+    "LLAMA_ARG_TENSOR_SPLIT",
+    "LLAMA_ARG_MAIN_GPU",
+)
 
 
 def _flag_args(args: Sequence[str], flags: frozenset) -> List[str]:
@@ -436,6 +441,9 @@ class ClusterServing:
         self.last_error: str = ""
         self._passthrough: bool = False
         self._alongside: bool = False
+        # A load this planned and has not completed: its after_load / load_failed come here even
+        # if the config changed meanwhile.
+        self.in_flight: bool = False
         # Set when the config went away while workers run: the next committed load stops them.
         self.retire_on_commit: bool = False
         self._pre_load: Optional[Tuple[str, str, Optional[ClusterPlan], List[str]]] = None
@@ -529,6 +537,7 @@ class ClusterServing:
         from core.inference import spark_serving as ss
 
         self._cancel_event = cancel_event
+        self.in_flight = True
         self._alongside = bool(getattr(request, "alongside", False)) or bool(
             getattr(request, "force_alongside", False)
         )
@@ -558,11 +567,16 @@ class ClusterServing:
         if placed:
             self.topology, self.reason = "single", f"the caller set {placed}; placement is theirs"
             return request
+        model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, effective, ss)
+        if model_bytes is None:
+            # Not a GGUF this can size (safetensors, diffusion, an unknown repo): nothing to split,
+            # so no worker is started for it.
+            self.topology, self.reason = "single", "model size unknown; serving on this machine"
+            return request
         failed = await self._ensure_workers()
         if self._cancelled():
             self.topology, self.reason = "single", "the load was cancelled"
             return request
-        model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, effective, ss)
         binary = ss.llama_server_binary()
         if not binary:
             self.topology, self.reason = "single", "no local llama-server to plan with"
@@ -692,6 +706,13 @@ class ClusterServing:
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)
             )
         ctx, cache_type, cache_type_v = ss.effective_kv_settings(request, extras)
+        if not ctx:
+            # llama-server takes the context from its environment when neither argv nor the
+            # request sets one.
+            try:
+                ctx = max(0, int((os.environ.get("LLAMA_ARG_CTX_SIZE") or "0").strip()))
+            except ValueError:
+                ctx = 0
         kv = None
         if local_file and ctx:
             kv = await asyncio.to_thread(
@@ -703,6 +724,7 @@ class ClusterServing:
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:
+        self.in_flight = False
         if self._passthrough:
             self._passthrough = False
             if not self._alongside:
@@ -735,6 +757,7 @@ class ClusterServing:
             self._resident = {}
 
     async def load_failed(self) -> None:
+        self.in_flight = False
         if self._passthrough:
             self._passthrough = False
             return
