@@ -13967,6 +13967,39 @@ def _mcp_search_limit(limit) -> int:
 _MCP_SEARCH_QUERY_CHARS = 2000
 # Ids and numbers ("page 195de922-...", "issue 55"); short names like ec2, s3 and v2 stay.
 _MCP_SEARCH_ID_RE = re.compile(r"\b(?:\d+|(?=[0-9a-f]*\d)[0-9a-f]{4,})\b", re.IGNORECASE)
+# Users and tool names pick different verbs for one write: "add a comment" is notion-create-comments, and an
+# unexpanded name leg ranks the update/fetch siblings that share the noun above it. Read verbs (find, get) stay
+# unexpanded: "find" -> "search" lists every search-* tool over the one the noun names.
+_MCP_VERB_GROUPS = (
+    ("create", "add", "new", "make", "insert", "append", "post", "reply"),
+    ("delete", "remove", "erase", "trash", "drop"),
+    ("update", "edit", "change", "modify", "rename", "patch"),
+)
+
+
+def _verb_forms(verb: str) -> set[str]:
+    if verb == "new":  # an adjective: "news" is not "create"
+        return {verb}
+    stem = verb.removesuffix("e")
+    return {
+        verb,
+        verb + "s",
+        verb + "d",
+        verb + "ed",
+        stem + "ing",
+        verb + "ing",
+        verb + verb[-1] + "ed",
+        verb + verb[-1] + "ing",
+        verb.removesuffix("y") + "ies",
+    }
+
+
+_MCP_VERB_SYNONYMS: dict[str, tuple[str, ...]] = {
+    form: tuple(v for v in group if v != verb)
+    for group in _MCP_VERB_GROUPS
+    for verb in group
+    for form in _verb_forms(verb)
+}
 
 
 def _mcp_ranked(specs: list[dict], query) -> tuple[list[int], int]:
@@ -13994,14 +14027,27 @@ def _mcp_ranked(specs: list[dict], query) -> tuple[list[int], int]:
     ) or conversation_match_queries(query)
     rankings: list[list] = []
     if expressions:
+        synonyms = dict.fromkeys(
+            v
+            for w in re.findall(r"[a-z]+", query.casefold())
+            for v in _MCP_VERB_SYNONYMS.get(w, ())
+        )
+        name_expression = " OR ".join([expressions[-1], *(f'"{v}"' for v in synonyms)])
         with _MCP_SEARCH_LOCK:
             conn = _mcp_search_index(specs)
-            for sql in (
-                "SELECT rowid, bm25(tool_names) AS s FROM tool_names WHERE tool_names MATCH ? ORDER BY s LIMIT ?",
-                "SELECT rowid, bm25(tool_text, 1.0, 0.3) AS s FROM tool_text WHERE tool_text MATCH ? "
-                "ORDER BY s LIMIT ?",
+            for sql, expression in (
+                (
+                    "SELECT rowid, bm25(tool_names) AS s FROM tool_names WHERE tool_names MATCH ? "
+                    "ORDER BY s LIMIT ?",
+                    name_expression,
+                ),
+                (
+                    "SELECT rowid, bm25(tool_text, 1.0, 0.3) AS s FROM tool_text WHERE tool_text MATCH ? "
+                    "ORDER BY s LIMIT ?",
+                    expressions[-1],
+                ),
             ):
-                rows = conn.execute(sql, (expressions[-1], 4 * _MCP_TOOL_SEARCH_MAX_LIMIT))
+                rows = conn.execute(sql, (expression, 4 * _MCP_TOOL_SEARCH_MAX_LIMIT))
                 rankings.append([retrieval.Hit(str(rowid), -score) for rowid, score in rows])
     ranked = [int(hit.chunk_id) for hit in retrieval._rrf(rankings, rag_config.RRF_K, len(specs))]
     return list(dict.fromkeys(exact + ranked)), len(exact)

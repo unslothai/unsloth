@@ -2413,6 +2413,44 @@ def test_mcp_listing_lists_the_tools_the_user_message_asks_for(tmp_path, monkeyp
     assert listing_for(ask) == ["mcp_tool_search"]
 
 
+def test_mcp_listing_matches_a_write_verb_to_the_tool_named_with_another(
+    tmp_path, monkeypatch, searching
+):
+    """ "Add a comment" lists create-comments, not only the update/fetch siblings sharing its noun (#13601)."""
+    import contextvars
+
+    from core.inference import tools as tools_mod
+
+    catalog = [
+        {"name": "search-pages", "description": "Search pages in the workspace by title or text."},
+        {"name": "fetch-page", "description": "Fetch a page and its content by page id."},
+        {"name": "fetch-comment", "description": "Fetch one comment on a page by comment id."},
+        {"name": "search-comments", "description": "Search comments on a page."},
+        {"name": "update-comment", "description": "Update the text of a comment by comment id."},
+        {
+            "name": "create-comments",
+            "description": "Start a discussion on a page, or reply to one.",
+        },
+        {"name": "delete-page", "description": "Move a page to the trash."},
+    ]
+    _cache_server_tools(tmp_path, monkeypatch, catalog)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD", 3)
+
+    def listing_for(prompt):
+        ctx = contextvars.copy_context()
+        messages = [{"role": "user", "content": prompt}]
+        ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, None, messages)
+        return ctx.run(lambda: _names(tools_mod.cached_mcp_tools()[0]))
+
+    add = listing_for("Add a comment to the Roadmap Q3 page saying the launch moved to September.")
+    assert "mcp__srv1__create-comments" in add
+    assert "mcp__srv1__delete-page" in listing_for("Remove the Roadmap Q3 page.")
+    assert "mcp__srv1__update-comment" in listing_for("Edit my comment on the Roadmap page.")
+    # Read verbs are not expanded, so "find" does not pull every search tool in.
+    assert tools_mod._MCP_VERB_SYNONYMS.get("find") is None
+    assert tools_mod._MCP_VERB_SYNONYMS.get("news") is None
+
+
 def test_mcp_tool_search_exact_name_loads_it_on_every_server(tmp_path, monkeypatch):
     from core.inference import mcp_client, tools as tools_mod
 
