@@ -39,6 +39,24 @@ export const MessageByIndexProvider: FC<
   return <AuiProvider value={aui}>{children}</AuiProvider>;
 };
 
+/**
+ * A composer attachment scope addressed by id, not index. Index scopes apply a new index a step
+ * after the list re-renders, so a card moved down by a removal reads its old index past the end
+ * and throws. A surviving card's id never changes, and the list unmounts the removed one.
+ */
+export const ComposerAttachmentByIdProvider: FC<
+  PropsWithChildren<{ id: string }>
+> = ({ id, children }) => {
+  const aui = useAui({
+    attachment: Derived({
+      source: "composer",
+      query: { type: "id", id },
+      get: (aui) => aui.composer().attachment({ id }),
+    }),
+  });
+  return <AuiProvider value={aui}>{children}</AuiProvider>;
+};
+
 /** `useMessagePartText` that reads an empty text part instead of throwing on a mismatched part. */
 export const useMessagePartTextSafe = (): TextPartState =>
   useAuiState((s) => textPartOrEmpty(s.part));

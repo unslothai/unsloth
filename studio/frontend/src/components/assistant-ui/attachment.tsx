@@ -42,6 +42,7 @@ import {
 } from "@/features/chat";
 import { formatBytes } from "@/features/hub";
 import { useAppearanceCustomStore } from "@/features/settings";
+import { ComposerAttachmentByIdProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import { cn } from "@/lib/utils";
 import { useShallow } from "zustand/shallow";
 import {
@@ -685,8 +686,6 @@ const SENT_FILE_COMPONENTS = {
   Document: SentFileItem,
   File: SentFileItem,
 };
-const CARD_COMPONENTS = { Attachment: ComposerAttachmentCard };
-
 export const UserMessageAttachments: FC = () => {
   const setting = useAppearanceCustomStore(
     (s) => s.customization.sentAttachments,
@@ -774,9 +773,25 @@ export const ComposerAttachments: FC<{ className?: string }> = ({ className }) =
         className,
       )}
     >
-      <ComposerPrimitive.Attachments components={CARD_COMPONENTS} />
+      <ComposerAttachmentCardList />
     </div>
   );
+};
+
+// ComposerPrimitive.Attachments keys cards by index, so removing one shifts every later card to a
+// new attachment id: each remounts (the id key below it) with no blob URL yet, a blank tile, and
+// decodes its image again. Keyed and scoped by id, the remaining cards keep their DOM.
+const ComposerAttachmentCardList: FC = () => {
+  const ids = useAuiState(
+    useShallow(({ composer }) =>
+      composer.attachments.map((attachment) => attachment.id),
+    ),
+  );
+  return ids.map((id) => (
+    <ComposerAttachmentByIdProvider key={id} id={id}>
+      <ComposerAttachmentCard />
+    </ComposerAttachmentByIdProvider>
+  ));
 };
 
 export const ComposerAddAttachment: FC = () => {
