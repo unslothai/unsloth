@@ -2421,7 +2421,9 @@ def stream_window_pad_mib(pipe: Any) -> Optional[int]:
             return None
         if state:
             streaming = True
-            partial = partial or any(getattr(g, "_unsloth_resident", False) for g in _offload_groups(module))
+            partial = partial or any(
+                getattr(g, "_unsloth_resident", False) for g in _offload_groups(module)
+            )
     if streaming and not partial:
         return encoders
     window = _stream_window_mib(pipe)
@@ -2456,7 +2458,10 @@ def _streamed_group_window_mib(pipe: Any) -> int:
                         if id(t) not in seen:
                             seen.add(id(t))
                             nbytes += sum(_storage_nbytes(t))
-                for t in (*(getattr(group, "parameters", None) or ()), *(getattr(group, "buffers", None) or ())):
+                for t in (
+                    *(getattr(group, "parameters", None) or ()),
+                    *(getattr(group, "buffers", None) or ()),
+                ):
                     if id(t) not in seen:
                         seen.add(id(t))
                         nbytes += sum(_storage_nbytes(t))
