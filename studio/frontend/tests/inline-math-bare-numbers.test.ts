@@ -78,6 +78,7 @@ test("a shell parameter right after a positional one stays text", () => {
     ["Use $1$ext in the replacement.", "$1$ext"],
     ['Run echo "$1$x" to print both.', "$1$x"],
     ['Run echo "$1$_" to print both.', "$1$_"],
+    ['Run echo "$1$_name" to print both.', "$1$_name"],
     ['Run echo "$1$?" to print both.', "$1$?"],
     ['Run echo "$1$#" to print both.', "$1$#"],
     ['Run echo "$1$@" to print both.', "$1$@"],
@@ -88,9 +89,23 @@ test("a shell parameter right after a positional one stays text", () => {
     ['Run echo "$1$$" to print both.', "$1$$"],
     ['Run echo "$1${2}" to print both.', "$1${2}"],
     ['Run echo "$1${?}" to print both.', "$1${?}"],
+    ['Run echo "$1${_}" to print both.', "$1${_}"],
+    ['Run echo "$1${foo_bar}" to print both.', "$1${foo_bar}"],
+    ['Run echo "$1${foo:-${bar}}" to print both.', "$1${foo:-${bar}}"],
   ]) {
     const html = render(source);
     assert.deepEqual(renderedMath(html), [], source);
     assert.ok(visibleText(html).includes(literal), source);
+  }
+
+  const combined =
+    'Shell examples "$1$x", "$1$?", "$1${2}", and "$1$$" stay literal.';
+  const html = render(combined);
+  assert.deepEqual(renderedMath(html), [], combined);
+  for (const literal of ["$1$x", "$1$?", "$1${2}", "$1$$"]) {
+    assert.ok(
+      visibleText(html).includes(literal),
+      `${combined} lost ${literal}`,
+    );
   }
 });

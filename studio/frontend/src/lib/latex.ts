@@ -69,6 +69,29 @@ function followsNumericShellParameter(text: string, at: number): boolean {
   }
   return start < at && text[start - 1] === "$" && text[start - 2] !== "\\";
 }
+
+function shellParameterEnd(text: string, at: number): number {
+  const first = text.charCodeAt(at + 1);
+  if (first === 123) {
+    let depth = 1;
+    for (let index = at + 2; index < text.length; index++) {
+      const char = text.charCodeAt(index);
+      if (char === 123) depth++;
+      if (char === 125 && --depth === 0) return index + 1;
+    }
+    return at + 2;
+  }
+  if (!isAsciiLetter(first) && first !== 95) return at + 2;
+  let end = at + 2;
+  while (end < text.length && isWordChar(text.charCodeAt(end))) end++;
+  return end;
+}
+
+function encodeMarkdownLiteral(text: string): string {
+  let encoded = "";
+  for (const char of text) encoded += `&#${char.codePointAt(0)};`;
+  return encoded;
+}
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 
@@ -794,15 +817,19 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
   ) {
     const prev = text[offset - 1];
     if (
-      text[offset + 1] === "$" &&
       followsNumericShellParameter(text, offset) &&
+      startsShellParameter(text, offset + 1) &&
       !inCode(offset) &&
       !inLink(offset) &&
       !inMath(offset)
     ) {
-      parts.push(text.slice(last, offset), "\\$\\$");
-      last = offset + 2;
-      offset++;
+      const end = shellParameterEnd(text, offset);
+      parts.push(
+        text.slice(last, offset),
+        encodeMarkdownLiteral(text.slice(offset, end)),
+      );
+      last = end;
+      offset = end - 1;
       continue;
     }
     if (prev === "\\" || prev === "$" || text[offset + 1] === "$") continue;
