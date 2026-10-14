@@ -76,6 +76,16 @@ test("a shell parameter right after a positional one stays text", () => {
   for (const [source, literal] of [
     ['Run echo "$1$HOME" to print both.', "$1$HOME"],
     ["Use $1$ext in the replacement.", "$1$ext"],
+    ['Run echo "$1$x" to print both.', "$1$x"],
+    ['Run echo "$1$_" to print both.', "$1$_"],
+    ['Run echo "$1$?" to print both.', "$1$?"],
+    ['Run echo "$1$#" to print both.', "$1$#"],
+    ['Run echo "$1$@" to print both.', "$1$@"],
+    ['Run echo "$1$*" to print both.', "$1$*"],
+    ['Run echo "$1$-" to print both.', "$1$-"],
+    ['Run echo "$1$!" to print both.', "$1$!"],
+    ['Run echo "$1$0" to print both.', "$1$0"],
+    ['Run echo "$1$$" to print both.', "$1$$"],
     ['Run echo "$1${2}" to print both.', "$1${2}"],
     ['Run echo "$1${?}" to print both.', "$1${?}"],
   ]) {

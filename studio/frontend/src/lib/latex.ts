@@ -53,6 +53,22 @@ function startsLikeVariable(text: string, at: number): boolean {
   if (a === 95) return isWordChar(b);
   return a === 123 && (isAsciiLetter(b) || b === 95);
 }
+
+/** valid Bash parameter starts after `$`, including braced, positional, and special forms. */
+function startsShellParameter(text: string, at: number): boolean {
+  const char = text.charCodeAt(at);
+  return isWordChar(char) || char === 123 || "*@#?-$!".includes(text[at] ?? "");
+}
+
+function followsNumericShellParameter(text: string, at: number): boolean {
+  let start = at;
+  while (start > 0) {
+    const char = text.charCodeAt(start - 1);
+    if (char < 48 || char > 57) break;
+    start--;
+  }
+  return start < at && text[start - 1] === "$" && text[start - 2] !== "\\";
+}
 // an entity stays literal in Markdown without showing an escape slash in raw HTML.
 const VARIABLE_DOLLAR = "&#36;";
 
@@ -531,11 +547,7 @@ function hasInlineMathCloser(
       continue;
     }
     const body = content.slice(offset + 1, i);
-    if (
-      BARE_NUMBER_RE.test(body) &&
-      content[i + 1] !== "{" &&
-      !startsLikeVariable(content, i + 1)
-    ) {
+    if (BARE_NUMBER_RE.test(body) && !startsShellParameter(content, i + 1)) {
       return true;
     }
     if (offset >= 2) {
@@ -781,6 +793,18 @@ export function preprocessLaTeX(content: string, isStreaming = false): string {
     offset = text.indexOf("$", offset + 1)
   ) {
     const prev = text[offset - 1];
+    if (
+      text[offset + 1] === "$" &&
+      followsNumericShellParameter(text, offset) &&
+      !inCode(offset) &&
+      !inLink(offset) &&
+      !inMath(offset)
+    ) {
+      parts.push(text.slice(last, offset), "\\$\\$");
+      last = offset + 2;
+      offset++;
+      continue;
+    }
     if (prev === "\\" || prev === "$" || text[offset + 1] === "$") continue;
     const out = rewrite(offset);
     if (out !== "$") {
