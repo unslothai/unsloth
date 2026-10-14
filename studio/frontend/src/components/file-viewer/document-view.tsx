@@ -3,7 +3,7 @@
 
 import { Spinner } from "@/components/ui/spinner";
 import { Suspense, lazy } from "react";
-import type { DocumentKind } from "./kind";
+import type { DocumentKind, PageTarget } from "./kind";
 
 const PdfView = lazy(() => import("./pdf-view"));
 const OfficeView = lazy(() => import("./office-view"));
@@ -15,6 +15,7 @@ export function DocumentView({
   contentType = "",
   scale = 1,
   thumbnail = false,
+  pageTarget,
 }: {
   file: Blob;
   kind: DocumentKind;
@@ -23,11 +24,13 @@ export function DocumentView({
   scale?: number;
   /** Card thumbnail: first PDF page or slide only, Office parses queued. */
   thumbnail?: boolean;
+  /** PDF page to scroll to; a new object asks again. */
+  pageTarget?: PageTarget;
 }) {
   return (
     <Suspense fallback={<Spinner className="m-auto size-6" />}>
       {kind === "pdf" ? (
-        <PdfView file={file} scale={scale} firstPageOnly={thumbnail} />
+        <PdfView file={file} scale={scale} firstPageOnly={thumbnail} pageTarget={pageTarget} />
       ) : (
         <OfficeView file={file} kind={kind} name={name} contentType={contentType} scale={scale} thumbnail={thumbnail} />
       )}

@@ -55,10 +55,12 @@ export function offerRagDocumentOutside(
   });
 }
 
-/** Opens an indexed document's file in Studio's browser; past the preview limit, offers it outside. */
+/** Opens an indexed document's file in Studio's browser, a PDF at `page`; past the preview limit,
+ *  offers it outside. */
 export function openRagDocumentInBrowser(
   documentId: string,
   filename: string,
+  page?: number,
 ): void {
   getDocumentFileUrl(documentId)
     // Signed URL: no bearer, so no credentials either.
@@ -87,6 +89,7 @@ export function openRagDocumentInBrowser(
         name: filename,
         contentType: blob.type,
         key: `rag:${documentId}`,
+        page,
       });
     })
     .catch(() => toast.error(`Could not open ${filename}`));

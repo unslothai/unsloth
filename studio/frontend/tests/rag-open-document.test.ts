@@ -9,15 +9,15 @@ import { loadWithStubs } from "./helpers/module-stubs.ts";
 
 const LIMIT = 100;
 const toasts: string[] = [];
-const opened: { name: string; size: number }[] = [];
+const opened: { name: string; size: number; page?: number }[] = [];
 
 const { openRagDocumentInBrowser, openRagDocumentExternally } = loadWithStubs<typeof OpenModule>(
   new URL("../src/features/rag/lib/open-document.ts", import.meta.url),
   {
     "@/components/file-viewer": { MAX_DOCUMENT_PREVIEW_BYTES: LIMIT },
     "@/features/browser": {
-      openFileInBrowser: ({ name, blob }: { name: string; blob: Blob }) =>
-        opened.push({ name, size: blob.size }),
+      openFileInBrowser: ({ name, blob, page }: { name: string; blob: Blob; page?: number }) =>
+        opened.push({ name, size: blob.size, ...(page ? { page } : {}) }),
     },
     "@/lib/api-base": { isTauri: false },
     "@/lib/toast": {
@@ -51,6 +51,15 @@ test("a file within the preview limit opens in the browser", async () => {
   await settle();
   assert.deepEqual(opened, [{ name: "handbook.pdf", size: LIMIT }]);
   assert.deepEqual(toasts, []);
+});
+
+test("a cited page reaches the browser's file view", async () => {
+  toasts.length = 0;
+  opened.length = 0;
+  serve(LIMIT);
+  openRagDocumentInBrowser("doc-1", "handbook.pdf", 3);
+  await settle();
+  assert.deepEqual(opened, [{ name: "handbook.pdf", size: LIMIT, page: 3 }]);
 });
 
 test("past the limit the body is never buffered and the file is offered outside Studio", async () => {

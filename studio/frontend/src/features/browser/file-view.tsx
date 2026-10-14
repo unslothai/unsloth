@@ -201,12 +201,20 @@ export function FileView({
   const svg = media === "image" && (/^image\/svg\+xml\b/i.test(contentType) || /\.svg$/i.test(name));
   const src = useObjectUrl(blob, media !== null, svg);
   const [failed, setFailed] = useState(false);
+  const pageTarget = useBrowserStore((state) => (tabId ? state.fileViews[tabId]?.pageTarget : undefined));
 
   if (docKind) {
     if (blob.size > MAX_DOCUMENT_PREVIEW_BYTES) return <Unavailable message={t("library.preview.cannotPreview")} />;
     return (
       <div className="flex size-full min-h-0 flex-col">
-        <DocumentView file={blob} kind={docKind} name={name} contentType={contentType} scale={scale} />
+        <DocumentView
+          file={blob}
+          kind={docKind}
+          name={name}
+          contentType={contentType}
+          scale={scale}
+          pageTarget={pageTarget ?? undefined}
+        />
       </div>
     );
   }
