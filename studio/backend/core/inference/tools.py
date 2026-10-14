@@ -16419,7 +16419,12 @@ def _is_bot_check(status: int, headers) -> bool:
         return True
     # Rate limits and outages behind these CDNs carry the same Server header.
     server = (headers.get("Server") or "").lower()
-    return status == 403 and ("cloudflare" in server or "akamaighost" in server)
+    if status != 403:
+        return False
+    # Cloudflare names itself on every response it proxies; its own blocks skip the cache and send no CF-Cache-Status.
+    if "cloudflare" in server:
+        return headers.get("cf-cache-status") is None
+    return "akamaighost" in server
 
 
 def _fetch_url_raw(

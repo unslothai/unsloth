@@ -59,7 +59,15 @@ def test_the_model_is_told_a_bot_check_blocked_the_fetch(monkeypatch, headers):
     assert "fetching this site again will not help" in result
 
 
-def test_a_plain_403_keeps_its_message(monkeypatch):
-    url = _serve_403(monkeypatch, {"Server": "nginx"})
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"Server": "nginx"},
+        # an origin's own 403 passed through Cloudflare carries a cache status
+        {"Server": "cloudflare", "CF-Cache-Status": "DYNAMIC"},
+    ],
+)
+def test_a_plain_403_keeps_its_message(monkeypatch, headers):
+    url = _serve_403(monkeypatch, headers)
     result = tools.execute_tool("web_search", {"url": url}, timeout = 10)
     assert result == "Failed to fetch URL: HTTP 403 Forbidden"
