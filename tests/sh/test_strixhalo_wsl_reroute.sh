@@ -317,6 +317,17 @@ _out=$(run_func "$_d" _SKIP_AUTOSTART=true UNSLOTH_SKIP_AUTOSTART= \
 assert_contains "UNSLOTH_SKIP_AUTOSTART forwarded to reroute"    "$_out" "skip=[1]"
 rm -rf "$_d"
 
+# 27b) The systemd opt-in and its bind settings reach the target distro too (the mock prints the
+#      command it was handed; the target distro does not inherit this shell's environment).
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" _INSTALL_SYSTEMD=true UNSLOTH_SYSTEMD_HOST=0.0.0.0 UNSLOTH_SYSTEMD_PORT=9000)
+assert_contains "systemd opt-in forwarded to reroute"             "$_out" "export UNSLOTH_INSTALL_SYSTEMD=1"
+assert_contains "systemd host forwarded to reroute"               "$_out" "export UNSLOTH_SYSTEMD_HOST='0.0.0.0'"
+assert_contains "systemd port forwarded to reroute"               "$_out" "export UNSLOTH_SYSTEMD_PORT='9000'"
+_out=$(run_func "$_d" UNSLOTH_SYSTEMD_HOST=0.0.0.0)
+assert_absent   "no systemd opt-in -> nothing forwarded"          "$_out" "SYSTEMD"
+rm -rf "$_d"
+
 # 28) Non-tauri mode: a child exit 2 is just a failure -> CPU fallback, not propagated.
 _d=$(make_fixture 1 strix 0 26.04 1)
 _rc=0
@@ -324,6 +335,27 @@ _out=$(run_func "$_d" UNSLOTH_WSL_REROUTE_CMD='exit 2') || _rc=$?
 if [ "$_rc" = "0" ]; then echo "  PASS: non-tauri exit 2 -> not propagated"; PASS=$((PASS+1)); else echo "  FAIL: non-tauri exit 2 wrongly propagated (rc=$_rc)"; FAIL=$((FAIL+1)); fi
 assert_contains "non-tauri child fail -> CPU fallback"            "$_out" "__NOROUTE__"
 assert_contains "non-tauri child fail -> skip ROCm bootstrap"     "$_out" "SKIP_ROCM=1"
+rm -rf "$_d"
+
+# 29) UV_CACHE_DIR: only a CALLER's override is portable. The installer's own default is a
+#     path in the ORIGIN distro, and forwarding it pins the child to `custom`, which skips
+#     its adaptive cache selection and outranks its --isolated-uv-cache.
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" UV_CACHE_DIR=/home/someone/.unsloth/studio/cache/uv \
+        _UV_CACHE_DIR_INSTALLER_DEFAULT=true)
+assert_contains "installer default is not forwarded"             "$_out" "unset UV_CACHE_DIR"
+assert_absent   "installer default is not exported"              "$_out" "export UV_CACHE_DIR="
+rm -rf "$_d"
+
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" UV_CACHE_DIR=/mnt/shared/uv \
+        _UV_CACHE_DIR_INSTALLER_DEFAULT=false)
+assert_contains "a caller's override is forwarded"               "$_out" "export UV_CACHE_DIR='/mnt/shared/uv'"
+rm -rf "$_d"
+
+_d=$(make_fixture 1 strix 0 26.04 1)
+_out=$(run_func "$_d" UV_CACHE_DIR=)
+assert_contains "an unset cache stays unset"                     "$_out" "unset UV_CACHE_DIR"
 rm -rf "$_d"
 
 echo ""

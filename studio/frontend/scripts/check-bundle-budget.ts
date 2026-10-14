@@ -32,28 +32,89 @@ const DIST = resolve(HERE, "..", "dist");
  * machine.
  */
 export const BUDGET = {
-  // Measured 1,496.2 KB transfer / 5,207.2 KB raw at 17363f8a2. Raised for the audio placement control: same
-  // build both sides, merge base 1,560.9 KB transfer against branch 1,562.6 KB, so it crossed the old 1,562.5 KB
-  // ceiling by a tenth of a kilobyte.
-  //
-  // Raised again because main crossed 1,582.0 KB and stayed there. Four builds on
-  // one machine, same toolchain, transfer / raw / chunks:
-  //
-  //   3f2c89537  #10629's parent          1,574.7 / 5,260.1 / 91
-  //   e3e457a7d  #10629 eager Settings    1,579.9 / 5,288.8 / 82
-  //   19c86b3cc  last green Frontend CI   1,576.5 / 5,267.6 / 91
-  //   7436c103e  main                     1,585.6 / 5,306.4 / 82
-  //
-  // No single change is over the line. #10629 is the largest contributor at
-  // +5.2 KB -- it statically imports SettingsDialog and FloatingMonitor to make
-  // Settings eager again, which is the fix it shipped, and which is what folds
-  // nine chunks into the eager graph and takes settings-*.js from 158.0 KB raw to
-  // 208.2 KB. It left 2.1 KB of headroom; the ~40 commits after it spent that.
-  // So this is a deliberate raise, not a regression to lazy-load away.
-  //
-  // Raw is untouched: 5,306.4 KB still has 64.7 KB to spare under 5,500,000.
-  transferBytes: 1_645_000,
-  rawBytes: 5_500_000,
+  // Re-measured together on one machine and build: 6,023.4 KB raw / 1,802.1 KB transfer at 5b78bafd04,
+  // plus the margin the previous raises chose (210.8 KB raw, 65.1 KB transfer). The growth since is
+  // the vLLM / SGLang engine options inside the model config page and Resources tab (#11491), which
+  // live inline in the chat and settings chunks: lazy-loading the separable inference-engines
+  // module recovers only 0.6 KB transfer, so what ran out is headroom, not laziness.
+  // The browser panel's bookmarks, tab dragging and page zoom then added 2.8 KB raw / 1.0 KB
+  // transfer (6,231.7 -> 6,234.5 KB raw, 1,865.0 -> 1,866.0 KB transfer, one machine and build),
+  // inside the already-eager chat chunk; raw is raised by that so the margin stays where it was.
+  // Re-measured again at cc84c7dc7a: 6,278.6 KB raw / 1,879.0 KB transfer, 11.8 KB transfer over.
+  // Measured commit by commit from the browser panel (#12347), no single import did it: the panel
+  // itself left 2.9 KB transfer over, the Sandbox settings tab (#12215) added 16.4 KB raw / 4.5 KB
+  // transfer (its strings in every eager locale and the sandbox pick in the chat adapter), the
+  // message action bar rework (#12735) 2.9 KB raw, and the other merges in that range the rest,
+  // all in the eager chat, index and settings chunks. Headroom ran out, so the same margin is put
+  // back.
+  // The long-chat render work (#13255: deferred fences and reasoning rows) adds 33.3 KB raw / 13.1 KB
+  // transfer to the eager chat chunk (6,477.1 -> 6,510.4 KB raw, 1,942.6 -> 1,955.7 KB transfer at
+  // 160cb41fe, one machine and build); raised by that so main's margin stays where it was.
+  // Project sources follow-ups (#13224: queued drops, retry on failed sources, folder drops) add
+  // 6.6 KB raw / 2.0 KB transfer, mostly in the eager chat chunk (6,513.0 -> 6,519.6 KB raw,
+  // 1,956.4 -> 1,958.4 KB transfer against d4ea5a51d, one machine and build). Lazy-loading the
+  // folder walker recovered 0.5 KB raw and no transfer, so the budget is raised by that growth.
+  // Then 19 small Studio merges took main over again with no single import doing it: 6,518.8 ->
+  // 6,533.6 KB raw, 1,958.0 -> 1,963.7 KB transfer from 5f38afbc2d to 33176a75e9 (one machine and
+  // build). The largest step is Regenerate title in the Library menu (#13491, +5.2 KB raw / +2.2 KB
+  // transfer, code that shares the eager chat row menu module); the Library card and composer tweaks
+  // and the edit_file download link add the rest, 0.2 to 1.7 KB transfer each. Raised by that growth
+  // so main's margin stays where it was.
+  // Twelve more Studio merges added 7.1 KB raw / 2.3 KB transfer (6,534.6 -> 6,541.7 KB raw,
+  // 1,963.9 -> 1,966.2 KB transfer from f68585e2e9 to a7dc8a0640, one machine and build), again with
+  // no single import doing it. The largest step is per-chat file history and /rewind (#13522, +4.3 KB
+  // raw / +1.3 KB transfer in the eager chat chunk); the rest are 0.1 to 0.6 KB each. Raised by that
+  // growth so main's margin stays where it was.
+  // Sidebar server paging adds 17.4 KB raw / 5.6 KB transfer to the first screen (6,544.5 -> 6,561.9
+  // KB raw, 1,967.1 -> 1,972.7 KB transfer against b73110c6f, one machine and build), raised by that.
+  // /compact and the in-loop compaction divider add 3.6 KB raw / 1.4 KB transfer to the eager startup
+  // JS (6,563.4 -> 6,567.0 KB raw, 1,973.0 -> 1,974.4 KB transfer against 280c45695, one machine
+  // and build), raised by that.
+  // Five merges since then add 2.1 KB raw / 0.8 KB transfer (6,567.3 -> 6,569.4 KB raw, 1,974.5 ->
+  // 1,975.3 KB transfer from a062c04d51 to c35052e42f, one machine and build). The step that crossed
+  // is the token activity Chart view (#13558, +0.7 KB raw / +0.3 KB transfer): its persisted store
+  // pulls zustand/middleware into the startup set as a 99th chunk. Raised by that growth so main's
+  // margin stays where it was.
+  // Six merges since add 2.9 KB raw / 1.4 KB transfer (6,570.7 -> 6,573.6 KB raw, 1,975.5 -> 1,976.9 KB
+  // transfer from b8d76e1696 to 8af12324b0, one machine and build), with the chunk count unchanged and
+  // no single import doing it. The largest step is the audio model selector fix (#13517, +2.9 KB raw /
+  // +0.9 KB transfer); thinking traces (#13545), MLX precision folders (#13565) and vLLM thinking
+  // effort (#13571) add the rest. Raised by that growth so main's margin stays where it was.
+  // The KV cache, GPU memory limit and seed engine options (#13596) add 5.7 KB raw / 1.4 KB transfer
+  // (6,573.5 -> 6,579.2 KB raw, 1,976.9 -> 1,978.3 KB transfer against abfe3142c, one machine and
+  // build), inline in the eager chat and settings chunks like the other engine options; raised by that.
+  // Read aloud's token cap and length warning add 0.2 KB raw / 0.1 KB transfer to the eager chat chunk
+  // (6,739,816 -> 6,740,052 B raw, 2,021,725 -> 2,021,835 B transfer against af9d97837e, one machine
+  // and build), which took main over; raised by that.
+  // Seven merges since add 2.1 KB raw / 0.7 KB transfer (6,741,756 -> 6,743,873 B raw, 2,025,885 ->
+  // 2,026,588 B transfer from b44035a64 to cbf0f593d, one machine and build, Node 22), with the chunk count
+  // unchanged and no new dependency. The step that crossed is eval-loss early stopping patience (#13626,
+  // +806 B raw / +311 B transfer: its training field and strings); the maximized window layout fix in the
+  // app provider (#13647) 539 B raw, the + menu reorder (#13679, measured together with #13659) 711 B raw,
+  // and #13703 / #13700 the last 61 B. Raised by that growth so main's margin stays where it was.
+  // The chat menu's Compact conversation item adds 1.6 KB raw / 0.3 KB transfer to the eager chat chunk
+  // (6,741,807 -> 6,743,381 B raw, 2,021,316 -> 2,021,655 B transfer against 2a03c22812), raised by that.
+  // Eleven frontend merges since add 4.6 KB raw / 1.2 KB transfer (6,745,911 -> 6,750,599 B raw, 2,027,285 ->
+  // 2,028,544 B transfer from 85b6414c68 to 8611f1846c, one machine and build, Node 24), with the chunk count
+  // unchanged at 95 and no new dependency. No single step crossed: the composer draft kept across chats
+  // (#13722) 2.1 KB raw / 0.5 KB transfer, the collapsed sidebar rail's Images and Audio entries (#13731)
+  // 2.1 KB raw / 0.4 KB transfer, and #13665, #13614, #13732, #13661, #13538 the rest (#13744's revert
+  // gave back 0.4 KB raw). Raised by that growth so main's margin stays where it was.
+  // Then the Audio API card in Settings (#12821) 2,019 B raw / 557 B transfer and #13630 132 B raw
+  // (6,750,599 -> 6,752,750 B raw, 2,028,544 -> 2,029,099 B transfer to dd56fb3572, same machine and build).
+  // Numbers wrapped tightly in dollars render as math (#13649): the shell-context checks that keep
+  // `$1$?`-style shell text literal add 6,984 B raw / 2,836 B transfer to the eager chat chunk
+  // (6,753,387 -> 6,760,371 B raw, 2,029,398 -> 2,032,234 B transfer against eba7641835, one machine
+  // and build, chunk count unchanged at 95), raised by that.
+  // Re-embedding documents after an embedding model switch (the save toast's action and the Settings row)
+  // adds 3,018 B raw / 905 B transfer (6,760,371 -> 6,763,389 B raw, 2,032,234 -> 2,033,139 B transfer
+  // against 525f3ceae, one machine and build, Node 24, chunk count unchanged at 95). Lazy-loading its store
+  // from both save sites cost 0.3 KB transfer more in chunk overhead, so the budget is raised by that growth.
+  // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
+  // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
+  // against 97ed9415f7, before #13649, one machine and build), raised by that.
+  transferBytes: 2_033_604,
+  rawBytes: 6_764_921,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
@@ -365,6 +426,36 @@ export function eagerChunksFromHtml(html: string): string[] {
   return [...blocking, ...entry, ...preloads];
 }
 
+/**
+ * Text that marks React-preview runtime code. The preview libraries and the bootstrap that imports
+ * them are only ever fetched when a preview opens, so either string in a startup chunk means that
+ * code was pulled onto the startup path: a static import where a lazy one was meant.
+ */
+export const LAZY_ONLY_NEEDLES = ["__unslothModules", "__vite_ssr_import__"];
+
+/** Every (chunk, needle) pair where an eager chunk contains a needle. A chunk that cannot be read is skipped. */
+export function eagerChunksContaining(
+  distDir: string,
+  chunks: string[],
+  needles: string[],
+): { chunk: string; needle: string }[] {
+  const found: { chunk: string; needle: string }[] = [];
+  for (const chunk of chunks) {
+    let text: string;
+    try {
+      text = readFileSync(join(distDir, chunk), "utf8");
+    } catch {
+      continue; // measure() reports a missing chunk; this only looks inside the ones that exist.
+    }
+    for (const needle of needles) {
+      if (text.includes(needle)) {
+        found.push({ chunk, needle });
+      }
+    }
+  }
+  return found;
+}
+
 type Measured = { name: string; raw: number; transfer: number };
 
 /**
@@ -461,6 +552,18 @@ function main(): number {
     );
   }
 
+  const lazyOnly = eagerChunksContaining(DIST, names, LAZY_ONLY_NEEDLES);
+  if (lazyOnly.length > 0) {
+    console.error("\nReact-preview runtime code is on the startup path:");
+    for (const { chunk, needle } of lazyOnly) {
+      console.error(`  ${chunk} contains ${needle}`);
+    }
+    console.error(
+      "It belongs only in chunks reached through import(). Find the static import that pulled it in.",
+    );
+    return 1;
+  }
+
   const over: string[] = [];
   if (transfer > BUDGET.transferBytes) {
     over.push(`transfer ${kb(transfer)} > ${kb(BUDGET.transferBytes)}`);
@@ -475,7 +578,9 @@ function main(): number {
       "Something is now imported statically that the first screen does not need. " +
         "Either load it on use (React.lazy, lazyRouteComponent, or a dynamic import " +
         "at the point of use), or raise BUDGET in this file in the same PR, with the " +
-        "measurement that justifies it.",
+        "measurement that justifies it. If the chunk count above went up, check the " +
+        "opposite first: a dynamic import of a module the startup set already carries " +
+        "loads nothing later, and splits that module's graph into extra startup chunks.",
     );
     return 1;
   }

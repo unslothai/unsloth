@@ -20,6 +20,7 @@ import sys
 import time
 from pathlib import Path
 
+from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,6 +28,7 @@ from _playwright_robust import (  # noqa: E402
     chromium_launch_args,
     start_vite,
     stop_process,
+    wait_for_smoke_page,
     click_forced,
 )
 
@@ -38,13 +40,17 @@ TABS = [
     "chat",
     "voice",
     "connections",
+    "library",
     "data",
     "api-keys",
     "remote-lan",
     "agents",
     "keyboard-shortcuts",
+    "browser",
     "debugging",
+    "sandbox",
     "about",
+    "accounts",
 ]
 
 ENGINE = os.environ.get("PW_ENGINE", "chromium")
@@ -114,6 +120,29 @@ SNAPSHOT_JS = """(sel) => {
         sig: labels.join('|') + '#' + root.querySelectorAll('*').length,
     };
 }"""
+
+
+def until(
+    page,
+    condition: str,
+    arg = None,
+    timeout: int = 5000,
+) -> None:
+    """Wait for the state a check reads, without failing here: a broken build spends the bound and
+    then fails on the same check. Replaces flat sleeps, which also asserted the runner's speed."""
+    try:
+        page.wait_for_function(condition, arg = arg, timeout = timeout)
+    except PlaywrightTimeout:
+        pass
+
+
+DIALOG_GONE = "() => !document.querySelector('div[role=\"dialog\"]')"
+ROWS = "[...document.querySelectorAll('[data-settings-label]')].map(r => r.dataset.settingsLabel)"
+
+
+def close_dialog(page) -> None:
+    page.evaluate("() => window.__settingsSmoke.close()")
+    until(page, DIALOG_GONE)
 
 
 def snapshot(page) -> dict:
@@ -270,8 +299,7 @@ def run_abandoned_deep_open(page) -> None:
         fail("an abandoned archive deep-open reopened the archive on the next visit to Data")
     else:
         log("an abandoned deep-open leaves the next visit to Data on the main page")
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(200)
+    close_dialog(page)
 
     # Dropping the abandoned ones must not drop the honoured ones.
     page.evaluate("() => window.__settingsSmoke.openArchived('chats')")
@@ -283,8 +311,7 @@ def run_abandoned_deep_open(page) -> None:
         fail(f"a deep-open the panel did reach no longer opens the archive ({honoured})")
     else:
         log("a deep-open the panel reaches still opens the archive")
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(200)
+    close_dialog(page)
     report["steps"].append("abandoned-deep-open")
 
 
@@ -306,6 +333,8 @@ def run_chunk_fail(page) -> None:
     if nav_before < 2:
         fail(f"the settings nav was already empty before blocking anything ({nav_before})")
     click_forced(page.locator(f'[data-testid="settings-tab-{CHUNK_FAIL}"]'), timeout = 15000)
+    # Observation window: the blocked panel's failure (and the idle prefetch's) must play out
+    # without taking the dialog or the app down, so this watches for a fixed time.
     page.wait_for_timeout(3000)
     state = page.evaluate(
         """() => ({
@@ -456,6 +485,97 @@ def assert_persisted_monitor_restores(page) -> None:
     report["steps"].append("persisted-monitor-reload")
 
 
+def run_keystroke_search(page) -> None:
+    """Searching the shortcut list by pressing a chord instead of typing its name.
+
+    Ordering is the whole risk here: the press has to reach the box ahead of the
+    shortcut it names and ahead of the dialog's own Escape, which only a real
+    browser can settle.
+    """
+    open_dialog(page, "keyboard-shortcuts")
+    settle_panel(page)
+    rows_js = """() => [...document.querySelectorAll('[data-settings-label]')]
+        .map(r => r.dataset.settingsLabel)"""
+    box = page.locator(f"{PANEL} input")
+    toggle = page.locator(f"{PANEL} button[aria-pressed]")
+    click_forced(toggle, timeout = 15000)
+    until(page, "el => el?.getAttribute('aria-pressed') === 'true'", arg = toggle.element_handle())
+    # Mod is Cmd on macOS and Ctrl everywhere else, and bindingFromEvent drops a Meta
+    # chord off macOS outright, so a hardcoded Meta would record nothing on the Linux
+    # runner. Same read as isMacPlatform(), which is what the app itself goes by.
+    mac = page.evaluate(
+        "() => /mac|iphone|ipad|ipod/i.test(`${navigator.platform} ${navigator.userAgent}`)"
+    )
+    mod = "Meta" if mac else "Control"
+    state: dict = {"armed": toggle.get_attribute("aria-pressed"), "mod": mod}
+
+    # A chord narrows to what answers to it: ⇧⌘O is New chat's, and New standalone
+    # chat sits on ⌥⌘O, which does not carry the Shift.
+    page.keyboard.press(f"{mod}+Shift+KeyO")
+    until(
+        page,
+        f"() => {{ const rows = {ROWS}; return rows.includes('New chat')"
+        " && !rows.includes('New standalone chat'); }",
+    )
+    state["chord"] = box.input_value()
+    state["chord_rows"] = page.evaluate(rows_js)
+
+    # The bare key widens to every chord built on it, ⌥⌘O included.
+    page.keyboard.press("KeyO")
+    until(page, f"() => {ROWS}.includes('New standalone chat')")
+    state["bare_rows"] = page.evaluate(rows_js)
+
+    # Escape backs out a step at a time, and the dialog stays open for both. A dialog
+    # gone here is the bug this covers: the press reaching Radix before the box.
+    page.keyboard.press("Escape")
+    # Observation window, not a readiness guess: the bug is the dialog closing, and a closing
+    # dialog stays mounted through its exit animation, so it needs the time to finish leaving.
+    page.wait_for_timeout(SETTLE_MS)
+    open_after_first = page.locator('div[role="dialog"]').count()
+    state["after_first_escape"] = {
+        "dialog": open_after_first,
+        "value": box.input_value() if open_after_first else None,
+        "rows": len(page.evaluate(rows_js)) if open_after_first else 0,
+    }
+    if open_after_first:
+        page.keyboard.press("Escape")
+        until(
+            page, "el => el?.getAttribute('aria-pressed') === 'false'", arg = toggle.element_handle()
+        )
+        open_after_second = page.locator('div[role="dialog"]').count()
+        state["after_second_escape"] = {
+            "dialog": open_after_second,
+            "armed": toggle.get_attribute("aria-pressed") if open_after_second else None,
+        }
+    else:
+        state["after_second_escape"] = {"dialog": 0, "armed": None}
+    report["keystroke_search"] = state
+
+    if state["armed"] != "true":
+        fail(f"keystroke search: the toggle did not arm ({state['armed']})")
+    if not state["chord"]:
+        fail("keystroke search: the pressed chord did not reach the box")
+    if "New chat" not in state["chord_rows"]:
+        fail(f"keystroke search: chord matched {state['chord_rows']}")
+    if "New standalone chat" in state["chord_rows"]:
+        fail(f"keystroke search: chord matched a lesser chord {state['chord_rows']}")
+    if "New standalone chat" not in state["bare_rows"]:
+        fail(
+            f"keystroke search: the bare key did not widen "
+            f"({state['bare_rows']} vs {state['chord_rows']})"
+        )
+    if state["after_first_escape"]["value"]:
+        fail("keystroke search: the first Escape left the chord in the box")
+    if state["after_first_escape"]["dialog"] != 1:
+        fail("keystroke search: the first Escape closed the dialog")
+    if state["after_second_escape"]["armed"] != "false":
+        fail("keystroke search: the second Escape left the mode armed")
+    if state["after_second_escape"]["dialog"] != 1:
+        fail("keystroke search: the second Escape closed the dialog")
+    page.evaluate("() => window.__settingsSmoke.close()")
+    report["steps"].append("keystroke-search")
+
+
 def run(page) -> None:
     if CHUNK_FAIL:
         run_chunk_fail(page)
@@ -492,8 +612,7 @@ def run(page) -> None:
     # --- 3. every lan address has actions bound to that address ----------------------
     run_lan_address_actions(page)
 
-    page.evaluate("() => window.__settingsSmoke.close()")
-    page.wait_for_timeout(300)
+    close_dialog(page)
     for tab in ("voice", "api-keys", "data", "about", "connections"):
         open_dialog(page, tab)
         state = page.evaluate("() => window.__settingsSmoke.state()")
@@ -510,8 +629,7 @@ def run(page) -> None:
             )
         else:
             log(f"deep-open {tab}: matches the clicked-to panel")
-        page.evaluate("() => window.__settingsSmoke.close()")
-        page.wait_for_timeout(200)
+        close_dialog(page)
     report["steps"].append("deep-open")
 
     # --- 5. search, then jump to a result and confirm the scroll target flashed ------
@@ -523,7 +641,12 @@ def run(page) -> None:
     settle_panel(page)
     search = page.locator('div[role="dialog"] aside input').first
     search.fill(query)
-    page.wait_for_timeout(400)
+    until(
+        page,
+        """label => [...document.querySelectorAll('div[role="dialog"] aside button:not([data-testid])')]
+          .some(b => b.innerText.trim() === label)""",
+        arg = target_label,
+    )
     entries = page.locator('div[role="dialog"] aside button:not([data-testid])')
     texts = [entries.nth(i).inner_text().strip() for i in range(entries.count())]
     report["search"] = {"query": query, "target_label": target_label, "result_texts": texts}
@@ -564,6 +687,8 @@ def run(page) -> None:
             log(f"search jump to '{target_label}': flashed, scrollTop {flashed['scrollTop']}")
     report["steps"].append("search-jump")
 
+    run_keystroke_search(page)
+
     report["page_errors"] = page.evaluate("() => window.__settingsSmoke.errors()")
 
 
@@ -577,6 +702,7 @@ def main() -> int:
     vite = start_vite(PORT)
     try:
         url = f"http://127.0.0.1:{PORT}/smoke-settings.html"
+        wait_for_smoke_page(url, "smoke-settings-main.tsx", proc = vite)
         with sync_playwright() as pw:
             launcher = getattr(pw, ENGINE)
             kwargs: dict = {"headless": True}

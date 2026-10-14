@@ -26,11 +26,23 @@ import zipfile
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Optional, Sequence
 
+# Same bootstrap as prebuilt_core.py: today only sd_cpp_backend.py prepares the path.
+if __package__:
+    from .backend.utils.auth_safe import auth_safe_open
+else:
+    _STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
+    if _STUDIO_DIR not in sys.path:
+        sys.path.insert(0, _STUDIO_DIR)
+    from backend.utils.auth_safe import auth_safe_open
+
 # Default source: the Unsloth mirror's CPU/Apple prebuilts (override with UNSLOTH_SD_CPP_REPO). GPU hosts run diffusers, so only CPU/Apple assets are needed.
 DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest) and a missing tag falls back to latest. The -u<id> suffix is the mirror's patch set: an unpatched build aborts on the default --cfg-scale and on --vae-on-cpu, and quantizes MiniMax-H3's 1-D norms into an output uncorrelated with its own bf16 reference (leejet/stable-diffusion.cpp#1861, #1862, #1863).
-DEFAULT_TAG = "master-813-bfbef5b-u13b9d92"
+# The base must carry every family's sd_cpp_arch_marker / sd_cpp_edit_marker: hosts the mirror does
+# not build (ROCm) install it from upstream. master-813, the previous base, predates Qwen-Image-2.1
+# (master-883) and its reference-alpha fix (master-896). CUDA bundles carry no CUDA runtime.
+DEFAULT_TAG = "master-951-f89d9b1-uafac7a7"
 
 REPO = DEFAULT_REPO
 
@@ -87,6 +99,8 @@ def _raw_install_record(root: Path) -> Optional[str]:
 
 # The same, for the bundle's sd-server capability. Memoised alongside the accelerator or not at all: with only half of it remembered, an unwritable record leaves a serverless install looking server-capable, and the load that finds a mismatched legacy server keeps reinstalling.
 _INSTALLED_SHIPS_SERVER_MEMO: dict[str, bool] = {}
+# The same for the pin: an unwritable record still names the old one, which re-downloads on every load.
+_INSTALLED_PIN_MEMO: dict[str, tuple[Optional[str], Optional[str]]] = {}
 
 
 def installed_ships_server(root: Path) -> Optional[bool]:
@@ -106,7 +120,8 @@ def _write_install_record(
 ) -> None:
     """Record what this install is, so a later ensure_* can tell a CPU bundle from a GPU one. The write itself stays best-effort (a metadata failure must not throw away binaries that extracted correctly) but the answer is memoised either way, so this process never re-installs what it just installed."""
     klass = accelerator_class(accelerator)
-    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag}
+    # The pin this install was FOR: a fallback (upstream / latest) tag never equals it.
+    rec: dict = {"accelerator": klass, "repo": repo, "tag": tag, "requested_tag": _pinned_tag()}
     if ships_server is not None:
         rec["ships_server"] = ships_server
         _INSTALLED_SHIPS_SERVER_MEMO[str(root)] = ships_server
@@ -117,7 +132,9 @@ def _write_install_record(
         with open(root / INSTALL_RECORD, "w", encoding = "utf-8") as f:
             json.dump(rec, f)
     except OSError as exc:
-        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, _raw_install_record(root))
+        snapshot = _raw_install_record(root)
+        _INSTALLED_ACCELERATOR_MEMO[str(root)] = (klass, snapshot)
+        _INSTALLED_PIN_MEMO[str(root)] = (rec["requested_tag"], snapshot)
         print(
             f"sd-cli: WARNING could not write the install record in {root}: {exc}; "
             f"remembering {klass} for this process only",
@@ -125,6 +142,7 @@ def _write_install_record(
         )
     else:
         _INSTALLED_ACCELERATOR_MEMO.pop(str(root), None)
+        _INSTALLED_PIN_MEMO.pop(str(root), None)
 
 
 def _repo() -> str:
@@ -135,6 +153,28 @@ def _pinned_tag() -> Optional[str]:
     """The release tag to install: env override, else the pinned default; '' = latest."""
     val = os.environ.get("UNSLOTH_SD_CPP_TAG", DEFAULT_TAG).strip()
     return val or None
+
+
+def install_is_stale(root: Path) -> bool:
+    """True when ``root`` was installed for another pin. Unknown (no record / tag, tracking latest) is not stale."""
+    want = _pinned_tag()
+    if not want:
+        return False
+    memo = _INSTALLED_PIN_MEMO.get(str(root))
+    if memo is not None:
+        raw = _raw_install_record(root)
+        if raw is None or raw == memo[1]:
+            return memo[0] != want
+        _INSTALLED_PIN_MEMO.pop(str(root), None)
+    rec = read_install_record(root)
+    requested = rec.get("requested_tag")
+    if isinstance(requested, str) and requested:
+        return requested != want
+    have = rec.get("tag")
+    if not isinstance(have, str) or not have:
+        return False
+    # Pre-requested_tag records: the mirror tag, or its upstream release on hosts the mirror does not build.
+    return have not in (want, upstream_tag_for(want))
 
 
 def is_mirror_only_tag(tag: Optional[str]) -> bool:
@@ -154,14 +194,14 @@ def upstream_tag_for(tag: Optional[str]) -> Optional[str]:
 
 _LINUX_ACCEL_TOKEN = {"rocm": "rocm", "vulkan": "vulkan"}
 _WINDOWS_ACCEL_TOKEN = {
-    "cuda": "cuda12",
+    "cuda": "cuda",
     "vulkan": "vulkan",
     "rocm": "rocm",
     "cpu": "avx2",
     "auto": "avx2",
 }
-# Tokens that mark an accelerator-specific Linux build; "auto"/"cpu" want none of them.
-_LINUX_ACCEL_MARKERS = ("rocm", "vulkan", "cuda", "sycl", "musa")
+# Tokens that mark an accelerator-specific build; "auto"/"cpu" want none of them.
+_ACCEL_MARKERS = ("rocm", "vulkan", "cuda", "sycl", "musa")
 
 _ARCH_TOKENS = {
     "x86_64": ("x86_64", "x64", "amd64"),
@@ -175,14 +215,24 @@ def _arch_tokens(machine: str) -> tuple[str, ...]:
     return _ARCH_TOKENS.get(machine.lower(), (machine.lower(),))
 
 
+def _prefer_cuda_major(names: list[str], cuda_major: Optional[str]) -> list[str]:
+    """The mirror's CUDA bundles load the host's cudart, so the major must match; others stay as fallback for older self-contained releases."""
+    if not cuda_major:
+        return names
+    want = f"cuda{cuda_major}"
+    exact = [a for a in names if re.search(rf"{want}(?!\d)", a.lower())]
+    return exact + [a for a in names if a not in exact]
+
+
 def resolve_release_asset(
     asset_names: Sequence[str],
     *,
     system: str,
     machine: str,
     accelerator: str = "auto",
+    cuda_major: Optional[str] = None,
 ) -> Optional[str]:
-    """Pick the best release asset for a host, or None if none matches. ``system`` / ``machine`` are ``platform.system()`` / ``platform.machine()`` values; ``accelerator`` is ``auto`` (CPU/Metal default), ``vulkan``, ``rocm``, or ``cuda`` (Windows only). Pure: the caller passes the release's asset name list."""
+    """Pick the best release asset for a host, or None if none matches. ``system`` / ``machine`` are ``platform.system()`` / ``platform.machine()`` values; ``accelerator`` is ``auto`` (CPU/Metal default), ``vulkan``, ``rocm``, or ``cuda``; ``cuda_major`` ("12" / "13") prefers that CUDA line. Pure: the caller passes the release's asset name list."""
     system = system.lower()
     accel = accelerator.lower()
     arch = _arch_tokens(machine)
@@ -201,8 +251,12 @@ def resolve_release_asset(
     if system == "windows":
         # Filter by host arch: an arm64 host must not install an unrunnable x64 sd-cli. No match returns None so the caller falls back.
         pool = [a for a in zips if "bin-win" in a.lower() and any(t in a.lower() for t in arch)]
+        if accel in ("auto", "cpu"):
+            pool = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
         token = _WINDOWS_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if token in a.lower()]
+        if accel == "cuda":
+            sel = _prefer_cuda_major(sel, cuda_major or "12")
         if sel:
             return sel[0]
         # An explicit GPU accelerator with no asset returns None, so the caller falls back instead of installing a CPU build.
@@ -216,8 +270,10 @@ def resolve_release_asset(
         # Explicit GPU accelerator: require its marker, never hand back a plain CPU build.
         marker = _LINUX_ACCEL_TOKEN.get(accel, accel)
         sel = [a for a in pool if marker in a.lower()]
+        if accel == "cuda":
+            sel = _prefer_cuda_major(sel, cuda_major)
     else:
-        sel = [a for a in pool if not any(m in a.lower() for m in _LINUX_ACCEL_MARKERS)]
+        sel = [a for a in pool if not any(m in a.lower() for m in _ACCEL_MARKERS)]
     return sel[0] if sel else None
 
 
@@ -237,7 +293,7 @@ def _fetch_release(
         req = urllib.request.Request(url, headers = {"Accept": "application/vnd.github+json"})
         if token:
             req.add_header("Authorization", f"Bearer {token}")
-        with urllib.request.urlopen(req, timeout = timeout) as resp:  # noqa: S310 (fixed https host)
+        with auth_safe_open(req, timeout = timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     base = f"https://api.github.com/repos/{repo}/releases"
@@ -257,6 +313,39 @@ def _fetch_release(
 
 def _fetch_latest_release(*, token: Optional[str] = None, timeout: float = 30.0) -> dict:
     return _fetch_release(None, token = token, timeout = timeout)
+
+
+class GitHubRateLimited(RuntimeError):
+    pass
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    """Same rule as freshness_flow.rate_limit_wait, which this stdlib-only installer cannot import."""
+    code = getattr(exc, "code", None)
+    if code == 429:
+        return True
+    if code != 403:
+        return False
+    headers = getattr(exc, "headers", None) or {}
+    if (
+        str(headers.get("Retry-After") or "").strip()
+        or str(headers.get("X-RateLimit-Remaining") or "").strip() == "0"
+    ):
+        return True
+    try:
+        body = exc.read(2048).decode("utf-8", errors = "replace").lower()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - an unreadable body names nothing
+        return False
+    return "rate limit" in body or "abuse detection" in body
+
+
+def _rate_limit_message() -> str:
+    hint = (
+        ""
+        if (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"))
+        else "; set GH_TOKEN or GITHUB_TOKEN to lift the 60 requests/hour unauthenticated limit"
+    )
+    return f"GitHub API is rate limiting release lookups{hint}"
 
 
 def _verify_sha256(path: Path, expected_digest: Optional[str]) -> None:
@@ -613,11 +702,14 @@ def _resolve_repo_asset(
     token: Optional[str],
     *,
     allow_latest: bool = True,
+    cuda_major: Optional[str] = None,
 ) -> tuple[Optional[dict], Optional[str]]:
-    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back."""
+    """Fetch ``repo``'s release and pick the asset for this host. Returns ``(release, asset_name)`` or ``(None, None)`` when the repo has no usable release (fetch failed, or the pinned tag is missing and ``allow_latest`` is False) or no asset for this host, so the caller can fall back. A quota refusal raises ``GitHubRateLimited`` instead: every rung shares that quota."""
     try:
         release = _fetch_release(tag, repo = repo, token = token, allow_latest = allow_latest)
-    except Exception as exc:  # noqa: BLE001 - network / rate limit -> fall back
+    except Exception as exc:  # noqa: BLE001 - network -> fall back
+        if _is_rate_limited(exc):
+            raise GitHubRateLimited(_rate_limit_message()) from exc
         print(f"sd-cli: {repo} release fetch failed ({exc})", flush = True)
         return None, None
     if release is None:
@@ -628,12 +720,15 @@ def _resolve_repo_asset(
         system = platform.system(),
         machine = platform.machine(),
         accelerator = accelerator,
+        cuda_major = cuda_major,
     )
     return release, chosen
 
 
 def _resolve_with_fallback(
-    accelerator: str, token: Optional[str]
+    accelerator: str,
+    token: Optional[str],
+    cuda_major: Optional[str] = None,
 ) -> tuple[str, Optional[dict], Optional[str]]:
     """Resolve ``(used_repo, release, asset_name)`` for this host across the primary repo and, only when the built-in default is in use and the user did not pin a repo, the upstream fallback. Ordering guarantees reproducibility: a pinned tag is tried EXACTLY on every candidate repo before any repo's unpinned latest, so a mirror missing the pinned release prefers the pinned upstream build over an unpinned mirror-latest. Returns ``(primary, None, None)`` when nothing serves this host. Shared by ``install`` and ``--print-asset`` so both honour the same fallback."""
     tag = _pinned_tag()
@@ -662,7 +757,7 @@ def _resolve_with_fallback(
 
     for repo, want_tag, allow_latest in attempts:
         release, chosen = _resolve_repo_asset(
-            repo, want_tag, accelerator, token, allow_latest = allow_latest
+            repo, want_tag, accelerator, token, allow_latest = allow_latest, cuda_major = cuda_major
         )
         if release is not None and chosen:
             if repo != primary:
@@ -691,6 +786,7 @@ def install(
     install_dir: Optional[Path] = None,
     accelerator: str = "auto",
     token: Optional[str] = None,
+    cuda_major: Optional[str] = None,
 ) -> Path:
     """Download and extract the prebuilt for this host, returning the sd-cli path. Resolves against the Unsloth mirror (``DEFAULT_REPO``) first; if the mirror cannot serve this host AND the default repo is in use, falls back to leejet upstream so native install still works. Raises ``RuntimeError`` only when neither source has an asset for the host, or the archive has no ``sd-cli``."""
     target = install_dir or default_install_dir()
@@ -713,7 +809,7 @@ def install(
             f"into your files. Remove or move that directory, or install into a different, empty "
             f"location (pass a different --install-dir / set the Unsloth sd.cpp install dir)."
         )
-    used_repo, release, chosen = _resolve_with_fallback(accelerator, token)
+    used_repo, release, chosen = _resolve_with_fallback(accelerator, token, cuda_major)
 
     if release is None or not chosen:
         raise RuntimeError(
@@ -814,13 +910,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     p.add_argument("--install-dir", default = None)
     p.add_argument(
+        "--cuda-major", default = None, help = "CUDA line the host runtime provides (12 / 13)"
+    )
+    p.add_argument(
         "--print-asset", action = "store_true", help = "resolve + print the asset, don't download"
     )
     args = p.parse_args(argv)
 
     if args.print_asset:
         # Same primary/fallback resolution as install(), so a host the mirror skips reports the upstream asset, not a false miss.
-        _used, _release, chosen = _resolve_with_fallback(args.accelerator, None)
+        try:
+            _used, _release, chosen = _resolve_with_fallback(
+                args.accelerator, None, args.cuda_major
+            )
+        except GitHubRateLimited as exc:
+            print(f"error: {exc}", file = sys.stderr)
+            return 2
         print(chosen or "(no matching prebuilt; build from source)")
         return 0 if chosen else 2
 
@@ -828,6 +933,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         install(
             install_dir = Path(args.install_dir).expanduser() if args.install_dir else None,
             accelerator = args.accelerator,
+            cuda_major = args.cuda_major,
         )
     except RuntimeError as exc:
         print(f"error: {exc}", file = sys.stderr)

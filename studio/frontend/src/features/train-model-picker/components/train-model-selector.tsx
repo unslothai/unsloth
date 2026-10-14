@@ -18,8 +18,8 @@ import { usePickerState } from "@/components/resource-picker/use-picker-state";
 import { usePlatformStore } from "@/config/env";
 import {
   MODEL_TYPE_TO_HF_TASKS,
-  PRIORITY_TRAINING_MODELS,
   applyPriorityOrdering,
+  priorityTrainingModels,
 } from "@/config/training";
 import {
   type CachedInventoryRow,
@@ -345,7 +345,12 @@ export function TrainModelSelector({
       if (row.partial) {
         return false;
       }
-      if (row.source === "lmstudio" || row.source === "ollama") {
+      // Host-app stores hold pre-quantized inference weights, not training bases.
+      if (
+        row.source === "lmstudio" ||
+        row.source === "omlx" ||
+        row.source === "ollama"
+      ) {
         return false;
       }
       if (!row.capabilities.canTrain) {
@@ -504,7 +509,7 @@ export function TrainModelSelector({
     task: trainingModelTaskFilter(requiredModelType),
     accessToken: hfApiToken(picker.debouncedHfToken),
     excludeGguf: true,
-    priorityIds: PRIORITY_TRAINING_MODELS,
+    priorityIds: priorityTrainingModels(deviceType),
     ownerScope: picker.debouncedHubQuery.trim() ? "all" : "unsloth",
     enabled: online && picker.open && tab === PICKER_TAB.hub,
   });
@@ -529,8 +534,8 @@ export function TrainModelSelector({
     ) {
       ids.push(selectedModel);
     }
-    return applyPriorityOrdering(ids);
-  }, [hfResults, modelKnownCached, modelLocalPath, selectedModel]);
+    return applyPriorityOrdering(ids, deviceType);
+  }, [deviceType, hfResults, modelKnownCached, modelLocalPath, selectedModel]);
 
   const hfResultById = useMemo(() => {
     const map = new Map<string, HfModelResult>();
@@ -778,7 +783,7 @@ export function TrainModelSelector({
           }`}
           className={cn(
             PICKER_TRIGGER_CLASS,
-            "w-full min-w-[180px] justify-between",
+            "w-full min-w-[calc(180px*var(--ui-space-scale,1))] justify-between",
           )}
         >
           <span className="flex min-w-0 items-center gap-1.5">

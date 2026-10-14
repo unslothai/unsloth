@@ -4,34 +4,35 @@
 import { useEffect, useState } from "react";
 import { formatBytes } from "@/features/hub/lib/format";
 import { fetchDeleteImpact, type DeleteImpact } from "../inventory";
+import { useHfTokenStore } from "../stores/hf-token-store";
 
-/**
- * Load the delete preview for a confirm dialog while it is open.
- *
- * An image GGUF is a small checkpoint plus a much larger companion base repo (text encoders,
- * VAE, tokenizer) shared by every quant of its family, so "removes it from disk" was never the
- * whole story: it could free 2.6 GB and silently leave 8.2 GB behind. Returns `null` until the
- * preview lands and if it fails, so the dialog opens either way.
- */
+/** preview reclaimed and shared companion bytes; return `null` so confirmation stays available. */
 export function useDeleteImpact(
   open: boolean,
   repoId: string,
   variant?: string | null,
+  cachePath?: string | null,
 ): DeleteImpact | null {
   const [impact, setImpact] = useState<DeleteImpact | null>(null);
+  const hfToken = useHfTokenStore((state) => state.token);
   useEffect(() => {
     if (!open) {
       setImpact(null);
       return;
     }
     let cancelled = false;
-    void fetchDeleteImpact(repoId, variant ?? undefined).then((result) => {
+    void fetchDeleteImpact(
+      repoId,
+      variant ?? undefined,
+      cachePath ?? undefined,
+      hfToken || undefined,
+    ).then((result) => {
       if (!cancelled) setImpact(result);
     });
     return () => {
       cancelled = true;
     };
-  }, [open, repoId, variant]);
+  }, [open, repoId, variant, cachePath, hfToken]);
   return impact;
 }
 
@@ -40,12 +41,7 @@ function joinNames(names: string[]): string {
   return `${names.slice(0, 2).join(", ")} and ${names.length - 2} more`;
 }
 
-/**
- * The truthful half of a delete confirmation: what comes back, and what does not.
- *
- * Deliberately says the retained number out loud even when it dwarfs the reclaimed one, and
- * says nothing at all rather than guess when the preview is unavailable.
- */
+/** report reclaimed and retained bytes, but render nothing when the preview is unavailable. */
 export function DeleteImpactSummary({ impact }: { impact: DeleteImpact | null }) {
   if (!impact) return null;
   if (impact.blocked_by.length > 0) {
@@ -60,6 +56,11 @@ export function DeleteImpactSummary({ impact }: { impact: DeleteImpact | null })
   const freeable = impact.freeable_companions.reduce((sum, c) => sum + c.size_bytes, 0);
   return (
     <span className="mt-2 block space-y-1 text-ui-12p5">
+      {impact.cache_path && (
+        <span className="block break-all text-muted-foreground" data-testid="delete-impact-folder">
+          Folder: {impact.cache_path}
+        </span>
+      )}
       <span className="block text-foreground" data-testid="delete-impact-reclaimed">
         Frees {formatBytes(impact.reclaimed_bytes)} of disk space.
       </span>

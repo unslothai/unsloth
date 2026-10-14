@@ -111,6 +111,9 @@ def _make_mla_backend(
     b._kv_value_length_swa = None
     b._draft_backend_cache = None
     b._vocab_size = vocab
+    # The speculative compute buffers ride on this reserve too; test_compute_buffer
+    # prices them, and these cases pin the cache terms.
+    b._mtp_draft_compute_bytes = lambda *args, **kwargs: 0
     return b
 
 
@@ -204,12 +207,10 @@ class TestMlaTargetCtxReserve:
         assert other._estimate_mtp_overhead_bytes(ctx) == (
             b._mtp_draft_kv_bytes(ctx) + b._estimate_kv_cache_bytes(ctx, "f16")
         )
-        # The "glm5-next" port builds no NextN graph, so it keeps the safe default.
+        # The upstream "glm5-next" name: its NextN graph allocates no copy either.
         hyphenated = _make_mla_backend()
         hyphenated._architecture = "glm5-next"
-        assert hyphenated._estimate_mtp_overhead_bytes(ctx) == other._estimate_mtp_overhead_bytes(
-            ctx
-        )
+        assert hyphenated._estimate_mtp_overhead_bytes(ctx) == b._estimate_mtp_overhead_bytes(ctx)
 
 
 class TestKdaRollbackReserve:

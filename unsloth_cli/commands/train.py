@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import os
 import time
 from pathlib import Path
 from typing import Optional
 
 import typer
 
-from unsloth_cli._inference import ensure_studio_backend_path
+from unsloth_cli._inference import ensure_studio_backend_path, mlx_distributed_info
 from unsloth_cli._studio_deps import studio_backend_imports
 from unsloth_cli.config import Config, ConfigError, load_config
 from unsloth_cli.options import add_options_from_config
@@ -23,10 +24,18 @@ def _should_use_mlx_backend_for_cli() -> bool:
 def _activate_mlx_transformers(model_name: str, hf_token: Optional[str]) -> None:
     # Activate before any transformers import: adapter model-type detection imports utils.models.
     ensure_studio_backend_path()
+    from filelock import FileLock
+    from utils.paths.storage_roots import studio_root
     from utils.transformers_version import activate_transformers_for_subprocess
+
     try:
-        activate_transformers_for_subprocess(model_name, hf_token)
+        root = studio_root()
+        root.mkdir(parents = True, exist_ok = True)
+        with FileLock(str(root / ".transformers-sidecar.lock")):
+            activate_transformers_for_subprocess(model_name, hf_token)
     except Exception as exc:
+        if mlx_distributed_info()[0]:
+            raise
         typer.echo(f"Warning: failed to activate Transformers sidecar: {exc}", err = True)
 
 
@@ -45,6 +54,121 @@ def _create_cli_trainer(model_name: str, hf_token: Optional[str]):
         from studio.backend.core.training.trainer import UnslothTrainer
 
     return UnslothTrainer()
+
+
+def _optimizer_for_host(requested: Optional[str] = None) -> str:
+    """The CLI exposes no --optim, so trainer.py would fall back to its own `adamw_8bit`
+    literal, which cannot complete a step on Intel XPU. Resolve the same device policy the
+    Studio route and worker config use, so `unsloth train` lands on the same optimizer a
+    Studio run on this host would. Non-XPU hosts keep `adamw_8bit` exactly as before.
+
+    Takes `requested` rather than only filling a default, so a future --optim carrying a
+    bitsandbytes name is normalized too instead of reaching the trainer unchanged.
+    """
+    ensure_studio_backend_path()
+    with studio_backend_imports("unsloth train"):
+        from studio.backend.core.training.training import (
+            DEFAULT_TRAINING_OPTIMIZER,
+            normalize_training_optimizer_for_device,
+        )
+        from studio.backend.utils.hardware import get_device
+
+    optimizer = requested or DEFAULT_TRAINING_OPTIMIZER
+    try:
+        device_backend = get_device().value
+    except Exception:  # noqa: BLE001 -- an undetectable host keeps the historical default
+        return optimizer
+    return normalize_training_optimizer_for_device(optimizer, device_backend = device_backend)
+
+
+def _launch_rank() -> Optional[int]:
+    # A size alone is not a launch: a stale PMI_SIZE or WORLD_SIZE in a shell would pin every run to one folder.
+    rank = os.environ.get("RANK")
+    size = os.environ.get("WORLD_SIZE")
+    if rank is not None and size is not None:
+        try:
+            rank, size = int(rank), int(size)
+        except ValueError:
+            return None
+        return rank if 0 <= rank < size and size > 1 else None
+    is_launch, rank, _size = mlx_distributed_info()
+    return rank if is_launch and (_size or 0) > 1 else None
+
+
+_RUN_DIR_STORE = None
+
+
+def _torch_launch_store(rank: int):
+    # torchrun's agent hosts a store at MASTER_ADDR:MASTER_PORT; a plain env:// launch has rank 0 host it, and
+    # multi_tenant lets init_process_group reuse this same server instead of failing to bind the port.
+    global _RUN_DIR_STORE
+    if (
+        "RANK" not in os.environ
+        or "MASTER_ADDR" not in os.environ
+        or "MASTER_PORT" not in os.environ
+    ):
+        return None
+    try:
+        from datetime import timedelta
+
+        from torch.distributed import TCPStore
+
+        host = rank == 0 and os.environ.get("TORCHELASTIC_USE_AGENT_STORE") != "True"
+        store = TCPStore(
+            os.environ["MASTER_ADDR"],
+            int(os.environ["MASTER_PORT"]),
+            is_master = host,
+            timeout = timedelta(minutes = 30),
+            multi_tenant = True,
+        )
+    except Exception:  # noqa: BLE001 -- no store reachable: fall back to the launcher's start time
+        return None
+    if host:
+        # Keep the server alive for the other ranks until init_process_group takes it over.
+        _RUN_DIR_STORE = store
+    return store
+
+
+def _launcher_start_time() -> int:
+    # Ranks reach this seconds apart after their own model load; their shared launcher started once.
+    try:
+        import psutil
+        return int(psutil.Process(os.getppid()).create_time())
+    except Exception:  # noqa: BLE001 -- no launcher to ask: fall back to this rank's clock
+        return int(time.time())
+
+
+def _reserve_run_dir(name: str) -> str:
+    from utils.paths import ensure_dir, resolve_output_dir
+    stamp = int(time.time())
+    while True:
+        path = resolve_output_dir(f"{name}_{stamp}")
+        ensure_dir(path.parent)
+        try:
+            path.mkdir()
+            return str(path)
+        except FileExistsError:
+            stamp += 1
+
+
+def _default_output_dir(model_name: str) -> str:
+    ensure_studio_backend_path()
+    from utils.paths import default_run_dir_name, resolve_output_dir
+
+    name = default_run_dir_name(model_name)
+    rank = _launch_rank()
+    if rank is None:
+        return _reserve_run_dir(name)
+    store = _torch_launch_store(rank)
+    if store is None:
+        # mlx.launch / mpirun ranks never write the folder, so rank 0 reserves one alone.
+        if rank == 0 and "RANK" not in os.environ:
+            return _reserve_run_dir(name)
+        return str(resolve_output_dir(f"{name}_{_launcher_start_time()}"))
+    key = "unsloth_cli/output_dir"
+    if rank == 0 and not store.check([key]):
+        store.set(key, _reserve_run_dir(name))
+    return store.get(key).decode()
 
 
 @add_options_from_config(Config)
@@ -69,14 +193,13 @@ def train(
     config_overrides: dict = None,
 ):
     """Launch training using the existing Unsloth training backend."""
+    config_overrides = config_overrides or {}
     try:
         cfg = load_config(config)
+        cfg.apply_overrides(**config_overrides)
     except (FileNotFoundError, ConfigError) as e:
         typer.echo(f"Error: {e}", err = True)
         raise typer.Exit(code = 2)
-
-    config_overrides = config_overrides or {}
-    cfg.apply_overrides(**config_overrides)
 
     # CLI/env tokens take precedence; guard against unresolved typer.Option.
     from typer.models import OptionInfo
@@ -93,6 +216,11 @@ def train(
 
         data = cfg.model_dump()
         data["training"]["output_dir"] = str(data["training"]["output_dir"])
+        # model_dump carries the config file's tokens verbatim, and this goes to stdout: CI logs,
+        # notebook output, scrollback. Mask only what is set, so an unset token still reads as null.
+        for name in ("hf_token", "wandb_token"):
+            if data["logging"].get(name) is not None:
+                data["logging"][name] = "[redacted]"
         typer.echo(yaml.dump(data, default_flow_style = False, sort_keys = False))
         raise typer.Exit(code = 0)
 
@@ -124,7 +252,9 @@ def train(
         model_name = cfg.model,
         max_seq_length = cfg.training.max_seq_length,
         load_in_4bit = cfg.training.load_in_4bit if use_lora else False,
+        full_finetuning = not use_lora,
         hf_token = hf_token,
+        use_gradient_checkpointing = cfg.training.gradient_checkpointing,
     ):
         typer.echo("Model load failed", err = True)
         raise typer.Exit(code = 1)
@@ -148,13 +278,17 @@ def train(
     ds, eval_ds = result
 
     training_kwargs = cfg.training_kwargs()
+    if "output_dir" not in cfg.training.model_fields_set:
+        training_kwargs["output_dir"] = _default_output_dir(cfg.model)
     training_kwargs["wandb_token"] = wandb_token
+    training_kwargs["optim"] = _optimizer_for_host(training_kwargs.get("optim"))
     started = trainer.start_training(dataset = ds, eval_dataset = eval_ds, **training_kwargs)
 
     if not started:
         typer.echo("Training failed to start", err = True)
         raise typer.Exit(code = 1)
 
+    interrupted = False
     try:
         while trainer.training_thread and trainer.training_thread.is_alive():
             progress = trainer.get_training_progress()
@@ -162,6 +296,7 @@ def train(
                 break
             time.sleep(1)
     except KeyboardInterrupt:
+        interrupted = True
         typer.echo("Stopping training (Ctrl+C detected)...")
         trainer.stop_training()
     finally:
@@ -176,3 +311,5 @@ def train(
     if getattr(final, "error", None):
         typer.echo(f"Training error: {final.error}", err = True)
         raise typer.Exit(code = 1)
+    if interrupted and not getattr(final, "is_completed", False):
+        raise typer.Exit(code = 130)

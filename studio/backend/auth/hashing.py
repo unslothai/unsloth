@@ -31,3 +31,13 @@ def verify_password(password: str, salt: str, hashed: str) -> bool:
         100_000,
     )
     return hmac.compare_digest(dk.hex(), hashed)
+
+
+# Fixed inputs, so a miss spends the same PBKDF2 round a real account would.
+_EQUALIZE_SALT = "0" * 32
+_EQUALIZE_HASH = "0" * 64
+
+
+def equalize_login_work(password: str) -> None:
+    """Spend the verification cost with no stored hash, so a miss is not faster to reject."""
+    verify_password(password, _EQUALIZE_SALT, _EQUALIZE_HASH)

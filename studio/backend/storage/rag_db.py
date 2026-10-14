@@ -17,10 +17,12 @@ import logging
 import re
 import sqlite3
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
+from storage import sqlite_gate
 from utils.paths import rag_db_path, ensure_dir
 
 # Optional dep: import must never crash this module (imported unconditionally).
@@ -43,7 +45,7 @@ class RagExtensionUnavailable(RuntimeError):
 
 
 _schema_lock = threading.Lock()
-_schema_ready = False
+_schema_ready: set[Path] = set()
 # The dylib is either there or it is not, and the UI polls the KB list on a timer, so one warning
 # per process says everything the repeats would.
 _unavailable_lock = threading.Lock()
@@ -54,7 +56,6 @@ _extension_loaded = False
 
 
 def _warn_unavailable_once(exc: BaseException | None = None) -> None:
-    """Log the sqlite-vec unavailability at most once per process."""
     global _unavailable_warned
     with _unavailable_lock:
         if _unavailable_warned:
@@ -128,7 +129,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             text TEXT NOT NULL,
             page_number INTEGER,
             source_page_index INTEGER,
+            page_char_start INTEGER,
+            page_char_end INTEGER,
             token_count INTEGER,
+            whole_document_token_count INTEGER,
             kind TEXT NOT NULL DEFAULT 'text',
             pdf_regions_json TEXT
         );
@@ -171,6 +175,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             last_error TEXT,
             last_scan_at TEXT,
             withheld_paths TEXT,
+            failed_files TEXT,
+            scan_report TEXT,
+            last_change_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(scope, path)
@@ -251,6 +258,13 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # recover the order within a compaction epoch.
     if "archive_ordinal" not in cols:
         conn.execute("ALTER TABLE documents ADD COLUMN archive_ordinal INTEGER")
+    chunk_cols = {r[1] for r in conn.execute("PRAGMA table_info(chunks)").fetchall()}
+    if "page_char_start" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN page_char_start INTEGER")
+    if "page_char_end" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN page_char_end INTEGER")
+    if "whole_document_token_count" not in chunk_cols:
+        conn.execute("ALTER TABLE chunks ADD COLUMN whole_document_token_count INTEGER")
     # Partial, so it is empty until a chat is compacted and the MAX() that allocates the next ordinal is
     # an index probe rather than a scan.
     conn.execute(
@@ -284,17 +298,28 @@ def ensure_linked_folder_columns(conn: sqlite3.Connection) -> None:
     folder_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folders)").fetchall()}
     if folder_cols and "withheld_paths" not in folder_cols:
         conn.execute("ALTER TABLE linked_folders ADD COLUMN withheld_paths TEXT")
+    if folder_cols and "failed_files" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN failed_files TEXT")
+    if folder_cols and "scan_report" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN scan_report TEXT")
+    if folder_cols and "last_change_at" not in folder_cols:
+        conn.execute("ALTER TABLE linked_folders ADD COLUMN last_change_at TEXT")
+
+
+def reset_schema_state_for_tests() -> None:
+    with _schema_lock:
+        _schema_ready.clear()
 
 
 def get_connection() -> sqlite3.Connection:
     """Open rag.db (WAL + sqlite-vec loaded, schema created once). Raises if the extension is unavailable."""
-    global _schema_ready, _extension_loaded
+    global _extension_loaded
     if not RAG_AVAILABLE:
         raise RagExtensionUnavailable(_RAG_UNAVAILABLE_MSG)
 
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite_gate.connect(db_path)
     conn.row_factory = sqlite3.Row
     # Wait for a lock instead of erroring immediately: a figure-heavy ingest can hold its connection
     # across many seconds of vision calls, and a concurrent read would hit "database is locked".
@@ -311,12 +336,13 @@ def get_connection() -> sqlite3.Connection:
     # database does next. A monotonic flip, so no lock.
     _extension_loaded = True
 
-    if not _schema_ready:
+    if db_path not in _schema_ready:
         with _schema_lock:
-            if not _schema_ready:
+            schema_path = db_path.resolve()
+            if schema_path not in _schema_ready:
                 try:
                     _ensure_schema(conn)
-                    _schema_ready = True
+                    _schema_ready.add(schema_path)
                 except Exception:
                     conn.close()
                     raise
@@ -329,7 +355,7 @@ def get_metadata_connection() -> sqlite3.Connection:
     is temporarily unavailable. Callers must not query or mutate the vec0 virtual table."""
     db_path = rag_db_path()
     ensure_dir(db_path.parent)
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite_gate.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout = 5000")
     return conn
@@ -346,25 +372,48 @@ def vec_table_dim(conn: sqlite3.Connection) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def ensure_vec(conn: sqlite3.Connection, dim: int) -> None:
+# Prefixed to the identity of a document whose vectors were dropped, so it matches no embedder.
+VECTORS_DROPPED = "vectors-dropped:"
+
+
+def ensure_vec(
+    conn: sqlite3.Connection,
+    dim: int,
+    writing: str | None = None,
+) -> None:
     """Create the dense ``chunks_vec`` table once the embedding dim is known (vec0 bakes it into the column
     type). A width change (embedding model switched in Settings) drops the table: the old vectors live in a
-    foreign space and would only block inserts, while lexical search keeps serving old chunks until they are
-    re-uploaded."""
+    foreign space and would only block inserts. Lexical search keeps serving the old chunks, and every
+    document but ``writing``, completed or not (ingestion commits its vectors before completing), gets
+    ``VECTORS_DROPPED`` prefixed to its identity until it writes vectors again or is re-embedded."""
     existing = vec_table_dim(conn)
     if existing is not None and existing != int(dim):
         logger.warning(
             "chunks_vec dim changed %d -> %d (embedding model switched); dropping "
-            "stale dense index. Re-upload documents to restore dense search.",
+            "stale dense index. Re-embed documents to restore dense search.",
             existing,
             int(dim),
         )
         conn.execute("DROP TABLE chunks_vec")
+        conn.execute(
+            "UPDATE documents SET embedding_model=? || COALESCE(embedding_model, '') "
+            "WHERE id IS NOT ? AND COALESCE(embedding_model, '') NOT LIKE ?",
+            (VECTORS_DROPPED, writing, VECTORS_DROPPED + "%"),
+        )
     conn.execute(
         f"CREATE VIRTUAL TABLE IF NOT EXISTS chunks_vec USING vec0("
         f"scope TEXT partition key, "
         f"chunk_id TEXT, "
         f"embedding float[{int(dim)}] distance_metric=cosine)"
+    )
+
+
+def restore_dropped_identity(conn: sqlite3.Connection, document_id: str) -> None:
+    """Undo ``ensure_vec``'s prefix once ``document_id`` has written vectors into the current table."""
+    conn.execute(
+        "UPDATE documents SET embedding_model=NULLIF(substr(embedding_model, ?), '') "
+        "WHERE id=? AND embedding_model LIKE ?",
+        (len(VECTORS_DROPPED) + 1, document_id, VECTORS_DROPPED + "%"),
     )
 
 

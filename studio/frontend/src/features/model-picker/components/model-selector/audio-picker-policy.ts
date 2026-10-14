@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  AUDIO_CPP_AUDIO_TYPES,
+  AUDIO_CPP_REPO,
+  AUDIO_CPP_SEP_AUDIO_TYPE,
+} from "../../../audio/audio-cpp-catalog.ts";
 import type { FormatFilter } from "./recommended-fit";
 import type { ModelSelectorChangeMeta } from "./types";
 
@@ -10,9 +15,27 @@ const NATIVE_AUDIO_TYPES = new Set([
   "moss_tts_nano",
   "higgs_tts3",
   "minimax_music3",
+  ...AUDIO_CPP_AUDIO_TYPES,
 ]);
 
 const TTS_CODECS = new Set(["snac", "csm", "bicodec", "dac"]);
+
+/** Hub evidence that a GGUF repo is published for the GGUF audio runtime rather than llama.cpp.
+ *  A Hub search row has no header to read, so its name, tags or library say so or nothing does. */
+const AUDIO_RUNTIME_EVIDENCE = /audio[-_.]?cpp/;
+
+const AUDIO_CPP_UMBRELLA_NAME = /^audio[-_.]?cpp[-_.]?gguf(?:$|[-_.])/i;
+
+/** The multi-model package repo itself, or a fork or mirror of it: its folders are the models, so
+ *  the root never loads as one. */
+export function isAudioCppUmbrellaRepo(id: string): boolean {
+  const parts = id.trim().split("/");
+  if (parts.length !== 2) return false;
+  return (
+    id.trim().toLowerCase() === AUDIO_CPP_REPO.toLowerCase() ||
+    AUDIO_CPP_UMBRELLA_NAME.test(parts[1])
+  );
+}
 
 export type CommunityModelPolicy = "none" | "search-only" | "recommended";
 
@@ -50,9 +73,9 @@ export function nativeAudioCheckpointIsLoadable(
   return !audioType || !NATIVE_AUDIO_TYPES.has(audioType) || exportType === "merged";
 }
 
-/** Community ASR runs through the Transformers Whisper sidecar. Curated GGUF/MTMD artifacts
- *  are handled by the catalog before this gate, so an uncurated row must identify a
- *  non-GGUF Whisper checkpoint. */
+/** Community ASR runs through the Transformers Whisper sidecar, or through the GGUF audio
+ *  runtime for a GGUF published for it. Curated GGUF/MTMD artifacts are handled by the catalog
+ *  before this gate, so an uncurated row must identify one of those two. */
 export function communityAudioRowIsRunnable({
   isStt,
   isTts,
@@ -75,9 +98,16 @@ export function communityAudioRowIsRunnable({
   if (!isStt && !isTts) {
     return true;
   }
+  if (isAudioCppUmbrellaRepo(id)) return false;
   const evidence = [id, baseModel ?? "", ...(tags ?? [])].map((value) =>
     value.toLowerCase(),
   );
+  if (
+    isGguf &&
+    isAudioRuntimeGgufEvidence({ id, baseModel, tags, libraryName, audioType })
+  ) {
+    return true;
+  }
   if (isStt) {
     if (isGguf) return false;
     if (libraryName && libraryName.toLowerCase() !== "transformers")
@@ -101,6 +131,28 @@ export function communityAudioRowIsRunnable({
   if (!family) return false;
   // llama.cpp intentionally has no CSM decoder; CSM is Transformers-only.
   return !(isGguf && /(?:^|[-_./])csm(?:$|[-_./])/.test(family));
+}
+
+function isAudioRuntimeGgufEvidence({
+  id,
+  baseModel,
+  tags,
+  libraryName,
+  audioType,
+}: {
+  id: string;
+  baseModel?: string | null;
+  tags?: readonly string[] | null;
+  libraryName?: string | null;
+  audioType?: string | null;
+}): boolean {
+  if (isAudioCppUmbrellaRepo(id)) return false;
+  return (
+    AUDIO_CPP_AUDIO_TYPES.has(audioType ?? "") ||
+    [id, baseModel ?? "", ...(tags ?? []), libraryName ?? ""].some((value) =>
+      AUDIO_RUNTIME_EVIDENCE.test(value.toLowerCase()),
+    )
+  );
 }
 
 /** A GGUF llama.cpp cannot decode, however it was found: CSM is Transformers-only, so it
@@ -178,9 +230,20 @@ export function audioPickIsRoutable({
   if (taskFromGgufArch && isGguf && task === "text-to-speech") {
     const codec = (audioType ?? "").toLowerCase();
     if (codec === "csm" || !codec) return false;
-    return ["snac", "bicodec", "dac"].includes(codec);
+    return ["snac", "bicodec", "dac"].includes(codec) || AUDIO_CPP_AUDIO_TYPES.has(codec);
   }
   if (isCurated) return true;
+  // Hub music / audio-to-audio tags also cover MusicGen, Stable Audio, codecs, enhancers: Audio runs none.
+  if (task === "audio-to-audio") return audioType === AUDIO_CPP_SEP_AUDIO_TYPE;
+  if (task === "text-to-audio") {
+    if (NATIVE_AUDIO_TYPES.has(audioType ?? "")) return true;
+    return (
+      isGguf &&
+      (taskFromGgufArch ||
+        isLocalCheckpoint ||
+        isAudioRuntimeGgufEvidence({ id, baseModel, tags, libraryName, audioType }))
+    );
+  }
   // A checkpoint from outputs/ has no Hub identity to judge, and the family-name heuristic would
   // reject it on its directory name. Its task came from the backend reading the checkpoint,
   // the stronger signal, and the Audio page lists it off that same tag.
@@ -206,6 +269,21 @@ export function audioPickIsRoutable({
     libraryName,
     audioType,
   });
+}
+
+/** The backend names on-device speech checkpoints it runs through mlx-audio by that library, Mac only. */
+export function macMlxSttRowIsRunnable({
+  isMac,
+  isStt,
+  isGguf,
+  libraryName,
+}: {
+  isMac: boolean;
+  isStt: boolean;
+  isGguf: boolean;
+  libraryName?: string | null;
+}): boolean {
+  return isMac && isStt && !isGguf && libraryName?.toLowerCase() === "mlx-audio";
 }
 
 /** The macOS audio runtime can execute TTS only through llama.cpp GGUF. Curated families may
@@ -334,6 +412,17 @@ export function allowedHiddenModelIdMatches(
     (modelId) =>
       typeof modelId === "string" &&
       allowedHiddenModelIds?.has(modelId.trim().toLowerCase()),
+  );
+}
+
+/** An audio.cpp umbrella folder row lists only on a task page that passed its exact id. */
+export function umbrellaFolderRowAllowed(
+  row: { repoId: string; umbrellaFolder?: boolean },
+  allowedHiddenModelIds: ReadonlySet<string> | undefined,
+): boolean {
+  return (
+    !row.umbrellaFolder ||
+    allowedHiddenModelIdMatches(allowedHiddenModelIds, row.repoId)
   );
 }
 

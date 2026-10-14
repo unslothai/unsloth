@@ -6,7 +6,6 @@ import {
   CHAT_HISTORY_UPDATED_EVENT,
   notifyChatHistoryUpdated,
 } from "../api/chat-api";
-import { useChatArtifactsStore } from "../artifacts/store";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import type { ThreadRecord } from "../types";
 import {
@@ -16,6 +15,7 @@ import {
   listStoredChatThreadsWithMessages,
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
+import { clearBranchHead } from "../utils/branch-head";
 import { clearComposerDraft } from "../utils/composer-draft";
 import { offerToDeleteKeptSandboxes } from "../utils/offer-kept-sandbox-files";
 import { stopChatThread } from "../utils/stop-chat-thread";
@@ -34,6 +34,9 @@ export interface SidebarItem {
   title: string;
   createdAt: number;
   updatedAt: number;
+  /** Last rename, move or (un)archive. */
+  modifiedAt?: number;
+  modelIds?: string[];
   isFork?: boolean;
   projectId?: string | null;
 }
@@ -61,6 +64,10 @@ export function groupThreads(
       if (existing) {
         existing.createdAt = Math.max(existing.createdAt, t.createdAt);
         existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
+        if (t.modifiedAt) existing.modifiedAt = Math.max(existing.modifiedAt ?? 0, t.modifiedAt);
+        if (t.modelId && !existing.modelIds?.includes(t.modelId)) {
+          existing.modelIds = [...(existing.modelIds ?? []), t.modelId];
+        }
         existing.threadIds?.push(t.id);
         continue;
       }
@@ -71,6 +78,8 @@ export function groupThreads(
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
+        ...(t.modifiedAt ? { modifiedAt: t.modifiedAt } : {}),
+        ...(t.modelId ? { modelIds: [t.modelId] } : {}),
         projectId: t.projectId ?? null,
       };
       pairItems.set(t.pairId, item);
@@ -83,6 +92,8 @@ export function groupThreads(
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
+        ...(t.modifiedAt ? { modifiedAt: t.modifiedAt } : {}),
+        ...(t.modelId ? { modelIds: [t.modelId] } : {}),
         isFork: Boolean(t.forkedFromThreadId),
         projectId: t.projectId ?? null,
       });
@@ -334,14 +345,9 @@ export async function deleteChatItems(
     cancelIfRunning(id);
   }
 
-  // Drop saved composer drafts so deleted threads leave no orphan keys.
+  // clear composer drafts so deleted threads leave no orphan keys.
   for (const id of threadIds) clearComposerDraft(id);
 
-  const artifactStore = useChatArtifactsStore.getState();
-  for (const id of threadIds) artifactStore.clearArtifactsForThread(id);
-  artifactStore.clearOrphanedArtifacts();
-
-  // Optimistic tombstone: hide immediately; roll back on backend error.
   markChatThreadsDeleted(threadIds);
   notifyChatHistoryUpdated();
 
@@ -352,9 +358,9 @@ export async function deleteChatItems(
 
   try {
     const kept = await deleteStoredChatThreads(threadIds, args);
-    // Whether or not deletion was asked for: a sandbox that could not be removed leaves files with
-    // no card to reach them from, and the chat is already gone, so this offer is the only notice
-    // and the only retry.
+    // retain the head until deletion succeeds so a restored chat reopens on the same branch.
+    for (const id of threadIds) clearBranchHead(id);
+    // offer recovery for sandbox files that outlive a deleted chat and lose their sidebar entry.
     offerToDeleteKeptSandboxes(kept);
   } catch (error) {
     removeChatThreadTombstones(threadIds);

@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useHfEndpoint } from "@/lib/hf-endpoint";
+import { revealCachedModel } from "@/features/chat";
+import { useRevealLabel } from "@/features/library/reveal";
+import { toast } from "@/lib/toast";
 import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
@@ -15,7 +19,12 @@ import {
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
-import { Alert02Icon, CubeIcon, Share05Icon } from "@hugeicons/core-free-icons";
+import {
+  Alert02Icon,
+  CubeIcon,
+  Folder01Icon,
+  Share05Icon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -29,7 +38,10 @@ import {
   type BaseModelSource,
   type LocalModelInfo,
   type ModelInventoryFormat,
+  DELETABLE_LOCAL_SOURCES,
   deleteCachedModel,
+  deleteLocalModel,
+  revealLocalModel,
 } from "../inventory";
 import { formatBytes } from "../lib/format";
 import type { HubModelRunSelection } from "../lib/model-run-selection";
@@ -127,6 +139,8 @@ function BaseModelReference({
   baseModelSummary?: string | null;
 }) {
   const canOpenHub = baseModelSource === "huggingface" && !!baseModelHubId;
+  const hfEndpoint = useHfEndpoint();
+  const hubUrl = `${hfEndpoint}/${baseModelHubId}`;
   return (
     <div className="flex min-w-0 items-center gap-2 rounded-[10px] border border-border/55 bg-muted/35 px-3 py-2">
       <div className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-background/70 text-muted-foreground">
@@ -155,18 +169,14 @@ function BaseModelReference({
         <Tooltip>
           <TooltipTrigger asChild={true}>
             <a
-              href={`https://huggingface.co/${baseModelHubId}`}
+              href={hubUrl}
               target="_blank"
               rel="noopener noreferrer"
               aria-label={`Open ${baseModelHubId} on Hugging Face`}
               className="inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background hover:text-foreground"
               onClick={(event) => {
                 event.stopPropagation();
-                if (
-                  confirmExternalLink(
-                    `https://huggingface.co/${baseModelHubId}`,
-                  )
-                ) {
+                if (confirmExternalLink(hubUrl)) {
                   event.preventDefault();
                 }
               }}
@@ -184,6 +194,36 @@ function BaseModelReference({
         </Tooltip>
       )}
     </div>
+  );
+}
+
+/** Null unless this is the owner on the backend's own machine with a file manager. */
+function CardRevealButton({ onReveal }: { onReveal: () => Promise<unknown> }) {
+  const revealLabel = useRevealLabel();
+  if (!revealLabel) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>
+        <button
+          type="button"
+          aria-label={revealLabel}
+          onClick={(e) => {
+            e.stopPropagation();
+            onReveal().catch((err) => {
+              toast.error(
+                err instanceof Error ? err.message : "Failed to open file manager",
+              );
+            });
+          }}
+          className="inline-flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground opacity-0 transition-[opacity,background-color,color] duration-150 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/dl:opacity-100"
+        >
+          <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className="size-4" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="tooltip-compact">
+        {revealLabel}
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -247,12 +287,17 @@ export function LocalOnDeviceCard({
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
   const online = useOnlineStatus();
+  const isCacheRow = source === "hf_cache";
   const deleteImpact = useDeleteImpact(
-    deleteOpen && Boolean(repoId),
+    deleteOpen && isCacheRow && Boolean(repoId),
     repoId ?? "",
   );
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
+      if (!isCacheRow) {
+        await deleteLocalModel(path, modelId);
+        return;
+      }
       if (!repoId) return;
       // Delete is only offered for hf_cache rows (see canDelete), so `path` is
       // the cache snapshot path: pass it so the delete targets the cache this
@@ -260,7 +305,7 @@ export function LocalOnDeviceCard({
       await deleteCachedModel(repoId, undefined, hfToken || undefined, path);
     },
     resourceName: "model",
-    successMessage: () => `Deleted ${repoId}`,
+    successMessage: () => `Deleted ${isCacheRow ? repoId : displayName}`,
     onSuccess: () => {
       setDeleteOpen(false);
       onChange?.();
@@ -296,8 +341,7 @@ export function LocalOnDeviceCard({
   }));
 
   const canDelete =
-    source === "hf_cache" &&
-    !!repoId &&
+    (isCacheRow ? !!repoId : DELETABLE_LOCAL_SOURCES.has(source) && !!path) &&
     !isActive &&
     !isLoading &&
     !runPending;
@@ -470,7 +514,7 @@ export function LocalOnDeviceCard({
                     <button
                       type="button"
                       disabled={currentVariantState.loading || runPending}
-                      className="inline-flex h-6 max-w-[170px] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
+                      className="inline-flex h-6 max-w-[calc(170px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center gap-1.5 rounded-[8px] border border-format-gguf/35 px-2 font-mono text-ui-10p5 leading-none text-format-gguf transition-colors hover:bg-format-gguf/8 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       <span className="truncate">
                         {currentVariantState.loading
@@ -497,9 +541,9 @@ export function LocalOnDeviceCard({
                     side="bottom"
                     sideOffset={8}
                     avoidCollisions={false}
-                    className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[220px] gap-0 overflow-hidden p-0 py-2 ring-0"
+                    className="hub-menu-instant menu-soft-surface w-[var(--radix-popover-trigger-width)] min-w-[min(calc(220px*var(--ui-space-scale,1)),calc(100vw-32px))] gap-0 overflow-hidden p-0 py-2 ring-0"
                   >
-                    <div className="max-h-[280px] overflow-y-auto [scrollbar-width:thin]">
+                    <div className="max-h-[calc(280px*var(--ui-space-scale,1))] overflow-y-auto [scrollbar-width:thin]">
                       {sortedVariants?.map((variant) => {
                         const label = ggufVariantDisplayLabel(variant);
                         const isSelected = ggufVariantsMatch(
@@ -521,10 +565,10 @@ export function LocalOnDeviceCard({
                               setVariantOpen(false);
                             }}
                             className={cn(
-                              "mx-2 flex w-[calc(100%-1rem)] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
+                              "mx-2 flex w-[calc(100%-1rem*var(--ui-space-scale,1))] min-w-0 cursor-pointer items-center gap-2 rounded-[10px] px-2.5 py-2 text-left transition-colors",
                               isSelected
-                                ? "bg-foreground/[0.07] dark:bg-foreground/[0.12]"
-                                : "hover:bg-foreground/[0.05] dark:hover:bg-foreground/[0.06]",
+                                ? "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),transparent)] dark:bg-[color-mix(in_oklab,var(--foreground)_calc(12%*var(--contrast-wash-gain,1)),transparent)]"
+                                : "hover:bg-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-wash-gain,1)),transparent)] dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]",
                             )}
                           >
                             <span className="min-w-0 flex-1 truncate font-mono text-ui-12 text-format-gguf">
@@ -570,8 +614,17 @@ export function LocalOnDeviceCard({
               )}
               {canDelete && (
                 <CardDeleteButton
-                  label={`Delete ${repoId}`}
+                  label={`Delete ${isCacheRow ? repoId : displayName}`}
                   onClick={() => setDeleteOpen(true)}
+                />
+              )}
+              {(isCacheRow ? repoId : path) && (
+                <CardRevealButton
+                  onReveal={() =>
+                    isCacheRow && repoId
+                      ? revealCachedModel(repoId)
+                      : revealLocalModel(path, modelId)
+                  }
                 />
               )}
               <PathInfoButton path={path} />
@@ -635,19 +688,28 @@ export function LocalOnDeviceCard({
         onOpenChange={(o) => {
           if (!o && !deleting) setDeleteOpen(false);
         }}
-        title="Delete cached model?"
+        title={isCacheRow ? "Delete cached model?" : "Delete local model?"}
         deleting={deleting}
         // Same gate the model row menu applies: when an installed image model still needs these
         // assets the summary says so, and leaving Delete enabled only bought the user a 400.
         blocked={(deleteImpact?.blocked_by.length ?? 0) > 0}
         onConfirm={() => void runDelete()}
         description={
-          <>
-            This will remove{" "}
-            <span className="font-medium text-foreground">{repoId}</span> and
-            its downloaded files from disk. You can re-download it later.
-            <DeleteImpactSummary impact={deleteImpact} />
-          </>
+          isCacheRow ? (
+            <>
+              This will remove{" "}
+              <span className="font-medium text-foreground">{repoId}</span> and
+              its downloaded files from disk. You can re-download it later.
+              <DeleteImpactSummary impact={deleteImpact} />
+            </>
+          ) : (
+            <>
+              This will permanently remove{" "}
+              <span className="font-medium text-foreground">{displayName}</span>{" "}
+              from{" "}
+              <span className="break-all font-mono text-xs">{path}</span>.
+            </>
+          )
         }
       />
       <UpdateConfirmDialog

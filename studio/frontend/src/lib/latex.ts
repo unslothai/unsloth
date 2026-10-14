@@ -9,7 +9,7 @@
 //   2. Escape currency dollar signs so they are not misinterpreted as LaTeX
 //      math delimiters when singleDollarTextMath is enabled.
 
-import { parseMarkdownIntoBlocks } from "streamdown";
+import { parseMarkdownIntoBlocks } from "./parse-markdown-blocks.ts";
 import {
   codeSpans,
   crossesCodeSpanBlockBoundary,
@@ -25,21 +25,643 @@ import {
   quoteState,
 } from "./markdown-list-columns.ts";
 
-/**
- * Matches a single $ followed by a number pattern (currency), e.g.:
- *   $5, $1,000, $5.99, $100K, $3.5M
- *
- * Does NOT match:
- *   $$ (display math), \$ (already escaped), $\alpha (LaTeX command)
- */
-const CURRENCY_REGEX =
-  /(?<![\\$])\$(?!\$)(?=\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d]))/g;
+/** matches currency bodies after `$`, including separators, decimals, and K/M/B suffixes. */
+const CURRENCY_REGEX = /\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?(?:\s|$|[^a-zA-Z\d])/y;
 
-/**
- * Union of two span lists, each ascending by start (overlap within a list is
- * fine, non-ascending input silently drops spans). The sorted, non-overlapping
- * result is the shape `isInRegion`'s binary search needs.
- */
+const HEADING_LINE_RE = / {0,3}#{1,6}(?=[ \t\r\n]|$)/y;
+const TABLE_ROW_RE = /[ \t]*\|/y;
+const BLOCK_BREAK_RE =
+  /\n[ \t\r]*(?:\n|#{1,6}(?=[ \t\r\n])|[>|]|[-*+][ \t]|1[.)][ \t]|```|~~~|(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)(?=\r?(?:\n|$)))/;
+
+/** matches prose-like `$NAME ... $word` spans without math symbols. */
+// non-ASCII letters and CJK punctuation are prose (KaTeX rejects them in math mode).
+const VARIABLE_PROSE_RE =
+  /^(?!\w+\s+$)(?:[A-Za-z]{2,}\w*|_\w+|\{[A-Za-z_]\w*\})[\w\s.,;:!?'"()/`|&<>=*\-\p{L}\p{M}\u3000-\u303f\uff00-\uff65]*(?:[\s/:,.;|<>=\-\u3000-\u303f\uff00-\uff65]|[^\P{L}\p{ASCII}]|[\s(]["'(`])$/u;
+// VARIABLE_PROSE_RE backtracks ~cubically: longer spans, or any past the per-message budget, stay math.
+const MAX_VARIABLE_PROSE_SPAN = 128;
+const VARIABLE_PROSE_BUDGET = 2048;
+const NEW_TOKEN_RE = /[\w{\\]/;
+const isAsciiLetter = (c: number) => (c | 32) >= 97 && (c | 32) <= 122;
+const isWordChar = (c: number) =>
+  isAsciiLetter(c) || (c >= 48 && c <= 57) || c === 95;
+
+/** necessary prefix of VARIABLE_PROSE_RE, checked before slicing the span. */
+function startsLikeVariable(text: string, at: number): boolean {
+  const a = text.charCodeAt(at);
+  const b = text.charCodeAt(at + 1);
+  if (isAsciiLetter(a)) return isAsciiLetter(b);
+  if (a === 95) return isWordChar(b);
+  return a === 123 && (isAsciiLetter(b) || b === 95);
+}
+
+const MAX_SHELL_EXPANSION_SPAN = 4096;
+const MAX_MARKDOWN_EMPHASIS_SPAN = 256;
+const SHELL_QUOTE_CONTEXT_CANDIDATE_RE =
+  /\$(?:["'!(*\-?_]|\[)|\$\d+\$[A-Za-z0-9_{$]/;
+const SHELL_COMMANDS = new Set([
+  "awk",
+  "bash",
+  "builtin",
+  "cat",
+  "command",
+  "dash",
+  "echo",
+  "env",
+  "eval",
+  "exec",
+  "export",
+  "find",
+  "fish",
+  "git",
+  "grep",
+  "ksh",
+  "kubectl",
+  "printf",
+  "read",
+  "sed",
+  "set",
+  "sh",
+  "source",
+  "sudo",
+  "test",
+  "unset",
+  "xargs",
+  "zsh",
+]);
+const SHELL_LEADIN_RE = /^(?:Run|Use|Try|Execute)$/i;
+const PROSE_COMMAND_RE =
+  /^(?:a|an|consider|imagine|note|suppose|the|this|that)$/i;
+const SHELL_WORD_RE = /^(?:[a-z_][\w.-]*|\.{0,2}\/[^\s]+)$/;
+const SHELL_POSITIONAL_WORD_RE = /^[A-Za-z0-9_][\w.-]*$/;
+const SHELL_ARGUMENT_RE =
+  /^(?!(?:\d+\.)+\d+$)(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
+const MARKDOWN_CONTAINER_PREFIX_RE =
+  /^(?:(?: {0,3}>[ \t]?)|(?: {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?))+/;
+const SHELL_PROMPT_PREFIX_RE = /^\$[ \t]+/;
+const SPACED_MATH_CLOSER_RE = /[ \t]\$(?![\w${(])|[^\\$\s]\$(?=[\s.,;:)\]*]|$)/;
+const BLANK_LINE_RE = /\r?\n[ \t]*\r?\n|\r[ \t]*\r/;
+const MARKDOWN_TABLE_PREFIX_RE = /^[ \t]*\|/;
+const SHELL_ASSIGNMENT_PREFIX_RE = /(?:^|[;&|]\s*)[A-Za-z_]\w*=$/;
+const SHELL_ASSIGNMENT_WORD_RE = /^[A-Za-z_]\w*=\S*$/;
+const SHELL_OPERATOR_PREFIX_RE = /\S\s*[;&|]{1,2}$/;
+const SHELL_QUOTE_BLOCK_START_RE =
+  /^(?: {0,3}(?:#{1,6}(?=[ \t])|[-+*][ \t]+|\d{1,9}[.)][ \t]+)|[ \t]*\|| {0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,}|=+[ \t]*)$)/;
+
+function hasCommandArguments(words: string[], at: number): boolean {
+  if (at >= words.length) return false;
+  let hasShellShapedArgument = false;
+  for (let index = at; index < words.length; index++) {
+    const word = words[index];
+    if (SHELL_ARGUMENT_RE.test(word)) {
+      hasShellShapedArgument = true;
+    } else if (!SHELL_POSITIONAL_WORD_RE.test(word)) {
+      return false;
+    }
+  }
+  return hasShellShapedArgument;
+}
+
+function isShellWordBoundary(char: number): boolean {
+  return (
+    char <= 32 ||
+    char === 34 ||
+    char === 36 ||
+    char === 38 ||
+    char === 39 ||
+    char === 40 ||
+    char === 41 ||
+    char === 59 ||
+    char === 60 ||
+    char === 61 ||
+    char === 62 ||
+    char === 92 ||
+    char === 124
+  );
+}
+
+function logicalShellLineStart(
+  text: string,
+  at: number,
+  minimum: number,
+): number {
+  let start = at;
+  while (start > minimum) {
+    while (
+      start > minimum &&
+      text.charCodeAt(start - 1) !== 10 &&
+      text.charCodeAt(start - 1) !== 13
+    ) {
+      start--;
+    }
+    if (start === minimum) return start;
+    let newlineStart = start - 1;
+    if (
+      text.charCodeAt(newlineStart) === 10 &&
+      text.charCodeAt(newlineStart - 1) === 13
+    ) {
+      newlineStart--;
+    }
+    let slash = newlineStart;
+    while (slash > minimum && text.charCodeAt(slash - 1) === 92) slash--;
+    if ((newlineStart - slash) % 2 === 0) return start;
+    start = newlineStart;
+  }
+  return start;
+}
+
+function lastShellControlOperatorEnd(prefix: string): number {
+  let quote = 0;
+  let last = 0;
+  for (let index = 0; index < prefix.length; index++) {
+    const char = prefix.charCodeAt(index);
+    if (quote !== 0) {
+      if (char === 92 && quote !== 39) index++;
+      else if (char === quote) quote = 0;
+      continue;
+    }
+    if (char === 34 || char === 39) {
+      quote = char;
+    } else if (char === 92) {
+      index++;
+    } else if (char === 38 || char === 59 || char === 124) {
+      if (prefix.charCodeAt(index + 1) === char) index++;
+      last = index + 1;
+    }
+  }
+  return last;
+}
+
+function isShellPromptMarker(text: string, at: number): boolean {
+  const next = text.charCodeAt(at + 1);
+  if (next !== 9 && next !== 32) return false;
+  const lineStart =
+    Math.max(text.lastIndexOf("\n", at - 1), text.lastIndexOf("\r", at - 1)) +
+    1;
+  if (
+    text.slice(lineStart, at).replace(MARKDOWN_CONTAINER_PREFIX_RE, "").trim()
+  ) {
+    return false;
+  }
+  // spaced inline math (`$ x = 3 $`) closes within its paragraph; a prompt does not.
+  // A `$` opening a later line is the next prompt, so the closer pattern skips it.
+  const rest = text.slice(at + 1, at + 1 + MAX_SHELL_EXPANSION_SPAN);
+  const blank = BLANK_LINE_RE.exec(rest);
+  return !SPACED_MATH_CLOSER_RE.test(blank ? rest.slice(0, blank.index) : rest);
+}
+
+function hasShellCommandPrefix(
+  text: string,
+  at: number,
+  allowBareCommand = false,
+): boolean {
+  const previousChar = text.charCodeAt(at - 1);
+  if (
+    !allowBareCommand &&
+    at > 0 &&
+    previousChar > 32 &&
+    previousChar !== 38 &&
+    previousChar !== 59 &&
+    previousChar !== 61 &&
+    previousChar !== 124
+  ) {
+    if (isShellWordBoundary(previousChar)) return false;
+    const minimum = Math.max(0, at - 256);
+    let wordStart = at;
+    while (wordStart > minimum) {
+      const char = text.charCodeAt(wordStart - 1);
+      if (isShellWordBoundary(char)) break;
+      wordStart--;
+    }
+    if (wordStart === at - 1 && text.charCodeAt(wordStart - 1) === 36) {
+      return false;
+    }
+    return (
+      wordStart > minimum &&
+      wordStart < at &&
+      hasShellCommandPrefix(text, wordStart, true)
+    );
+  }
+  const minimum = Math.max(0, at - 256);
+  const lineStart = logicalShellLineStart(text, at, minimum);
+  const completeLinePrefix =
+    lineStart === 0 ||
+    text.charCodeAt(lineStart - 1) === 10 ||
+    text.charCodeAt(lineStart - 1) === 13;
+  const rawPrefix = text
+    .slice(lineStart, at)
+    .replace(/\\(?:\r\n|\n|\r)[ \t]*/g, " ")
+    .trimEnd();
+  const prefix = rawPrefix
+    .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
+    .replace(SHELL_PROMPT_PREFIX_RE, "");
+  if (!prefix) return false;
+  if (
+    MARKDOWN_TABLE_PREFIX_RE.test(rawPrefix) ||
+    MARKDOWN_TABLE_PREFIX_RE.test(prefix)
+  )
+    return false;
+  if (
+    SHELL_ASSIGNMENT_PREFIX_RE.test(prefix) ||
+    (!MARKDOWN_TABLE_PREFIX_RE.test(rawPrefix) &&
+      SHELL_OPERATOR_PREFIX_RE.test(prefix))
+  ) {
+    return true;
+  }
+  if (/\b(?:shell|bash|command) examples?\b[^\n.]*$/i.test(prefix)) return true;
+  const commandStart = lastShellControlOperatorEnd(prefix);
+  const commandPrefix = prefix.slice(commandStart).trimStart();
+  const words = commandPrefix.match(/[^\s]+/g) ?? [];
+  let commandIndex = 0;
+  while (
+    commandIndex < words.length - 1 &&
+    SHELL_LEADIN_RE.test(words[commandIndex])
+  ) {
+    commandIndex++;
+  }
+  while (
+    commandIndex < words.length - 1 &&
+    SHELL_ASSIGNMENT_WORD_RE.test(words[commandIndex])
+  ) {
+    commandIndex++;
+  }
+  const command = words[commandIndex] ?? "";
+  if (SHELL_COMMANDS.has(command) || /^\.{0,2}\//.test(command)) return true;
+  if (
+    allowBareCommand &&
+    completeLinePrefix &&
+    command.length >= 2 &&
+    !PROSE_COMMAND_RE.test(command) &&
+    SHELL_WORD_RE.test(command) &&
+    (commandStart > 0 || hasCommandArguments(words, commandIndex + 1))
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function hasShellParameterContext(
+  text: string,
+  at: number,
+  numericOffset: number,
+  quoteState: number,
+): boolean {
+  if (quoteState > 0 || hasShellCommandPrefix(text, numericOffset)) return true;
+  if (at !== numericOffset + 3) return false;
+  const lineStart =
+    Math.max(
+      text.lastIndexOf("\n", numericOffset - 1),
+      text.lastIndexOf("\r", numericOffset - 1),
+    ) + 1;
+  const prefix = text
+    .slice(lineStart, numericOffset)
+    .trimEnd()
+    .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
+    .replace(SHELL_PROMPT_PREFIX_RE, "");
+  return SHELL_LEADIN_RE.test(prefix);
+}
+
+function startsNewMarkdownBlock(text: string, at: number): boolean {
+  const char = text.charCodeAt(at);
+  if (at >= text.length || char === 10 || char === 13) return true;
+  const nextLf = text.indexOf("\n", at);
+  const nextCr = text.indexOf("\r", at);
+  const nextEnd =
+    nextLf === -1 ? nextCr : nextCr === -1 ? nextLf : Math.min(nextLf, nextCr);
+  const nextLine = text.slice(at, nextEnd === -1 ? text.length : nextEnd);
+  const nextQuotes = quoteDepth(nextLine);
+  if (nextQuotes === 0) return SHELL_QUOTE_BLOCK_START_RE.test(nextLine);
+
+  let previousEnd = at - 1;
+  if (
+    text.charCodeAt(previousEnd) === 10 &&
+    text.charCodeAt(previousEnd - 1) === 13
+  ) {
+    previousEnd--;
+  }
+  const previousStart =
+    Math.max(
+      text.lastIndexOf("\n", previousEnd - 1),
+      text.lastIndexOf("\r", previousEnd - 1),
+    ) + 1;
+  const previousLine = text.slice(previousStart, previousEnd);
+  if (quoteDepth(previousLine) !== nextQuotes) return true;
+  const content = containerContent(nextLine, EMPTY_LIST_STATE, nextQuotes);
+  return !content.trim() || SHELL_QUOTE_BLOCK_START_RE.test(content);
+}
+
+function findShellQuoteStates(
+  text: string,
+  resetRegions: ReadonlyArray<readonly [number, number]>,
+): Map<number, number> {
+  const states = new Map<number, number>();
+  let quote = 0;
+  let comment = false;
+  let resetIndex = 0;
+  for (let index = 0; index < text.length; index++) {
+    while (
+      resetIndex < resetRegions.length &&
+      resetRegions[resetIndex][1] <= index
+    ) {
+      resetIndex++;
+    }
+    const resetRegion = resetRegions[resetIndex];
+    if (resetRegion && index >= resetRegion[0] && index < resetRegion[1]) {
+      quote = 0;
+      index = resetRegion[1] - 1;
+      continue;
+    }
+    const char = text.charCodeAt(index);
+    if (comment) {
+      if (char === 10 || char === 13) {
+        comment = false;
+      } else {
+        if (char === 36) states.set(index, 34);
+        continue;
+      }
+    }
+    if (
+      (char === 10 || (char === 13 && text.charCodeAt(index + 1) !== 10)) &&
+      quote !== 0 &&
+      startsNewMarkdownBlock(text, index + 1)
+    ) {
+      quote = 0;
+      continue;
+    }
+    const activeQuote = Math.abs(quote);
+    if (char === 36) states.set(index, quote);
+    if (
+      quote === 0 &&
+      char === 35 &&
+      (index === 0 || text.charCodeAt(index - 1) <= 32) &&
+      hasShellCommandPrefix(text, index)
+    ) {
+      comment = true;
+      continue;
+    }
+    if (char === 92 && activeQuote !== 39) {
+      index++;
+    } else if (quote === 0 && (char === 34 || char === 39)) {
+      const shellQuote = hasShellCommandPrefix(text, index, true);
+      if (
+        char === 39 &&
+        isWordChar(text.charCodeAt(index - 1)) &&
+        !shellQuote
+      ) {
+        continue;
+      }
+      quote = shellQuote ? char : -char;
+    } else if (char === activeQuote) {
+      quote = 0;
+    }
+  }
+  return states;
+}
+
+function startsMarkdownEmphasis(
+  text: string,
+  at: number,
+  marker: number,
+): boolean {
+  const width = text.charCodeAt(at + 1) === marker ? 2 : 1;
+  const bodyStart = at + width;
+  const first = text.charCodeAt(bodyStart);
+  if (first <= 32) return false;
+  const token = width === 2 ? text.slice(at, at + 2) : text[at];
+  const nextLf = text.indexOf("\n", bodyStart);
+  const nextCr = text.indexOf("\r", bodyStart);
+  const newline =
+    nextLf === -1 ? nextCr : nextCr === -1 ? nextLf : Math.min(nextLf, nextCr);
+  const limit = Math.min(
+    text.length,
+    at + MAX_MARKDOWN_EMPHASIS_SPAN,
+    newline === -1 ? text.length : newline,
+  );
+  const close = text.indexOf(token, bodyStart + 1);
+  return close > bodyStart && close < limit && text.charCodeAt(close - 1) > 32;
+}
+
+function enclosingMarkdownEmphasisOpener(
+  text: string,
+  at: number,
+  before: number,
+  marker: number,
+): number {
+  const width = text.charCodeAt(at + 1) === marker ? 2 : 1;
+  const token = width === 2 ? text.slice(at, at + 2) : text[at];
+  const lineStart =
+    Math.max(text.lastIndexOf("\n", at - 1), text.lastIndexOf("\r", at - 1)) +
+    1;
+  const minimum = Math.max(lineStart, at - MAX_MARKDOWN_EMPHASIS_SPAN);
+  let opener = text.lastIndexOf(token, before - 1);
+  while (opener >= minimum) {
+    const bodyStart = opener + width;
+    if (
+      bodyStart <= before &&
+      startsMarkdownEmphasis(text, opener, marker) &&
+      text.indexOf(token, bodyStart + 1) === at
+    ) {
+      return opener;
+    }
+    // lastIndexOf clamps a negative start to 0, which would return the same opener forever.
+    if (opener === 0) break;
+    opener = text.lastIndexOf(token, opener - 1);
+  }
+  return -1;
+}
+
+function findLegacyArithmeticCloses(text: string): Int32Array {
+  const closes = new Int32Array(text.length);
+  let nextClose = -1;
+  for (let index = text.length - 1; index >= 0; index--) {
+    const char = text.charCodeAt(index);
+    if (char === 93) nextClose = index;
+    else if (char === 91 && text.charCodeAt(index - 1) === 36) {
+      closes[index] = nextClose + 1;
+    }
+  }
+  return closes;
+}
+
+function startsLegacyArithmetic(
+  text: string,
+  at: number,
+  numericOffset: number,
+  quoteState: number,
+  closes: Int32Array | undefined,
+  isStreaming: boolean,
+): boolean {
+  const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
+  const close = (closes?.[at] ?? 0) - 1;
+  if (close === -1) {
+    return (
+      isStreaming &&
+      quoteState >= 0 &&
+      (quoteState > 0 || hasShellCommandPrefix(text, numericOffset))
+    );
+  }
+  if (close >= limit || text[at + 1] === "^") return false;
+  if (text[close + 1] === "(" || text[close + 1] === "[") return false;
+  if (quoteState < 0) return false;
+  return quoteState > 0 || hasShellCommandPrefix(text, numericOffset);
+}
+
+/** valid Bash expansion starts after `$`, disambiguated from prose punctuation and closing quotes. */
+function startsShellExpansion(
+  text: string,
+  at: number,
+  numericOffset: number,
+  quoteState: number,
+  legacyArithmeticCloses: Int32Array | undefined,
+  isStreaming: boolean,
+): boolean {
+  if (at >= text.length) return false;
+  const char = text.charCodeAt(at);
+  const quote = Math.abs(quoteState);
+  if (char === 34 || char === 39) {
+    return (
+      quote !== char &&
+      (quoteState > 0 || hasShellCommandPrefix(text, numericOffset))
+    );
+  }
+  if (char === 33 || char === 45 || char === 63) {
+    return quoteState > 0 || hasShellCommandPrefix(text, numericOffset);
+  }
+  if (char === 91)
+    return startsLegacyArithmetic(
+      text,
+      at,
+      numericOffset,
+      quoteState,
+      legacyArithmeticCloses,
+      isStreaming,
+    );
+  if (char === 42 || char === 95) {
+    const emphasisOpener = enclosingMarkdownEmphasisOpener(
+      text,
+      at,
+      numericOffset,
+      char,
+    );
+    if (
+      emphasisOpener !== -1 &&
+      quoteState <= 0 &&
+      !hasShellCommandPrefix(text, emphasisOpener)
+    ) {
+      return false;
+    }
+  }
+  if (
+    (char === 42 || char === 95) &&
+    startsMarkdownEmphasis(text, at, char) &&
+    quoteState <= 0 &&
+    !hasShellCommandPrefix(text, numericOffset)
+  ) {
+    return false;
+  }
+  if (char === 42) return true;
+  if (char === 64 || char === 35) return true;
+  if (char === 40) {
+    return quoteState > 0 || hasShellCommandPrefix(text, numericOffset);
+  }
+  return (
+    (isWordChar(char) || char === 123 || char === 36) &&
+    hasShellParameterContext(text, at, numericOffset, quoteState)
+  );
+}
+
+function numericShellParameterStart(text: string, at: number): number {
+  let start = at;
+  while (start > 0) {
+    const char = text.charCodeAt(start - 1);
+    if (char < 48 || char > 57) break;
+    start--;
+  }
+  return start < at &&
+    text[start - 1] === "$" &&
+    text[start - 2] !== "\\" &&
+    text[start - 2] !== "$"
+    ? start - 1
+    : -1;
+}
+
+function shellExpansionFallbackEnd(
+  text: string,
+  at: number,
+  limit: number,
+): number {
+  const nextLf = text.indexOf("\n", at + 2);
+  const nextCr = text.indexOf("\r", at + 2);
+  const lineEnd =
+    nextLf === -1 ? nextCr : nextCr === -1 ? nextLf : Math.min(nextLf, nextCr);
+  return lineEnd !== -1 && lineEnd < limit ? lineEnd : limit;
+}
+
+function balancedShellExpansionEnd(
+  text: string,
+  at: number,
+  open: number,
+  close: number,
+): number {
+  let depth = 1;
+  let quote = 0;
+  const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
+  for (let index = at + 2; index < limit; index++) {
+    const char = text.charCodeAt(index);
+    if (quote !== 0) {
+      if (char === 92 && quote !== 39) index++;
+      else if (char === quote) quote = 0;
+      continue;
+    }
+    if (char === 34 || char === 39 || char === 96) {
+      quote = char;
+      continue;
+    }
+    if (char === 92) {
+      index++;
+      continue;
+    }
+    if (char === open) depth++;
+    else if (char === close && --depth === 0) return index + 1;
+  }
+  return shellExpansionFallbackEnd(text, at, limit);
+}
+
+function quotedShellExpansionEnd(
+  text: string,
+  at: number,
+  quote: number,
+): number {
+  const limit = Math.min(text.length, at + MAX_SHELL_EXPANSION_SPAN);
+  for (let index = at + 2; index < limit; index++) {
+    const char = text.charCodeAt(index);
+    if (char === 92) index++;
+    else if (char === quote) return index + 1;
+  }
+  return shellExpansionFallbackEnd(text, at, limit);
+}
+
+function shellExpansionEnd(text: string, at: number): number {
+  const first = text.charCodeAt(at + 1);
+  if (first === 123) return balancedShellExpansionEnd(text, at, 123, 125);
+  if (first === 40) return balancedShellExpansionEnd(text, at, 40, 41);
+  if (first === 91) return balancedShellExpansionEnd(text, at, 91, 93);
+  if (first === 34 || first === 39)
+    return quotedShellExpansionEnd(text, at, first);
+  if (!isAsciiLetter(first) && first !== 95) return at + 2;
+  let end = at + 2;
+  while (end < text.length && isWordChar(text.charCodeAt(end))) end++;
+  return end;
+}
+
+function encodeMarkdownLiteral(text: string): string {
+  let encoded = "";
+  for (const char of text) encoded += `&#${char.codePointAt(0)};`;
+  return encoded;
+}
+// an entity stays literal in Markdown without showing an escape slash in raw HTML.
+const VARIABLE_DOLLAR = "&#36;";
+
+/** merges ascending spans; overlaps merge and non-ascending spans drop. */
 function mergeRegions(
   left: ReadonlyArray<readonly [number, number]>,
   right: ReadonlyArray<readonly [number, number]>,
@@ -357,43 +979,63 @@ export function findCodeBlockRegions(content: string): Array<[number, number]> {
   const blocks = mergeRegions(fenced, indented);
   const inline = findInlineCodeRegions(content, blocks);
 
-  // An inline span can CONTAIN a fence (`` `~~~a~~~ $5` ``); that overlap made
-  // the binary search land on the inner span and miss the outer one.
+  // merge overlaps so binary search does not miss a containing inline span.
   return mergeRegions(blocks, inline);
 }
 
-/**
- * Match an inline link/image `[text](DEST)`, capturing the destination as group 1
- * with the `d` flag so its span is read straight from `match.indices` (the text
- * can contain an escaped `\](`, so a string search for the separator is unsafe).
- * The text disallows unescaped `]`; the destination allows escapes and one level
- * of balanced parens.
- */
+/** destinations allow escapes and one level of balanced parentheses. */
 const LINK_DEST_RE =
   /!?\[(?:\\.|[^\]\\])*?\]\(((?:\\.|[^()\\]|\([^()]*\))*)\)/dg;
+const AUTOLINK_RE =
+  /<(?:[a-z][a-z0-9+.-]*:[^\s<>]*|[^\s<>@]+@[^\s<>@]+)>|\b(?:https?:\/\/|www\.)[^\s<]+/gi;
 
-/**
- * Find the destination spans of inline links/images, so a `\(...\)` written with
- * escaped parens inside a URL isn't rewritten as math (which would break the
- * link). Only the destination is returned, not the link text, so math in the
- * visible text still converts. Sorted, non-overlapping (matches are disjoint).
- */
+/** shields link destinations from math rewrites; link text stays convertible. */
 function findLinkDestinationRegions(content: string): Array<[number, number]> {
   if (!content.includes("](")) return [];
   const regions: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
   LINK_DEST_RE.lastIndex = 0;
   while ((match = LINK_DEST_RE.exec(content)) !== null) {
-    // `indices` is present (the `d` flag); group 1 spans the destination.
+    // escaped separators make searches unsafe; use the `d` flag's bounds.
     regions.push(match.indices![1]);
   }
   return regions;
 }
 
-/**
- * Binary search to check if a position falls inside any region. Regions must be
- * sorted by start and non-overlapping.
- */
+// raw-text element bodies do not decode character references.
+const RAW_TEXT_ELEMENT_RE =
+  /<(script|style|xmp|iframe|noembed|noframes)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi;
+
+function findRawTextRegions(content: string): Array<[number, number]> {
+  if (!content.includes("<")) return [];
+  const regions: Array<[number, number]> = [];
+  for (const match of content.matchAll(RAW_TEXT_ELEMENT_RE)) {
+    regions.push([match.index, match.index + match[0].length]);
+  }
+  return regions;
+}
+
+function findAutolinkRegions(content: string): Array<[number, number]> {
+  const regions: Array<[number, number]> = [];
+  AUTOLINK_RE.lastIndex = 0;
+  for (const match of content.matchAll(AUTOLINK_RE)) {
+    regions.push([match.index, match.index + match[0].length]);
+  }
+  return regions;
+}
+
+/** `isInRegion` for ascending positions: amortised O(1) per query. */
+function regionCursor(
+  regions: Array<[number, number]>,
+): (position: number) => boolean {
+  let k = 0;
+  return (position) => {
+    while (k < regions.length && regions[k][1] <= position) k++;
+    return k < regions.length && regions[k][0] <= position;
+  };
+}
+
+/** regions must be sorted by start and non-overlapping. */
 export function isInRegion(
   position: number,
   regions: Array<[number, number]>,
@@ -414,16 +1056,14 @@ export function isInRegion(
   return false;
 }
 
-/** A whitespace-free token that looks purely like currency, e.g. `5`, `1,000`, `5.99`, `100K`, `3.5M`. */
 const CURRENCY_BODY_RE = /^\d+(?:,\d{3})*(?:\.\d+)?[KMBkmb]?$/;
 
-/** Body characters that almost always indicate real LaTeX. */
+const BARE_NUMBER_RE = /^\d+(?:,\d{3})*(?:\.\d+)?$/;
+
+/** these characters almost always indicate real LaTeX. */
 const LATEX_CHAR_RE = /[\\^_{}]/;
 
-/**
- * Operators that strongly suggest math. Omits `^` and `_` since
- * `LATEX_CHAR_RE` short-circuits on those before this regex runs.
- */
+/** math operators excluding `^` and `_`, which LATEX_CHAR_RE checks first. */
 const MATH_OP_RE = /[=+\-<>/*]/;
 
 /**
@@ -472,18 +1112,14 @@ function looksLikeMathBody(body: string): boolean {
   return LONE_LETTER_RE.test(trimmed);
 }
 
-/**
- * True if the `$` at `offset` opens a balanced inline math span (`$...$`)
- * on the same line. The closer must be unescaped, not part of `$$`, and
- * within 200 chars. The body must look like LaTeX so we don't pair two
- * currency tokens on a line (e.g. "$5 to $10"). Bold-wrapped spans
- * (`**$X$**`, `__$X$__`) are always math: LLMs use that for "bold math"
- * and the heuristic would otherwise reject prose-shaped bodies like "90 - x".
- */
+/** accepts bold-wrapped spans to preserve prose-shaped math and bare numbers unless the closer starts a shell parameter. */
 function hasInlineMathCloser(
   content: string,
   offset: number,
   mathRegions: Array<[number, number]>,
+  shellQuoteStates: Map<number, number>,
+  legacyArithmeticCloses: Int32Array | undefined,
+  isStreaming: boolean,
 ): boolean {
   const maxSpan = 200;
   const limit = Math.min(content.length, offset + 1 + maxSpan);
@@ -492,18 +1128,30 @@ function hasInlineMathCloser(
     if (c === "\n") return false;
     if (c !== "$") continue;
     if (content[i - 1] === "\\") continue;
-    // A `$` opening a generated span (from `\(...\)`) is not a currency closer;
-    // pairing with it would swallow the price into math (`$5 + x \(y\)`).
+    // generated `\(...\)` openers cannot close currency spans because they would consume the price as math.
     if (isInRegion(i, mathRegions)) return false;
     if (content[i + 1] === "$") {
       i++;
       continue;
     }
-    // A `$` followed by a digit is more likely another currency token than
-    // the closer. Keep scanning so prose like `$5 + a $10 add-on` doesn't
-    // pair the two currency markers as a math span.
+    // a digit after `$` likely starts another currency token, so keep scanning.
     if (/\d/.test(content[i + 1] ?? "")) {
       continue;
+    }
+    const body = content.slice(offset + 1, i);
+    if (BARE_NUMBER_RE.test(body)) {
+      if (isStreaming && i + 1 === content.length) return false;
+      if (
+        !startsShellExpansion(
+          content,
+          i + 1,
+          offset,
+          shellQuoteStates.get(offset) ?? 0,
+          legacyArithmeticCloses,
+          isStreaming,
+        )
+      )
+        return true;
     }
     if (offset >= 2) {
       const op = content[offset - 1];
@@ -516,15 +1164,46 @@ function hasInlineMathCloser(
         return true;
       }
     }
-    return looksLikeMathBody(content.slice(offset + 1, i));
+    return looksLikeMathBody(body);
   }
   return false;
 }
 
-/**
- * Matches a `\[...\]` (display) or `\(...\)` (inline) LaTeX span. The body
- * is capped so repeated incomplete openers stay linear during streaming.
- */
+// remark-math closes an open span at the next single `$`, escaped or not, within the block.
+function findInlineMathCloser(
+  content: string,
+  offset: number,
+  lineStart: number,
+  lineEnd: number,
+  tableRow: boolean,
+): number {
+  let i = content.indexOf("$", offset + 1);
+  while (i !== -1 && content[i + 1] === "$") {
+    while (content[i + 1] === "$") i++;
+    i = content.indexOf("$", i + 1);
+  }
+  if (i === -1) return -1;
+  // hot path: only multi-line spans can cross a block break or leave a heading.
+  const multiline = lineEnd !== -1 && lineEnd < i;
+  if (multiline) {
+    if (BLOCK_BREAK_RE.test(content.slice(offset + 1, i))) return -1;
+    HEADING_LINE_RE.lastIndex = lineStart;
+    if (HEADING_LINE_RE.test(content)) return -1;
+  }
+  if (tableRow) {
+    if (multiline) return -1;
+    for (
+      let p = content.indexOf("|", offset + 1);
+      p !== -1 && p < i;
+      p = content.indexOf("|", p + 1)
+    ) {
+      if (content[p - 1] !== "\\") return -1;
+    }
+  }
+  return i;
+}
+
+/** caps LaTeX delimiter bodies at 4,096 characters so repeated incomplete openers stay linear while streaming. */
 const CONVERT_LATEX_DELIM_RE =
   /(?<!\\)\\\[([\s\S]{0,4096}?)\\\]|(?<!\\)\\\(([\s\S]{0,4096}?)\\\)/g;
 
@@ -627,40 +1306,162 @@ function convertLatexDelimiters(content: string): {
   return { text: parts.join(""), mathRegions };
 }
 
-/**
- * Preprocess a markdown string so LaTeX renders: convert bracket delimiters to
- * dollar forms, then escape currency dollar signs so they are not parsed as
- * math delimiters.
- *
- * - `\[E = mc^2\]` becomes a `$$` display block on its own lines (display math)
- * - `\(\alpha\)` becomes `$\alpha$` (inline math)
- * - `\(x\)` in a code span is untouched
- * - `$5` alone becomes `\$5` (currency, not math)
- * - `$\alpha$` is untouched (real LaTeX)
- * - `$30^\circ$` is untouched (LaTeX whose body starts with a digit)
- * - `**$30^\circ$**` is untouched (LaTeX wrapped in bold)
- * - `$$E = mc^2$$` is untouched (display math)
- * - Currency inside code blocks/spans is untouched
- */
-export function preprocessLaTeX(content: string): string {
+/** converts bracketed LaTeX and protects currency or shell variables from single-dollar math. */
+export function preprocessLaTeX(content: string, isStreaming = false): string {
   const { text, mathRegions } = convertLatexDelimiters(content);
 
   if (!text.includes("$")) return text;
 
+  let proseBudget = VARIABLE_PROSE_BUDGET;
   const codeRegions = findCodeBlockRegions(text);
+  const linkRegions = mergeRegions(
+    findLinkDestinationRegions(text),
+    text.includes("<") || text.includes("://") || text.includes("www.")
+      ? findAutolinkRegions(text)
+      : [],
+  );
+  const rawTextRegions = findRawTextRegions(text);
+  const shellQuoteStates = SHELL_QUOTE_CONTEXT_CANDIDATE_RE.test(text)
+    ? findShellQuoteStates(text, mergeRegions(codeRegions, rawTextRegions))
+    : new Map<number, number>();
+  const legacyArithmeticCloses = text.includes("$[")
+    ? findLegacyArithmeticCloses(text)
+    : undefined;
+  const inCode = regionCursor(codeRegions);
+  const inLink = regionCursor(linkRegions);
+  const inMath = regionCursor(mathRegions);
+  const inRawText = regionCursor(rawTextRegions);
+  let closer = -1;
+  let lineStart = 0;
+  let nextNewline = text.indexOf("\n");
+  let tableRow: boolean | null = null;
 
-  return text.replace(CURRENCY_REGEX, (match, offset) => {
-    if (isInRegion(offset, codeRegions)) {
-      return match;
+  const rewrite = (offset: number): string => {
+    // evaluate all cursors so each advances past `offset`.
+    const code = inCode(offset);
+    const link = inLink(offset);
+    const math = inMath(offset);
+    const rawText = inRawText(offset);
+    if (code || link || rawText) {
+      return "$";
     }
-    // Skip the spans we just created from `\(...\)` so a numeric body like
-    // `$5$` isn't re-escaped back to literal `\$5$`.
-    if (isInRegion(offset, mathRegions)) {
-      return match;
+    // preserve converted numeric math to avoid currency re-escaping
+    if (math) {
+      return "$";
     }
-    if (hasInlineMathCloser(text, offset, mathRegions)) {
-      return match;
+    if (isShellPromptMarker(text, offset)) {
+      return "\\$";
     }
-    return "\\" + match;
-  });
+    const digit = text.charCodeAt(offset + 1) - 48;
+    CURRENCY_REGEX.lastIndex = offset + 1;
+    const currency = digit >= 0 && digit <= 9 && CURRENCY_REGEX.test(text);
+    if (
+      currency &&
+      !hasInlineMathCloser(
+        text,
+        offset,
+        mathRegions,
+        shellQuoteStates,
+        legacyArithmeticCloses,
+        isStreaming,
+      )
+    ) {
+      return "\\$";
+    }
+    if (offset === closer) {
+      return "$";
+    }
+    while (nextNewline !== -1 && nextNewline < offset) {
+      lineStart = nextNewline + 1;
+      nextNewline = text.indexOf("\n", lineStart);
+      tableRow = null;
+    }
+    if (tableRow === null) {
+      TABLE_ROW_RE.lastIndex = lineStart;
+      tableRow = TABLE_ROW_RE.test(text);
+    }
+    const next = findInlineMathCloser(
+      text,
+      offset,
+      lineStart,
+      nextNewline,
+      tableRow,
+    );
+    if (
+      !currency &&
+      next !== -1 &&
+      startsLikeVariable(text, offset + 1) &&
+      // a closer at the end of a streaming reply may still be followed by a name.
+      (next + 1 === text.length
+        ? isStreaming
+        : NEW_TOKEN_RE.test(text[next + 1])) &&
+      next - offset - 1 <= MAX_VARIABLE_PROSE_SPAN &&
+      (proseBudget -= next - offset - 1) >= 0 &&
+      VARIABLE_PROSE_RE.test(text.slice(offset + 1, next))
+    ) {
+      return VARIABLE_DOLLAR;
+    }
+    closer = next;
+    return "$";
+  };
+
+  // a single `$`: not escaped, not part of `$$`. A plain scan, since a regex replace
+  // callback per dollar dominated the streaming re-render cost.
+  const parts: string[] = [];
+  let last = 0;
+  for (
+    let offset = text.indexOf("$");
+    offset !== -1;
+    offset = text.indexOf("$", offset + 1)
+  ) {
+    const prev = text[offset - 1];
+    if (offset === closer) continue;
+    const numericOffset = numericShellParameterStart(text, offset);
+    if (
+      numericOffset !== -1 &&
+      startsShellExpansion(
+        text,
+        offset + 1,
+        numericOffset,
+        shellQuoteStates.get(numericOffset) ?? 0,
+        legacyArithmeticCloses,
+        isStreaming,
+      ) &&
+      !inCode(offset) &&
+      !inLink(offset) &&
+      !inMath(offset) &&
+      !inRawText(offset)
+    ) {
+      const end = shellExpansionEnd(text, offset);
+      parts.push(
+        text.slice(last, offset),
+        encodeMarkdownLiteral(text.slice(offset, end)),
+      );
+      last = end;
+      offset = end - 1;
+      continue;
+    }
+    if (prev === "\\" || prev === "$" || text[offset + 1] === "$") continue;
+    const out = rewrite(offset);
+    if (out !== "$") {
+      const marker = text.charCodeAt(offset - 1);
+      if (
+        out === "\\$" &&
+        (marker === 42 || marker === 95) &&
+        hasShellCommandPrefix(text, offset - 1)
+      ) {
+        parts.push(
+          text.slice(last, offset - 1),
+          encodeMarkdownLiteral(text[offset - 1]),
+          out,
+        );
+      } else {
+        parts.push(text.slice(last, offset), out);
+      }
+      last = offset + 1;
+    }
+  }
+  if (last === 0) return text;
+  parts.push(text.slice(last));
+  return parts.join("");
 }

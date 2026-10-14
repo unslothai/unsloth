@@ -788,6 +788,11 @@ def test_the_auto_cache_ram_clamp_charges_the_host_only_allocations(tmp_path, mo
         return backend, gguf
 
     monkeypatch.setitem(globals(), "_backend", hooked)
+    # The stub projector has no readable image tower, which raises the micro-batch for an unknown
+    # one and grows the compute buffer; held at the default so only the pinned projector moves.
+    import core.inference.llama_cpp as llama_mod
+
+    monkeypatch.setattr(llama_mod, "_mmproj_required_ubatch", lambda *a, **k: 0)
     proj = tmp_path / "proj.gguf"
     proj.write_bytes(b"GGUF")
     monkeypatch.setenv("LLAMA_ARG_MMPROJ", str(proj))

@@ -17,6 +17,19 @@ runs a scripted target on a thread.
 
 from __future__ import annotations
 
+from core.training.account_jobs import (
+    account_is_retired,
+    init_job_owner,
+    job_busy,
+    job_control,
+    job_pump,
+    job_read,
+    owned_job,
+    validate_job_paths,
+    worker_alive,
+)
+from utils.account_context import account_thread
+from utils.gpu_memory_events import invalidates_gpu_memory as _invalidates_gpu_memory
 import contextlib
 import json
 import math
@@ -52,11 +65,13 @@ def _finite_or_none(value: Any) -> Optional[float]:
 
 
 def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
-    # Fresh spawned interpreter: re-apply the OS-trust-store injection, inside the secret scrub and
-    # before the trainer imports diffusers.
+    # Fresh spawned interpreter: re-apply the process-wide network injections, inside the secret
+    # scrub and before the trainer imports diffusers.
     from utils.native_tls import activate_native_tls
+    from utils.happy_eyeballs import activate_happy_eyeballs
 
     activate_native_tls()
+    activate_happy_eyeballs()
 
     # Imported lazily so this module (and the route layer) stays torch-free at import.
     from .diffusion_lora_trainer import run_diffusion_training_process
@@ -72,12 +87,57 @@ def _run_diffusion_child(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     run_diffusion_training_process(event_queue = event_queue, stop_queue = stop_queue, config = config)
 
 
-def _default_target(*, event_queue: Any, stop_queue: Any, config: dict) -> None:
+def _default_target(
+    *,
+    event_queue: Any,
+    stop_queue: Any,
+    config: dict,
+    unsloth_stderr_mirror_path: Optional[str] = None,
+) -> None:
     # First thing in the child (before torch): self-bind to parent death and scrub the native path
-    # secret, like the other workers.
+    # secret, like the other workers. Token policy first of all, ahead of the account branch
+    # below, which returns: both children need it applied.
+    if unsloth_stderr_mirror_path:
+        # Before the token setup below, so its failure is captured too.
+        try:
+            from utils.worker_stderr import install_worker_stderr_mirror
+            install_worker_stderr_mirror(unsloth_stderr_mirror_path)
+        except Exception:
+            pass
+    if not config.get("allow_ambient", True):
+        # Before any huggingface_hub import, as the LLM worker does: a child env is seeded from
+        # the parent's, so not setting a token is not denying one.
+        import os
+
+        from hub.utils.hf_tokens import apply_token_to_child_env, hf_token_arg, is_anonymous
+
+        hf_token = hf_token_arg(config.get("hf_token"), allow_ambient_token = False)
+        apply_token_to_child_env(os.environ, hf_token)
+        if is_anonymous(hf_token):
+            os.environ["HF_TOKEN_PATH"] = os.devnull
+
+    account = config.pop("_job_account", None)
+    if account is not None:
+        from core.training.account_jobs import run_account_child
+        from utils.native_path_leases import run_without_native_path_secret
+
+        run_without_native_path_secret(
+            run_account_child,
+            account = account,
+            job_module = "core.training.diffusion_training_service",
+            job_target = "_run_diffusion_child",
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+        )
+        return
     from utils.native_path_leases import run_without_native_path_secret
+
     run_without_native_path_secret(
-        _run_diffusion_child, event_queue = event_queue, stop_queue = stop_queue, config = config
+        _run_diffusion_child,
+        event_queue = event_queue,
+        stop_queue = stop_queue,
+        config = config,
     )
 
 
@@ -106,9 +166,9 @@ def _llm_training_active() -> bool:
 
 # One JSON file per terminal run, not the LLM sqlite, so diffusion runs stay off the LLM Runs page.
 def _runs_dir() -> Path:
-    from utils.paths.storage_roots import studio_root
+    from utils.paths.storage_roots import tensorboard_root
 
-    d = studio_root() / "runs" / "diffusion"
+    d = tensorboard_root() / "diffusion"
     d.mkdir(parents = True, exist_ok = True)
     return d
 
@@ -232,6 +292,7 @@ def list_diffusion_runs(limit: int = 20) -> list[dict]:
             continue
         rec.pop("metric_history", None)
         rec.pop("config", None)
+        rec.pop("samples", None)
         out.append(rec)
     return out
 
@@ -329,7 +390,44 @@ def _idle_state() -> dict[str, Any]:
         # stay index-aligned.
         "metric_video_loss": [],
         "metric_audio_loss": [],
+        "samples": [],
     }
+
+
+# Past this the oldest half after the step-0 baseline is thinned, like the metrics.
+_SAMPLES_CAP = 400
+
+
+def _append_samples(
+    state: dict[str, Any],
+    step: Any,
+    images: Any,
+    output_dir: Optional[str] = None,
+) -> None:
+    """Fold one ``sample`` event; thinned rounds' images are deleted so every file on disk stays listed."""
+    from core.training.diffusion_samples import SAMPLE_PATH_RE, delete_sample_files
+
+    try:
+        istep = int(step)
+    except (TypeError, ValueError):
+        return
+    entries = state.setdefault("samples", [])
+    for img in images if isinstance(images, list) else []:
+        if not isinstance(img, dict) or not SAMPLE_PATH_RE.match(str(img.get("path") or "")):
+            continue
+        entries.append(
+            {
+                "step": istep,
+                "path": str(img["path"]),
+                "prompt": str(img.get("prompt") or ""),
+                "seed": img.get("seed") if isinstance(img.get("seed"), int) else None,
+            }
+        )
+    if len(entries) > _SAMPLES_CAP:
+        steps = sorted({e["step"] for e in entries})
+        keep = set(steps[:1] + steps[1:-1][::2] + steps[-1:])
+        state["samples"] = [e for e in entries if e["step"] in keep]
+        delete_sample_files(output_dir, [e["path"] for e in entries if e["step"] not in keep])
 
 
 # The value series, in append order, paired index-for-index with metric_steps. One list so a new
@@ -417,8 +515,15 @@ class DiffusionTrainingService:
         ctx: Any = None,
         target: Optional[Callable[..., None]] = None,
     ) -> None:
+        init_job_owner(
+            self,
+            lambda: worker_alive(self, pump = "_pump") or self.is_active(),
+            lambda: self.stop(save = False),
+            self._clear_account_result,
+        )
         self._ctx = ctx if ctx is not None else _CTX
         self._target = target if target is not None else _default_target
+        self._stderr_capture = None
         self._lock = threading.Lock()
         # Set by reserve() while a start is in flight (before the route frees GPU models) so the load guards
         # refuse a concurrent load. Cleared by unreserve().
@@ -450,12 +555,18 @@ class DiffusionTrainingService:
         # The active job's start config, scrubbed of secrets, kept for the run record.
         self._config: dict[str, Any] = {}
 
+    # ── lifecycle ────────────────────────────────────────────────────────────
+    def _clear_account_result(self):
+        self._state = _idle_state()
+        self._config = {}
+
     def is_active(self) -> bool:
         with self._lock:
             if self._reserved:
                 return True
             return self._proc is not None and self._proc.is_alive()
 
+    @owned_job()
     def reserve(self) -> None:
         """Mark a diffusion-training start as in flight so the image/video load guards (which read
         is_active) refuse a concurrent load BEFORE the route frees resident GPU models. Without this
@@ -492,6 +603,7 @@ class DiffusionTrainingService:
                 )
             self._reserved = True
 
+    @job_control
     def unreserve(self) -> None:
         """Clear the reservation set by reserve(). Only touches the reservation flag, never
         _proc, so a live job stays active on success and a failed start is fully rolled back."""
@@ -551,11 +663,14 @@ class DiffusionTrainingService:
             with self._lock:
                 self._gpu_admissions = max(0, self._gpu_admissions - 1)
 
+    @_invalidates_gpu_memory("diffusion training start")
+    @owned_job()
     def start(self, config: dict) -> str:
         """Validate ``config``, spawn the trainer, and start pumping its events.
 
         Raises ValueError for an unusable config (before any spawn) and RuntimeError if a
         job is already running. Returns the new job id."""
+        validate_job_paths(config)
         # Validate before spawning, and keep the normalised config: it carries the resolved family the
         # recipe overrides are keyed on, which the raw request dict need not name.
         from .diffusion_lora_trainer import _config_from_dict
@@ -584,13 +699,22 @@ class DiffusionTrainingService:
             self._stop_signalled = False
             event_queue = self._ctx.Queue()
             self._stop_queue = self._ctx.Queue()
+            if self.job_account is not None:
+                config = {**config, "_job_account": self.job_account}
+            child_kwargs = {
+                "event_queue": event_queue,
+                "stop_queue": self._stop_queue,
+                "config": config,
+            }
+            # Test targets take only the three job kwargs.
+            if self._target is _default_target:
+                self._open_worker_stderr_capture()
+                if self._stderr_capture is not None:
+                    from utils.native_path_leases import STDERR_MIRROR_KWARG
+                    child_kwargs[STDERR_MIRROR_KWARG] = self._stderr_capture.path
             self._proc = self._ctx.Process(
                 target = self._target,
-                kwargs = {
-                    "event_queue": event_queue,
-                    "stop_queue": self._stop_queue,
-                    "config": config,
-                },
+                kwargs = child_kwargs,
                 daemon = True,
             )
             # Keep the lease secret out of the child's env, as other orchestrators do.
@@ -621,14 +745,21 @@ class DiffusionTrainingService:
             # Record the config with the fields this family's loop REPLACES set to what it will actually run:
             # the trainer applies the same table in the child, so without this Previous runs described a
             # recipe no step ever used.
-            self._config = {k: v for k, v in dict(config).items() if k != "hf_token"}
+            self._config = {
+                k: v for k, v in dict(config).items() if k not in {"hf_token", "_job_account"}
+            }
+            # A resume's unset bucketing stays unset; the trainer adopts the bundle's.
+            if normalized_cfg.bucketing is not None:
+                self._config["bucketing"] = normalized_cfg.bucketing
             self._config.update(train_recipe_overrides(normalized_cfg))
-            self._pump = threading.Thread(
+            self._pump = account_thread(
                 target = self._pump_loop, args = (event_queue, self._proc), daemon = True
             )
             self._pump.start()
             return job_id
 
+    @_invalidates_gpu_memory("diffusion training stop")
+    @job_control
     def stop(self, save: bool = True) -> bool:
         """Request a clean stop: the trainer finishes the current step, then either saves
         a partial adapter (``save=True``, the default) or discards the run (``save=False``,
@@ -660,6 +791,37 @@ class DiffusionTrainingService:
             self._state["updated_at"] = time.time()
             return True
 
+    def stop_for_shutdown(self, timeout: float) -> bool:
+        from utils.account_context import run_as
+
+        with self._lock:
+            proc = self._proc
+            pump = self._pump
+            account = self._result_account
+
+        def settled():
+            # The pump writes the run record after the child exits, so wait for it too.
+            return (proc is None or not proc.is_alive()) and (pump is None or not pump.is_alive())
+
+        if settled():
+            return True
+        if proc is not None and proc.is_alive():
+            # The signal path runs as the owner, which job_control refuses for a managed account's run.
+            run_as(account, self.stop, save = True)
+        deadline = time.monotonic() + max(0.0, timeout)
+        while time.monotonic() < deadline:
+            if settled():
+                return True
+            time.sleep(0.25)
+        return False
+
+    @job_read(
+        lambda self: {
+            **_idle_state(),
+            "status": "busy" if job_busy(self) else "idle",
+            "message": "Busy" if job_busy(self) else "",
+        }
+    )
     def status(self) -> dict[str, Any]:
         with self._lock:
             snap = dict(self._state)
@@ -667,6 +829,51 @@ class DiffusionTrainingService:
             snap["active"] = self._proc is not None and self._proc.is_alive()
             return snap
 
+    def sample_source(self, job_id: str) -> Optional[tuple[Optional[str], list]]:
+        """(output_dir, samples) for the live job ``job_id``, or None when it is not the live job or
+        belongs to another account (the run record answers for a finished one)."""
+        from core.training.account_jobs import job_is_foreign
+
+        if job_is_foreign(self):
+            return None
+        with self._lock:
+            if not job_id or self._state.get("job_id") != job_id:
+                return None
+            out = self._state.get("output_dir") or self._config.get("output_dir")
+            return (str(out) if out else None), list(self._state.get("samples") or [])
+
+    def _open_worker_stderr_capture(self) -> None:
+        previous = self._stderr_capture
+        self._stderr_capture = None
+        if previous is not None:
+            try:
+                previous.close()
+            except Exception:
+                pass
+        try:
+            from utils.worker_stderr import WorkerStderrCapture
+            self._stderr_capture = WorkerStderrCapture(prefix = "unsloth-diffusion-worker-")
+        except Exception:
+            self._stderr_capture = None
+
+    def _unexpected_exit_message(self, proc: Any) -> str:
+        from utils.worker_stderr import unexpected_exit_message
+
+        text = ""
+        capture = self._stderr_capture
+        if capture is not None:
+            try:
+                text = capture.text()
+            except Exception:
+                text = ""
+        return unexpected_exit_message(
+            getattr(proc, "pid", None),
+            getattr(proc, "exitcode", None),
+            text,
+        )
+
+    # ── event pump ───────────────────────────────────────────────────────────
+    @job_pump
     def _pump_loop(self, event_queue: Any, proc: Any) -> None:
         while True:
             try:
@@ -687,7 +894,7 @@ class DiffusionTrainingService:
                             self._state.update(
                                 active = False,
                                 status = "error",
-                                message = "Training process exited unexpectedly.",
+                                message = self._unexpected_exit_message(proc),
                                 updated_at = time.time(),
                             )
                         discarding = self._discard_requested
@@ -738,14 +945,26 @@ class DiffusionTrainingService:
         deleting them then destroys the predecessor that was just handed back. The state half still
         applies either way.
         """
+        if account_is_retired():
+            delete = False
         with self._lock:
             own = list(self._own_checkpoints) if delete else []
+            samples = [e.get("path") for e in self._state.get("samples") or []] if delete else []
+            sample_root = self._state.get("output_dir") or self._config.get("output_dir")
             self._state["resume_blocked_reason"] = (
                 "This run was stopped without saving, so it was discarded."
             )
             self._state["checkpoint_path"] = None
             self._state["checkpoint_step"] = None
+            # Their files are deleted, so listing them would serve 404s.
+            self._state["samples"] = []
             self._own_checkpoints = []
+        if samples:
+            try:
+                from core.training.diffusion_samples import discard_sample_paths
+                discard_sample_paths(sample_root, samples)
+            except Exception:  # noqa: BLE001 -- cleanup must never break the terminal transition
+                pass
         if not own:
             return
         try:
@@ -764,6 +983,8 @@ class DiffusionTrainingService:
         used to write the JSON that Previous runs and its Resume action are built from. The
         status recorded is the one that is true if nothing else ever happens -- the run was
         interrupted -- and the terminal write replaces it in place."""
+        if account_is_retired():
+            return
         try:
             with self._lock:
                 s = dict(self._state)
@@ -831,6 +1052,7 @@ class DiffusionTrainingService:
                     "video_loss": s.get("metric_video_loss") or [],
                     "audio_loss": s.get("metric_audio_loss") or [],
                 },
+                "samples": s.get("samples") or [],
             }
             path = _runs_dir() / f"{s['job_id']}.json"
             path.write_text(json.dumps(record), encoding = "utf-8")
@@ -956,6 +1178,13 @@ class DiffusionTrainingService:
                     ev.get("video_loss"),
                     ev.get("audio_loss"),
                 )
+            elif etype == "sample":
+                _append_samples(
+                    s,
+                    ev.get("step"),
+                    ev.get("images"),
+                    s.get("output_dir") or self._config.get("output_dir"),
+                )
             elif etype == "complete":
                 # Reset in_model_load: a stop during model load emits complete with no preceding
                 # model_load_completed, leaving a stale indicator.
@@ -991,6 +1220,7 @@ class DiffusionTrainingService:
                     s["resume_blocked_reason"] = (
                         "This run was stopped without saving, so it was discarded."
                     )
+                    s["samples"] = []
             elif etype == "error":
                 # Reset in_model_load too: an error during model loading has no model_load_completed.
                 s.update(

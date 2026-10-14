@@ -30,16 +30,69 @@ _UNRESOLVED_PYTHON_MARKER = "No virtual environment or system Python installatio
 _MLX_MIN_VERSIONS = {"mlx": "0.22.0", "mlx-lm": "0.31.2", "mlx-vlm": "0.4.4"}
 _MLX_PACKAGE_NAMES = tuple(_MLX_MIN_VERSIONS)
 _MLX_RUNTIME_IMPORTS = ("mlx.core", "mlx_lm", "mlx_lm.sample_utils", "mlx_vlm")
-# What the self-heal INSTALLS, as opposed to the floors above, which judge a stack that is already there. Pinned rather than floored because this install is unattended and default-on and mlx ships breaking changes in patch releases: 0.32.1 broke model loading here (unslothai/unsloth#9466). Keep in sync with unsloth-zoo's pyproject darwin deps; mlx-vlm stays a range so the resolver can pick 0.6.15, where the installer overrides mlx-vlm's transformers requirement, and 0.6.4 under the plain cap. 0.32.1 is chosen with its known defect: it segfaults at interpreter finalization when a fused Metal custom kernel is the last work a process did, worked around in tests/_run_then_exit_hard.py, while staying on 0.32.0 would give back mlx#3833, where two fast.metal_kernel instances sharing a name but not a source run the first kernel's code for the second.
+# What the self-heal INSTALLS (the floors above judge a stack already there). Pinned, not floored: this install is unattended and mlx breaks in patch releases (0.32.1, unslothai/unsloth#9466). Keep in sync with unsloth-zoo's darwin deps. mlx 0.32.3 rather than mlx-vlm's 0.32.2 floor: 0.32.2's GQA-8 decode kernel read the first sequence's KV for every batch row (mlx#4431). mlx-vlm stays a range: 0.7.8 under the installer's transformers override, 0.6.4 under the plain cap.
 _MLX_INSTALL_SPECS = {
-    "mlx": "==0.32.1",
+    "mlx": "==0.32.3",
     "mlx-lm": "==0.31.3",
-    "mlx-vlm": ">=0.4.4,<0.7.0",
+    "mlx-vlm": ">=0.4.4,<=0.7.8",
 }
 MLX_PACKAGES = tuple(f"{name}{spec}" for name, spec in _MLX_INSTALL_SPECS.items())
+
+
+def _zoo_declared_specifier(package: str) -> str:
+    """The version range the INSTALLED unsloth-zoo declares for `package`, or "".
+
+    The specs above track the zoo in the repository, but the self-heal runs against whatever zoo is on
+    the machine, and it never upgrades it. mlx-vlm 0.7.1 passes `cache` to `gated_delta_update`, which a
+    zoo predating that keyword does not accept, so admitting 0.7.1 next to an older zoo raises TypeError
+    at the first Qwen3.5 VLM training step, after mlx_stack_available() has already cleared the
+    chat-only gate. Reading the installed zoo's own requirement is what keeps the two in step without
+    naming a zoo version here: it widens on its own the moment a zoo that declares 0.7.1 is installed.
+    """
+    try:
+        from importlib.metadata import requires
+    except ImportError:  # pragma: no cover - importlib.metadata is stdlib on every supported Python
+        return ""
+    try:
+        from packaging.requirements import Requirement
+        from packaging.utils import canonicalize_name
+    except ImportError:
+        return ""
+    try:
+        declared = requires("unsloth_zoo") or ()
+    except Exception:
+        # Not installed, or metadata unreadable. Either way there is no zoo constraint to honour.
+        return ""
+    wanted = canonicalize_name(package)
+    for raw in declared:
+        try:
+            requirement = Requirement(raw)
+        except Exception:
+            continue
+        if canonicalize_name(requirement.name) == wanted and str(requirement.specifier):
+            return str(requirement.specifier)
+    return ""
+
+
+def _install_packages() -> tuple[str, ...]:
+    """MLX_PACKAGES, with mlx-vlm narrowed to what the installed unsloth-zoo declares.
+
+    Only mlx-vlm: it is the one whose call shape the zoo has to match, and mlx/mlx-lm are pinned
+    exactly at both ends, so intersecting those would just empty the range on any zoo a patch release
+    behind. Both specifiers are passed and uv intersects them.
+    """
+    packages = []
+    for name, spec in _MLX_INSTALL_SPECS.items():
+        declared = _zoo_declared_specifier(name) if name == "mlx-vlm" else ""
+        packages.append(f"{name}{spec},{declared}" if declared else f"{name}{spec}")
+    return tuple(packages)
+
+
 _MLX_REINSTALL_ARGS = tuple(
     arg for name in _MLX_PACKAGE_NAMES for arg in ("--reinstall-package", name)
 )
+# Per name: a bare --upgrade re-resolves every transitive dependency (pandas, pyarrow) to its newest.
+_MLX_UPGRADE_ARGS = tuple(arg for name in _MLX_PACKAGE_NAMES for arg in ("--upgrade-package", name))
 # Require pre-built wheels for the unattended self-heal: a source distribution's PEP 517 build backend runs arbitrary code at install time, and this install is default-on and runs before the post-install stack check can reject anything. mlx/mlx-metal ship wheels only (no sdist on PyPI) and mlx-lm/mlx-vlm publish py3-none-any wheels, so requiring wheels does not break a healthy self-heal; if a wheel is genuinely unavailable the install fails and Unsloth stays chat-only.
 _ONLY_BINARY_ARG = "--only-binary=:all:"
 # Allowlist of environment variables forwarded to the install subprocess. The self-heal runs without confirmation on the default startup path, so it must not hand resolver/build code the full Unsloth environment. Dropping everything else excludes three classes by construction: secrets (HF_TOKEN, AWS_*, WANDB_API_KEY) a malicious wheel/sdist build hook would read out of os.environ; package-source redirects (UV_INDEX*, UV_DEFAULT_INDEX, UV_FIND_LINKS, PIP_INDEX_URL) that could repoint the install at an attacker-controlled index; and cache-dir redirects (UV_CACHE_DIR, XDG_CACHE_HOME) that could point uv at an attacker-staged cache. uv still honours on-disk config (uv.toml / pip.conf), so a corporate mirror keeps working, and UV_OVERRIDE is set in _mlx_install_env, so a poisoned one here is ignored.
@@ -266,17 +319,21 @@ def _mlx_install_env() -> dict[str, str]:
 
 def _transformers_constraint_args() -> tuple[list[str], str | None]:
     """Pin transformers to the running version for the mlx install. The install must never upgrade transformers underneath a running Unsloth (the single-env install pins a compatible default). With UV_OVERRIDE set this is belt-and-suspenders; on the plain-pip path (no UV_OVERRIDE support) it is the actual guard, since the resolver either finds an mlx build compatible with the pin or fails, leaving us chat-only rather than breaking Unsloth. Returns (pip args, temp file path to clean up). Read the version from installed metadata rather than `import transformers`: transformers can have valid metadata yet fail to import (e.g. an incompatible huggingface_hub), and in that case we still want to pin it so the mlx install cannot quietly upgrade it out from under Unsloth."""
-    from importlib.metadata import PackageNotFoundError, version as _dist_version
+    from importlib.metadata import version as _dist_version
 
-    try:
-        transformers_version = _dist_version("transformers")
-    except PackageNotFoundError:
-        return [], None
-    except Exception:
+    # datasets: mlx-vlm 0.7.8 requires it unbounded, so a moved or absent one would resolve to 5.x, past unsloth's <5.
+    pins = []
+    for name in ("transformers", "datasets"):
+        try:
+            pins.append(f"{name}=={_dist_version(name)}\n")
+        except Exception:
+            if name == "datasets":
+                pins.append("datasets<5.0.0\n")
+    if not pins:
         return [], None
     fd, path = tempfile.mkstemp(prefix = "mlx_repair_", suffix = ".txt")
     with os.fdopen(fd, "w", encoding = "utf-8") as fh:
-        fh.write(f"transformers=={transformers_version}\n")
+        fh.writelines(pins)
     return ["--constraint", path], path
 
 
@@ -287,12 +344,13 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
     constraint_path = None
     try:
         constraint_args, constraint_path = _transformers_constraint_args()
+        packages = _install_packages()
         cmd = _uv_install_cmd(
-            "--upgrade",
+            *_MLX_UPGRADE_ARGS,
             _ONLY_BINARY_ARG,
             *_MLX_REINSTALL_ARGS,
             *constraint_args,
-            *MLX_PACKAGES,
+            *packages,
         )
         if cmd is None:
             logger.warning(
@@ -300,7 +358,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
                 "staying chat-only. Run `unsloth studio update` to restore uv."
             )
             return False
-        logger.info("MLX self-heal: installing %s", ", ".join(MLX_PACKAGES))
+        logger.info("MLX self-heal: installing %s", ", ".join(packages))
         # Before the wait, not after: every package is passed with --reinstall-package, so uv removes and replaces them as it goes and a timeout or a non-zero exit part way through leaves a stack neither the one detection measured nor the one asked for. Nothing before this line touches the environment.
         _environment_mutated = True
         result = subprocess.run(
@@ -346,7 +404,7 @@ def attempt_mlx_repair(*, timeout: int = _REPAIR_TIMEOUT_S) -> bool:
         logger.warning(
             "MLX self-heal produced an incomplete or too-old MLX stack "
             "(need %s); staying chat-only.",
-            # The floors, not MLX_PACKAGES: the gate above tests the floors, so quoting the install pins would tell someone on a usable mlx 0.33 that they need exactly 0.32.1.
+            # The floors, not MLX_PACKAGES: the gate above tests the floors, so quoting the install pins would tell someone on a usable mlx 0.33 that they need exactly 0.32.3.
             ", ".join(f"{name}>={ver}" for name, ver in _MLX_MIN_VERSIONS.items()),
         )
         return False

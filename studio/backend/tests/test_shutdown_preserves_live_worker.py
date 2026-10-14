@@ -43,8 +43,10 @@ class _FakeProc:
 
 def _bare_inference():
     o = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    o._stop_ledger = None
+    o._pending_teardowns = None
     o._subprocess_shutdown_lock = threading.Lock()
-    o._stop_dispatcher = lambda: None
+    o._stop_dispatcher = lambda thread = None: None
     o._cancel_generation = lambda: None
     o._drain_queue = lambda: []
 
@@ -193,6 +195,9 @@ class TestSpawnPathsHonorFailedShutdown:
 
         o = ExportOrchestrator.__new__(ExportOrchestrator)
         o._lock = threading.RLock()
+        o._op_lock = threading.Lock()
+        o._active_op_id = None
+        o._cancelled_op_ids = set()
         o._proc = _FakeProc(dies_on = None)  # survivor
         o.clear_logs = lambda: None
         o._cancel_requested = False

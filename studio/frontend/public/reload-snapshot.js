@@ -18,6 +18,16 @@
   var overlay = null;
   var retainedSnapshot = null;
   var removalTimer = null;
+  var viewportObserver = null;
+  var accountStorageKey = "unsloth.browser-account.v1";
+  function readAccountMarker() {
+    try {
+      return localStorage.getItem(accountStorageKey);
+    } catch (error) {
+      return null;
+    }
+  }
+  var initialAccountMarker = readAccountMarker();
   // Appearance is inline custom properties on <html> plus these gate attributes, written by
   // theme-boot.js (mode and palette) and applyCustomizationToDocument in
   // src/features/settings/stores/appearance-custom-store.ts (the rest). Uncarried, the copy paints
@@ -36,8 +46,20 @@
   var appearanceVariables = [
     "--background",
     "--chart-1",
-    "--contrast-mix",
+    "--contrast-control-mix",
+    "--contrast-edge-gain",
+    "--contrast-fill-mix",
+    "--contrast-ink-mix",
+    "--contrast-ink-target",
+    "--contrast-line-mix",
+    "--contrast-panel-ink-target",
+    "--contrast-panel-target",
+    "--contrast-seam-gain",
+    "--contrast-state-mix",
+    "--contrast-surface-mix",
     "--contrast-target",
+    "--contrast-text-mix",
+    "--contrast-wash-gain",
     "--control-accent",
     "--control-accent-foreground",
     "--custom-chat-font",
@@ -48,9 +70,11 @@
     "--font-mono",
     "--font-sans",
     "--foreground",
+    "--foreground-base",
     "--primary",
     "--primary-foreground",
-    "--ui-font-scale",
+    "--ui-font-size-scale",
+    "--ui-interface-scale",
   ];
 
   function clearStoredSnapshot() {
@@ -317,6 +341,23 @@
       "reload-snapshot-shell " +
       (typeof snapshot.rootClass === "string" ? snapshot.rootClass : "");
     applyAppearanceAttributes(shellRoot, snapshot.appearance);
+    Array.prototype.forEach.call(
+      document.documentElement.attributes,
+      function (attribute) {
+        if (attribute.name.indexOf("data-mq-") === 0) {
+          shellRoot.setAttribute(attribute.name, attribute.value);
+        }
+      },
+    );
+    viewportObserver = new MutationObserver(function (records) {
+      records.forEach(function (record) {
+        var name = record.attributeName;
+        if (name.indexOf("data-mq-") === 0) {
+          shellRoot.toggleAttribute(name, document.documentElement.hasAttribute(name));
+        }
+      });
+    });
+    viewportObserver.observe(document.documentElement, { attributes: true });
     var tokens = snapshot.tokens || {};
     Object.keys(tokens).forEach(function (name) {
       if (name.slice(0, 2) === "--" && typeof tokens[name] === "string") {
@@ -658,6 +699,7 @@
 
   function saveSnapshot() {
     if (
+      readAccountMarker() !== initialAccountMarker ||
       document.documentElement.hasAttribute("data-reload-snapshot-private")
     ) {
       clearStoredSnapshot();
@@ -825,6 +867,10 @@
   }
 
   function removeOverlay() {
+    if (viewportObserver) {
+      viewportObserver.disconnect();
+      viewportObserver = null;
+    }
     if (removalTimer !== null) {
       clearTimeout(removalTimer);
       removalTimer = null;

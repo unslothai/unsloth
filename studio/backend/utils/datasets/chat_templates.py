@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Chat template utilities for dataset processing: apply chat templates to datasets and generate dataset info summaries."""
-
+import json
 import warnings as python_warnings
 
+from .cells import cell_text
 from .format_detection import detect_dataset_format, detect_multimodal_dataset, detect_custom_format_heuristic
 from .iterable import is_streaming_dataset
 from .model_mappings import MODEL_TO_TEMPLATE_MAPPER
@@ -25,10 +25,54 @@ DEFAULT_ALPACA_TEMPLATE = """Below is an instruction that describes a task, pair
 ### Response:
 {}"""
 
+# Renders a single-turn conversation byte-identical to a DEFAULT_ALPACA_TEMPLATE row with an empty input.
+STUDIO_ALPACA_CHAT_TEMPLATE = (
+    "{{ bos_token }}"
+    "{% if messages[0]['role'] == 'system' %}"
+    "{{ messages[0]['content'] + '\\n\\n' }}{% set loop_messages = messages[1:] %}"
+    "{% else %}"
+    "{{ '" + DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)[0] + "\\n\\n' }}{% set loop_messages = messages %}"
+    "{% endif %}"
+    "{% for message in loop_messages %}"
+    "{% if message['role'] == 'user' %}"
+    "{{ '### Instruction:\\n' + message['content'] + '\\n\\n### Input:\\n\\n\\n' }}"
+    "{% elif message['role'] == 'assistant' %}"
+    "{{ '### Response:\\n' + message['content'] + eos_token }}"
+    "{% if not loop.last %}{{ '\\n\\n' }}{% endif %}"
+    "{% else %}"
+    "{{ raise_exception('Only user and assistant roles are supported!') }}"
+    "{% endif %}"
+    "{% endfor %}"
+    "{% if add_generation_prompt %}{{ '### Response:\\n' }}{% endif %}"
+)
+
+_TEMPLATE_ERROR_COLUMN = "__chat_template_error"
+
+# Rows per batch when scanning or filtering the error column, so neither pass
+# materialises the whole column in Python.
+_ERROR_SCAN_BATCH = 10_000
+
+_TEMPLATE_PROBE_ROWS = 8
+
+_CHOSEN_TEMPLATE_ATTR = "_unsloth_studio_chat_template_choice"
+
 _CUSTOM_PROMPT_TEMPLATE_ERROR = (
-    "custom_prompt_template is deprecated and unsupported because Studio cannot persist a "
+    "custom_prompt_template is deprecated and unsupported because Unsloth Studio cannot persist a "
     "matching template for inference. Pass None to continue without a custom prompt template."
 )
+
+
+def _map_with_pickle_fallback(dataset, function, map_kwargs):
+    """dataset.map, retried in one process when the worker processes cannot receive the function: a
+    remote-code tokenizer class is pickled by value and can drag in unpicklable module state (an HTTP
+    client's SSLContext), which fails the whole multi-process map."""
+    try:
+        return dataset.map(function, **map_kwargs)
+    except Exception as exc:
+        if (map_kwargs.get("num_proc") or 1) <= 1 or "pickle" not in str(exc).lower():
+            raise
+        logger.warning(f"Formatting in one process: the worker processes could not be started ({exc})")
+        return dataset.map(function, **{k: v for k, v in map_kwargs.items() if k != "num_proc"})
 
 
 def _custom_prompt_template_error(custom_prompt_template):
@@ -101,6 +145,331 @@ def get_tokenizer_chat_template(tokenizer, model_name):
     return tokenizer
 
 
+def get_training_chat_template(tokenizer, model_name, final_format):
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer
+    if final_format in ("chatml_messages", "chatml_conversations"):
+        return get_tokenizer_chat_template(tokenizer, model_name)
+    if final_format != "alpaca":
+        return tokenizer
+    try:
+        from unsloth.chat_templates import get_chat_template
+        tokenizer = get_chat_template(
+            tokenizer,
+            chat_template = "alpaca",
+            **_chat_template_kwargs(),
+        )
+        # Unsloth's "alpaca" template words the preamble differently and has no Input section.
+        _set_chat_template(tokenizer, STUDIO_ALPACA_CHAT_TEMPLATE)
+        logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
+    except Exception as e:
+        logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
+    return tokenizer
+
+
+def _set_chat_template(tokenizer, chat_template):
+    """Set on processor and tokenizer; does not undo ``get_chat_template`` EOS remapping (Gemma 1/2)."""
+    tokenizer.chat_template = chat_template
+    inner = getattr(tokenizer, "tokenizer", None)
+    if inner is not None and inner is not tokenizer and hasattr(inner, "chat_template"):
+        inner.chat_template = chat_template
+
+
+def _drop_none_values(value):
+    # loaded dicts cannot distinguish nulls from keys added by another row, unlike JSON strings.
+    if isinstance(value, dict):
+        return {key: _drop_none_values(item) for key, item in value.items() if item is not None}
+    if isinstance(value, list):
+        return [_drop_none_values(item) for item in value]
+    return value
+
+
+def _json_cell(value):
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return None
+
+
+def _row_tools(tools):
+    if isinstance(tools, list):
+        tools = [tool if isinstance(tool, str) else _drop_none_values(tool) for tool in tools]
+    else:
+        tools = _json_cell(tools)
+    if not isinstance(tools, list):
+        return None
+    tools = [_json_cell(tool) for tool in tools]
+    if not tools or not all(isinstance(tool, dict) for tool in tools):
+        return None
+    normalized = []
+    for tool in tools:
+        if tool.get("type") is None and isinstance(tool.get("function"), dict):
+            tool = {**tool, "type": "function"}
+        elif "function" not in tool and "name" in tool:
+            tool = {"type": "function", "function": tool}
+        normalized.append(tool)
+    return normalized
+
+
+def _sharegpt_tool_turns(conversation, content = "", probe = False):
+    """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
+    markers ``probe`` put in place of each call's arguments and each result; the conversation
+    itself when it has neither role."""
+    if not any(
+        isinstance(message, dict) and message.get("role") in ("observation", "function_call")
+        for message in conversation
+    ):
+        return conversation, []
+    turns = []
+    markers = []
+    result_ids = []
+    calls_made = 0
+    for index, message in enumerate(conversation):
+        role = message.get("role") if isinstance(message, dict) else None
+        if role == "observation":
+            message = {**message, "role": "tool"}
+            if result_ids:
+                message["tool_call_id"] = result_ids.pop(0)
+            if probe:
+                markers.append(f"unslothresult{len(markers)}end")
+                message["content"] = markers[-1]
+        elif role == "function_call":
+            try:
+                calls = json.loads(message.get("content"))
+            except (TypeError, ValueError, RecursionError):
+                calls = None
+            calls = calls if isinstance(calls, list) else [calls]
+            if calls and all(isinstance(call, dict) and call.get("name") for call in calls):
+                tool_calls = []
+                for call in calls:
+                    arguments = call.get("arguments", {})
+                    # A JSON string keeps explicit nulls through _drop_none_values.
+                    if not isinstance(arguments, str):
+                        arguments = json.dumps(arguments, ensure_ascii = False)
+                    name = call["name"]
+                    if probe:
+                        markers.append(f"unslothname{len(markers)}end")
+                        name = markers[-1]
+                        markers.append(f"unslothcall{len(markers)}end")
+                        arguments = json.dumps({"probe": markers[-1]})
+                    calls_made += 1
+                    tool_calls.append(
+                        {
+                            # Nine alphanumerics, as Mistral requires.
+                            "id": f"call{calls_made:05d}",
+                            "type": "function",
+                            "function": {"name": name, "arguments": arguments},
+                        }
+                    )
+                message = {"role": "assistant", "content": content, "tool_calls": tool_calls}
+                results = 0
+                for later in conversation[index + 1 :]:
+                    if not (isinstance(later, dict) and later.get("role") == "observation"):
+                        break
+                    results += 1
+                # Results pair with calls by position only when there is one per call.
+                result_ids = [call["id"] for call in tool_calls] if results == len(calls) else []
+            else:
+                result_ids = []
+                if probe:
+                    # Kept as written: a template skipping unknown roles must not pass on its result.
+                    markers.append(f"unslothraw{len(markers)}end")
+                    message = {**message, "content": markers[-1]}
+        turns.append(message)
+    return turns, markers
+
+
+def _one_call_per_message(turns):
+    # Each call then its own result: gpt-oss names a result after the latest call.
+    split = []
+    index = 0
+    while index < len(turns):
+        message = turns[index]
+        index += 1
+        calls = message.get("tool_calls") if isinstance(message, dict) else None
+        if not calls or len(calls) < 2:
+            split.append(message)
+            continue
+        run = []
+        while (
+            index < len(turns)
+            and isinstance(turns[index], dict)
+            and turns[index].get("role") == "tool"
+        ):
+            run.append(turns[index])
+            index += 1
+        results = {result.get("tool_call_id"): result for result in run}
+        paired = len(run) == len(calls) and all(call.get("id") in results for call in calls)
+        for i, call in enumerate(calls):
+            # Later pieces repeat no text, but keep a None content for templates gating on it.
+            content = message.get("content")
+            split.append({**message, "tool_calls": [call], "content": "" if i and content else content})
+            if paired:
+                split.append(results[call["id"]])
+        if not paired:
+            split.extend(run)
+    return split if len(split) != len(turns) else turns
+
+
+def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
+    candidates = []
+    # None content for DeepSeek-style templates; one call per message for Llama 3.x and gpt-oss.
+    for content in ("", None):
+        turns, _ = _sharegpt_tool_turns(conversation, content)
+        if turns is conversation:
+            break
+        probe, markers = _sharegpt_tool_turns(conversation, content, probe = True)
+        candidates.append((turns, probe, markers))
+        split = _one_call_per_message(turns)
+        if split is not turns:
+            candidates.append((split, _one_call_per_message(probe), markers))
+    for turns, probe, markers in candidates:
+        # Templates may ignore tool_calls, drop tool turns, or render only the first call (gpt-oss).
+        try:
+            shown = _render_messages(tokenizer, probe, tools, fallback_without_tools)
+            if all(marker in shown for marker in markers):
+                return _render_messages(tokenizer, turns, tools, fallback_without_tools)
+        except Exception:
+            pass
+    return _render_messages(tokenizer, conversation, tools, fallback_without_tools)
+
+
+def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
+    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+
+    attempts = []
+    for messages in (_drop_none_values(conversation), conversation):
+        for attempt in (_normalize_tool_call_arguments(messages), messages):
+            if not any(attempt is seen for seen in attempts):
+                attempts.append(attempt)
+    tools_kwargs = {"tools": tools} if tools else {}
+    first_error = None
+    for attempt in attempts:
+        try:
+            return tokenizer.apply_chat_template(
+                attempt, tokenize = False, add_generation_prompt = False, **tools_kwargs
+            )
+        except Exception as error:
+            # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
+            if first_error is None:
+                first_error = error
+    if tools and fallback_without_tools:
+        return _render_messages(tokenizer, conversation)
+    raise first_error
+
+
+def _template_render_stats(tokenizer, rows):
+    rendered = 0
+    advertised = 0
+    tool_rows = 0
+    for conversation, tools in rows:
+        try:
+            if tools:
+                tool_rows += 1
+                with_tools = _render_conversation(tokenizer, conversation, tools)
+                try:
+                    without_tools = _render_conversation(tokenizer, conversation)
+                except Exception:
+                    advertised += 1
+                else:
+                    advertised += with_tools != without_tools
+            else:
+                _render_conversation(tokenizer, conversation)
+            rendered += 1
+        except Exception:
+            pass
+    return rendered, advertised, tool_rows
+
+
+def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+    """sample finite datasets evenly, adding one missed sparse tool row; stream from the front."""
+    n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
+    sampled = []
+    try:
+        if n_rows > limit:
+            step = (n_rows - 1) / (limit - 1)
+            rows = (dataset[round(i * step)] for i in range(limit))
+        else:
+            rows = dataset
+        for row in rows:
+            conversation = row.get(chat_column)
+            if conversation:
+                sampled.append((conversation, _row_tools(row.get("tools"))))
+            if len(sampled) >= limit:
+                break
+        if (
+            n_rows > limit
+            and not any(tools for _, tools in sampled)
+            and "tools" in (getattr(dataset, "column_names", None) or ())
+        ):
+            for index, value in enumerate(dataset["tools"]):
+                tools = _row_tools(value)
+                if not tools:
+                    continue
+                conversation = dataset[index].get(chat_column)
+                if conversation:
+                    sampled.append((conversation, tools))
+                    break
+    except Exception:
+        return []
+    return sampled
+
+
+def keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template):
+    """restore the checkpoint template when it renders more rows or preserves tool catalogs."""
+    override = getattr(tokenizer, "chat_template", None)
+    if not own_template or override == own_template:
+        return None
+
+    sampled = _sample_template_rows(dataset, chat_column)
+    if not sampled:
+        return None
+
+    override_rendered, override_advertised, tool_rows = _template_render_stats(
+        tokenizer, sampled
+    )
+    if override_rendered == len(sampled) and override_advertised == tool_rows:
+        return None
+
+    _set_chat_template(tokenizer, own_template)
+    own_rendered, own_advertised, _ = _template_render_stats(tokenizer, sampled)
+    restores_tools = (
+        tool_rows
+        and override_advertised < tool_rows
+        and own_advertised == tool_rows
+        and own_rendered == len(sampled)
+    )
+    if own_rendered <= override_rendered and not restores_tools:
+        _set_chat_template(tokenizer, override)
+        return None
+
+    return (
+        "📝 The Unsloth chat template cannot render every conversation or tool catalog; "
+        "using the model's own chat template instead"
+    )
+
+
+def resolve_dataset_chat_template(tokenizer, model_name, dataset, chat_column):
+    """choose a template on the first split and reuse it for evaluation and saving."""
+    remembered = getattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, None)
+    if remembered is not None and remembered[0] == model_name:
+        _set_chat_template(tokenizer, remembered[1])
+        return tokenizer, None
+
+    own_template = getattr(tokenizer, "chat_template", None)
+    tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
+    note = keep_renderable_chat_template(tokenizer, dataset, chat_column, own_template)
+    try:
+        chosen = (model_name, getattr(tokenizer, "chat_template", None))
+        setattr(tokenizer, _CHOSEN_TEMPLATE_ATTR, chosen)
+    except Exception:
+        # Wrappers that reject new attributes cannot retain the choice across splits.
+        pass
+    return tokenizer, note
+
+
 def get_dataset_info_summary(dataset_info):
     """Return a human-readable summary for UI display."""
     detected_format = dataset_info["detected_format"]
@@ -126,6 +495,18 @@ def get_dataset_info_summary(dataset_info):
     }
 
 
+def _with_system_turn(convo, system):
+    if (
+        isinstance(system, str)
+        and system.strip()
+        and convo
+        and isinstance(convo[0], dict)
+        and convo[0].get("role") != "system"
+    ):
+        return [{"role": "system", "content": system}, *convo]
+    return convo
+
+
 def apply_chat_template_to_dataset(
     dataset_info,
     tokenizer,
@@ -141,7 +522,7 @@ def apply_chat_template_to_dataset(
 ):
     """Apply the chat template to a dataset based on its format, returning a dict with the dataset, success status, warnings and errors.
 
-    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends tokenizer.eos_token to each text, ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
+    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends the tokenizer's eos_token to each ChatML text (Alpaca text always gets one), ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
     """
     dataset = dataset_info["dataset"]
     final_format = dataset_info["final_format"]
@@ -161,12 +542,14 @@ def apply_chat_template_to_dataset(
             "errors": errors,
         }
 
-    eos_token = ""
-    if add_eos_token:
-        if hasattr(tokenizer, 'eos_token') and tokenizer.eos_token:
-            eos_token = tokenizer.eos_token
-        else:
-            warnings.append("add_eos_token=True but tokenizer has no eos_token")
+    # A processor (Gemma 3 on the text path) keeps eos_token on its inner tokenizer.
+    eos_token = (
+        getattr(tokenizer, 'eos_token', None)
+        or getattr(getattr(tokenizer, 'tokenizer', None), 'eos_token', None)
+        or ""
+    )
+    if not eos_token and (add_eos_token or final_format == "alpaca"):
+        warnings.append("Tokenizer has no eos_token, so EOS was not appended")
 
     # CUSTOM FORMAT MAPPING (for non-standard datasets)
     if final_format == "unknown":
@@ -224,11 +607,12 @@ def apply_chat_template_to_dataset(
 
                                 if is_user_provided:
                                     # User-mapped: include even if empty.
-                                    convo.append({"role": role, "content": str(content) if content else ""})
+                                    convo.append({"role": role, "content": cell_text(content)})
                                 else:
                                     # Auto-detected: skip empty.
-                                    if content and str(content).strip():
-                                        convo.append({"role": role, "content": str(content)})
+                                    text = cell_text(content)
+                                    if text.strip():
+                                        convo.append({"role": role, "content": text})
 
                     conversations.append(convo)
 
@@ -259,18 +643,7 @@ def apply_chat_template_to_dataset(
     # ALPACA FORMAT
     if final_format == "alpaca":
 
-        # Set the alpaca chat template if unset, so it is saved for inference.
-        if not (hasattr(tokenizer, 'chat_template') and tokenizer.chat_template):
-            try:
-                from unsloth.chat_templates import get_chat_template
-                tokenizer = get_chat_template(
-                    tokenizer,
-                    chat_template = "alpaca",
-                    **_chat_template_kwargs(),
-                )
-                logger.info(f"📝 Set alpaca chat template on tokenizer for model saving")
-            except Exception as e:
-                logger.info(f"⚠️ Could not set alpaca template on tokenizer: {e}")
+        tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
         def _format_alpaca(examples):
             texts = []
@@ -280,11 +653,14 @@ def apply_chat_template_to_dataset(
                     "input": examples.get("input", [""] * len(examples["instruction"]))[i],
                     "output": examples["output"][i]
                 }
+                fields = {key: cell_text(value) for key, value in fields.items()}
 
                 text = DEFAULT_ALPACA_TEMPLATE.format(
                     fields["instruction"], fields["input"], fields["output"]
                 )
-                texts.append(text + eos_token)
+                if not text.endswith(eos_token):
+                    text += eos_token
+                texts.append(text)
 
             return {"text": texts}
 
@@ -305,7 +681,7 @@ def apply_chat_template_to_dataset(
                 dataset_map_kwargs['num_proc'] = num_proc
                 dataset_map_kwargs['desc'] = "Applying template to Alpaca format"
 
-            formatted_dataset = dataset.map(_format_alpaca, **dataset_map_kwargs)
+            formatted_dataset = _map_with_pickle_fallback(dataset, _format_alpaca, dataset_map_kwargs)
 
             return {
                 "dataset": formatted_dataset,
@@ -329,31 +705,64 @@ def apply_chat_template_to_dataset(
             warnings.append("Dataset may not be fully standardized")
 
         if model_name:
-            tokenizer = get_tokenizer_chat_template(tokenizer, model_name)
+            tokenizer, kept_own_template = resolve_dataset_chat_template(
+                tokenizer, model_name, dataset, chat_column
+            )
+            if kept_own_template:
+                logger.info(kept_own_template)
+
+        streamed_failures = []
+
+        # protect real marker columns; generator-backed IterableDataset needs a first-row probe.
+        from .raw_text import resolve_column_names
+
+        existing_columns = set(resolve_column_names(dataset))
+        error_column = _TEMPLATE_ERROR_COLUMN
+        while error_column in existing_columns:
+            error_column += "_"
 
         def _format_chatml(examples):
             convos = examples[chat_column]
+            systems = examples.get("system") or [None] * len(convos)
+            row_tools = examples.get("tools") or [None] * len(convos)
             texts = []
+            row_errors = []
 
-            for convo in convos:
+            for convo, system, tools in zip(convos, systems, row_tools):
                 try:
-                    text = tokenizer.apply_chat_template(
-                        convo,
-                        tokenize = False,
-                        add_generation_prompt = False
-                    )
+                    with_system = _with_system_turn(convo, system)
+                    tools = _row_tools(tools)
+                    try:
+                        text = _render_conversation(
+                            tokenizer,
+                            with_system,
+                            tools,
+                            fallback_without_tools = with_system is convo,
+                        )
+                    except Exception:
+                        # unsupported system turns are omitted so the original conversation renders.
+                        if with_system is convo:
+                            raise
+                        text = _render_conversation(tokenizer, convo, tools)
 
                     if remove_bos_prefix:
                         text = text.removeprefix('<bos>')
-                    text += eos_token
+                    if add_eos_token:
+                        text += eos_token
 
                     texts.append(text)
+                    row_errors.append("")
                 except Exception as e:
-                    if len(texts) == 0:
-                        warnings.append(f"Chat template failed: {e}")
                     texts.append("")
+                    row_errors.append(str(e) or type(e).__name__)
 
-            return {"text": texts}
+            return {"text": texts, error_column: row_errors}
+
+        def _keep_streamed_row(row_error):
+            if row_error and not streamed_failures:
+                streamed_failures.append(row_error)
+                logger.warning(f"Dropping rows whose chat template failed: {row_error}")
+            return not row_error
 
         try:
             is_iterable = is_streaming_dataset(dataset)
@@ -398,16 +807,69 @@ def apply_chat_template_to_dataset(
 
                 threading.Thread(target = _poll_tqdm, daemon = True).start()
 
-            formatted_dataset = dataset.map(_format_chatml, **dataset_map_kwargs)
+            formatted_dataset = _map_with_pickle_fallback(dataset, _format_chatml, dataset_map_kwargs)
 
             if _tqdm_monitor_stop is not None:
                 _tqdm_monitor_stop.set()
+
+            dropped_rows_warning = None
+            if is_iterable:
+                formatted_dataset = formatted_dataset.filter(
+                    _keep_streamed_row, input_columns = [error_column]
+                ).remove_columns(error_column)
+            elif len(formatted_dataset):
+                # Everything here stays Arrow-side and batched. Reading the error column
+                # into a Python list, or building one index per surviving row, costs a
+                # measured 85 MB at 2M rows (70 MB of it the index list) and scales
+                # linearly, so a dataset of tens of millions of mostly valid rows could be
+                # killed during formatting.
+                n_total = len(formatted_dataset)
+                kept = formatted_dataset.filter(
+                    lambda row_errors: [not row_error for row_error in row_errors],
+                    input_columns = [error_column],
+                    batched = True,
+                    batch_size = _ERROR_SCAN_BATCH,
+                    desc = "Dropping rows whose chat template failed",
+                )
+                n_failed = n_total - len(kept)
+                if n_failed:
+                    first_error = next(
+                        (
+                            row_error
+                            for batch in formatted_dataset.select_columns(
+                                [error_column]
+                            ).iter(batch_size = _ERROR_SCAN_BATCH)
+                            for row_error in batch[error_column]
+                            if row_error
+                        ),
+                        "",
+                    )
+                if n_failed == n_total:
+                    errors.append(
+                        f"Chat template failed on all {n_total:,} rows: {first_error}"
+                    )
+                    return {
+                        "dataset": dataset,
+                        "success": False,
+                        "warnings": warnings,
+                        "errors": errors,
+                        "dropped_rows_warning": None,
+                    }
+                if n_failed:
+                    formatted_dataset = kept
+                    dropped_rows_warning = (
+                        f"Dropped {n_failed:,} of {n_total:,} rows because the "
+                        f"chat template failed: {first_error}"
+                    )
+                    warnings.append(dropped_rows_warning)
+                formatted_dataset = formatted_dataset.remove_columns(error_column)
 
             return {
                 "dataset": formatted_dataset,
                 "success": True,
                 "warnings": warnings,
-                "errors": errors
+                "errors": errors,
+                "dropped_rows_warning": dropped_rows_warning,
             }
         except Exception as e:
             errors.append(f"Failed to format ChatML dataset: {e}")

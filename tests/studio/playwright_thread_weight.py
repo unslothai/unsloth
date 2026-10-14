@@ -304,10 +304,13 @@ async (timeoutMs) => {
 }
 """
 
+# Delete is a button on the reply's action bar again since #13615 (#12735 had moved it into the More
+# menu). The button is found before the clock starts, so the window holds only what Delete costs: the
+# message leaving the thread.
 DELETE_JS = """
 async (timeoutMs) => {
   const api = window.__threadWeight;
-  const button = api.actionButton("Delete message");
+  const button = api.actionButton("Delete");
   if (!button) return null;
   // The last assistant message. That is the cheapest delete on the React side -- one subtree
   // unmounts -- so this column under-measures reconciliation, though the export/rebuild/import

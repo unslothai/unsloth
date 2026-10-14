@@ -7,7 +7,9 @@
 turns it into a generator that yields:
 
 * ``{"type": "tool_output", "tool_name", "tool_call_id", "text"}`` -- an
-  incremental stdout/stderr chunk (python/terminal tools) for live UI output;
+  incremental stdout/stderr chunk (python/terminal tools) for live UI output,
+  or, with empty ``text``, a dict the tool passed to its callback (the browser
+  tools' ``browser_action`` requests for the chat tab);
 * ``{"type": "heartbeat"}`` -- emitted whenever nothing else has been yielded
   for ``heartbeat_interval_s`` seconds, so the SSE route can write a
   keepalive and reverse proxies (Cloudflare tunnels cap idle streams at
@@ -21,13 +23,54 @@ and healing downstream are untouched.
 
 from __future__ import annotations
 
+import contextvars
 import inspect
 import queue
 import threading
 import time
-from typing import Any, Callable, Generator
+from typing import Any, Callable, Generator, Sequence
 
 from loggers import get_logger
+
+# Split across two chunks, neither half matches the key pattern and the credential is painted whole.
+_SECRET_PREFIXES = ("sk-unsloth-", "desktop-")
+# A prefix plus a generous token: bounds the reverse search on a multi-megabyte chunk.
+_SECRET_SCAN_TAIL = 128
+# What ends a credential token in tool output: whitespace, quoting and closing punctuation.
+_SECRET_TERMINATORS = frozenset(" \t\r\n\"'`,;)]}")
+
+
+def _hold_back_partial_secret(text: str) -> int:
+    """Index at which `text` may hold a credential token still open at its end.
+
+    Everything from the returned index is carried to the next chunk. Returns ``len(text)`` when the
+    tail is safe to emit whole. Conservative on purpose: holding back a few bytes that turn out to
+    be ordinary text only delays them until the next chunk or the final flush.
+    """
+    tail_start = max(0, len(text) - _SECRET_SCAN_TAIL)
+    tail = text[tail_start:]
+    best = len(text)
+    for prefix in _SECRET_PREFIXES:
+        index = tail.rfind(prefix)
+        while index != -1:
+            absolute = tail_start + index
+            rest = text[absolute + len(prefix) :]
+            # A terminator ANYWHERE after the token ends it, so the regex has had its chance and
+            # the text is safe to emit. Read only at the ends, `sk-unsloth-<key> done` looked open
+            # and held the chunk (and every chunk after it) back until the tool finished.
+            if not rest or not _SECRET_TERMINATORS.intersection(rest):
+                best = min(best, absolute)
+            # Keep going left: a terminated occurrence says nothing about an EARLIER one, and
+            # stopping at the first one found hid an open token behind it.
+            index = tail.rfind(prefix, 0, index)
+    # Also a tail that is a PREFIX of a prefix ("...sk-unslo"), which no rfind above can see.
+    for prefix in _SECRET_PREFIXES:
+        for length in range(min(len(prefix) - 1, len(text)), 0, -1):
+            if text.endswith(prefix[:length]):
+                best = min(best, len(text) - length)
+                break
+    return best
+
 
 logger = get_logger(__name__)
 
@@ -89,7 +132,12 @@ TOOL_OUTPUT_STREAM_MAX_CHARS = 400_000
 _STREAM_CAPPED_NOTICE = "\n... (further live output not streamed)\n"
 
 
-def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> tuple[str, bool]:
+def _drain_queue(
+    q: "queue.Queue",
+    sentinel: object,
+    max_chars: int | None,
+    held: list | None = None,
+) -> tuple[str, bool]:
     """Pull every currently-queued item, joining chunks in FIFO order.
 
     With ``max_chars`` set, stop concatenating at the budget and discard the
@@ -97,7 +145,8 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
     far more than the cap before the consumer wakes. The crossing chunk is sliced
     to one char past the budget, enough for the caller's truncation to stay
     byte-identical. Returns ``(joined_text, hit_sentinel)``; the surplus is still
-    scanned so completion is detected promptly.
+    scanned so completion is detected promptly. A structured event (a dict) ends
+    the run of text and waits in ``held``, so it is never joined or dropped.
     """
     parts: list[str] = []
     total = 0
@@ -110,6 +159,10 @@ def _drain_queue(q: "queue.Queue", sentinel: object, max_chars: int | None) -> t
             break
         if item is sentinel:
             hit_sentinel = True
+            break
+        if isinstance(item, dict):
+            if held is not None:
+                held.append(item)
             break
         if dropping:
             continue
@@ -131,6 +184,7 @@ def stream_tool_execution(
     cancel_event: Any = None,
     heartbeat_interval_s: float = TOOL_HEARTBEAT_INTERVAL_S,
     poll_interval_s: float = _POLL_INTERVAL_S,
+    started_events: Sequence[dict] = (),
 ) -> Generator[dict, None, str]:
     """Run ``invoke(output_callback)`` in a thread; yield live events; return the result.
 
@@ -145,6 +199,8 @@ def stream_tool_execution(
     timeout. Set ONLY on that abnormal-exit path, never on a clean finish, because
     the event is shared across a turn's tool calls and setting it early would
     abort the next tool.
+
+    ``started_events`` are yielded once the worker is running, so a slow consumer never delays the tool.
     """
     output_queue: queue.Queue[Any] = queue.Queue()
     done_sentinel = object()
@@ -157,8 +213,12 @@ def stream_tool_execution(
     accepted_output_chars = 0
     accepted_output_lock = threading.Lock()
 
-    def _on_output(text: str) -> None:
+    def _on_output(text: "str | dict") -> None:
         nonlocal accepted_output_chars
+        if isinstance(text, dict):
+            # A structured request for the client (a browser action), outside the text budget.
+            output_queue.put(dict(text))
+            return
         if not text:
             return
         with accepted_output_lock:
@@ -179,8 +239,10 @@ def stream_tool_execution(
             # poll-interval latency.
             output_queue.put(done_sentinel)
 
+    # The worker runs in the caller's context, so a tool started for one account cannot resolve another's roots.
     worker = threading.Thread(
-        target = _run,
+        target = contextvars.copy_context().run,
+        args = (_run,),
         daemon = True,
         name = f"tool-exec-{tool_name or 'unknown'}",
     )
@@ -194,9 +256,12 @@ def stream_tool_execution(
     stream_capped = False
     finished = False
 
+    # Structured events pulled while joining text, delivered before the queue is read again.
+    held: list[dict] = []
+
     def _drain_pending(max_chars: int | None = None) -> str:
         nonlocal finished
-        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars)
+        text, hit_sentinel = _drain_queue(output_queue, done_sentinel, max_chars, held)
         if hit_sentinel:
             finished = True
         return text
@@ -216,12 +281,31 @@ def stream_tool_execution(
             if item is done_sentinel:
                 finished = True
                 return
+            if isinstance(item, dict):
+                held.append(item)
+
+    # tool_end is masked downstream, but these chunks are what the frontend paints and persists
+    # first. A key can straddle a chunk boundary, so `_hold_back_partial_secret` returns the index
+    # where a still-open token begins and everything from there is carried into the next chunk.
+    carry = ""
+
+    def _masked(text: str, *, final: bool) -> "tuple[str, str]":
+        """Return (emit, carry) for `text`, with credentials masked and partials held back."""
+        from core.inference.tool_loop_controller import redact_studio_credentials
+
+        combined = carry + text
+        if final:
+            return redact_studio_credentials(combined), ""
+        split = _hold_back_partial_secret(combined)
+        return redact_studio_credentials(combined[:split]), combined[split:]
 
     abnormal_exit = False
     try:
-        while not finished:
+        for event in started_events:
+            yield event
+        while not finished or held:
             try:
-                item = output_queue.get(timeout = poll_interval_s)
+                item = held.pop(0) if held else output_queue.get(timeout = poll_interval_s)
             except queue.Empty:
                 # A disconnect sets cancel_event while the worker is silent; surface a heartbeat this poll so the route
                 # regains control and tears down at once, not after a full heartbeat interval.
@@ -237,13 +321,24 @@ def stream_tool_execution(
             if item is done_sentinel:
                 break
 
+            if isinstance(item, dict):
+                idle_polls = 0
+                yield {
+                    **item,
+                    "type": "tool_output",
+                    "tool_name": tool_name,
+                    "tool_call_id": tool_call_id,
+                    "text": "",
+                }
+                continue
+
             if stream_capped:
                 # Past the cap: drop this chunk and every queued sibling (see _drain_and_drop). Pace with one time.sleep
                 # per poll (not time.monotonic -- tests patch the clock), counted as an idle poll so heartbeats keep
                 # flowing while the queue stays non-empty.
                 _drain_and_drop()
                 if finished:
-                    break
+                    continue
                 time.sleep(poll_interval_s)
                 idle_polls += 1
                 if idle_polls >= idle_polls_per_heartbeat:
@@ -262,11 +357,24 @@ def stream_tool_execution(
                 stream_capped = True
             streamed_chars += len(chunk)
             if chunk:
+                # The capped chunk is the last one sent, so flush the carry with it.
+                emit, carry = _masked(chunk, final = stream_capped)
+                if emit:
+                    yield {
+                        "type": "tool_output",
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "text": emit,
+                    }
+        # Deferred text that turns out to be ordinary: emit it, or the output is truncated.
+        if carry:
+            emit, carry = _masked("", final = True)
+            if emit:
                 yield {
                     "type": "tool_output",
                     "tool_name": tool_name,
                     "tool_call_id": tool_call_id,
-                    "text": chunk,
+                    "text": emit,
                 }
     except BaseException:
         # The loop only raises when the consumer closes us early: an SSE disconnect calls gen.close() (GeneratorExit at

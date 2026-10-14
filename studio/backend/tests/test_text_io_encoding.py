@@ -12,6 +12,8 @@ model config or path containing ``ä ö ü → 世`` mojibakes or raises
 
 from __future__ import annotations
 
+import sys
+import subprocess
 import ast
 import importlib.util
 import json
@@ -34,6 +36,11 @@ BACKEND_ROOT = Path(__file__).resolve().parent.parent
 # Not runtime source. Shipped plugins under plugins/*/src are, so only builds are skipped.
 _SKIPPED_DIRS = ("node_modules", "build", "tests", "__pycache__")
 
+# Vendored packages kept byte-identical to their wheel and pinned by per-file hashes
+# (vendor/README.md), mapped to the loader that gives their modules a UTF-8 `open`. They are
+# fixed there, not in place; test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale checks it.
+_UTF8_BY_LOADER = {"vendor/laya": "core/systemone/laya_runtime.py"}
+
 # Path.open()'s signature is what tells it apart from other libraries' open(),
 # e.g. fitz.open(stream=...) and av.open(..., metadata_errors=...).
 _FILE_MODE_CHARS = set("rwxabt+")
@@ -53,6 +60,10 @@ def _studio_sources() -> list[Path]:
         path
         for path in sorted(BACKEND_ROOT.rglob("*.py"))
         if not any(part in _SKIPPED_DIRS for part in path.relative_to(BACKEND_ROOT).parts)
+        and not any(
+            path.relative_to(BACKEND_ROOT).as_posix().startswith(prefix + "/")
+            for prefix in _UTF8_BY_LOADER
+        )
     ]
 
 
@@ -260,11 +271,58 @@ def _splatted_kwargs_offenders(tree: ast.AST) -> list[ast.Dict]:
     return found
 
 
+def _is_locale_default(value: ast.expr) -> bool:
+    """None and "locale" are the locale default spelled out, not a chosen encoding."""
+    return isinstance(value, ast.Constant) and value.value in (None, "locale")
+
+
+_PATH_CLASSES = {"Path", "PosixPath", "PurePath", "WindowsPath"}
+
+
+def _path_class_names(tree: ast.AST) -> set[str]:
+    """The pathlib classes and every name they are imported under in this module.
+
+    `from pathlib import Path as P` still puts the path in front of an unbound `P.read_text(p)`,
+    as tests/test_source_read_encoding.py's `_is_path_class` already accounts for. Names bound by
+    assignment, defaults or subclassing are not followed: those need the binding visible at each
+    call site, and a module-wide guess flags valid calls on an instance that happens to share the
+    name in another scope."""
+    names = set(_PATH_CLASSES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "pathlib":
+            for alias in node.names:
+                if alias.name in _PATH_CLASSES:
+                    names.add(alias.asname or alias.name)
+    return names
+
+
+def _path_text_names_encoding(node: ast.Call, name: str, path_classes: set[str]) -> bool:
+    """Path.read_text(encoding, errors) / Path.write_text(data, encoding, ...) name an encoding
+    by keyword or positionally. The unbound form, Path.read_text(p), has the path in front, so the
+    position shifts by one."""
+    for kw in node.keywords:
+        if kw.arg == "encoding":
+            return not _is_locale_default(kw.value)
+    receiver = node.func.value
+    unbound = (isinstance(receiver, ast.Name) and receiver.id in path_classes) or (
+        isinstance(receiver, ast.Attribute) and receiver.attr in _PATH_CLASSES
+    )
+    position = (0 if name == "read_text" else 1) + (1 if unbound else 0)
+    # A starred argument at or before the slot makes the runtime position unknowable statically,
+    # so only a keyword encoding counts there: conservative, and nothing in the tree spells it so.
+    if any(isinstance(arg, ast.Starred) for arg in node.args[: position + 1]):
+        return False
+    if len(node.args) <= position:
+        return False
+    return not _is_locale_default(node.args[position])
+
+
 def _offenders(path: Path) -> list[str]:
     source = path.read_text(encoding = "utf-8")
     tree = ast.parse(source, filename = str(path))
     subprocess_names = _subprocess_names(tree)
     subprocess_aliases = _subprocess_aliases(tree, subprocess_names)
+    path_classes = _path_class_names(tree)
     found: list[str] = []
     for node in _splatted_kwargs_offenders(tree):
         found.append(
@@ -303,7 +361,7 @@ def _offenders(path: Path) -> list[str]:
             continue
 
         if name in ("read_text", "write_text") and isinstance(node.func, ast.Attribute):
-            if _has_keyword(node, "encoding"):
+            if _path_text_names_encoding(node, name, path_classes):
                 continue
             # importlib.metadata Distribution.read_text() takes no encoding kwarg.
             if isinstance(node.func.value, ast.Name) and node.func.value.id == "dist":
@@ -700,6 +758,59 @@ def test_the_guard_sees_os_fdopen(tmp_path: Path) -> None:
     assert flagged == {"text.py", "default_mode.py"}, flagged
 
 
+def test_the_guard_reads_a_positional_path_text_encoding(tmp_path: Path) -> None:
+    """Path.read_text(encoding, errors) and Path.write_text(data, encoding, ...) take the
+    encoding positionally too. #13565's read_text("utf-8") is not a locale-default read."""
+    cases = {
+        "read_none.py": "p.read_text()\n",
+        "read_kw.py": 'p.read_text(encoding = "utf-8")\n',
+        "read_pos.py": 'p.read_text("utf-8")\n',
+        "write_none.py": 'p.write_text("x")\n',
+        "write_kw.py": 'p.write_text("x", encoding = "utf-8")\n',
+        "write_pos.py": 'p.write_text("x", "utf-8")\n',
+        # The locale default spelled out is still the locale default.
+        "read_none_pos.py": "p.read_text(None)\n",
+        "read_locale_pos.py": 'p.read_text("locale")\n',
+        "read_locale_kw.py": 'p.read_text(encoding = "locale")\n',
+        "write_none_pos.py": 'p.write_text("x", None)\n',
+        # Unbound calls carry the path first, so the encoding sits one slot later.
+        "unbound_read.py": "Path.read_text(p)\n",
+        "unbound_read_pos.py": 'Path.read_text(p, "utf-8")\n',
+        "unbound_write.py": 'pathlib.Path.write_text(p, "x")\n',
+        "unbound_write_pos.py": 'pathlib.Path.write_text(p, "x", "utf-8")\n',
+        # Under an alias, or a concrete pathlib class.
+        "unbound_alias.py": "from pathlib import Path as P\nP.read_text(p)\n",
+        "unbound_alias_pos.py": 'from pathlib import Path as P\nP.read_text(p, "utf-8")\n',
+        "unbound_posix.py": 'PosixPath.write_text(p, "x")\n',
+        # A same-named instance elsewhere is not an alias: no module-wide assignment guessing.
+        "instance_named_p.py": 'def a():\n    P = Path\n\ndef b(P):\n    P.read_text("utf-8")\n',
+        # A starred argument hides the runtime position: only a keyword encoding counts.
+        "starred_empty.py": "p.read_text(*())\n",
+        "unbound_starred.py": "Path.read_text(p, *())\n",
+        "starred_kw.py": 'p.read_text(*args, encoding = "utf-8")\n',
+    }
+    flagged = set()
+    for name, source in cases.items():
+        path = tmp_path / name
+        path.write_text(source, encoding = "utf-8")
+        if _offenders(path):
+            flagged.add(name)
+    assert flagged == {
+        "read_none.py",
+        "write_none.py",
+        "read_none_pos.py",
+        "read_locale_pos.py",
+        "read_locale_kw.py",
+        "write_none_pos.py",
+        "unbound_read.py",
+        "unbound_write.py",
+        "unbound_alias.py",
+        "unbound_posix.py",
+        "starred_empty.py",
+        "unbound_starred.py",
+    }, flagged
+
+
 def test_an_undecodable_bootstrap_password_does_not_stop_startup(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -823,3 +934,40 @@ def test_an_unparseably_nested_document_is_discarded_not_raised(tmp_path: Path) 
         assert writer.has("id:1") and writer.has("id:2")
     finally:
         writer.close()
+
+
+def test_vendored_laya_reads_utf8_config_under_a_non_utf8_locale(tmp_path):
+    """The loader in _UTF8_BY_LOADER really makes vendored laya decode its JSON as UTF-8.
+
+    Run in a C locale with coercion and UTF-8 mode off, so a bare open() does not decode as
+    UTF-8. laya's tokenizer repair must still read a config holding non-ASCII special tokens
+    and write them back unchanged.
+    """
+    config = tmp_path / "tokenizer" / "tokenizer_config.json"
+    config.parent.mkdir()
+    config.write_text(
+        json.dumps(
+            {"tokenizer_class": None, "extra_special_tokens": ["ä", "世"]}, ensure_ascii = False
+        ),
+        encoding = "utf-8",
+    )
+    # C locale with coercion and UTF-8 mode off decodes a bare open() as ASCII on Linux and
+    # macOS; on Windows it stays the ANSI code page, which mis-decodes the same bytes instead of
+    # raising, and the exact-token assertions below catch that. A UTF-8 locale has nothing to test.
+    script = (
+        "import codecs, locale, sys\n"
+        "if codecs.lookup(locale.getencoding()).name == 'utf-8': sys.exit(3)\n"
+        f"sys.path.insert(0, {str(BACKEND_ROOT)!r})\n"
+        "from core.systemone import laya_runtime\n"
+        f"laya_runtime._laya().agent._fix_tokenizer_config({str(tmp_path)!r})\n"
+    )
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "PYTHONCOERCECLOCALE": "0", "PYTHONUTF8": "0"}
+    run = subprocess.run(
+        [sys.executable, "-c", script], env = env, capture_output = True, text = True, encoding = "utf-8"
+    )
+    if run.returncode == 3:
+        pytest.skip("this platform's locale is UTF-8 even under LC_ALL=C")
+    assert run.returncode == 0, run.stderr[-3000:]
+    repaired = json.loads(config.read_text(encoding = "utf-8"))
+    assert repaired["tokenizer_class"] == "PreTrainedTokenizerFast"
+    assert repaired["extra_special_tokens"] == {"extra_0": "ä", "extra_1": "世"}

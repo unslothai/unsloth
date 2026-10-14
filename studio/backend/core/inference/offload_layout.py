@@ -143,6 +143,8 @@ class ModelLayout:
     # (models/qwen4exp.cpp:llama_model_qwen4exp::load_arch_tensors) create it TENSOR_READ_LAZY, so
     # llama.cpp serves it from the mapping; gemma3n does not, and keeps the full charge.
     per_layer_embd_bytes: int = 0
+    # Every tensor's bytes, excluded blocks included; the file size less its metadata.
+    tensor_bytes: int = 0
     # output_norm and friends: GPU-resident, too small to be worth spilling.
     other_resident_bytes: int = 0
     # Attention cache for ONE token at f16, across the attention layers only.
@@ -566,7 +568,8 @@ def _layout_from_readers(readers) -> ModelLayout:
         if name.startswith("per_layer_token_embd"):
             # gemma3/gemma4 per-layer embeddings.
             per_layer_embd += nbytes
-        elif "token_embd" in name:
+        # token_embd_norm is a repeating-layer tensor, not a host-pinned input embedding.
+        elif "token_embd" in name and not name.startswith("token_embd_norm"):
             token_embd += nbytes
         elif name == "output.weight":
             lm_head += nbytes
@@ -628,6 +631,7 @@ def _layout_from_readers(readers) -> ModelLayout:
         lm_head_bytes = lm_head,
         token_embd_bytes = token_embd + per_layer_embd,
         per_layer_embd_bytes = per_layer_embd,
+        tensor_bytes = sum(int(t.n_bytes) for r in readers for t in r.tensors),
         other_resident_bytes = other_resident,
         kv_bytes_per_token_f16 = kv_per_token,
         recurrent_bytes = recurrent,

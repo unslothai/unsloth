@@ -34,7 +34,7 @@ The guard must swallow too little nowhere:
                  release does not clear, so the click still fires; Blink and WebKit gate it on the
                  shared `:active` state, which the release does clear, so no click is ever
                  dispatched and the case cannot fail there however broken the guard is.
-  touch_hold_    a finger presses and HOLDS the unconfirmed "Delete message" button, a MOUSE
+  touch_hold_    a finger presses and HOLDS the reply's Copy button, a MOUSE
     second_      press lands inside the still-open menu, then the finger lifts. Radix defers a
     pointer      touch dismissal to the resulting click, so the menu is still there for a second
                  pointer to land in, and every early return in the guard's `pointerdown` handler
@@ -50,7 +50,7 @@ The guard must swallow too little nowhere:
                  for the swallow-too-much direction.
   dismiss_then_  click the button to dismiss, then press Space. The swallowed press must move
     space        focus off the dangerous control and back to the menu trigger. Space then reopens
-                 the menu instead of activating Delete. Discriminates on chromium, firefox and
+                 the menu instead of activating Copy. Discriminates on chromium, firefox and
                  webkit. The modal shape cannot reach it, because with `pointer-events: none` on
                  the body the press lands on `HTML` and focus never moves off `BODY`.
 
@@ -139,16 +139,36 @@ async () => {
 }
 """
 
+# The control under attack is the reply's Copy button: always on the action bar, and harmless when
+# a broken guard lets a click through. (It was Delete until #12735 moved Delete into the More menu,
+# where a dismissal cannot reach it.) Whether a click reached it is counted on `window`, bubble
+# phase: the guard swallows on `document` in the capture phase with stopPropagation, so a swallowed
+# click never gets there and one that slipped past always does, however React re-renders the button.
 FACTS_JS = """
 () => {
   const api = window.__heavyThread;
-  const del = api.actionButton("Delete message");
-  const r = del ? del.getBoundingClientRect() : null;
+  const target = api.actionButton("Copy");
+  if (!window.__dismissProbeTarget) {
+    window.__dismissProbeTarget = { clicks: 0 };
+    window.addEventListener("click", (event) => {
+      const copy = window.__heavyThread.actionButton("Copy");
+      if (copy && event.target instanceof Node && copy.contains(event.target)) {
+        window.__dismissProbeTarget.clicks += 1;
+      }
+    });
+  }
+  const r = target ? target.getBoundingClientRect() : null;
+  const x = r ? r.x + r.width / 2 : 0;
+  const y = r ? r.y + r.height / 2 : 0;
+  const hit = r ? document.elementFromPoint(x, y) : null;
   return {
     menuOpen: Boolean(document.querySelector(".aui-action-bar-more-content")),
     bodyPointerEvents: getComputedStyle(document.body).pointerEvents,
-    deleteRect: r ? { x: r.x + r.width / 2, y: r.y + r.height / 2 } : null,
-    assistantMessages: document.querySelectorAll('[data-role="assistant"]').length,
+    targetRect: r ? { x, y } : null,
+    // Nothing else may be painted over the spot the attack presses, the open menu included, or
+    // the case would be testing a click into whatever covers it.
+    targetUncovered: Boolean(hit && target && target.contains(hit)),
+    targetClicks: window.__dismissProbeTarget.clicks,
   };
 }
 """
@@ -270,6 +290,29 @@ MENU_BLANK_JS = """
 """
 
 
+async def until(
+    page,
+    condition: str,
+    timeout: int,
+    arg = None,
+) -> None:
+    """Wait for `condition` up to `timeout` ms without raising: a broken build spends the bound and
+    is then judged on the same facts it always was. Replaces flat sleeps sized for a fast machine."""
+    try:
+        await page.wait_for_function(condition, arg = arg, timeout = timeout)
+    except Exception:  # noqa: BLE001  (PlaywrightTimeout; the verdict below reads the state)
+        pass
+
+
+async def frames(page) -> None:
+    await page.evaluate(
+        "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))"
+    )
+
+
+MENU_CLOSED = "() => !document.querySelector('.aui-action-bar-more-content')"
+
+
 async def hover_last_assistant(page) -> None:
     await page.evaluate(
         "() => window.__heavyThread.lastAssistantMessage()?.scrollIntoView({ block: 'center' })"
@@ -281,7 +324,9 @@ async def hover_last_assistant(page) -> None:
     )
     if box:
         await page.mouse.move(box["x"], box["y"])
-        await page.wait_for_timeout(600)
+        # What the cases need from the hover: a Copy button whose centre hit-tests to itself.
+        await until(page, f"() => ({FACTS_JS})().targetUncovered", 3000)
+        await frames(page)
 
 
 async def one_case(
@@ -290,16 +335,37 @@ async def one_case(
     engine: str = "chromium",
     context = None,
 ) -> dict:
-    """Open the menu, attack the Delete button one way, report whether it fired."""
+    """Open the menu, attack the Copy button one way, report whether the click reached it."""
+    await hover_last_assistant(page)
+    # Positive control: a direct click with no menu open must be counted, or a zero below would
+    # mean only that the counter cannot see clicks.
+    control = await page.evaluate(FACTS_JS)
+    if not control["targetRect"]:
+        return {"case": case, "error": "no Copy button"}
+    await page.mouse.click(control["targetRect"]["x"], control["targetRect"]["y"])
+    await until(page, f"n => ({FACTS_JS})().targetClicks > n", 2000, arg = control["targetClicks"])
+    counted = (await page.evaluate(FACTS_JS))["targetClicks"] - control["targetClicks"]
+    if counted != 1:
+        return {
+            "case": case,
+            "error": f"a direct click on Copy was counted {counted} times, not once",
+        }
+    # The control click focused Copy; the focus cases below must start where they always did.
+    await page.evaluate("() => document.activeElement && document.activeElement.blur()")
     await hover_last_assistant(page)
     opened = await page.evaluate(OPEN_MENU_JS)
     if not opened.get("ok"):
         return {"case": case, "error": "menu never opened"}
     before = await page.evaluate(FACTS_JS)
     before_space = None
-    rect = before["deleteRect"]
+    rect = before["targetRect"]
     if not rect:
-        return {"case": case, "error": "no Delete button"}
+        return {"case": case, "error": "no Copy button"}
+    if not before["targetUncovered"]:
+        return {
+            "case": case,
+            "error": "the open menu covers the Copy button, so a press there is not a dismissal",
+        }
     x, y = rect["x"], rect["y"]
     if case == "quick":
         await page.mouse.move(x, y)
@@ -357,7 +423,7 @@ async def one_case(
         before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_then_space":
-        # A swallowed dismissal must not leave Delete focused for Space activation.
+        # A swallowed dismissal must not leave Copy focused for Space activation.
         await page.mouse.click(x, y)
         await page.wait_for_timeout(300)
         before_space = await page.evaluate(FOCUS_FACTS_JS)
@@ -378,18 +444,36 @@ async def one_case(
         before_space = await page.evaluate(FOCUS_FACTS_JS)
         await page.keyboard.press("Space")
     elif case == "dismiss_on_composer":
-        # Dismissing into the composer must preserve its caret.
+        # Dismissing into the composer must preserve its caret. The click has to land on the
+        # composer itself: since #13615 the shorter More menu can open over the composer's middle,
+        # and a click there is a click IN the menu, which rightly does not dismiss it. So the spot
+        # is the first point across the composer's midline that hit-tests to the composer.
         spot = await page.evaluate(
-            "() => { const c = window.__heavyThread.composer(); if (!c) return null;"
-            "const r = c.getBoundingClientRect();"
-            "return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; }"
+            """() => {
+              const c = window.__heavyThread.composer();
+              if (!c) return { error: "no composer" };
+              const r = c.getBoundingClientRect();
+              const y = r.y + r.height / 2;
+              for (let i = 1; i < 20; i += 1) {
+                const x = r.x + (r.width * i) / 20;
+                const el = document.elementFromPoint(x, y);
+                if (el && (el === c || c.contains(el))) return { x, y };
+              }
+              return { error: "the open menu covers the whole composer" };
+            }"""
         )
-        if not spot:
-            return {"case": case, "error": "no composer"}
+        if spot.get("error"):
+            return {"case": case, "error": spot["error"]}
         await page.mouse.click(spot["x"], spot["y"])
-        await page.wait_for_timeout(300)
+        # A focus steal would come from the close-autofocus, which runs once the menu unmounts.
+        await until(page, MENU_CLOSED, 1500)
+        await frames(page)
         await page.keyboard.type("zz")
-        await page.wait_for_timeout(400)
+        await until(
+            page,
+            "() => (window.__heavyThread.composer()?.value ?? '').endsWith('zz')",
+            1000,
+        )
         after = await page.evaluate(FACTS_JS)
         typed = await page.evaluate(
             "() => { const c = window.__heavyThread.composer(); return c ? c.value : ''; }"
@@ -399,7 +483,7 @@ async def one_case(
             "composerText": typed[-8:],
             "menuClosed": not after["menuOpen"],
             "lostComposerFocus": not typed.endswith("zz"),
-            "deleted": after["assistantMessages"] < before["assistantMessages"],
+            "fired": after["targetClicks"] > before["targetClicks"],
         }
     elif case == "touch":
         await page.touchscreen.tap(x, y)
@@ -454,9 +538,9 @@ async def one_case(
             "case": case,
             "concurrentPointers": state["downs"],
             "menuOpenUnderSecondPointer": held["menuOpen"],
-            "assistantMessagesBefore": before["assistantMessages"],
-            "assistantMessagesAfter": after["assistantMessages"],
-            "deleted": after["assistantMessages"] < before["assistantMessages"],
+            "targetClicksBefore": before["targetClicks"],
+            "targetClicksAfter": after["targetClicks"],
+            "fired": after["targetClicks"] > before["targetClicks"],
             "menuClosed": not after["menuOpen"],
             "clicksSeen": state["clicks"],
             "clicksDelivered": state["delivered"],
@@ -467,7 +551,7 @@ async def one_case(
         if not spot:
             return {"case": case, "error": "no menu item to select"}
         await page.mouse.click(spot["x"], spot["y"])
-        await page.wait_for_timeout(800)
+        await until(page, "() => window.__dismissProbe.itemClicks > 0", 800)
         return {
             "case": case,
             "itemClicks": await page.evaluate("() => window.__dismissProbe.itemClicks"),
@@ -487,7 +571,7 @@ async def one_case(
             "case": case,
             "tappedTag": spot.get("tag"),
             "menuClosed": not after["menuOpen"],
-            "deleted": after["assistantMessages"] < before["assistantMessages"],
+            "fired": after["targetClicks"] > before["targetClicks"],
         }
     elif case == "touch_trigger":
         # Tapping the trigger must still close the menu.
@@ -504,7 +588,7 @@ async def one_case(
         return {
             "case": case,
             "menuClosed": not after["menuOpen"],
-            "deleted": after["assistantMessages"] < before["assistantMessages"],
+            "fired": after["targetClicks"] > before["targetClicks"],
         }
     elif case in ("rightclick_then_click", "dragoff_then_click"):
         spot = await page.evaluate(WATCH_NEUTRAL_JS, False)
@@ -530,7 +614,7 @@ async def one_case(
         # for a gesture that cannot produce a click at all.
         await page.wait_for_timeout(150)
         await page.mouse.click(spot["x"], spot["y"])
-        await page.wait_for_timeout(600)
+        await until(page, "() => window.__dismissProbe.neutralClicks > 0", 600)
         clicks = await page.evaluate("() => window.__dismissProbe.neutralClicks")
         return {
             "case": case,
@@ -548,7 +632,7 @@ async def one_case(
         await page.mouse.click(item["x"], item["y"])
         await page.wait_for_timeout(int(os.environ.get("PROBE_EXIT_DELAY_MS", "40")))
         await page.mouse.click(spot["x"], spot["y"])
-        await page.wait_for_timeout(600)
+        await until(page, "() => window.__dismissProbe.neutralClicks > 0", 600)
         clicks = await page.evaluate("() => window.__dismissProbe.neutralClicks")
         return {
             "case": case,
@@ -563,7 +647,7 @@ async def one_case(
         await page.mouse.click(spot["x"], spot["y"])
         await page.wait_for_timeout(200)
         await page.mouse.click(spot["x"], spot["y"])
-        await page.wait_for_timeout(600)
+        await until(page, "() => window.__dismissProbe.neutralClicks > 0", 600)
         clicks = await page.evaluate("() => window.__dismissProbe.neutralClicks")
         return {
             "case": case,
@@ -573,14 +657,19 @@ async def one_case(
     else:
         return {"case": case, "error": f"unknown case {case}"}
 
-    await page.wait_for_timeout(1500)
+    # Wait for the menu's exit rather than a flat 1500 ms: same bound, but it returns as soon as
+    # the menu is gone. A case that leaves it open on purpose (Space reopening it) still waits the
+    # whole bound. Then a short observation window, because the verdict is mostly "no click
+    # reached Copy", and a click a touch gesture synthesizes can land after the menu has closed.
+    await until(page, MENU_CLOSED, 1500)
+    await page.wait_for_timeout(300)
     after = await page.evaluate(FACTS_JS)
     result = {
         "case": case,
         "bodyPointerEvents": before["bodyPointerEvents"],
-        "assistantMessagesBefore": before["assistantMessages"],
-        "assistantMessagesAfter": after["assistantMessages"],
-        "deleted": after["assistantMessages"] < before["assistantMessages"],
+        "targetClicksBefore": before["targetClicks"],
+        "targetClicksAfter": after["targetClicks"],
+        "fired": after["targetClicks"] > before["targetClicks"],
         "menuClosed": not after["menuOpen"],
     }
     if before_space is not None:
@@ -657,7 +746,7 @@ def main() -> int:
     skipped = [(c["case"], c["skipped"]) for c in result["cases"] if c.get("skipped")]
     for case, why in skipped:
         print(f"[probe] SKIPPED {case}: {why}", flush = True)
-    deleted = [c["case"] for c in result["cases"] if c.get("deleted")]
+    fired = [c["case"] for c in result["cases"] if c.get("fired")]
     stuck = [
         c["case"]
         for c in result["cases"]
@@ -685,9 +774,9 @@ def main() -> int:
     if over:
         print(f"[probe] FAIL: the guard swallowed a click it should not have: {over}", flush = True)
         broken = broken + over
-    if deleted:
+    if fired:
         print(
-            f"[probe] FAIL: dismissing the menu also deleted a message via {deleted}",
+            f"[probe] FAIL: dismissing the menu also clicked the control underneath via {fired}",
             flush = True,
         )
     if broken:
@@ -700,7 +789,7 @@ def main() -> int:
             f"and reopen the menu: {unsafe_space}",
             flush = True,
         )
-    if deleted or broken or stuck or unsafe_space:
+    if fired or broken or stuck or unsafe_space:
         return 1
     print("[probe] PASS: no dismissal variant reached the control underneath", flush = True)
     return 0

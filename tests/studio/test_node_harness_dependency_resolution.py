@@ -134,6 +134,21 @@ def test_a_pulled_const_that_needs_a_fixture_is_dropped_not_emitted(tmp_path):
     assert "const HEADERS" not in resolved.replace("const used = HEADERS;", "")
 
 
+def test_a_pulled_arrow_const_is_kept_like_a_function(tmp_path):
+    """An arrow const reads its references only when called, so one it cannot follow is fine."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { store } from "./store";\n'
+        "const pick = () =>\n  store.getState().on === false ? [] : [1];\n"
+        "export function count() {\n  return pick().length;\n}\n"
+    )
+    (module.parent / "store.ts").write_text("export const store = create(() => ({ on: null }));\n")
+    resolved = resolve_dependencies("const used = count();\n", (module,), root = tmp_path / "src")
+    assert "const pick = () =>" in resolved
+    assert "create(" not in resolved
+
+
 def test_a_destructured_fixture_is_not_declared_twice(tmp_path):
     """``const { only, ...rest } = ...`` is a binding a declaration regex does not see."""
     module = tmp_path / "src" / "m.ts"

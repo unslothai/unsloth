@@ -4,11 +4,11 @@
 // Containers the backend can reach wav/mp3 from: wav and mp3 pass through, the
 // rest decode via libsndfile, PyAV's bundled FFmpeg, or finally librosa.
 export const AUDIO_ACCEPT =
-  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp";
+  "audio/wav,audio/mpeg,audio/webm,audio/ogg,audio/opus,audio/flac,audio/mp4,audio/aac,audio/aiff,audio/x-aiff,audio/x-caf,audio/x-ms-wma,audio/amr,audio/3gpp,audio/x-matroska";
 // Browsers report an empty or wrong type for several of these containers, so
 // every surface that takes audio matches the name as well as the MIME.
 export const AUDIO_ACCEPT_EXTENSIONS =
-  ".wav,.mp3,.m4a,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2";
+  ".wav,.mp3,.m4a,.m4b,.ogg,.oga,.opus,.flac,.aac,.aiff,.aif,.aifc,.caf,.wma,.amr,.mp2,.weba,.mka";
 /** What claims a file as audio: the MIME list plus those extensions. Keep .3gp
  *  out of it. A recording and a clip share that extension, and the composer's
  *  audio adapter is matched before its video one, so claiming the name here
@@ -45,6 +45,31 @@ export function getAudioSizeError(size: number): string | null {
   return size > MAX_AUDIO_SIZE
     ? `Audio size exceeds ${MAX_AUDIO_SIZE_LABEL} limit`
     : null;
+}
+
+// Keep in sync with _MAX_AUDIO_CLIPS_PER_REQUEST. MAX_AUDIO_SIZE covers all clips together.
+export const MAX_AUDIO_FILES = 8;
+
+/** Max clips per message for a model. MLX takes one. */
+export function maxAudioFilesFor(model: { isMlx?: boolean } | undefined): number {
+  return model?.isMlx ? 1 : MAX_AUDIO_FILES;
+}
+
+export function getAudioAddError(
+  count: number,
+  totalSize: number,
+  size: number,
+  maxFiles: number = MAX_AUDIO_FILES,
+): string | null {
+  if (count >= maxFiles) {
+    return maxFiles === 1
+      ? "This model takes one audio file per message. Load a GGUF model to send several."
+      : `Up to ${maxFiles} audio files can be attached per message.`;
+  }
+  if (count > 0 && totalSize + size > MAX_AUDIO_SIZE) {
+    return `Audio files together exceed the ${MAX_AUDIO_SIZE_LABEL} per-message limit`;
+  }
+  return getAudioSizeError(size);
 }
 
 export function fileToBase64(file: File): Promise<string> {

@@ -99,6 +99,8 @@ _IDENTITY_LABELS: tuple[tuple[str, str], ...] = (
     ("cache_variants", "cached crop variants"),
     ("center_crop", "centre cropping"),
     ("random_flip", "random flipping"),
+    # Buckets change canvases and batch order; a pre-field manifest trained square (_LEGACY_IDENTITY_DEFAULTS).
+    ("bucketing", "aspect ratio buckets"),
     # TF32 versus strict fp32 continues the trajectory at a different numeric precision, and off is the documented
     # strict-reproducibility mode.
     ("enable_tf32", "TF32 matmuls"),
@@ -139,6 +141,7 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "cache_variants",
         "center_crop",
         "random_flip",
+        "bucketing",
         "enable_tf32",
         "train_batch_size",
         "gradient_accumulation_steps",
@@ -148,6 +151,8 @@ _OPTIONAL_IDENTITY_FIELDS = frozenset(
         "base_precision_effective",
     }
 )
+# Bundle side only: an incoming None is the route's unresolved pre-trainer identity ("cannot tell").
+_LEGACY_IDENTITY_DEFAULTS: dict[str, str] = {"bucketing": "off"}
 # What source_revision() returns when it cannot resolve a revision offline.
 _UNRESOLVED_REVISION = "unresolved"
 
@@ -215,6 +220,7 @@ class CheckpointIdentity:
     cache_variants: Optional[int] = None
     center_crop: Optional[str] = None
     random_flip: Optional[str] = None
+    bucketing: Optional[str] = None
     enable_tf32: Optional[str] = None
     train_batch_size: Optional[int] = None
     gradient_accumulation_steps: Optional[int] = None
@@ -256,6 +262,7 @@ class CheckpointIdentity:
             "cache_variants": self.cache_variants,
             "center_crop": self.center_crop,
             "random_flip": self.random_flip,
+            "bucketing": self.bucketing,
             "enable_tf32": self.enable_tf32,
             "train_batch_size": self.train_batch_size,
             "gradient_accumulation_steps": self.gradient_accumulation_steps,
@@ -298,6 +305,7 @@ class CheckpointIdentity:
                 cache_variants = _optional_int(data.get("cache_variants")),
                 center_crop = _optional_str(data.get("center_crop")),
                 random_flip = _optional_str(data.get("random_flip")),
+                bucketing = _optional_str(data.get("bucketing")),
                 enable_tf32 = _optional_str(data.get("enable_tf32")),
                 train_batch_size = _optional_int(data.get("train_batch_size")),
                 gradient_accumulation_steps = _optional_int(data.get("gradient_accumulation_steps")),
@@ -326,6 +334,8 @@ class CheckpointIdentity:
         mine, theirs = self.as_dict(), other.as_dict()
         for field, label in _IDENTITY_LABELS:
             a, b = mine.get(field), theirs.get(field)
+            if a in (None, "") and field in _LEGACY_IDENTITY_DEFAULTS:
+                a = _LEGACY_IDENTITY_DEFAULTS[field]
             # None / "" is "cannot tell", NOT falsiness: a lora_dropout of 0.0 is a real value and the commonest one,
             # so truthiness would skip exactly the 0.0-against-0.15 comparison that matters.
             if field in _OPTIONAL_IDENTITY_FIELDS and (a in (None, "") or b in (None, "")):
@@ -369,6 +379,22 @@ def _optional_float(value: Any) -> Optional[float]:
         return round(float(value), 6)
     except (TypeError, ValueError):
         return None
+
+
+# Families whose scheduler bakes a static shift into ``sigmas`` (no dynamic shifting, shift != 1): Z-Image's 3 / 6.
+_STATIC_SHIFT_FAMILIES = frozenset({"z-image"})
+
+
+def _flow_shift_key(value: Any, family: str = "") -> str:
+    """None keeps the "1.0" earlier builds wrote. Numbers changed meaning only on static-shift
+    families, so only those get a new token (older checkpoints are refused there)."""
+    if value is None:
+        return "1.0"
+    if isinstance(value, str):
+        return value
+    if family in _STATIC_SHIFT_FAMILIES:
+        return f"effective:{float(value)}"
+    return str(float(value))
 
 
 def _snr_gamma_key(value: Any) -> str:
@@ -549,11 +575,16 @@ def identity_for_config(
         lora_alpha = int(cfg.lora_alpha if cfg.lora_alpha is not None else cfg.lora_rank),
         lora_dropout = round(float(getattr(cfg, "lora_dropout", 0.0) or 0.0), 6),
         cfg_dropout = round(float(getattr(cfg, "cfg_dropout", 0.0) or 0.0), 6),
-        # flow_shift is float | "auto" | None, so it is recorded as text: "auto" and the number it resolves to are
-        # different runs, and comparing them as floats would lose that.
-        flow_shift = str(getattr(cfg, "flow_shift", None)),
+        flow_shift = _flow_shift_key(
+            getattr(cfg, "flow_shift", None), str(getattr(cfg, "resolved_family", "") or "")
+        ),
         weighting_scheme = str(getattr(cfg, "weighting_scheme", "") or "none"),
-        snr_gamma = _snr_gamma_key(getattr(cfg, "snr_gamma", None)),
+        # Only the SDXL loop applies min-SNR, so a flow-matching run records "cannot tell" rather than the unused default.
+        snr_gamma = (
+            _snr_gamma_key(getattr(cfg, "snr_gamma", None))
+            if str(getattr(cfg, "resolved_family", "") or "sdxl") == "sdxl"
+            else None
+        ),
         lr_scheduler = str(getattr(cfg, "lr_scheduler", "") or "constant"),
         lr_warmup_steps = int(getattr(cfg, "lr_warmup_steps", 0) or 0),
         seed = int(getattr(cfg, "seed", 0) or 0),
@@ -561,6 +592,7 @@ def identity_for_config(
         cache_variants = int(getattr(cfg, "cache_variants", 0) or 0),
         center_crop = _flag_key(getattr(cfg, "center_crop", None)),
         random_flip = _flag_key(getattr(cfg, "random_flip", None)),
+        bucketing = _flag_key(getattr(cfg, "bucketing", None)),
         enable_tf32 = _flag_key(getattr(cfg, "enable_tf32", None)),
         train_batch_size = int(getattr(cfg, "train_batch_size", 0) or 0),
         gradient_accumulation_steps = int(getattr(cfg, "gradient_accumulation_steps", 0) or 0),
@@ -590,6 +622,9 @@ def capture_rng_state(streams: Optional[dict[str, Any]] = None) -> dict[str, Any
         "python": _random_state_to_json(random.getstate()),
         "streams": {},
         "numpy": None,
+        # Which accelerator the torch_* device tensors below belong to. The resume preflight reads it: the device
+        # generator of one backend says nothing on another, and nothing else in the identity distinguishes them.
+        "accelerator": _rng_accelerator(),
     }
     for name, stream in (streams or {}).items():
         try:
@@ -623,6 +658,14 @@ def capture_rng_state(streams: Optional[dict[str, Any]] = None) -> dict[str, Any
                 # ALL OR NOTHING on a CUDA host: keeping the CPU half made the result non-empty, so the preflight
                 # (which only requires torch_cpu) offered it and the restore then left the CUDA generator freshly
                 # seeded, silently changing every latent and timestep draw.
+                tensors = {}
+        elif _xpu_available():
+            # The flow trainers draw randn_like on the training device, so an XPU run's noise stream lives in the XPU
+            # generator; capturing only torch_cpu resumed it from a fresh seed. Same all-or-nothing rule as CUDA.
+            try:
+                for i, state in enumerate(torch.xpu.get_rng_state_all()):
+                    tensors[f"torch_xpu_{i}"] = state
+            except Exception:  # noqa: BLE001 -- one device erroring loses the whole capture
                 tensors = {}
     except Exception:  # noqa: BLE001 -- torch RNG capture is best-effort
         tensors = {}
@@ -685,8 +728,37 @@ def restore_rng_state(
                 if state is None:
                     continue
                 torch.cuda.set_rng_state(state.cpu().to(torch.uint8), i)
+        elif _xpu_available():
+            # Per device for the same reason as CUDA above: set_rng_state_all needs one state per visible device.
+            for i in range(torch.xpu.device_count()):
+                state = tensors.get(f"torch_xpu_{i}")
+                if state is None:
+                    continue
+                torch.xpu.set_rng_state(state.cpu().to(torch.uint8), i)
     except Exception:  # noqa: BLE001 -- best-effort restore, never fatal
         pass
+
+
+def _rng_accelerator() -> str:
+    """The backend whose device generator a capture holds: ``cuda``, ``xpu`` or ``cpu``."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:  # noqa: BLE001 -- probe failure -> no CUDA generator captured
+        pass
+    return "xpu" if _xpu_available() else "cpu"
+
+
+def _xpu_available() -> bool:
+    """Guarded like ``resolve_train_device``'s probe: an uninitialised driver must not turn a
+    best-effort RNG capture into a raise."""
+    try:
+        import torch
+        fn = getattr(getattr(torch, "xpu", None), "is_available", None)
+        return bool(fn()) if callable(fn) else False
+    except Exception:  # noqa: BLE001 -- probe failure -> no XPU generator to capture
+        return False
 
 
 def _random_state_to_json(state: Any) -> Optional[list[Any]]:
@@ -1718,6 +1790,16 @@ def _assert_required_state(path: Path, manifest: dict[str, Any]) -> None:
         isinstance(saved_streams.get(name), (list, tuple)) for name in _TRAINER_RNG_STREAMS
     ):
         missing.append("the trainer's random-number streams")
+    # Same failure one level down: a CUDA bundle carries only torch_cuda_* keys, so resuming it on XPU (or the
+    # reverse) leaves the destination generator freshly seeded and reports a clean resume. Nothing else catches it,
+    # since the identity records the effective precision and that is bf16 on both. Only a KNOWN mismatch counts: a
+    # bundle predating this field must still resume.
+    saved_accel = rng_manifest.get("accelerator") if isinstance(rng_manifest, dict) else None
+    if isinstance(saved_accel, str) and saved_accel and saved_accel != _rng_accelerator():
+        missing.append(
+            f"the random-number state for this accelerator (written on {saved_accel}, "
+            f"resuming on {_rng_accelerator()})"
+        )
     if not missing:
         return
     raise ResumeError(
@@ -1735,10 +1817,10 @@ def _join_clauses(items: list[str]) -> str:
 def _assert_optimizer_buildable(path: Path, manifest: dict[str, Any]) -> None:
     """Refuse moments this host provably cannot build an optimizer for, BEFORE teardown.
 
-    The trainers choose bitsandbytes AdamW8bit or torch AdamW from the HOST, so a bundle can arrive
-    with foreign moments, and the child's own check then fires after the route has evicted the
-    resident inference models and loaded a multi-GB base, for a run that is guaranteed to terminate
-    without training.
+    Bundles from older builds carry bitsandbytes AdamW8bit moments, which the trainers can only
+    restore into AdamW8bit. Without bitsandbytes the child's own check fires after the route has
+    evicted the resident inference models and loaded a multi-GB base, for a run that is guaranteed
+    to terminate without training.
 
     Deliberately one-directional, and deliberately import-free. ``find_spec`` answers "is
     bitsandbytes installed" without creating a CUDA context in the Unsloth process, but it cannot
@@ -1803,6 +1885,36 @@ def _assert_loadable(path: Path, manifest: dict[str, Any]) -> None:
                 f"The '{role}' file in '{path.name}' could not be read back "
                 f"({type(error).__name__}), so this checkpoint cannot be resumed."
             ) from error
+
+
+def recorded_resume_targets(path_value: Any) -> Optional[tuple[str, ...]]:
+    """LoRA targets recorded by the bundle a resume would continue, else None. Never raises."""
+    try:
+        root = resolve_resume_dir(str(path_value))
+        explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+        candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+        for _candidate, manifest in candidates:
+            saved = CheckpointIdentity.from_dict((manifest or {}).get("identity"))
+            if saved is not None and saved.lora_target_modules:
+                return tuple(saved.lora_target_modules)
+    except Exception:  # noqa: BLE001 -- best effort; the preflight reports the real problem
+        pass
+    return None
+
+
+def recorded_bucketing(path_value: str) -> bool:
+    """Whether the resumed bundle trained bucketed (pre-field or unreadable: False; preflight_resume refuses)."""
+    try:
+        root = resolve_resume_dir(path_value)
+    except ResumeError:
+        return False
+    explicit = read_checkpoint(root) if checkpoint_step(root) >= 0 else None
+    candidates = [(root, explicit)] if explicit is not None else iter_valid_checkpoints(root)
+    for _path, manifest in candidates:
+        identity = manifest.get("identity")
+        if isinstance(identity, dict):
+            return _optional_str(identity.get("bucketing")) == "on"
+    return False
 
 
 def preflight_resume(

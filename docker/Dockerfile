@@ -222,7 +222,7 @@ RUN set -eux \
 # rebuilds. The resolve must NOT move torch/numpy/numba (asserted below).
 RUN ${VENV}/bin/uv pip install \
         --python ${VENV}/bin/python \
-        "jupyterlab==4.6.0" "notebook==7.6.0" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
+        "jupyterlab==4.6.4" "notebook==7.6.3" "ipywidgets==8.1.8" "matplotlib==3.11.0" \
         "soundfile==0.14.0" "evaluate==0.4.6" "jiwer==4.0.0" "tensorboard==2.20.0" \
         "langid==1.1.6" "easydict==1.13" "protobuf==6.33.6" \
         "omegaconf==2.3.1" "einx==0.4.3" "librosa==0.11.0" "ftfy==6.3.1" \
@@ -578,15 +578,16 @@ RUN mkdir -p ${HF_HOME} ${TRITON_CACHE_DIR} \
 #     same shim so in-process installs can't bypass PATH.
 #   * IPython startup hook: activates the right sidecar before the first model cell.
 #   * unsloth-run: headless `unsloth-run <notebook|url>`, the robust driven path.
-COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
+COPY unsloth_nb_compat.py unsloth_pip_shim.py unsloth_root_shim.py unsloth_nb_pip_magic.py unsloth_ipython_startup.py unsloth_run.py unsloth_sync_notebooks.sh unsloth_nb_content_sig.py unsloth_nb_view.py unsloth_nb_strip_colab.py unsloth_colab_compat.py /opt/unsloth-nb/
 RUN set -eux \
  && SP=/opt/unsloth-venv/lib/python${PYTHON_VERSION}/site-packages \
  && cp /opt/unsloth-nb/unsloth_nb_compat.py "$SP/unsloth_nb_compat.py" \
  && cp /opt/unsloth-nb/unsloth_nb_pip_magic.py "$SP/unsloth_nb_pip_magic.py" \
  && cp /opt/unsloth-nb/unsloth_colab_compat.py "$SP/unsloth_colab_compat.py" \
- && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
+ && chmod +x /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/unsloth_root_shim.py /opt/unsloth-nb/unsloth_run.py /opt/unsloth-nb/unsloth_sync_notebooks.sh /opt/unsloth-nb/unsloth_nb_content_sig.py /opt/unsloth-nb/unsloth_nb_view.py /opt/unsloth-nb/unsloth_nb_strip_colab.py \
  && mkdir -p /opt/unsloth-nb/bin \
  && for t in pip pip3 uv; do ln -sf /opt/unsloth-nb/unsloth_pip_shim.py /opt/unsloth-nb/bin/$t; done \
+ && for t in apt apt-get dpkg sudo; do ln -sf /opt/unsloth-nb/unsloth_root_shim.py /opt/unsloth-nb/bin/$t; done \
  && ln -sf /opt/unsloth-nb/unsloth_run.py /usr/local/bin/unsloth-run \
  && ln -sf /opt/unsloth-nb/unsloth_sync_notebooks.sh /usr/local/bin/unsloth-sync-notebooks \
  && ln -sf /opt/unsloth-nb/unsloth_nb_content_sig.py /usr/local/bin/unsloth-nb-content-sig \

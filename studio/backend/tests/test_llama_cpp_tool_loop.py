@@ -115,6 +115,9 @@ def _run_tool_loop(
     )
 
 
+_MCP_PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAYAAAAGCAIAAABvrngfAAAAFElEQVR4nGM8ISfHgAqY0PhUFgIAdYgBEED+8ToAAAAASUVORK5CYII="
+
+
 def _sse(delta: dict) -> str:
     return "data: " + json.dumps({"choices": [{"index": 0, "delta": delta}]}) + "\n"
 
@@ -275,6 +278,8 @@ def test_plain_stream_reports_request_scoped_live_prompt_and_generation_timings(
     assert payloads[0]["timings_per_token"] is True
     assert samples[0]["prompt_n"] == 900
     assert samples[0]["prompt_per_second"] == 9000
+    assert samples[0]["prompt_progress"]["total"] == 1000
+    assert samples[1]["running_phase"] == "token_generation"
     assert all("prompt_ms" not in sample for sample in samples)
     assert samples[-1]["predicted_per_second"] == 200
 
@@ -335,6 +340,80 @@ def test_plain_random_seed_sentinel_keeps_slot_prompt_cache_reuse(monkeypatch):
 
     assert payloads[0]["seed"] == -1
     assert "cache_prompt" not in payloads[0]
+
+
+def test_reuse_prompt_cache_keeps_fixed_seed_without_disabling_slot_reuse():
+    """Tool-loop continuations opt out of #9979's cold-cache pin (#10698)."""
+    from core.inference.llama_cpp import _apply_seeded_llama_request
+
+    cold: dict = {}
+    _apply_seeded_llama_request(cold, 3407)
+    assert cold == {"seed": 3407, "cache_prompt": False}
+
+    warm: dict = {}
+    _apply_seeded_llama_request(warm, 3407, reuse_prompt_cache = True)
+    assert warm == {"seed": 3407}
+    assert "cache_prompt" not in warm
+
+
+def test_seeded_tool_loop_keeps_prompt_cache_after_the_first_round(monkeypatch):
+    """#10698: round 0 stays cold (#9979); later rounds keep the seed and the cache."""
+    streams = [
+        _structured_tool_call("web_search", {"query": "kernel"}, "call_search"),
+        [_sse({"content": "Linux 6.10."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: "Linux kernel 6.10",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "search then answer"}],
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "web_search",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            seed = 3407,
+            max_tool_iterations = 5,
+            permission_mode = "off",
+        )
+    )
+
+    assert len(payloads) >= 2
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
+    for later in payloads[1:]:
+        assert later["seed"] == 3407
+        assert "cache_prompt" not in later, later
+
+
+def test_seeded_zero_tool_iterations_keeps_cold_cache_on_the_final_pass(monkeypatch):
+    """max_tool_iterations=0 never sends an in-loop request; the final pass is round 0."""
+    backend, payloads = _backend_and_payloads(
+        monkeypatch,
+        [[_sse({"content": "no tools this turn"}), _done()]],
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "just answer"}],
+            tools = [],
+            seed = 3407,
+            max_tool_iterations = 0,
+            permission_mode = "off",
+        )
+    )
+
+    assert len(payloads) == 1
+    assert payloads[0]["seed"] == 3407
+    assert payloads[0]["cache_prompt"] is False
 
 
 def test_tool_stream_reports_progress_without_leaking_a_content_event(monkeypatch):
@@ -1559,7 +1638,10 @@ def test_render_html_success_drops_tool_schema_before_final_pass(monkeypatch):
     )
 
     assert len(payloads) == 2
-    assert "tools" not in payloads[1]
+    # The final pass may not call tools, but re-renders the same catalogue so the cached
+    # prompt prefix still matches.
+    assert payloads[1]["tool_choice"] == "none"
+    assert payloads[1]["tools"] == payloads[0]["tools"]
     assert any(event.get("type") == "content" and event.get("text") == "Done." for event in events)
     final_user_messages = [
         m.get("content", "") for m in payloads[1]["messages"] if m.get("role") == "user"
@@ -1699,6 +1781,31 @@ def test_duplicate_web_search_noop_allows_distinct_followup_tool(monkeypatch):
     assert len(duplicate_nudges) == 1
 
 
+@pytest.mark.parametrize("deduplicate", [True, False])
+def test_rebuild_without_an_edit_runs_again_only_when_deduplication_is_off(
+    monkeypatch, deduplicate
+):
+    # #10379: a second identical build command after no file edit is a duplicate by default.
+    build = {"command": "./gradlew build"}
+    streams = [
+        [_tool_call_sse("terminal", build, "call_build_1"), _done()],
+        [_tool_call_sse("terminal", build, "call_build_2"), _done()],
+        [_sse({"content": "Built."}), _done()],
+    ]
+    backend = _make_backend(monkeypatch, streams, [])
+    calls = _record_tool_calls(monkeypatch, lambda name: "BUILD SUCCESSFUL")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "build it twice"}],
+        [{"type": "function", "function": {"name": "terminal"}}],
+        max_tool_iterations = 3,
+        deduplicate_tool_calls = deduplicate,
+    )
+
+    assert calls == [("terminal", build)] * (1 if deduplicate else 2)
+
+
 def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
     first_search = [
         _tool_call_sse("web_search", {"query": "gpu prices 2026"}, "call_search_1"),
@@ -1733,7 +1840,8 @@ def test_repeated_duplicate_noop_transitions_to_final_pass(monkeypatch):
         "call_search_1"
     ]
     assert len(payloads) == 4
-    assert "tools" not in payloads[-1]
+    assert payloads[-1]["tool_choice"] == "none"
+    assert payloads[-1]["tools"] == payloads[-2]["tools"]
     assert any(
         event.get("type") == "content" and event.get("text") == "Final answer from first search."
         for event in events
@@ -1916,7 +2024,9 @@ def test_same_turn_repeated_render_html_does_not_emit_second_provisional_start(m
         and event.get("type") in {"tool_start", "tool_end"}
     ]
     assert len(payloads) == 2
-    assert "tools" not in payloads[1]
+    # No more calls, but the same catalogue keeps the cached prompt prefix.
+    assert payloads[1]["tool_choice"] == "none"
+    assert payloads[1]["tools"] == payloads[0]["tools"]
     render_feedback = [
         message
         for message in payloads[1]["messages"]
@@ -2108,6 +2218,40 @@ def test_post_tool_reprompt_budget_is_one(monkeypatch):
     )
 
     assert len(payloads) == 3
+
+
+def test_browser_turns_get_a_post_tool_nudge_per_step(monkeypatch):
+    """A browser task announces many steps; each tool turn earns its own nudge, not one per request."""
+
+    def call(name, arguments, call_id):
+        return [_tool_call_sse(name, arguments, call_id), _done()]
+
+    streams = [
+        call("browser_snapshot", {}, "call_1"),
+        [_sse({"content": "Let me click the Code panel."}), _done()],
+        call("browser_click", {"ref": "r4"}, "call_2"),
+        [_sse({"content": "Let me take a screenshot to see it."}), _done()],
+        call("browser_snapshot", {}, "call_3"),
+        [_sse({"content": "The panel shows the CSS."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "Done.")
+    tools = [
+        {"type": "function", "function": {"name": name}}
+        for name in ("browser_snapshot", "browser_click")
+    ]
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "Fix the CSS."}],
+        tools,
+        max_tool_iterations = 10,
+        nudge_tool_calls = True,
+    )
+
+    assert len(calls) == 3 and len(payloads) == 6
+    content_texts = [event.get("text", "") for event in events if event.get("type") == "content"]
+    assert content_texts[-1] == "The panel shows the CSS."
 
 
 def test_repeat_guard_resets_after_a_tool_runs(monkeypatch):
@@ -2474,7 +2618,7 @@ def test_textual_explicit_id_reuses_provisional_card(monkeypatch):
         [{"type": "function", "function": {"name": "web_search"}}],
     )
 
-    assert calls == [("web_search", {"query": big_query})]
+    assert calls == [("web_search", {"query": big_query.strip()})]
     tool_starts = [e for e in events if e.get("type") == "tool_start"]
     # Empty-args card = provisional open; full-args card = reconciled real start.
     provisional = [e for e in tool_starts if not e.get("arguments")]
@@ -3045,6 +3189,29 @@ def test_gated_python_call_still_streams_its_arguments(monkeypatch):
     gated = [e for e in tool_starts if e.get("awaiting_confirmation")]
     assert gated, tool_starts
     assert events.index(provisional[0]) < events.index(gated[0])
+
+
+@pytest.mark.parametrize("verdict", ["allow", "deny"])
+def test_only_an_approved_call_is_marked_approved(monkeypatch, verdict):
+    first_stream = _streamed_structured_tool_call("python", {"code": "print(1)"}, "call_gated")
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+    seen: list = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **kwargs: seen.append(kwargs.get("host_access_approved")) or "OK",
+    )
+    monkeypatch.setattr("core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: verdict)
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "run it"}],
+        [{"type": "function", "function": {"name": "python"}}],
+        confirm_tool_calls = True,
+        permission_mode = "ask",
+    )
+
+    assert seen == ([True] if verdict == "allow" else [])
 
 
 def test_auto_mode_render_html_suppresses_provisional_card_under_confirm(monkeypatch):
@@ -4493,6 +4660,21 @@ def test_metadata_event_preserves_prompt_tokens_details(monkeypatch):
     assert usage["completion_tokens"] == 4
 
 
+def test_metadata_event_omits_context_tokens_on_a_single_pass(monkeypatch):
+    stream = [
+        _sse({"content": "hi"}),
+        _usage_done({"prompt_tokens": 5, "completion_tokens": 2}),
+        _done(),
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, [stream])
+
+    events = _run_tool_loop(backend, [{"role": "user", "content": "hi"}], [_web_search_tool()])
+
+    usage = [e for e in events if e.get("type") == "metadata"][-1]["usage"]
+    assert usage["total_tokens"] == 7
+    assert "context_tokens" not in usage
+
+
 def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
     """No KV-cache block from the server -> the key isn't fabricated, so the
     route falls back to its 0-default instead of reading a bogus value."""
@@ -4508,6 +4690,172 @@ def test_metadata_event_omits_prompt_tokens_details_when_absent(monkeypatch):
     metadata = [e for e in events if e.get("type") == "metadata"]
     assert metadata, "expected a metadata event"
     assert "prompt_tokens_details" not in metadata[-1]["usage"]
+
+
+def test_metadata_event_context_tokens_count_earlier_passes_once(monkeypatch):
+    """A tool pass's completion is re-sent inside the next pass's prompt, so the
+    context the turn leaves is the final prompt plus the final completion only;
+    total_tokens keeps billing every pass's completion."""
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "cats"}, "call_1"),
+            _usage_done({"prompt_tokens": 100, "completion_tokens": 30}, "tool_calls"),
+            _done(),
+        ],
+        [
+            _sse({"content": "Found cats."}),
+            _usage_done({"prompt_tokens": 140, "completion_tokens": 10}),
+            _done(),
+        ],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats"}],
+        [_web_search_tool()],
+        max_tool_iterations = 2,
+    )
+
+    assert len(payloads) == 2
+    usage = [e for e in events if e.get("type") == "metadata"][-1]["usage"]
+    assert usage["completion_tokens"] == 40
+    assert usage["total_tokens"] == 180
+    assert usage["context_tokens"] == 150
+
+
+def test_context_usage_frame_precedes_each_tool_run(monkeypatch):
+    """#12624: the meter refreshes when a pass hands off to a tool, from the usage
+    llama-server already reported, before the tool runs; none on the final pass."""
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "cats"}, "call_1"),
+            _usage_done(
+                {
+                    "prompt_tokens": 100,
+                    "completion_tokens": 30,
+                    "prompt_tokens_details": {"cached_tokens": 64},
+                },
+                "tool_calls",
+            ),
+            _done(),
+        ],
+        [
+            _tool_call_sse("web_search", {"query": "dogs"}, "call_2"),
+            _usage_done({"prompt_tokens": 140, "completion_tokens": 20}, "tool_calls"),
+            _done(),
+        ],
+        [
+            _sse({"content": "Found both."}),
+            _usage_done({"prompt_tokens": 170, "completion_tokens": 10}),
+            _done(),
+        ],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search cats then dogs"}],
+        [_web_search_tool()],
+        max_tool_iterations = 3,
+    )
+
+    assert len(payloads) == 3
+    frames = [e for e in events if e.get("type") == "context_usage"]
+    assert frames == [
+        {
+            "type": "context_usage",
+            "prompt_tokens": 100,
+            "completion_tokens": 30,
+            "context_tokens": 130,
+            "cached_tokens": 64,
+        },
+        {
+            "type": "context_usage",
+            "prompt_tokens": 140,
+            "completion_tokens": 20,
+            "context_tokens": 160,
+            "cached_tokens": 0,
+        },
+    ]
+    # Each frame lands once its pass's tool has started and before it finishes.
+    order = [
+        e["type"] for e in events if e.get("type") in ("context_usage", "tool_start", "tool_end")
+    ]
+    assert order == ["tool_start", "context_usage", "tool_end"] * 2, order
+    assert [e for e in events if e.get("type") == "metadata"][-1]["usage"]["context_tokens"] == 180
+
+
+def test_context_usage_frame_never_delays_the_tool(monkeypatch):
+    """The frame goes out while the tool is already executing, so the tool never waits on the
+    consumer: hold the generator at the frame and the tool still starts."""
+    streams = [
+        [
+            _tool_call_sse("web_search", {"query": "cats"}, "call_1"),
+            _usage_done({"prompt_tokens": 100, "completion_tokens": 30}, "tool_calls"),
+            _done(),
+        ],
+        [
+            _sse({"content": "Found cats."}),
+            _usage_done({"prompt_tokens": 140, "completion_tokens": 10}),
+            _done(),
+        ],
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, streams)
+    # No window: the result budget is priced through a template render the fake server lacks.
+    backend._effective_context_length = None
+    tool_started = threading.Event()
+    release_tool = threading.Event()
+
+    def fake_execute_tool(name, arguments, **_kwargs):
+        tool_started.set()
+        release_tool.wait(timeout = 10)
+        return "result"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", fake_execute_tool)
+    gen = backend.generate_chat_completion_with_tools(
+        messages = [{"role": "user", "content": "search cats"}],
+        tools = [_web_search_tool()],
+        max_tool_iterations = 2,
+    )
+    for event in gen:
+        if event.get("type") == "context_usage":
+            break
+    # The consumer has not pulled again, yet the tool is already running.
+    assert tool_started.wait(timeout = 5)
+    release_tool.set()
+    rest = list(gen)
+    assert [e["type"] for e in rest if e.get("type") == "tool_end"] == ["tool_end"]
+
+
+def test_context_usage_frame_absent_on_a_single_pass(monkeypatch):
+    stream = [
+        _sse({"content": "hi"}),
+        _usage_done({"prompt_tokens": 5, "completion_tokens": 2}),
+        _done(),
+    ]
+    backend, _ = _backend_and_payloads(monkeypatch, [stream])
+
+    events = _run_tool_loop(backend, [{"role": "user", "content": "hi"}], [_web_search_tool()])
+
+    assert not [e for e in events if e.get("type") == "context_usage"]
+
+
+def test_context_usage_event_reads_timings_when_usage_is_missing():
+    """timings.prompt_n leaves out the KV-cache hit that usage.prompt_tokens includes."""
+    from core.inference.llama_cpp import _context_usage_event
+
+    assert _context_usage_event(None, {"prompt_n": 12, "cache_n": 88, "predicted_n": 7}) == {
+        "type": "context_usage",
+        "prompt_tokens": 100,
+        "completion_tokens": 7,
+        "context_tokens": 107,
+        "cached_tokens": 88,
+    }
+    assert _context_usage_event(None, None) is None
+    assert _context_usage_event({"prompt_tokens": 0}, {}) is None
 
 
 def test_gguf_rehearsal_name_split_before_args_is_not_leaked(monkeypatch):
@@ -4857,7 +5205,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
 
     cap = 16384
     big = "A" * (cap + 5000)
-    full = '{"name":"web_search","parameters":{"code":"' + big + '"}}'
+    full = '{"name":"web_search","parameters":{"query":"' + big + '"}}'
     first_stream = [_sse({"content": full[i : i + 2000]}) for i in range(0, len(full), 2000)]
     first_stream.append(_done())
     final_stream = [_sse({"content": "done"}), _done()]
@@ -4878,7 +5226,7 @@ def test_gguf_oversized_bare_json_not_leaked_and_executes(monkeypatch):
     content_texts = [e.get("text", "") for e in events if e.get("type") == "content"]
     assert not any(t.lstrip().startswith('{"name') for t in content_texts), content_texts[:1]
     assert calls and calls[0][0] == "web_search"
-    assert len(calls[0][1].get("code", "")) > cap
+    assert len(calls[0][1].get("query", "")) > cap
 
 
 def test_gguf_bare_json_call_not_replayed_in_next_turn_content(monkeypatch):
@@ -4933,13 +5281,197 @@ def test_gguf_textual_fallback_caps_distinct_tool_calls_per_turn(monkeypatch):
         backend.generate_chat_completion_with_tools(
             messages = [{"role": "user", "content": "go"}],
             tools = [{"type": "function", "function": {"name": f"t{i}"}} for i in range(n)],
-            max_tool_iterations = 1,
+            max_tool_iterations = 2,
         )
     )
 
     assert len(calls) == _MAX_TOOL_CALLS_PER_TURN, [c[0] for c in calls]
     # The cap keeps the first calls in order (no reordering / drop of leading ones).
     assert [c[0] for c in calls] == [f"t{i}" for i in range(_MAX_TOOL_CALLS_PER_TURN)]
+    (notice,) = [
+        m for m in payloads[1]["messages"] if "more tool call(s)" in (m.get("content") or "")
+    ]
+    assert notice["role"] == "user"
+    assert notice["content"].startswith("4 more tool call(s)")
+    for i in range(_MAX_TOOL_CALLS_PER_TURN, n):
+        assert f"t{i} " in notice["content"]
+
+
+def test_gguf_textual_fallback_over_cap_notice_is_not_folded_into_tool_result(monkeypatch):
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+
+    def _call(i):
+        return '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+
+    streams = [
+        [_sse({"content": _call(0)}), _done()],
+        [
+            _sse({"content": "".join(_call(i) for i in range(_MAX_TOOL_CALLS_PER_TURN + 2))}),
+            _done(),
+        ],
+        [_sse({"content": "done"}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 3,
+        )
+    )
+
+    last = payloads[2]["messages"][-1]
+    assert last["role"] == "user"
+    assert "2 more tool call(s)" in last["content"]
+    assert not any(
+        "more tool call(s)" in (m.get("content") or "")
+        for m in payloads[2]["messages"]
+        if m.get("role") == "tool"
+    )
+
+
+def test_gguf_textual_fallback_over_cap_on_last_turn_does_not_ask_for_retry(monkeypatch):
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+    blocks = "".join(
+        '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+        for i in range(_MAX_TOOL_CALLS_PER_TURN + 2)
+    )
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "done"}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    last = messages[-1]
+    assert last["role"] == "tool"
+    assert "2 more tool call(s)" in last["content"]
+    assert BUDGET_EXHAUSTED_NUDGE in last["content"]
+    assert not any("Call them again" in (m.get("content") or "") for m in messages)
+    assert not any(
+        a.get("role") == "user" and b.get("role") == "user" for a, b in zip(messages, messages[1:])
+    )
+
+
+def test_gguf_over_cap_notice_is_not_folded_into_an_unrelated_tools_result(monkeypatch):
+    """The final-turn notice must not ride a result whose tool it says nothing about.
+
+    Templates label a folded block with the result's own tool name (gemma-4.jinja resolves
+    tool_call_id -> name and wraps the body), so a note about t8..t11 inside t7's result
+    reads as t7's own output. max_tool_iterations = 1 is the value that routes the notice
+    through the final branch, which is why the cap test above uses 2 and this one does not.
+    """
+    n = 12
+    blocks = "".join(
+        '<tool_call>{"name":"t%d","arguments":{"x":"t%d"}}</tool_call>' % (i, i) for i in range(n)
+    )
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "done"}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": "t%d" % i}} for i in range(n)],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    holders = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
+    assert len(holders) == 1
+    holder = holders[0]
+    skipped = {"t8", "t9", "t10", "t11"}
+    if holder["role"] == "tool":
+        assert holder.get("name") in skipped, "a note about %s must not sit inside %r's result" % (
+            sorted(skipped),
+            holder.get("name"),
+        )
+
+
+def test_gguf_over_cap_notice_for_several_tools_is_not_folded_into_one_tools_result(monkeypatch):
+    from core.inference.llama_cpp import _MAX_TOOL_CALLS_PER_TURN
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+    blocks = "".join(
+        '<tool_call>{"name":"web_search","arguments":{"query":"q%d"}}</tool_call>' % i
+        for i in range(_MAX_TOOL_CALLS_PER_TURN + 1)
+    )
+    blocks += '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "done"}), _done()]]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [
+                {"type": "function", "function": {"name": "web_search"}},
+                {"type": "function", "function": {"name": "python"}},
+            ],
+            max_tool_iterations = 1,
+        )
+    )
+
+    messages = payloads[1]["messages"]
+    (holder,) = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
+    assert holder["role"] == "user"
+    assert "python" in holder["content"] and '"q8"' in holder["content"]
+    assert holder == messages[-1]
+    assert BUDGET_EXHAUSTED_NUDGE in holder["content"]
+    assert not any(
+        a.get("role") == "user" and b.get("role") == "user" for a, b in zip(messages, messages[1:])
+    )
+
+
+def test_gguf_over_cap_does_not_ask_for_a_retry_when_the_range_check_ends_the_loop(monkeypatch):
+    """The iteration range is a second exit; the notice must not ask for a retry there.
+
+    No-op turns burn the range budget without advancing the executed-tool counter, so the
+    loop can stop without the tool-iteration cap ever tripping. Asking for a retry there
+    lands next to the budget nudge that says not to call any more tools.
+    """
+
+    def _call(q):
+        return '<tool_call>{"name":"web_search","arguments":{"query":"%s"}}</tool_call>' % q
+
+    # Six real calls, then five no-op turns each re-issuing a DIFFERENT already-successful
+    # key (repeating one key twice trips the duplicate limit and forces the final answer
+    # through another exit), then a turn that overflows the cap. The no-ops burn the range
+    # without advancing the executed-tool count, so at max_tool_iterations = 3 the loop stops
+    # on the range check with only 2 executed-tool turns behind it.
+    streams = [[_sse({"content": "".join(_call("q%d" % i) for i in range(6))}), _done()]]
+    streams += [[_sse({"content": _call("q%d" % i)}), _done()] for i in range(5)]
+    streams.append([_sse({"content": "".join(_call("z%d" % i) for i in range(10))}), _done()])
+    streams += [[_sse({"content": "done"}), _done()] for _ in range(6)]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    _record_tool_calls(monkeypatch, "OK")
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "go"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 3,
+        )
+    )
+
+    # Assert the scenario really happened rather than letting the check pass vacuously: the
+    # loop ended without offering tools again, and it did produce exactly one notice.
+    assert payloads[-1]["tool_choice"] == "none"
+    messages = payloads[-1]["messages"]
+    notices = [m for m in messages if "more tool call(s)" in (m.get("content") or "")]
+    assert len(notices) == 1
+    assert "Call them again" not in notices[0]["content"]
 
 
 def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
@@ -4964,6 +5496,57 @@ def test_gguf_textual_fallback_collapses_duplicate_tool_calls(monkeypatch):
     )
 
     assert len(calls) == 1, [c[0] for c in calls]
+
+
+@pytest.mark.parametrize("deduplicate", [True, False])
+def test_gguf_textual_fallback_keeps_identical_calls_when_deduplication_is_off(
+    monkeypatch, deduplicate
+):
+    blocks = '<tool_call>{"name":"web_search","arguments":{"query":"cats"}}</tool_call>' * 3
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "OK",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "cats"}],
+            tools = [{"type": "function", "function": {"name": "web_search"}}],
+            max_tool_iterations = 1,
+            deduplicate_tool_calls = deduplicate,
+        )
+    )
+
+    assert len(calls) == (1 if deduplicate else 3), [c[0] for c in calls]
+
+
+def test_gguf_identical_browser_calls_in_one_batch_all_run(monkeypatch):
+    # Each acts on the page as it is then, so the second scroll is not a repeat of the first.
+    blocks = '<tool_call>{"name":"browser_scroll","arguments":{"direction":"down"}}</tool_call>' * 2
+    first_stream = [_sse({"content": blocks}), _done()]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, _payloads = _backend_and_payloads(monkeypatch, [first_stream, final_stream])
+
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_k: calls.append((name, arguments)) or "Done.",
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "scroll"}],
+            tools = [{"type": "function", "function": {"name": "browser_scroll"}}],
+            max_tool_iterations = 1,
+        )
+    )
+
+    assert [name for name, _ in calls] == ["browser_scroll", "browser_scroll"]
 
 
 def test_gguf_drain_truncated_enabled_name_json_preserved_when_auto_heal_disabled(monkeypatch):
@@ -5023,9 +5606,9 @@ def test_gguf_valid_tool_calls_respect_max_tool_iterations(monkeypatch):
     # Exactly two executed tool rounds, then one final-answer pass.
     assert len(calls) == 2, calls
     assert len(payloads) == 3, len(payloads)
-    # The final pass carries no tool schemas. Its controller feedback stays in
+    # The final pass may not call tools (it keeps the schemas for the cache). Its controller feedback stays in
     # the latest tool result rather than opening a newer user turn.
-    assert _tool_names(payloads[2]) == [], _tool_names(payloads[2])
+    assert payloads[2]["tool_choice"] == "none", payloads[2].get("tool_choice")
     assert any(
         m.get("role") == "tool" and "used all available tool calls" in m.get("content", "")
         for m in payloads[2]["messages"]
@@ -5218,7 +5801,7 @@ def test_provisional_mcp_card_carries_server_display_name(tmp_path, monkeypatch)
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
     mcp_servers_db.create_server(id = "a3f9c1d2e4b6f807", display_name = "GitHub", url = "https://a/m")
 
     tool_name = "mcp__a3f9c1d2e4b6f807__create_issue"
@@ -5248,7 +5831,7 @@ def test_provisional_non_mcp_card_omits_mcp_server(tmp_path, monkeypatch):
     from storage import mcp_servers_db
 
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
-    monkeypatch.setattr(mcp_servers_db, "_schema_ready", False)
+    monkeypatch.setattr(mcp_servers_db, "_schema_ready", set())
 
     big_code = "total = 0\n" + "\n".join(f"total += {i}" for i in range(120))
     first_stream = _streamed_structured_tool_call("python", {"code": big_code}, "call_py")
@@ -6304,6 +6887,112 @@ def test_the_synthesized_final_pass_is_recosted_before_it_is_sent(monkeypatch):
     )
 
 
+def _mcp_image_result() -> str:
+    from core.inference import mcp_images
+    image = {"data": _MCP_PNG_B64, "mimeType": "image/png"}
+    return "[1 image returned]\n" + mcp_images.SENTINEL + json.dumps([image])
+
+
+def _vision_backend(monkeypatch, streams, payloads, *, vision: bool):
+    backend = _make_backend(monkeypatch, streams, payloads)
+    backend._is_vision = vision
+    backend._mmproj_accepts_image = vision
+    return backend
+
+
+def _run_mcp_image_turn(monkeypatch, *, vision: bool) -> list[dict]:
+    streams = [
+        _structured_tool_call("mcp__fs__read_media_file", {"path": "cat.png"}, "call_mcp"),
+        [_sse({"content": "A tabby cat."}), _done()],
+    ]
+    payloads: list[dict] = []
+    backend = _vision_backend(monkeypatch, streams, payloads, vision = vision)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool",
+        lambda name, arguments, **_kwargs: _mcp_image_result(),
+    )
+
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "describe the image"}],
+            tools = [{"type": "function", "function": {"name": "mcp__fs__read_media_file"}}],
+            max_tool_iterations = 2,
+        )
+    )
+    return payloads[1]["messages"]
+
+
+def test_mcp_images_reach_a_vision_model_as_their_own_user_turn(monkeypatch):
+    messages = _run_mcp_image_turn(monkeypatch, vision = True)
+
+    tool_message = next(m for m in messages if m["role"] == "tool")
+    assert "__MCP_IMAGES__" not in tool_message["content"]
+    assert messages[-1]["role"] == "user"
+    assert messages[-1]["content"][1]["type"] == "image_url"
+    assert messages[-1]["content"][1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_mcp_images_are_not_sent_to_a_text_only_model(monkeypatch):
+    messages = _run_mcp_image_turn(monkeypatch, vision = False)
+
+    assert [m["role"] for m in messages] == ["user", "assistant", "tool"]
+    assert "__MCP_IMAGES__" not in messages[-1]["content"]
+
+
+def test_repeated_note_on_an_mcp_image_keeps_the_base64_out_of_the_tool_text(monkeypatch):
+    """#11358: a note after the image array broke its parse and sent the base64 as text."""
+    tool = "mcp__browser__screenshot"
+    # A window-cut result: the repeat key ignores the arguments, so three distinct calls repeat.
+    fitted = (
+        "page\n\n... (truncated to 4 chars for the model; 99 chars total.)\n" + _mcp_image_result()
+    )
+    streams = [_structured_tool_call(tool, {"page": page}, f"call_{page}") for page in range(3)] + [
+        [_sse({"content": "done"}), _done()]
+    ]
+    payloads: list[dict] = []
+    backend = _vision_backend(monkeypatch, streams, payloads, vision = True)
+    monkeypatch.setattr(
+        "core.inference.tools.execute_tool", lambda name, arguments, **_kwargs: fitted
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "screenshot each page"}],
+            tools = [{"type": "function", "function": {"name": tool}}],
+            max_tool_iterations = 4,
+        )
+    )
+
+    tool_texts = [m["content"] for m in payloads[-1]["messages"] if m["role"] == "tool"]
+    assert len(tool_texts) == 3
+    assert "returned exactly this 3 times" in tool_texts[-1]
+    assert not any(_MCP_PNG_B64 in text for text in tool_texts)
+    saved = [e["result"] for e in events if e.get("type") == "tool_end"][-1]
+    assert saved.endswith("}]")
+    assert saved.index("returned exactly this 3 times") < saved.index("__MCP_IMAGES__")
+
+
+@pytest.mark.parametrize("wanted", [True, False])
+def test_the_decode_slot_is_asked_for_and_read_only_when_a_caller_wants_it(monkeypatch, wanted):
+    """Verbose alone would attach the whole prompt, so it travels with the narrowing."""
+    final = {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+    final["__verbose"] = {"id_slot": 3}
+    stream = [_sse({"content": "done"}), "data: " + json.dumps(final) + "\n", _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream])
+    seen = []
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "hi"}],
+        _render_html_tools(),
+        on_decode_slot = (lambda url, slot: seen.append((url, slot))) if wanted else None,
+    )
+
+    assert seen == ([(backend.base_url, 3)] if wanted else [])
+    assert payloads[0].get("verbose") is (True if wanted else None)
+    assert payloads[0].get("response_fields") == (["id_slot"] if wanted else None)
+
+
 @pytest.mark.parametrize(
     "held",
     [
@@ -6362,3 +7051,549 @@ def test_only_the_tool_loop_flushes_held_text_on_cancel():
     ), f"exactly one cancel arm may flush held text; flushing arms: {flushing}"
     # The last arm is the synthesized final pass, which owns none of those buffers.
     assert flushing[0] != len(arms) - 1, "the final pass must not flush the tool loop's buffers"
+
+
+@pytest.mark.parametrize("edit_result", ["Edited notes.txt", "Error: failed after writing"])
+def test_textual_workspace_read_edit_read_in_one_turn(monkeypatch, edit_result):
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": read + edit + read}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", edit_result, "after"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_textual_repeated_workspace_reads_do_not_crowd_out_a_later_edit(monkeypatch):
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": read * 8 + edit + read}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", "Edited notes.txt", "after"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_textual_alternating_workspace_block_does_not_replay_the_edit(monkeypatch):
+    """One re-run verifies an edit. A repeating block past that applied the edit twice."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": (read + edit) * 2}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", "Edited notes.txt", "after", "Edited notes.txt"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_textual_alternating_workspace_block_does_not_crowd_out_a_later_tool(monkeypatch):
+    """The block used to fill the 8-call cap, so the search the model asked for never ran."""
+    read = '<tool_call>{"name":"terminal","arguments":{"command":"cat notes.txt"}}</tool_call>'
+    edit = '<tool_call>{"name":"edit_file","arguments":{"path":"notes.txt","edits":[]}}</tool_call>'
+    search = '<tool_call>{"name":"web_search","arguments":{"query":"gpu prices"}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": (read + edit) * 4 + search}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["before", "Edited notes.txt", "after", "results"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, verify, then search"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file", "web_search")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "web_search"]
+
+
+def test_textual_every_independent_edit_gets_its_own_verification_rerun(monkeypatch):
+    """Two edit-and-verify cycles in one turn: the test after the second edit must run."""
+    test = '<tool_call>{"name":"terminal","arguments":{"command":"pytest -q"}}</tool_call>'
+    edit_a = '<tool_call>{"name":"edit_file","arguments":{"path":"a.py","edits":[]}}</tool_call>'
+    edit_b = '<tool_call>{"name":"edit_file","arguments":{"path":"b.py","edits":[]}}</tool_call>'
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": test + edit_a + test + edit_b + test}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["1 failed", "Edited a.py", "1 failed", "Edited b.py", "1 passed"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Fix the test"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
+
+
+def test_textual_mcp_listing_runs_again_after_an_mcp_write(monkeypatch):
+    """#10348: `list, create, list` on an MCP server re-lists instead of dropping the call."""
+    name = "mcp__docs__manager"
+    listing = '<tool_call>{"name":"%s","arguments":{"action":"list"}}</tool_call>' % name
+    create = '<tool_call>{"name":"%s","arguments":{"action":"create"}}</tool_call>' % name
+    backend, _ = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_sse({"content": listing + create + listing}), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    calls = []
+    results = iter(["[]", "created", "[a]"])
+
+    def execute(name, arguments, **kwargs):
+        calls.append(arguments.get("action"))
+        return next(results)
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Create a doc"}],
+            tools = [{"type": "function", "function": {"name": name}}],
+            max_tool_iterations = 3,
+        )
+    )
+    assert calls == ["list", "create", "list"]
+
+
+def _structured_batch(spec: list) -> list:
+    """One assistant turn carrying `spec` as parallel structured tool_calls."""
+    frames = [
+        _tool_call_sse(name, args, f"call_{i}", index = i) for i, (name, args) in enumerate(spec)
+    ]
+    return [frames + [_done()], [_sse({"content": "Done."}), _done()]]
+
+
+def _drive_structured(monkeypatch, spec, results):
+    backend, _ = _backend_and_payloads(monkeypatch, _structured_batch(spec))
+    calls: list[str] = []
+    supply = iter(results)
+
+    def execute(name, arguments, **kwargs):
+        calls.append(name)
+        return next(supply, "OK")
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute)
+    list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "Read, edit, and verify notes.txt"}],
+            tools = [
+                {"type": "function", "function": {"name": name}}
+                for name in ("terminal", "edit_file")
+            ],
+            max_tool_iterations = 3,
+        )
+    )
+    return calls
+
+
+def test_structured_workspace_block_does_not_replay_the_edit(monkeypatch):
+    """Structured batches skip the textual prefilter, so the controller has to catch this."""
+    read = ("terminal", {"command": "cat notes.txt"})
+    edit = ("edit_file", {"path": "notes.txt", "edits": []})
+    calls = _drive_structured(
+        monkeypatch, [read, edit, read, edit], ["v1", "Edited notes.txt", "v2", "Edited"]
+    )
+    assert calls == ["terminal", "edit_file", "terminal"]
+
+
+def test_structured_every_independent_edit_keeps_its_verification(monkeypatch):
+    read = ("terminal", {"command": "cat notes.txt"})
+    edit_a = ("edit_file", {"path": "a.txt", "edits": []})
+    edit_b = ("edit_file", {"path": "b.txt", "edits": []})
+    calls = _drive_structured(
+        monkeypatch,
+        [read, edit_a, read, edit_b, read],
+        ["v1", "Edited a.txt", "v2", "Edited b.txt", "v3"],
+    )
+    assert calls == ["terminal", "edit_file", "terminal", "edit_file", "terminal"]
+
+
+def test_nested_object_schema_is_relaxed_on_the_wire_but_not_in_the_loop(monkeypatch):
+    data = {
+        "type": "object",
+        "properties": {
+            "view_url": {"type": "string"},
+            "start_cursor": {"type": "string"},
+            "page_size": {"type": "integer"},
+        },
+        "required": ["view_url"],
+    }
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "mcp__notion__query",
+            "parameters": {"type": "object", "properties": {"data": data}, "required": ["data"]},
+        },
+    }
+    arguments = {"data": {"view_url": "u", "page_size": "1", "start_cursor": "c"}}
+    stream = [
+        _tool_call_sse("mcp__notion__query", arguments, "call_a"),
+        _finish("tool_calls"),
+        _done(),
+    ]
+    final_stream = [_sse({"content": "done"}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [stream, final_stream])
+    calls = _record_tool_calls(monkeypatch, "row 2")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "next page"}],
+        [tool],
+        max_tool_iterations = 2,
+    )
+
+    wire = payloads[0]["tools"][0]["function"]["parameters"]["properties"]["data"]
+    assert wire == {**data, "anyOf": [{"type": "object", "additionalProperties": True}]}
+    assert calls == [
+        ("mcp__notion__query", {"data": {"view_url": "u", "page_size": 1, "start_cursor": "c"}})
+    ]
+
+
+def test_an_mcp_tool_search_leaves_a_budget_of_one_for_the_tool_it_found(monkeypatch):
+    """Loading deferred MCP tools is not a tool round (#10997)."""
+    from core.inference import tools as tools_mod
+
+    ping = {
+        "type": "function",
+        "function": {
+            "name": "mcp__srv1__ping",
+            "description": "[A] Ping.",
+            "parameters": {"type": "object"},
+        },
+    }
+    monkeypatch.setattr(tools_mod, "mcp_tool_search_specs", lambda arguments: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_loadable_specs", lambda tools: [ping])
+    monkeypatch.setattr(tools_mod, "mcp_record_loaded_tools", lambda *a: None)
+    streams = [
+        _structured_tool_call("mcp_tool_search", {"query": "ping"}, "call_search"),
+        _structured_tool_call("mcp__srv1__ping", {}, "call_ping"),
+        [_sse({"content": "Pinged."}), _done()],
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "ok")
+
+    _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "ping it"}],
+        [tools_mod._mcp_tool_search_spec([])],
+        max_tool_iterations = 1,
+    )
+
+    assert [name for name, _ in calls] == ["mcp_tool_search", "mcp__srv1__ping"]
+    assert "mcp__srv1__ping" in [t["function"]["name"] for t in payloads[1].get("tools", [])]
+
+
+def test_budget_exhausted_final_pass_keeps_the_cached_tool_catalogue(monkeypatch):
+    # The template renders tools at the top of the system prompt. Dropping them on the final
+    # pass changed the prompt from its first tokens, so llama-server re-processed the whole
+    # conversation on that pass and again on the next turn.
+    first = [_tool_call_sse("web_search", {"query": "flappy bird"}, "call_1"), _done()]
+    final_stream = [_sse({"content": "Summary."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first, final_stream])
+    _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [_web_search_tool()],
+        max_tool_iterations = 1,
+    )
+
+    assert len(payloads) == 2
+    assert payloads[1]["tools"] == payloads[0]["tools"]
+    assert payloads[1]["tool_choice"] == "none"
+    assert any(e.get("type") == "content" and e.get("text") == "Summary." for e in events)
+
+
+def test_replayed_failed_tool_result_carries_the_nudge_the_model_saw(monkeypatch):
+    from core.inference.tool_call_parser import TOOL_ERROR_NUDGE
+
+    failed = "Exit code 1\nerror: aborting due to previous error"
+    history = [
+        {"role": "user", "content": "build it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_old",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": {"query": "x"}},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_old", "name": "web_search", "content": failed},
+        {"role": "assistant", "content": "It failed."},
+        {"role": "user", "content": "show me"},
+    ]
+    backend, payloads = _backend_and_payloads(monkeypatch, [[_sse({"content": "Here."}), _done()]])
+
+    _run_tool_loop(backend, copy.deepcopy(history), [_web_search_tool()])
+
+    tool_messages = [m for m in payloads[0]["messages"] if m.get("role") == "tool"]
+    assert [m["content"] for m in tool_messages] == [failed + TOOL_ERROR_NUDGE]
+
+
+def test_parallel_batch_tool_events_share_one_round_id(monkeypatch):
+    # The frontend groups a round's cards into one assistant message by provenance round_id;
+    # without it a batch replayed as separate assistant/tool pairs and broke the cached prefix.
+    batch = [
+        _tool_call_sse("web_search", {"query": "a"}, "call_a", index = 0),
+        _tool_call_sse("web_search", {"query": "b"}, "call_b", index = 1),
+        _done(),
+    ]
+    second = [_tool_call_sse("web_search", {"query": "c"}, "call_c"), _done()]
+    final_stream = [_sse({"content": "Done."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [batch, second, final_stream])
+    _record_tool_calls(monkeypatch, "result")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [_web_search_tool()],
+        max_tool_iterations = 3,
+    )
+
+    rounds = {
+        e["tool_call_id"]: e["provenance"]["round_id"]
+        for e in events
+        if e.get("type") == "tool_end"
+    }
+    assert set(rounds) == {"call_a", "call_b", "call_c"}
+    assert rounds["call_a"] == rounds["call_b"] != rounds["call_c"]
+    batch_assistant = [m for m in payloads[1]["messages"] if m.get("tool_calls")]
+    assert [len(m["tool_calls"]) for m in batch_assistant] == [2]
+
+
+def test_budget_notice_folded_into_a_result_is_reported_for_replay(monkeypatch):
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+    from core.inference.tool_loop_controller import restore_replayed_tool_results
+
+    first = [_tool_call_sse("web_search", {"query": "flappy bird"}, "call_1"), _done()]
+    final_stream = [_sse({"content": "Summary."}), _done()]
+    backend, payloads = _backend_and_payloads(monkeypatch, [first, final_stream])
+    _record_tool_calls(monkeypatch, "Exit code 1\nboom")
+
+    events = _run_tool_loop(
+        backend,
+        [{"role": "user", "content": "search"}],
+        [_web_search_tool()],
+        max_tool_iterations = 1,
+    )
+
+    notes = [e for e in events if e.get("type") == "tool_model_note"]
+    tool_end = next(e for e in events if e.get("type") == "tool_end")
+    assert notes == [
+        {
+            "type": "tool_model_note",
+            "tool_call_id": tool_end["tool_call_id"],
+            "suffix": f"\n\n{BUDGET_EXHAUSTED_NUDGE}",
+        }
+    ]
+    # What the client sends back next turn renders exactly what the final pass sent.
+    replayed = {
+        "role": "tool",
+        "tool_call_id": "call_1",
+        "name": "web_search",
+        "content": tool_end["result"],
+        "extra_content": {"studio_model_suffix": notes[0]["suffix"]},
+    }
+    sent = [m for m in payloads[1]["messages"] if m.get("role") == "tool"][-1]
+    assert restore_replayed_tool_results([replayed])[0]["content"] == sent["content"]
+
+
+def test_restored_replay_is_the_branch_the_tools_are_given(monkeypatch):
+    # Restored results are new dicts and the live branch is accumulated by identity, so seeding it
+    # from the unrestored messages handed a tool the same replayed result twice.
+    history = [
+        {"role": "user", "content": "build it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_old",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": {"query": "x"}},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_old",
+            "name": "web_search",
+            "content": "Error: offline",
+        },
+        {"role": "assistant", "content": "It failed."},
+        {"role": "user", "content": "try again"},
+    ]
+    backend, _payloads = _backend_and_payloads(
+        monkeypatch,
+        [
+            [_tool_call_sse("web_search", {"query": "y"}, "call_new"), _done()],
+            [_sse({"content": "Done."}), _done()],
+        ],
+    )
+    branches: list[list[dict]] = []
+
+    def execute_tool(
+        name,
+        arguments,
+        conversation_branch = None,
+        **_kwargs,
+    ):
+        branches.append(list(conversation_branch or ()))
+        return "sunny"
+
+    monkeypatch.setattr("core.inference.tools.execute_tool", execute_tool)
+
+    _run_tool_loop(backend, copy.deepcopy(history), [_web_search_tool()])
+
+    assert branches
+    replayed = [m for m in branches[0] if m.get("tool_call_id") == "call_old"]
+    assert len(replayed) == 1
+
+
+def test_budget_notice_folded_into_a_denied_result_is_reported_for_replay(monkeypatch):
+    # A denial is the round's last tool message too, so the notice can land on it: the client has
+    # to be told, or it replays the bare denial and the next turn misses the cache there.
+    from core.inference.tool_call_parser import BUDGET_EXHAUSTED_NUDGE
+
+    # One call runs and spends the budget; the batch's last call is declined.
+    blocks = (
+        '<tool_call>{"name":"python","arguments":{"code":"print(1)"}}</tool_call>'
+        '<tool_call>{"name":"python","arguments":{"code":"print(2)"}}</tool_call>'
+    )
+    streams = [[_sse({"content": blocks}), _done()], [_sse({"content": "Done."}), _done()]]
+    backend, _payloads = _backend_and_payloads(monkeypatch, streams)
+    calls = _record_tool_calls(monkeypatch, "OK")
+    decisions = iter(["allow", "deny"])
+    monkeypatch.setattr("core.inference.llama_cpp.new_approval_id", lambda: "approval-1")
+    monkeypatch.setattr("core.inference.llama_cpp.begin_tool_decision", lambda *_a, **_k: object())
+    monkeypatch.setattr(
+        "core.inference.llama_cpp.wait_tool_decision", lambda *_a, **_k: next(decisions)
+    )
+
+    events = list(
+        backend.generate_chat_completion_with_tools(
+            messages = [{"role": "user", "content": "run python"}],
+            tools = [{"type": "function", "function": {"name": "python"}}],
+            max_tool_iterations = 1,
+            confirm_tool_calls = True,
+            permission_mode = "ask",
+            session_id = "sess",
+        )
+    )
+
+    assert calls == [("python", {"code": "print(1)"})]
+    tool_end = [e for e in events if e.get("type") == "tool_end"][-1]
+    notes = [e for e in events if e.get("type") == "tool_model_note"]
+    assert notes == [
+        {
+            "type": "tool_model_note",
+            "tool_call_id": tool_end["tool_call_id"],
+            "suffix": f"\n\n{BUDGET_EXHAUSTED_NUDGE}",
+        }
+    ]
+
+
+def test_appended_notice_keeps_an_image_part_an_image():
+    from core.inference.tool_loop_controller import with_appended_text as _with_appended_text
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    out = _with_appended_text([{"type": "text", "text": "Over the cap."}, image], "\n\nStop.")
+    assert out == [
+        {"type": "text", "text": "Over the cap."},
+        image,
+        {"type": "text", "text": "\n\nStop."},
+    ]
+    assert _with_appended_text("Over the cap.", "\n\nStop.") == "Over the cap.\n\nStop."

@@ -18,6 +18,12 @@ from pathlib import Path
 
 import pytest
 
+# tests/_shared, put on sys.path by studio/backend/tests/conftest.py. Every pwsh spawn in
+# this file goes through it: the two parametrised probes below are 17 pwsh startups in one
+# xdist job, all sharing $XDG_CACHE_HOME/powershell with every other worker, which is the
+# race that kills a startup outright with SIGABRT before the script runs.
+from unsloth_pwsh_runner import run_pwsh
+
 _STUDIO = Path(__file__).resolve().parents[2]
 _SETUP_SH = _STUDIO / "setup.sh"
 _SETUP_PS1 = _STUDIO / "setup.ps1"
@@ -308,7 +314,7 @@ def test_llama_backend_source_choice_in_setup_ps1(backend, force_vulkan, expecte
         env["UNSLOTH_LLAMA_CPP_BACKEND"] = backend
     if force_vulkan is not None:
         env["UNSLOTH_FORCE_VULKAN"] = force_vulkan
-    out = subprocess.run(
+    out = run_pwsh(
         [
             "pwsh",
             "-NoProfile",
@@ -353,7 +359,7 @@ def _run_ps1(value: str | None) -> str:
         "$explicitLlamaSourceBackend = $null\n"
         f'{normalize}\n"ARGS:" + ($prebuiltArgs -join ",")'
     )
-    out = subprocess.run(
+    out = run_pwsh(
         ["pwsh", "-NoProfile", "-Command", harness],
         capture_output = True,
         text = True,

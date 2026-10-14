@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, Iterator, Optional
 
@@ -44,9 +45,44 @@ from core.inference.sd_cpp_args import (
     build_sd_cpp_upscale_command,
     build_sd_cpp_video_command,
     native_speed_flags,
+    sd_cli_output_paths,
 )
 
 logger = logging.getLogger(__name__)
+
+# Lines worth keeping from a failed native process's output whatever their position.
+_DIAGNOSTIC_MARKERS = (
+    "error",
+    "abort",
+    "assert",
+    "unsupported",
+    "not implemented",
+    "out of memory",
+    "failed",
+    "exception",
+)
+
+
+def _diagnostic_tail(
+    lines,
+    *,
+    keep: int = 20,
+    limit: int = 1500,
+) -> str:
+    """The most useful part of the captured output, not merely its last lines.
+
+    A native abort prints its REASON first and then a long backtrace, so taking the last N lines
+    reported nothing but stack frames: a Metal host that died on an unimplemented op showed twenty
+    addresses and no cause. Marked lines come first (in order), then the last few lines for
+    context, deduplicated."""
+    captured = list(lines)
+    marked = [line for line in captured if any(m in line.lower() for m in _DIAGNOSTIC_MARKERS)]
+    chosen: list[str] = []
+    for line in marked[-keep:] + captured[-max(keep // 2, 4) :]:
+        if line not in chosen:
+            chosen.append(line)
+    return "\n".join(chosen)[:limit]
+
 
 # sd-cli (sd-cli.exe on Windows); older builds shipped ``sd`` -- both probed on PATH.
 _BINARY_STEM = "sd-cli"
@@ -286,9 +322,74 @@ def runtime_env(binary: str, base_env: Optional[dict[str, str]] = None) -> dict[
     env = child_env_without_native_path_secret(os.environ if base_env is None else base_env)
     var = _lib_path_var()
     bindir = str(Path(binary).resolve().parent)
+    dirs = [bindir]
+    if _needs_host_cuda_runtime(bindir):
+        dirs.extend(d for d in host_cuda_runtime_dirs() if d not in dirs)
     existing = env.get(var, "")
-    env[var] = bindir + (os.pathsep + existing if existing else "")
+    env[var] = os.pathsep.join(dirs) + (os.pathsep + existing if existing else "")
     return env
+
+
+def _needs_host_cuda_runtime(bindir: str) -> bool:
+    try:
+        names = [n.lower() for n in os.listdir(bindir)]
+    except OSError:
+        return False
+    cuda = any(n == "ggml-cuda.dll" or n.startswith("libggml-cuda.so") for n in names)
+    runtime = any(n.startswith(("cudart64_", "libcudart.so")) for n in names)
+    return cuda and not runtime
+
+
+def _llama_server_binary() -> Optional[str]:
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend
+        return LlamaCppBackend._find_llama_server_binary()
+    except Exception:  # noqa: BLE001 -- no llama.cpp install: nothing to share
+        return None
+
+
+def host_cuda_runtime_dirs() -> list[str]:
+    """llama-server's CUDA runtime dirs. Its build dir is dropped off Windows: its libggml*.so share
+    sonames with the bundle's (Windows searches the executable's dir first)."""
+    binary = _llama_server_binary()
+    if not binary:
+        return []
+    try:
+        from core.inference.llama_cpp import LlamaCppBackend, _llama_lib_dir
+
+        var = _lib_path_var()
+        inherited = {d for d in os.environ.get(var, "").split(os.pathsep) if d}
+        llama_dir = os.path.normcase(str(_llama_lib_dir(binary)))
+        out: list[str] = []
+        for d in (
+            LlamaCppBackend._llama_server_env_for_binary(binary).get(var, "").split(os.pathsep)
+        ):
+            if not d or d in inherited or d in out:
+                continue
+            if sys.platform != "win32" and os.path.normcase(d) == llama_dir:
+                continue
+            out.append(d)
+        return out
+    except Exception as exc:  # noqa: BLE001 -- a launch must not fail on a path lookup
+        logger.debug("sd.cpp: CUDA runtime dirs from llama.cpp unavailable: %s", exc)
+        return []
+
+
+def host_cuda_runtime_major() -> Optional[str]:
+    """CUDA major the installed llama.cpp links, else torch's."""
+    binary = _llama_server_binary()
+    if binary:
+        try:
+            from utils.llama_cpp_freshness import read_install_marker
+
+            line = (read_install_marker(binary) or {}).get("runtime_line")
+            match = re.fullmatch(r"cuda(\d+)", line if isinstance(line, str) else "")
+            if match:
+                return match.group(1)
+        except Exception:  # noqa: BLE001
+            pass
+    version = getattr(getattr(sys.modules.get("torch"), "version", None), "cuda", None)
+    return version.split(".")[0] if isinstance(version, str) and version else None
 
 
 def _layout_candidates(root: Path, stem: str = _BINARY_STEM) -> list[Path]:
@@ -707,7 +808,11 @@ class SdCppEngine:
         process tree and raises ``SdCppCancelled``.
         """
         offload = list(offload or [])
-        speed = [f for f in native_speed_flags(native_speed) if f not in offload]
+        speed = [
+            f
+            for f in native_speed_flags(native_speed, [*offload, *(extra_args or ())])
+            if f not in offload
+        ]
         merged_extra = speed + list(extra_args or [])
         cmd = build_sd_cpp_command(
             self._require_binary(),
@@ -719,9 +824,13 @@ class SdCppEngine:
             verbose = verbose,
             extra_args = merged_extra,
         )
+        # A layered run writes numbered files, never output_path itself.
+        expected = output_path
+        if params.qwen_image_layers is not None:
+            expected = sd_cli_output_paths(str(output_path), int(params.qwen_image_layers) + 1)[0]
         return self._run(
             cmd,
-            output_path,
+            expected,
             timeout = timeout,
             env = env,
             on_log = on_log,
@@ -836,7 +945,7 @@ class SdCppEngine:
         # shutdown sweep has taken its snapshot, and sd-cli would then keep running with
         # nothing left to reap it, holding VRAM past the app.
         if is_process_shutting_down():
-            raise SdCppCancelled("Studio is shutting down; not starting sd-cli.")
+            raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         proc = subprocess.Popen(
             cmd,
             stdout = subprocess.PIPE,
@@ -860,12 +969,12 @@ class SdCppEngine:
         if is_process_shutting_down():
             logger.info("shutdown began during the spawn; killing the new sd-cli")
             _terminate(proc)
-            raise SdCppCancelled("Studio is shutting down; not starting sd-cli.")
+            raise SdCppCancelled("Unsloth is shutting down; not starting sd-cli.")
         # Drain stdout on a reader thread so the timeout holds even when the child hangs WITHOUT printing (a plain `for
         # line in proc.stdout` blocks until EOF). Lines, then a None sentinel, go to a queue the main loop polls against
         # a wall-clock deadline. iter_sd_cpp_records also splits sd-cli's in-place progress redraws, which carry no
         # newline of their own, so sampling progress reaches on_log while sampling is still running.
-        tail: list[str] = []
+        tail: deque[str] = deque(maxlen = 200)
         line_q: "queue.Queue[Optional[str]]" = queue.Queue()
 
         def _drain() -> None:
@@ -902,8 +1011,6 @@ class SdCppEngine:
                         break
                     continue
                 tail.append(line)
-                if len(tail) > 40:
-                    tail.pop(0)
                 if on_log is not None:
                     on_log(line)
             ret = proc.wait(timeout = 5.0)
@@ -914,11 +1021,11 @@ class SdCppEngine:
                 forget_pid(proc.pid)
 
         if ret != 0:
-            raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + "\n".join(tail[-12:]))
+            raise RuntimeError(f"sd-cli exited {ret}. Last output:\n" + _diagnostic_tail(tail))
         if not out.is_file():
             raise RuntimeError(
                 f"sd-cli reported success but no image at {out}. Last output:\n"
-                + "\n".join(tail[-12:])
+                + _diagnostic_tail(tail)
             )
         elapsed = time.time() - t0
         if verbose_logs:
@@ -930,6 +1037,8 @@ class SdCppEngine:
 
 ENGINE_DIFFUSERS = "diffusers"
 ENGINE_SD_CPP = "sd_cpp"
+# Opt-in Apple Silicon MLX engine (core.inference.mlx_diffusion_backend), chosen only by the router, never here.
+ENGINE_MLX = "mlx"
 
 # Backends diffusers serves well with GPU acceleration; everything else is native-engine territory.
 _GPU_BACKENDS = frozenset({"cuda", "rocm", "xpu"})

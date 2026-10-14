@@ -81,7 +81,7 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
         for step in build["steps"]
         if step.get("uses", "").startswith("tauri-apps/tauri-action@")
     ]
-    assert len(tauri_steps) == 3
+    assert len(tauri_steps) == 4
     for step in tauri_steps:
         assert "GITHUB_TOKEN" not in step.get("env", {})
         assert not {"releaseId", "tagName", "releaseName"} & step.get("with", {}).keys()
@@ -103,7 +103,15 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     wait_run = wait["run"]
 
     matrix_legs = {f"Build {entry['label']}" for entry in build["strategy"]["matrix"]["include"]}
-    assert len(matrix_legs) == len(tauri_steps)
+    # Legs outnumber the tauri-action steps: the two Windows legs (x64 and the
+    # cross-compiled ARM64) share one `build_windows` step and differ only by
+    # matrix.args. What matters is that every leg is named in the wait list, which
+    # the loop below asserts, and that every build step is still reachable from
+    # some leg's platform.
+    assert len(matrix_legs) >= len(tauri_steps)
+    leg_platforms = {entry["platform"] for entry in build["strategy"]["matrix"]["include"]}
+    for step in tauri_steps:
+        assert any(platform in step.get("if", "") for platform in leg_platforms), step.get("name")
     for leg in matrix_legs:
         assert f"'{leg}'" in wait_run, leg
 

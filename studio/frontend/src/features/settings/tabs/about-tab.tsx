@@ -146,7 +146,7 @@ export function AboutTab() {
   }, [consumeScrollTarget, scrollTarget]);
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="settings-page">
       <header className="flex flex-col gap-1">
         <h1 className="text-xl font-semibold font-heading">
           {t("settings.about.title")}
@@ -156,10 +156,11 @@ export function AboutTab() {
         </p>
       </header>
 
-      {/* llama.cpp row lives in the shared version section so it sits with the
-          Unsloth/Package rows; the prop keeps it About-only (General passes none). */}
+      {/* llama.cpp and audio.cpp rows live in the shared version section so they sit with
+          the Unsloth/Package rows; the props keep them About-only (General passes none). */}
       <StudioVersionSection
         llamaCppVersion={hw.llamaCpp}
+        audioCppVersion={hw.audioCpp}
         desktopAppVersion={desktopAppVersion}
       />
 

@@ -120,7 +120,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   const awaitingApproval = useToolAwaitingApproval(toolCallId);
   const isWriting = isWritingCode && !awaitingApproval;
   const collapseByDefault = useChatPreferencesStore(
-    (state) => state.collapseToolActivityByDefault,
+    (state) => state.toolVisibility === "collapsed",
   );
   const scriptCell = code ? (
     <div className="mt-1 pl-5">
@@ -137,9 +137,10 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
   return (
     // Status, output and images collapse from history; the executed script renders outside
     // ToolFallbackContent so it stays visible on reopen (#7165) -- a script is an artifact, a
-    // one-line command is not. That holds only while collapseToolActivity is off; with it on the
+    // one-line command is not. That holds unless tool calls are set to collapsed, where the
     // script moves inside the collapsible, behind one click. awaitingApproval is the exception: a
-    // decision about a script needs the script on screen.
+    // decision about a script needs the script on screen. Created files stay outside even when the
+    // card is collapsed (#10425).
     <ToolFallbackRoot
       defaultOpen={isRunning}
       awaitingApproval={awaitingApproval}
@@ -181,9 +182,6 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
             </div>
           ) : null}
 
-          {/* Anything the script wrote, as a real download */}
-          <SandboxFiles sessionId={sessionId} files={files} />
-
           {/* Images from Python tool execution */}
           {images.length > 0 && sessionId && (
             <div className="mt-2 flex flex-col gap-2">
@@ -198,6 +196,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
           )}
         </div>
       </ToolFallbackContent>
+      <SandboxFiles className="ml-5" sessionId={sessionId} files={files} />
     </ToolFallbackRoot>
   );
 };

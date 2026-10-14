@@ -28,6 +28,21 @@ for _up in _iso.parents:
         _spec.loader.exec_module(_mod)  # sets the env vars on import
         break
 
+# --- one CPU share per xdist worker -----------------------------------------------
+# Also before torch is imported. Each xdist worker otherwise starts a torch / OpenMP pool
+# as wide as the machine, so `-n 4` on a 4 vCPU runner runs 16 spinning threads on 4 cores
+# and CPU training tests slow down by an order of magnitude: test_decision_model's Clef
+# training took >330 s there against ~50 s alone. An explicit thread setting is kept.
+# Loaded by path: tests/_shared is put on sys.path only below.
+import os as _os  # noqa: E402
+
+_share_path = _iso.parent / "_shared" / "xdist_cpu_share.py"
+if _share_path.is_file():
+    _spec = _ilu.spec_from_file_location("xdist_cpu_share", _share_path)
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    _mod.apply(_os.environ)
+
 # --- shared test helpers on sys.path -----------------------------------------------
 # tests/_shared holds no package marker and pytest only puts a *test file's* own
 # directory on sys.path, so tests/python/, tests/studio/install/ and tests/security/
@@ -49,6 +64,9 @@ import types
 
 import pytest
 
+# A test that hides nvidia-smi to fake a CPU host must not find the real GPUs through NVML.
+os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
+
 
 @pytest.fixture(autouse = True)
 def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
@@ -62,21 +80,17 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
 
 
 def _has_real_accelerator() -> bool:
-    try:
-        import torch
-    except Exception:
-        return False
-    for probe in (
-        lambda: hasattr(torch, "cuda") and torch.cuda.is_available(),
-        lambda: hasattr(torch, "xpu") and torch.xpu.is_available(),
-        lambda: hasattr(torch, "accelerator") and torch.accelerator.is_available(),
-    ):
-        try:
-            if probe():
-                return True
-        except Exception:
-            pass
-    return False
+    """Mechanism: tests/_shared/real_accelerator.py.
+
+    The probe moved there so test modules can ask the same question, and so the
+    answer is recorded once. Calling it here, before the pre-load window below and
+    long before any test module imports the aggressive spoof, is what makes the
+    recorded answer the pre-spoof one for everybody. Kept as a function of this
+    name because tests/python/test_conftest_bitsandbytes_preimport.py reads the
+    `if not _has_real_accelerator():` block out of this file's AST.
+    """
+    from real_accelerator import has_real_accelerator
+    return has_real_accelerator()
 
 
 def _preload_device_type(package: str, prereqs: tuple[str, ...] = ()) -> bool:
@@ -167,6 +181,12 @@ def _install_device_type_stub(name: str) -> None:
     stub.arch_lacks_bf16 = lambda arch: (
         str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx10")
     )
+    # #11615: gfx101x (RDNA1) only; gfx103x (RDNA2) must not match.
+    stub.arch_lacks_buffer_ops = lambda arch: (
+        str(arch or "").split(":", 1)[0].strip().lower().startswith("gfx101")
+    )
+    stub.apply_gfx101x_triton_workaround = lambda *a, **k: False
+    stub.gfx101x_triton_workaround_applied = lambda: False
     stub.hip_visible_archs = lambda: []
     sys.modules[name] = stub
 

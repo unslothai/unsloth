@@ -26,7 +26,11 @@ from ..utils.attention_dispatch import (
 from .llama import (
     LlamaRotaryEmbedding,
     LlamaLinearScalingRotaryEmbedding,
+    _gqa_decode_scores,
+    _gqa_decode_values,
     _LlamaModel_fast_forward_inference,
+    original_apply_qkv,
+    original_apply_o,
 )
 
 try:
@@ -98,7 +102,7 @@ def FalconH1Attention_fast_forward(
     head_dim = self.head_dim
     assert n_kv_heads * n_groups == n_heads
 
-    Q, K, V = self.apply_qkv(self, hidden_states)
+    Q, K, V = getattr(self, "apply_qkv", original_apply_qkv)(self, hidden_states)
     Q = Q.view(bsz, q_len, n_heads, head_dim)
     K = K.view(bsz, q_len, n_kv_heads, head_dim)
     V = V.view(bsz, q_len, n_kv_heads, head_dim).transpose(1, 2)
@@ -129,14 +133,13 @@ def FalconH1Attention_fast_forward(
     if past_key_value is not None:
         K = torch.cat([past_key_value[0], K], dim = 2)
         V = torch.cat([past_key_value[1], V], dim = 2)
+    # Incoming cache; past_key_value is reassigned below (eval keeps use_cache on).
+    had_cache = past_key_value is not None
     past_key_value = (K, V) if use_cache else None
 
     window = (-1, -1)
     use_varlen = (
-        attention_mask is None
-        and seq_info is not None
-        and past_key_value is None
-        and window == (-1, -1)
+        attention_mask is None and seq_info is not None and not had_cache and window == (-1, -1)
     )
 
     backend = SDPA if attention_mask is not None else select_attention_backend(use_varlen)
@@ -170,7 +173,7 @@ def FalconH1Attention_fast_forward(
     A = run_attention(config = attention_config, context = context, Q = Q, K = K, V = V)
 
     attn_output = A.reshape(bsz, q_len, n_heads * head_dim)
-    attn_output = self.apply_o(self, attn_output)
+    attn_output = getattr(self, "apply_o", original_apply_o)(self, attn_output)
     attn_weights = None
     return attn_output, attn_weights, past_key_value
 
@@ -252,7 +255,9 @@ def FalconH1Attention_fast_forward_inference(
             self.temp_O = self.temp_QA[1][:, :, :hidden_size]
 
         self.attention = torch.empty(
-            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len), dtype = dtype, device = device
+            (bsz, n_heads, 1, KV_CACHE_INCREMENT + seq_len + (-seq_len) % 8),
+            dtype = dtype,
+            device = device,
         )
         self.scalar = 1.0 / math_sqrt(self.head_dim)
         self.half_head_dim = head_dim // 2
@@ -321,9 +326,9 @@ def FalconH1Attention_fast_forward_inference(
     else:
         Knn, Vnn = Kn, Vn
 
-    # Grouped query attention.
+    # Grouped query attention; bsz == 1 reads the KV heads in place below.
     _, _, cached_len, _ = Knn.shape
-    if bsz == 1 or not SDPA_HAS_GQA and n_groups != 1:
+    if bsz != 1 and (not SDPA_HAS_GQA) and n_groups != 1:
         Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, cached_len, head_dim)
         Knn = Knn.reshape(bsz, n_heads, cached_len, head_dim)
@@ -333,9 +338,9 @@ def FalconH1Attention_fast_forward_inference(
         Qn *= self.scalar
         # (Q * scalar) @ K beats (Q @ K) * scalar for stopping overflows; see ggerganov/llama.cpp#7805
         # (comment 2153349963).
-        A = torch_matmul(Qn, Knn.transpose(2, 3), out = self.attention[:, :, :, :cached_len])
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :cached_len])
         A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
-        A = torch_matmul(A, Vnn, out = Qn)
+        A = _gqa_decode_values(A, Vnn, Qn)
     else:
         if SDPA_HAS_GQA:
             A = scaled_dot_product_attention(
@@ -510,8 +515,11 @@ def _FalconH1_fast_forward_inference(
             attention_mask = None
 
         next_decoder_cache = []
+        block_swap = getattr(self.model.layers, "_unsloth_block_swap", None)
 
         for idx, decoder_layer in enumerate(self.model.layers):
+            if block_swap is not None:
+                block_swap.enter(idx)
             residual.copy_(X)
             X = fast_rms_layernorm_inference(
                 decoder_layer.input_layernorm,
@@ -557,6 +565,8 @@ def _FalconH1_fast_forward_inference(
                 down_multiplier = down_multiplier,
             )
             X += residual
+            if block_swap is not None:
+                block_swap.leave(idx)
 
             next_decoder_cache.append(present_key_value)
         X = fast_rms_layernorm_inference(
@@ -644,7 +654,7 @@ def fix_prepare_inputs_for_generation(module):
 
 
 class Unsloth_FalconH1RMSNorm(FalconH1RMSNorm):
-    """fast_rms_layernorm (compiler-disabled, fp32 eps) avoids the float64 torch.compile RMSNorm kernel that fails on Intel Arc DG2 (issue #6555)."""
+    """fast_rms_layernorm (compiler-disabled on XPU, fp32 eps) avoids the float64 torch.compile RMSNorm kernel that fails on Intel Arc DG2 (issue #6555)."""
 
     def forward(self, hidden_states):
         return fast_rms_layernorm(self, hidden_states, gemma = False)

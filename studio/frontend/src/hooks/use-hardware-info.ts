@@ -28,12 +28,15 @@ export interface HardwareInfo {
     transformers: string | null;
     unsloth: string | null;
     llamaCpp: string | null;
+    audioCpp: string | null;
     // Whether export can run here (true only on a supported accelerator), with a torch-aware
     // reason. `null` until the authoritative response lands, so callers don't briefly enable
     // export; `loaded` flips true once a real (non-error) response arrives.
     exportSupported: boolean | null;
     exportUnsupportedReason: string | null;
     exportUnsupportedMessage: string | null;
+    // False only on Windows ROCm without a loadable torchao; absent from older backends = true.
+    torchaoExportSupported: boolean;
     // Whether video generation can run here. Same tri-state as export: `null` until the
     // authoritative response lands, and `null` too against a backend that predates the field,
     // so only an explicit `false` hides the generator.
@@ -55,9 +58,11 @@ const DEFAULT: HardwareInfo = {
     transformers: null,
     unsloth: null,
     llamaCpp: null,
+    audioCpp: null,
     exportSupported: null,
     exportUnsupportedReason: null,
     exportUnsupportedMessage: null,
+    torchaoExportSupported: true,
     videoSupported: null,
     videoUnsupportedReason: null,
     videoUnsupportedMessage: null,
@@ -115,9 +120,11 @@ async function fetchOnce(): Promise<HardwareInfo> {
                 transformers: data?.versions?.transformers ?? null,
                 unsloth: data?.versions?.unsloth ?? null,
                 llamaCpp: data?.llama_cpp ?? null,
+                audioCpp: data?.audio_cpp ?? null,
                 exportSupported: data?.export_supported ?? null,
                 exportUnsupportedReason: data?.export_unsupported_reason ?? null,
                 exportUnsupportedMessage: data?.export_unsupported_message ?? null,
+                torchaoExportSupported: data?.torchao_export_supported ?? true,
                 videoSupported: data?.video_supported ?? null,
                 videoUnsupportedReason: data?.video_unsupported_reason ?? null,
                 videoUnsupportedMessage: data?.video_unsupported_message ?? null,

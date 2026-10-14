@@ -23,9 +23,15 @@ import {
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
   paramsFromId,
+  pickerSearchMatches,
   searchRowFitsDevice,
   searchableRecommendedIds,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
+import {
+  AUDIO_CPP_MODELS,
+  audioCppDisplayName,
+  isAudioCppFolderId,
+} from "../src/features/audio/audio-cpp-catalog.ts";
 
 const H3_GGUF = "unsloth/MiniMax-H3-GGUF";
 const H3_BF16 = "MiniMaxAI/MiniMax-H3";
@@ -33,6 +39,34 @@ const LTX_GGUF = "unsloth/LTX-2.3-GGUF";
 const WAN_BF16 = "Wan-AI/Wan2.2-TI2V-5B-Diffusers";
 
 // ── search: a downloaded curated row stays findable ───────────────────────────
+
+test("a bundled folder is searched on the folder name its row shows", () => {
+  const folders = AUDIO_CPP_MODELS.filter((model) => isAudioCppFolderId(model.id));
+  const hits = (query: string) =>
+    folders.filter((model) => pickerSearchMatches(model.id, [model.id], null, query));
+  const audioNamed = folders.filter((model) =>
+    audioCppDisplayName(model.id).toLowerCase().includes("audio"),
+  );
+  assert.ok(audioNamed.length > 0 && audioNamed.length < folders.length);
+  assert.deepEqual(hits("audio"), audioNamed);
+  assert.deepEqual(hits("cpp"), []);
+  assert.deepEqual(hits("gguf"), []);
+  assert.deepEqual(hits("GGUF"), []);
+  assert.equal(hits("kokoro").length, 1);
+  // The full name the row shows, and its tail, still find it.
+  assert.equal(hits("Kokoro-82M-GGUF").length, 1);
+  assert.equal(hits("82M-GGUF").length, 1);
+  assert.equal(hits("kokoro 82m gguf").length, 1);
+});
+
+test("any other row is searched on its aliases and label", () => {
+  const id = "unsloth/Qwen3-8B-GGUF";
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "unsloth/qwen3"), true);
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "qwen3 8b"), true);
+  assert.equal(pickerSearchMatches(id, [id], null, "gguf"), true);
+  assert.equal(pickerSearchMatches(id, [id], "Qwen3 8B", "llama"), false);
+  assert.equal(pickerSearchMatches("a/b", ["a/b"], "", ""), true);
+});
 
 test("a seed the listing pool dropped is still searchable", () => {
   // recommendedIds (the listing pool) filters out everything already on disk, because a
@@ -298,7 +332,7 @@ test("every list that judges a row against the device asks the same helper", () 
   // calls it a fit and painted with the OOM badge at the same time.
   assert.match(
     declarationText("catalogFit"),
-    /curatedArtifactFitsDevice\(id, catalog, budget\)/,
+    /curatedArtifactFit\(id, catalog, budget\)/,
   );
   for (const declaration of ["recommendedRows", "searchRowFits"]) {
     assert.match(
@@ -345,4 +379,38 @@ test("seed rows carry the curated param count", () => {
     declarationText("catalogSeedRows"),
     /totalParams:\s*catalog\s*\?\s*curatedTotalParamsFor\(id, catalog\)/,
   );
+});
+
+
+test("Hub settings configure the cached alias and share the row selection", () => {
+  const compiled = ts.transpileModule(
+    `const render = ${declarationText("renderHubModelRow")};`,
+    { compilerOptions: { jsx: ts.JsxEmit.React, target: ts.ScriptTarget.ES2022 } },
+  ).outputText;
+  const calls: unknown[][] = [];
+  const React = {
+    createElement: (type: unknown, props: Record<string, unknown>, ...children: unknown[]) =>
+      ({ type, props, children }),
+  };
+  const render = new Function(
+    "React", "isKnownGgufRepo", "onConfigure", "downloadedRowShellClassName",
+    "isValueRow", "ROW_ACTIONS_CLASS", "ModelLoadSettingsAction", "cachedIdFor", "pipelineTagById",
+    `${compiled}; return render;`,
+  )(
+    React, () => false, (...args: unknown[]) => calls.push(args),
+    (selected: boolean) => selected ? "selected" : "idle", () => true,
+    "actions", "settings", (id: string) => id === "mirror/model" ? "vendor/model" : null,
+    new Map([["mirror/model", "text-generation"]]),
+  );
+  const row = render("mirror/model", "model row");
+  assert.equal(row.props.className, "selected");
+  row.children[1].children[0].props.onConfigure();
+  assert.deepEqual(calls[0], ["vendor/model", {
+    source: "hub", isLora: false, isGguf: false, isDownloaded: true,
+    pipelineTag: "text-generation",
+  }]);
+  render("new/model", "model row").children[1].children[0].props.onConfigure();
+  assert.deepEqual(calls[1], ["new/model", {
+    source: "hub", isLora: false, isGguf: false, isDownloaded: false, pipelineTag: null,
+  }]);
 });

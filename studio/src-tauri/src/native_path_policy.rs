@@ -46,10 +46,104 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
     })
 }
 
-/// Document types the RAG ingest accepts; keep in sync with `config.UPLOAD_EXTS`.
+/// Document types the RAG ingest accepts; keep in sync with `config.SUPPORTED_UPLOAD_EXTS`.
 pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
+/// Office, Outlook and saved-page types RAG sources accept from a drop zone; chat drops take only the
+/// ones with a composer adapter (`DOC_EXTS` in `drop-paths.ts`).
+pub const OFFICE_ATTACHMENT_EXTS: &[&str] = &[
+    "doc", "xls", "xlt", "xlsx", "xlsm", "xltx", "xltm", "ppt", "pps", "pptx", "pptm", "ppsx",
+    "ott", "ots", "otp", "msg", "mht", "mhtml", "xhtml", "xht",
+];
+/// Read on the server by the composer; keep in sync with `SERVER_DOCUMENT_ATTACHMENT_EXTENSIONS`.
+pub const SERVER_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &[
+    "doc", "docm", "dotx", "dotm", "xls", "xlt", "xltx", "xltm", "ppt", "pps", "pptm", "potx",
+    "potm", "ppsx", "ppsm", "odp", "ott", "ots", "otp", "msg", "mht", "mhtml", "epub", "xhtml",
+    "xht",
+];
+
+pub fn is_server_document_attachment(path: &Path) -> bool {
+    SERVER_DOCUMENT_ATTACHMENT_EXTS
+        .iter()
+        .any(|ext| has_extension(path, ext))
+}
 /// OpenDocument files the chat composer parses directly rather than indexing as RAG sources.
 pub const OPEN_DOCUMENT_ATTACHMENT_EXTS: &[&str] = &["ods", "odt"];
+pub const RTF_ATTACHMENT_EXTS: &[&str] = &["rtf"];
+/// Files only the python tool reads; keep in sync with `open-document-accept.ts`.
+pub const TOOL_ONLY_ATTACHMENT_EXTS: &[&str] = &[
+    "parquet",
+    "feather",
+    "arrow",
+    "orc",
+    "dta",
+    "sas7bdat",
+    "xpt",
+    "mat",
+    "npy",
+    "npz",
+    "safetensors",
+    "sqlite",
+    "sqlite3",
+    "db",
+    "gpkg",
+    "mbtiles",
+    "duckdb",
+    "zip",
+    "jar",
+    "whl",
+    "apk",
+    "tar",
+    "gz",
+    "tgz",
+    "bz2",
+    "tbz2",
+    "tbz",
+    "xz",
+    "txz",
+    "lzma",
+    "epub",
+    "mobi",
+    "fb2",
+    "cbz",
+    "xps",
+    "oxps",
+    "docm",
+    "dotx",
+    "dotm",
+    "potx",
+    "potm",
+    "ppsm",
+    "odp",
+    "odg",
+    "vsdx",
+    "stl",
+    "3mf",
+    "ply",
+    "glb",
+    "kmz",
+    "ttf",
+    "otf",
+    "ttc",
+    "woff",
+    "psd",
+    "ico",
+    "icns",
+    "cur",
+    "tga",
+    "dds",
+    "pcx",
+    "ppm",
+    "pgm",
+    "pbm",
+    "pnm",
+    "qoi",
+    "jp2",
+    "j2k",
+    "xbm",
+    "xpm",
+    "sgi",
+    "fits",
+];
 pub const TRAINING_DATASET_EXTS: &[&str] = &["csv", "json", "jsonl", "parquet"];
 
 /// Keep in sync with `text-attachment-accept.ts`. RAG types are absent so a
@@ -90,6 +184,8 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "jsonc",
     "json5",
     "geojson",
+    "kml",
+    "gpx",
     "har",
     "avsc",
     "xml",
@@ -280,6 +376,7 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "cairo",
     "mojo",
     "gd",
+    "sqf",
     // Shells
     "sh",
     "bash",
@@ -356,8 +453,57 @@ pub const TEXT_ATTACHMENT_EXTS: &[&str] = &[
     "patch",
 ];
 
-/// Conventional extensionless names represented by dotted frontend accept tokens.
-pub const TEXT_ATTACHMENT_NAMES: &[&str] = &["containerfile", "dockerfile", "makefile"];
+/// Conventional extensionless names and dotfiles represented by dotted frontend accept tokens.
+pub const TEXT_ATTACHMENT_NAMES: &[&str] = &[
+    "containerfile",
+    "dockerfile",
+    "makefile",
+    "gnumakefile",
+    "justfile",
+    "procfile",
+    "jenkinsfile",
+    "vagrantfile",
+    "gemfile",
+    "rakefile",
+    "podfile",
+    "brewfile",
+    "pipfile",
+    "caddyfile",
+    "codeowners",
+    "readme",
+    "license",
+    "licence",
+    "copying",
+    "notice",
+    "authors",
+    "contributors",
+    "changelog",
+    ".gitignore",
+    ".gitattributes",
+    ".gitmodules",
+    ".dockerignore",
+    ".npmignore",
+    ".prettierignore",
+    ".eslintignore",
+    ".editorconfig",
+    ".npmrc",
+    ".nvmrc",
+    ".yarnrc",
+    ".prettierrc",
+    ".eslintrc",
+    ".babelrc",
+    ".pylintrc",
+    ".flake8",
+    ".clang-format",
+    ".python-version",
+    ".tool-versions",
+    ".bashrc",
+    ".bash_profile",
+    ".zshrc",
+    ".profile",
+    ".vimrc",
+    ".htaccess",
+];
 
 pub fn is_text_attachment_name(path: &Path) -> bool {
     path.file_name()
@@ -482,11 +628,23 @@ fn has_soundtracker_pattern_data(bytes: &[u8], pattern_end: usize) -> bool {
     true
 }
 
+/// The MIME a binary .dot/.pot is sent under: the composer reads it on the server, not as text.
+pub fn office_template_mime_type(path: &Path) -> &'static str {
+    if has_extension(path, "pot") {
+        "application/vnd.ms-powerpoint"
+    } else {
+        "application/msword"
+    }
+}
+
+pub fn has_office_template_extension(path: &Path) -> bool {
+    has_extension(path, "dot") || has_extension(path, "pot")
+}
+
 /// Legacy Word `.dot` and PowerPoint `.pot` templates are OLE compound files,
 /// unlike Graphviz `.dot` and gettext `.pot`.
 pub fn is_binary_office_template(path: &Path, bytes: &[u8]) -> bool {
-    (has_extension(path, "dot") || has_extension(path, "pot"))
-        && bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    has_office_template_extension(path) && bytes.starts_with(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
 }
 
 /// gfortran writes a compiled `.mod` module as gzip; text `go.mod` never is.
@@ -570,26 +728,44 @@ pub fn is_audio_only_3gp(raw: &[u8]) -> bool {
     has_audio && !has_video
 }
 
+pub fn has_transport_stream_extension(path: &Path) -> bool {
+    has_extension(path, "ts") || has_extension(path, "mts")
+}
+
+/// 0x47 sync byte every 188 bytes, or 192 behind M2TS's 4-byte timestamp.
+pub fn is_mpeg_transport_stream(path: &Path, bytes: &[u8]) -> bool {
+    has_transport_stream_extension(path)
+        && [(0, 188), (4, 192)].iter().any(|&(start, packet)| {
+            (0..3).all(|index| bytes.get(start + index * packet) == Some(&0x47))
+        })
+}
+
 /// Vision chat image attachments; keep in sync with `drop-paths.ts` `CHAT_IMAGE_DROP_ACCEPT`.
-pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
+pub const IMAGE_ATTACHMENT_EXTS: &[&str] = &[
+    "jpg", "jpeg", "png", "webp", "gif", "heic", "heif", "avif", "bmp", "tif", "tiff",
+];
 
 /// Chat audio attachments; keep in sync with `audio-attachment-adapter.ts` `accept`.
 pub const AUDIO_ATTACHMENT_EXTS: &[&str] = &[
     "wav", "mp3", "m4a", "ogg", "oga", "opus", "flac", "aac", "aiff", "aif", "aifc", "caf", "wma",
-    "amr", "mp2",
+    "amr", "mp2", "m4b", "weba", "mka",
 ];
 
 /// Chat video attachments; keep in sync with `drop-paths.ts`
 /// `CHAT_VIDEO_DROP_ACCEPT`. llama-server decodes with ffmpeg, so this is what
 /// ffmpeg reads, not what the webview can play.
 pub const VIDEO_ATTACHMENT_EXTS: &[&str] = &[
-    "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "ogv",
+    "mp4", "m4v", "mov", "webm", "mkv", "avi", "mpg", "mpeg", "wmv", "flv", "3gp", "3g2", "ogv",
+    "m2ts",
 ];
 
 fn accepted_attachment_exts() -> impl Iterator<Item = &'static &'static str> {
     ATTACHMENT_EXTS
         .iter()
+        .chain(OFFICE_ATTACHMENT_EXTS.iter())
         .chain(OPEN_DOCUMENT_ATTACHMENT_EXTS.iter())
+        .chain(RTF_ATTACHMENT_EXTS.iter())
+        .chain(TOOL_ONLY_ATTACHMENT_EXTS.iter())
         .chain(TEXT_ATTACHMENT_EXTS.iter())
         .chain(IMAGE_ATTACHMENT_EXTS.iter())
         .chain(AUDIO_ATTACHMENT_EXTS.iter())
@@ -1159,12 +1335,17 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_path(name: &str) -> PathBuf {
+        // Tests run on parallel threads, and macOS's clock resolves only microseconds, so two
+        // calls with the same name could get the same path and one test's cleanup or swap would
+        // land on the other's file. The counter keeps every name in this process distinct.
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         scratch_root().join(format!(
-            "unsloth-native-policy-{name}-{}-{nanos}",
+            "unsloth-native-policy-{name}-{}-{nanos}-{seq}",
             std::process::id()
         ))
     }

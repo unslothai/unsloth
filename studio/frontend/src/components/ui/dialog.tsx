@@ -10,6 +10,10 @@ import type * as React from "react";
 import { createContext, useContext } from "react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownGlowContext,
+  dialogDropdownGlow,
+} from "@/components/ui/dropdown-glow";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -58,8 +62,9 @@ function DialogOverlay({
   return (
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
+      data-viewport-backdrop={position === "fixed" ? true : undefined}
       className={cn(
-        "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 supports-backdrop-filter:backdrop-blur-[2px] duration-100  inset-0 isolate z-50",
+        "data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 bg-black/30 duration-100  inset-0 isolate z-50",
         position === "fixed" ? "fixed" : "absolute",
         className,
       )}
@@ -76,6 +81,8 @@ function DialogContent({
   position = "fixed",
   overlayClassName,
   overlayPosition,
+  overlayTone,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
@@ -83,21 +90,29 @@ function DialogContent({
   position?: "fixed" | "absolute";
   overlayClassName?: string;
   overlayPosition?: "fixed" | "absolute";
+  /** A darker overlay names it, so the custom titlebar dims to match. */
+  overlayTone?: "strong";
 }) {
   const resolvedContainer = container ?? null;
+  const inheritedGlow = useContext(DropdownGlowContext);
+  const glow =
+    resolvedContainer === null
+      ? dialogDropdownGlow(className, inheritedGlow)
+      : inheritedGlow;
   return (
     <DialogPortalContainerContext.Provider value={resolvedContainer}>
       <DialogPortal container={resolvedContainer ?? undefined}>
         <DialogOverlay
           className={overlayClassName}
           position={overlayPosition ?? position}
+          data-viewport-backdrop-tone={overlayTone}
         />
         <DialogPrimitive.Content
           data-slot="dialog-content"
           className={cn(
             // max-h + scroll keeps tall dialogs reachable on short viewports; a call site
             // managing its own height overrides both (twMerge drops the base classes).
-            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-foreground/5 grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
+            "bg-background data-open:animate-in data-closed:animate-out data-closed:fade-out-0 data-open:fade-in-0 data-closed:zoom-out-95 data-open:zoom-in-95 ring-[color-mix(in_oklab,var(--foreground)_calc(5%*var(--contrast-edge-gain,1)),transparent)] grid max-h-[calc(100dvh-var(--studio-window-chrome-top,0px)-2rem)] max-w-[calc(100%-2rem)] gap-6 overflow-y-auto scroll-rounded rounded-4xl px-7 pt-8 pb-7 text-sm ring-1 duration-100 sm:max-w-md top-1/2 left-1/2 z-50 w-full -translate-x-1/2 -translate-y-1/2",
             // Viewport-fixed dialogs center below the desktop titlebar, which paints over them at
             // z-70, and fill the screen at phone width instead of floating on a sliver of backdrop.
             // Both are viewport-sized, so neither applies to a dialog portaled into a container.
@@ -110,9 +125,18 @@ function DialogContent({
               : "absolute",
             className,
           )}
+          onInteractOutside={(event) => {
+            onInteractOutside?.(event);
+            // toasts render outside every dialog, so using one must not dismiss the dialog under it.
+            if ((event.target as Element | null)?.closest?.("[data-sonner-toaster]")) {
+              event.preventDefault();
+            }
+          }}
           {...props}
         >
-          {children}
+          <DropdownGlowContext.Provider value={glow}>
+            {children}
+          </DropdownGlowContext.Provider>
           {showCloseButton && (
             <DialogPrimitive.Close data-slot="dialog-close" asChild>
               <Button

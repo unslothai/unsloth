@@ -185,7 +185,7 @@ def install_dir_for(binary_path: Optional[str], *, marker_name: str) -> Optional
     if not binary_path:
         return None
     p = Path(binary_path)
-    for parent in p.parents[:5]:
+    for parent in list(p.parents)[:5]:
         if (parent / marker_name).is_file():
             return parent
     return None
@@ -274,12 +274,24 @@ def is_external_link(path: Optional[Path]) -> bool:
     return False
 
 
+def resolves_into_studio_app_tree(path: Path) -> bool:
+    """True when ``path`` resolves inside $UNSLOTH_STUDIO_APP: the Docker image links its own code from there into the Studio home, so such a link is ours, not a user checkout. False wherever the variable is unset."""
+    app = (os.environ.get("UNSLOTH_STUDIO_APP") or "").strip()
+    if not app:
+        return False
+    try:
+        root = os.path.realpath(app)
+        return os.path.commonpath([root, os.path.realpath(path)]) == root
+    except (OSError, ValueError):
+        return False
+
+
 def active_install_is_local_link(binary: Optional[str], *, dir_name: str) -> bool:
-    """True when the active server binary resolves through a locally-linked component directory. An update would write through that link into the user's checkout (or fail), so the install is treated as externally managed: none is offered or applied. Checks only up to and including the component dir so a symlinked HOME / studio root above it can't trip a false positive."""
+    """True when the active server binary resolves through a locally-linked component directory. An update would write through that link into the user's checkout (or fail), so the install is treated as externally managed: none is offered or applied. Checks only up to and including the component dir so a symlinked HOME / studio root above it can't trip a false positive, and skips a link into the image's own code tree (see resolves_into_studio_app_tree): the Docker image links whisper.cpp into the Studio home from there, and a --with-whisper-cpp-dir / --with-llama-cpp-dir checkout never resolves inside it."""
     if not binary:
         return False
     for parent in Path(binary).parents:
-        if is_external_link(parent):
+        if is_external_link(parent) and not resolves_into_studio_app_tree(parent):
             return True
         if parent.name == dir_name:
             break
@@ -567,7 +579,7 @@ def run_chained_update(phases: list[dict], *, job: dict, job_lock: threading.Loc
         if phase.get("affects_job_reload", True):
             reload_required = reload_required or bool(result.get("reload_required"))
             # The legacy job-level to_tag means "the llama build now installed"
-            if primary_to_tag is None:
+            if primary_to_tag is None and phase.get("reports_job_tag", True):
                 primary_to_tag = result.get("to_tag")
 
     with job_lock:

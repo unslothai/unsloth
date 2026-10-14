@@ -249,15 +249,9 @@ def _read_gguf_header(
 ) -> bytes:
     """A bounded prefix of a Hub-hosted GGUF, or b"" when it cannot be read.
 
-    One wall-clock bound over the WHOLE operation, request included. requests' timeout is an
-    inactivity timeout: a peer (or an intermediary) that trickles response HEADERS resets it on
-    every byte, so a deadline armed only once ``get()`` has returned leaves the caller blocked
-    before the bounded body reader is ever reached -- and this runs on the /images/load route
-    thread and on the download-plan path, both of which promised to fail open in seconds.
-
-    So the request AND the drain run on a worker this call can walk away from. On timeout the
-    response, if one exists by then, is half-closed to wake the worker; either way the caller
-    returns with whatever arrived."""
+    One wall-clock bound over the WHOLE operation: requests' own timeout is per-byte, so a
+    trickled response would block this fail-open path past any deadline armed after ``get()``.
+    Request and drain therefore run on a worker this call can abandon."""
     try:
         from huggingface_hub import hf_hub_url
         from huggingface_hub.utils import build_hf_headers, get_session
@@ -594,7 +588,7 @@ def speech_pick_refusal(
     hf_token: Optional[str] = None,
     allow_network: bool = True,
 ) -> Optional[str]:
-    """Why this diffusion pick cannot load, when it names a speech GGUF, else None.
+    """Why this diffusion pick cannot load, when it names a speech or text-encoder GGUF, else None.
 
     A media pick names its file, and ``detect_family_for_pick`` resolves the family from the FOLDER
     rather than that name, so a csm quant sitting beside a FLUX denoiser answers flux.1: the pick
@@ -617,6 +611,16 @@ def speech_pick_refusal(
         return (
             f"'{os.path.basename(gguf_filename)}' is a {named}speech checkpoint, which no image "
             "or video backend can decode. Pick one of this folder's media GGUFs instead."
+        )
+    # A text-encoder GGUF (a FLUX.2-klein Qwen3 encoder repo tagged text-to-image, #9875) matches a family by name, then
+    # loads as the denoiser with every tensor unmapped and dies in .to() with "Cannot copy out of meta tensor".
+    from core.inference.diffusion_content import _TE_GGUF_ARCHS
+
+    if arch in _TE_GGUF_ARCHS:
+        return (
+            f"'{os.path.basename(gguf_filename)}' is a text encoder ({arch} GGUF), not a diffusion "
+            "model (DiT/UNet), so it cannot be loaded as the image or video model. Pick the "
+            "model's diffusion GGUF instead."
         )
     return None
 

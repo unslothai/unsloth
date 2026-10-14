@@ -48,6 +48,7 @@ export interface TrainingStartRequest {
   max_steps: number | null;
   save_steps: number;
   eval_steps: number;
+  early_stopping_patience?: number;
   weight_decay: number;
   max_grad_norm?: number | null;
   max_grad_value?: number | null;
@@ -61,6 +62,10 @@ export interface TrainingStartRequest {
   lora_dropout: number;
   target_modules: string[];
   gradient_checkpointing: string;
+  offload_layers: number | "auto";
+  offload_vram_gb: number | null;
+  offload_vram_gb_per_device: (number | null)[] | null;
+  prefetch_depth: number | "auto";
   use_rslora: boolean;
   use_loftq: boolean;
   use_dora: boolean;
@@ -72,6 +77,8 @@ export interface TrainingStartRequest {
   is_dataset_image: boolean;
   is_dataset_audio: boolean;
   is_embedding: boolean;
+  is_decision: boolean;
+  model_subfolder: string | null;
   enable_wandb: boolean;
   wandb_token: string | null;
   wandb_project: string | null;
