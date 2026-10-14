@@ -2582,7 +2582,7 @@ def refine_plan_from_loaded_weights(
                     encode_room = int(dit_room)
                     dit_room, room, wide_dit = streamed_room, streamed_room, True
                     estimates["stream_window_mib"] = window
-        te_room = max(0, room - dit_room) if stream_te and policy == OFFLOAD_GROUP else 0
+        te_room = min(max(0, room - dit_room), encoders) if stream_te and policy == OFFLOAD_GROUP else 0
         if dit_room <= 0 and te_room <= 0:
             return plan
         if whole_dit or wide_dit:
@@ -2599,7 +2599,12 @@ def refine_plan_from_loaded_weights(
             },
             reasons = plan.reasons
             + (
-                f"{int(dit_room)} MiB of the {dit} MiB transformer and {int(te_room)} MiB of the {encoders} MiB "
+                (
+                    f"the {dit} MiB transformer is resident (not streamed by the plan)"
+                    if not bool(getattr(plan, "stream_transformer", True))
+                    else f"{int(dit_room)} MiB of the {dit} MiB transformer"
+                )
+                + f" and {int(te_room)} MiB of the {encoders} MiB "
                 f"encoders stay resident (measured peak {headroom} MiB); the rest streams"
                 + (
                     f" (whole transformer within free memory less a {_resident_dit_slack_mib(memory)} MiB slack;"

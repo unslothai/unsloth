@@ -109,11 +109,9 @@ def test_24gb_keeps_transformer_and_text_encoder_resident(q21_pipe):
     assert new.offload_policy == dm.OFFLOAD_GROUP
     assert new.stream_text_encoders and not new.stream_transformer
     assert new.resident_transformer_mib is None
-    assert (
-        new.resident_text_encoder_mib
-        == 21432 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922
-        >= 8959
-    )
+    # the room (21432 - 2304 - overhead - 644 - 6922) covers the whole encoder; the plan records the encoder's size
+    assert 21432 - 2304 - dm.DEFAULT_BASE_OVERHEAD_MIB - 644 - 6922 >= 8959
+    assert new.resident_text_encoder_mib == 8959
     assert new.estimates["measured_runtime_headroom_mib"] == 2304
     # never under-reserved: loaded weights + measured peak x margin + base overhead within the safe budget
     assert 6922 + 8959 + 644 + 2304 + dm.DEFAULT_BASE_OVERHEAD_MIB <= 21432

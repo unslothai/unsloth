@@ -434,3 +434,13 @@ def test_video_peak_of_a_request_with_a_failed_capture_is_not_persisted(store, m
     monkeypatch.setitem(__import__("sys").modules, "torch", _Torch)
     assert vsr.record_request_peak(types.SimpleNamespace(transformer = module)) == 9000
     assert mp.work_peaks(key) == {}  # kept in this process only
+
+
+def test_resident_dit_plan_clamps_encoder_room_and_says_so(klein_pipe):
+    """L4 (22.5 GB): the flat plan already kept the DiT resident; the encoder room exceeded the encoders and the log
+    read '0 MiB of the transformer and 10970 MiB of the 7673 MiB encoders'."""
+    plan = _klein_flat_plan(budget_mib = 19500, total_mib = 23034)
+    assert plan.offload_policy == dm.OFFLOAD_GROUP and not plan.stream_transformer and plan.stream_text_encoders
+    new = _refine(klein_pipe, plan)
+    assert new.resident_text_encoder_mib == 7629
+    assert "transformer is resident" in new.reasons[-1]
