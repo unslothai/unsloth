@@ -4886,3 +4886,22 @@ def test_a_managed_account_is_not_refused_for_the_split_block_spark_serving_adde
             seen.append(type(chain).__name__)
             chain = chain.__cause__ or chain.__context__
         assert raised.value.status_code != 403 and "Reached" in seen, seen
+
+
+def test_inherited_extras_handed_to_the_planner_are_shadow_stripped(monkeypatch):
+    """The planner writes inherited extras into the request, so a field the Apply set (here the
+    context) must already have dropped the stale flag, as the route's own inheritance does."""
+    import routes.inference as ri
+    from models.inference import LoadRequest
+
+    stored = ["--ctx-size", "4096", "--seed", "1"] + ss.layer_split_extra_args(
+        "192.168.200.13", 50052
+    )
+    backend = SimpleNamespace(
+        extra_args = stored, extra_args_requested_source = ("unsloth/some-GGUF", None)
+    )
+    monkeypatch.setattr(ri, "get_llama_cpp_backend", lambda: backend)
+    applied = LoadRequest(model_path = "unsloth/some-GGUF", max_seq_length = 32768)
+    assert ri._spark_inherited_extra_args(applied) == ["--seed", "1"]
+    untouched = LoadRequest(model_path = "unsloth/some-GGUF")
+    assert ri._spark_inherited_extra_args(untouched) == ["--ctx-size", "4096", "--seed", "1"]
