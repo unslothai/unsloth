@@ -1473,6 +1473,7 @@ def _gemv_rows(X, W, quant_state, out):
             and plan[1] is quant_state.absmax
             and plan[2] is X.dtype
             and X.data_ptr() & 15 == plan[3]
+            and X.numel() == M * plan[7]
             and (
                 plan[4] == plan[6]
                 if out is None
@@ -1483,6 +1484,7 @@ def _gemv_rows(X, W, quant_state, out):
                     and out.stride(-1) == 1
                     and out.shape[0] == M
                     and out.shape[-1] == plan[6]
+                    and out.device == X.device
                 )
             )
         ):
@@ -1497,10 +1499,15 @@ def _gemv_rows(X, W, quant_state, out):
     absmax, shape, dtype, blocksize, code, code2, absmax2, offset, blocksize2 = _unpack_quant_state(
         quant_state
     )
-    if shape[1] % blocksize != 0 or X.dtype not in (torch.float16, torch.bfloat16):
+    if (
+        shape[1] % blocksize != 0
+        or X.dtype not in (torch.float16, torch.bfloat16)
+        or X.numel() != M * shape[1]
+    ):
         return None
     if out is not None and (
-        out.dtype != X.dtype
+        out.device != X.device
+        or out.dtype != X.dtype
         or out.stride(-1) != 1
         or out.shape[0] != M
         or out.shape[-1] != shape[0]
@@ -1526,6 +1533,7 @@ def _gemv_rows(X, W, quant_state, out):
                     out.stride(0),
                     rerun,
                     int(shape[0]),
+                    int(shape[1]),
                 ]
             )
         return out

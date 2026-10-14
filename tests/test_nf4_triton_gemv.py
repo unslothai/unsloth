@@ -270,6 +270,9 @@ def test_rows_gemv_rejects_an_out_it_cannot_fill(monkeypatch):
         torch.empty(2048, dtype = torch.bfloat16, device = "cuda").as_strided((2, 1, 1024), (512, 512, 1)),
     ):
         assert utils._gemv_rows(X, W, W_quant, bad) is None
+    assert utils._gemv_rows(X, W, W_quant, torch.empty(2, 1, 1024, dtype = torch.bfloat16)) is None
+    for wrong_k in (4095, 4097):
+        assert utils._gemv_rows(torch.randn(2, 1, wrong_k, dtype = torch.bfloat16, device = "cuda"), W, W_quant, None) is None
 
 
 def test_empty_decode_batch_keeps_the_matmul_path(monkeypatch):
