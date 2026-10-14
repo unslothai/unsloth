@@ -308,13 +308,16 @@ def plan_companion_split(
     secondary_budget_mib: Callable[[int], Optional[int]],
     selection: Optional[MultiGpuSelection],
     text_encoder_dense_mib: Optional[int] = None,
+    phase_headroom_mib: Optional[tuple[int, int, int]] = None,
 ) -> Optional[CompanionSplit]:
     """Pure decision: return a split when the single-card plan offloads (or ``force``), the denoiser fits the primary
     under the resident rule, and the moved companions fit a secondary. Tried in order: every companion (text encoders
     + VAE + the rest, the secondary priced with the full runtime headroom since it runs the decode), then the text
     encoders alone (the VAE decodes on the primary; the secondary needs only an encoder forward's room).
     ``primary_limit_mib`` is the primary's resident limit (already scaled by the caller's rule);
-    ``secondary_budget_mib(ordinal)`` returns a secondary's safe budget."""
+    ``secondary_budget_mib(ordinal)`` returns a secondary's safe budget. ``phase_headroom_mib`` = measured (encode,
+    denoise, decode) MiB above the weights for families Studio has calibrated: each card is then priced only for the
+    phases it runs instead of the flat runtime headroom."""
     mode = multigpu_mode()
     if selection is None or mode == "off":
         return None
@@ -329,17 +332,22 @@ def plan_companion_split(
             limits[ordinal] = int(int(budget) * _RESIDENT_FRACTION)
     if not limits:
         return None
-    candidates: list[tuple[int, int, Optional[tuple[str, ...]], str]] = [
-        (int(companion_dense_mib), int(runtime_headroom_mib), None, "text encoders + VAE"),
+    runtime = int(runtime_headroom_mib)
+    if phase_headroom_mib is not None:
+        encode, denoise, decode = (int(v) for v in phase_headroom_mib)
+        # (moved MiB, primary headroom, secondary headroom, components, label)
+        companions_split = (denoise, max(encode, decode))
+        encoders_split = (max(denoise, decode), encode)
+    else:
+        companions_split = (runtime, runtime)
+        encoders_split = (runtime, TEXT_ENCODER_HEADROOM_MIB)
+    candidates: list[tuple[int, int, int, Optional[tuple[str, ...]], str]] = [
+        (int(companion_dense_mib), *companions_split, None, "text encoders + VAE"),
     ]
     if text_encoder_dense_mib and 0 < int(text_encoder_dense_mib) <= int(companion_dense_mib):
-        candidates.append(
-            (int(text_encoder_dense_mib), TEXT_ENCODER_HEADROOM_MIB, TEXT_ENCODERS_ONLY, "text encoders")
-        )
-    for moved_mib, sec_headroom, components, label in candidates:
-        primary_required = (
-            max(0, int(model_dense_mib) - moved_mib) + int(runtime_headroom_mib) + int(base_overhead_mib)
-        )
+        candidates.append((int(text_encoder_dense_mib), *encoders_split, TEXT_ENCODERS_ONLY, "text encoders"))
+    for moved_mib, pri_headroom, sec_headroom, components, label in candidates:
+        primary_required = max(0, int(model_dense_mib) - moved_mib) + int(pri_headroom) + int(base_overhead_mib)
         if primary_required > int(primary_limit_mib):
             continue
         secondary_required = moved_mib + sec_headroom + int(base_overhead_mib)
@@ -443,7 +451,13 @@ def refine_plan_for_multigpu(pipe: Any, plan: Any, logger: Any = None) -> Any:
     sec_budget = secondary_safe_budget_mib(secondary)
     if sec_budget is None:
         return plan
-    headroom = int(plan.estimates.get("runtime_headroom_mib") or 0)
+    # the measured figure when the loaded-weights refinement or the calibration table priced this family
+    headroom = int(
+        plan.estimates.get("measured_runtime_headroom_mib")
+        or plan.estimates.get("calibrated_headroom_mib")
+        or plan.estimates.get("runtime_headroom_mib")
+        or 0
+    )
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
     moved = choose_component_assignment(
         sizes,

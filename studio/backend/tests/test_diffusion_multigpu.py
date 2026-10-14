@@ -128,6 +128,24 @@ def test_text_encoders_alone_when_the_decode_needs_the_runtime_room():
     assert _split(**{**kwargs, "text_encoder_dense_mib": None}) is None
 
 
+def test_measured_phases_price_each_card_for_what_it_runs():
+    # klein-like on two 15 GB cards: the flat 8 GiB estimate refuses, the measured phases fit.
+    kwargs = dict(
+        model_dense_mib = 7630 + 7500 + 160,
+        companion_dense_mib = 7660,
+        text_encoder_dense_mib = 7500,
+        runtime_headroom_mib = 8192,
+        base_overhead_mib = 2048,
+        primary_limit_mib = 14400,
+        secondary_budget_mib = lambda o: 14700,
+    )
+    assert _split(**kwargs) is None
+    split = _split(**kwargs, phase_headroom_mib = (1516, 1160, 2645))
+    assert split is not None and split.components is None
+    assert split.primary_required_mib == 7630 + 1160 + 2048
+    assert split.secondary_required_mib == 7660 + 2645 + 2048
+
+
 def test_force_splits_even_when_one_card_fits(monkeypatch):
     monkeypatch.setenv(mg.MULTIGPU_ENV, "force")
     assert _split(single_card_policy = "none") is not None
