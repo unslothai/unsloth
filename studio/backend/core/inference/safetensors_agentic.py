@@ -758,10 +758,14 @@ def run_safetensors_tool_loop(
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
     # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = unrestricted.
-    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(tools))
+    from core.inference.tools import mcp_loadable_specs
+
+    # Plus the MCP tools a search can load mid-turn (#10997).
+    _loadable_mcp = [] if unrestricted_tools else mcp_loadable_specs(tools)
+    _detect_tools = [] if unrestricted_tools else list(tools or []) + _loadable_mcp
+    _enabled_names_gate = None if unrestricted_tools else set(_active_tool_names(_detect_tools))
     # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
     # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-    _detect_tools = [] if unrestricted_tools else list(tools or [])
     # Sanitized at construction: prepare_call authorizes against the controller, so a tool
     # dropped from the prompt for unsafe markup must leave the controller too. The gates above
     # keep the ORIGINAL names: those decide what LOOKS like a call, not what may run (#7066).
@@ -842,7 +846,12 @@ def run_safetensors_tool_loop(
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
         # Gate the markerless bare-JSON form on enabled names so an ordinary JSON answer isn't misread as a call.
-        _enabled_tool_names = None if unrestricted_tools else set(_active_tool_names(active_tools))
+        _enabled_tool_names = (
+            None
+            if unrestricted_tools
+            else set(_active_tool_names(active_tools))
+            | (set(_active_tool_names(_loadable_mcp)) if active_tools else set())
+        )
 
         # Refit every iteration: tool results grow the prompt after the first turn. Given
         # the prompt, this turn's tools and the live branch; returns `messages` and `events`.
@@ -1805,7 +1814,9 @@ def run_safetensors_tool_loop(
             completion = tool_controller.record_result(decision, result)
             if provisional_match:
                 provisional_resolved = True
-            _turn_executed_real_tool = True
+            # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
+            if decision.tool_name != "mcp_tool_search":
+                _turn_executed_real_tool = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             # Parsed only when there is a sink for them.
