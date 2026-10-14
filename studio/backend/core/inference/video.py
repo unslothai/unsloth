@@ -134,6 +134,8 @@ from .diffusion_memory import (
     stop_background_pins,
 )
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
+from . import diffusion_compile_cache as compile_cache
+from .diffusion_compile_cache import compiled_stages as compiled_denoiser_stages
 from .media_decode_phase import decode_phase as _decode_phase
 from .media_decode_phase import denoise_phase as _denoise_phase
 from . import diffusion_render_thread as render_thread
@@ -145,6 +147,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    fresh_compile_count,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -1359,6 +1362,8 @@ class _VideoLoadState:
     h3_residency: Any = None
     resolved: Optional[dict] = None
     bg_compile: Any = None
+    # Mega-cache bundle for every compiled denoiser stage of this load (diffusion_compile_cache.begin_stages), or None.
+    compile_cache_ctx: Any = None
 
 
 @dataclass(frozen = True)
@@ -4574,6 +4579,7 @@ class VideoBackend:
         uncommitted load would otherwise leak its profile into the next speed=off
         load. Token-scoped: when a newer load has already taken the snapshot slot,
         the stale worker must leave the globals alone."""
+        self._release_precommit_compile_cache(token)
         stored = getattr(self, "_precommit_globals", None)
         if stored is None:
             return
@@ -4587,6 +4593,52 @@ class VideoBackend:
 
         diffusion_gguf_compile.uninstall_all()
         uninstall_group(GROUP_VIDEO_FUSED)
+
+    def _release_precommit_compile_cache(self, token: Optional[int]) -> None:
+        """Release the compile-cache context of a load that died before its state commit. Token-scoped like
+        ``_rollback_precommit_globals``."""
+        stored = getattr(self, "_precommit_compile_cache", None)
+        if stored is None:
+            return
+        stored_token, ctx = stored
+        if token is not None and stored_token is not None and stored_token != token:
+            return
+        self._precommit_compile_cache = None
+        compile_cache.restore(ctx, logger = logger)
+
+    def _begin_stage_compile_cache(
+        self,
+        *,
+        token: Optional[int],
+        roots: tuple,
+        speed_optims: tuple,
+        dtype: Any,
+        quant: Optional[str],
+        attention_backend: Optional[str],
+    ) -> tuple[Any, Optional[str]]:
+        """Open the Mega-cache bundle for every compiled denoiser stage reachable from ``roots`` (the pipe and its
+        expert views). After the speed layer armed the (lazy) regional compile, before the first forward. Returns
+        ``(ctx, decline_reason)``."""
+        if "compiled" not in tuple(speed_optims or ()):
+            return None, "nothing compiled on this load"
+        stages = compiled_denoiser_stages(*roots)
+        if not stages:
+            return None, "no regional-compiled denoiser stage found"
+        ctx = compile_cache.begin_stages(
+            stages,
+            dtype = dtype,
+            quant = quant,
+            attention_backend = attention_backend,
+            logger = logger,
+        )
+        if ctx is None:
+            return None, (
+                "disabled (UNSLOTH_DIFFUSION_COMPILE_CACHE=0)"
+                if compile_cache.cache_mode() == "off"
+                else "unavailable on this torch build"
+            )
+        self._precommit_compile_cache = (token, ctx)
+        return ctx, None
 
     # LTX-2.3 gets DiT/connectors/VAEs/vocoder from the checkpoint + extras, so only the 2.0 base scheduler / text
     # encoder / tokenizer are pulled.
@@ -7951,6 +8003,15 @@ class VideoBackend:
                     speed_optims += ("hv15_vae_vector_mask",)
                 if wan_fused_engaged:
                     speed_optims += ("wan_fused_adaln",)
+        # The regional compile is armed but lazy: load the stages' Mega-cache bundle now, before the first forward.
+        compile_ctx, compile_cache_decline = self._begin_stage_compile_cache(
+            token = _load_token,
+            roots = (pipe, *views),
+            speed_optims = speed_optims,
+            dtype = dtype,
+            quant = transformer_quant_engaged,
+            attention_backend = attention_engaged,
+        )
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck
             # before placement.
@@ -8144,8 +8205,8 @@ class VideoBackend:
                 attention = attention_engaged,
                 step_cache = cache_engaged,
                 step_cache_reason = cache_reason,
-                compile_cache = False,
-                compile_cache_reason = autoopt.VIDEO_COMPILE_CACHE_DECLINE,
+                compile_cache = compile_ctx is not None,
+                compile_cache_reason = compile_cache_decline,
             )
             autoopt.finalize(load_audit, speed_optims, resolved)
 
@@ -8241,8 +8302,10 @@ class VideoBackend:
                     ),
                     resolved = resolved,
                     bg_compile = load_bg_compile,
+                    compile_cache_ctx = compile_ctx,
                 )
                 self._precommit_globals = None
+                self._precommit_compile_cache = None
                 pending_encoder = self._ltx25_pending_encoder
                 if (
                     ltx25_client is not None
@@ -9206,6 +9269,16 @@ class VideoBackend:
                 )
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_speed_optims failed, continuing unoptimised: %s", exc)
+        # Every compiled denoiser stage reachable from the pipe (the streamed denoiser compiles below its hooks with the
+        # same recorded kwargs): load its Mega-cache bundle before the first forward.
+        h3_compile_ctx, h3_compile_cache_decline = self._begin_stage_compile_cache(
+            token = _load_token,
+            roots = (pipe, speed_view, getattr(pipe, denoiser_component, None)),
+            speed_optims = speed_optims,
+            dtype = dtype,
+            quant = transformer_quant_engaged,
+            attention_backend = attention_engaged,
+        )
         # H3 declines graphs (cuda_graph_decline), so this only acts when a family override forces them: the graph was
         # deferred to the placement above, so arm it against the hooks that landed, or record why it stays eager,
         # rather than leaving the pending note in the status.
@@ -9378,8 +9451,8 @@ class VideoBackend:
             attention = attention_engaged,
             step_cache = h3_cache_engaged,
             step_cache_reason = h3_cache_reason,
-            compile_cache = False,
-            compile_cache_reason = autoopt.VIDEO_COMPILE_CACHE_DECLINE,
+            compile_cache = h3_compile_ctx is not None,
+            compile_cache_reason = h3_compile_cache_decline,
         )
         autoopt.finalize(h3_audit, speed_optims, resolved)
         apply_comfy_flow_shift(pipe, getattr(fam, "comfy_flow_shift", None), logger)
@@ -9441,8 +9514,10 @@ class VideoBackend:
                 te_streamed = bool(te_streamed),
                 h3_residency = residency,
                 resolved = resolved,
+                compile_cache_ctx = h3_compile_ctx,
             )
             self._precommit_globals = None
+            self._precommit_compile_cache = None
         logger.info(
             "video.loaded: %s (%s, modular diffusers, speed=%s%s, transformer_quant=%s, "
             "text_encoder_quant=%s)",
@@ -10702,6 +10777,9 @@ class VideoBackend:
                     publish = _publish_preview,
                     total_steps = steps,
                 )
+                compile_ctx = getattr(state, "compile_cache_ctx", None)
+                graphs_before = fresh_compile_count()
+                compile_cache.note_use(compile_ctx)
                 try:
                     with grad_ctx, protect_ctx, progress_ctx(), sigma_ctx:
                         output = render_thread.run(
@@ -10741,6 +10819,16 @@ class VideoBackend:
                 # The pipeline returned, so every step ran whatever the last event said. This is
                 # also the only place a latent-only render (no decoder entered) can complete.
                 _finish_denoise()
+                if compile_ctx is not None:
+                    # Persist the stages' compiled graphs for the NEXT process: queued, never waited on. A render that
+                    # compiled new graphs (a new resolution under a static compile, automatic dynamic generalising)
+                    # re-dirties a bundle that was a hit.
+                    try:
+                        if fresh_compile_count() > graphs_before:
+                            compile_cache.mark_recompiled(compile_ctx)
+                        compile_cache.save_async(compile_ctx, logger = logger)
+                    except Exception:  # noqa: BLE001 - cache persistence is best-effort
+                        pass
                 self._gen.update(phase = "export", eta_seconds = None)
                 if fam.modular_workflow:
                     video_frames = output["videos"][0]
@@ -11557,6 +11645,9 @@ class VideoBackend:
                 except Exception:  # noqa: BLE001 -- teardown is best effort
                     pass
             restore_backend_flags(state.backend_flags)
+            # Unregisters the bundle key from eviction protection. A queued save may still run: it serialises the
+            # process's in-memory artifact record, not this pipe.
+            compile_cache.restore(getattr(state, "compile_cache_ctx", None), logger = logger)
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later
             # speed=off load is bit-identical.
             from . import diffusion_gguf_compile
