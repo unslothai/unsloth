@@ -121,6 +121,19 @@ def test_a_failed_lookup_is_not_retried_on_every_poll(monkeypatch):
     assert calls == [_REPO, _REPO]
 
 
+def test_a_failed_asset_lookup_is_not_retried_on_every_poll(monkeypatch):
+    calls: list = []
+    monkeypatch.setattr(fr, "_fetch_latest_release_assets", lambda repo: calls.append(repo))
+    assert fr.latest_release_assets(_REPO) is None
+    assert fr.latest_release_assets(_REPO) is None
+    assert calls == [_REPO]
+    assert fr.latest_release_assets(_REPO, force_refresh = True) is None
+    assert calls == [_REPO, _REPO]
+    monkeypatch.setattr(fr, "_fetch_latest_release_assets", lambda repo: {"a.tar.gz": 7})
+    assert fr.latest_release_assets(_REPO, force_refresh = True) == {"a.tar.gz": 7}
+    assert _REPO not in fr._assets_failed_at
+
+
 def test_a_failed_lookup_keeps_the_last_good_value(monkeypatch, tmp_path):
     freshness_flow.save_disk_cache(
         _REPO, "v0.9.0-unsloth.1", tmp_path / "audio_cpp_freshness", log_message = "test"

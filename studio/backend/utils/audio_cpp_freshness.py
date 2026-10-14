@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,8 @@ _release_memo: dict[str, tuple[float, Optional[str]]] = {}
 _release_failed_at: dict[str, float] = {}
 # Newest-release asset sizes (name -> bytes), memoized like the tag (24h TTL).
 _assets_memo: dict[str, tuple[float, dict[str, int]]] = {}
+# An offline host with a disk-cached newer tag still asks for its assets: without this every poll pays the fetch deadline.
+_assets_failed_at: dict[str, float] = {}
 
 # A leading v?X.Y[.Z], any middle label (``-audio8-perf-hotfix``), then an optional ``-unsloth.N``.
 _VERSION = re.compile(r"v?(\d+)\.(\d+)(?:\.(\d+))?(?:-\S*)?")
@@ -80,13 +83,30 @@ def _fetch_latest_release_assets(repo: str, timeout: float = 5.0) -> Optional[di
 
 
 def latest_release_assets(repo: str, *, force_refresh: bool = False) -> Optional[dict[str, int]]:
-    """Newest-release asset sizes for `repo`, memoized (24h TTL). None when offline and never fetched. In-memory only, so a restart simply re-fetches."""
-    return _flow.latest_release_assets(
-        repo,
-        force_refresh = force_refresh,
-        memo = _assets_memo,
-        fetch = lambda r: _fetch_latest_release_assets(r),
+    """Newest-release asset sizes for `repo`, memoized (24h TTL) with the same 60s failure cache as the tag. None when offline and never fetched. In-memory only, so a restart simply re-fetches."""
+    failed = _assets_failed_at.get(repo)
+    if (
+        not force_refresh
+        and failed is not None
+        and time.monotonic() - failed < _flow.RELEASE_FAILURE_CACHE_TTL_SECONDS
+    ):
+        cached = _assets_memo.get(repo)
+        return cached[1] if cached else None
+    fetched = []
+
+    def _fetch(r: str) -> Optional[dict[str, int]]:
+        assets = _fetch_latest_release_assets(r)
+        fetched.append(assets)
+        return assets
+
+    assets = _flow.latest_release_assets(
+        repo, force_refresh = force_refresh, memo = _assets_memo, fetch = _fetch
     )
+    if fetched and fetched[-1] is None:
+        _assets_failed_at[repo] = time.monotonic()
+    elif fetched:
+        _assets_failed_at.pop(repo, None)
+    return assets
 
 
 def parse_release_version(tag: object) -> Optional[tuple]:
@@ -122,7 +142,7 @@ def is_behind(installed: Optional[str], latest: Optional[str]) -> bool:
 def reset_caches(*, drop_disk: bool = False) -> None:
     """Drop the in-memory freshness caches. The no-arg form is test-only. With ``drop_disk = True`` also delete the on-disk 24h release cache, used after an install: clearing memory alone leaves the old value on disk, so an offline refresh would replay it and the offer could point at the build just replaced."""
     _flow.reset_caches(
-        (_release_memo, _release_failed_at, _assets_memo),
+        (_release_memo, _release_failed_at, _assets_memo, _assets_failed_at),
         drop_disk = drop_disk,
         cache_dir = lambda: _cache_dir(),
     )
