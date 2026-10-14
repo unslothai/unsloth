@@ -120,7 +120,8 @@ def test_arming_awaits_the_slow_probe_without_stalling_the_loop():
 
     policy, worst_gap, elapsed = asyncio.run(run())
     assert policy is not None, "the chat must still be armed"
-    assert elapsed >= inference_route._ARM_RESIDENCY_READ_S, "the read was not waited for"
+    # A tenth off for timer granularity: Windows' 15.6 ms tick ends the wait a tick early.
+    assert elapsed >= inference_route._ARM_RESIDENCY_READ_S * 0.9, "the read was not waited for"
     assert worst_gap < _MAX_GAP_S, f"the loop stalled for {worst_gap:.3f}s while arming"
 
 

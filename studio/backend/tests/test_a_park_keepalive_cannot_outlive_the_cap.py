@@ -54,7 +54,9 @@ def test_a_park_that_never_ends_still_times_out():
     assert time.monotonic() - started < 5, "every keepalive pushed the deadline out again"
 
 
-def test_a_park_that_resumes_inside_the_cap_still_answers():
+def test_a_park_that_resumes_inside_the_cap_still_answers(monkeypatch):
+    # A cap well above the park itself, so a slow runner's sleeps cannot outlast it.
+    monkeypatch.setattr(llama_mod, "_SERVER_PARK_STALL_CAP_S", 5.0)
     data = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
     chunks = [": preempted 1\n\n"] + [": preempt-keepalive\n\n"] * 5 + [": resumed 1\n\n", data]
     assert "".join(_read(chunks)).endswith(data)
@@ -133,7 +135,13 @@ class TestARawRelayParkedBeforeItsFirstToken:
     """Keepalives before any token renew the first-token window, never past the park cap."""
 
     @staticmethod
-    async def _relay(items, monkeypatch, cap, window):
+    async def _relay(
+        items,
+        monkeypatch,
+        cap,
+        window,
+        step = 0.01,
+    ):
         import routes.inference as inference
 
         monkeypatch.setattr(inference, "_RAW_PARK_STALL_CAP_S", cap)
@@ -142,7 +150,7 @@ class TestARawRelayParkedBeforeItsFirstToken:
 
         async def upstream():
             for item in items:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(step)
                 yield item
 
         seen = []
@@ -172,13 +180,17 @@ class TestARawRelayParkedBeforeItsFirstToken:
 def test_a_second_park_before_the_first_token_gets_its_own_cap(monkeypatch):
     """Two parks during prefill, each inside the cap, together over it: the resume between them
     starts the second one's clock afresh."""
-    items = [": preempted"] + [": preempt-keepalive"] * 30 + [": resumed", ": preempted"]
-    items += [": preempt-keepalive"] * 30 + [
+    # Each park is six 50 ms steps, 0.3 s, with the cap just under the two together: a few long
+    # sleeps stretch far less on a loaded runner or a coarse timer than sixty short ones.
+    items = [": preempted"] + [": preempt-keepalive"] * 6 + [": resumed", ": preempted"]
+    items += [": preempt-keepalive"] * 6 + [
         ": resumed",
         'data: {"choices":[{"delta":{"content":"a"}}]}',
     ]
     seen = asyncio.run(
-        TestARawRelayParkedBeforeItsFirstToken._relay(items, monkeypatch, cap = 0.5, window = 0.4)
+        TestARawRelayParkedBeforeItsFirstToken._relay(
+            items, monkeypatch, cap = 0.58, window = 0.4, step = 0.05
+        )
     )
     assert seen[-1].startswith("data:")
 

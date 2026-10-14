@@ -304,8 +304,9 @@ class TestAdmissionReadsTheCacheAfresh:
             waited = asyncio.run(_drive())
         finally:
             released.set()
+        # A tenth off for timer granularity: Windows' 15.6 ms tick ends the wait a tick early.
         assert (
-            inference_route._ARM_RESIDENCY_READ_S
+            inference_route._ARM_RESIDENCY_READ_S * 0.9
             <= waited
             < inference_route._ARM_RESIDENCY_READ_S + 1.0
         )
