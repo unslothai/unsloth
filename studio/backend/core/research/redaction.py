@@ -72,7 +72,7 @@ _QUERY_AUTHORIZATION = re.compile(
     (?:{_SCHEME_ALTERNATION}
     |[\w-]*(?:key|token|secret|password|credential|signature)|(?P=scheme))(?:[ \t]+|[ \t]*\r?\n[ \t]+)
     (?:[\w.~+/-]+(?::[\w.~+/-]+)*=*(?=[\s,"'`)\]}}>”’.;!?—–]|$)(?![ \t]*=)(?!(?<==)["'“‘][^"'”’\s,]*["'”’])|{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*)
-    |(?!(?:HTTP|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)[ \t])(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*
+    |(?!(?:HTTP|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)[ \t])(?:(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{{2,}}(?=[ \t]+[\w!#$%&'*+.^`|~-]*(?:key|token|secret|password|credential|signature|nonce|response)\*?[ \t]*=)))[ \t]+{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*{_AUTH_PARAM})*
     |(?!(?:HTTP|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)[ \t])(?-i:[A-Z][A-Za-z0-9-]*[ \t]+(?=[\w.~+-][\w.~+/-]{{7}})(?=[\w.~+/:-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{{2}})|[\w.~+/-]{{16}})[\w.~+/-]+(?::[\w.~+/-]+)*=*)))*)""".replace(
         r"[ \t]", _HSPACE
     )
@@ -113,7 +113,7 @@ _REGISTERED_SCHEME_NAMES = frozenset(
 )
 _COALESCED_MEMBER = re.compile(
     rf"\s*,\s*(?=(?:{_SCHEME_ALTERNATION}|[\w-]*(?:key|token|secret|password|credential|signature))\s"
-    r"|(?!(?-i:HTTP|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\s)(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{2,})\s+[\w!#$%&'*+.^`|~-]+\s*="
+    r"|(?!(?-i:HTTP|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\s)(?-i:[A-Z][A-Za-z0-9]*[-\d][\w!#$%&'*+.^`|~-]*|[A-Z]{2,}(?=\s+[\w!#$%&'*+.^`|~-]*(?:key|token|secret|password|credential|signature|nonce|response)\*?\s*=))\s+[\w!#$%&'*+.^`|~-]+\s*="
     r"|(?!(?-i:HTTP|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|CONNECT|TRACE)\s)(?-i:[A-Z][A-Za-z0-9-]*\s+(?=[\w.~+-][\w.~+/-]{7})(?=[\w.~+/:-]*(?:[\d+/=]|[a-z][A-Z]|[A-Z]{2})|[\w.~+/-]{16})))",
     re.IGNORECASE,
 )
