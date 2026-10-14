@@ -94,9 +94,9 @@ const PROSE_COMMAND_RE =
 const SHELL_WORD_RE = /^(?:[a-z_][\w.-]*|\.{0,2}\/[^\s]+)$/;
 const SHELL_POSITIONAL_WORD_RE = /^[A-Za-z0-9_][\w.-]*$/;
 const SHELL_ARGUMENT_RE =
-  /^(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
+  /^(?!(?:\d+\.)+\d+$)(?:-{1,2}[\w-]+|[\w.-]+=\S*|\.{0,2}\/\S+|\S*[./*?[\]{}]\S*)$/;
 const MARKDOWN_CONTAINER_PREFIX_RE =
-  /^(?:(?: {0,3}>[ \t]?)|(?: {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+))+/;
+  /^(?:(?: {0,3}>[ \t]?)|(?: {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+(?:\[[ xX]\][ \t]+)?))+/;
 const SHELL_PROMPT_PREFIX_RE = /^\$[ \t]+/;
 const MARKDOWN_TABLE_PREFIX_RE = /^[ \t]*\|/;
 const SHELL_ASSIGNMENT_PREFIX_RE = /(?:^|[;&|]\s*)[A-Za-z_]\w*=$/;
@@ -135,6 +135,58 @@ function isShellWordBoundary(char: number): boolean {
     char === 92 ||
     char === 124
   );
+}
+
+function logicalShellLineStart(
+  text: string,
+  at: number,
+  minimum: number,
+): number {
+  let start = at;
+  while (start > minimum) {
+    while (
+      start > minimum &&
+      text.charCodeAt(start - 1) !== 10 &&
+      text.charCodeAt(start - 1) !== 13
+    ) {
+      start--;
+    }
+    if (start === minimum) return start;
+    let newlineStart = start - 1;
+    if (
+      text.charCodeAt(newlineStart) === 10 &&
+      text.charCodeAt(newlineStart - 1) === 13
+    ) {
+      newlineStart--;
+    }
+    let slash = newlineStart;
+    while (slash > minimum && text.charCodeAt(slash - 1) === 92) slash--;
+    if ((newlineStart - slash) % 2 === 0) return start;
+    start = newlineStart;
+  }
+  return start;
+}
+
+function lastShellControlOperatorEnd(prefix: string): number {
+  let quote = 0;
+  let last = 0;
+  for (let index = 0; index < prefix.length; index++) {
+    const char = prefix.charCodeAt(index);
+    if (quote !== 0) {
+      if (char === 92 && quote !== 39) index++;
+      else if (char === quote) quote = 0;
+      continue;
+    }
+    if (char === 34 || char === 39) {
+      quote = char;
+    } else if (char === 92) {
+      index++;
+    } else if (char === 38 || char === 59 || char === 124) {
+      if (prefix.charCodeAt(index + 1) === char) index++;
+      last = index + 1;
+    }
+  }
+  return last;
 }
 
 function isShellPromptMarker(text: string, at: number): boolean {
@@ -182,23 +234,24 @@ function hasShellCommandPrefix(
     );
   }
   const minimum = Math.max(0, at - 256);
-  let lineStart = at;
-  while (
-    lineStart > minimum &&
-    text.charCodeAt(lineStart - 1) !== 10 &&
-    text.charCodeAt(lineStart - 1) !== 13
-  ) {
-    lineStart--;
-  }
+  const lineStart = logicalShellLineStart(text, at, minimum);
   const completeLinePrefix =
     lineStart === 0 ||
     text.charCodeAt(lineStart - 1) === 10 ||
     text.charCodeAt(lineStart - 1) === 13;
-  const rawPrefix = text.slice(lineStart, at).trimEnd();
+  const rawPrefix = text
+    .slice(lineStart, at)
+    .replace(/\\(?:\r\n|\n|\r)[ \t]*/g, " ")
+    .trimEnd();
   const prefix = rawPrefix
     .replace(MARKDOWN_CONTAINER_PREFIX_RE, "")
     .replace(SHELL_PROMPT_PREFIX_RE, "");
   if (!prefix) return false;
+  if (
+    MARKDOWN_TABLE_PREFIX_RE.test(rawPrefix) ||
+    MARKDOWN_TABLE_PREFIX_RE.test(prefix)
+  )
+    return false;
   if (
     SHELL_ASSIGNMENT_PREFIX_RE.test(prefix) ||
     (!MARKDOWN_TABLE_PREFIX_RE.test(rawPrefix) &&
@@ -207,7 +260,9 @@ function hasShellCommandPrefix(
     return true;
   }
   if (/\b(?:shell|bash|command) examples?\b[^\n.]*$/i.test(prefix)) return true;
-  const words = prefix.match(/[^\s]+/g) ?? [];
+  const commandStart = lastShellControlOperatorEnd(prefix);
+  const commandPrefix = prefix.slice(commandStart).trimStart();
+  const words = commandPrefix.match(/[^\s]+/g) ?? [];
   let commandIndex = 0;
   while (
     commandIndex < words.length - 1 &&
@@ -229,11 +284,11 @@ function hasShellCommandPrefix(
     command.length >= 2 &&
     !PROSE_COMMAND_RE.test(command) &&
     SHELL_WORD_RE.test(command) &&
-    hasCommandArguments(words, commandIndex + 1)
+    (commandStart > 0 || hasCommandArguments(words, commandIndex + 1))
   ) {
     return true;
   }
-  return /[;&|]\s*[a-z_][\w.-]*\s*$/.test(prefix);
+  return false;
 }
 
 function hasShellParameterContext(
@@ -519,6 +574,18 @@ function numericShellParameterStart(text: string, at: number): number {
     : -1;
 }
 
+function shellExpansionFallbackEnd(
+  text: string,
+  at: number,
+  limit: number,
+): number {
+  const nextLf = text.indexOf("\n", at + 2);
+  const nextCr = text.indexOf("\r", at + 2);
+  const lineEnd =
+    nextLf === -1 ? nextCr : nextCr === -1 ? nextLf : Math.min(nextLf, nextCr);
+  return lineEnd !== -1 && lineEnd < limit ? lineEnd : limit;
+}
+
 function balancedShellExpansionEnd(
   text: string,
   at: number,
@@ -546,7 +613,7 @@ function balancedShellExpansionEnd(
     if (char === open) depth++;
     else if (char === close && --depth === 0) return index + 1;
   }
-  return limit;
+  return shellExpansionFallbackEnd(text, at, limit);
 }
 
 function quotedShellExpansionEnd(
@@ -560,7 +627,7 @@ function quotedShellExpansionEnd(
     if (char === 92) index++;
     else if (char === quote) return index + 1;
   }
-  return limit;
+  return shellExpansionFallbackEnd(text, at, limit);
 }
 
 function shellExpansionEnd(text: string, at: number): number {

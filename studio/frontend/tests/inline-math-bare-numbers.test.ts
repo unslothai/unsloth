@@ -59,6 +59,7 @@ test("numbers written as inline maths render as maths", () => {
     ['the answer is "$42$!"', ["42"]],
     ['consider this "$3$?"', ["3"]],
     ['- please note "The answer is $42$!"', ["42"]],
+    ['- chapter 1.2 notes "The answer is $42$!"', ["42"]],
     ["The mass is $42$kg.", ["42"]],
     ["a $10$-fold increase", ["10"]],
     ["Range $1$-$2$", ["1", "2"]],
@@ -149,6 +150,8 @@ test("a shell parameter right after a positional one stays text", () => {
     ['cat -n "$1$?" to print both.', "$1$?"],
     ['widget --mode fast "$1$?" to print both.', "$1$?"],
     ['- Run echo "$1$?" to print both.', "$1$?"],
+    ['- [ ] Run echo "$1$?" to print both.', "$1$?"],
+    ['- [x] Run echo "$1$?" to print both.', "$1$?"],
     ['> echo "$1$?" to print both.', "$1$?"],
     ['> 1. Run echo "$1$?" to print both.', "$1$?"],
     ['Run echo "$1$#" to print both.', "$1$#"],
@@ -166,6 +169,8 @@ test("a shell parameter right after a positional one stays text", () => {
     ['git show HEAD "$1$?" now.', "$1$?"],
     ['kubectl get pods "$1$?" now.', "$1$?"],
     ['widget --mode HEAD "$1$?" now.', "$1$?"],
+    ['python script.py | grep -n "$1$?" now.', "$1$?"],
+    ["Run echo \\" + '\n  "$1$?"', "$1$?"],
     ['sudo -u root echo "$1$?" now.', "$1$?"],
     ['env MODE=fast echo "$1$?" now.', "$1$?"],
     ['MODE=fast echo "$1$?" now.', "$1$?"],
@@ -222,6 +227,14 @@ test("raw-text element bodies keep adjacent shell syntax byte-for-byte", () => {
   ]) {
     assert.equal(preprocessLaTeX(source), source);
   }
+});
+
+test("unterminated shell expansions stop at Markdown block boundaries", () => {
+  const source = "Run echo $1${oops\n\n**later**";
+  const html = render(source);
+  assert.deepEqual(renderedMath(html), []);
+  assert.ok(visibleText(html).includes("$1${oops"));
+  assert.match(html, /data-streamdown="strong">later<\/span>/);
 });
 
 test("protected regions do not leak shell quote state into later prose", () => {
