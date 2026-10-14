@@ -65,7 +65,7 @@ _AUTH_PARAM = r"""(?:[\w!#$%&'*+.^`|~-]+=(?:[ \t]+(?=\\?["'“‘]|[^\s,"]+[ \t]
     r"[ \t]", _HSPACE
 )
 _QUERY_AUTHORIZATION = re.compile(
-    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:[ \t]+header(?:[ \t]+value)?)?(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])(?:[ \t]*(?:\r?\n[ \t]*)?\\?["'“‘]value\\?["'”’][ \t]*[:=])?|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`"'“‘]*
+    rf"""(?aix)(?<![A-Za-z0-9])authorization(?:[ \t_-]*header(?:[ \t_-]*value)?)?(?:\\?["'”’]\]?[ \t]*(?:=>|[:=,])(?:[ \t]*(?:\r?\n[ \t]*)?\\?["'“‘]value\\?["'”’][ \t]*[:=])?|\]?[*_~`]*[ \t]*(?:=>|[:=])[*_~`]*)(?:[ \t]*\r?\n)?[ \t]*(?:\[[ \t]*(?:\r?\n[ \t]*)?)?\\?["'“‘]?(?P<scheme>[\w!#$%&'*+.^`|~-]+)(?:[ \t]+|[ \t]*\r?\n[ \t]+)[*_~`"'“‘]*
     (?P<credentials>(?:(?<=basic\s)|(?<=bearer\s)|(?<=negotiate\s)|(?<=ntlm\s))[\w.~+/-]+=*(?![\w"'“‘])
     |(?:,[ \t]*)*{_AUTH_PARAM}(?:(?:[ \t]*,)+[ \t]*(?:\r?\n[ \t]*)?{_AUTH_PARAM})*|[\w.~+/-]+(?::[\w.~+/-]+)*=*)
     (?P<more>(?:[ \t]*,[ \t]*(?:\r?\n[ \t]*)?(?:
@@ -233,8 +233,9 @@ def _shield_untrusted(text: str) -> str:
 def _escape_echo(text: str) -> str:
     # Percent escapes match in either hex case: %2B and %2b are the same byte.
     return re.sub(
-        r"%([0-9A-F])([0-9A-F])",
-        lambda m: "%" + "".join(f"[{c}{c.lower()}]" if c.isalpha() else c for c in m.groups()),
+        r"%([0-9A-Fa-f])([0-9A-Fa-f])",
+        lambda m: "%"
+        + "".join(f"[{c.upper()}{c.lower()}]" if c.isalpha() else c for c in m.groups()),
         re.escape(text),
     )
 
