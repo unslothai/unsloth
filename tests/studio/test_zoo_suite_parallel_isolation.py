@@ -38,7 +38,9 @@ ISOLATED = [
 
 ZOO_MARKER = "--dist loadfile tests/"
 
-MLX_DESELECT = (
+# Was deselected while the zoo fixture did not stub model.trainable_parameters(). The zoo
+# fixed the fixture, and it passes on CPU in the serial mlx group, so it must run there.
+MLX_FORMERLY_DESELECTED = (
     "tests/test_mlx_finetune_last_n_layers.py::"
     "test_get_peft_model_passes_finetune_last_n_layers_through"
 )
@@ -146,12 +148,17 @@ def test_the_deselects_survive_on_the_parallel_run() -> None:
     """Keep each deselect with the command that owns its file."""
     cmd = _zoo_parallel()
     assert (
-        cmd.count("--deselect") == 2
-    ), f"the parallel zoo run carries {cmd.count('--deselect')} deselects, expected 2"
+        cmd.count("--deselect") == 1
+    ), f"the parallel zoo run carries {cmd.count('--deselect')} deselects, expected 1"
+    assert "test_merge_lora_moves_cpu_inputs_to_active_device" in cmd
+
+
+def test_the_mlx_group_runs_the_last_n_layers_test() -> None:
+    """A deselect of a test that passes hides it; this one passes on CPU since the zoo fix."""
     group = _zoo_mlx_group()
-    assert MLX_DESELECT in group, (
-        f"{MLX_DESELECT} is deselected nowhere now that test_mlx_finetune_last_n_layers.py "
-        f"runs in the serial mlx group, so it fails on a GPU-less runner instead"
+    assert MLX_FORMERLY_DESELECTED not in group, (
+        f"{MLX_FORMERLY_DESELECTED} is deselected again, but it passes in the serial mlx "
+        f"group on a GPU-less runner"
     )
 
 
