@@ -66,8 +66,11 @@ VERIFIED_NAME = "verified"
 _HASH_CHUNK = 16 << 20
 _TEMP_SUFFIX = ".tmp"
 _TOMBSTONE_SUFFIX = ".evicting"
-# A key used this recently is never evicted: another process may be loading from it.
+# A key used this recently is spared while older keys can bring the cache under budget: another process may be
+# loading from it. Still over budget, only the last _EVICT_ACTIVE_SECONDS (lookup to open) are spared, so a run of
+# fresh multi-GB saves cannot grow the cache past its budget.
 _EVICT_GRACE_SECONDS = 600.0
+_EVICT_ACTIVE_SECONDS = 60.0
 # Free space kept after a save: max(this, 5% of the artifact).
 _DISK_MARGIN_BYTES = 2 << 30
 _MAX_HEADER_BYTES = 100 << 20
@@ -1116,11 +1119,14 @@ def evict(
         total = sum(e[2] for e in entries)
         if extra_free_bytes > 0:
             budget = min(budget, max(0, total - int(extra_free_bytes)))
-        cutoff = time.time() - _EVICT_GRACE_SECONDS
-        for used, path, size in sorted(entries, key = lambda e: e[0]):
+        now = time.time()
+        passes = [now - _EVICT_GRACE_SECONDS, now - _EVICT_ACTIVE_SECONDS]
+        for cutoff, (used, path, size) in (
+            (c, e) for c in passes for e in sorted(entries, key = lambda e: e[0])
+        ):
             if total <= budget:
                 break
-            if path.name == keep or used > cutoff:
+            if path.name == keep or path.name in removed or used > cutoff:
                 continue
             tomb = path.with_name(
                 f"{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}{_TOMBSTONE_SUFFIX}"

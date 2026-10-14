@@ -993,3 +993,13 @@ def test_an_entry_the_loader_rejected_is_a_miss_until_replaced(env, tmp_path, sc
         assert C.lookup(fam, scheme, base_repo = str(base)) == path
     finally:
         C._REJECTED.clear()
+
+
+def test_entries_written_minutes_ago_do_not_hold_the_cache_over_budget(env):
+    """Several saves inside the grace window: the oldest goes once over budget; one resolved seconds ago stays."""
+    env.mkdir(parents = True)
+    older = _old_entry(env, "1" * 32, 1000, age = 300)
+    newer = _old_entry(env, "2" * 32, 1000, age = 200)
+    active = _old_entry(env, "3" * 32, 1000, age = 5)
+    assert C.evict(root = env, max_bytes = 1500) == [older.name, newer.name]
+    assert active.exists()
