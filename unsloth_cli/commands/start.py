@@ -2774,6 +2774,18 @@ def _fail_gguf_variant_missing(model_id: str, variant: str, variants: list) -> N
     _fail(message)
 
 
+def _refuse_npu_model(model: Optional[str]) -> None:
+    from unsloth_cli._npu import npu_model_path
+    npu_path = npu_model_path(model)
+    if npu_path:
+        model_id = npu_path.split(":", 1)[1]
+        # Unchecked, `lemonade:<id>` was split into a GGUF lookup for a repo named "lemonade".
+        _fail(
+            f"{model_id} is an AMD NPU model. `unsloth start` runs coding agents on GGUF models; "
+            f"chat with {model_id} in Unsloth Studio or with `unsloth chat {model_id}`."
+        )
+
+
 def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
     message = (
         f"{agent.label} needs a GGUF model served by llama-server, " f"but {model_id} is not one."
@@ -2796,6 +2808,7 @@ def _preflight_agent_gguf(
     # Only a complete listing with no .gguf files rejects; unknown defers to the
     # post-connect check. Mirrors _require_studio's auto-start condition, so with no start
     # possible its "no running server" error comes first, without a hub probe.
+    _refuse_npu_model(model)
     if not (serve and launch and model):
         return
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
@@ -4623,6 +4636,7 @@ def _connect(
     server_options: ServerOptions = ServerOptions(),
     preload_check = None,
 ) -> tuple:
+    _refuse_npu_model(model)
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
     if model:
         repo, variant = _split_repo_variant(model)

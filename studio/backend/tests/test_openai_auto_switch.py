@@ -12367,3 +12367,117 @@ def test_tensor_split_requires_matching_gpu_ids_at_the_settings_boundary(ids):
         settings_route.ModelOverridePayload(
             model_id = "org/split-GGUF", gpu_ids = ids, tensor_split = [3, 1]
         )
+
+
+_NPU_MODEL = "lemonade:qwen3-0.6b-FLM"
+
+
+def test_an_npu_model_named_by_a_request_switches_when_on(monkeypatch):
+    # The GGUF resolver cannot find an NPU id, so this used to 404 even with the switch on.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _run_hook(_NPU_MODEL)
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_an_npu_model_named_with_the_switch_off_says_how_to_load_it(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None, enabled = False)
+    with pytest.raises(HTTPException) as excinfo:
+        _run_hook(_NPU_MODEL)
+    assert excinfo.value.status_code == 404
+    assert "Switch model by request" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_a_resident_npu_model_is_not_reloaded(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    monkeypatch.setattr(inference_route, "_loaded_satisfies", lambda model: model == _NPU_MODEL)
+    _run_hook(_NPU_MODEL)
+    assert rec.calls == []
+
+
+def test_messages_with_an_npu_model_loaded_names_it(monkeypatch):
+    # "No GGUF model loaded" read as "nothing is loaded" while the NPU model was serving.
+    from models.inference import AnthropicMessagesRequest
+
+    _wired(monkeypatch, _FakeBackend(None), None, enabled = False)
+    monkeypatch.setattr(inference_route, "_automatic_model_load_may_run", lambda: False)
+    monkeypatch.setattr(
+        inference_route,
+        "_resident_npu_model",
+        lambda: SimpleNamespace(model_path = _NPU_MODEL),
+    )
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/messages"), method = "POST"
+    )
+    payload = AnthropicMessagesRequest(max_tokens = 16, messages = [{"role": "user", "content": "hi"}])
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.anthropic_messages(payload, request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert _NPU_MODEL in excinfo.value.detail
+    assert "No GGUF model loaded" not in excinfo.value.detail
+
+
+def test_messages_with_switching_on_and_an_npu_model_loaded_names_it(monkeypatch):
+    # The early check is skipped once automatic loads may run; the later one must say the same.
+    from models.inference import AnthropicMessagesRequest
+
+    _wired(monkeypatch, _FakeBackend(None), None, enabled = True)
+    monkeypatch.setattr(
+        inference_route,
+        "_resident_npu_model",
+        lambda: SimpleNamespace(model_path = _NPU_MODEL, id = "qwen3-0.6b-FLM"),
+    )
+    monkeypatch.setattr(inference_route, "_loaded_satisfies", lambda model: model == _NPU_MODEL)
+    request = SimpleNamespace(
+        state = SimpleNamespace(), url = SimpleNamespace(path = "/v1/messages"), method = "POST"
+    )
+    payload = AnthropicMessagesRequest(
+        model = _NPU_MODEL, max_tokens = 16, messages = [{"role": "user", "content": "hi"}]
+    )
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.anthropic_messages(payload, request, "tester"))
+    assert excinfo.value.status_code == 400
+    assert _NPU_MODEL in str(excinfo.value.detail)
+
+
+def _npu_catalog_entry(monkeypatch, *, vision):
+    from core.inference import npu_backend as nb
+    class _Npu:
+        def loadable_model(self, model_id):
+            return SimpleNamespace(id = model_id, vision = vision)
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "words"),
+    [
+        ({"gguf_only": True}, "serves /v1/chat/completions only"),
+        ({"require_audio_input": True}, "takes no audio or video input"),
+        ({"require_video": True}, "takes no audio or video input"),
+        ({"require_vision": True}, "cannot read images"),
+    ],
+)
+def test_a_request_the_npu_model_cannot_serve_never_switches(monkeypatch, kwargs, words):
+    # Loading first evicted the resident GGUF, then the endpoint failed on the NPU model anyway.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(_NPU_MODEL, object(), "tester", **kwargs)
+        )
+    assert excinfo.value.status_code == 400
+    assert words in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+def test_an_image_request_switches_to_a_vision_npu_model(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = True)
+    asyncio.run(
+        inference_route._maybe_auto_switch_model(
+            _NPU_MODEL, object(), "tester", require_vision = True
+        )
+    )
+    assert [call.model_path for call in rec.calls] == [_NPU_MODEL]

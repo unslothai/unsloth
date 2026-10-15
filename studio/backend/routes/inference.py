@@ -10913,7 +10913,10 @@ async def _reject_unservable_model(
     if is_npu_model_path(requested_model) and not await asyncio.to_thread(
         _loaded_satisfies, requested_model
     ):
-        message = f"The NPU model '{requested_model}' is not loaded. Load it in Unsloth Studio."
+        message = (
+            f"The NPU model '{requested_model}' is not loaded. Load it in Unsloth Studio, or turn "
+            "on 'Switch model by request' under Settings > API to load it from a request."
+        )
         path = getattr(getattr(fastapi_request, "url", None), "path", None)
         raise HTTPException(
             status_code = 404,
@@ -11155,6 +11158,83 @@ def _audio_cpp_switch_target(requested_model: Optional[str]) -> Optional[tuple]:
     return (model.id, model.variant.key, model.id, False)
 
 
+async def _refuse_unservable_npu_switch(
+    named_model: str,
+    fastapi_request: Request,
+    *,
+    gguf_only: bool,
+    needs_vision: bool,
+    needs_audio: bool,
+    rejection_prefix: str,
+) -> None:
+    """400 for a request naming an NPU model that could not serve it once loaded."""
+    from core.inference.npu_backend import NpuError, get_npu_backend, model_id_from_path
+
+    message = None
+    if gguf_only:
+        message = (
+            f"The NPU model '{named_model}' serves /v1/chat/completions only. "
+            "Load a GGUF model to use this endpoint."
+        )
+    elif needs_audio:
+        message = f"{rejection_prefix}The NPU model '{named_model}' takes no audio or video input."
+    elif needs_vision and not await asyncio.to_thread(_loaded_satisfies, named_model):
+        try:
+            model = await asyncio.to_thread(
+                get_npu_backend().loadable_model, model_id_from_path(named_model)
+            )
+        except NpuError:
+            model = None  # Not downloaded or unknown: the load reports that itself.
+        if model is not None and not model.vision:
+            message = f"{rejection_prefix}The NPU model '{named_model}' cannot read images."
+    if message is None:
+        return
+    path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    raise HTTPException(
+        status_code = 400,
+        detail = (
+            error_body_for_path(path, message, status = 400, code = "invalid_value", param = "model")
+            if isinstance(path, str)
+            else message
+        ),
+    )
+
+
+async def _auto_switch_npu_model(
+    named_model: str, fastapi_request: Request, current_subject: str
+) -> None:
+    """Load a downloaded ``lemonade:<id>`` model a request names, when auto-switch is on.
+
+    Same lock and gates as a GGUF switch; ``_load_npu_model`` keeps the owner-only and
+    not-downloaded refusals. Off, the request still gets the not-loaded 404.
+    """
+    from core.inference.gpu_arbiter import require_no_foreign_generations
+    from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
+    from utils.openai_auto_switch_settings import get_openai_auto_switch_enabled
+
+    if _auto_switch_opted_out(fastapi_request) or not get_openai_auto_switch_enabled():
+        return
+    if await asyncio.to_thread(_loaded_satisfies, named_model):
+        return
+    switch_path = getattr(getattr(fastapi_request, "url", None), "path", None)
+    async with _auto_switch_lock():
+        await _acquire_swap_gate()
+        try:
+            async with model_load_gate(), inference_lifecycle_gate():
+                # Re-read under the gate: another request may have loaded it while this one waited.
+                if await asyncio.to_thread(_loaded_satisfies, named_model):
+                    return
+                require_no_foreign_generations(path = switch_path)
+                await _load_model_impl(
+                    LoadRequest(model_path = named_model),
+                    fastapi_request,
+                    current_subject,
+                    current_request_counted = True,
+                )
+        finally:
+            _auto_switch_process_lock.release()
+
+
 async def _maybe_auto_switch_model(
     requested_model: Optional[str],
     fastapi_request: Request,
@@ -11344,6 +11424,30 @@ async def _maybe_auto_switch_model(
         if not idle_unload_is_configured():
             await _reject_unservable_model(requested_model, fastapi_request)
             return
+
+    from core.inference.npu_backend import is_npu_model_path
+
+    if auto_switch_on and named_model and is_npu_model_path(named_model):
+        # Refused before the switch, so a request the NPU cannot serve never evicts the resident model.
+        await _refuse_unservable_npu_switch(
+            named_model,
+            fastapi_request,
+            gguf_only = gguf_only,
+            needs_vision = gguf_requires_vision,
+            needs_audio = bool(
+                require_audio_input
+                or require_video
+                or require_speech
+                or require_audio_workflow
+                or audio_preflight
+            ),
+            rejection_prefix = rejection_prefix,
+        )
+        # The GGUF and checkpoint resolution below can never find an NPU model.
+        await _auto_switch_npu_model(named_model, fastapi_request, current_subject)
+        if claim_resident:
+            _claim_slot_for_non_preview(fastapi_request)
+        return
 
     async def _resolve_and_switch() -> None:
         from core.inference.openai_auto_download import looks_like_quant, split_model_ref
@@ -29801,6 +29905,17 @@ _NPU_CUT_SHORT_ERROR = {
 }
 
 
+def _npu_kv_cache_full(usage: Any) -> bool:
+    """Whether FastFlowLM's usage says the reply used the whole loaded context."""
+    if not isinstance(usage, dict):
+        return False
+    total = usage.get("total_tokens")
+    capacity = usage.get("max_kv_token_capacity")
+    return (
+        isinstance(total, int) and isinstance(capacity, int) and capacity > 0 and total >= capacity
+    )
+
+
 class _NpuStreamRelay:
     """Normalize model IDs, enforce stop sequences, and collect non-streaming replies.
 
@@ -29842,16 +29957,22 @@ class _NpuStreamRelay:
         self._pending = buffer[len(buffer) - keep :] if keep else ""
         return buffer[: len(buffer) - keep] if keep else buffer
 
-    def _chunk(self, delta: dict, finish_reason: Optional[str]) -> str:
-        return "data: " + json.dumps(
-            {
-                "id": self.completion_id or "chatcmpl-npu",
-                "object": "chat.completion.chunk",
-                "created": self.created or int(time.time()),
-                "model": self.public_model,
-                "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
-            }
-        )
+    def _chunk(
+        self,
+        delta: dict,
+        finish_reason: Optional[str],
+        tool_event: Optional[dict] = None,
+    ) -> str:
+        chunk = {
+            "id": self.completion_id or "chatcmpl-npu",
+            "object": "chat.completion.chunk",
+            "created": self.created or int(time.time()),
+            "model": self.public_model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+        if tool_event is not None:
+            chunk["_toolEvent"] = tool_event
+        return "data: " + json.dumps(chunk)
 
     def feed(self, line: str) -> list[str]:
         """The lines to send on for one line of the upstream stream."""
@@ -29919,6 +30040,11 @@ class _NpuStreamRelay:
             elif isinstance(content, str):
                 self.content += content
             if choice.get("finish_reason") is not None:
+                if choice["finish_reason"] == "stop" and _npu_kv_cache_full(chunk.get("usage")):
+                    # FastFlowLM says "stop" when the reply filled the context; without this the
+                    # chat saved a reasoning-only turn as complete and showed no answer and no reason.
+                    choice["finish_reason"] = "length"
+                    out.append(self._chunk({}, None, {"type": "context_window_exceeded"}))
                 self.finish_reason = choice["finish_reason"]
                 if self._pending:
                     # The reply ended partway into a stop sequence, so what was held back is text.
@@ -29930,7 +30056,9 @@ class _NpuStreamRelay:
         return out
 
     def completion(self) -> dict:
-        message: dict[str, Any] = {"role": "assistant", "content": self.content or None}
+        # A tool-calling turn often streams only newlines as text; OpenAI sends null content there.
+        content = self.content if self.content.strip() or not self.tool_calls else ""
+        message: dict[str, Any] = {"role": "assistant", "content": content or None}
         if self.reasoning:
             message["reasoning_content"] = self.reasoning
         if self.tool_calls:
@@ -42092,6 +42220,17 @@ async def anthropic_messages(
     # so validation runs before the reload hook gets a chance to restore the model.
     # Plain detail, not _no_model_loaded_error: that helper leaves this case unchanged.
     if not llama_backend.is_loaded and not _automatic_model_load_may_run():
+        _npu_model = _resident_npu_model()
+        if _npu_model is not None:
+            # "No GGUF model loaded" read as "nothing is loaded" while an NPU model was serving.
+            raise HTTPException(
+                status_code = 400,
+                detail = (
+                    f"The loaded NPU model ({_npu_model.model_path}) serves "
+                    "/v1/chat/completions only. Load a GGUF model to use the "
+                    "Anthropic Messages API."
+                ),
+            )
         raise HTTPException(
             status_code = 503,
             detail = _no_model_loaded_detail("No GGUF model loaded. Load a GGUF model first."),

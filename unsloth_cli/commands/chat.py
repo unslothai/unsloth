@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import sys
+from types import SimpleNamespace
 from typing import List, Optional
 
 import typer
@@ -285,9 +286,32 @@ def chat(
             raise typer.Exit(code = 1)
         model = _pick_model(console)
 
-    # Resolve first so --compare can be rejected before the slow load.
-    with quiet_if_nonzero_mlx_rank():
-        model_config = resolve_model_config(model, hf_token = hf_token)
+    from unsloth_cli._npu import npu_model_path
+
+    # An NPU model runs inside Unsloth Studio, never in this process: no HF config to resolve.
+    npu_path = npu_model_path(model)
+    if npu_path:
+        model = npu_path
+        model_config = SimpleNamespace(
+            display_name = npu_path.split(":", 1)[1],
+            is_gguf = False,
+            is_lora = False,
+            path = None,
+            base_model = None,
+            gguf_variant = None,
+        )
+        if no_server or is_mlx_distributed:
+            if should_print:
+                err.print(
+                    "NPU models run inside Unsloth Studio; drop --no-server.",
+                    style = "red",
+                    markup = False,
+                )
+            raise typer.Exit(code = 1)
+    else:
+        # Resolve first so --compare can be rejected before the slow load.
+        with quiet_if_nonzero_mlx_rank():
+            model_config = resolve_model_config(model, hf_token = hf_token)
     compare_blocked = _compare_blocked_reason(model_config)
     if is_mlx_distributed:
         compare_blocked = (
@@ -318,6 +342,16 @@ def chat(
         else connect_studio_server(model, **server_load_opts(ctx, load_opts))
     )
     server_mode = chat_backend is not None
+    if npu_path and not server_mode:
+        if should_print:
+            err.print(
+                f"{model_config.display_name} runs on the AMD NPU inside Unsloth Studio. "
+                "Start it with `unsloth studio` (or `unsloth run --model "
+                f"{npu_path}`) and run this again.",
+                style = "red",
+                markup = False,
+            )
+        raise typer.Exit(code = 1)
     if server_mode and should_print:
         console.print(
             "(Unsloth server connected — model stays warm after /exit)",

@@ -69,7 +69,38 @@ _FLM_TIMINGS = {
 }
 
 
+# The end of a reply whose reasoning filled the loaded context, captured on Strix Halo: FastFlowLM
+# says "stop" with the KV cache full.
+_FULL_USAGE = {
+    "prompt_tokens": 45,
+    "completion_tokens": 8147,
+    "total_tokens": 8192,
+    "active_kv_tokens": 8192,
+    "max_kv_token_capacity": 8192,
+    "kv_token_occupancy_rate_percentage": 100.0,
+}
+
+
 def _script(prompt: str) -> str:
+    if "FULL" in prompt:
+        return (
+            _chunk({"reasoning_content": " Wait, no!"})
+            + _chunk({"content": None}, "stop", _FULL_USAGE)
+            + "data: [DONE]\n\n"
+        )
+    if "WSTOOL" in prompt:
+        call = {
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'},
+        }
+        return (
+            _chunk({"content": "\n\n\n"})
+            + _chunk({"tool_calls": [call]})
+            + _chunk({}, "tool_calls", _USAGE)
+            + "data: [DONE]\n\n"
+        )
     if "FAULT" in prompt:
         return (
             _chunk({"content": "par"})
@@ -1278,3 +1309,40 @@ def test_a_tool_loop_turn_dropped_after_a_tool_call_is_cut_short():
     plain = _TurnFinish()
     plain.see(_chunk({}, "stop").strip())
     assert plain.finished is True
+
+
+def test_a_reply_that_fills_the_context_says_so(flm):
+    flm(reasoning = True)
+    full = [{"role": "user", "content": "FULL"}]
+    status, lines = _call(stream = True, messages = full)
+    assert status == 200
+    chunks = _data(lines)
+    assert [c["_toolEvent"] for c in chunks if "_toolEvent" in c] == [
+        {"type": "context_window_exceeded"}
+    ]
+    finishes = [
+        c["choices"][0]["finish_reason"] for c in chunks if c["choices"][0]["finish_reason"]
+    ]
+    assert finishes == ["length"]
+    _, body = _call(stream = False, messages = full)
+    assert body["choices"][0]["finish_reason"] == "length"
+
+
+def test_a_reply_with_room_left_keeps_its_stop(flm):
+    flm()
+    status, lines = _call(stream = True, messages = [{"role": "user", "content": "TIMED"}])
+    assert status == 200
+    chunks = _data(lines)
+    assert not any("_toolEvent" in c for c in chunks)
+    assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
+
+
+def test_whitespace_beside_a_tool_call_is_no_content(flm):
+    flm(tools = True)
+    tools = [
+        {"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object"}}}
+    ]
+    _, body = _call(stream = False, tools = tools, messages = [{"role": "user", "content": "WSTOOL"}])
+    message = body["choices"][0]["message"]
+    assert message["content"] is None
+    assert message["tool_calls"][0]["function"]["name"] == "get_weather"

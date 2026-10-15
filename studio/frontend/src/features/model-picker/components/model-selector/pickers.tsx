@@ -495,10 +495,25 @@ function ListLabel({
         divider ? "mt-3 border-t border-border pt-3" : "pt-3",
       )}
     >
-      <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-        {icon}
-        {children}
-      </span>
+      {onToggle ? (
+        // The label toggles as well: the chevron alone is a 12px target at the far edge. The
+        // chevron stays the keyboard control, so the label is not a second tab stop.
+        <button
+          type="button"
+          tabIndex={-1}
+          onClick={onToggle}
+          aria-expanded={!collapsed}
+          className="flex cursor-pointer select-none items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground"
+        >
+          {icon}
+          {children}
+        </button>
+      ) : (
+        <span className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+          {icon}
+          {children}
+        </span>
+      )}
       {(action || onToggle) && (
         <div className="flex items-center gap-0.5">
           {action}

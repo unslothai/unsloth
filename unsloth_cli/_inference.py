@@ -1119,6 +1119,20 @@ def connect_studio_server(
     if not token:
         return _refuse("couldn't self-issue an Unsloth token (is Unsloth set up here?).")
     backend = HttpChatBackend(base_url, token)
+    from unsloth_cli._npu import npu_model_path, prepare_npu_model
+
+    if npu_model_path(model):
+        try:
+            prepare_npu_model(
+                lambda method, path, payload, timeout: backend._request(
+                    method, path, payload, timeout = timeout
+                ),
+                model,
+                lambda line: typer.echo(line, err = True),
+            )
+        except RuntimeError as exc:
+            typer.echo(f"Error: {exc}", err = True)
+            raise typer.Exit(code = 1)
     backend.ensure_loaded(
         model,
         hf_token = hf_token,
