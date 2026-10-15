@@ -28,8 +28,7 @@ export interface PerModelConfig {
   engineSeed?: number | null;
   engineGpuMemoryUtilization?: number | null;
   engine?: "auto" | "vllm" | "sglang";
-  /** Default engine only: quantize an unquantized Hugging Face checkpoint to 4 bits on load. Optional so older
-   *  blobs parse; anything but false is the 4-bit default. */
+  /** Default engine only; optional so older blobs parse, and anything but false is the 4-bit default. */
   loadIn4bit?: boolean;
   customContextLength: number | null;
   maxSeqLength: number | null;
