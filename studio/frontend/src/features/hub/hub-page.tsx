@@ -8,7 +8,6 @@ import { useHfEndpoint, useHubSource } from "@/lib/hf-endpoint";
 import { usePlatformStore } from "@/config/env";
 import {
   applyActiveModelStatusToStore,
-  clearNewChatDraft,
   getInferenceStatus,
   isExternalModelId,
   isSpeechOnlyStatus,
@@ -123,10 +122,6 @@ import {
   supersedingRefresh,
 } from "./lib/superseded-refresh";
 import { studioPageForTask } from "./lib/unsloth-support";
-import {
-  listingTagsForFormat,
-  recommendedNeedsLikes,
-} from "./lib/format-filters";
 import {
   buildDiscoverRows,
   detectResultFormat,
@@ -935,10 +930,6 @@ export function ModelsPage() {
     direction: effectiveDirection,
     channel: listChannel,
     ownerScope,
-    listingTags:
-      mode === "search"
-        ? listingTagsForFormat(effectiveDiscoverFormat, checkpointQuantFormats)
-        : undefined,
     filters: searchFilters,
     task:
       capabilityFilter === "audio" ? (linkedAudioTask ?? undefined) : undefined,
@@ -1059,7 +1050,6 @@ export function ModelsPage() {
         // search and every other format show all matches.
         (effectiveDiscoverFormat !== "recommended" ||
           hasQuery ||
-          (mode === "search" && !recommendedNeedsLikes(effectiveSort)) ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
         (effectiveDiscoverFormat === "recommended"
@@ -1088,8 +1078,6 @@ export function ModelsPage() {
     hiddenEmbeddingModelIds,
     isDatasetMode,
     hasQuery,
-    mode,
-    effectiveSort,
     effectiveDiscoverFormat,
     checkpointQuantFormats,
     diffusionQuantFormats,
@@ -1579,7 +1567,6 @@ export function ModelsPage() {
   // A new chat opens with the model's run settings, where Load starts it.
   const openRunSettingsInChat = useCallback(
     (request: ModelConfigHandoffRequest) => {
-      clearNewChatDraft();
       const chatRuntime = useChatRuntimeStore.getState();
       chatRuntime.setActiveThreadId(null);
       chatRuntime.setActiveProjectId(null);
