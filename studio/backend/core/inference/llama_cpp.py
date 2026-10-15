@@ -43500,6 +43500,7 @@ class LlamaCppBackend:
         repetition_penalty: float = 1.1,
         cancel_event: Optional[threading.Event] = None,
         stats_holder: Optional[dict] = None,
+        audio_options: Optional[dict] = None,
     ) -> tuple:
         """
         Generate TTS audio via llama-server /completion + codec decode.
@@ -43514,10 +43515,16 @@ class LlamaCppBackend:
 
         tpl, stop, need_ids = self._TTS_PROMPTS[audio_type]
         # Raw prompt, not messages: codec delimiters are the only structure to break (#7066).
-        from core.inference.chat_template_helpers import neutralize_tts_prompt_text
+        from core.inference.chat_template_helpers import (
+            neutralize_tts_prompt_text,
+            tts_prompt_with_voice,
+        )
 
+        prompt_text = tts_prompt_with_voice(
+            neutralize_tts_prompt_text(text, audio_type), audio_type, audio_options
+        )
         payload: dict = {
-            "prompt": tpl.format(text = neutralize_tts_prompt_text(text, audio_type)),
+            "prompt": tpl.format(text = prompt_text),
             "stream": False,
             "n_predict": max_new_tokens,
             "temperature": temperature,

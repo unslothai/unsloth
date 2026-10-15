@@ -8569,6 +8569,8 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
 
 def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
     """Runtime state shared by load, dedupe, and status; duplicates echo active settings."""
+    from core.inference.chat_template_helpers import tts_voice_options
+
     fields = {
         name: getattr(llama_backend, name, getattr(llama_backend, f"_{name}", None))
         for name in _InferenceRuntimeFields.model_fields
@@ -8598,9 +8600,13 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         context_length_enforced = True,
         context_length_fitted = None,
         context_unbounded_when_batched = False,
-        # llama-server never serves an audio GGUF; those load through the audio worker.
+        # audio.cpp GGUFs load through the audio worker; llama-server serves only codec TTS.
         audio_family = None,
-        audio_options = None,
+        audio_options = (
+            tts_voice_options(getattr(llama_backend, "_audio_type", None))
+            if getattr(llama_backend, "_is_audio", False)
+            else None
+        ),
         audio_workflows = None,
         audio_reference_text = None,
         audio_required_inputs = None,
@@ -22966,6 +22972,14 @@ def _audio_convert_problem(model_info: dict, label: str, run_inputs: dict) -> Op
     return None
 
 
+def _apply_builtin_voice(payload, voice: Optional[str], options) -> None:
+    """Send a requested built-in speaker as the ``voice`` option when the loaded model lists it
+    and the request set none."""
+    speakers = next((o.get("values") for o in options or () if o.get("name") == "voice"), None)
+    if voice in (speakers or ()) and "voice" not in (payload.audio_options or {}):
+        payload.audio_options = {**(payload.audio_options or {}), "voice": voice}
+
+
 async def _generate_tts_wav(
     text: str,
     payload: ChatCompletionRequest,
@@ -23032,6 +23046,9 @@ async def _generate_tts_wav(
         audio_type = getattr(llama_backend, "_audio_type", None)
         supported_audio_types = _GGUF_TTS_AUDIO_TYPES
         _audio_model_id = getattr(llama_backend, "model_identifier", None) or model_name
+        from core.inference.chat_template_helpers import tts_voice_options
+
+        _apply_builtin_voice(payload, voice, tts_voice_options(audio_type))
         gen = lambda: llama_backend.generate_audio_response(
             text = text,
             audio_type = llama_backend._audio_type,
@@ -23048,6 +23065,7 @@ async def _generate_tts_wav(
             repetition_penalty = payload.repetition_penalty,
             cancel_event = _audio_cancel,
             stats_holder = stats_holder,
+            audio_options = payload.audio_options,
         )
     else:
         backend = await asyncio.to_thread(get_inference_backend)
@@ -23060,16 +23078,7 @@ async def _generate_tts_wav(
         audio_type = model_info.get("audio_type")
         audio_family = model_info.get("audio_family")
         supported_audio_types = _TRANSFORMERS_TTS_AUDIO_TYPES
-        speakers = next(
-            (
-                o.get("values")
-                for o in model_info.get("audio_options") or ()
-                if o.get("name") == "voice"
-            ),
-            None,
-        )
-        if voice in (speakers or ()) and "voice" not in (payload.audio_options or {}):
-            payload.audio_options = {**(payload.audio_options or {}), "voice": voice}
+        _apply_builtin_voice(payload, voice, model_info.get("audio_options"))
         _audio_model_id = getattr(backend, "active_model_name", None) or model_name
         gen = lambda: backend.generate_audio_response(
             text = text,
