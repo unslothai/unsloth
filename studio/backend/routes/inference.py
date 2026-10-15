@@ -11169,6 +11169,7 @@ async def _maybe_auto_switch_model(
     require_video: bool = False,
     gguf_only: bool = False,
     gguf_only_reason: Optional[str] = None,
+    audio_cpp_ok: bool = True,
     audio_preflight: Optional[dict] = None,
     image_preflight: Optional[dict] = None,
     require_speech: bool = False,
@@ -11566,6 +11567,9 @@ async def _maybe_auto_switch_model(
         # llama.cpp alone, so the swap would strand them with nothing to serve.
         if gguf_only and not target_is_gguf and resolved is not None:
             _refuse_non_gguf_endpoint()
+        # A raw-prompt endpoint opened to MLX still has nothing an audio.cpp model can serve.
+        if not audio_cpp_ok and looks_like_audio_cpp(target_id) and resolved is not None:
+            _refuse_non_gguf_endpoint()
         # Raises for a request only a non-GGUF target serves, before any GGUF load or reload.
         if gguf_target_check is not None and target_is_gguf:
             gguf_target_check()
@@ -11936,6 +11940,7 @@ async def _auto_switch_from_request_body(
     gguf_only: bool = False,
     gguf_only_reason: Optional[str] = None,
     gguf_target_check: Optional[Callable[[], None]] = None,
+    audio_cpp_ok: bool = True,
 ):
     """Run auto-switch from a raw-body endpoint's ``model`` without changing its
     pre-feature status codes: a malformed/non-dict body yields no model (so an
@@ -11964,6 +11969,7 @@ async def _auto_switch_from_request_body(
         gguf_only = gguf_only,
         gguf_only_reason = gguf_only_reason,
         gguf_target_check = gguf_target_check,
+        audio_cpp_ok = audio_cpp_ok,
     )
     return body
 
@@ -37860,6 +37866,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
         gguf_target_check = (
             (lambda: _raise_ignored_completions_params(_pre)) if isinstance(_pre, dict) else None
         ),
+        audio_cpp_ok = False,
     )
     llama_backend = get_llama_cpp_backend()
     mlx_backend = None if llama_backend.is_loaded else _active_mlx_backend()

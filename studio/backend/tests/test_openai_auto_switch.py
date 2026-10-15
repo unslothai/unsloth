@@ -12415,3 +12415,15 @@ def test_completions_switch_admits_an_mlx_target_only_for_what_it_serves(monkeyp
         # A GGUF-only host keeps the GGUF refusal: no MLX reason, no grammar compiled.
         (True, None),
     ]
+
+
+def test_completions_on_mlx_refuses_an_audio_cpp_target_before_it_loads(monkeypatch):
+    from utils import hardware
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType.MLX)
+    target = "audio-cpp/audio.cpp-gguf/HTDemucs-6stems-GGUF"
+    _, rec = _wired(monkeypatch, _FakeBackend("org/A-GGUF"), (target, None, target))
+    body = {"model": target, "prompt": "hello"}
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.openai_completions(_json_body_request(body), "tester"))
+    assert exc.value.status_code == 400 and rec.calls == []
