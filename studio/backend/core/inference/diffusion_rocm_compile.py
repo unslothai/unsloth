@@ -21,6 +21,7 @@ import threading
 import time
 from typing import Any, Callable, Iterator, Optional
 
+
 def _module_logger() -> Any:
     # Studio's structured logger; stdlib logging alone is not routed at info level.
     try:
