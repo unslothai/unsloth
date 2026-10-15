@@ -168,4 +168,9 @@ test("a saved Transcribe whisper.cpp pick moves to Qwen3-ASR only without PyTorc
     sidecar,
     /if \(retiredWhisperPick\.current\) \{\s*const fallback = retiredWhisperFallback\(stt\);[\s\S]*?setLastSttRepoChoice\(fallback\.repo\);/,
   );
+  // a pick the user made before the status read settles is theirs: the fallback must not replace it.
+  assert.match(
+    sidecar,
+    /const setLastSttRepo = useCallback\(\s*\(repo: string\) => \{[\s\S]*?retiredWhisperPick\.current = false;\s*setLastSttRepoChoice\(repo\);/,
+  );
 });

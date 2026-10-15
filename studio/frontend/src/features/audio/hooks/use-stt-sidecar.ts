@@ -91,6 +91,8 @@ export function useSttSidecar({
   );
   const setLastSttRepo = useCallback(
     (repo: string) => {
+      // An explicit pick replaces the saved whisper.cpp choice, so a later status read must not move it.
+      retiredWhisperPick.current = false;
       setLastSttRepoChoice(repo);
       setLastSttVariant(sttGgufVariants.current.get(repo.toLowerCase()) ?? "");
       setLastSttEngine(sttEngines.current.get(repo.toLowerCase()) ?? "");

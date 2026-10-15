@@ -176,6 +176,27 @@ def test_an_alias_cancel_never_stops_a_download_it_did_not_start(host):
     assert host.cancels == []
 
 
+def test_an_alias_that_joins_a_direct_download_does_not_claim_it(host, monkeypatch):
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "transformers"),
+            current_subject = "tester",
+            hf_token = None,
+        )
+    )
+    # The direct download is still running, so the alias request gets the same id back.
+    monkeypatch.setattr(
+        stt_module, "download_status", lambda: {"downloading": True, "download_id": "download-1"}
+    )
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "gguf"), current_subject = "tester", hf_token = None
+        )
+    )
+    asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
+    assert host.cancels == []
+
+
 def test_an_alias_unloads_the_transformers_model(host):
     _load("small", "gguf")
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))

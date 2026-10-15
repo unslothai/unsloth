@@ -25569,6 +25569,9 @@ async def stt_download(
     engine = _resolve_serving_stt_engine(payload.engine)
     model = _serving_stt_model(payload.engine, engine, payload.model)
     module = _stt_download_module(engine)
+    # Joining a running download returns its id; an alias request that only joined it did not start it.
+    before = module.download_status()
+    running_id = before.get("download_id") if before.get("downloading") else None
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
         # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
@@ -25594,7 +25597,12 @@ async def stt_download(
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
-    _note_retired_alias_engine(payload.engine, engine, "download")
+    _note_retired_alias_engine(
+        payload.engine,
+        engine,
+        "download",
+        reused = running_id is not None and str(download_id) == str(running_id),
+    )
     return JSONResponse(content = {**module.download_status(), "download_id": download_id})
 
 
