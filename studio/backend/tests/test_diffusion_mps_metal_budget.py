@@ -74,8 +74,43 @@ def test_available_ram_and_this_process_metal_still_bound_it(mac):
     mac["available"] = 10_000
     assert snapshot_device_memory(MPS).free_mib == 10_000
     mac["available"] = AVAILABLE_MIB
+    mac["working_set"] = (WORKING_SET_MIB, 1_024)
+    assert snapshot_device_memory(MPS).free_mib == WORKING_SET_MIB - 1_024
+
+
+def test_the_working_set_never_budgets_below_the_ram_reading(mac):
+    # 2 GiB already in Metal: 14,336 - 2,457 = 11,879 would undercut RAM minus 20% (12,288), so RAM stands.
     mac["working_set"] = (WORKING_SET_MIB, 2_048)
-    assert snapshot_device_memory(MPS).free_mib == WORKING_SET_MIB - 2_048
+    memory = snapshot_device_memory(MPS)
+    assert (memory.free_mib, memory.metal_working_set_mib) == (AVAILABLE_MIB, None)
+    assert dm._safe_device_budget_mib(memory) == AVAILABLE_MIB - int(RAM_MIB * 0.20)
+
+
+# Idle Macs with more RAM available than the working set (2/3 of RAM up to 32 GB, 3/4 above).
+IDLE_MACS = [
+    (24, 19_456, 16_384),
+    (32, 27_648, 21_845),
+    (64, 57_671, 49_152),
+    (128, 115_343, 98_304),
+    (192, 173_015, 147_456),
+]
+
+
+@pytest.mark.parametrize("ram_gb, available, working_set", IDLE_MACS)
+def test_an_idle_mac_keeps_every_load_the_ram_reading_admitted(mac, monkeypatch, ram_gb, available, working_set):
+    ram = ram_gb * 1024
+    monkeypatch.setattr(dm, "_system_memory_mib", lambda: (ram, available))
+    mac["working_set"] = (working_set, 0)
+    ram_budget = available - int(ram * 0.20)
+    assert dm._safe_device_budget_mib(snapshot_device_memory(MPS)) == ram_budget
+    # A model needing exactly the RAM budget: admitted before the working set reading existed, so still admitted.
+    plan = plan_diffusion_memory(
+        target = MPS,
+        device_memory = snapshot_device_memory(MPS),
+        model_dense_mib = ram_budget - dm.DEFAULT_BASE_OVERHEAD_MIB,
+        runtime_headroom_mib = dm.estimate_image_runtime_mib(width = None, height = None),
+    )
+    assert unified_memory_shortfall_message(plan) is None
 
 
 def test_without_a_working_set_reading_the_ram_reading_stands(mac):

@@ -651,15 +651,22 @@ def snapshot_device_memory(target: Any) -> DeviceMemory:
         # One CPU/GPU pool, so offload is pointless. The device is Metal's recommended working set (what the GPU holds
         # with good performance; allocations past it succeed and page), bounded by the RAM available right now.
         total, free = _system_memory_mib()
+        ram = DeviceMemory(backend, device, "unified_memory", free, total)
         working_set, in_use = _metal_working_set_mib()
         if working_set is None:
-            return DeviceMemory(backend, device, "unified_memory", free, total)
-        if free is not None:
-            free = min(int(free), max(0, working_set - in_use))
-        total = working_set if total is None else min(int(total), working_set)
-        return DeviceMemory(
-            backend, device, "unified_memory", free, total, metal_working_set_mib = working_set
+            return ram
+        ws_free = None if free is None else min(int(free), max(0, working_set - in_use))
+        ws_total = working_set if total is None else min(int(total), working_set)
+        metal = DeviceMemory(
+            backend, device, "unified_memory", ws_free, ws_total, metal_working_set_mib = working_set
         )
+        # The working set only widens the RAM reading: on an idle Mac with more RAM available than the working set,
+        # 15% of it can leave less than RAM minus 20%, and a load that fit under the RAM reading must keep fitting.
+        if free is not None and total is not None:
+            ram_budget = int(free) - _reserve_mib("unified_memory", int(total))
+            if ram_budget > int(ws_free) - _reserve_mib(METAL_WORKING_SET, ws_total):
+                return ram
+        return metal
 
     total, free = _system_memory_mib()
     return DeviceMemory(backend, device, "system_memory", free, total)
