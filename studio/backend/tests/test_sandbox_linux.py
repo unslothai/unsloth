@@ -359,6 +359,101 @@ def test_a_path_bwrap_from_a_writable_location_is_never_executed(tmp_path, monke
         sandbox_linux.prepare(_plan(tmp_path))
 
 
+def _bwrap_under(
+    monkeypatch,
+    usr_mode,
+    usr_gid = 0,
+    gids = (1000, 1000, 1000),
+    groups = (1000,),
+    usr_xattrs = (),
+):
+    """Point the trust check at /usr/bin/bwrap with the given /usr mode, group, xattrs and caller groups."""
+    entries = {
+        "/": (stat.S_IFDIR | 0o755, 0),
+        "/usr": (stat.S_IFDIR | usr_mode, usr_gid),
+        "/usr/bin": (stat.S_IFDIR | 0o755, 0),
+        "/usr/bin/bwrap": (stat.S_IFREG | 0o755, 0),
+    }
+
+    real_stat, real_access, real_realpath = os.stat, os.access, os.path.realpath
+    real_listxattr = os.listxattr
+
+    def fake_stat(path, *args, **kwargs):
+        if os.fspath(path) not in entries:
+            return real_stat(path, *args, **kwargs)
+        mode, gid = entries[os.fspath(path)]
+        return os.stat_result((mode, 1, 1, 1, 0, gid, 0, 0, 0, 0))
+
+    def fake_access(path, mode, *args, **kwargs):
+        return os.fspath(path) in entries or real_access(path, mode, *args, **kwargs)
+
+    def fake_listxattr(path, *args, **kwargs):
+        if os.fspath(path) not in entries:
+            return real_listxattr(path, *args, **kwargs)
+        if isinstance(usr_xattrs, OSError):
+            raise usr_xattrs
+        return list(usr_xattrs) if os.fspath(path) == "/usr" else []
+
+    monkeypatch.setattr(sandbox_linux.shutil, "which", lambda _name: "/usr/bin/bwrap")
+    monkeypatch.setattr(
+        sandbox_linux.os.path,
+        "realpath",
+        lambda path, *args, **kwargs: path
+        if path in entries
+        else real_realpath(path, *args, **kwargs),
+    )
+    monkeypatch.setattr(sandbox_linux.os, "stat", fake_stat)
+    monkeypatch.setattr(sandbox_linux.os, "access", fake_access)
+    monkeypatch.setattr(sandbox_linux.os, "listxattr", fake_listxattr)
+    monkeypatch.setattr(sandbox_linux.os, "getresgid", lambda: tuple(gids))
+    monkeypatch.setattr(sandbox_linux.os, "getgroups", lambda: list(groups))
+
+
+@pytest.mark.parametrize("usr_mode", [0o775, 0o2775])
+def test_a_root_group_writable_directory_is_trusted_when_studio_is_outside_group_root(
+    monkeypatch, usr_mode
+):
+    _bwrap_under(monkeypatch, usr_mode)
+    assert sandbox_linux._trusted_bwrap_path() == "/usr/bin/bwrap"
+
+
+def test_a_filesystem_without_xattrs_still_trusts_a_root_group_writable_directory(monkeypatch):
+    _bwrap_under(monkeypatch, 0o775, usr_xattrs = OSError(errno.ENOTSUP, "not supported"))
+    assert sandbox_linux._trusted_bwrap_path() == "/usr/bin/bwrap"
+
+
+@pytest.mark.parametrize(
+    "gids, groups",
+    [
+        ((1000, 1000, 1000), (1000, 0)),
+        ((1000, 0, 1000), (0,)),
+        ((0, 1000, 1000), (1000,)),
+        ((1000, 1000, 0), (1000,)),
+    ],
+    ids = ["supplementary", "effective", "real", "saved"],
+)
+def test_a_root_group_writable_directory_is_refused_when_studio_is_in_group_root(
+    monkeypatch, gids, groups
+):
+    _bwrap_under(monkeypatch, 0o775, gids = gids, groups = groups)
+    with pytest.raises(SandboxUnavailableError, match = r"replaceable: /usr\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+def test_a_root_group_writable_directory_with_an_acl_is_refused(monkeypatch):
+    # With an ACL the group bits are its mask, so a named user may be the writer.
+    _bwrap_under(monkeypatch, 0o775, usr_xattrs = ("system.posix_acl_access",))
+    with pytest.raises(SandboxUnavailableError, match = r"replaceable: /usr\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
+@pytest.mark.parametrize("usr_mode, usr_gid", [(0o775, 1000), (0o777, 0), (0o757, 0)])
+def test_a_directory_writable_beyond_group_root_is_refused(monkeypatch, usr_mode, usr_gid):
+    _bwrap_under(monkeypatch, usr_mode, usr_gid = usr_gid)
+    with pytest.raises(SandboxUnavailableError, match = r"replaceable: /usr\)"):
+        sandbox_linux._trusted_bwrap_path()
+
+
 def test_the_workdir_is_the_only_writable_bind(prepared, tmp_path):
     workdir = os.path.realpath(tmp_path)
     assert _pairs(prepared.argv, "--bind") == [(workdir, workdir)]

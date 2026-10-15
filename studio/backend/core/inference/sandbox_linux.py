@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import glob
 import os
@@ -81,6 +82,16 @@ _SYSTEM_ROOTS = (
 )
 
 
+def _has_access_acl(path: str) -> bool:
+    """True when an ACL governs the directory: its group mode bits then show the ACL mask."""
+    try:
+        return "system.posix_acl_access" in os.listxattr(path, follow_symlinks = False)
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            return False
+        raise
+
+
 def _trusted_bwrap_path() -> str:
     """Resolve bubblewrap to a system-owned executable that the Studio user cannot replace."""
     candidate = shutil.which("bwrap")
@@ -96,13 +107,20 @@ def _trusted_bwrap_path() -> str:
             or not os.access(resolved, os.X_OK)
         ):
             raise OSError("the executable is not root-owned, executable, and non-writable")
+        # A root-group-writable directory is safe only while this process is outside group root
+        # and no ACL grants anyone else write.
+        in_root_group = 0 in os.getresgid() or 0 in os.getgroups()
         parent = os.path.dirname(resolved)
         while True:
             directory = os.stat(parent, follow_symlinks = False)
             if (
                 not stat.S_ISDIR(directory.st_mode)
                 or directory.st_uid != 0
-                or directory.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or (
+                    directory.st_mode & stat.S_IWGRP
+                    and (directory.st_gid != 0 or in_root_group or _has_access_acl(parent))
+                )
+                or directory.st_mode & stat.S_IWOTH
             ):
                 raise OSError(f"its directory is replaceable: {parent}")
             ancestor = os.path.dirname(parent)
