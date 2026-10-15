@@ -55,19 +55,19 @@ def test_adamw_flash_selects_flashoptim(stub_flashoptim, make_args, monkeypatch)
         optim = "adamw_flash",
         learning_rate = 3e-4,
         adam_beta2 = 0.95,
-        optim_args = "master_weight_bits=32, quantize=False",
+        optim_args = "master_weight_bits=24, quantize=True",
     )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(args)
     assert issubclass(optimizer_cls, FlashAdamW)
     assert optimizer_kwargs["lr"] == 3e-4
     assert optimizer_kwargs["betas"] == (0.9, 0.95)
-    assert optimizer_kwargs["master_weight_bits"] == 32
-    assert optimizer_kwargs["quantize"] is False
+    assert optimizer_kwargs["master_weight_bits"] == 24
+    assert optimizer_kwargs["quantize"] is True
 
     bf16 = torch.nn.Parameter(torch.zeros(4, dtype = torch.bfloat16))
     optimizer_cls([{"params": [bf16], "weight_decay": 0.1}], **optimizer_kwargs)
-    assert calls[-1]["master_weight_bits"] == 32
+    assert calls[-1]["master_weight_bits"] == 24
     # flashoptim rejects master_weight_bits on all-fp32 params (LoRA adapters).
     fp32 = torch.nn.Parameter(torch.zeros(4))
     optimizer_cls([{"params": [fp32], "weight_decay": 0.0}], **optimizer_kwargs)
@@ -92,3 +92,20 @@ def test_other_optimizers_untouched():
     assert not getattr(args, "_unsloth_flash_adamw", False)
     optimizer_cls, _ = Trainer.get_optimizer_cls_and_kwargs(args)
     assert optimizer_cls is torch.optim.AdamW
+
+
+@pytest.mark.parametrize("make_args", [_sft_config, _unsloth_args])
+def test_adamw_flash_survives_dataclasses_replace(stub_flashoptim, make_args, monkeypatch):
+    import dataclasses
+    from transformers import Trainer
+
+    FlashAdamW, _ = stub_flashoptim
+    args = make_args(optim = "adamw_flash")
+    copied = dataclasses.replace(args, learning_rate = 1e-5)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(copied)
+    assert issubclass(optimizer_cls, FlashAdamW)
+    assert optimizer_kwargs["lr"] == 1e-5
+    # Default: full 32 bit master semantics and unquantized moments.
+    assert optimizer_kwargs["master_weight_bits"] == 32
+    assert optimizer_kwargs["quantize"] is False
