@@ -328,6 +328,7 @@ export { ModelLoadDescription } from "./components/model-load-status";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
+  buildExternalModelId,
   customProviderDisplayName,
   isCustomProviderType,
   isDecisionConnection,
@@ -463,6 +464,7 @@ export {
 export { allRecordedSandboxSessionIds } from "./utils/recorded-sandbox-session";
 export {
   markChatThreadDeleted,
+  onChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
 export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";

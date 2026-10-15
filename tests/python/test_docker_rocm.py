@@ -1,13 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""The AMD ROCm image's host-side plumbing: `docker/run.sh --rocm`,
-`docker/build.sh --rocm`, and the container entrypoint's refusal paths.
-
-None of these need an AMD GPU. run.sh and build.sh are driven with a recording
-`docker` stub and a staged /dev tree (the UNSLOTH_DEV_ROOT idiom); the
-entrypoint is driven the same way with stub `rocm-smi` and `python` binaries,
-so every message a user can hit before torch loads is checked here.
-"""
+"""Drives run.sh, build.sh and the entrypoint with stub docker, rocm-smi and python: no AMD GPU."""
 
 import os
 import shutil
@@ -42,9 +35,6 @@ def _stub(path, body):
     os.chmod(path, os.stat(path).st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
-# ── run.sh --rocm ────────────────────────────────────────────────────────────
-
-
 def _run_sh(
     tmp_path,
     args,
@@ -58,7 +48,6 @@ def _run_sh(
     groups = "both",
     extra_env = None,
 ):
-    # a fresh sandbox per call: a test may drive run.sh twice
     tmp_path = tmp_path / f"run{len(os.listdir(tmp_path))}"
     tmp_path.mkdir()
     bindir = tmp_path / "bin"
@@ -131,7 +120,6 @@ def _run_sh(
 
 def _image_and_cmd(argv):
     """The positional tail of `docker run`: image, then the container command."""
-    # every option run.sh emits takes a value or is a known flag
     flags_with_value = {
         "--device",
         "--group-add",
@@ -216,8 +204,7 @@ class TestRunShRocm:
         assert "/dev/kfd" not in argv, argv
         assert "HSA_ENABLE_DXG_DETECTION=1" in argv, argv
         assert any("librocdxg.so" in a for a in argv), argv
-        # librocdxg dlopens libdxcore from here; without the mount hsa_init fails
-        # (measured on an R9700: "Failed to load libdxcore.so")
+        # librocdxg dlopens libdxcore from here; without the mount hsa_init fails.
         assert "/usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in argv, argv
         assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in argv, argv
         assert "--gpus" not in argv, argv
@@ -265,8 +252,7 @@ class TestRunShRocm:
             extra_env = {"HSA_OVERRIDE_GFX_VERSION": "11.0.0", "UNSLOTH_ROCM_GFX_ARCH": "gfx1151"},
         )
         env_flags = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
-        # the dash-only form: docker reads the value from the environment, so it
-        # never lands in argv
+        # Dash-only form: docker reads the value from the environment, not argv.
         assert "HSA_OVERRIDE_GFX_VERSION" in env_flags and "UNSLOTH_ROCM_GFX_ARCH" in env_flags
 
     def test_the_studio_volume_and_caches_are_mounted_like_the_cuda_path(self, tmp_path):
@@ -315,8 +301,6 @@ class TestRunShRocm:
         assert "/dev/kfd" not in argv and "--group-add" not in argv
         assert "rocm" not in stderr.lower(), stderr
 
-
-# ── build.sh --rocm ──────────────────────────────────────────────────────────
 
 _SHA_U = "a" * 40
 _SHA_Z = "b" * 40
@@ -429,7 +413,6 @@ class TestBuildShRocm:
         assert "ARG ROCM_VERSION=7.2.4" in body
         assert "ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/rocm7.2" in body
         assert "FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}" in body
-        # a knowingly broken fallback range is worse than a failed build
         assert "bitsandbytes>=0.49" not in body
         assert "bitsandbytes>=0.50.0" in body
 
@@ -437,18 +420,11 @@ class TestBuildShRocm:
         body = open(_WORKFLOW, encoding = "utf-8").read()
         assert "DEFAULT_ROCM_VERSION: '7.2.4'" in body
         assert "DEFAULT_TORCH_INDEX_URL: 'https://download.pytorch.org/whl/rocm7.2'" in body
-        # ROCm 6.2, which is what this file must no longer mention anywhere. The plain
-        # substring also matched the version comment on a pinned action
-        # (`docker/metadata-action@<sha>  # v6.2.0`), which has nothing to do with ROCm
-        # and would have forced the next person to either unpin the action or weaken the
-        # check. Comments and the `runs-on` image name are dropped first; everything the
-        # workflow actually executes still has to be free of it.
+        # Strip comments and runs-on first: pinned action comments contain `v6.2.0`.
         meaningful = "\n".join(line.split("#", 1)[0] for line in body.splitlines()).replace(
             "ubuntu-22.04", ""
         )
         assert "6.2" not in meaningful
-        # per RUN on main: a sha would still pair a scheduled run with a dispatch on
-        # an unchanged main, and the group keeps only one pending run
         assert "github.ref == 'refs/heads/main' && github.run_id" in body
         assert "-r{0}', github.run_id" in body, "override sha tags need the run id suffix"
         assert "git ls-remote https://github.com/unslothai/unsloth-zoo" in body
@@ -471,25 +447,19 @@ class TestTheUserFacingDocsCoverWsl:
             "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro",
             "LD_LIBRARY_PATH=/usr/lib/wsl/lib",
             "ROCM_GFX=<your gfx> bash docker/build.sh --rocm",
-            # run.sh defaults to the published image, which is refused on DXG
+            # run.sh defaults to the published image, which is refused on DXG.
             "UNSLOTH_IMAGE=unsloth-rocm:latest bash run.sh --rocm",
-            # Dockerfile.rocm maps no RDNA3 arch to a per-arch index, so the page must not
-            # promise one
+            # Dockerfile.rocm maps no RDNA3 arch to a per-arch index.
             "RDNA3 cards (`gfx1100` to `gfx1103`) have no bridge path yet",
         ):
             assert needle in text, needle
 
     def test_the_readme_no_longer_says_native_linux_only(self):
-        # The README keeps one line for AMD and sends the reader to the Hub page, whose WSL
-        # flags the test above pins. What it must not do is bring back the claim that sent
-        # Windows users away, or lose the link that replaces the detail.
+        # README must not restore the claim that sent Windows users away, nor drop the Hub link.
         text = open(_README, encoding = "utf-8").read()
         assert "needs native Linux" not in text
         assert "native Linux only" not in text
         assert "https://hub.docker.com/r/unsloth/unsloth-rocm" in text
-
-
-# ── entrypoint-rocm.sh ───────────────────────────────────────────────────────
 
 
 def _entrypoint(
@@ -518,7 +488,6 @@ def _entrypoint(
         str(bindir / "rocm-smi"),
         'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n",
     )
-    # the two torch heredocs; stand in for torch on this host
     _stub(str(bindir / "python"), python_body or "cat > /dev/null\nexit 0\n")
     build_info = tmp_path / "build-info"
     build_info.write_text(f"TORCH_INDEX_URL=x\nROCM_GFX={build_info_gfx}\nROCM_VERSION=7.2.4\n")
@@ -573,7 +542,6 @@ class TestRocmEntrypoint:
         rc, ran, err = _entrypoint(tmp_path, kfd = False)
         assert rc == 1 and not ran
         assert "/dev/kfd not found" in err and "Docker Desktop" in err, err
-        # the old advice: a WSL or Docker Desktop host cannot modprobe anything
         assert "modprobe" not in err, err
         assert "run.sh --rocm" in err
 
@@ -643,12 +611,10 @@ class TestRocmEntrypoint:
         )
         assert rc == 1 and not ran
         assert "librocdxg" in err, err
-        # librocdxg dlopens libdxcore from WSL's lib dir: the hand-run recovery must
-        # mount it and put it on the search path, or hsa_init fails after this check.
+        # librocdxg dlopens libdxcore from WSL's lib dir, so the recovery must mount it.
         assert "-v /usr/lib/wsl/lib:/usr/lib/wsl/lib:ro" in err, err
         assert "LD_LIBRARY_PATH=/usr/lib/wsl/lib" in err, err
-        # run.sh defaults to the published image, which the bridge refuses: the
-        # recovery has to name the per-arch build, or it sends the user there
+        # The bridge refuses the published image, so the recovery must name the per-arch build.
         assert "UNSLOTH_IMAGE=unsloth-rocm:latest bash docker/run.sh --rocm" in err, err
         assert "unsloth/unsloth-rocm:latest" not in err, err
 
@@ -733,7 +699,6 @@ class TestRocmEntrypoint:
         assert rc == 1 and not ran, err
         assert "gfx1033" in err and "refuses" in err, err
         assert "HSA_OVERRIDE_GFX_VERSION=10.3.0" not in err, err
-        # the same fake torch on a supported arch runs the command
         (fake / "torch" / "cuda" / "__init__.py").write_text(
             (fake / "torch" / "cuda" / "__init__.py")
             .read_text()
@@ -778,7 +743,6 @@ class TestRocmEntrypoint:
         )
         assert rc == 1 and not ran, err
         assert "kernel reports a gfx1033" in err and "10.3.0" in err, err
-        # the same topology without the spoof: torch already names gfx1033 and the plain refusal fires
         (tmp_path / "b").mkdir()
         rc, ran, err = _entrypoint(
             tmp_path / "b",
@@ -786,7 +750,6 @@ class TestRocmEntrypoint:
             env_extra = {"UNSLOTH_KFD_TOPOLOGY": str(tmp_path / "topo")},
         )
         assert rc == 1 and not ran and "refuses" in err, err
-        # a real gfx1030 with the override set is not refused
         (tmp_path / "c").mkdir()
         (tmp_path / "topo" / "1" / "properties").write_text(
             "vendor_id 4098\ngfx_target_version 100300\n"
@@ -923,9 +886,7 @@ class TestRocmEntrypoint:
         assert "load_in_4bit = four_bit" in smoke and "ROCM_GFX=gfx906" in smoke
         entry = open(_ENTRYPOINT, encoding = "utf-8").read()
         assert "ROCM_GFX=gfx906 ROCM_VERSION=6.3.4" in entry
-        # The Studio venv is installed by install.sh with the index pinned, which
-        # skips the reroute that would notice gfx906, and the builder has no GPU
-        # to probe, so the arch has to be forwarded or the prebuilt wheel goes in.
+        # Pinned index skips the gfx906 reroute and the builder has no GPU, so forward the arch.
         studio = open(os.path.join(_DOCKER, "Dockerfile.studio-rocm"), encoding = "utf-8").read()
         install = studio[
             studio.index(". /etc/unsloth-rocm-build") : studio.index("bash install.sh --local")
@@ -934,11 +895,8 @@ class TestRocmEntrypoint:
         assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in install
 
     def test_the_studio_image_is_published_from_the_base_digest_with_the_same_refs(self):
-        """docker/Dockerfile.studio-rocm is built by the same run as the base, on the
-        base by digest (a tag can already be a newer run's) with the refs the base
-        baked, and takes the base's tags with a -studio leaf under the same gates.
-        Neither tag set moves until both digests exist: a :latest that moved while the
-        Studio build then failed would leave :studio on the previous base."""
+        """Neither tag set moves until both digests exist, so a failed Studio build cannot strand
+        :studio."""
         import yaml
 
         wf = yaml.safe_load(open(_WORKFLOW, encoding = "utf-8"))
@@ -951,8 +909,6 @@ class TestRocmEntrypoint:
         assert args["BASE_IMAGE"].endswith("@${{ needs.build.outputs.digest }}"), args
         assert args["UNSLOTH_STUDIO_REF"] == "${{ needs.prepare.outputs.unsloth_ref }}"
         assert args["UNSLOTH_STUDIO_ZOO_REF"] == "${{ needs.prepare.outputs.zoo_ref }}"
-        # the notebooks too: the layer is keyed on this string, so a mutable ref
-        # would be a cache hit on the next run and ship the old set
         assert args["UNSLOTH_NOTEBOOKS_REF"] == "${{ needs.prepare.outputs.notebooks_commit }}"
         prepare = wf["jobs"]["prepare"]
         assert prepare["outputs"]["notebooks_commit"] == "${{ steps.notebooks.outputs.commit }}"
@@ -969,9 +925,7 @@ class TestRocmEntrypoint:
         assert len(studio) == len(base) == 5
         for s_ln, b_ln in zip(studio, base):
             assert "studio" in s_ln, s_ln
-            # the same enable= gate as the base line it mirrors
             assert s_ln.split(",enable=", 1)[1:] == b_ln.split(",enable=", 1)[1:], (s_ln, b_ln)
-        # the page describes both images, so it syncs only once both moved
         assert "tag-studio" in wf["jobs"]["hub-readme"]["needs"]
 
     def test_a_notebooks_override_gets_sha_tags_only(self, tmp_path):
@@ -1009,9 +963,6 @@ class TestRocmEntrypoint:
 
         assert not re.search(r"RX\s*\d{4}", body), "marketing names in the entrypoint's arch table"
         assert "gfx906" in body and "6.3" in body, "gfx906 needs the version-aware note"
-
-
-# ── studio_launch_rocm.sh ────────────────────────────────────────────────────
 
 
 def _studio_launch(
@@ -1094,12 +1045,8 @@ class TestStudioLaunchRocm:
         body = open(_STUDIO_DOCKERFILE, encoding = "utf-8").read()
         assert 'CMD ["/usr/local/bin/unsloth-studio-launch"]' in body
         assert "COPY studio_run.sh /usr/local/bin/unsloth-studio-run" in body
-        # The single-service ROCm launcher was replaced by the shared studio_launch.sh
-        # under supervisord once this image gained JupyterLab (#11286); the
-        # program list itself is asserted in test_docker_studio_rocm_jupyter.py.
         assert "COPY studio_launch.sh /usr/local/bin/unsloth-studio-launch" in body
         assert "COPY supervisord.conf /etc/supervisor/supervisord.conf" in body
-        # the gfx906 base removes bitsandbytes; the Studio venv must be told the arch
         assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in body
         ignore = open(os.path.join(_DOCKER, ".dockerignore"), encoding = "utf-8").read()
         assert "!studio_launch.sh" in ignore and "!studio_run.sh" in ignore

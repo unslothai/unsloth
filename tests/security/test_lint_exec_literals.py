@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`scripts/lint_exec_literals.py` fails CI on a new non-literal exec/eval/compile.
-
-The rule is coarse on purpose, so what these pin is the shape of the coarseness: which
-calls it fires on, which it leaves alone, and that the baseline cannot be used to
-smuggle a new call site past it.
-"""
+"""The lint is coarse on purpose; the baseline must not let a new non-literal call slip past."""
 
 from __future__ import annotations
 

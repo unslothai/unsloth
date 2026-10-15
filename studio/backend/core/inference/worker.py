@@ -1730,7 +1730,7 @@ def _handle_generate_audio(backend, cmd: dict, resp_queue: Any, cancel_event) ->
             )
             logger.info("Finished audio separation for request_id=%s", request_id)
             return
-        # Only audio.cpp models take per-model options; other backends never see the keyword.
+        # Only audio.cpp and Orpheus (voice) models take per-model options; others never see the keyword.
         extra = {"audio_options": cmd["audio_options"]} if cmd.get("audio_options") else {}
         # Run fields reach only a backend that takes them: a Speak run on a native TTS model carries a
         # workflow its backend has no keyword for.

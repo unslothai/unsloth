@@ -56,7 +56,11 @@ from core.inference.mcp_images import (
     top_up_image_markers,
     trim_image_turns,
 )
-from utils.models.model_config import is_audio_input_type, load_mlx_adapter_tokenizer
+from utils.models.model_config import (
+    is_audio_input_type,
+    load_mlx_adapter_processor,
+    load_mlx_adapter_tokenizer,
+)
 from utils.utils import is_metal_queue_dead
 from loggers import get_logger
 
@@ -4839,6 +4843,8 @@ class MLXInferenceBackend:
         self._reads_vision = bool(is_vision)
         if use_vlm:
             processor = tokenizer_or_processor
+            if is_lora:
+                processor = load_mlx_adapter_processor(processor, model_name, hf_token)
             self._model = model
             self._processor = processor
             self._tokenizer = getattr(processor, "tokenizer", processor)
