@@ -800,6 +800,8 @@ class TestFatbinCompression:
                 'export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"'
                 in script
             )
+            # An empty value would compile, and in warm save, uncompressed objects under the tag.
+            assert 'if [ -z "$FATBIN_FLAGS" ]' in script
             assert script.index("NVCC_APPEND_FLAGS=") < script.index("prebuilt_wheels") or (
                 script.index("NVCC_APPEND_FLAGS=") < script.index("bdist_wheel")
             )

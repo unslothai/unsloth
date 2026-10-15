@@ -481,6 +481,7 @@ jobs:
           done
           export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"
           echo "NVCC_APPEND_FLAGS=$NVCC_APPEND_FLAGS"
+          if [ -z "$FATBIN_FLAGS" ]; then echo "::error::FATBIN_FLAGS is empty"; exit 1; fi
           ccache -z
           # Windows ends the whole process tree at the deadline; see prebuilt_wheels_timeout.py.
           if [ "$RUNNER_OS" = "Windows" ]; then
