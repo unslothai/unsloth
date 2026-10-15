@@ -507,6 +507,7 @@ def _precheck_band(layer, seq_len, args, kwargs):
 # block). Read inside the trace, so dynamo guards on it.
 _IN_BLOCK = [0]
 _OFF, _FULL, _SPLIT = 0, 1, 2
+_DEMOTION = (_FULL, _SPLIT, _OFF)
 # UNSLOTH_BLOCK_FLEX=outside starts every layer with flex_attention outside its block.
 _FIRST_MODE = _SPLIT if os.environ.get("UNSLOTH_BLOCK_FLEX", "inside") == "outside" else _FULL
 
@@ -569,6 +570,17 @@ def _nf4_in_blocks():
     Linear4bit.forward = forward
 
 
+def _layer_kind(layer):
+    attn = getattr(layer, "self_attn", None) or getattr(layer, "linear_attn", None)
+    return (
+        type(attn).__name__,
+        getattr(layer, "attention_type", None),
+        getattr(attn, "is_sliding", None),
+        getattr(attn, "sliding_window", None),
+        getattr(attn, "head_dim", None),
+    )
+
+
 def _wrap(cls, compile_options):
     original = cls.forward
     compiled = torch.compile(original, fullgraph = False, dynamic = None, options = compile_options)
@@ -580,7 +592,9 @@ def _wrap(cls, compile_options):
     # one class differ: sliding / full attention, widths, quantized or not). A layer that does not
     # compile retries with flex_attention outside, then keeps the stock forward. Per layer, never
     # per class: a checkpointed layer must recompute in the mode its forward ran in.
-    state = {"reported": set()}
+    # A failure also sets the starting mode of later layers of the same kind, so 26 identical
+    # Gemma-3 layers do not each retry a compile that cannot fit (L4: flex needs 135 KB smem).
+    state = {"reported": set(), "start": {}}
 
     def run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
@@ -594,7 +608,10 @@ def _wrap(cls, compile_options):
 
     @functools.wraps(original)
     def forward(self, hidden_states, *args, **kwargs):
-        mode = self.__dict__.get("_unsloth_block_mode", _FIRST_MODE)
+        mode = self.__dict__.get("_unsloth_block_mode")
+        if mode is None:
+            mode = state["start"].get(_layer_kind(self), _FIRST_MODE)
+            self.__dict__["_unsloth_block_mode"] = mode
         # Training only: eval / generation keep the stock forward, so their logits match
         # transformers bit for bit (Inductor's bf16 fusions round differently).
         if (
@@ -629,6 +646,10 @@ def _wrap(cls, compile_options):
                     traceback.print_exc()
                 mode = _SPLIT if mode == _FULL else _OFF
                 self.__dict__["_unsloth_block_mode"] = mode
+                kind = _layer_kind(self)
+                state["start"][kind] = max(
+                    state["start"].get(kind, _FIRST_MODE), mode, key = _DEMOTION.index
+                )
                 first = str(e).strip().splitlines()[0][:200] if str(e).strip() else type(e).__name__
                 if (first, mode) not in state["reported"]:
                     state["reported"].add((first, mode))

@@ -110,8 +110,11 @@ def test_compile_failure_falls_back(monkeypatch, fails_in):
     else:
         assert layer._unsloth_block_mode == M._OFF
         assert calls == ["full", "split"]  # then the stock forward, never compiled again
-    # The mode is per layer: a sibling of the same class still starts compiled.
-    assert "_unsloth_block_mode" not in cls().__dict__
+    # A sibling of the same kind starts where this layer ended, without retrying what failed.
+    calls.clear()
+    with torch.no_grad():
+        cls()(x)
+    assert calls == (["split"] if fails_in == ("full",) else [])
     # Eval keeps the stock forward (logits equal transformers bit for bit).
     calls.clear()
     sibling = cls().eval()
