@@ -3,12 +3,13 @@
 import os
 
 import pytest
+from real_accelerator import has_real_cuda
 
 torch = pytest.importorskip("torch")
 
 pytestmark = [
     pytest.mark.gpu,
-    pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA"),
+    pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA"),
     pytest.mark.skipif(torch.version.hip is not None, reason = "the fused path is CUDA only"),
 ]
 
@@ -286,7 +287,9 @@ def test_extra_scale_columns_are_ignored(N, fused, monkeypatch):
     assert _calls(N)["fwd"] == before["fwd"] + 1
     assert torch.equal(Y, N._nvfp4_matmul_fwd(X, packed, scale, gs))
     G = torch.randn(4, 64, device = "cuda", dtype = dtype)
-    assert torch.equal(N._nvfp4_matmul_bwd(G, packed, wide, gs), N._nvfp4_matmul_bwd(G, packed, scale, gs))
+    assert torch.equal(
+        N._nvfp4_matmul_bwd(G, packed, wide, gs), N._nvfp4_matmul_bwd(G, packed, scale, gs)
+    )
 
 
 def test_inf_scale_in_the_last_group_matches_dense(N, fused, monkeypatch):
@@ -319,7 +322,9 @@ def test_column_strided_e4m3_scales(N, fused, monkeypatch):
     dtype = _dtypes()[0]
     packed, scale, gs = _random_nvfp4(64, 128)
     strided = torch.stack([scale, scale], dim = -1).reshape(scale.shape[0], -1)[:, ::2]
-    assert strided.stride(-1) == 2 and torch.equal(strided.view(torch.uint8), scale.view(torch.uint8))
+    assert strided.stride(-1) == 2 and torch.equal(
+        strided.view(torch.uint8), scale.view(torch.uint8)
+    )
     X = torch.randn(4, 128, device = "cuda", dtype = dtype)
     assert torch.equal(_fwd(N, X, packed, strided, gs), _fwd(N, X, packed, scale, gs))
 
@@ -347,6 +352,7 @@ def test_row_gate_keeps_unaligned_shapes_dense(N, monkeypatch):
         assert N._fused_ok(X, packed, scale, gs, k)
         monkeypatch.delenv("UNSLOTH_NVFP4_FUSED")
 
+
 def test_flags_are_read_once_per_process(N, live_env, monkeypatch):
     monkeypatch.setattr(N, "_FUSED_ENV", None)
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", " Off ")
@@ -355,6 +361,7 @@ def test_flags_are_read_once_per_process(N, live_env, monkeypatch):
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED", "1")
     assert live_env() == ("off", 32)
 
+
 def test_offset_width_follows_the_strided_span(N):
     small = torch.empty((2, 4), device = "meta")
     assert not N._needs_int64(small)
@@ -362,7 +369,7 @@ def test_offset_width_follows_the_strided_span(N):
     assert N._needs_int64(small.as_strided((2, 4), (2**31, 1)))
 
 
-@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+@pytest.mark.skipif(not has_real_cuda() or torch.cuda.device_count() < 2, reason = "needs two GPUs")
 def test_operands_on_another_device_stay_dense(N, monkeypatch):
     monkeypatch.setenv("UNSLOTH_NVFP4_FUSED_MAX_ROWS", "64")
     dtype = _dtypes()[0]
