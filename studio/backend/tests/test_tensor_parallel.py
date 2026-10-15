@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import socket
 import sys
 import threading
@@ -329,10 +330,16 @@ def test_mtp_decode_probe_wired_under_tensor_parallel():
     # shared drafter-drop fallback fires.
     after = src[probe : probe + 900]
     assert "_with_flash_attn_off" in after and "healthy = False" in after
-    fallback = src.find(
-        "and (_spec_requested_mtp or _spec_requested_dspark or _spec_requested_dflash)"
+    # The drafter-drop fallback is `if not healthy and (<any drafter requested>) ...`. Matched on
+    # its shape, not its exact spelling: #13806 added eagle3 to that list and wrapped it over
+    # several lines, and a one-line literal then found nothing.
+    match = re.search(
+        r"not healthy\s+and\s*\(\s*_spec_requested_mtp\s+or\s+_spec_requested_dspark\b"
+        r"[^)]*?_spec_requested_dflash\b",
+        src,
     )
-    assert 0 <= probe < fallback, "the probe must precede the drafter-drop fallback"
+    assert match is not None, "load_model no longer has a drafter-drop fallback for MTP"
+    assert probe < match.start(), "the probe must precede the drafter-drop fallback"
 
 
 def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):

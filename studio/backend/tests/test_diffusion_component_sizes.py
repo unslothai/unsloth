@@ -398,10 +398,17 @@ class _Pipe:
         self.transformer = _Module()
 
 
+def _on_card_placement(monkeypatch):
+    # A peak is recorded only under a known placement; the fake pipe's denoiser stays on the card.
+    from core.inference import diffusion_memory
+    monkeypatch.setattr(diffusion_memory, "stream_window_pad_mib", lambda pipe: 0)
+
+
 def test_calibration_records_and_reuses_for_any_family(monkeypatch):
     import torch
 
     monkeypatch.setattr(vsr, "_PEAKS", {})
+    _on_card_placement(monkeypatch)
     allocated = {"now": 1000 << 20, "peak": 0}
     monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda dev = None: None)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda dev = None: allocated["now"])
@@ -1638,6 +1645,7 @@ def test_retagged_peak_is_recorded_under_the_mode_that_ran(monkeypatch):
     import torch
 
     monkeypatch.setattr(vsr, "_PEAKS", {})
+    _on_card_placement(monkeypatch)
     alloc = {"now": 0, "peak": 0}
     monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda dev = None: None)
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda dev = None: alloc["now"])
@@ -1727,9 +1735,9 @@ def test_calibration_revision_includes_the_companion_base(monkeypatch):
         )
         return video._calibration_revision(state)
 
-    assert rev("pipeline", "Lightricks/LTX-2") == "g" * 40
+    assert rev("pipeline", "Lightricks/LTX-2") == f"u/ltx-gguf/x.gguf@{'g' * 40}"
     gguf_default = rev("gguf", "Lightricks/LTX-2")
-    assert gguf_default == f"{'g' * 40}|base=Lightricks/LTX-2@{'b' * 40}"
+    assert gguf_default == f"u/ltx-gguf/x.gguf@{'g' * 40}+Lightricks/LTX-2@{'b' * 40}"
     assert rev("gguf", "someone/ltx2-base") != gguf_default
 
 

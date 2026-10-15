@@ -1,42 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A/B comparison: paired ratios, a bootstrap CI, and four ways to refuse to answer.
-
-The comparison is PAIRED AND INTERLEAVED WITHIN ONE SESSION. Cross-session drift on the measured
-machine ran to 8%: the same build, measured an hour apart, differs by more than most real wins.
-Two runs one after the other therefore cannot be subtracted, and this module will not do it. What
-it compares is base and treatment cells that were recorded alternately inside a single browser
-session, matched by (rung, metric), so whatever drifted drifted through both sides.
-
-THE NULL-TREATMENT CONTROL RUNS FIRST AND CAN VOID THE WHOLE THING. Before any real comparison,
-base is compared against base under two different arm ids. Whatever spread that produces IS the
-noise floor for this machine on this day; it is measured, not assumed. If the null control itself
-shows a difference outside its own band, the harness is not currently capable of resolving a
-difference and every number downstream of it is unquotable. That is reported as VOID, not as a
-result with a caveat.
-
-A REGRESSION BEYOND THE NOISE FLOOR IS A FAIL REGARDLESS OF THE HEADLINE. A change that improves
-the aggregate by 12% while tripling the worst frame is not a win, and a single headline number is
-exactly the instrument that would let it ship. Every metric is checked individually.
-
-A POINT ESTIMATE PAST THE NOISE FLOOR IS NOT YET AN EFFECT. The noise floor answers "could this
-machine resolve a difference of this size at all", which is a question about the harness; it says
-nothing about whether these repetitions agree. Ratios of 0.7, 0.7, 1.2, 1.2 have a geometric mean
-of 0.917, clear of a 5% floor, and a bootstrap CI of 0.700-1.200 that contains 1.0: the pairs do
-not agree on the sign, and the honest reading is that nothing was resolved. So a direction is only
-claimed when the CI clears 1.0, and an interval that does not exist cannot clear it: below three
-usable pairs there is no bootstrap CI at all, and that reads as unresolved rather than as
-permission. The refusal is one-sided: an unresolved WIN is withheld from the headline, while an
-unresolved regression keeps both its FAIL and its place in the aggregate, where it can only pull
-the number toward worse. Withholding a win costs a headline; withholding a loss ships it. `sweep/floor_table.py` applies the same rule to its own pooled ratios under
-"VOID (pairs disagree on sign)".
-
-FOUR REFUSALS. Rendering is refused outright when `bench_version`, `corpus_hash`, `rung_ladder_id`
-or `weights_id` differ between the two sides. Each of those changes what the numbers mean, and a
-table that prints them side by side is not a comparison, it is a category error with column
-headers.
-"""
+"""Paired A/B within one session; a failed null control voids the run; a win needs a CI clearing 1.0."""
 
 from __future__ import annotations
 
@@ -73,8 +38,7 @@ class RunIdentity:
         }
 
 
-#: The fields that must match. `session_id` is separate because its failure mode differs: mismatched
-#: ids mean different meanings, a mismatched session means an 8% drift term.
+#: `session_id` is checked separately: a mismatch there is drift, not a different meaning.
 COMPARABILITY_FIELDS = ("bench_version", "corpus_hash", "rung_ladder_id", "weights_id")
 
 
@@ -109,32 +73,8 @@ class Pair:
 
     @staticmethod
     def _divisible(measure: Measure) -> float | None:
-        """The value this arm contributes to a ratio, or None when it cannot contribute one.
-
-        A MEASURED ZERO IS A READING, AND `> 0` THREW THAT AWAY. `time_in_jank_pct` and
-        `jank_index` are 0.0 on any arm smooth enough to have no over-budget frames, which is the
-        ordinary state of a healthy base. Requiring both values to be strictly positive dropped
-        the pair, so a treatment that introduced 5% time-in-jank over a zero-jank base reported
-        `no reading` -- a false statement about two arms that both read -- kept the regression out
-        of the table, the headline and `result.regressions`, and, as a null control, neither voided
-        the run nor contributed to the noise floor derived from it. That last one is the worst of
-        the three: the floor is what every later comparison is judged against, so a null control
-        blind to the jank it introduced silently shrinks the effect size anything else can claim.
-
-        The rule is `score.py`'s, which the ladder scorer has always applied to exactly this case:
-        a sub-floor reading is at least as good as the floor, so use the floor rather than the raw
-        value. Dividing by it yields a BOUND on the ratio -- understating the regression, never
-        overstating it -- instead of an infinity or a silence. Two sub-floor arms give floor/floor
-        = 1.0, which is the honest answer and the one score.py's comment is about: instrument noise
-        on a fast machine must not invent a difference between two perfect builds.
-
-        WHAT THIS DELIBERATELY DOES NOT ADMIT. It keys on `has_reading`, so a measure that was
-        never attempted or that was attempted and failed still contributes nothing: those carry
-        `value is None` and are a different thing from a measured zero, which is the distinction
-        `frames.py` makes when it refuses to score an unscheduled rAF loop as zero jank. A zero
-        with no declared floor stays unusable too, because nothing bounds it. So this admits
-        readings that were taken and still excludes readings that were not.
-        """
+        """A measured zero is a reading; a sub-floor value uses the floor, giving a bound rather
+        than infinity."""
         if not measure.has_reading:
             return None
         value = float(measure.value)
@@ -184,13 +124,9 @@ class MetricComparison:
     ci_high: float | None
     verdict: str = "no_reading"
     beyond_noise: bool = False
-    #: The 95% CI of the paired geometric mean contains 1.0, so the data cannot rule out "no effect"
-    #: however far the point estimate landed from the noise floor. Carried so the table can say the
-    #: size is unresolved rather than print a direction as a finding.
+    #: The paired geomean 95% CI contains 1.0, so the effect size is unresolved.
     ci_spans_no_effect: bool = False
-    #: At least one contributing pair had a sub-floor arm, so the ratio is a BOUND: the true magnitude
-    #: is larger. Carried so a number derived from an instrument floor is not quoted as a
-    #: measurement.
+    #: A contributing pair had a sub-floor arm, so the ratio is only a bound.
     bounded: bool = False
 
     @property
@@ -202,25 +138,12 @@ class MetricComparison:
 
     @property
     def withheld(self) -> bool:
-        """An unresolved BETTER-side metric, whose magnitude is kept out of the headline.
-
-        Only the better side is withheld. An unresolved regression keeps contributing, where it
-        can only pull the aggregate toward worse; dropping it would make the headline read rosier
-        than the run actually was, which is the one direction this table must never round toward.
-        """
+        """Only the better side is withheld; an unresolved regression still counts toward the headline."""
         return self.verdict == "inconclusive"
 
     @property
     def unresolved(self) -> bool:
-        """Moved past the floor without an interval that rules out no effect.
-
-        Covers two cases, and the second is the one that failed open. An interval can straddle
-        1.0, or there can be no interval at all: `bootstrap_geomean_ci` returns `(None, None)`
-        below three usable pairs, which a short ladder or a partially measured metric reaches
-        easily. A rule that claims a direction only when the CI clears 1.0 cannot be satisfied
-        by a CI that does not exist, so an absent one has to read as unresolved rather than as
-        permission. Two pairs at 0.5 used to print a 50% win with no interval behind it.
-        """
+        """Past the floor but no CI clears 1.0; a missing CI counts as unresolved, never as permission."""
         return self.beyond_noise and not self.ci_rules_out_no_effect
 
     @property
@@ -249,12 +172,7 @@ def bootstrap_geomean_ci(
     confidence: float = 0.95,
     bootstrap_seed: int = 0,
 ) -> tuple[float | None, float | None]:
-    """Percentile bootstrap CI of the geometric mean of paired ratios.
-
-    Resampling is over PAIRS, which is the unit that was randomised. Resampling over individual
-    readings would treat base and treatment as independent samples and throw away the pairing
-    that is doing all the work here.
-    """
+    """Resamples over pairs, the unit that was randomised; resampling readings would discard the pairing."""
 
     usable = [float(r) for r in ratios if r is not None and r > 0 and math.isfinite(r)]
     if len(usable) < 3:
@@ -304,16 +222,11 @@ class AbResult:
         if self.regressions:
             return "FAIL"
         if self.headline_ratio is None:
-            # UNRESOLVED IS NOT UNMEASURED. `compare` keeps unresolved metrics out of the headline entirely, so
-            # a run whose every moving metric straddled 1.0 arrives with no ratio at all: the data exists and
-            # says nothing, which is INCONCLUSIVE, while NO READING means there was nothing to read.
+            # Unresolved metrics are excluded from the headline, so this is INCONCLUSIVE, not NO READING.
             if any(m.unresolved for m in self.metrics):
                 return "INCONCLUSIVE"
             return "NO READING"
-        # NO DIFFERENCE IS A CLAIM, AND A STRONGER ONE THAN THIS DATA SUPPORTS. Excluding an unresolved
-        # mover can leave only flat metrics behind, putting the aggregate back inside the noise floor;
-        # reporting 'no difference' there would assert the change did nothing when one metric moved and
-        # could not resolve its own sign.
+        # Dropping an unresolved mover can leave only flat metrics; do not claim no difference then.
         if any(m.unresolved for m in self.metrics) and not any(
             m.resolves_direction for m in self.metrics
         ):
@@ -351,12 +264,8 @@ def compare(
     is_null_control: bool = False,
     bootstrap_seed: int = 0,
 ) -> AbResult:
-    """Build one A/B result from interleaved paired cells.
-
-    Refuses (raises) on identity mismatch. Produces a VOID result, rather than raising, when the
-    data is present but cannot support a claim: that distinction matters because the first is a
-    caller bug and the second is a fact about the machine that belongs in the report.
-    """
+    """Raises on identity mismatch; returns a VOID result, not an error, when data cannot support a
+    claim."""
 
     assert_comparable(identity_base, identity_treatment)
 
@@ -402,11 +311,7 @@ def compare(
             if not comparison.beyond_noise:
                 comparison.verdict = "within noise"
             elif worse:
-                # THE ASYMMETRY IS THE POINT, ON BOTH THE LABEL AND THE HEADLINE. Withholding an unresolved win
-                # costs a headline; withholding an unresolved loss ships the regression. So the worse side keeps
-                # counting and keeps contributing to the aggregate, where it can only drag the number toward
-                # worse. `_divisible` exists because a single bounded pair over a zero base once vanished from the
-                # table, the headline and this list at once.
+                # Deliberately asymmetric: an unresolved win is withheld, an unresolved loss keeps counting.
                 comparison.verdict = (
                     "regressed (unresolved)" if comparison.ci_spans_no_effect else "regressed"
                 )
@@ -421,12 +326,7 @@ def compare(
                 )
             else:
                 comparison.verdict = "inconclusive" if comparison.unresolved else "improved"
-            # AN UNRESOLVED METRIC LENDS ITS MAGNITUDE TO NOTHING. The headline is a weighted geometric mean
-            # of point estimates carrying no interval of its own, so a metric that moved a long way but could
-            # not resolve its sign would supply most of the quoted number: keystroke_p95_ms at 0.2, 0.2, 1.5,
-            # 1.5 beside a resolved menu_open_ms of 0.900 produced a headline of 0.631 and the word IMPROVED.
-            # That metric's own mean was 0.548, CI 0.200-1.500.
-            # Metrics still within noise keep contributing, pulling the headline toward 1.0.
+            # Unresolved metrics are excluded from the headline geomean so a wide-CI mover cannot dominate it.
             if not comparison.withheld:
                 weight = anchor.weight if anchor else 1.0
                 weighted_logs.append((weight, math.log(geo)))
@@ -437,8 +337,7 @@ def compare(
         result.headline_ratio = math.exp(sum(w * lg for w, lg in weighted_logs) / total_weight)
 
     if is_null_control:
-        # A null control that shows a difference is the harness moving, not the build. Whatever it
-        # reports, no comparison run on the same machine at the same time can be believed.
+        # A null control showing a difference means the harness moved; nothing measured alongside counts.
         offenders = [
             f"{m.metric_key}: {abs((m.ratio_geomean - 1.0) * 100):.1f}%"
             for m in result.metrics
@@ -450,7 +349,6 @@ def compare(
                 "the null-treatment control (base vs base) moved beyond its own noise floor of "
                 f"{noise_floor_pct:.1f}%: " + ", ".join(offenders)
             )
-        # A null control never counts as a regression; it is a measurement of the harness.
         result.regressions = []
 
     return result
@@ -459,20 +357,7 @@ def compare(
 def noise_floor_from_null_control(
     null_control: AbResult, *, minimum_pct: float = 1.0
 ) -> tuple[float, str]:
-    """Derive this machine's noise floor from the null control it just ran.
-
-    The floor is the largest absolute per-metric deviation the null control showed, never below
-    `minimum_pct`. Using the measured spread rather than a constant is the difference between
-    "this machine can resolve 3%" and "we hope every machine can resolve 5%".
-
-    A BOUNDED RATIO IS NOT A DEVIATION and is excluded here. A metric whose base fell under its
-    instrument floor contributes the floor to the ratio, so the result says "at least this much"
-    rather than "this much": a null control that moved from no measurable jank to 5% yields a
-    ratio of 50 and would publish a 4,900% noise floor, which would then swallow every real effect
-    on that machine. Such a control has already set `void` on the same evidence -- the movement is
-    real and nothing measured beside it can be believed -- and that is the outcome that belongs to
-    it. The floor is a question about SPREAD, and only point estimates can answer it.
-    """
+    """Measures spread only: bounded ratios are excluded, since they state a bound, not a deviation."""
 
     bounded = sum(1 for m in null_control.metrics if m.ratio_geomean is not None and m.bounded)
     deviations = [
@@ -501,12 +386,7 @@ def pairs_from_cells(
     treatment_cells: Mapping[int, Mapping[str, Measure]],
     metric_keys: Iterable[str] | None = None,
 ) -> list[Pair]:
-    """Match base and treatment readings by (rung, metric). Unmatched readings are dropped.
-
-    Dropping is correct here and only here: an unmatched cell has no partner, so there is no
-    ratio to compute. It is NOT the same as dropping an incomplete rung from a score, where the
-    absence is itself the result.
-    """
+    """Dropping unmatched readings is right only because they have no partner to form a ratio."""
 
     keys = list(metric_keys) if metric_keys is not None else list(METRIC_BY_KEY)
     out: list[Pair] = []

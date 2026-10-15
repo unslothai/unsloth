@@ -6,6 +6,7 @@ import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
+import { copyTabPageStorage, dropTabPageStorage } from "./page-storage";
 import { setShownBrowserChat } from "./panel-availability";
 import { defaultZoom } from "./prefs-store";
 import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
@@ -584,7 +585,9 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     duplicateTab: (tabId) => {
       const tab = get().tabs.find((candidate) => candidate.id === tabId);
       if (!tab) return;
-      openTab(copyTab(tab), false, tabId, tab.chat);
+      const copy = copyTab(tab);
+      copyTabPageStorage(tab.id, copy.id);
+      openTab(copy, false, tabId, tab.chat);
     },
     openPinned: (pinnedId, url, title) => {
       const shown = chatTabs(get()).find((tab) => tab.pinnedId === pinnedId);
@@ -756,6 +759,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       for (const entry of closing.history) pageCache.delete(entry);
       releaseFiles(remaining);
       pageDownloads.delete(tabId);
+      dropTabPageStorage(tabId);
       const { [tabId]: _closed, ...fileViews } = get().fileViews;
       const annotateTabId = get().annotateTabId === tabId ? null : get().annotateTabId;
       const renamingTabId = get().renamingTabId === tabId ? null : get().renamingTabId;
