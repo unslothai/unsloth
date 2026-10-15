@@ -3022,3 +3022,20 @@ def test_deferred_profile_engagement_runs_in_its_own_rocm_probe_scope(monkeypatc
     with pytest.raises(_Stop):
         backend._engage_deferred_profile(state)
     assert scopes == [{}] and rc._load_oom.get() is None
+
+
+def test_rocm_load_local_oom_wins_over_a_concurrent_global_success(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: (False, "OutOfMemoryError: HIP out of memory"))
+    rc._reset_for_tests()
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is False
+        rc._result[0] = (True, "ok")  # another load on the same card probed successfully meanwhile
+        assert rc.rocm_block_compile_probe()[0] is False
+    assert rc.rocm_block_compile_probe()[0] is True
+    rc._reset_for_tests()

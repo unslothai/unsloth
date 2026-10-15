@@ -110,10 +110,11 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
     index = _index(device)
     memo = _load_oom.get()
     with _lock:
-        if index in _result:
-            return _result[index]
+        # The load's own OOM first: a concurrent load's later success must not send this load into a compile.
         if memo is not None and index in memo:
             return memo[index]
+        if index in _result:
+            return _result[index]
         ok, why = _probe(torch, index)
         (logger.info if ok else logger.warning)(
             "diffusion.speed: ROCm regional compile probe on cuda:%s: %s (%s)",
