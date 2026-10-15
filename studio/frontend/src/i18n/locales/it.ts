@@ -60,6 +60,8 @@ export const it = {
       never: "Mai",
       scripts: "Esegui script",
       scriptsDescription: "Scegli se i modelli possono eseguire script nelle pagine. Ogni script ti viene mostrato prima dell’esecuzione",
+      cursor: "Mostra cursore",
+      cursorDescription: "Mostra un puntatore dove i modelli fanno clic, scrivono e trascinano nella pagina",
       askEveryTime: "Chiedi ogni volta",
       permissionsTitle: "Autorizzazioni dell'agente",
       permissionsDescription: "Scegli i valori predefiniti e aggiungi eccezioni per siti specifici. I campi di password e pagamento non vengono mai compilati, qualunque cosa indichino queste impostazioni.",
@@ -82,6 +84,9 @@ export const it = {
     },
     agent: {
       working: "Unsloth sta navigando in questa scheda",
+      waiting: "Unsloth ha bisogno della tua risposta nel browser per {chat}",
+      otherChat: "un'altra chat",
+      show: "Mostra",
       stop: "Interrompi",
       allow: "Consenti",
       deny: "Nega",
@@ -255,7 +260,7 @@ export const it = {
     annotationScreenshotsAlways: "Includi sempre",
     annotationScreenshotsNever: "Non includere mai",
     clearDataSetting: "Cancella dati di navigazione",
-    clearDataSettingDescription: "Cancella la cronologia di navigazione, la cronologia download e le pagine nella cache. Le pagine non conservano cookie né dati dei siti.",
+    clearDataSettingDescription: "Cancella la cronologia di navigazione, la cronologia download e le pagine nella cache. Le pagine conservano cookie e dati dei siti solo fino al ricaricamento di Studio.",
     manage: "Gestisci",
     fullView: {
       enter: "Vista completa",
@@ -431,7 +436,7 @@ export const it = {
     },
     clearData: {
       title: "Cancellare i dati di navigazione?",
-      description: "Verranno cancellate la cronologia di navigazione, la cronologia download e le pagine nella cache. I file scaricati restano sul tuo computer.",
+      description: "Questo cancella cronologia di navigazione, cronologia dei download, pagine in cache e cookie e dati dei siti, disconnettendoti dai siti. I file scaricati restano sul computer.",
       cancel: "Annulla",
       confirm: "Cancella dati",
       done: "Dati di navigazione cancellati",
@@ -447,6 +452,7 @@ export const it = {
       resubmit: "Questa pagina deriva da un modulo. Ricaricarla invia di nuovo il modulo e potrebbe ripeterne l'azione.",
       upload: "Il caricamento di file non funziona in questa vista. Apri la pagina nel browser di sistema per inviarlo.",
       scriptNavigation: "Questa pagina ha provato ad andare a un altro indirizzo tramite script, cosa che questa vista non può seguire. Aprila nel browser di sistema.",
+      needsBrowser: "Questa pagina ha provato a usare una funzione del browser che questa vista blocca, quindi alcune parti potrebbero non funzionare. Aprila nel browser di sistema.",
     },
     native: {
       externalPrompt: "{host} vuole aprire {url}",
@@ -1270,6 +1276,7 @@ export const it = {
       installRuntimeFailed: "Installazione del runtime non riuscita.",
       installRuntimeError: "Impossibile avviare l'installazione del runtime.",
       unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64, quindi non è disponibile su questo PC.",
+      builtinNeedsUpdate: "Il container integrato di Windows richiede la build {required} o successiva, e questo PC esegue {current}. Installa l'ultimo aggiornamento di Windows per usarlo senza un passaggio da amministratore, oppure attiva la sandbox di riserva qui sotto.",
       unsupportedBuild: "La sandbox di Windows (MXC) richiede Windows 11 24H2 (build 26100) o successivo, quindi non è disponibile su questo PC.",
       permissionsIntro: "Scegli quando gli strumenti chiedono prima e se Python e Terminale vengono eseguiti anche nella sandbox del sistema.",
       permissionLabel: "Autorizzazioni strumenti",
@@ -2543,6 +2550,9 @@ export const it = {
         showMemoryBar: "Mostra la barra di utilizzo della VRAM",
         showMemoryBarDescription:
           "Mostra sotto la riga di ogni modello scaricato il consumo stimato di VRAM: pesi, cache KV alla lunghezza di contesto con cui verrà caricato ed eventuale riserva per il draft speculativo.",
+        fitOnDeviceOnly: "Mostra solo i modelli compatibili",
+        fitOnDeviceOnlyDescription:
+          "Nasconde nel selettore dei modelli e nell'Hub i modelli troppo grandi per la memoria GPU e la RAM di questo dispositivo. I modelli scaricati restano visibili.",
       },
       menu: {
         title: "Menu della chat",
