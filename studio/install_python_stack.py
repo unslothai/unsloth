@@ -6729,8 +6729,12 @@ def _ensure_rocm_torch() -> "bool | None":
                     _clear_confirmed_hsa_spoof(_selected_gfx)
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
+                # Unpinned, the discrete-card preference in _runtime_gfx_target moved it.
+                _selector = (
+                    "HIP_VISIBLE_DEVICES" if _visible_devices_pinned() else "the discrete GPU"
+                )
                 _safe_print(
-                    f"   AMD per-gfx GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
+                    f"   AMD per-gfx GPU ({_gfx_str}) present but {_selector} "
                     f"selects another runtime target ({_runtime_gfx});\n"
                     f"   skipping AMD per-gfx index override.\n"
                 )
