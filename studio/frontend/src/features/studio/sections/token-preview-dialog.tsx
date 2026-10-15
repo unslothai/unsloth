@@ -66,7 +66,7 @@ const TokenStream = memo(function TokenStream({
   showIds: boolean;
 }) {
   return (
-    <div className="font-mono text-[12.5px] leading-6 whitespace-pre-wrap break-words">
+    <div className="font-mono text-ui-12p5 leading-6 whitespace-pre-wrap break-words">
       {tokens.map(([id, text, trained], index) => (
         <span
           // biome-ignore lint/suspicious/noArrayIndexKey: tokens are positional
@@ -81,7 +81,7 @@ const TokenStream = memo(function TokenStream({
         >
           {visibleText(text)}
           {showIds ? (
-            <sub className="ml-0.5 text-[9px] opacity-60">{id}</sub>
+            <sub className="ml-0.5 text-ui-9 opacity-60">{id}</sub>
           ) : null}
         </span>
       ))}
@@ -355,7 +355,7 @@ function TextPlayground({
         value={text}
         onChange={(event) => onTextChange(event.target.value)}
         placeholder={t("studio.dataset.tokenPreview.textPlaceholder")}
-        className="min-h-28 font-mono text-[12.5px]"
+        className="min-h-28 font-mono text-ui-12p5"
       />
       <div className="flex flex-wrap items-center gap-2">
         <p className="text-xs text-muted-foreground">
