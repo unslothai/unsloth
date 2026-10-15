@@ -2610,6 +2610,21 @@ def run(
         rich_help_panel = _RUN_PANEL_MODEL,
         help = "Weight precision for --engine vllm/sglang (auto keeps the checkpoint's).",
     ),
+    start_api_key_marker: bool = typer.Option(
+        False,
+        "--start-api-key-marker",
+        hidden = True,
+        help = "Emit an early API key marker for the unsloth start parent process.",
+    ),
+    password: str = typer.Option(
+        "",
+        "--password",
+        rich_help_panel = _RUN_PANEL_ADVANCED,
+        help = "Set the INITIAL admin password non-interactively (headless setups), "
+        "only when none is set yet. Also reads the UNSLOTH_STUDIO_PASSWORD env var, or "
+        "`--password -` to read one line from stdin. A literal value is visible in the "
+        "process list and shell history. Rotate later with `unsloth studio reset-password`.",
+    ),
     engine_parallelism: Literal["tensor", "pipeline", "data"] = typer.Option(
         "tensor",
         "--engine-parallelism",
@@ -2628,21 +2643,6 @@ def run(
             "Comma-separated GPU indices to load the model on, for example 0,1 (the "
             "Studio GPU picker). Default: automatic selection."
         ),
-    ),
-    start_api_key_marker: bool = typer.Option(
-        False,
-        "--start-api-key-marker",
-        hidden = True,
-        help = "Emit an early API key marker for the unsloth start parent process.",
-    ),
-    password: str = typer.Option(
-        "",
-        "--password",
-        rich_help_panel = _RUN_PANEL_ADVANCED,
-        help = "Set the INITIAL admin password non-interactively (headless setups), "
-        "only when none is set yet. Also reads the UNSLOTH_STUDIO_PASSWORD env var, or "
-        "`--password -` to read one line from stdin. A literal value is visible in the "
-        "process list and shell history. Rotate later with `unsloth studio reset-password`.",
     ),
 ):
     """Start Unsloth, load a model, print an API key -- one-liner server.
