@@ -1122,13 +1122,9 @@ class TestStudioRocmGgufOnTheGpu:
         # install.sh falls back to the CPU bundle on a failed Vulkan install
         assert "assert m.get('backend') == 'vulkan'" in body
 
-    def test_the_radv_driver_is_installed_and_pinned(self):
+    def test_the_radv_driver_is_installed(self):
         body = self._body()
         apt = re.search(r"apt-get install -y --no-install-recommends \\\n\s+([^\n]+)", body).group(
             1
         )
         assert "libvulkan1" in apt and "mesa-vulkan-drivers" in apt, apt
-        assert "ENV VK_DRIVER_FILES=/usr/local/share/unsloth/radeon_icd.json" in body
-        # Mesa 25 (noble-updates) dropped the .x86_64 suffix that 24.x carried
-        assert "ls /usr/share/vulkan/icd.d/radeon_icd*.json" in body
-        assert 'ln -sf "$icd" /usr/local/share/unsloth/radeon_icd.json' in body

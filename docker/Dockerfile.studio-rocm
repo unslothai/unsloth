@@ -96,17 +96,12 @@ ENV UNSLOTH_STUDIO_HOME=/opt/unsloth-studio \
 
 # install.sh needs curl + git; supervisor runs Studio and JupyterLab together;
 # ffmpeg is what the notebooks' audio decode shells out to (docker/Dockerfile bakes
-# it for the same reason), and it is not in the ROCm base.
+# it for the same reason), and it is not in the ROCm base. libvulkan1 and
+# mesa-vulkan-drivers (RADV) let the Vulkan llama.cpp reach the card.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
         curl git ca-certificates supervisor ffmpeg libvulkan1 mesa-vulkan-drivers \
- && rm -rf /var/lib/apt/lists/* \
- && icd="$(ls /usr/share/vulkan/icd.d/radeon_icd*.json | head -n 1)" \
- && test -n "$icd" \
- && mkdir -p /usr/local/share/unsloth \
- && ln -sf "$icd" /usr/local/share/unsloth/radeon_icd.json
-# RADV only, not lavapipe or other vendors' drivers; the glob covers Mesa 24's radeon_icd.x86_64.json.
-ENV VK_DRIVER_FILES=/usr/local/share/unsloth/radeon_icd.json
+ && rm -rf /var/lib/apt/lists/*
 
 # JupyterLab and the notebooks' runtime packages into the base venv, so the kernel
 # is the ROCm torch. The same pins as the CUDA core image (docker/Dockerfile, which
@@ -173,7 +168,7 @@ RUN set -eux \
     # The UI is the point of this image, so a missing frontend build is fatal here
     # rather than a 404 at runtime.
  && test -f "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/dist/index.html" \
-    # install.sh silently falls back to the CPU bundle when the Vulkan one fails.
+    # Shipping the CPU bundle here would put GGUF chat back on the CPU unnoticed.
  && "${UNSLOTH_STUDIO_HOME}/unsloth_studio/bin/python" -c "import json; m = json.load(open('${UNSLOTH_STUDIO_HOME}/llama.cpp/UNSLOTH_PREBUILT_INFO.json')); assert m.get('backend') == 'vulkan', 'llama.cpp installed as ' + repr(m.get('backend')) + ', not vulkan'; print('llama.cpp', m.get('release_tag'), m.get('asset'))" \
  && rm -rf "${UNSLOTH_STUDIO_HOME}/src/.git" \
           "${UNSLOTH_STUDIO_HOME}/src/studio/frontend/node_modules" \
