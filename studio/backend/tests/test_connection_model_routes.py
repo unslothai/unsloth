@@ -18,6 +18,7 @@ TOOL = {
 
 class FakeExternalClient:
     calls: list = []
+    tool_extra: dict = {}
 
     def __init__(self, **kwargs):
         FakeExternalClient.calls.append({"ctor": kwargs})
@@ -38,6 +39,7 @@ class FakeExternalClient:
                                         "index": 0,
                                         "id": "call_1",
                                         "function": {"name": "Read", "arguments": '{"file_'},
+                                        **FakeExternalClient.tool_extra,
                                     }
                                 ]
                             },
@@ -87,6 +89,8 @@ def v1(monkeypatch):
     from utils.api_errors import install_api_error_handlers
 
     FakeExternalClient.calls = []
+    FakeExternalClient.tool_extra = {}
+    inf._CONNECTION_TOOL_EXTRAS.clear()
     allowed = []
 
     def resolve(
@@ -430,3 +434,128 @@ def test_a_connection_stream_without_a_space_after_data_still_reaches_the_agent(
 
     response = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "ping"}).json()
     assert response["output"][0]["content"][0]["text"] == "pong"
+
+
+SIGNED = {"extra_content": {"google": {"thought_signature": "sig-abc"}}}
+
+
+@pytest.fixture()
+def gemini(v1, monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf.providers_db,
+        "get_provider",
+        lambda pid: {
+            "id": pid,
+            "provider_type": "gemini",
+            "base_url": "https://generativelanguage.googleapis.com/v1beta",
+            "api_type": "chat_completions",
+            "display_name": "Gemini",
+            "is_enabled": True,
+            "reasoning_config": None,
+        },
+    )
+    FakeExternalClient.tool_extra = SIGNED
+    return v1
+
+
+def _replayed_call(messages, tool_id):
+    return next(
+        call
+        for message in messages
+        for call in (message.get("tool_calls") or [])
+        if call.get("id") == tool_id
+    )
+
+
+def test_messages_replays_a_tool_calls_thought_signature(gemini):
+    # Gemini 3 rejects a replayed functionCall without its thoughtSignature; Claude Code drops it.
+    v1 = gemini
+    first = v1.post("/v1/messages", json = _messages_body()).json()
+    tool_use = first["content"][1]
+    assert tool_use["type"] == "tool_use"
+
+    history = [
+        {"role": "user", "content": "read a.txt"},
+        {"role": "assistant", "content": [tool_use]},
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": tool_use["id"], "content": "hi"}],
+        },
+    ]
+    resp = v1.post("/v1/messages", json = _messages_body(messages = history))
+
+    assert resp.status_code == 200, resp.text
+    call = _replayed_call(FakeExternalClient.calls[-1]["stream"]["messages"], tool_use["id"])
+    assert call["extra_content"] == SIGNED["extra_content"]
+
+
+def test_responses_replays_a_tool_calls_thought_signature(gemini):
+    v1 = gemini
+    first = v1.post("/v1/responses", json = {"model": CONNECTION_MODEL, "input": "read a.txt"})
+    assert first.status_code == 200, first.text
+    call_item = next(i for i in first.json()["output"] if i["type"] == "function_call")
+
+    resp = v1.post(
+        "/v1/responses",
+        json = {
+            "model": CONNECTION_MODEL,
+            "input": [
+                {"role": "user", "content": "read a.txt"},
+                call_item,
+                {"type": "function_call_output", "call_id": call_item["call_id"], "output": "hi"},
+            ],
+        },
+    )
+
+    assert resp.status_code == 200, resp.text
+    call = _replayed_call(FakeExternalClient.calls[-1]["stream"]["messages"], call_item["call_id"])
+    assert call["extra_content"] == SIGNED["extra_content"]
+
+
+def test_a_signature_is_only_replayed_for_its_own_account(v1):
+    import routes.inference as inf
+
+    inf._remember_connection_tool_extra("someone-else", "call_1", SIGNED["extra_content"])
+    messages = [{"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function"}]}]
+
+    inf._restore_connection_tool_extras("owner", messages)
+
+    assert "extra_content" not in messages[0]["tool_calls"][0]
+
+
+def test_chat_completions_without_stream_returns_one_completion_object(v1):
+    FakeExternalClient.tool_extra = SIGNED
+    resp = v1.post(
+        "/v1/chat/completions",
+        json = {"model": CONNECTION_MODEL, "messages": [{"role": "user", "content": "read a.txt"}]},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("application/json")
+    body = resp.json()
+    assert body["object"] == "chat.completion"
+    message = body["choices"][0]["message"]
+    assert message["content"] == "Reading it."
+    assert message["tool_calls"][0]["function"] == {
+        "name": "Read",
+        "arguments": '{"file_path": "a.txt"}',
+    }
+    assert body["choices"][0]["finish_reason"] == "tool_calls"
+    assert body["usage"]["completion_tokens"] == 7
+    assert FakeExternalClient.calls[-1]["stream"]["stream"] is True
+
+
+def test_messages_forwards_an_output_format_to_the_connection(v1):
+    schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+    resp = v1.post(
+        "/v1/messages",
+        json = _messages_body(output_config = {"format": {"type": "json_schema", "schema": schema}}),
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert FakeExternalClient.calls[-1]["stream"]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "response", "schema": schema},
+    }

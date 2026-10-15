@@ -63,6 +63,7 @@ from loggers.media_progress import (
     reset_media_load_progress,
 )
 import asyncio
+import collections
 import contextvars
 import threading
 import weakref
@@ -30607,6 +30608,122 @@ def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
     return provider_id, _urlunquote(encoded)
 
 
+# Gemini 3 answers 400 to a replayed functionCall without the thoughtSignature it was issued with
+# (ai.google.dev thought signatures), and agent clients drop a tool call's extra_content. Keep it
+# here by the tool id the client echoes back.
+_CONNECTION_TOOL_EXTRAS: collections.OrderedDict = collections.OrderedDict()
+_CONNECTION_TOOL_EXTRAS_MAX = 4096
+_CONNECTION_TOOL_EXTRAS_LOCK = threading.Lock()
+
+
+def _remember_connection_tool_extra(subject: Optional[str], tool_id: Any, extra: Any) -> None:
+    if not isinstance(tool_id, str) or not tool_id or not isinstance(extra, dict) or not extra:
+        return
+    with _CONNECTION_TOOL_EXTRAS_LOCK:
+        _CONNECTION_TOOL_EXTRAS[(subject or "", tool_id)] = extra
+        _CONNECTION_TOOL_EXTRAS.move_to_end((subject or "", tool_id))
+        while len(_CONNECTION_TOOL_EXTRAS) > _CONNECTION_TOOL_EXTRAS_MAX:
+            _CONNECTION_TOOL_EXTRAS.popitem(last = False)
+
+
+def _restore_connection_tool_extras(subject: Optional[str], messages: Any) -> None:
+    for message in messages or []:
+        tool_calls = (
+            message.get("tool_calls")
+            if isinstance(message, dict)
+            else getattr(message, "tool_calls", None)
+        )
+        for call in tool_calls or []:
+            if not isinstance(call, dict) or call.get("extra_content"):
+                continue
+            with _CONNECTION_TOOL_EXTRAS_LOCK:
+                extra = _CONNECTION_TOOL_EXTRAS.get((subject or "", call.get("id")))
+            if extra:
+                call["extra_content"] = extra
+
+
+def _remember_connection_tool_extras_in_chunk(subject: Optional[str], chunk: Any) -> None:
+    for choice in (chunk.get("choices") if isinstance(chunk, dict) else None) or []:
+        delta = choice.get("delta") if isinstance(choice, dict) else None
+        for call in (delta.get("tool_calls") if isinstance(delta, dict) else None) or []:
+            if isinstance(call, dict):
+                _remember_connection_tool_extra(subject, call.get("id"), call.get("extra_content"))
+
+
+async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
+    pending = ""
+    try:
+        async for chunk in chunks:
+            yield chunk
+            pending += chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
+            *complete, pending = pending.split("\n")
+            for line in complete:
+                if line.startswith("data:") and "extra_content" in line:
+                    try:
+                        _remember_connection_tool_extras_in_chunk(subject, json.loads(line[5:]))
+                    except ValueError:
+                        pass
+    finally:
+        await chunks.aclose()
+
+
+async def _chat_completion_from_connection_stream(response: StreamingResponse, model: str):
+    completion_id, created, finish, usage = None, int(time.time()), None, None
+    content, reasoning = "", ""
+    calls: dict[int, dict] = {}
+    async for line in _sse_data_lines(response.body_iterator):
+        data = line[len("data:") :].strip() if line.startswith("data:") else ""
+        if not data or data == "[DONE]":
+            continue
+        chunk = json.loads(data)
+        error = chunk.get("error")
+        if error:
+            message = error.get("message") if isinstance(error, dict) else str(error)
+            try:
+                status_code = int(error.get("code"))
+            except (AttributeError, TypeError, ValueError):
+                status_code = 502
+            if not 400 <= status_code <= 599:
+                status_code = 502
+            return JSONResponse(
+                status_code = status_code,
+                content = openai_error_body(message or "The connection failed.", status = status_code),
+            )
+        completion_id = completion_id or chunk.get("id")
+        usage = chunk.get("usage") or usage
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content += delta.get("content") or ""
+            reasoning += delta.get("reasoning_content") or ""
+            for part in delta.get("tool_calls") or []:
+                call = calls.setdefault(
+                    part.get("index", len(calls)),
+                    {"id": None, "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                call["id"] = call["id"] or part.get("id")
+                function = part.get("function") or {}
+                call["function"]["name"] += function.get("name") or ""
+                call["function"]["arguments"] += function.get("arguments") or ""
+                if part.get("extra_content"):
+                    call["extra_content"] = part["extra_content"]
+            finish = choice.get("finish_reason") or finish
+    message: dict = {"role": "assistant", "content": content or None}
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    if calls:
+        message["tool_calls"] = [calls[index] for index in sorted(calls)]
+    body = {
+        "id": completion_id or f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [{"index": 0, "message": message, "finish_reason": finish or "stop"}],
+    }
+    if usage:
+        body["usage"] = usage
+    return JSONResponse(body)
+
+
 @router.post("/chat/completions")
 @account_access.gpu_busy_route
 async def openai_chat_completions(
@@ -30616,8 +30733,17 @@ async def openai_chat_completions(
 ):
     _admit_tool_access(payload)
     connection = _connection_model_ref(payload.model)
-    if connection is not None and not (payload.provider_id or payload.provider_type):
+    if connection is not None and (payload.provider_id or payload.provider_type):
+        connection = None
+    collect = False
+    if connection is not None:
         payload.provider_id, payload.external_model = connection
+        _restore_connection_tool_extras(current_subject, payload.messages)
+        # The proxy relays a stream:false provider body as is, so stream and answer from the chunks.
+        collect = payload.stream is not True
+        if collect:
+            payload.stream = True
+            payload.stream_options = {"include_usage": True}
     from auth.authentication import request_admitted_without_credential
 
     if (payload.provider_id or payload.provider_type) and request_admitted_without_credential(
@@ -30627,12 +30753,18 @@ async def openai_chat_completions(
             status_code = 403,
             detail = "External providers can only be used from the Unsloth UI or with an API key.",
         )
-    return await produce_openai_chat_completions(
+    response = await produce_openai_chat_completions(
         payload,
         request,
         current_subject,
         cancel_on_disconnect = True,
     )
+    if connection is None or not isinstance(response, StreamingResponse):
+        return response
+    response.body_iterator = _relay_recording_tool_extras(response.body_iterator, current_subject)
+    if collect:
+        return await _chat_completion_from_connection_stream(response, payload.model)
+    return response
 
 
 async def produce_openai_chat_completions(
@@ -39315,6 +39447,7 @@ async def _responses_stream(
     if connection is not None:
         # A Connection model: the chat proxy serves it and the converter below relays its stream.
         chat_req.provider_id, chat_req.external_model = connection
+        _restore_connection_tool_extras(current_subject, chat_req.messages)
         chat_req.stream_options = {"include_usage": True}
         request.state.skip_api_monitor = True
         upstream = await produce_openai_chat_completions(
@@ -39870,7 +40003,9 @@ async def _responses_stream(
         disconnect_event = cancel_event
         try:
             if upstream is not None:
-                items_iter = _sse_data_lines(upstream.body_iterator)
+                items_iter = _sse_data_lines(
+                    _relay_recording_tool_extras(upstream.body_iterator, current_subject)
+                )
             else:
                 client = httpx.AsyncClient(
                     timeout = _llama_streaming_generation_timeout(),
@@ -41962,7 +42097,12 @@ def _anthropic_connection_error_event(error: Any) -> str:
     )
 
 
-async def _anthropic_events_from_openai_sse(lines, message_id: str, model: str):
+async def _anthropic_events_from_openai_sse(
+    lines,
+    message_id: str,
+    model: str,
+    subject: Optional[str] = None,
+):
     emitter = AnthropicPassthroughEmitter()
     for event in emitter.start(message_id, model):
         yield event
@@ -41978,7 +42118,18 @@ async def _anthropic_events_from_openai_sse(lines, message_id: str, model: str):
             if parsed.get("error"):
                 yield _anthropic_connection_error_event(parsed["error"])
                 return
+            # The emitter renames tool ids (toolu_*): file each call's extras under the id it publishes.
+            extras = [
+                call.get("extra_content")
+                for choice in parsed.get("choices") or []
+                for call in (choice.get("delta") or {}).get("tool_calls") or []
+                if isinstance(call, dict) and call.get("id")
+            ]
             for event in emitter.feed_chunk(parsed):
+                if extras and event.startswith("event: content_block_start"):
+                    block = json.loads(event.partition("\ndata: ")[2]).get("content_block") or {}
+                    if block.get("type") == "tool_use":
+                        _remember_connection_tool_extra(subject, block.get("id"), extras.pop(0))
                 yield event
     finally:
         await items.aclose()
@@ -42047,13 +42198,15 @@ async def _anthropic_messages_via_connection(
             status_code = 400,
             detail = "Unsloth server tools are not available with a Connection model.",
         )
+    messages = anthropic_messages_to_openai(
+        [m.model_dump() for m in payload.messages], payload.system
+    )
+    _restore_connection_tool_extras(current_subject, messages)
     fields = {
         "model": model,
         "provider_id": provider_id,
         "external_model": model,
-        "messages": anthropic_messages_to_openai(
-            [m.model_dump() for m in payload.messages], payload.system
-        ),
+        "messages": messages,
         "tools": anthropic_tools_to_openai(payload.tools or []) or None,
         "tool_choice": anthropic_tool_choice_to_openai(payload.tool_choice),
         "max_tokens": payload.max_tokens,
@@ -42063,6 +42216,7 @@ async def _anthropic_messages_via_connection(
         "top_k": payload.top_k,
         "session_id": payload.session_id,
         "cancel_id": payload.cancel_id,
+        "response_format": _anthropic_response_format(payload, require_llama_compatibility = False),
         "stream": True,
         "stream_options": {"include_usage": True},
     }
@@ -42078,7 +42232,7 @@ async def _anthropic_messages_via_connection(
     if not isinstance(response, StreamingResponse):
         return response
     events = _anthropic_events_from_openai_sse(
-        response.body_iterator, f"msg_{uuid.uuid4().hex[:24]}", payload.model
+        response.body_iterator, f"msg_{uuid.uuid4().hex[:24]}", payload.model, current_subject
     )
     if payload.stream:
         return _sse_streaming_response(events)
