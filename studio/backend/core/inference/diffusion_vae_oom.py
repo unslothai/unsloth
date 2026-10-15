@@ -179,8 +179,101 @@ def _to_host(module: Any) -> None:
     module.to("cpu")
 
 
+_DEFERRED_ATTR = "_unsloth_vae_oom_deferred"
+_RECORD_ATTR = "_unsloth_vae_oom_record"
+
+
+class DeferredReturn:
+    """The way back for state a decode's restore could not undo (the card filled up meanwhile).
+
+    Registered on the module that has to come back: a forward pre-hook retries every pending undo before the module
+    runs, and the module carries an accelerate-shaped ``_hf_hook`` whose ``execution_device`` is the card, so
+    ``DiffusionPipeline._execution_device`` still resolves the card while the module waits on the host (diffusers
+    reads that attribute for offloaded components; ``apply_forward_hook`` decode methods call ``pre_forward``). Each
+    pending undo leaves only once it has succeeded; when none is left the hooks go. ``required``: the module cannot run
+    where it is (weights on the host, no offload hooks), so a retry that still runs out of memory raises; otherwise
+    (the VAE streams through its offload hooks, resident groups stream) it runs as it is and retries next time."""
+
+    no_grad = False
+
+    def __init__(self, module: Any, device: Any, required: bool) -> None:
+        self.module_ref = weakref.ref(module)
+        self.execution_device = device
+        self.required = required
+        self.pending: list = []  # (label, undo)
+        self.handle = module.register_forward_pre_hook(self._pre_hook)
+        self.owns_hf_hook = "_hf_hook" not in module.__dict__
+        if self.owns_hf_hook:
+            module._hf_hook = self
+        module.__dict__[_DEFERRED_ATTR] = self
+
+    # accelerate ModelHook surface
+    def init_hook(self, module: Any) -> Any:
+        return module
+
+    def pre_forward(self, module: Any, *args: Any, **kwargs: Any) -> tuple:
+        self.attempt()
+        return args, kwargs
+
+    def post_forward(self, module: Any, output: Any) -> Any:
+        return output
+
+    def detach_hook(self, module: Any) -> Any:
+        return module
+
+    def _pre_hook(self, module: Any, args: Any) -> None:
+        self.attempt()
+
+    def add(self, label: str, undo: Callable[[], None]) -> None:
+        self.pending.append((label, undo))
+
+    def attempt(self) -> bool:
+        """Retry every pending undo in order; True once none is left."""
+        while self.pending:
+            label, undo = self.pending[0]
+            try:
+                undo()
+            except Exception as exc:  # noqa: BLE001
+                if self.required and is_oom(exc):
+                    raise
+                return False
+            self.pending.pop(0)
+        self.detach()
+        return True
+
+    def detach(self) -> None:
+        module = self.module_ref()
+        try:
+            self.handle.remove()
+        except Exception:  # noqa: BLE001
+            pass
+        if module is None:
+            return
+        if self.owns_hf_hook and module.__dict__.get("_hf_hook") is self:
+            del module.__dict__["_hf_hook"]
+        if module.__dict__.get(_DEFERRED_ATTR) is self:
+            del module.__dict__[_DEFERRED_ATTR]
+
+
+def _defer(module: Any, device: Any, label: str, undo: Callable[[], None], required: bool, owner: Any) -> None:
+    """Hand ``undo`` to ``module``'s deferred return (one per module); ``owner`` (the VAE) records the module so
+    uninstall can settle it."""
+    deferred = module.__dict__.get(_DEFERRED_ATTR)
+    if deferred is None:
+        deferred = DeferredReturn(module, device, required)
+    deferred.required = deferred.required or required
+    deferred.add(label, undo)
+    if owner is not None:
+        record = owner.__dict__.setdefault(_RECORD_ATTR, {})
+        refs = record.setdefault("deferred", [])
+        if not any(r() is module for r in refs):
+            refs.append(weakref.ref(module))
+
+
 class DecodeSession:
-    """What one OOM recovery moved, and how to put it back. ``restore`` is idempotent."""
+    """One OOM recovery as a transaction: every state change is an undo entry, undone in reverse order by
+    ``restore``. An entry leaves the log only once its own undo succeeded; an undo that fails first puts its module
+    back in a consistent, working state and is handed to the module's DeferredReturn, which retries it."""
 
     def __init__(self, vae: Any, device: Any, logger: Any = None) -> None:
         self.vae = vae
@@ -188,9 +281,12 @@ class DecodeSession:
         self.logger = logger
         self.freed = False
         self.vae_offloaded = False
-        self.moved: list = []  # (name, module) moved to the host
-        self.restorers: list = []
-        self.graphs_reset = False
+        # (label, undo, defer): defer(exc) runs when undo raised, after undo left its module consistent
+        self.log: list = []
+
+    @property
+    def moved(self) -> list:
+        return [label.split(":", 1)[1] for label, _, _ in self.log if label.startswith("moved:")]
 
     def _note(self, msg: str, *args: Any) -> None:
         if self.logger is not None:
@@ -203,13 +299,13 @@ class DecodeSession:
         self.freed = True
         released = 0
         # Captured graphs pin their pool and the weights' addresses: drop them before any weight moves (the image and
-        # video backends drop them on any OOM too); the next step re-captures.
+        # video backends drop them on any OOM too). Nothing to undo: the next step re-captures.
         graphs = getattr(pipe, "_unsloth_cuda_graphs", ()) or ()
         if graphs:
             try:
                 from . import diffusion_cuda_graph
                 diffusion_cuda_graph.reset_all(graphs)
-                self.graphs_reset = True
+                self.log.append(("graphs_reset", lambda: None, lambda exc: None))
                 released += 1
             except Exception as exc:  # noqa: BLE001
                 self._note("diffusion.vae_oom: dropping CUDA graphs failed (%s)", exc)
@@ -223,7 +319,18 @@ class DecodeSession:
             restore = None
             self._note("diffusion.vae_oom: releasing resident groups failed (%s)", exc)
         if restore is not None:
-            self.restorers.append(restore)
+            anchor = next(
+                (m for m in (getattr(pipe, "components", {}) or {}).values()
+                 if getattr(m, "_unsloth_resident_room", None)),
+                None,
+            )  # fmt: skip
+
+            def defer_groups(exc: BaseException, restore: Callable = restore, anchor: Any = anchor) -> None:
+                # streamed groups are the load's flat plan: a working state; re-pinned before the next forward
+                if anchor is not None:
+                    _defer(anchor, self.device, "resident_groups", restore, False, self.vae)
+
+            self.log.append(("resident_groups", restore, defer_groups))
             released += 1
         # Components whole on the card with no offload hooks: to the host, largest first, while host RAM allows.
         try:
@@ -249,87 +356,112 @@ class DecodeSession:
                     _return_to(comp, self.device)
                     self._note("diffusion.vae_oom: %s could not move to the host (%s)", name, exc)
                     continue
-                self.moved.append((name, comp))
+                self.log.append((f"moved:{name}", *self._component_undo(name, comp)))
                 if host is not None:
                     host -= mib
                 released += 1
         except Exception as exc:  # noqa: BLE001
             self._note("diffusion.vae_oom: moving components to the host failed (%s)", exc)
         if self.moved:
-            self._note(
-                "diffusion.vae_oom: moved %s to the host for the decode", ", ".join(n for n, _ in self.moved)
-            )
+            self._note("diffusion.vae_oom: moved %s to the host for the decode", ", ".join(self.moved))
         return released
+
+    def _component_undo(self, name: str, comp: Any) -> tuple:
+        device = self.device
+
+        def undo() -> None:
+            try:
+                _return_to(comp, device)
+            except Exception:
+                _to_host(comp)  # whole on the host: consistent, and the deferred return knows how to move it
+                _empty_cache(device)
+                raise
+
+        def defer(exc: BaseException) -> None:
+            self._note(
+                "diffusion.vae_oom: %s could not return to the card after the decode (%s); it returns before its "
+                "next forward", name, exc,
+            )  # fmt: skip
+            _defer(comp, device, f"moved:{name}", undo, True, self.vae)
+
+        return undo, defer
 
     def offload_vae(self) -> bool:
         """Step (c): the VAE's weights stream per layer from the host (diffusers leaf-level group offload)."""
         if self.vae_offloaded or getattr(self.device, "type", None) != "cuda" or _hooked(self.vae):
             return False
         try:
-            import torch
-            from diffusers.hooks import apply_group_offloading
-
-            apply_group_offloading(
-                self.vae,
-                onload_device = self.device,
-                offload_device = torch.device("cpu"),
-                offload_type = "leaf_level",
-            )
+            _apply_vae_offload(self.vae, self.device)
         except Exception as exc:  # noqa: BLE001
-            self._undo_vae_offload()
+            try:
+                _undo_vae_offload(self.vae, self.device)
+            except Exception:  # noqa: BLE001
+                pass
             self._note("diffusion.vae_oom: offloading the VAE failed (%s)", exc)
             return False
         self.vae_offloaded = True
+        vae, device = self.vae, self.device
+
+        def undo() -> None:
+            _undo_vae_offload(vae, device)
+
+        def defer(exc: BaseException) -> None:
+            self._note("diffusion.vae_oom: %s stays streamed from the host (%s); it returns at its next decode",
+                       type(vae).__name__, exc)  # fmt: skip
+            _defer(vae, device, "vae_offload", undo, False, vae)
+
+        self.log.append(("vae_offload", undo, defer))
         self._note("diffusion.vae_oom: %s weights stream from the host for this decode", type(self.vae).__name__)
         return True
 
-    def _undo_vae_offload(self) -> None:
-        from .diffusion_memory import _remove_group_offload_hooks
-        _remove_group_offload_hooks(self.vae)
-        _return_to(self.vae, self.device)
-
     def restore(self) -> None:
-        if self.vae_offloaded:
-            self.vae_offloaded = False
+        while self.log:
+            label, undo, defer = self.log[-1]
             try:
-                self._undo_vae_offload()
+                undo()
             except Exception as exc:  # noqa: BLE001
-                self._note("diffusion.vae_oom: returning the VAE to the card failed (%s)", exc)
-        moved, self.moved = self.moved, []
-        for name, comp in reversed(moved):
-            try:
-                _return_to(comp, self.device)
-            except Exception as exc:  # noqa: BLE001
-                if not is_oom(exc):
-                    raise
-                # The card filled up during the decode (another process): leave the component on the host whole and
-                # bring it back on its next forward.
-                _to_host(comp)
-                _empty_cache(self.device)
-                _return_on_next_forward(comp, self.device, self.logger, name)
-        restorers, self.restorers = self.restorers, []
-        for restore in reversed(restorers):
-            try:
-                restore()
-            except Exception as exc:  # noqa: BLE001
-                self._note("diffusion.vae_oom: re-pinning resident groups failed (%s)", exc)
+                self.log.pop()
+                try:
+                    defer(exc)
+                except Exception as exc2:  # noqa: BLE001
+                    self._note("diffusion.vae_oom: deferring %s failed (%s)", label, exc2)
+                continue
+            self.log.pop()
+        self.vae_offloaded = False
 
 
-def _return_on_next_forward(module: Any, device: Any, logger: Any, name: str) -> None:
-    if logger is not None:
-        logger.warning(
-            "diffusion.vae_oom: %s could not return to the card after the decode; it returns on its next forward",
-            name,
-        )
-    handle: list = []
+def _apply_vae_offload(vae: Any, device: Any) -> None:
+    import torch
+    from diffusers.hooks import apply_group_offloading
 
-    def pre_hook(mod: Any, args: Any) -> None:
-        for h in handle:
-            h.remove()
-        handle.clear()
-        _return_to(mod, device)
+    apply_group_offloading(
+        vae, onload_device = device, offload_device = torch.device("cpu"), offload_type = "leaf_level"
+    )
 
-    handle.append(module.register_forward_pre_hook(pre_hook))
+
+def _undo_vae_offload(vae: Any, device: Any) -> None:
+    """Hooks off and weights back on the card; if the weights cannot all return, they go back to the host whole and the
+    hooks are put back, so the VAE still decodes (streamed) and the caller can retry later."""
+    from .diffusion_memory import _remove_group_offload_hooks
+    _remove_group_offload_hooks(vae)
+    try:
+        _return_to(vae, device)
+    except Exception:
+        _to_host(vae)
+        _empty_cache(device)
+        _apply_vae_offload(vae, device)
+        raise
+
+
+def settle_deferred(module: Any) -> bool:
+    """Run ``module``'s pending deferred returns now; True when nothing is left pending."""
+    deferred = getattr(module, "__dict__", {}).get(_DEFERRED_ATTR)
+    if deferred is None:
+        return True
+    try:
+        return deferred.attempt()
+    except Exception:  # noqa: BLE001 - still out of memory: the deferred return stays
+        return False
 
 
 # -- the wrapper -------------------------------------------------------------------------------------------------
@@ -384,6 +516,8 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
             return inner(z, *args, **kwargs)
         depth[0] += 1
         try:
+            # a VAE left streamed by an earlier restore that ran out of memory comes back first, if it fits now
+            settle_deferred(vae)
             return _retrying(z, args, kwargs)
         finally:
             depth[0] -= 1
@@ -546,10 +680,26 @@ def _guard_compiled_decode(vae: Any, logger: Any = None) -> bool:
     decode._unsloth_compiled_decode = True
     decode._unsloth_eager_decode = eager
     owner.decode = decode
+    vae.__dict__.setdefault(_RECORD_ATTR, {})["guard"] = (owner, decode, compiled)
     return True
 
 
 def uninstall(vae: Any) -> None:
+    """Remove everything ``install`` and its retries put in place: the ``_decode`` wrapper, the compiled-decode guard,
+    and every deferred return. A deferred return is settled first (its pending undo runs); one that still cannot run
+    (the card is full) stays, since it is that module's only way back to the card."""
+    record = vae.__dict__.get(_RECORD_ATTR, {})
+    guard = record.pop("guard", None)
+    if guard is not None:
+        owner, decode, compiled = guard
+        if owner.__dict__.get("decode") is decode:
+            owner.__dict__["decode"] = compiled
+    for ref in record.pop("deferred", []):
+        module = ref()
+        if module is not None and not settle_deferred(module):
+            record.setdefault("deferred", []).append(ref)
+    if not record:
+        vae.__dict__.pop(_RECORD_ATTR, None)
     inner = vae.__dict__.pop("_unsloth_vae_oom_inner", None)
     if inner is None:
         return
@@ -564,6 +714,8 @@ def uninstall(vae: Any) -> None:
 
 __all__ = [
     "DecodeSession",
+    "DeferredReturn",
+    "settle_deferred",
     "OOM_RETRY_ENV",
     "install",
     "is_oom",

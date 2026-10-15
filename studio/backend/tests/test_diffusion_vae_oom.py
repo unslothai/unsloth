@@ -175,14 +175,8 @@ def test_step_c_offloads_the_vae_at_stock_tiles(monkeypatch):
     """Fail-before: even tiled, the VAE's own weights leave no room; streaming them from the host does."""
     offloads = []
 
-    def fake_offload(self):
-        offloads.append(1)
-        self.vae.conv.to(torch.float32)
-        self.vae_offloaded = True
-        return True
-
-    monkeypatch.setattr(O.DecodeSession, "offload_vae", fake_offload)
-    monkeypatch.setattr(O.DecodeSession, "_undo_vae_offload", lambda self: self.vae.conv.to(_CARD))
+    monkeypatch.setattr(O, "_apply_vae_offload", lambda vae, device: (offloads.append(1), vae.conv.to(torch.float32)))
+    monkeypatch.setattr(O, "_undo_vae_offload", lambda vae, device: vae.conv.to(_CARD))
     vae, pipe = _setup(cap = 4096 + 100, untiled_need = 10**9, tiled_need = 3000, tiled = True)
     stock = O.tile_attrs(vae)
     vae._decode(_z())
@@ -196,8 +190,8 @@ def test_step_c_offloads_the_vae_at_stock_tiles(monkeypatch):
 def test_streamed_decode_that_breaks_fails_on_the_oom(monkeypatch):
     """A non-OOM error inside the streamed (step c) decode, e.g. an offload hook the environment cannot run, must not
     replace the out-of-memory the render already had; the VAE still comes back."""
-    monkeypatch.setattr(O.DecodeSession, "offload_vae", lambda self: setattr(self, "vae_offloaded", True) or True)
-    monkeypatch.setattr(O.DecodeSession, "_undo_vae_offload", lambda self: None)
+    monkeypatch.setattr(O, "_apply_vae_offload", lambda vae, device: None)
+    monkeypatch.setattr(O, "_undo_vae_offload", lambda vae, device: None)
     vae, pipe = _setup(cap = 1, untiled_need = 10**9, tiled_need = 10**9, tiled = True)
     real = vae._unsloth_vae_oom_inner
 
@@ -262,21 +256,154 @@ def test_host_ram_short_keeps_component(monkeypatch):
 def test_restore_that_runs_out_of_memory_returns_on_next_forward(monkeypatch):
     m = _on_card(64)
     session = O.DecodeSession(None, _FakeDevice())
-    session.moved = [("transformer", m)]
+    session.log.append(("moved:transformer", *session._component_undo("transformer", m)))
     m.to(torch.float32)
     calls = []
 
     def flaky(module, device):
         calls.append(1)
-        if len(calls) == 1:
+        module.to(torch.float16)  # a partial move
+        if len(calls) <= 2:
             raise _FakeOOM()
         module.to(_CARD)
 
     monkeypatch.setattr(O, "_return_to", flaky)
     session.restore()
-    assert next(m.parameters()).dtype == torch.float32
-    m(torch.zeros(1, 8, dtype = _CARD))
+    assert session.log == []
+    assert next(m.parameters()).dtype == torch.float32  # whole on the host, not half moved
+    # Item 4282775926: the card is still full at the next forward: the OOM surfaces and the way back STAYS
+    with pytest.raises(_FakeOOM):
+        m(torch.zeros(1, 8, dtype = _CARD))
+    assert next(m.parameters()).dtype == torch.float32 and len(m._forward_pre_hooks) == 1
+    assert isinstance(m.__dict__.get("_hf_hook"), O.DeferredReturn)
+    m(torch.zeros(1, 8, dtype = _CARD))  # memory freed: it returns and the hooks go
     assert next(m.parameters()).dtype == _CARD and len(m._forward_pre_hooks) == 0
+    assert "_hf_hook" not in m.__dict__ and O._DEFERRED_ATTR not in m.__dict__
+
+
+def _tiny_vae():
+    diffusers = pytest.importorskip("diffusers")
+    torch.manual_seed(0)
+    return diffusers.AutoencoderKL(
+        block_out_channels = (8, 16), down_block_types = ("DownEncoderBlock2D",) * 2,
+        up_block_types = ("UpDecoderBlock2D",) * 2, latent_channels = 4, norm_num_groups = 4, layers_per_block = 1,
+    ).eval()  # fmt: skip
+
+
+def test_vae_restore_oom_keeps_offload_hooks_and_retries(monkeypatch):
+    """Item 4282775917: the VAE's weights cannot all return after a streamed decode. Before: hooks removed, weights
+    stranded on the host. After: weights whole on the host WITH the offload hooks back (it still decodes, streamed),
+    and its next decode brings it back once memory allows."""
+    vae = _tiny_vae()
+    z = torch.randn(1, 4, 8, 8)
+    with torch.no_grad():
+        ref = vae.decode(z).sample
+    cpu = torch.device("cpu")
+    monkeypatch.setattr(O, "_to_host", lambda m: m.to("cpu", torch.float32))
+    full = [True]
+
+    def ret(module, device):
+        if full[0]:
+            module.decoder.conv_in.to(torch.float64)  # part of it moved, then the card is full
+            raise _FakeOOM()
+        _REAL_RETURN_TO(module, device)
+
+    monkeypatch.setattr(O, "_return_to", ret)
+    session = O.DecodeSession(vae, cpu)
+    O._apply_vae_offload(vae, cpu)
+    session.log.append(("vae_offload", lambda: O._undo_vae_offload(vae, cpu),
+                        lambda exc: O._defer(vae, cpu, "vae_offload", lambda: O._undo_vae_offload(vae, cpu), False, vae)))
+    session.restore()
+    monkeypatch.undo()
+    assert session.log == []
+    assert O._hooked(vae), "the weights are on the host: the offload hooks must stay"
+    assert all(p.dtype == torch.float32 for p in vae.parameters())
+    with torch.no_grad():
+        assert torch.equal(vae.decode(z).sample, ref)  # still decodes (streamed), same output
+    assert O.settle_deferred(vae)  # memory back: it returns
+    assert not O._hooked(vae) and O._DEFERRED_ATTR not in vae.__dict__ and "_hf_hook" not in vae.__dict__
+    with torch.no_grad():
+        assert torch.equal(vae.decode(z).sample, ref)
+
+
+def test_execution_device_resolves_the_card_while_a_component_waits_on_the_host(monkeypatch):
+    """A real diffusers pipeline whose first component could not return: ``_execution_device`` must still be the
+    card, and the next call must run (the component comes back before its forward). The meta device stands in for
+    the host, the CPU for the card."""
+    diffusers = pytest.importorskip("diffusers")
+
+    class TinyPipe(diffusers.DiffusionPipeline):
+        def __init__(self, unet, vae):
+            super().__init__()
+            self.register_modules(unet = unet, vae = vae)
+
+        def __call__(self):
+            x = torch.ones(1, 4, 8, 8, device = self._execution_device)
+            return self.vae.decode(self.unet(x, 1).sample).sample
+
+    torch.manual_seed(0)
+    unet = diffusers.UNet2DModel(
+        sample_size = 8, in_channels = 4, out_channels = 4, block_out_channels = (8, 16), layers_per_block = 1,
+        norm_num_groups = 4, down_block_types = ("DownBlock2D", "DownBlock2D"), up_block_types = ("UpBlock2D",) * 2,
+    ).eval()  # fmt: skip
+    pipe = TinyPipe(unet, _tiny_vae())
+    with torch.no_grad():
+        ref = pipe()
+    saved = {k: v.clone() for k, v in unet.state_dict().items()}
+    card = torch.device("cpu")
+    monkeypatch.setattr(O, "_to_host", lambda m: m.to("meta"))
+    oom = [True]
+
+    def ret(module, device):
+        if oom[0]:
+            raise _FakeOOM()
+        module.to_empty(device = device)
+        module.load_state_dict(saved)
+
+    monkeypatch.setattr(O, "_return_to", ret)
+    session = O.DecodeSession(pipe.vae, card)
+    unet.to("meta")
+    session.log.append(("moved:unet", *session._component_undo("unet", unet)))
+    session.restore()
+    assert next(unet.parameters()).device.type == "meta"
+    assert pipe._execution_device == card  # fail-before: meta
+    oom[0] = False
+    with torch.no_grad():
+        out = pipe()
+    assert torch.equal(out, ref) and next(unet.parameters()).device == card
+    assert "_hf_hook" not in unet.__dict__ and len(unet._forward_pre_hooks) == 0
+
+
+def test_uninstall_removes_compiled_guard_and_settles_deferred():
+    """Item 4282775938: uninstall puts the compiled decode back (before: the guard stayed and kept retrying) and
+    settles every deferred return the wrapper registered."""
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    O.uninstall(vae)
+
+    def compiled(z, return_dict = True):
+        return ("compiled",)
+
+    compiled._unsloth_compiled_decode = True
+    compiled._unsloth_eager_decode = lambda *a, **k: ("eager",)
+    vae.decode = compiled
+    assert O.install(vae, pipe = pipe)
+    assert vae.__dict__["decode"] is not compiled and vae.__dict__["decode"]._unsloth_vae_oom_guard
+    m = pipe.components["text_encoder"]
+    O._defer(m, _FakeDevice(), "moved:text_encoder", lambda: None, True, vae)
+    assert O._DEFERRED_ATTR in m.__dict__
+    O.uninstall(vae)
+    assert vae.__dict__["decode"] is compiled
+    assert O._DEFERRED_ATTR not in m.__dict__ and "_hf_hook" not in m.__dict__
+    assert O._RECORD_ATTR not in vae.__dict__ and "_decode" not in vae.__dict__
+    assert O.install(vae, pipe = pipe) and vae.__dict__["decode"]._unsloth_vae_oom_guard  # reinstall wraps again
+
+
+def test_uninstall_keeps_a_deferred_return_that_still_cannot_run():
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    m = pipe.components["text_encoder"]
+    O._defer(m, _FakeDevice(), "moved:text_encoder", lambda: (_ for _ in ()).throw(_FakeOOM()), True, vae)
+    O.uninstall(vae)
+    assert O._DEFERRED_ATTR in m.__dict__  # its only way back to the card
 
 
 def test_step_a_drops_graphs_and_repins_resident_groups(monkeypatch):
@@ -360,15 +487,13 @@ def test_real_vae_offload_hooks_round_trip(monkeypatch):
     monkeypatch.setattr(O, "_return_to", _REAL_RETURN_TO)
     with torch.no_grad():
         ref = vae.decode(z).sample
-    session = O.DecodeSession(vae, _FakeDevice())
-    session.device = torch.device("cpu")
-    import diffusers.hooks as H
-    H.apply_group_offloading(vae, onload_device = torch.device("cpu"), offload_type = "leaf_level")
-    session.vae_offloaded = True
+    cpu = torch.device("cpu")
+    O._apply_vae_offload(vae, cpu)
+    assert O._hooked(vae)
     with torch.no_grad():
         out = vae.decode(z).sample
     assert torch.equal(out, ref)
-    session.restore()
+    O._undo_vae_offload(vae, cpu)
     assert not O._hooked(vae)
     with torch.no_grad():
         assert torch.equal(vae.decode(z).sample, ref)
