@@ -5957,14 +5957,7 @@ def _torch_kernel_arch_tokens() -> list[str]:
 
 
 def nvidia_gpu_ids_without_torch_kernels() -> set[int]:
-    """Physical NVIDIA ids older than every CUDA architecture in this Torch wheel.
-
-    CUDA wheels commonly contain a PTX fallback for architectures newer than the
-    lowest listed cubin, so this deliberately rejects only cards *older* than
-    that floor. It is a safe early rejection for, for example, an sm_61 P4
-    alongside sm_75 cards when the wheel starts at sm_75. Any incomplete probe
-    fails open rather than making a usable host look CPU-only.
-    """
+    """Physical NVIDIA ids older than the wheel's lowest cubin (newer get PTX); fails open."""
     try:
         import torch
 
@@ -6016,7 +6009,6 @@ def nvidia_gpu_ids_without_torch_kernels() -> set[int]:
 
 
 def gpu_ids_without_torch_kernels() -> set[int]:
-    """Physical ids known to be unsupported by the installed Torch wheel."""
     return rocm_gpu_ids_without_torch_kernels() | nvidia_gpu_ids_without_torch_kernels()
 
 
@@ -6046,7 +6038,6 @@ def _describe_rocm_gpus(gpu_ids) -> list[str]:
 
 
 def reject_gpu_ids_without_torch_kernels(gpu_ids) -> None:
-    """Explicit picks bypass auto-selection; reject a known-incompatible Torch device early."""
     uncovered = sorted(set(int(gpu_id) for gpu_id in gpu_ids) & gpu_ids_without_torch_kernels())
     if not uncovered:
         return

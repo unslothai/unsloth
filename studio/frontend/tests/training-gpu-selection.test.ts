@@ -205,7 +205,6 @@ test("the hardware tab stays hidden unless there is a placement to choose", () =
   assert.equal(showsTrainingHardwareTab("auto", []), false);
   assert.equal(showsTrainingHardwareTab("auto", [gpu(0)]), false);
   assert.equal(showsTrainingHardwareTab("auto", [gpu(0), gpu(1)]), true);
-  // A saved explicit choice must stay reachable after a card disappears.
   assert.equal(showsTrainingHardwareTab("ddp", [gpu(0)]), true);
 });
 

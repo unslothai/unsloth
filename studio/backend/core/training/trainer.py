@@ -54,7 +54,6 @@ from core.training.ddp import model_load_dtype_for_training, training_precision_
 
 
 def _training_precision_flags() -> dict[str, bool]:
-    """Return training precision, honoring the launcher-selected DDP dtype."""
     return training_precision_flags_for_dtype(
         os.environ.get("UNSLOTH_DDP_COMMON_DTYPE"), is_bfloat16_supported()
     )
@@ -1078,7 +1077,6 @@ class UnslothTrainer:
         """Calculate total training steps from dataset size and training params."""
         if max_steps and max_steps > 0:
             return max_steps
-        # DistributedSampler pads to an equal number of samples per rank.
         samples_per_rank = math.ceil(num_samples / world_size_from_env())
         len_dataloader = math.ceil(samples_per_rank / batch_size)
         steps_per_epoch = max(
@@ -1145,11 +1143,7 @@ class UnslothTrainer:
         label = "",
     ):
         """Save model after training and update progress. Used by all training branches."""
-        # Keep Trainer's save calls on every rank (they own distributed save
-        # semantics), but only the writing rank may mutate auxiliary files.
-        # LOCAL_RANK is intentionally zero in every isolated DDP rank. Use the
-        # global process-zero predicate, not TrainingArguments.should_save,
-        # which may also depend on save strategy.
+        # Aux files: global process zero only (LOCAL_RANK is 0 in every isolated rank).
         is_writing_rank = (
             self.trainer.is_world_process_zero()
             if hasattr(self.trainer, "is_world_process_zero")
@@ -4919,10 +4913,7 @@ class UnslothTrainer:
             if online_decision.enabled:
                 eval_dataset = self._online_eval_dataset
 
-            # PEFT wrappers are not PreTrainedModel instances, so Transformers turns on
-            # unused-parameter discovery, which marks reentrant-checkpointed LoRA weights ready
-            # twice. Every dense text family shares Unsloth's reentrant checkpointing; MoE
-            # experts can genuinely sit out a step, so those keep discovery on.
+            # Unused-param discovery double-marks reentrant-checkpointed LoRA weights; MoE needs it.
             if (
                 world_size_from_env() > 1
                 and config_args.get("gradient_checkpointing")
@@ -5292,9 +5283,7 @@ class UnslothTrainer:
             logger.warning(f"Failed to patch adapter_config.json: {e}")
 
     def _agree_on_ddp_stop(self, device) -> None:
-        """Each DDP rank polls the shared stop on its own thread, so ranks can see it a step
-        apart, and a rank running one more step waits forever on its gradient all-reduce.
-        Agree once per step so every rank leaves on the same step and takes the same save path."""
+        """Agree on stop once per step: a rank running one extra step hangs in all-reduce."""
         import torch.distributed as dist
 
         if not (dist.is_available() and dist.is_initialized()):

@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Exercise trainer helpers without importing the GPU-heavy ML stack."""
-
 import ast
 import math
 from pathlib import Path
@@ -52,7 +50,6 @@ def test_finalization_only_writing_rank_mutates_auxiliary_files(
 ):
     trainer = MagicMock()
     trainer.is_world_process_zero.return_value = is_world_process_zero
-    # Saving auxiliary files is independent of save strategy/should_save.
     trainer.args = SimpleNamespace(should_save = False, save_strategy = "no")
     owner = SimpleNamespace(
         trainer = trainer,

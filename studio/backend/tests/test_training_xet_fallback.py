@@ -179,7 +179,6 @@ def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch, mode):
     assert cfg["model_name"] == "org/model"
     assert cfg["parallelism_mode"] == mode
     assert cfg["gpu_ids"] == gpu_ids
-    # Daemonic in every mode: the worker clears its own daemon flag to spawn DDP ranks.
     assert fake_ctx.spawned[0]["daemon"] is True
     assert created["n"] == 0, "respawn must not recreate the DB run row"
     assert finalized["n"] == 0, "a successful respawn must not finalize the run as error"

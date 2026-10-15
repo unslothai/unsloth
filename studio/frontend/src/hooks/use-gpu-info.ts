@@ -384,7 +384,6 @@ export function useGpuDevices(forDiffusion = false): SystemGpuDevice[] {
   return devices;
 }
 
-/** Training uses the torch inventory, even when GGUF inference uses Vulkan. */
 export function useTrainingGpuDevices(): SystemGpuDevice[] {
   return useGpuDevices(true);
 }
@@ -422,7 +421,6 @@ export async function ensureGpuDeviceCache(): Promise<void> {
   await fetchSystemInfo();
 }
 
-/** Training uses physical indices independently of inference pinning support. */
 function physicalTrainingGpuIndices(
   system: SystemInfoResponse | null,
 ): number[] | null {
@@ -437,7 +435,6 @@ export function cachedTrainingGpuIndices(): number[] | null {
   return physicalTrainingGpuIndices(getCachedSystemInfo());
 }
 
-/** Refresh training membership before launch; a failed probe is not authoritative. */
 export async function refreshTrainingGpuIndices(): Promise<number[] | null> {
   return physicalTrainingGpuIndices(await fetchSystemInfo({ force: true }));
 }

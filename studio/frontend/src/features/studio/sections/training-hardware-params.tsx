@@ -28,7 +28,6 @@ export function TrainingHardwareParams(): ReactElement {
   const t = useT();
   const devices = useTrainingGpuDevices();
   const gpu = useGpuInfo();
-  // DDP ranks rendezvous over NCCL, which PyTorch ships for Linux only.
   const ddpPlatform = usePlatformStore((state) => state.deviceType) === "linux";
   const store = useTrainingConfigStore(
     useShallow((state) => ({
@@ -42,8 +41,7 @@ export function TrainingHardwareParams(): ReactElement {
         state.modelType !== "decision",
     })),
   );
-  // Training consumes physical torch device IDs; inference's `pinnable` also
-  // encodes llama.cpp/GGUF support and incorrectly excludes valid XPU devices.
+  // Not `pinnable`: it encodes llama.cpp support and wrongly excludes XPU.
   const selectable = devices.filter(
     (device) => device.indexKind === "physical",
   );
@@ -62,7 +60,6 @@ export function TrainingHardwareParams(): ReactElement {
       store.setGpuSelection(next.parallelismMode, next.selectedGpuIds);
     }
   }, [
-    // Re-run when async device discovery updates its rendered inventory.
     devices,
     store.parallelismMode,
     store.selectedGpuIds,

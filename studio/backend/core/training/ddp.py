@@ -15,7 +15,6 @@ from typing import Any
 
 
 def _wait_for_stop(stop_event: Any, timeout: float | None) -> bool:
-    """Wait for an event using Queue.get-style timeout semantics."""
     if timeout is None:
         stop_event.wait()
         return True
@@ -36,11 +35,7 @@ def _nvidia_smi_child_env() -> dict[str, str]:
 def training_precision_flags_for_dtype(
     ddp_dtype: str | None, supports_bf16: bool
 ) -> dict[str, bool]:
-    """Resolve mutually exclusive Trainer flags from the DDP-wide dtype.
-
-    The local capability can differ by rank, so the coordinator override takes
-    precedence over Unsloth's per-process capability result.
-    """
+    """The coordinator dtype overrides each rank's local capability, which can differ."""
     if ddp_dtype == "fp16":
         return {"fp16": True, "bf16": False}
     if ddp_dtype == "bf16":
@@ -51,7 +46,6 @@ def training_precision_flags_for_dtype(
 def model_load_dtype_for_training(
     ddp_dtype: str | None, is_rocm: bool, supports_bf16: bool
 ) -> str | None:
-    """Choose the model loader dtype to match DDP Trainer precision."""
     if ddp_dtype in ("fp16", "bf16"):
         return ddp_dtype
     if is_rocm and not supports_bf16:
@@ -60,12 +54,7 @@ def model_load_dtype_for_training(
 
 
 def _common_cuda_dtype(gpu_ids: list[int]) -> str:
-    """Choose one dtype the whole DDP process group can run natively.
-
-    DDP replicates the model on every rank, so using each GPU's local preference
-    can produce incompatible Trainer configs. Turing (SM 7.x), for example,
-    requires FP16 even when another selected rank is Ampere or newer.
-    """
+    """One dtype for every rank: Turing (SM 7.x) needs FP16 even beside Ampere ranks."""
     try:
         from utils.hardware import gpu_query
 
@@ -101,9 +90,6 @@ def _common_cuda_dtype(gpu_ids: list[int]) -> str:
 
 
 class _RankEvents:
-    """Forward rank-zero events plus any rank's download stall (the backend's Xet recovery needs
-    it from whichever rank stalled); make errors from any rank fatal to spawn."""
-
     def __init__(self, rank: int, event_queue: Any, failures: Any):
         self.rank = rank
         self.event_queue = event_queue
@@ -123,8 +109,6 @@ class _RankEvents:
 
 
 class _SharedStopQueue:
-    """One rank's view of the coordinator's stop: a save-stop, then possibly a cancel on top."""
-
     def __init__(self, stop_event: Any, cancel_event: Any):
         self._stop_event = stop_event
         self._cancel_event = cancel_event
@@ -149,8 +133,7 @@ class _SharedStopQueue:
 
 
 def _bind_to_parent_lifetime() -> None:
-    """SIGTERM on parent death; torch.multiprocessing's own SIGINT cannot interrupt a rank
-    blocked in a collective, which then holds its GPU until the NCCL timeout."""
+    """SIGTERM on parent death: SIGINT cannot interrupt a rank blocked in a collective."""
     try:
         from utils.process_lifetime import bind_current_process_to_parent_lifetime
         bind_current_process_to_parent_lifetime()
@@ -159,8 +142,7 @@ def _bind_to_parent_lifetime() -> None:
 
 
 def _destroy_process_group(synchronize: bool) -> None:
-    """Leave the process group together; rank 0 hosts the store, and exiting first leaves the
-    other ranks retrying it until their own teardown."""
+    """Leave together: rank 0 hosts the store, so exiting first strands its peers."""
     try:
         import torch.distributed as dist
         if dist.is_available() and dist.is_initialized():
@@ -210,8 +192,7 @@ def _rank_entry(
             "MASTER_PORT": str(master_port),
         }
     )
-    # Set before importing the worker/Unsloth: their BF16 capability is initialized
-    # at import time, and the coordinator's common dtype must win on every rank.
+    # Before importing worker/Unsloth: BF16 capability is fixed at import time.
     os.environ["UNSLOTH_DDP_COMMON_DTYPE"] = str(config.get("_ddp_common_dtype", "fp16"))
     rank_config = copy.deepcopy(config)
     rank_config["_ddp_child"] = True
@@ -225,8 +206,7 @@ def _rank_entry(
     rank_events = _RankEvents(rank, event_queue, failures)
     finished = False
     try:
-        # As account_process_spec does for the coordinator: a managed account's ranks must
-        # resolve paths and credentials as that account, not as the owner.
+        # Like account_process_spec: ranks act as the managed account, not the owner.
         run_account_child(
             account = account or OWNER,
             job_module = "core.training.worker",
@@ -246,7 +226,6 @@ def _rank_entry(
 
 
 def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[str, Any]) -> None:
-    """Launch one worker rank per selected NVIDIA GPU and relay rank-zero events."""
     gpu_ids = list(config.get("resolved_gpu_ids") or [])
     if len(gpu_ids) < 2:
         raise ValueError("DDP requires at least two resolved GPU ids.")

@@ -6,7 +6,6 @@ import type { TrainingParallelismMode } from "../types/config";
 
 import type { SystemGpuDevice } from "@/hooks/gpu-selection";
 
-/** Physical devices explicitly selected for the training preview. */
 export function selectedTrainingPreviewDevices(
   mode: TrainingParallelismMode,
   selectedGpuIds: number[] | null,
@@ -21,8 +20,6 @@ export function selectedTrainingPreviewDevices(
   );
 }
 
-/** Single-GPU, Mac and CPU hosts have nothing to place; a saved explicit choice keeps the tab
- * so it can still be changed. */
 export function showsTrainingHardwareTab(
   mode: TrainingParallelismMode,
   devices: readonly SystemGpuDevice[],
@@ -33,7 +30,6 @@ export function showsTrainingHardwareTab(
   );
 }
 
-/** DDP's global batch scales with its selected workers; other modes use one. */
 export function trainingPreviewGpuCount(
   mode: TrainingParallelismMode,
   selectedGpuIds: number[] | null,
@@ -46,8 +42,6 @@ export type RefreshedGpuValidation<T> =
   | { kind: "invalid"; errorKey: TranslationKey }
   | { kind: "valid"; availableGpuIds: number[] | null | undefined; config: T };
 
-/** Refresh device membership and validate the same config snapshot before launch proceeds.
- * A `null` refresh (automatic placement) skips the inventory round trip. */
 export async function validateRefreshedTrainingGpuSelection<T>(options: {
   refresh: (() => Promise<number[] | null>) | null;
   abortIfInputsChanged: () => boolean;
@@ -70,7 +64,6 @@ export async function validateRefreshedTrainingGpuSelection<T>(options: {
   return { kind: "valid", availableGpuIds, config };
 }
 
-/** Preserve selections during discovery; normalize stale selections once it settles. */
 export function reconcileTrainingGpuSelection(
   mode: TrainingParallelismMode,
   ids: number[] | null,
@@ -86,7 +79,6 @@ export function reconcileTrainingGpuSelection(
   const kept = uniqueIds.filter(
     (id) => Number.isSafeInteger(id) && id >= 0 && availableIds.includes(id),
   );
-  // Keep an in-progress manual selection so validation can explain its arity.
   if (mode !== "auto" && ids !== null && kept.length === uniqueIds.length) {
     return { parallelismMode: mode, selectedGpuIds: ids };
   }
