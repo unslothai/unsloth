@@ -667,9 +667,10 @@ def test_the_recorded_micro_batch_is_derived_from_the_slots_that_launched():
     # MoE expert-spill raise, the post-launch record, the drafter probe's four
     # (per-slot compute buffer, candidate footprint, one-slot trim, slot commit; #8872)
     # the slot restore when GPU selection abandons that cut, the plan repriced when a
-    # drafterless retry restores it, and the offload planner's five (spill cache floors,
-    # _spill_ubatch_by_parallel, _kv_bytes_at, _kv_swa_bytes_at, planner slot reduction)
-    assert len(calls) == 17, f"expected seventeen re-derivations, found {len(calls)}"
+    # drafterless retry restores it, and the offload planner's six (spill cache floors,
+    # _spill_ubatch_by_parallel, _kv_bytes_at, _kv_swa_bytes_at, _kv_layer_weights_at, planner
+    # slot reduction)
+    assert len(calls) == 18, f"expected eighteen re-derivations, found {len(calls)}"
     # the record must not reuse the sizing pass's value
     compact = "".join(src.split())
     assert "self._n_ubatch=max(0,int(self._DEFAULT_N_UBATCHif_launched_ubatchisNone" in compact
