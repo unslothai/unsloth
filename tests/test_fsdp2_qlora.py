@@ -393,3 +393,15 @@ def test_patch_is_idempotent_across_imports():
     assert _load_module().patch_fsdp2_params4bit() == (True, None)
     assert FSDPParam.init_dtype_attrs is first
     assert getattr(first._unsloth_original, "_unsloth_original", None) is None
+
+
+def test_no_float_storage_when_fsdp2_checks_frozen_dtypes():
+    # torch < 2.8 asserts one dtype per unit, frozen weights included.
+    m = _load_module()
+    assert m._fsdp2_checks_frozen_dtypes() is False  # installed torch >= 2.8
+    m._fsdp2_checks_frozen_dtypes = lambda: True
+    assert m.float_storage_survives_wrap(_prepare_that_keeps_dtypes) is False
+    from transformers import BitsAndBytesConfig
+
+    cfg = BitsAndBytesConfig(load_in_4bit = True)
+    assert not m.set_fsdp2_quant_storage(cfg, torch.float16)

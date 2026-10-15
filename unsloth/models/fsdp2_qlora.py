@@ -24,8 +24,7 @@ become a sharded nn.Parameter before torch 2.12 and accelerate leaves it replica
    (about 1 in 60 packed float16 words) to the canonical NaN;
 4. `nonfloat_param_guard` lets torch < 2.12 shard what is still uint8.
 Float storage is used only when 2 and 3 can be patched and the wrap does not upcast the whole model.
-Pattern from axolotl (monkeypatch/fsdp2_qlora.py) and NeMo Automodel (quantization/qlora.py), done
-with method wrappers instead of source rewrites so it holds on torch 2.6 .. 2.14.
+Method wrappers (not source rewrites, as in axolotl's monkeypatch/fsdp2_qlora.py) hold on torch 2.6 .. 2.14.
 """
 
 __all__ = [
@@ -57,13 +56,12 @@ _QUANT_ATTRS = (
 
 
 def is_params4bit(tensor):
-    # By name: importing bitsandbytes here would initialise CUDA on a CPU-only import.
     return any(cls.__name__ == "Params4bit" for cls in type(tensor).__mro__)
 
 
 def float_storage_survives_wrap(prepare_fn = None):
     """Whether 4-bit weights may be packed in a float dtype for FSDP2. False when this torch's FSDP2
-    cannot be patched (`patch_fsdp2_params4bit`), or when accelerate's FSDP2 wrap ends with
+    cannot be patched (`patch_fsdp2_params4bit`), checks frozen dtypes per unit (torch < 2.8), or when accelerate's FSDP2 wrap ends with
     `model.to(torch.float32)` (accelerate < 1.13 with mixed precision), which converts float-stored
     packed bytes as if they were weights. uint8 storage is safe from both, so 4-bit weights then stay
     uint8 (left replicated by accelerate, but correct)."""
@@ -75,6 +73,10 @@ def float_storage_survives_wrap(prepare_fn = None):
     if _missing_fsdp2_anchors():
         # Unpatched FSDP2 would scramble float-stored packed bytes (see 3 above).
         return False
+    if _fsdp2_checks_frozen_dtypes():
+        # torch < 2.8 wants one dtype per unit, frozen weights included: packed bytes in the compute
+        # dtype next to float32 LoRA / upcast weights would fail it, while uint8 is left out by accelerate.
+        return False
     if prepare_fn is None:
         return True
     prepare_fn = inspect.unwrap(prepare_fn)
@@ -83,6 +85,14 @@ def float_storage_survives_wrap(prepare_fn = None):
     except (OSError, TypeError):
         return False
     return "model.to(torch.float32)" not in source
+
+
+def _fsdp2_checks_frozen_dtypes():
+    try:
+        from torch.distributed.fsdp._fully_shard._fsdp_param_group import FSDPParamGroup
+        return "requires_grad" not in inspect.getsource(FSDPParamGroup._init_mp_dtypes)
+    except Exception:
+        return True
 
 
 def fsdp2_quant_storage_dtype(dtype):
@@ -161,7 +171,6 @@ def _check_fsdp_param_anchors(FSDPParam):
         method = getattr(FSDPParam, name, None)
         if not callable(method):
             missing.append(f"FSDPParam.{name}")
-        # Already wrapped: check torch's own method.
         methods[name] = getattr(method, "_unsloth_original", method)
     if missing:
         return missing
@@ -236,7 +245,6 @@ def patch_fsdp2_params4bit():
     from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
 
     if getattr(FSDPParam.init_dtype_attrs, "_unsloth_original", None) is not None:
-        # Another copy of this module patched already.
         _PATCH_STATE["patched"] = True
         return True, None
 
@@ -287,7 +295,6 @@ def patch_fsdp2_params4bit():
     def _get_all_gather_input_metadatas(*args, **kwargs):
         dtypes, numels, dtype = original_get_metadatas(*args, **kwargs)
         if _BYTE_ALL_GATHER[0] and dtype != torch.uint8:
-            # The path FSDP2 already takes for mixed dtypes: copy every input as bytes.
             dtype = torch.uint8
         _BYTE_ALL_GATHER[0] = False
         return dtypes, numels, dtype
