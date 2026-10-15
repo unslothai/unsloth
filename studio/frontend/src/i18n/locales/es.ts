@@ -61,6 +61,8 @@ export const es = {
       never: "Nunca",
       scripts: "Ejecutar scripts",
       scriptsDescription: "Elige si los modelos pueden ejecutar scripts en las páginas. Verás cada script antes de que se ejecute",
+      cursor: "Mostrar cursor",
+      cursorDescription: "Muestra un puntero donde los modelos hacen clic, escriben y arrastran en la página",
       askEveryTime: "Preguntar cada vez",
       permissionsTitle: "Permisos del agente",
       permissionsDescription: "Elige los valores predeterminados y añade excepciones para sitios concretos. Los campos de contraseña y de pago nunca se rellenan, digan lo que digan estos ajustes.",

@@ -62,6 +62,8 @@ export const ja = {
       never: "許可しない",
       scripts: "スクリプトの実行",
       scriptsDescription: "モデルがページ上でスクリプトを実行できるかどうかを選択します。各スクリプトは実行前に表示されます",
+      cursor: "カーソルを表示",
+      cursorDescription: "モデルがページ上でクリック、入力、ドラッグする位置にポインターを表示します",
       askEveryTime: "その都度確認",
       permissionsTitle: "エージェントの権限",
       permissionsDescription: "既定の動作を選び、特定のサイトに例外を追加します。パスワードや支払い情報の欄は、この設定にかかわらず入力されません。",

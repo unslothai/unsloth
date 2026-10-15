@@ -61,6 +61,8 @@ export const zhCN = {
       never: "从不",
       scripts: "运行脚本",
       scriptsDescription: "选择模型是否可以在页面上运行脚本。每个脚本运行前都会先向你显示",
+      cursor: "显示光标",
+      cursorDescription: "在模型于页面上点击、输入和拖动的位置显示指针",
       askEveryTime: "每次都询问",
       permissionsTitle: "代理权限",
       permissionsDescription: "选择默认设置，并为特定网站添加例外。无论这里如何设置，都不会填写密码和支付信息字段。",
