@@ -273,7 +273,7 @@ export const sv = {
     annotationScreenshotsNever: "Ta aldrig med",
     clearDataSetting: "Rensa webbdata",
     clearDataSettingDescription:
-      "Rensa webbhistorik, hämtningshistorik och cachade sidor. Sidor sparar inga cookies eller webbplatsdata.",
+      "Rensa webbhistorik, hämtningshistorik och cachade sidor. Sidor sparar cookies och webbplatsdata bara tills Studio laddas om.",
     manage: "Hantera",
     fullView: {
       enter: "Öppna helvy",
@@ -452,7 +452,7 @@ export const sv = {
     clearData: {
       title: "Rensa webbdata?",
       description:
-        "Detta rensar din webbhistorik, hämtningshistorik och cachade sidor. Hämtade filer finns kvar på datorn.",
+        "Detta rensar din webbhistorik, hämtningshistorik, cachade sidor samt webbplatsers cookies och data, vilket loggar ut dig från webbplatser. Hämtade filer finns kvar på datorn.",
       cancel: "Avbryt",
       confirm: "Rensa data",
       done: "Webbdata rensades",
@@ -475,6 +475,8 @@ export const sv = {
         "Filuppladdningar fungerar inte i den här vyn. Öppna sidan i systemets webbläsare för att skicka den.",
       scriptNavigation:
         "Sidan försökte gå till en annan adress via skript, vilket den här vyn inte kan följa. Öppna den i systemets webbläsare i stället.",
+      needsBrowser:
+        "Sidan försökte använda en webbläsarfunktion som den här vyn blockerar, så delar av den kanske inte fungerar. Öppna den i systemets webbläsare i stället.",
     },
     native: {
       externalPrompt: "{host} vill öppna {url}",
@@ -1886,6 +1888,19 @@ export const sv = {
         apiOnlyDescription:
           "Avlastning efter inaktivitet lämnar en modell som du läst in från Unsloth i minnet och frigör endast de som lästs in av en API-begäran.",
       },
+      modelAliases: {
+        sectionTitle: "Modellalias (OpenAI API)",
+        description:
+          "Fasta namn för API-klienter, till exempel fast-chat eller code. En begäran som anger ett alias besvaras av modellen det pekar på, så anslutna appar fortsätter fungera när du byter modell. Slå på Byt modell enligt begäran så att ett alias kan läsa in sin modell.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Aliasnamn",
+        modelAriaLabel: "Modell som aliaset pekar på",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Ta bort alias",
+        add: "Lägg till alias",
+        loadError: "Det gick inte att läsa in modellalias.",
+        saveError: "Det gick inte att spara modellalias.",
+      },
       previewSharing: {
         sectionTitle: "Delning av förhandsvisning",
         enableLabel: "Offentliga förhandsvisningslänkar",
@@ -2791,6 +2806,9 @@ export const sv = {
         showMemoryBar: "Stapel för VRAM-användning",
         showMemoryBarDescription:
           "Visa uppskattat VRAM för modellvikter, kontext och spekulativ avkodning.",
+        fitOnDeviceOnly: "Visa bara modeller som får plats",
+        fitOnDeviceOnlyDescription:
+          "Döljer modeller som är för stora för enhetens GPU-minne och RAM i modellväljaren och Hub. Hämtade modeller visas fortfarande.",
       },
       menu: {
         title: "Chattmeny",

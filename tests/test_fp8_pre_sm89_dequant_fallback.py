@@ -1,16 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team.
-"""The block dequant fallback must divert on exactly the GPUs triton cannot compile fp8e4nv for.
-
-triton adds fp8e4nv (torch.float8_e4m3fn) to its supported dtypes at compute capability >= 89
-(third_party/nvidia/backend/compiler.py), so sm80 has to take the torch path or it raises
-instead of falling back. sm89 -- 4090, L40S, L4 -- is on the supported side of that line, and a
-major-only "< 9" test silently drops all of Ada onto a path that costs several times the memory.
-
-The capability is monkeypatched and the triton entry point is stubbed, so the routing cases run
-on any CUDA GPU including the pre-sm89 ones under discussion, which cannot compile the kernel
-they are asserted to select. Only the value comparison needs real fp8 hardware, and it skips.
-"""
+"""Route to torch below sm89, not below 9, so Ada stays on triton; triton needs sm89 for fp8e4nv."""
 
 import types
 
@@ -52,14 +42,7 @@ def _route(
     gcn_arch = None,
     triton_version = None,
 ):
-    """Return "triton" or "torch" for a simulated device.
-
-    The kernel is stubbed rather than wrapped: these cases assert which branch is chosen, and
-    letting the real one run would need a GPU that can compile fp8e4nv, so every "routes to
-    triton" case would fail on exactly the pre-sm89 cards this file is about. Values are
-    covered separately by test_fallback_matches_the_triton_kernel_bit_for_bit, which skips
-    when the hardware cannot run both sides.
-    """
+    """Stubs the kernel so only the chosen branch is asserted; values come from a separate test."""
     from unsloth.kernels import fp8
 
     calls = []
@@ -88,14 +71,14 @@ def _route(
 @pytest.mark.parametrize(
     "capability, expected",
     [
-        ((7, 0), "torch"),  # V100
-        ((8, 0), "torch"),  # A100, the reported failure
-        ((8, 6), "torch"),  # A10 / 3090
-        ((8, 7), "torch"),  # Jetson Orin
+        ((7, 0), "torch"),
+        ((8, 0), "torch"),
+        ((8, 6), "torch"),
+        ((8, 7), "torch"),
         ((8, 9), "triton"),  # 4090 / L40S / L4: fp8e4nv IS supported here
-        ((9, 0), "triton"),  # H100
-        ((10, 0), "triton"),  # B200
-        ((12, 0), "triton"),  # RTX 5090
+        ((9, 0), "triton"),
+        ((10, 0), "triton"),
+        ((12, 0), "triton"),
     ],
 )
 def test_divert_boundary_is_sm89_not_sm90(monkeypatch, capability, expected):
@@ -179,7 +162,6 @@ def test_rocm_unknown_arch_takes_the_torch_path(monkeypatch):
     ],
 )
 def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, block):
-    # Diverting must not change a single value, in either direction.
     if torch.cuda.get_device_capability() < (8, 9):
         pytest.skip("needs a GPU that can run the triton fp8e4nv path to compare against")
     m, n = shape
@@ -191,8 +173,7 @@ def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, bloc
 
     from unsloth.kernels import fp8
 
-    # Both capabilities are simulated in one test, so clear between them too: the cache is
-    # keyed on the device, and a stale entry would quietly compare triton against itself.
+    # The cache is keyed on the device, so clear it between the simulated capabilities.
     with monkeypatch.context() as mp:
         mp.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (9, 0))
         fp8._fp8_device_lacks_kernel.cache_clear()
@@ -208,8 +189,7 @@ def test_fallback_matches_the_triton_kernel_bit_for_bit(monkeypatch, shape, bloc
 
 
 def test_fallback_does_not_materialize_a_full_size_scale(monkeypatch):
-    # The whole-weight expansion needed two m*n float32 temporaries; the chunked one must stay
-    # well under that or a 40GB A100 trades a CompilationError for an OOM.
+    # Whole-weight expansion needed two m*n float32 temporaries; chunking avoids the OOM.
     from unsloth.kernels import fp8
 
     m, n = 4096, 8192
@@ -217,7 +197,7 @@ def test_fallback_does_not_materialize_a_full_size_scale(monkeypatch):
     scale = torch.rand(m // 128, n // 128, device = "cuda", dtype = torch.float32) + 0.5
 
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a, **k: (8, 0))
-    monkeypatch.setattr(fp8, "_DEQUANT_CHUNK_ELEMS", 1 << 20)  # keep the test tensor small
+    monkeypatch.setattr(fp8, "_DEQUANT_CHUNK_ELEMS", 1 << 20)
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
@@ -227,19 +207,14 @@ def test_fallback_does_not_materialize_a_full_size_scale(monkeypatch):
     peak = torch.cuda.max_memory_allocated() - before
 
     assert out.shape == (m, n)
-    # Two m*n float32 tensors plus the output is 10+ bytes/element; chunking holds it near the
-    # 2-byte output itself.
+    # Unchunked is 10+ bytes/element; chunking stays near the 2-byte output.
     assert peak < 5 * m * n, f"fallback peaked at {peak / m / n:.1f} bytes/element"
 
 
 @pytest.mark.parametrize("weight_dtype", [torch.float8_e4m3fn, torch.float8_e5m2])
 def test_pre_sm89_forward_never_reaches_the_fp8_only_kernels(monkeypatch, weight_dtype):
-    # Fixing the weight dequant alone is not enough to run a model: the forward also calls
-    # act_quant and the w8a8 gemm, and both take fp8e4nv pointers, so on a pre-sm89 card the
-    # public path kept raising with the dequant helper already fixed. Assert the forward
-    # reaches neither, rather than only that it returns. e5m2 weights are covered because
-    # act_quant emits e4m3fn regardless, so keying the decision on the weight alone lets them
-    # through to a kernel this device cannot compile.
+    # The forward also calls act_quant and the w8a8 gemm, both fp8e4nv; act_quant emits e4m3fn
+    # even for e5m2 weights, so the forward must reach neither on pre-sm89.
     from unsloth.kernels import fp8
 
     called = []
@@ -274,9 +249,7 @@ def test_pre_sm89_forward_never_reaches_the_fp8_only_kernels(monkeypatch, weight
 
 
 def test_grouped_fp8_eval_is_guarded_in_source():
-    # The grouped layer only exists in newer transformers, so the runtime test below skips on
-    # most installs. Assert statically that eval does not bypass the guard, or admitting these
-    # checkpoints at load time just moves the failure to the first grouped forward.
+    # The grouped layer only exists in newer transformers, so assert statically that eval keeps the guard.
     import ast
     import inspect
 

@@ -5,6 +5,14 @@ import { useEffect, useRef, useState } from "react";
 import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
 import { pageRequests } from "./page-requests";
+import {
+  onPageStorageClear,
+  onPageStorageWrite,
+  type PageStorageArea,
+  pageOrigin,
+  readPageStorage,
+  writePageStorage,
+} from "./page-storage";
 
 export type { FrameMessage };
 
@@ -18,6 +26,17 @@ export type FrameCommand =
   | { command: "snapshot" }
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
+  | { command: "clearStorage" }
+  | {
+      command: "storageSync";
+      area: PageStorageArea;
+      key: string | null;
+      value: string | null;
+      url: string | null;
+      own: boolean;
+      seq: number | null;
+      refused: boolean;
+    }
   | { command: "annotateInstall"; code: string }
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
@@ -139,6 +158,8 @@ export function PageFrame({
     urlRef.current = url;
   });
   const [loadId] = useState(() => String(++loadCounter));
+  // Fixed per frame, from the address the panel loaded: never from what the page says.
+  const [origin] = useState(() => pageOrigin(url));
   const postedRef = useRef(false);
 
   useEffect(() => {
@@ -180,6 +201,19 @@ export function PageFrame({
         agentRequests.get(message.id)?.({ installed: message.installed, result: message.result });
         return;
       }
+      if (message.type === "storage") {
+        if (origin) writePageStorage(
+            origin,
+            tabIdRef.current,
+            message.area,
+            message.key,
+            message.value,
+            frame,
+            message.url,
+            message.seq,
+          );
+        return;
+      }
       if (isUserAction(message)) {
         if (!userActive(frame, message)) return;
         // Shortcuts too: a script can queue many before the first one moves focus off the page.
@@ -199,11 +233,32 @@ export function PageFrame({
       onMessageRef.current(message);
     };
     window.addEventListener("message", listener);
+    const stopClearing = onPageStorageClear(() => sendFrameCommand(tabIdRef.current, { command: "clearStorage" }));
+    // sessionStorage belongs to one tab, which shows one page.
+    const stopSyncing = onPageStorageWrite(({ origin: site, area, key, value, requested, from, url, seq }) => {
+      const target = frameRef.current;
+      if (!target || site !== origin || area === "session") return;
+      const own = from === target;
+      // The writer hears back too, so racing pages settle on the store's value; a refused value stays in its page.
+      const command: FrameCommand = {
+        command: "storageSync",
+        area,
+        key,
+        value,
+        url: url ?? null,
+        own,
+        seq: own ? (seq ?? null) : null,
+        refused: own && value !== requested,
+      };
+      target.contentWindow?.postMessage({ type: "unsloth:browser-command", ...command }, "*");
+    });
     return () => {
       window.removeEventListener("message", listener);
+      stopClearing();
+      stopSyncing();
       requests.stop();
     };
-  }, []);
+  }, [origin]);
 
   useEffect(() => {
     const frame = frameRef.current;
@@ -253,6 +308,7 @@ export function PageFrame({
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,
+            storage: origin ? readPageStorage(origin, tabId) : null,
           },
           "*",
         );

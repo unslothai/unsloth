@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-Present the Unsloth team. See /studio/LICENSE.AGPL-3.0
-"""Tests for the Unsloth Docker Studio branding / AGPLv3 integrity guard.
-
-verify_branding() runs against a staged temp tree mirroring the installed image
-layout, so no container or built labextension is required.
-"""
+"""verify_branding runs on a staged temp tree mirroring the installed image; no container needed."""
 
 import json
 import os
@@ -67,7 +63,6 @@ def _stage(tmp_path):
     (js_dir / "static" / "logo").mkdir(parents = True)
     (js_dir / "static" / "logo" / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\nlogo")
 
-    # config_dirs = [] keeps the tree hermetic: no host jupyter config is scanned
     return ub.resolve_paths(
         venv_share = str(venv_share),
         jupyter_server_dir = str(js_dir),

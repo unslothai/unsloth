@@ -62,7 +62,6 @@ class TestMmprojEmitsOversizedChunks:
             # Non-causal but capped under the stock ubatch: 256 and 384.
             ("gemma3", 2560, 0),
             ("deepseek4v", 4096, 0),
-            # Causal, so no image size reaches the assert.
             ("qwen3vl_merger", 2048, 0),
             ("youtuvl", 4096, 0),
             ("pixtral", 4096, 0),
@@ -75,8 +74,7 @@ class TestMmprojEmitsOversizedChunks:
         assert _mmproj_required_ubatch(None) == 0
 
     def test_an_audio_only_encoder_makes_no_image_chunk(self, projector):
-        # ModelConfig calls every discovered mmproj vision, so these reach here as
-        # vision and must still pay nothing.
+        # ModelConfig calls every discovered mmproj vision.
         path = projector("ultravox", accepts_image = False)
         assert _mmproj_required_ubatch(path, 4096) == 0
 
@@ -114,7 +112,6 @@ class TestLaunchNeedsBiggerUbatch:
         assert _launch_required_ubatch(path, 3840, ["--no-mmproj"], env = {}) == 0
 
     def test_a_pass_through_projector_obeys_both(self, projector):
-        # The launch emits it as the managed projector, so the switch and --no-mmproj drop it.
         path = projector("gemma4uv")
         assert _launch_required_ubatch(None, 3840, ["--mmproj", path], env = {}) == _GEMMA4
         assert _launch_required_ubatch(None, 3840, ["-mm", path], env = {}) == _GEMMA4
@@ -139,7 +136,6 @@ class TestLaunchNeedsBiggerUbatch:
         assert got == 0
 
     def test_an_unfetched_url_counts(self, projector):
-        # Nothing has downloaded it, so it cannot be classified.
         env = {"LLAMA_ARG_MMPROJ_URL": "https://example.invalid/mmproj.gguf"}
         got = _launch_required_ubatch(projector("qwen3vl_merger"), 2048, env = env)
         assert got == _MMPROJ_UNKNOWN_UBATCH
@@ -152,7 +148,6 @@ class TestLaunchNeedsBiggerUbatch:
             assert got == 0
 
     def test_mmproj_auto_with_nothing_resolved(self, projector):
-        # Discovery may open an adjacent projector this process was never told about.
         assert (
             _launch_required_ubatch(None, 3840, ["--mmproj-auto"], env = {}) == _MMPROJ_UNKNOWN_UBATCH
         )
@@ -164,12 +159,9 @@ class TestLaunchNeedsBiggerUbatch:
         )
 
     def test_mmproj_auto_does_not_trust_this_processs_classification(self, projector):
-        # llama-server runs its own adjacent-projector search and the two can disagree,
-        # so a model this discovery called text-only can still open one.
+        # llama-server's own projector search can disagree with this discovery.
         got = _launch_required_ubatch(None, 3840, ["--mmproj-auto"], is_vision = False, env = {})
         assert got == _MMPROJ_UNKNOWN_UBATCH
-        # With a projector to read, discovery finds that one: classify it rather than
-        # assume headroom.
         got = _launch_required_ubatch(
             projector("gemma4uv"), 3840, ["--mmproj-auto"], is_vision = False, env = {}
         )
@@ -185,7 +177,7 @@ class TestBatchUbatchForMmproj:
     """Turning the answer into the two flags, without undoing a size the user chose."""
 
     def test_raised_when_nothing_else_sets_one(self):
-        # Only the micro-batch: llama.cpp's own 2048 batch default already exceeds it.
+        # Only the micro-batch: llama.cpp's 2048 batch default already exceeds it.
         assert _batch_ubatch_for_mmproj(_GEMMA4, None, None, None, {}) == (None, _GEMMA4)
 
     def test_untouched_when_no_projector_needs_it(self):
@@ -211,22 +203,18 @@ class TestBatchUbatchForMmproj:
         [(4096, (4096, _GEMMA4)), (1024, (1024, 1024))],
     )
     def test_a_named_batch_caps_the_raise(self, batch, expected):
-        # mtmd cuts the image into n_batch chunks, so the batch caps how big the
-        # micro-batch must be; it does not cancel the raise.
+        # mtmd cuts the image into n_batch chunks, so the batch caps the needed micro-batch.
         assert _batch_ubatch_for_mmproj(_GEMMA4, batch, None, None, {}) == expected
 
     def test_a_small_batch_already_holds_the_chunk(self):
-        # -b 256 makes every chunk 256, which the llama.cpp default 512 holds.
         assert _batch_ubatch_for_mmproj(_GEMMA4, None, None, ["-b", "256"], {}) == (None, None)
 
     def test_a_batch_in_the_extras_caps_the_raise(self):
-        # The field stays None so Unsloth emits no --batch-size; the extras keep theirs.
         assert _batch_ubatch_for_mmproj(_GEMMA4, None, None, ["-b", "1024"], {}) == (None, 1024)
 
     @pytest.mark.parametrize("source", ["extras", "env"])
     def test_a_negative_batch_is_read_as_llama_cpp_reads_it(self, source):
-        # common_params stores the batch signed and llama_context_params casts it to
-        # uint32_t, so -1 reaches the child as 4294967295.
+        # The batch is cast to uint32_t, so -1 reaches the child as 4294967295.
         args, env = (["-b", "-1"], {}) if source == "extras" else (None, {"LLAMA_ARG_BATCH": "-1"})
         assert _batch_ubatch_for_mmproj(_GEMMA4, None, None, args, env) == (None, _GEMMA4)
 
@@ -241,25 +229,19 @@ def test_the_target_is_the_per_image_ceiling_not_a_round_number():
     }
     # clip.cpp: set_limit_image_tokens(70, 1120) for both Gemma 4 towers.
     assert _GEMMA4 == 1120
-    # Only a projector whose family cannot be read gets headroom instead.
     assert _MMPROJ_UNKNOWN_UBATCH > _GEMMA4
 
 
 @pytest.mark.parametrize(
     "family, n_embd, custom, expected",
     [
-        # Stock ceilings under the default micro-batch need nothing raised...
         ("gemma3", 2560, None, 0),
         ("deepseek4v", 4096, None, 0),
-        # ...but clip.cpp lets --image-max-tokens replace them, and the chunk grows
-        # with it, so a non-causal family under 512 today can be lifted past it.
+        # --image-max-tokens replaces the ceiling, so a family under 512 can be lifted past it.
         ("gemma3", 2560, 1024, 1024),
         ("deepseek4v", 4096, 4096, 4096),
-        # Below the stock micro-batch it changes nothing.
         ("gemma3", 2560, 256, 0),
-        # A family ceiling already above it wins when the flag asks for less.
         ("gemma4uv", 3840, 256, 1120),
-        # Causal families never reach the assert, whatever the flag says.
         ("qwen3vl_merger", 2048, 8192, 0),
         ("gemma4v", 2560, 8192, 0),
     ],
@@ -297,9 +279,7 @@ def test_the_remote_estimate_honours_a_custom_ceiling_too():
 @pytest.mark.parametrize(
     "env, expected",
     [
-        # arg.cpp gives --image-max-tokens the LLAMA_ARG_IMAGE_MAX_TOKENS twin.
         ({"LLAMA_ARG_IMAGE_MAX_TOKENS": "1024"}, 1024),
-        # A value the stock micro-batch already holds changes nothing.
         ({"LLAMA_ARG_IMAGE_MAX_TOKENS": "256"}, 0),
         ({}, 0),
     ],
@@ -320,12 +300,10 @@ def test_argv_still_wins_over_the_image_ceiling_env_twin(projector):
 @pytest.mark.parametrize(
     "env, expected",
     [
-        # The LLAMA_ARG_MMPROJ_AUTO twin, parsed with llama.cpp's own truthy set.
         ({"LLAMA_ARG_MMPROJ_AUTO": "1"}, _MMPROJ_UNKNOWN_UBATCH),
         ({"LLAMA_ARG_MMPROJ_AUTO": "on"}, _MMPROJ_UNKNOWN_UBATCH),
         ({"LLAMA_ARG_MMPROJ_AUTO": "0"}, 0),
-        # arg.cpp reads the NO_ form for any flag with a negative spelling, and its
-        # mere presence is falsey whatever it holds.
+        # arg.cpp reads the NO_ form, and its mere presence is falsey whatever it holds.
         ({"LLAMA_ARG_MMPROJ_AUTO": "1", "LLAMA_ARG_NO_MMPROJ_AUTO": "anything"}, 0),
         ({}, 0),
     ],
@@ -335,7 +313,6 @@ def test_the_discovery_env_twin_is_honoured(env, expected):
 
 
 def test_the_batch_still_caps_what_is_emitted():
-    # The batch caps the chunk mtmd cuts, so it caps the micro-batch that must hold it.
     assert _batch_ubatch_for_mmproj(4096, None, None, None, {})[1] == 2048
 
 
@@ -346,7 +323,6 @@ def test_the_decision_lands_after_the_download_and_before_the_fit():
     decide = source.index("_batch_ubatch_for_mmproj(")
     price = source.index("_ubatch_for_slots(n_parallel)")
     assert download < decide < price
-    # A missing or mismatched projector must not add image overhead.
     decision = source[decide : source.index("\n\n", decide)]
     assert "self._resolve_launch_mmproj_path(" in decision
 

@@ -261,7 +261,7 @@ export const ko = {
     annotationScreenshotsAlways: "항상 포함",
     annotationScreenshotsNever: "포함하지 않음",
     clearDataSetting: "인터넷 사용 기록 삭제",
-    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 쿠키나 사이트 데이터를 저장하지 않습니다.",
+    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 Studio를 다시 불러올 때까지만 쿠키와 사이트 데이터를 저장합니다.",
     manage: "관리",
     fullView: {
       enter: "전체 보기",
@@ -437,7 +437,7 @@ export const ko = {
     },
     clearData: {
       title: "인터넷 사용 기록을 삭제할까요?",
-      description: "방문 기록, 다운로드 기록, 캐시된 페이지가 삭제됩니다. 다운로드한 파일은 컴퓨터에 그대로 남습니다.",
+      description: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
       cancel: "취소",
       confirm: "데이터 삭제",
       done: "인터넷 사용 기록을 삭제했습니다",
@@ -453,6 +453,7 @@ export const ko = {
       resubmit: "이 페이지는 양식 제출 결과입니다. 다시 불러오면 양식이 다시 전송되어 같은 작업이 반복될 수 있습니다.",
       upload: "이 보기에서는 파일 업로드가 작동하지 않습니다. 보내려면 시스템 브라우저에서 페이지를 여세요.",
       scriptNavigation: "이 페이지가 스크립트로 다른 주소로 이동하려 했지만 이 보기에서는 따라갈 수 없습니다. 시스템 브라우저에서 여세요.",
+      needsBrowser: "이 페이지가 이 보기에서 차단하는 브라우저 기능을 사용하려고 해서 일부가 작동하지 않을 수 있습니다. 시스템 브라우저에서 여세요.",
     },
     native: {
       externalPrompt: "{host}에서 {url}을(를) 열려고 합니다",
@@ -1730,6 +1731,19 @@ export const ko = {
         apiOnlyDescription:
           "유휴 해제 시 Unsloth에서 직접 불러온 모델은 메모리에 남기고, API 요청이 불러온 모델만 해제합니다.",
       },
+      modelAliases: {
+        sectionTitle: "모델 별칭 (OpenAI API)",
+        description:
+          "fast-chat이나 code처럼 API 클라이언트용 고정 이름입니다. 별칭을 지정한 요청은 그 별칭이 가리키는 모델이 처리하므로, 모델을 바꿔도 연결된 앱이 계속 동작합니다. 별칭이 모델을 불러올 수 있도록 요청에 따라 모델 전환을 켜세요.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "별칭 이름",
+        modelAriaLabel: "별칭이 가리키는 모델",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "별칭 삭제",
+        add: "별칭 추가",
+        loadError: "모델 별칭을 불러오지 못했습니다.",
+        saveError: "모델 별칭을 저장하지 못했습니다.",
+      },
       previewSharing: {
         sectionTitle: "미리보기 공유",
         enableLabel: "공개 미리보기 링크",
@@ -2584,6 +2598,9 @@ export const ko = {
         showMemoryBar: "VRAM 사용량 막대 표시",
         showMemoryBarDescription:
           "다운로드한 모델의 행 아래에 예상 VRAM 사용량을 표시합니다. 가중치, 실제로 로드될 컨텍스트 길이 기준 KV 캐시, 그리고 추측 디코딩 초안용 예약 공간으로 나뉩니다.",
+        fitOnDeviceOnly: "맞는 모델만 표시",
+        fitOnDeviceOnlyDescription:
+          "이 기기의 GPU 메모리와 RAM보다 큰 모델을 모델 선택기와 Hub에서 숨깁니다. 다운로드한 모델은 계속 표시됩니다.",
       },
       menu: {
         title: "채팅 메뉴",

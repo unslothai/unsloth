@@ -261,7 +261,7 @@ export const ptBR = {
     annotationScreenshotsAlways: "Sempre incluir",
     annotationScreenshotsNever: "Nunca incluir",
     clearDataSetting: "Limpar dados de navegação",
-    clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads e as páginas em cache. As páginas não guardam cookies nem dados de sites.",
+    clearDataSettingDescription: "Limpa o histórico de navegação, o histórico de downloads e as páginas em cache. As páginas guardam cookies e dados de sites só até o Studio ser recarregado.",
     manage: "Gerenciar",
     fullView: {
       enter: "Visualização completa",
@@ -437,7 +437,7 @@ export const ptBR = {
     },
     clearData: {
       title: "Limpar dados de navegação?",
-      description: "Isso limpa seu histórico de navegação, o histórico de downloads e as páginas em cache. Os arquivos baixados continuam no seu computador.",
+      description: "Isso limpa o histórico de navegação, o histórico de downloads, as páginas em cache e os cookies e dados de sites, o que encerra sua sessão nos sites. Os arquivos baixados continuam no seu computador.",
       cancel: "Cancelar",
       confirm: "Limpar dados",
       done: "Dados de navegação limpos",
@@ -453,6 +453,7 @@ export const ptBR = {
       resubmit: "Esta página veio de um formulário. Carregá-la de novo reenvia o formulário, o que pode repetir o que ele fez.",
       upload: "O envio de arquivos não funciona nesta visualização. Abra a página no navegador do sistema para enviá-lo.",
       scriptNavigation: "Esta página tentou ir para outro endereço por script, o que esta visualização não consegue acompanhar. Abra-a no navegador do sistema.",
+      needsBrowser: "Esta página tentou usar um recurso do navegador que esta visualização bloqueia, então partes dela podem não funcionar. Abra-a no navegador do sistema.",
     },
     native: {
       externalPrompt: "{host} quer abrir {url}",
@@ -1739,6 +1740,19 @@ export const ptBR = {
         apiOnlyDescription:
           "O descarregamento por inatividade mantém na memória o modelo que você carregou pelo Unsloth e libera apenas os que uma requisição da API carregou.",
       },
+      modelAliases: {
+        sectionTitle: "Aliases de modelos (OpenAI API)",
+        description:
+          "Nomes fixos para clientes da API, como fast-chat ou code. Uma solicitação que cita um alias é atendida pelo modelo para o qual ele aponta, então os apps conectados continuam funcionando quando você troca de modelo. Ative Trocar de modelo por requisição para que um alias possa carregar o modelo para o qual aponta.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nome do alias",
+        modelAriaLabel: "Modelo para o qual o alias aponta",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Remover alias",
+        add: "Adicionar alias",
+        loadError: "Não foi possível carregar os aliases de modelos.",
+        saveError: "Não foi possível salvar os aliases de modelos.",
+      },
       previewSharing: {
         sectionTitle: "Compartilhamento de pré-visualização",
         enableLabel: "Links públicos de pré-visualização",
@@ -2611,6 +2625,9 @@ export const ptBR = {
         showMemoryBar: "Mostrar barra de uso de VRAM",
         showMemoryBarDescription:
           "Mostra abaixo da linha de cada modelo baixado o uso estimado de VRAM: pesos, cache KV no comprimento de contexto com que será carregado e qualquer reserva de rascunho especulativo.",
+        fitOnDeviceOnly: "Mostrar apenas modelos que cabem",
+        fitOnDeviceOnlyDescription:
+          "Oculta no seletor de modelos e no Hub os modelos grandes demais para a memória da GPU e a RAM deste dispositivo. Os modelos baixados continuam visíveis.",
       },
       menu: {
         title: "Menu do chat",

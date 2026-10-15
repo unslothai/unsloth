@@ -124,6 +124,42 @@ def test_local_json_seed_preview_keeps_its_values_as_written(monkeypatch, tmp_pa
     assert rows == records
 
 
+def test_local_parquet_seed_preview_reads_typed_rows(monkeypatch, tmp_path):
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    assert ".parquet" in seed_route.LOCAL_UPLOAD_EXTS
+    path = tmp_path / "seed.parquet"
+    pd.DataFrame(
+        {
+            "question": [f"q{i}" for i in range(5)],
+            "qty": list(range(5)),
+            "tags": [["a"], ["b", "c"], [], ["d"], ["e"]],
+        }
+    ).to_parquet(path, index = False)
+
+    rows = seed_route._read_preview_rows_from_local_file(path, 2)
+
+    assert rows == [
+        {"question": "q0", "qty": 0, "tags": ["a"]},
+        {"question": "q1", "qty": 1, "tags": ["b", "c"]},
+    ]
+
+
+def test_corrupt_parquet_seed_is_a_clear_422(monkeypatch, tmp_path):
+    pytest.importorskip("pyarrow")
+    seed_route = _load_seed_route(monkeypatch, tmp_path)
+    monkeypatch.setattr(seed_route, "account_path", lambda path: None)
+    path = tmp_path / "seed.parquet"
+    path.write_bytes(b"not a parquet file")
+
+    with pytest.raises(HTTPException) as excinfo:
+        seed_route._read_preview_rows_from_local_file(path, 10)
+
+    assert excinfo.value.status_code == 422
+
+
 @pytest.mark.parametrize(
     ("filename", "module", "package"),
     [
