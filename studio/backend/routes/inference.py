@@ -37526,6 +37526,10 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
         )
     finally:
         await _stop_local_disconnect_cancel_watcher(watcher)
+    n_vocab = resolved[0].get("n_vocab")
+    if n_vocab and sampling["top_k"] >= n_vocab:
+        # llama-server keeps every candidate here; mlx_lm's apply_top_k raises instead.
+        sampling["top_k"] = 0
     echo = body.get("echo") is True
     created = int(time.time())
     stats_holder: dict = {}

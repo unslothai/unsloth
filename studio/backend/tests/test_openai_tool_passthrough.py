@@ -11752,7 +11752,7 @@ class _MLXCompletionBackend:
         if prompt == "queued":
             active_generations.cancel_all()  # e.g. a model swap while behind another generation
         ids = [1, 2] * len(prompt) if isinstance(prompt, str) else [1, 2]
-        return {"ids": ids, "text": prompt if isinstance(prompt, str) else "P"}
+        return {"ids": ids, "text": prompt if isinstance(prompt, str) else "P", "n_vocab": 50}
 
     def generate_completion(self, prompt_ids, cancel_event, stats_holder, **kw):
         self.call, self.runs = (
@@ -11848,6 +11848,10 @@ def test_mlx_completion_reads_the_body_as_llama_server_does(monkeypatch):
     assert sampled == [0.0, 0, 0.05, 1.2] and kw["logit_bias"] == {7: float("-inf"), 8: 2.0}
     greedy, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "top_p": 0, "top_k": 0})
     assert greedy.call[1]["top_k"] == 1
+    # top_k at or past the vocabulary keeps every candidate, as on llama-server.
+    for top_k, sent in ((10**6, 0), (50, 0), (49, 49)):
+        wide, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", "top_k": top_k})
+        assert wide.call[1]["top_k"] == sent
     assert inf_mod.api_monitor.snapshot()[0]["reply_preview"] == "ab"
     for alias in ("n_predict", "max_completion_tokens"):
         unset, _ = _run_mlx_completion(monkeypatch, {"prompt": "P", alias: -1, "max_tokens": 9})

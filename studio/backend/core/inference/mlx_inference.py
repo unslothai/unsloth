@@ -5546,7 +5546,7 @@ class MLXInferenceBackend:
                 text.append(piece)
         if not ids:
             raise ValueError("The prompt is empty.")
-        return {"ids": ids, "text": "".join(text)}
+        return {"ids": ids, "text": "".join(text), "n_vocab": vocab}
 
     def generate_completion(
         self,

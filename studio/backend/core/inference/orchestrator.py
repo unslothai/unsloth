@@ -3018,7 +3018,7 @@ class InferenceOrchestrator:
             raise RuntimeError("Timed out resolving the prompt")
         if resp.get("error"):
             raise (ValueError if resp.get("invalid") else RuntimeError)(resp["error"])
-        return {"ids": list(resp["ids"]), "text": resp["text"]}
+        return {"ids": list(resp["ids"]), "text": resp["text"], "n_vocab": resp.get("n_vocab")}
 
     def generate_completion(
         self,

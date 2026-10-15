@@ -2585,7 +2585,11 @@ def test_mlx_completion_prompt_resolves_as_llama_server_tokenizes_it(prompt, ids
         with pytest.raises(ValueError):
             backend.resolve_completion_prompt(prompt)
     else:
-        assert backend.resolve_completion_prompt(prompt) == {"ids": ids, "text": text}
+        assert backend.resolve_completion_prompt(prompt) == {
+            "ids": ids,
+            "text": text,
+            "n_vocab": 200,
+        }
 
 
 def test_mlx_penalty_window_scores_the_last_tokens_of_prompt_and_completion():
