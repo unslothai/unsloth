@@ -120,12 +120,22 @@ export const BUDGET = {
   // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
   // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
   // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
+  // Each chat keeping its own browser tabs (#13800: the store's per-chat state, background pages in the
+  // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
+  // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
+  // chunk count unchanged at 95), raised by that.
+  // Always allow on browser agent prompts (#13777) adds 91 B raw / 42 B transfer to the eager chat chunk
+  // (6,770,922 -> 6,771,013 B raw, 2,035,640 -> 2,035,682 B transfer against cd947468f1, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 71 B raw over. Raised by that growth.
+  // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 39 B transfer to the
+  // eager attachment reader (6,770,962 -> 6,771,190 B raw, 2,035,676 -> 2,035,715 B transfer against 7ae1a5386,
+  // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
   // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
-  // host) adds 1,467 B raw / 479 B transfer to the eager settings and chat chunks (6,764,964 -> 6,766,431 B raw,
-  // 2,033,544 -> 2,034,023 B transfer from 6c3bd16256, one machine and build, Node 24, chunk count unchanged at
+  // host) adds 1,468 B raw / 562 B transfer to the eager settings and chat chunks (6,771,190 -> 6,772,658 B raw,
+  // 2,035,715 -> 2,036,277 B transfer against 1a76e88853, one machine and build, Node 24, chunk count unchanged at
   // 95). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_034_256,
-  rawBytes: 6_767_131,
+  transferBytes: 2_036_306,
+  rawBytes: 6_772_729,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

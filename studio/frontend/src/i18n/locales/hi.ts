@@ -83,6 +83,9 @@ export const hi = {
     },
     agent: {
       working: "Unsloth इस टैब में ब्राउज़ कर रहा है",
+      waiting: "Unsloth को {chat} के लिए ब्राउज़र में आपका जवाब चाहिए",
+      otherChat: "किसी अन्य चैट",
+      show: "दिखाएँ",
       stop: "रोकें",
       allow: "अनुमति दें",
       deny: "अस्वीकार करें",

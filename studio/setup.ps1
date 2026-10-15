@@ -10529,7 +10529,10 @@ if ($NeedLlamaSourceBuild -and -not $script:LlamaBuildToolsDeclined) {
         substep "installing OpenSSL dev (for HTTPS in llama-server)..."
         $HasWinget = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
         if ($HasWinget) {
-            winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements
+            # Optional: a winget that cannot launch (#13662) must not abort setup under EAP Stop.
+            try {
+                Invoke-SetupCommand { winget install -e --id ShiningLight.OpenSSL.Dev --source winget --accept-package-agreements --accept-source-agreements } | Out-Null
+            } catch { }
             # Re-check after install
             foreach ($root in $OpenSslRoots) {
                 if (Test-Path (Join-Path $root 'include\openssl\ssl.h')) {

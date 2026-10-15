@@ -81,6 +81,9 @@ export const sv = {
     },
     agent: {
       working: "Unsloth surfar i den här fliken",
+      waiting: "Unsloth behöver ditt svar i webbläsaren för {chat}",
+      otherChat: "en annan chatt",
+      show: "Visa",
       stop: "Stoppa",
       allow: "Tillåt",
       deny: "Neka",

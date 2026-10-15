@@ -83,6 +83,9 @@ export const zhCN = {
     },
     agent: {
       working: "Unsloth 正在此标签页中浏览",
+      waiting: "Unsloth 需要你在 {chat} 的浏览器中回答",
+      otherChat: "另一个聊天",
+      show: "显示",
       stop: "停止",
       allow: "允许",
       deny: "拒绝",

@@ -35,6 +35,14 @@ def test_the_shell_is_isolated():
     assert "X-Unsloth-Browser-Kind" in browser_mod.EXPOSED_HEADERS
 
 
+def test_the_shells_page_may_go_fullscreen_and_nothing_more():
+    shell = browser_mod._FRAME_HTML
+    assert 'page.setAttribute("sandbox", "allow-scripts allow-forms");' in shell
+    assert 'page.setAttribute("allowfullscreen", "");' in shell
+    assert "allow-same-origin" not in shell
+    assert 'setAttribute("allow",' not in shell and "page.allow" not in shell
+
+
 def test_the_print_shell_runs_only_its_own_script():
     import base64
     import hashlib
@@ -486,6 +494,7 @@ def test_bot_checks_are_told_apart_from_plain_refusals():
     assert not _is_bot_check(503, headers(Server = "cloudflare"))
     assert not _is_bot_check(404, headers(Server = "cloudflare"))
     assert not _is_bot_check(403, headers(Server = "nginx"))
+    assert not _is_bot_check(403, headers(Server = "cloudflare", cf_cache_status = "DYNAMIC"))
 
 
 def test_a_byte_order_mark_decides_the_encoding():
