@@ -527,10 +527,10 @@ def test_compiled_decode_oom_frees_then_retries_compiled():
                 raise RuntimeError("compiled graph failed") from oom
         return ("ok",)
 
-    compiled._unsloth_compiled_decode = True
-    compiled._unsloth_eager_decode = eager
-    vae.decode = compiled
+    from core.inference import diffusion_speed as S
+
     O.uninstall(vae)
+    vae.decode = S._guard_compiled_decode(vae, compiled, eager, None)  # the speed layer's real guard
     assert O.install(vae)
     before = _devices(pipe)
     assert vae.decode(_z()) == ("ok",)
@@ -551,10 +551,10 @@ def test_compiled_decode_oom_falls_to_the_eager_ladder_sharing_the_session():
         calls.append("compiled")
         raise _FakeOOM()
 
-    compiled._unsloth_compiled_decode = True
-    compiled._unsloth_eager_decode = eager
-    vae.decode = compiled
+    from core.inference import diffusion_speed as S
+
     O.uninstall(vae)
+    vae.decode = S._guard_compiled_decode(vae, compiled, eager, None)  # the speed layer's real guard
     assert O.install(vae)
     before = _devices(pipe)
     out = vae.decode(_z())
@@ -1887,11 +1887,12 @@ def test_step_a_moves_no_weight_when_a_graph_could_not_be_dropped(monkeypatch):
 
 
 def test_scope_finds_a_compiled_guard_under_the_rocm_bf16_decode(monkeypatch):
-    """Item 4285966482: ROCm order is compile, then the bf16 decode wraps the compiled guard, then the OOM retry. The
-    bf16 wrapper exposed the guard only through __wrapped__, so the scope went on top as a plain layer and a compiled
-    OOM escaped. The bf16 decode now calls through a mutable slot, and discovery walks every wrapper kind, so the
-    scope sits under the bf16 cast, around the compiled guard."""
+    """Items 4285966482 / 4286353651: ROCm order is compile, then the bf16 decode wraps the compiled guard, then the
+    OOM retry. The scope is the outermost layer (above the bf16 cast, whose own fp32 output cast may run out of
+    memory too) and reaches the compiled guard under it: a compiled OOM frees the card and retries the whole decode,
+    compiled."""
     from core.inference import diffusion_device as D
+    from core.inference import diffusion_speed as S
 
     budget = _Budget(16384 + 1000)
     transformer, text_encoder = _on_card(8192), _on_card(4096)
@@ -1907,26 +1908,262 @@ def test_scope_finds_a_compiled_guard_under_the_rocm_bf16_decode(monkeypatch):
             raise _FakeOOM()
         return (z,)
 
-    def guard(*a, **k):
-        return compiled(*a, **k)
-
-    guard._unsloth_compiled_decode = True
-    guard._unsloth_eager_decode = vae.decode
-    vae.decode = guard
+    vae.decode = S._guard_compiled_decode(vae, compiled, vae.decode, None)
+    guard = vae.__dict__["decode"]
     monkeypatch.setattr(D, "_rocm_bf16_decode_arch", lambda torch_, target: "gfx1151")
     monkeypatch.setenv(D.VAE_BF16_DECODE_ENV, "autocast")
     target = types.SimpleNamespace(device = "cuda", backend = "rocm")
     assert D.install_rocm_vae_bf16_decode(pipe, target) == "autocast"
     bf16 = vae.__dict__["decode"]
     assert O.install(vae, pipe = pipe)
-    assert vae.__dict__["decode"] is bf16  # the cast stays outermost
-    slot = bf16._unsloth_decode_slot
-    assert getattr(slot.decode, "_unsloth_vae_oom_scope", False) and slot.decode.__wrapped__ is guard
-    assert O.ensure_outermost(vae)  # and it counts as in place (no churn)
-    assert vae.__dict__["decode"] is bf16 and slot.decode.__wrapped__ is guard
+    top = vae.__dict__["decode"]
+    assert getattr(top, "_unsloth_vae_oom_scope", False) and top.__wrapped__ is bf16  # outermost, over the cast
+    assert bf16._unsloth_decode_slot.decode is guard
+    assert O.ensure_outermost(vae) and vae.__dict__["decode"] is top  # in place: no churn
     import warnings
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         out = vae.decode(_z())
     assert calls == ["compiled", "compiled"] and out[0].dtype == torch.float32
+
+# -- PR review round 14 -----------------------------------------------------------------------------------------
+
+
+class _CompileFailed(RuntimeError):
+    pass
+
+
+def _fp16_shaped(vae, budget, own_need, oom_once = None):
+    """An fp16-decode-shaped dtype wrapper: calls through a mutable slot, then allocates for its own non-finite check
+    (``own_need`` bytes on top of what is resident), which can run out of memory itself."""
+    slot = types.SimpleNamespace(decode = vae.decode)
+
+    def fp16_decode(z, *a, **k):
+        out = slot.decode(z, *a, **k)
+        if budget.resident([*vae.pipe_modules, vae]) + own_need > budget.cap:
+            raise _FakeOOM()  # isfinite(sample).all() needs its own buffer
+        return out
+
+    fp16_decode._unsloth_decode_slot = slot
+    vae.decode = fp16_decode
+    return fp16_decode, slot
+
+
+def test_dtype_wrapper_own_allocation_oom_reaches_the_scope():
+    """Item 4286353651: with the scope inside the dtype wrapper's slot, an OOM in the wrapper's own work (the fp16
+    isfinite check, the ROCm fp32 output cast) escaped it. The scope is outermost now: it frees the card and the
+    whole decode, wrapper included, succeeds."""
+    budget = _Budget(16384 + 1000)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+    vae = _PublicVae(budget, [transformer, text_encoder], 1, 1)
+    vae.to(_CARD)
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+    wrapper, slot = _fp16_shaped(vae, budget, own_need = 6000)
+    assert O.install(vae, pipe = pipe)
+    top = vae.__dict__["decode"]
+    assert getattr(top, "_unsloth_vae_oom_scope", False) and top.__wrapped__ is wrapper
+    before = _devices(pipe)
+    out = vae.decode(_z())
+    assert out[0].shape[-1] == 64
+    assert vae._unsloth_vae_oom_stats["recovered_by"] == "freed" and _devices(pipe) == before
+
+
+@pytest.mark.parametrize("slot_kind", ["vae", "fp16"])
+def test_compile_fallback_keeps_the_scope(monkeypatch, slot_kind):
+    """Item 4286353643: a lazy compile that fails replaced its owner slot with the eager decode. When the scope sat in
+    that slot (fp16 / bf16 orders) or on top of the guard, the fallback dropped it and later sliced decodes ran
+    without one shared session. The fallback now leaves a slot it no longer holds alone, and the scope re-asserts
+    itself when a decode closes."""
+    from core.inference import diffusion_speed as S
+
+    monkeypatch.setattr(S, "is_compile_failure", lambda exc: isinstance(exc, _CompileFailed))
+    budget = _Budget(16384 + 1000)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+    vae = _SlicedVae(budget, [transformer, text_encoder], 10000, 500)
+    vae.to(_CARD)
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+
+    def compiled(z, *a, **k):
+        raise _CompileFailed("inductor lowering failed")
+
+    if slot_kind == "fp16":
+        _, slot = _fp16_shaped(vae, budget, own_need = 0)
+        slot.decode = S._guard_compiled_decode(vae, compiled, slot.decode, None, owner = slot)
+    else:
+        vae.decode = S._guard_compiled_decode(vae, compiled, vae.decode, None)
+    assert O.install(vae, pipe = pipe)
+    moves = []
+    monkeypatch.setattr(O, "_to_host", lambda m: (moves.append("off"), m.to(torch.float32)))
+    monkeypatch.setattr(O, "_return_to", lambda m, d: (moves.append("on"), m.to(_CARD)))
+    out = vae.decode(torch.ones(3, 4, 1, 8, 8))[0]  # compile fails, eager decode, slice OOMs recover
+    assert out.shape[0] == 3
+    top = vae.__dict__["decode"]
+    assert getattr(top, "_unsloth_vae_oom_scope", False)  # still outermost after the fallback
+    moves.clear()
+    out = vae.decode(torch.ones(3, 4, 1, 8, 8))[0]
+    assert out.shape[0] == 3 and moves == ["off", "off", "on", "on"]  # one session for the whole sliced batch
+
+
+def test_compiled_guard_behind_the_untiled_gate_reaches_the_ladder(monkeypatch):
+    """The gap left last round: the video untiled gate calls what it wraps through a closure (no slot), so a compiled
+    guard under it was invisible and its tiled-attempt OOM escaped. Under the single placement rule the scope is
+    outermost; it frees the card, retries the whole decode compiled, then with every guard eager."""
+    from core.inference import diffusion_speed as S
+    from core.inference import video_vae_untiled as U
+
+    budget = _Budget(16384 + 1000)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+    vae = _PublicVae(budget, [transformer, text_encoder], 10**9, 10**9)
+    vae.to(_CARD)
+    vae.use_tiling = True
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+    calls = []
+
+    def compiled(z, *a, **k):
+        calls.append(("compiled", vae.use_tiling))
+        raise _FakeOOM()  # the compiled graph fails at any free memory
+
+    vae.decode = S._guard_compiled_decode(vae, compiled, vae.decode, None)
+    vae._unsloth_compiled_decode = True
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 0)  # untiled never fits: the gate decodes tiled
+    family = next(iter(U._BYTES_PER_LATENT_PIXEL))
+    assert U.install_untiled_decode(pipe, family)
+    assert O.install(vae, pipe = pipe)
+    vae.tiled_need = 500  # the eager tiled decode fits once the card is freed
+    out = vae.decode(_z())
+    assert calls == [("compiled", True), ("compiled", True)]  # then eager: the ladder's freed tiled decode
+    assert out[0].shape[-1] == 64 and vae.seen[-1][0] is True
+    assert getattr(vae.__dict__["decode"], "_unsloth_vae_oom_scope", False)
+
+
+def _raw_read(t):
+    """What a Triton kernel sees: the values at ``t.data_ptr()`` indexed with ``t``'s own strides (CPU, float32)."""
+    import ctypes
+
+    n = t.storage_offset() + sum((s - 1) * st for s, st in zip(t.shape, t.stride())) + 1
+    buf = (ctypes.c_float * n).from_address(t.data_ptr())
+    flat = torch.frombuffer(buf, dtype = torch.float32, count = n).clone()
+    return torch.as_strided(flat, t.shape, t.stride(), t.storage_offset())
+
+
+def test_patched_norms_unwrap_a_fused_input_before_the_kernel(monkeypatch):
+    """Item 4286353624: a GroupNorm-only site (act False) handed a fused GroupNorm+SiLU output to its kernel as is,
+    and a kernel reads raw memory: it saw the ACTIVATED values (the CPU reference, reading through torch, hid it).
+    The fake kernel reads ``data_ptr()`` like Triton; every patched entry, fused or GroupNorm only, now hands it the
+    stock value."""
+    seen = []
+
+    def kernel(x, norm, act = True, in_bias = None, on_kernel = None, **_):
+        raw = _raw_read(x)  # a raw-memory read, as the Triton launch does
+        seen.append(raw)
+        y = torch.nn.functional.group_norm(raw, norm.num_groups, norm.weight, norm.bias, norm.eps)
+        return torch.nn.functional.silu(y) if act else y
+
+    monkeypatch.setattr(F, "group_norm_act", kernel)
+    norm, norm2, norm3 = torch.nn.GroupNorm(4, 8), torch.nn.GroupNorm(4, 8), torch.nn.GroupNorm(4, 8)
+    state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
+    fused = F._fast_gn_maybe_act(norm, True, state)
+    gn_only = F._fast_gn_maybe_act(norm2, False, state)
+    fused2 = F._fast_gn_maybe_act(norm3, True, state)
+    x = torch.randn(1, 8, 4, 4)
+    with torch.no_grad():
+        n = norm(x)
+        assert torch.allclose(gn_only(fused(x)), norm2(n), atol = 1e-5)  # GroupNorm-only site
+        assert torch.allclose(F._plain(fused2(fused(x))), torch.nn.functional.silu(norm3(n)), atol = 1e-5)
+        assert torch.allclose(_raw_read(fused(x)), n, atol = 1e-6)  # any raw-pointer reader elsewhere
+
+
+def test_fused_output_raw_pointer_reads_keep_its_layout():
+    """A raw-pointer reader indexes with the fused tensor's own strides (channels-last here), so the stock value it
+    is redirected to has that exact layout."""
+    norm = torch.nn.GroupNorm(4, 8)
+    state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
+    fast = F._fast_gn_maybe_act(norm, True, state)
+    x = torch.randn(1, 8, 4, 6).contiguous(memory_format = torch.channels_last)
+    with torch.no_grad():
+        y = fast(x)
+        y_cl = y  # group_norm_act on CPU: the reference; force a channels-last fused tensor to check the layout
+        y_cl = F._plain(y).contiguous(memory_format = torch.channels_last).as_subclass(type(y))
+        y_cl._unsloth_norm, y_cl._unsloth_norm_in, y_cl._unsloth_silu_for = norm, x, "any"
+        assert torch.allclose(_raw_read(y_cl), norm(x), atol = 1e-6)
+
+
+class _CausalLtx:
+    """An LTX-2-shaped VAE whose decoder keeps causal state across calls (reset by clear_cache); OOMs on chosen
+    decoder calls."""
+
+    spatial_compression_ratio = 32
+
+    def __init__(self, oom_calls):
+        self.state = []
+        self.calls = 0
+        self.oom_calls = set(oom_calls)
+        self.use_tiling = True
+
+    def clear_cache(self):
+        self.state = []
+
+    def decoder(self, z, temb = None, causal = None):
+        self.calls += 1
+        if self.calls in self.oom_calls:
+            raise _FakeOOM()
+        out = z.repeat_interleave(32, -1).repeat_interleave(32, -2) + 0.001 * len(self.state)
+        self.state.append(1)  # causal state: every later call sees it
+        return out
+
+
+@pytest.mark.parametrize("k", [1, 2, 3])
+def test_ltx2_floor_decode_starts_clean_after_a_freed_retry_fails_part_way(monkeypatch, k):
+    """Item 4286353660: the freed retry of the wide LTX-2 tiles ran k tiles, then ran out of memory; the floor-tile
+    decode started on that partial causal state. Every retry after a partial causal decode clears it first."""
+    from core.inference import video_ltx2_vae_tiles as T
+
+    z = torch.randn(1, 4, 1, 48, 48)
+    clean = _CausalLtx(())
+    ref = T._decode_tiles(clean, z, None, None, 16, 16, False)  # the floor decode from a clean start
+    # the wide attempt (32-latent tiles: 4 of them) OOMs at once; its freed retry decodes k tiles, then OOMs
+    vae = _CausalLtx({1, 1 + k + 1})
+    retry_calls = []
+
+    def free_first(v, zz):
+        v.clear_cache()  # what the real step (a) does before the freed retry
+        retry_calls.append(v.calls)
+        return True
+
+    monkeypatch.setattr(T, "oom_free_first", free_first)
+    monkeypatch.setattr(T, "_plan", lambda vae, z: ((32, 32), True))
+    out = T.tiled_decode(vae, z, return_dict = False)[0]
+    assert retry_calls == [1] and vae.calls > 1 + k + 1  # the retry failed part way, the floor decode ran
+    assert torch.allclose(out, ref)
+
+
+def test_untiled_gate_tiled_retry_starts_clean(monkeypatch):
+    """Same class as 4286353660 in the untiled-when-fits gate: an untiled attempt that ran out of memory part way
+    left causal state for the tiled decode."""
+    from core.inference import video_vae_untiled as U
+
+    class Causal(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.use_tiling = True
+            self.state = []
+            self.decoder = torch.nn.Linear(2, 2)
+
+        def clear_cache(self):
+            self.state = []
+
+        def decode(self, z, return_dict = True):
+            out = z + 0.001 * len(self.state)
+            self.state.append(1)
+            if not self.use_tiling:
+                raise _FakeOOM()  # the untiled attempt fails after a causal step
+            return (out,)
+
+    vae = Causal()
+    monkeypatch.setattr(U, "_free_bytes", lambda device: 1 << 50)
+    family = next(iter(U._BYTES_PER_LATENT_PIXEL))
+    assert U.install_untiled_decode(types.SimpleNamespace(vae = vae), family)
+    z = torch.zeros(1, 4, 1, 8, 8)
+    out = vae.decode(z)[0]
+    assert torch.equal(out, z)  # the tiled decode started from a clean causal state

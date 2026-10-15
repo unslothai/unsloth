@@ -1655,6 +1655,9 @@ def _guard_compiled_decode(
     def guarded(*args: Any, **kwargs: Any) -> Any:
         if eager_when_tiled and getattr(vae, "use_tiling", False):
             return eager(*args, **kwargs)
+        # the OOM scope's last retry of a decode whose compiled graph ran out of memory (diffusion_vae_oom)
+        if getattr(vae, "__dict__", {}).get("_unsloth_decode_force_eager", False):
+            return eager(*args, **kwargs)
         if not failed:
             try:
                 return compiled(*args, **kwargs)
@@ -1668,10 +1671,13 @@ def _guard_compiled_decode(
                 try:
                     vae._unsloth_compile_decode_error = error
                     vae._unsloth_compiled_decode = False
-                    if had_own:
-                        owner.decode = eager
-                    else:
-                        del owner.decode
+                    # Only while the slot still holds this guard: a layer installed over it since (the OOM scope)
+                    # stays, and this guard (``failed``) runs eager under it from now on.
+                    if getattr(owner, "__dict__", {}).get("decode") is guarded:
+                        if had_own:
+                            owner.decode = eager
+                        else:
+                            del owner.decode
                 except Exception:  # noqa: BLE001 - `failed` still routes this wrapper to eager
                     pass
                 if getattr(vae, "_unsloth_eager_contiguous", False):
@@ -1695,6 +1701,21 @@ def _guard_compiled_decode(
     return guarded
 
 
+def _decode_slot_owner(fn: Any) -> Any:
+    """The mutable slot an eager outer wrapper (fp16 non-finite check, ROCm bf16 cast) calls through, found under
+    any layer installed over it since (the OOM scope), or None."""
+    from .decode_layers import next_layer  # noqa: PLC0415
+
+    for _ in range(32):
+        if fn is None:
+            return None
+        slot = getattr(fn, "_unsloth_decode_slot", None)
+        if slot is not None:
+            return slot
+        fn = next_layer(fn)
+    return None
+
+
 def _compile_vae_decode(
     pipe: Any,
     logger: Any,
@@ -1705,7 +1726,7 @@ def _compile_vae_decode(
     vae = getattr(pipe, "vae", None)
     # An outer wrapper that must stay eager (fp16 non-finite check) exposes the slot it calls through.
     outer = getattr(vae, "__dict__", {}).get("decode") if vae is not None else None
-    owner = getattr(outer, "_unsloth_decode_slot", None) or vae
+    owner = _decode_slot_owner(outer) or vae
     decode = getattr(owner, "decode", None) if vae is not None else None
     if not callable(decode):
         return False

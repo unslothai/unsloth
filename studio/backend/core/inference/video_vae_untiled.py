@@ -157,6 +157,9 @@ def install_untiled_decode(
         # Retried outside the handler so the failed attempt's tensors (held by the traceback) are gone first.
         stats["oom_fallback"] += 1
         oom_need[:] = [min([need, *oom_need])]
+        from .diffusion_vae_oom import clear_partial_decode  # noqa: PLC0415
+
+        clear_partial_decode(vae, z)  # the untiled attempt's causal state goes before the tiled decode
         torch.cuda.empty_cache()
         if logger is not None:
             logger.warning("video.vae_untiled: untiled decode ran out of memory; decoding tiled")

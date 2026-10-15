@@ -96,6 +96,14 @@ def _release_cache(z: Any, vae: Any = None) -> None:
     _empty_cache(getattr(z, "device", None))
 
 
+def clear_partial_decode(vae: Any, z: Any = None) -> None:
+    """Before ANY retry of a decode that failed part way: drop a causal decoder's frame / feature cache (Wan,
+    Qwen-Image, LTX-2 and HunyuanVideo expose ``clear_cache``), which still holds the failed attempt's state and
+    tensors, and return the freed blocks to the device. Every fallback (wide tiles -> stock tiles, LTX-2 tiles ->
+    the floor tile, untiled -> tiled, the ladder's own steps) calls this first."""
+    _release_cache(z, vae)
+
+
 def _compiling() -> bool:
     try:
         import torch
@@ -852,36 +860,38 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
     return True
 
 
-def _compiled_decode_owner(vae: Any) -> Any:
-    """The object whose ``decode`` slot holds the speed layer's compiled decode guard (the VAE, or the slot an eager
-    outer wrapper calls through), or None when the decode is not compiled whole."""
-    # Walk the whole chain (``__wrapped__`` of every wrapper kind, and the mutable slot an eager outer wrapper calls
-    # through: fp16 non-finite check, ROCm bf16 decode), not just the first level.
-    owner: Any = vae
-    fn = vae.__dict__.get("decode")
-    seen: set = set()
-    while fn is not None and id(fn) not in seen and len(seen) < 64:
-        seen.add(id(fn))
+# One placement rule: the scope is the OUTERMOST public decode layer, on the VAE itself, above every other decode
+# wrapper (dtype wrappers: the fp16 non-finite check, the ROCm bf16 cast; the untiled-when-fits gate; a compiled
+# decode guard), so an out-of-memory anywhere in the decode, a wrapper's own allocation included, reaches it. A
+# compiled guard anywhere below (in a dtype wrapper's slot, behind the untiled gate's closure) is reached through
+# FORCE_EAGER_ATTR: while it is set on the VAE every guard of that decode runs its eager path.
+FORCE_EAGER_ATTR = "_unsloth_decode_force_eager"
+
+
+def _compiled_below(vae: Any, top: Any) -> bool:
+    """A compiled decode guard sits somewhere under ``top`` (walked through every wrapper kind), or the speed layer
+    compiled this VAE's decode (a guard behind a closure the walk cannot see)."""
+    fn, seen = top, 0
+    while fn is not None and seen < 64:
+        seen += 1
         if getattr(fn, "_unsloth_compiled_decode", False) and callable(getattr(fn, "_unsloth_eager_decode", None)):
-            return owner if getattr(owner, "__dict__", {}).get("decode") is fn else None
-        slot = getattr(fn, "_unsloth_decode_slot", None)
-        if slot is not None:
-            owner, fn = slot, getattr(slot, "__dict__", {}).get("decode")
-        else:
-            fn = getattr(fn, "__wrapped__", None)
-    return None
+            return True
+        fn = decode_layers.next_layer(fn)
+    return bool(vae.__dict__.get("_unsloth_compiled_decode", False))
 
 
 # Decode wrappers that must sit BELOW the scope: a compiled decode guard (the graph would trace the scope as a
-# pass-through and its guard re-raises the OOM) and the untiled-when-fits gate (it retries tiled itself).
-_BELOW_SCOPE_MARKERS = ("_unsloth_compiled_decode", "_unsloth_untiled_decode")
+# pass-through and its guard re-raises the OOM), the untiled-when-fits gate (it retries tiled itself) and the dtype
+# wrappers (their own allocations: the fp16 isfinite check, the bf16 -> fp32 output cast).
+_BELOW_SCOPE_MARKERS = ("_unsloth_compiled_decode", "_unsloth_untiled_decode", "_unsloth_bf16_decode",
+                        "_unsloth_decode_slot")  # fmt: skip
 
 
 def _scope_intact(vae: Any) -> bool:
-    """The scope layer is active, reachable from the current public decode through the ``__wrapped__`` chain, and
-    no compiled guard or untiled gate sits above it."""
+    """The scope layer is active, reachable from the current public decode, and none of the wrappers that must sit
+    below it is above it."""
     layer = vae.__dict__.get(_RECORD_ATTR, {}).get("scope")
-    if layer is None or not layer.active:
+    if layer is None or not layer.active or layer.owner is not vae:
         return False
     fn = vae.__dict__.get("decode")
     for _ in range(32):
@@ -889,7 +899,7 @@ def _scope_intact(vae: Any) -> bool:
             break
         if fn is layer.fn:
             return True
-        if any(getattr(fn, m, False) for m in _BELOW_SCOPE_MARKERS) and not getattr(fn, "_unsloth_vae_oom_scope", False):
+        if any(getattr(fn, m, None) for m in _BELOW_SCOPE_MARKERS) and not getattr(fn, "_unsloth_vae_oom_scope", False):
             return False
         fn = decode_layers.next_layer(fn)
     return False
@@ -897,42 +907,38 @@ def _scope_intact(vae: Any) -> bool:
 
 def ensure_outermost(vae: Any, logger: Any = None) -> bool:
     """(Re)assert the OOM scope as the outermost decode layer after anything rewrapped ``vae.decode`` (a deferred
-    speed profile, a VAE compile, a compile fallback). Called after every rewrap site; idempotent and cheap. True
-    when the retry is installed and its scope is in place."""
+    speed profile, a VAE compile, a compile fallback, a dtype wrapper). Called after every rewrap site and when a
+    decode closes; idempotent and cheap. True when the retry is installed and its scope is in place."""
     if vae is None or decode_layers.find(vae, "_decode", _RETRY_LAYER) is None or oom_retry_disabled():
         return False
     if _scope_intact(vae):
         return True
     record = vae.__dict__.setdefault(_RECORD_ATTR, {})
-    decode_layers.unwrap(record.pop("scope", None))  # buried under the rewrap: now a pass-through
+    decode_layers.unwrap(record.pop("scope", None))  # buried under the rewrap (or displaced): now a pass-through
     return _install_scope(vae, logger)
 
 
 def _install_scope(vae: Any, logger: Any = None) -> bool:
-    """Wrap the public ``decode`` (or, for a decode compiled whole, the slot holding it): the outermost call opens
-    the recovery scope every inner ``_decode`` (batch slices, frames, tiles) shares, and closes it, restoring what
-    the recovery moved, once the whole decode returns. A compiled decode that runs out of memory frees the card and
-    retries compiled first (same kernels, same output), then decodes on the eager path inside the same scope."""
-    owner = _compiled_decode_owner(vae)
-    compiled_slot = owner is not None
-    owner = owner if compiled_slot else vae
-    if decode_layers.find(owner, "decode", _SCOPE_LAYER) is not None:
+    """Wrap the public ``decode`` as its outermost layer: the outermost call opens the recovery scope every inner
+    ``_decode`` (batch slices, frames, tiles) shares, and closes it, restoring what the recovery moved, once the
+    whole decode returns. An out-of-memory that reaches the scope (a compiled graph, which never enters the
+    ``_decode`` ladder, or a wrapper's own allocation) frees the card and retries the whole decode as it was (a
+    compiled one with the same kernels, same output); then, with a compiled guard below, the whole decode once more
+    with every guard on its eager path, where the ``_decode`` ladder continues in the same session."""
+    if decode_layers.find(vae, "decode", _SCOPE_LAYER) is not None:
         return True
-    if not callable(getattr(owner, "decode", None)):
+    if not callable(getattr(vae, "decode", None)):
         return False
 
     def make_scope(inner: Callable, layer: Any) -> Callable:
-        eager = getattr(inner, "_unsloth_eager_decode", None) if compiled_slot else None
-
-        def _try(args: tuple, kwargs: dict) -> tuple:
+        def _try(args: tuple, kwargs: dict, failures: list) -> tuple:
             try:
                 return True, inner(*args, **kwargs)
             except Exception as exc:  # noqa: BLE001
-                if not is_oom(exc) or (
-                    not getattr(vae, "use_tiling", False) and _outer_gate_owns_untiled(vae)
-                ):
+                if not is_oom(exc):
                     raise
                 exc.__traceback__ = None
+                failures.append(exc)
                 return False, None
 
         def decode(*args: Any, **kwargs: Any) -> Any:
@@ -941,45 +947,55 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
             holder: dict = {"session": None}
             vae.__dict__[_SESSION_ATTR] = holder
             z = args[0] if args else kwargs.get("z")
+            failures: list = []
             try:
                 # a VAE left streamed by an earlier restore that ran out of memory comes back first, if it fits now
                 settle_deferred(vae)
-                if eager is None:
-                    return inner(*args, **kwargs)
-                ok, out = _try(args, kwargs)
+                ok, out = _try(args, kwargs, failures)
                 if ok:
                     return out
+                compiled = _compiled_below(vae, inner)
                 stats = vae.__dict__.get("_unsloth_vae_oom_stats")
                 if isinstance(stats, dict):
-                    stats["compiled_oom"] = stats.get("compiled_oom", 0) + 1
-                session = holder["session"] = DecodeSession(vae, _device_of(z), logger)
+                    stats["outer_oom"] = stats.get("outer_oom", 0) + 1
+                    if compiled:
+                        stats["compiled_oom"] = stats.get("compiled_oom", 0) + 1
+                session = holder.get("session")
+                if session is None:
+                    session = holder["session"] = DecodeSession(vae, _device_of(z), logger)
                 _release_cache(z, vae)
                 if session.free_others(_pipe_of(vae)):
                     if logger is not None:
-                        logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying with the "
-                                       "rest of the pipeline off the card", type(vae).__name__)  # fmt: skip
-                    ok, out = _try(args, kwargs)
+                        logger.warning("diffusion.vae_oom: %s decode ran out of memory; retrying with the rest of the "
+                                       "pipeline off the card", type(vae).__name__)  # fmt: skip
+                    ok, out = _try(args, kwargs, failures)
                     if ok:
                         if isinstance(stats, dict):
                             stats["recovered"] = stats.get("recovered", 0) + 1
-                            stats["recovered_by"] = "freed_compiled"
+                            stats["recovered_by"] = "freed_compiled" if compiled else "freed"
                         return out
                     _release_cache(z, vae)
+                if not compiled:
+                    raise failures[0]
                 if logger is not None:
                     logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying eager",
                                    type(vae).__name__)  # fmt: skip
-                return eager(*args, **kwargs)
+                vae.__dict__[FORCE_EAGER_ATTR] = True
+                try:
+                    return inner(*args, **kwargs)
+                finally:
+                    vae.__dict__.pop(FORCE_EAGER_ATTR, None)
             finally:
+                failures.clear()
                 _close_scope(vae, holder, z)
+                # a compile fallback (or any rewrap) during this decode displaced the scope: back on top
+                ensure_outermost(vae, logger)
 
-        if eager is not None:
-            decode._unsloth_vae_oom_guard = True
-            decode._unsloth_compiled_decode = True
-            decode._unsloth_eager_decode = eager
+        decode._unsloth_vae_oom_guard = True
         decode._unsloth_vae_oom_scope = True
         return decode
 
-    layer = decode_layers.wrap(owner, "decode", _SCOPE_LAYER, make_scope)
+    layer = decode_layers.wrap(vae, "decode", _SCOPE_LAYER, make_scope)
     vae.__dict__.setdefault(_RECORD_ATTR, {})["scope"] = layer
     return True
 
@@ -1007,6 +1023,8 @@ def uninstall(vae: Any) -> None:
 __all__ = [
     "DecodeSession",
     "DeferredReturn",
+    "FORCE_EAGER_ATTR",
+    "clear_partial_decode",
     "ensure_outermost",
     "free_first",
     "settle_deferred",

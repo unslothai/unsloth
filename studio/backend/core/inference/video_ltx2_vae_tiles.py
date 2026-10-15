@@ -14,6 +14,7 @@ import os
 import types
 from typing import Any, Optional
 
+from .diffusion_vae_oom import clear_partial_decode
 from .diffusion_vae_oom import free_first as oom_free_first
 from .diffusion_vae_tiling import axis_weights as _axis_weights
 
@@ -252,6 +253,7 @@ def tiled_decode(
     if failed and oom_free_first(vae, z):
         # the OOM retry freed the card (rest of the pipeline off it): the same tiles again before the floor tile
         failed = False
+        clear_partial_decode(vae, z)  # the failed attempt's causal state goes before any retry
         try:
             dec = _decode_tiles(vae, z, temb, causal, th, tw, budgeted)
         except Exception as exc:  # noqa: BLE001
@@ -263,6 +265,7 @@ def tiled_decode(
         import torch
 
         stats["oom_fallback"] += 1
+        clear_partial_decode(vae, z)  # a retry that failed part way leaves causal state too
         torch.cuda.empty_cache()
         th, tw = floor
         vae._unsloth_last_decode_tile = floor

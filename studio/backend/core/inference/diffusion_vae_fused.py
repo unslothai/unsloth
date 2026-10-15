@@ -505,6 +505,14 @@ def _torch():
     return torch
 
 
+def _stock_in(t: Any) -> Any:
+    """A kernel input that is a fused GroupNorm+SiLU output (_FusedAct, which holds the activated values) as the
+    stock GroupNorm value any reader but its paired SiLU must see; anything else as it is. Kernels read raw memory,
+    so every entry unwraps first (the subclass also redirects raw-pointer reads; this keeps the kernel off that)."""
+    cls = globals().get("_FusedActCls")
+    return t._unsloth_pre() if cls is not None and type(t) is cls else t
+
+
 def group_norm_act(
     x: Any,
     norm: Any,
@@ -515,6 +523,7 @@ def group_norm_act(
     """``silu?(group_norm(x + in_bias))`` for 3/4/5-D ``x``; channels-last output; 5-D stats span T like nn.GroupNorm.
     ``on_kernel``: called once the Triton kernels completed for this call (not on a stock fallback)."""
     torch = _torch()
+    x, in_bias = _stock_in(x), _stock_in(in_bias)  # a fused GroupNorm+SiLU output is read as its stock value
     if not _gn_fusable(x, norm):
         return group_norm_reference(x, norm, act, in_bias)
     ndim = x.dim()
@@ -642,6 +651,7 @@ def rms_norm_act(
 
     ``replicate_pad=(ph, pw)``: HunyuanVideo-1.5 replicate padding instead (``cache`` must be None); ``back`` repeats the
     last frame (LTX-2)."""
+    x, in_bias = _stock_in(x), _stock_in(in_bias)
     torch = _torch()
     if replicate_pad is not None and cache is not None:
         raise ValueError("replicate padding takes no cache")
@@ -2514,11 +2524,15 @@ _META_PROPS = frozenset((
 ))  # fmt: skip
 
 
+# Raw-memory reads (a Triton launch takes ``data_ptr()``, anything else the storage): reads of the VALUES.
+_RAW_READS = frozenset(("data_ptr", "untyped_storage", "storage", "_typed_storage"))
+
+
 def _is_meta_read(func: Any) -> bool:
     name = getattr(func, "__name__", "")
     if name == "__get__":
         return getattr(getattr(func, "__self__", None), "__name__", "") in _META_PROPS
-    return name in _META_FUNCS
+    return name in _META_FUNCS and name not in _RAW_READS
 
 
 def _fused_act_class() -> Any:
@@ -2547,6 +2561,11 @@ def _fused_act_class() -> Any:
             if pre is None:
                 with torch._C.DisableTorchFunctionSubclass():
                     pre = _stock_forward(self._unsloth_norm)(self._unsloth_norm_in)
+                    if pre.stride() != self.stride() or self.storage_offset() != 0:
+                        # the fused output's exact layout: a raw-pointer reader (any Triton kernel, here or in
+                        # another module) indexes with the fused tensor's own strides
+                        same = torch.empty_strided(self.size(), self.stride(), dtype = pre.dtype, device = pre.device)
+                        pre = same.copy_(pre)
                 self._unsloth_pre_value = pre
             return pre
 
@@ -2581,8 +2600,9 @@ def _fast_gn_maybe_act(norm: Any, act: bool, state: Any, silus: Any = None) -> A
     torch = _torch()
 
     def fast(x: Any) -> Any:
-        if fused_cls is not None and type(x) is fused_cls:
-            x = x._unsloth_pre()  # a norm reading a fused output reads the stock values (its kernel reads raw memory)
+        # any patched norm (fused activation or GroupNorm only) reading a fused output reads its stock value: the
+        # kernel reads raw memory
+        x = _stock_in(x)
         fuse = act and not _compiling()
         ran: list = []
         y = group_norm_act(x, norm, act = fuse, on_kernel = lambda: ran.append(1))

@@ -19,6 +19,7 @@ import types
 from typing import Any, Optional
 
 from .diffusion_device import float64_device
+from .diffusion_vae_oom import clear_partial_decode
 from .diffusion_vae_oom import free_first as oom_free_first
 
 WIDE_TILES_ENV = "UNSLOTH_DIFFUSION_VAE_WIDE_TILES"
@@ -540,6 +541,10 @@ def _release_cache(z: Any) -> None:
         pass
 
 
+def _clear_partial(vae: Any, z: Any) -> None:
+    clear_partial_decode(vae, z)
+
+
 def _log_stock_fallback(vae: Any, reason: str) -> None:
     logger = vae.__dict__.get("_unsloth_wide_logger")
     seen = vae.__dict__.setdefault("_unsloth_wide_fallback_logged", set())
@@ -593,14 +598,15 @@ def install(vae: Any, logger: Any = None) -> bool:
                             raise
                         reason = f"the wide tiles ran out of memory ({type(exc).__name__})"
                         tried = (self.__dict__.get("_unsloth_last_decode_tile") or (0, 0))[:2]
-                    # outside the except block, so the failed attempt's tensors are freed
-                    _release_cache(z)
+                    # outside the except block, so the failed attempt's tensors (and causal state) are freed
+                    _clear_partial(self, z)
                     ratio, tile, _ = _geometry(self)
                     if tuple(tried) == (min(tile, z.shape[-2]), min(tile, z.shape[-1])):
                         break
             if _round or not oom_free_first(self, z):
                 break
         _log_stock_fallback(self, reason)
+        _clear_partial(self, z)
         return _stock(z, return_dict)
 
     def _tiled_encode(self: Any, x: Any) -> Any:
