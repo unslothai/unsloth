@@ -74,11 +74,19 @@ export interface DiffusionStatus {
   // Whether the loaded model can apply a ControlNet. Diffusers only, for families with a ControlNet pipeline.
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
+  // "default" first; empty or absent = no choice (flow models, native / MLX engines, older backend).
+  samplers?: DiffusionSamplerOption[];
   // Per-Advanced-control provenance, keyed by control name. Present only when a model is loaded on a
   // backend that records it; absent on older backends.
   resolved?: Record<string, DiffusionResolvedControl> | null;
   // Default steps / guidance the backend renders the loaded model with (file header before base repo).
   generation_defaults?: { steps?: number; guidance?: number } | null;
+}
+
+export interface DiffusionSamplerOption {
+  id: string;
+  label: string;
+  schedule_types: string[];
 }
 
 export interface DiffusionConditioning {
@@ -108,6 +116,8 @@ export interface DiffusionGenerateProgress {
   // Live latent preview of the image being denoised (small JPEG data URL), and a counter that moves with each one.
   preview?: string | null;
   preview_seq?: number;
+  // "connection" while the run is on a saved image connection: the Stop target for a resumed run.
+  target?: "connection" | null;
 }
 
 export interface DiffusionLoadProgress {
@@ -201,6 +211,8 @@ export interface DiffusionGenerateRequest {
   loras?: LoraSpecInput[];
   // ControlNet conditioning for this generation. Rejected (400) when the loaded model cannot apply ControlNet.
   controlnet?: ControlNetSpecInput;
+  sampler?: string;
+  schedule_type?: string;
 }
 
 // One LoRA selection sent with a generation.
@@ -286,6 +298,9 @@ export interface GalleryImage {
   reference_image_count?: number | null;
   reference_resolution?: number | null;
   localized_edit?: LocalizedEditMode | null;
+  // null = the model's shipped scheduler; schedule_type is the resolved schedule.
+  sampler?: string | null;
+  schedule_type?: string | null;
   created_at: number;
   // Library state, not recipe: stored beside the PNG, absent on records written before this existed.
   pinned?: boolean;
@@ -436,10 +451,7 @@ export async function generateDiffusionImage(
     // A proxy answers with HTML (or nothing); the app answers with JSON. Only the former means the request may still
     // be running: settling an application error would poll for a generation that never started and hide the reason
     // the backend gave.
-    if (
-      response.status === 503 &&
-      (response.headers.get("content-type") || "").toLowerCase().includes("application/json")
-    ) {
+    if ((response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
       throw new Error(detail);
     }
     throw new GenerateResponseLostError(detail);

@@ -2,13 +2,12 @@ from tqdm import tqdm
 import torch
 import pandas as pd
 
-# DEVICE_TYPE_TORCH, not DEVICE_TYPE: the latter can be "hip"/"mlx", which .to() rejects.
+# DEVICE_TYPE can be "hip"/"mlx", which .to() rejects.
 from unsloth.device_type import DEVICE_TYPE_TORCH
 
 model_comparison_results = {}
 
 
-# Per-example perplexity, sliding window for examples longer than 512 tokens.
 def ppl_model(model, tokenizer, dataset):
     nlls = []
     max_length = 2048
@@ -34,9 +33,6 @@ def ppl_model(model, tokenizer, dataset):
                 break
     ppl = torch.exp(torch.stack(nlls).mean())
     return ppl
-
-
-# ----------- Reporting helpers ----------- #
 
 
 def add_to_comparison(model_name, ppl):

@@ -15,14 +15,7 @@ STACK_PY = REPO_ROOT / "studio" / "install_python_stack.py"
 
 
 def _fallback_range(lines):
-    """The half-open line range of install.sh's "GPU detection failed" fallback.
-
-    The end is the `fi` that closes the branch, which means counting nesting
-    rather than taking the first `fi` that appears. Any `if` inside the branch
-    contributes one, and so does a `case`: it closes with `esac`, so a version
-    that only counted `if`/`fi` would still be off by one from the `fi` of an
-    `if` nested inside a case arm.
-    """
+    """Half-open range of the fallback branch, found by counting nested if/fi and case/esac pairs."""
     start = next(i for i, line in enumerate(lines) if "GPU detection failed" in line)
     depth = 0
     for i in range(start, len(lines)):
@@ -66,23 +59,15 @@ class TestNoTorchBackendAutoInInstallSh:
         )
 
     def test_the_fallback_range_reaches_the_end_of_the_branch(self):
-        """A range that stops early makes the assertion above fire on correct code.
-
-        It did. #8670 put a `case` with a nested `if`/`fi` in this branch to pick
-        the desktop install spec, and the previous "first `fi` after the comment"
-        scan then ended the block four lines short of the install call it exists
-        to permit -- reporting the fallback's own line as a primary path.
-        """
+        """The fallback range must reach its real end, not stop at the first fi inside a case arm."""
         lines = INSTALL_SH.read_text(encoding = "utf-8").splitlines()
         block = _fallback_range(lines)
         body = "\n".join(lines[block.start : block.stop])
-        # Both arms of the branch, so neither an early stop nor a runaway passes.
         assert "STUDIO_LOCAL_INSTALL" in body, "the fallback block stops before its own first if"
         assert body.count("--torch-backend=auto") == 2, (
             "the fallback runs --torch-backend=auto once per arm; the detected block "
             f"contains {body.count('--torch-backend=auto')}"
         )
-        # And it must not have swallowed the rest of the file.
         assert "_installed_package_version" not in body, "the fallback block ran past its `fi`"
 
     def test_fallback_uses_torch_backend_auto(self):
@@ -110,15 +95,9 @@ class TestInstallShHasGpuDetection:
 
 
 class TestPreTuringCapParity:
-    """Every wheel-selection site caps cu128/cu130 on a pre-Turing host (issue #7765).
+    """Each of the four scripts caps cu128/cu130 to cu126 on pre-Turing GPUs, below sm_75."""
 
-    PyTorch 2.11 builds those families for sm_75 and newer, so a Maxwell/Pascal/Volta
-    box needs cu126 -- both for torch itself and for the CUDA 12 runtime that gets it
-    a llama.cpp GGUF bundle. Four scripts pick the family; none may be left behind.
-    """
-
-    # (file, call spelling, selection function that must invoke it, its end marker). The
-    # spelling carries the first argument, so a prose mention cannot satisfy the assertion.
+    # Spelling includes the first argument so a prose mention cannot satisfy the check.
     _SITES = (
         (INSTALL_SH, '_cap_cuda_family_for_pre_turing "', "get_torch_index_url() {", "\n}"),
         (
@@ -137,8 +116,7 @@ class TestPreTuringCapParity:
     )
 
     def test_cu126_span_agrees_across_the_python_modules(self):
-        # Neither module imports the other (the installer runs before dependencies
-        # exist), so assert the shared span here rather than let it drift silently.
+        # Neither module imports the other (installer runs before deps), so pin the span here.
         span = "_CU126_SM_RANGE = (50, 90)"
         for path in (STACK_PY, REPO_ROOT / "studio" / "install_llama_prebuilt.py"):
             assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
@@ -151,8 +129,7 @@ class TestPreTuringCapParity:
         assert call in body, f"{path.name}'s selection function never applies {call!r}"
 
 
-# A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a
-# variable a later step can still cap ("_cuda_tag=cu128"), so accept both spellings.
+# A rung names its family as an index suffix (/cu128) or a variable (=cu128).
 _CUDA_LEAF_RE = r"""[/=]\s*["']?(cu\d+|cpu)"""
 
 
@@ -162,7 +139,6 @@ class TestCudaMappingParity:
     @staticmethod
     def _extract_cuda_thresholds_sh(text: str) -> list[str]:
         """Extract cu* suffixes from the major/minor comparison chain in install.sh."""
-        # Only match lines in the if/elif chain that compare _major/_minor
         in_func = False
         results = []
         for line in text.splitlines():
@@ -192,7 +168,6 @@ class TestCudaMappingParity:
                 depth += line.count("{") - line.count("}")
                 if depth <= 0:
                     break
-                # Only match the if-chain lines that compare $major/$minor
                 if "$major" in line or "$minor" in line:
                     m = re.search(_CUDA_LEAF_RE, line)
                     if m:
@@ -292,16 +267,14 @@ class TestTorchIndexOverrideParity:
         ids = ["install.ps1", "setup.ps1"],
     )
     def test_amd_reroute_guarded_when_pinned(self, path):
-        # The AMD ROCm reroute must be skipped when the index is explicitly pinned,
-        # so an explicit cpu / cu* / rocm pin on an AMD host is not overwritten.
+        # An explicit cpu/cu*/rocm pin on an AMD host must skip the ROCm reroute.
         text = path.read_text(encoding = "utf-8")
         assert (
             "TorchIndexPinned" in text
         ), f"{path.name} should gate the AMD ROCm reroute on a pinned-index flag"
 
     def test_cuda_pin_overrides_cvd_hide_gate(self):
-        # A pinned cu* index skips ALL host-GPU probing, so the CUDA repair must clear the
-        # CUDA_VISIBLE_DEVICES hide gate too (else the GPU-less CI case bails).
+        # A pinned cu* index skips GPU probing, so repair must clear the CUDA_VISIBLE_DEVICES gate.
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_cuda_torch\(.*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cuda_torch"
@@ -315,8 +288,7 @@ class TestTorchIndexOverrideParity:
         ), "the CVD hide gate must be bypassed when a CUDA index is pinned"
 
     def test_cpu_repair_pins_supported_torch_range(self):
-        # The explicit-CPU repair must use the bounded CPU/CUDA spec, not a bare trio (the
-        # /cpu index serves torch 2.11+, so a bare install could resolve out of range).
+        # The /cpu index serves torch 2.11+, so a bare trio could resolve out of range.
         text = STACK_PY.read_text(encoding = "utf-8")
         m = re.search(r"def _ensure_cpu_torch\(\).*?(?=\ndef )", text, re.DOTALL)
         assert m, "could not locate _ensure_cpu_torch"
@@ -327,8 +299,7 @@ class TestTorchIndexOverrideParity:
         )
 
     def test_setup_ps1_stale_check_gates_rocm_on_supported_arch(self):
-        # The stale check must expect ROCm torch only for arches the install path maps to a
-        # repo.amd.com index; expecting "rocm" for an unmapped arch marks a good CPU venv stale.
+        # Expecting rocm for an unmapped arch would mark a good CPU venv stale.
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "_rocmWheelArches" in text, (
             "setup.ps1 stale check should restrict the ROCm expected-tag to the "
@@ -337,16 +308,7 @@ class TestTorchIndexOverrideParity:
 
 
 class TestGfx211AllowlistParity:
-    """The gfx per-arch 2.11-floor leaves must be the SAME set in every installer
-    and its stale/mismatch check. When they diverged, a pinned gfx110X-all /
-    gfx90a / gfx908 wheel (<2.11) was force-reinstalled every update.
-
-    Each test extracts the set each installer actually holds and compares it
-    against EXPECTED, rather than matching one hardcoded ordering. Order and
-    spacing are free; membership is not. The earlier literal-string form had to
-    be edited in four places whenever a leaf was added, which is how adding
-    gfx1152 (Krackan Point) turned this class red without any installer
-    actually disagreeing with another."""
+    """Every installer's gfx 2.11-floor leaf set must equal EXPECTED; order and spacing do not matter."""
 
     EXPECTED = {"gfx120x-all", "gfx1151", "gfx1150", "gfx1152", "gfx103x-all", "gfx110x-all"}
 
@@ -357,7 +319,6 @@ class TestGfx211AllowlistParity:
 
     def test_install_sh_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8").lower()
-        # install.sh: the TORCH_CONSTRAINT case (rocm7.2|gfx...|gfx...).
         m = re.search(r"^\s*(rocm7\.2\|[a-z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh gfx-2.11 allowlist case not found / changed"
         assert self._leaves(m.group(1)) == self.EXPECTED, (
@@ -375,8 +336,7 @@ class TestGfx211AllowlistParity:
         )
 
     def test_setup_ps1_defines_single_allowlist_helper(self):
-        # setup.ps1 must define the allowlist once (Test-RocmGfx211Leaf) and reuse it, so
-        # the stale check and install spec can't disagree.
+        # One shared allowlist so the stale check and install spec cannot disagree.
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert (
             "function Test-RocmGfx211Leaf" in text
@@ -403,27 +363,21 @@ class TestGfx211AllowlistParity:
 
 
 class TestCudaLeafDigitParity:
-    """A wheel-family leaf is CUDA only when it is "cu" + digits (cu118/cu128/...).
-    A bare cu* glob wrongly catches mirror leaves like /custom or /current; when
-    that happened the venv was marked stale and rebuilt on every run. Every
-    installer must require a digit after "cu" in its family/CUDA classification."""
+    """A leaf is CUDA only when it is cu+digits; a bare cu* glob wrongly catches /custom and /current."""
 
     def test_stack_py_requires_cu_digit(self):
         text = STACK_PY.read_text(encoding = "utf-8")
-        # EXACT cu+digits: a custom leaf like cu128-private must route to the
-        # verbatim/unknown path, not be compared against the installed +cu128 tag.
+        # Exact cu+digits: a custom leaf like cu128-private takes the verbatim path.
         assert re.search(
             r'r"cu\[0-9\]\+"', text
         ), "install_python_stack.py _is_cuda_family_leaf must fullmatch cu[0-9]+"
 
     def test_setup_ps1_requires_cu_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        # EXACT cu+digits: cu128-private must not classify as CUDA (it would become
-        # the expected tag and rebuild the venv on every update).
+        # cu128-private must not classify as CUDA or the venv rebuilds on every update.
         assert re.search(
             r"'\^cu\[0-9\]\+\$'", text
         ), "setup.ps1 Test-CudaFamilyLeaf must match ^cu[0-9]+$, not a cu* prefix"
-        # The stale-venv branch must go through the digit-guarded helper.
         assert (
             "Test-CudaFamilyLeaf $_pinLeaf" in text
         ), "setup.ps1 stale check should classify CUDA via Test-CudaFamilyLeaf"
@@ -436,27 +390,23 @@ class TestCudaLeafDigitParity:
 
     def test_install_sh_requires_cu_digit_in_gpu_branch(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The _tauri_gpu_branch cuda case must be cu[0-9]*, not a bare cu*.
         assert re.search(
             r"cu\[0-9\]\*\)\s*echo \"cuda\"", text
         ), "install.sh _tauri_gpu_branch cuda case must be cu[0-9]*, not cu*"
 
     def test_install_sh_backend_export_requires_cu_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # Brand CUDA only on cu[0-9]*; a bare catch-all *) -> cuda would mis-brand
-        # /current, /custom pins and skip ROCm repair on AMD hosts.
+        # A bare *) -> cuda would mis-brand /current, /custom pins and skip ROCm repair.
         assert re.search(
             r'cu\[0-9\]\*\)\s*export UNSLOTH_TORCH_BACKEND="cuda"', text
         ), "install.sh backend export must brand cuda only on cu[0-9]*"
-        # An unknown leaf must NOT commit a cuda backend (it unsets instead).
         assert re.search(
             r"\*\)\s*unset UNSLOTH_TORCH_BACKEND", text
         ), "install.sh backend export must unset (not force cuda) on an unknown leaf"
 
     def test_install_sh_lowercases_backend_leaf(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The leaf feeding both the backend case and the 2.11 floor case must be
-        # lowercased so the canonical gfx120X-all (capital X) matches.
+        # Lowercased so the canonical gfx120X-all (capital X) matches.
         assert re.search(
             r"_torch_index_leaf=\$\(printf '%s' \"\$_torch_index_leaf\" \| tr '\[:upper:\]' '\[:lower:\]'\)",
             text,
@@ -470,9 +420,7 @@ class TestKnown211SetParity:
 
     def test_install_sh_known_211_leaf_is_rocm72_and_gfx_allowlist(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # The 2.11 floor case matches exactly rocm7.2 + the gfx allowlist, in
-        # any order: it is the same set as TestGfx211AllowlistParity.EXPECTED,
-        # asserted here so the rocm-version half cannot drift on its own.
+        # Same set as TestGfx211AllowlistParity.EXPECTED, so the rocm half cannot drift.
         m = re.search(r"^\s*(rocm7\.2\|[a-zA-Z0-9|.\-]*)\)", text, re.MULTILINE)
         assert m, "install.sh 2.11 floor case (rocm7.2|gfx...) not found / changed"
         alternatives = set(m.group(1).lower().split("|"))
@@ -480,13 +428,11 @@ class TestKnown211SetParity:
             f"install.sh 2.11 floor is {sorted(alternatives)}, expected "
             f"{sorted({'rocm7.2'} | TestGfx211AllowlistParity.EXPECTED)}"
         )
-        # No speculative rocm7.3 anywhere.
         assert "rocm7.3" not in text, "install.sh must not reference a non-existent rocm7.3"
 
     def test_python_known_211_versions_is_only_rocm72(self):
         text = STACK_PY.read_text(encoding = "utf-8")
         assert "_ROCM_KNOWN_TORCH211_VERSIONS" in text
-        # The frozenset literal is exactly {(7, 2)}.
         m = re.search(r"_ROCM_KNOWN_TORCH211_VERSIONS[^=]*=\s*frozenset\(\{([^}]*)\}\)", text)
         assert m is not None, "install_python_stack.py must define _ROCM_KNOWN_TORCH211_VERSIONS"
         assert "(7, 2)" in m.group(1)
@@ -495,25 +441,20 @@ class TestKnown211SetParity:
     def test_setup_ps1_known_211_helper_is_only_rocm72(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "Test-RocmKnown211Version" in text
-        # The predicate is Major -eq 7 -and Minor -eq 2 (only rocm7.2).
         assert re.search(
             r"Test-RocmKnown211Version[\s\S]{0,400}\$Major -eq 7 -and \$Minor -eq 2", text
         ), "setup.ps1 Test-RocmKnown211Version must accept only rocm7.2"
 
     def test_install_ps1_pin_floor_is_only_rocm72(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        # The pinned-ROCm install-spec floor must be Major -eq 7 -and Minor -eq 2,
-        # not the speculative >= 2 that would floor a non-existent rocm7.3.
+        # The pinned ROCm floor must be Major -eq 7 -and Minor -eq 2, not the speculative >= 2.
         assert re.search(
             r"\$_pinRocm211 = \(\[int\]\$Matches\[1\] -eq 7 -and \[int\]\$Matches\[2\] -eq 2\)",
             text,
         ), "install.ps1 pinned-ROCm floor must be rocm7.2 only (no speculative >= 2)"
 
     def test_ps1_pin_floor_gate_is_anchored(self):
-        """The floor-selection gate that reads $_pinRocm211 from the raw leaf must anchor
-        the rocm match ($), or a suffixed custom leaf (rocm7.2-private) matches the rocm7.2
-        prefix, takes the 2.11-floor branch, and is force-routed through the ROCm path
-        before the exact-match elseif can send it to the verbatim install (Codex P2)."""
+        """The PS1 floor gate must anchor its rocm match, or rocm7.2-private takes the 2.11-floor branch."""
         for path, label in ((INSTALL_PS1, "install.ps1"), (SETUP_PS1, "setup.ps1")):
             text = path.read_text(encoding = "utf-8")
             assert "-match '^rocm(\\d+)\\.(\\d+)$'" in text, (
@@ -525,11 +466,7 @@ class TestKnown211SetParity:
             ), f"{label} floor gate must not use the unanchored ^rocm(\\d+)\\.(\\d+) prefix"
 
     def test_install_ps1_bounds_unknown_leaf_pinned_torch(self):
-        """install.ps1's pinned-torch install must bound the whole trio on EVERY
-        index with the default torch 2.11 line (<2.12 trio, matching install.sh's
-        ceiling-composed default and _CUDA_TORCH_PKG_SPEC): torchaudio 2.11
-        dropped its exact torch pin from the wheel metadata, so a bare companion
-        beside a capped torch can resolve a mismatched build."""
+        """Bound the torch trio below 2.12 on every index: torchaudio 2.11 dropped its exact torch pin."""
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert (
             '$_pinTorchSpec = "torch>=2.4,<2.12.0"' in text
@@ -543,8 +480,7 @@ class TestKnown211SetParity:
         assert (
             "$_pinCuLeaf" not in text
         ), "install.ps1 must bound companions on every index (no cu-family exemption)"
-        # No stale 2.10-line DEFAULT remains. Checked against the default trio's own assignments,
-        # not a blanket "<2.11.0 appears nowhere": Get-XpuTorchSpecs keeps a curated sub-2.11 cap.
+        # Scoped to the default trio: Get-XpuTorchSpecs keeps a curated sub-2.11 cap.
         for _stale in (
             '$_pinTorchSpec = "torch>=2.4,<2.11.0"',
             '$_pinVisionSpec = "torchvision>=0.19,<0.26.0"',
@@ -554,7 +490,6 @@ class TestKnown211SetParity:
             assert (
                 _stale not in text
             ), f"install.ps1 must not retain the <2.11.0 default torch line: {_stale}"
-        # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
             "$_torchSpecs = @($_pinTorchSpec, $_pinVisionSpec, $_pinAudioSpec)" in text
         ), "install.ps1 pinned install must build the bounded trio spec list"
@@ -563,7 +498,6 @@ class TestKnown211SetParity:
         ), "install.ps1 pinned install must pass the bounded trio specs to uv"
 
     def test_gfx_allowlist_matches_across_installers(self):
-        # The gfx 2.11 allowlist {gfx120x-all, gfx1151, gfx1150} must appear in each.
         gfx = ("gfx120x-all", "gfx1151", "gfx1150")
         for path, label in (
             (INSTALL_SH, "install.sh"),
@@ -577,25 +511,15 @@ class TestKnown211SetParity:
 
 
 class TestPinnedRocmLeafDigitParity:
-    """A pinned index is a pip ROCm --default-index family only when its leaf is an
-    EXACT rocm+digits (rocm7 / rocm7.2) or gfx*. A ^rocm[0-9] PREFIX (or a bare rocm*
-    glob) wrongly catches a custom mirror / find-links leaf (rocm-current /
-    rocm-rel-7.2.1) AND a suffixed private-mirror leaf (rocm7.2-private / rocm7-current),
-    routing it through the ROCm install path (which silently falls back to CPU on
-    failure) or skipping the custom-index companion bounds, instead of the verbatim
-    --default-index install. All installers must match the family EXACTLY: Python and
-    install.sh via a shared _is_pip_rocm_family_leaf, setup.ps1 via Test-PipRocmFamilyLeaf,
-    install.ps1 via an anchored ^rocm[0-9]+(\\.[0-9]+)?$ reroute."""
+    """A pinned index is a ROCm family only on an exact rocm+digits or gfx* leaf, not a prefix match."""
 
     def test_install_ps1_pinned_reroute_requires_rocm_digit(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
-        # The pinned gfx*/rocm reroute must match rocm EXACTLY (anchored), so a suffixed
-        # rocm7.2-private / rocm-current falls through to the verbatim --default-index path.
+        # Anchored so rocm7.2-private / rocm-current fall through to --default-index.
         assert "-match '^rocm[0-9]+(\\.[0-9]+)?$'" in text, (
             "install.ps1 pinned-index reroute must anchor the rocm match "
             "(^rocm[0-9]+(\\.[0-9]+)?$), not a bare -like 'rocm*' or an unanchored ^rocm\\d"
         )
-        # Neither the broad glob nor the unanchored prefix may drive that reroute.
         assert (
             "-like 'rocm*'" not in text
         ), "install.ps1 must not route a pinned index on a bare -like 'rocm*' glob"
@@ -605,8 +529,7 @@ class TestPinnedRocmLeafDigitParity:
 
     def test_setup_ps1_pinned_reroute_requires_rocm_digit(self):
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        # setup.ps1 routes every family decision through Test-PipRocmFamilyLeaf, which
-        # anchors the rocm match so a suffixed custom leaf stays on the verbatim path.
+        # Test-PipRocmFamilyLeaf anchors the rocm match for every family decision.
         assert (
             "function Test-PipRocmFamilyLeaf" in text
         ), "setup.ps1 must define Test-PipRocmFamilyLeaf (the exact rocm/gfx family gate)"
@@ -621,11 +544,10 @@ class TestPinnedRocmLeafDigitParity:
 
     def test_install_sh_repairable_requires_rocm_digit(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
-        # _torch_index_repairable routes rocm/gfx through the exact-match helper.
         assert (
             "_is_pip_rocm_family_leaf" in text
         ), "install.sh must define/use _is_pip_rocm_family_leaf for the exact rocm gate"
-        # gfx needs a following digit: gfx-private / gfxfoo are custom verbatim pins.
+        # gfx needs a digit: gfx-private / gfxfoo are custom verbatim pins.
         assert re.search(
             r'case "\$1" in\n\s*gfx\[0-9\]\*\) return 0', text
         ), "install.sh _is_pip_rocm_family_leaf must treat only gfx<digit>* as a family"
@@ -638,16 +560,12 @@ class TestPinnedRocmLeafDigitParity:
         assert re.search(
             r'fullmatch\(r"rocm\\d\+\(\?:\\\.\\d\+\)\?", leaf\)', text
         ), "install_python_stack.py _is_pip_rocm_family_leaf must fullmatch rocm\\d+(?:\\.\\d+)?"
-        # The unanchored prefix must be gone from the family/flavor gates.
         assert (
             're.match(r"^rocm\\d"' not in text
         ), "install_python_stack.py must not gate a family on an unanchored re.match(^rocm\\d)"
 
     def test_install_sh_rocm_side_effects_digit_gated(self):
-        """The AMD bitsandbytes + 'repair ROCm torch' side effects must fire only on
-        an EXACT ROCm family (rocm7.2/gfx*), not a bare */rocm* whole-URL glob nor a
-        ^rocm[0-9] prefix that catches a custom CPU/CUDA index like /rocm-current or a
-        suffixed /rocm7.2-private and force-repairs it from the wrong --default-index."""
+        """ROCm side effects must fire only on an exact ROCm family leaf, not a rocm prefix or glob."""
         text = INSTALL_SH.read_text(encoding = "utf-8")
         assert (
             'if _is_pip_rocm_family_leaf "$_torch_index_leaf"; then\n    _torch_index_is_rocm_family=true'
@@ -662,11 +580,7 @@ class TestPinnedRocmLeafDigitParity:
 
 
 class TestPinnedIndexClearsUvEnvParity:
-    """Every installer must neutralise the uv index env vars for a pinned torch
-    install (#6898). uv treats the default index (--index-url / --default-index) as
-    lowest priority, so an inherited UV_INDEX / UV_EXTRA_INDEX_URL mirror would win
-    under uv's first-index strategy and pull torch from the wrong index -- after
-    which the pinned wheel index is silently never used."""
+    """Pinned installs must clear the UV_INDEX env vars, or an inherited uv mirror wins over the pin."""
 
     UV_VARS = ("UV_DEFAULT_INDEX", "UV_INDEX_URL", "UV_INDEX", "UV_EXTRA_INDEX_URL")
 
@@ -736,35 +650,26 @@ class TestPinnedIndexClearsUvEnvParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         fi = text[text.find("function Fast-Install") :][:2500]
         assert "'PIP_EXTRA_INDEX_URL'" in fi and "'PIP_FIND_LINKS'" in fi
-        # the pip fallback must sit INSIDE the try whose finally restores the vars
         assert fi.find("python -m pip install") < fi.find(
             "finally"
         ), "pip fallback must run before the scrub is restored"
 
     def test_windows_installers_probe_uv_before_replacing_an_incumbent(self):
-        """A host can have a working older uv while AppLocker, WDAC or endpoint
-        protection refuses the one we just downloaded. Both PowerShell installers must
-        run the extracted uv.exe where it landed BEFORE anything at the destination is
-        touched, and must restore the incumbent if the published copy will not run."""
+        """Probe the new uv.exe before touching the destination; restore the incumbent if it will
+        not run."""
         for path, probe in (
             (INSTALL_PS1, "Get-UvExecutableVerdict"),
             (SETUP_PS1, "Get-SetupUvExecutableVerdict"),
         ):
             text = path.read_text(encoding = "utf-8")
             assert f"function {probe}" in text, f"{path.name} must define {probe}"
-            # WaitForExit takes a timeout: an unbounded wait on a freshly downloaded
-            # binary is exactly how an unattended install hangs.
+            # An unbounded wait on a freshly downloaded binary hangs unattended installs.
             assert "WaitForExit(20000)" in text, f"{path.name}'s uv probe must bound its wait"
             probe_at = text.index(f"({probe} -Path $stagedUv)")
-            # Tri-state, not a boolean. A launch that throws or a wait that times out got no
-            # verdict, and treating that as a broken binary turned three clean-machine CI legs
-            # into hard install failures: Start-Process -NoNewWindow with redirected streams
-            # does not behave in a Windows container or on arm64 as it does on a desktop. Only
-            # the binary answering non-zero may block the install.
+            # Tri-state: a launch error or timeout is no verdict (breaks in containers/arm64);
+            # only a non-zero exit from the binary may block the install.
             body = text.split(f"function {probe}", 1)[1].split("\n    }\n", 1)[0]
-            # An EMPTY exit code is no verdict either. WaitForExit(ms) can return before the
-            # code is cached, which is how arm64 and the Windows containers reported "exited ."
-            # and had a working uv read as broken.
+            # WaitForExit(ms) can return before the exit code is cached; empty is no verdict.
             assert (
                 "try { $proc.WaitForExit() } catch {}" in body
             ), f"{path.name} must settle the exit code before reading it"
@@ -785,18 +690,13 @@ class TestPinnedIndexClearsUvEnvParity:
                 f"{path.name} must probe the extracted uv.exe before copying over the "
                 "destination"
             )
-            # The publish is not a transaction: a locked or ACL-denied destination fails the
-            # install rather than being skipped, which is what the caller's fallback is for.
+            # A locked or ACL-denied destination must fail so the caller's fallback runs.
             assert (
                 "Copy-Item -LiteralPath $src -Destination $dst -Force -ErrorAction Stop" in text
             ), f"{path.name} must copy each executable under -ErrorAction Stop"
 
     def test_all_installers_disable_uv_config_for_pinned_installs(self):
-        """A DISCOVERED uv.toml / pyproject [tool.uv] outranks the CLI pin
-        (verified with uv 0.10: [pip] torch-backend = "cpu" and a non-default
-        [[index]] both resolve torch+cpu against an explicit --index-url /
-        --default-index cu126 pin; UV_NO_CONFIG=1 restores the pin). Every
-        installer's pinned scrub must set UV_NO_CONFIG=1 and drop UV_CONFIG_FILE."""
+        """Pinned installs must set UV_NO_CONFIG=1 and drop UV_CONFIG_FILE, or discovered uv config wins."""
         sh = INSTALL_SH.read_text(encoding = "utf-8")
         assert "-u UV_CONFIG_FILE UV_NO_CONFIG=1" in sh, (
             "install.sh run_install_cmd must set UV_NO_CONFIG=1 and drop "
@@ -817,21 +717,13 @@ class TestPinnedIndexClearsUvEnvParity:
         ), "_install_env_for_cmd must set UV_NO_CONFIG=1 for pinned installs"
 
     def test_pip_fallbacks_disable_pip_config_files(self):
-        """The pip FALLBACK (uv missing/failed) honours user/site pip config files
-        even with the PIP_* env vars stripped: `pip config set
-        global.extra-index-url` still adds indexes to a pinned install. pip loads
-        NO configuration files when PIP_CONFIG_FILE is the platform devnull, so
-        the two installers that HAVE a pip fallback (install_python_stack.py and
-        setup.ps1's Fast-Install) must set it in their pinned scrub. install.sh
-        and install.ps1 are uv-only (no python -m pip fallback) and need no
-        equivalent."""
+        """Pinned pip fallbacks must set PIP_CONFIG_FILE to os.devnull, or pip config still adds indexes."""
         stack = STACK_PY.read_text(encoding = "utf-8")
         assert 'env["PIP_CONFIG_FILE"] = os.devnull' in stack, (
             "_install_env_for_cmd must point PIP_CONFIG_FILE at os.devnull for "
             "pinned installs (pip fallback isolation)"
         )
-        # devnull is all or nothing, so the transport and only-binary it removes are put
-        # back key by key.
+        # devnull is all or nothing, so transport and only-binary are restored key by key.
         assert "_pinned_pip_config_overrides()" in stack, (
             "the pinned scrub must re-assert the operator's transport and binary policy "
             "that PIP_CONFIG_FILE=devnull removes"
@@ -846,14 +738,10 @@ class TestPinnedIndexClearsUvEnvParity:
         ), "setup.ps1 must save/restore PIP_CONFIG_FILE around the pinned scrub"
 
     def test_setup_ps1_bounds_unknown_leaf_pinned_torch(self):
-        """A first-time/changed unknown-leaf custom pin routes through setup.ps1's
-        CUDA branch; install.ps1's fresh pinned install, install.sh, and the Python
-        verbatim path bound the WHOLE trio, so the Windows update path must too -- a
-        private mirror serving newer torch OR newer companions must not lift the venv
-        above the supported range under the pin."""
+        """setup.ps1's custom-leaf branch must bound all three torch packages, or a mirror can lift
+        the venv."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
-        # The custom-leaf branch bounds torch AND both companions (parity with the
-        # other installers' custom-pin trio bounds), gated on a non-cu-family leaf.
+        # Custom-leaf branch bounds torch and both companions, like the other installers.
         for spec in (
             '$cudaTorchSpec = "torch>=2.4,<2.12.0"',
             '$cudaVisionSpec = "torchvision>=0.19,<0.27.0"',
@@ -863,7 +751,6 @@ class TestPinnedIndexClearsUvEnvParity:
         assert (
             "if ($TorchIndexPinned -and -not (Test-CudaFamilyLeaf $CuTag)) {" in text
         ), "the custom-leaf trio bounds must be gated on a pinned non-cu-family leaf"
-        # Specs are splatted, so check both halves: the list is built, and it is passed.
         assert (
             "$_cudaTrio = @($cudaTorchSpec, $cudaVisionSpec, $cudaAudioSpec)" in text
         ), "setup.ps1's CUDA branch must build the trio from the bounded spec variables"
@@ -872,10 +759,7 @@ class TestPinnedIndexClearsUvEnvParity:
         ), "setup.ps1's CUDA branch must install the trio it built"
 
     def test_setup_ps1_bounds_pinned_cpu_torch(self):
-        """setup.ps1's CPU branch must bound the trio under an explicit pin (parity with
-        _CPU_TORCH_PKG_SPEC): the /cpu index serves newer torch, and _ensure_cpu_torch
-        keeps any CPU build, so a bare pinned trio could land an unsupported version.
-        An unpinned CPU host keeps the bare trio (pre-pin behavior unchanged)."""
+        """Pinned CPU installs in setup.ps1 must bound the trio, since the /cpu index serves newer torch."""
         text = SETUP_PS1.read_text(encoding = "utf-8")
         for spec in (
             '$cpuTorchSpec  = "torch>=2.4,<2.12.0"',
@@ -892,7 +776,6 @@ class TestPinnedIndexClearsUvEnvParity:
         assert (
             "Fast-Install @_torchTrio @cpuForce" in text
         ), "setup.ps1's CPU branch must install the trio it built"
-        # The ceilings mirror the Python repair spec exactly.
         stack = STACK_PY.read_text(encoding = "utf-8")
         spec_block = re.search(r"_CUDA_TORCH_PKG_SPEC[^(]*\(\s*(.*?)\)", stack, re.DOTALL)
         assert spec_block and '"torch>=2.4,<2.12.0"' in spec_block.group(1), (
@@ -920,10 +803,7 @@ class TestPinnedIndexClearsUvEnvParity:
 
 
 class TestIndexPathSlashTrimParity:
-    """Every installer must trim trailing PATH slashes only on the verbatim
-    UNSLOTH_TORCH_INDEX_URL override, preserving a ?query/#fragment token: a whole-URL
-    strip corrupts a base64 token ending in "/", a single strip leaves a double-slash leaf
-    empty. The helper must be DEFINED and WIRED into the override return in all four."""
+    """Trim trailing slashes from the path only, so a query token ending in / is not corrupted."""
 
     def test_helper_defined_in_all_installers(self):
         assert "def _trim_index_path_slashes(" in STACK_PY.read_text(encoding = "utf-8")
@@ -954,10 +834,7 @@ class TestInstallOutputRedactionParity:
         assert "function Redact-InstallOutput" in SETUP_PS1.read_text(encoding = "utf-8")
 
     def test_helper_wired_into_failure_print(self):
-        # install.sh dumps the captured log through the redactor on failure.
         assert '_redact_install_output "$_log"' in INSTALL_SH.read_text(encoding = "utf-8")
-        # Both ps1 installers redact the captured $output before printing it on a
-        # non-zero exit. Write-StudioLine is the UTF-8 stdout sink both now use.
         assert (
             "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
             in INSTALL_PS1.read_text(encoding = "utf-8")
@@ -966,15 +843,11 @@ class TestInstallOutputRedactionParity:
             "Write-StudioLine (Redact-InstallOutput $output) -ForegroundColor Red"
             in SETUP_PS1.read_text(encoding = "utf-8")
         )
-        # Python redacts the captured stdout before printing.
         assert "_redact_install_output(" in STACK_PY.read_text(encoding = "utf-8")
 
 
 class TestPipNoIndexScrubParity:
-    """The plain-pip fallback honours PIP_*: PIP_NO_INDEX=1 makes it ignore ALL indexes
-    (defeating the pinned --index-url) and PIP_INDEX_URL replaces the pin. The two installers
-    that HAVE a plain-pip fallback (Python + setup.ps1) must scrub both for a pinned install.
-    install.sh / install.ps1 are uv-only (--default-index), which ignores pip config/env."""
+    """Pinned pip fallbacks must scrub PIP_NO_INDEX and PIP_INDEX_URL, which defeat the pinned index."""
 
     def test_python_scrubs_pip_no_index_and_pip_index_url(self):
         text = STACK_PY.read_text(encoding = "utf-8")
@@ -988,26 +861,16 @@ class TestPipNoIndexScrubParity:
 
 
 class TestNoTorchPersistenceParity:
-    """No-torch mode must outlive the process that requested it.
-
-    install.sh / install.ps1 export UNSLOTH_NO_TORCH for their own run only.
-    `unsloth studio update` exports nothing, so both the PowerShell setup and the
-    shared Python stack have to recover the mode from the install manifest, or an
-    update reinstalls PyTorch into a GGUF-only venv. On Windows it is worse than
-    cosmetic: setup.ps1 reads the missing torch as a stale venv and tries to delete
-    the venv it is itself running out of, which fails on a locked python.exe."""
+    """UNSLOTH_NO_TORCH is not exported on update, so the install manifest must record no-torch mode."""
 
     def test_the_stack_records_the_mode_it_installed(self):
         text = STACK_PY.read_text(encoding = "utf-8")
         assert "no_torch = NO_TORCH" in text
         assert "install_manifest.recorded_no_torch()" in text
-        # Written after the manifest is dropped and before the dependency pass, so
-        # a pass killed part-way still leaves the mode recorded somewhere.
+        # Marker written before the dependency pass so a killed pass still records the mode.
         assert text.index("install_manifest.set_no_torch_marker(NO_TORCH)") > text.index(
             "if install_manifest.remove_manifest():"
         )
-        # And the parked copy goes with it before the pass starts, so a pass killed part-way leaves
-        # no evidence of a finished one.
         removed_at = text.index("if install_manifest.remove_manifest():")
         consumed_at = text.index("install_manifest.consume_previous_manifest()", removed_at)
         assert consumed_at < text.index("install_manifest.set_no_torch_marker(NO_TORCH)")
@@ -1021,15 +884,13 @@ class TestNoTorchPersistenceParity:
         text = SETUP_PS1.read_text(encoding = "utf-8")
         assert "function Get-PersistedNoTorch" in text
         assert "function Set-PersistedNoTorch" in text
-        # setup.ps1 drops the manifest before running install_python_stack.py, so
-        # the resolved answer has to be handed down through the environment.
+        # setup.ps1 drops the manifest first, so the answer is passed via the environment.
         assert text.index("Get-PersistedNoTorch -VenvPath $VenvDir") < text.index(
             '$env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }'
         )
 
     def test_both_sides_accept_the_same_spellings(self):
-        # install.ps1 / install.sh accept 1|true|yes|on; the two consumers must not
-        # be narrower, or a value one layer honours another silently ignores.
+        # Consumers must accept the same 1|true|yes|on set as the installers.
         assert "'^\\s*(?i:true|1|yes|on)\\s*$'" in SETUP_PS1.read_text(encoding = "utf-8")
         manifest = (REPO_ROOT / "studio" / "install_manifest.py").read_text(encoding = "utf-8")
         assert 'NO_TORCH_TRUTHY: Tuple[str, ...] = ("1", "true", "yes", "on")' in manifest
@@ -1037,11 +898,7 @@ class TestNoTorchPersistenceParity:
 
 
 class TestAmdBnbFloorParity:
-    """bitsandbytes <= 0.49.2 NaNs at 4-bit decode shape on every AMD GPU; the ROCm
-    4-bit GEMV fix (bnb #1887) first ships on PyPI in 0.50.0. The `amd` extra,
-    install.sh and the Unsloth stack resolve bitsandbytes independently, so all three
-    must carry the same floor or an unreachable pre-release wheel silently reinstates
-    the broken range."""
+    """bitsandbytes must be at least 0.50.0 on AMD GPUs, since 0.49.2 and older NaN at 4-bit decode."""
 
     FLOOR = "0.50.0"
     PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -1144,7 +1001,6 @@ class TestInstallUvCacheRootParity:
                 "so cached packages may download again",
             ):
                 assert message in source
-            # Both selectors must agree: a metadata-only cache is cold.
             for bucket in ("archive", "builds", "built-wheels", "wheels", "sdists"):
                 assert bucket in source, bucket
             for metadata_suffix in (".msgpack", ".http", ".rev", ".lock"):
@@ -1161,11 +1017,8 @@ class TestInstallUvCacheRootParity:
         for source in (sh, ps1, cli):
             assert "uv-cache-dir" in source
 
-        # Written after the choice is made.
         assert "_record_uv_cache_choice() {" in sh
-        # Every mode records, custom included, or a previous install's marker survives. The
-        # no-cache guard may precede the call, since uv fills nothing under it, but a branch
-        # that stops calling it at all is the bug this counts.
+        # Every mode must record, or a previous install's marker survives.
         call_sites = [
             match.start()
             for match in re.finditer(
@@ -1180,50 +1033,37 @@ class TestInstallUvCacheRootParity:
             < min(call_sites)
             < sh.index("_UV_CACHE_MODE=isolated")
         ), "the custom branch records before it returns"
-        # Three on the ps1 side too, one per recording mode: custom, isolated, and the
-        # selection. UV_NO_CACHE is the deliberate fourth that records NOTHING on both sides,
-        # since a marker there would name a cache the install never filled.
+        # Custom, isolated and selection record; UV_NO_CACHE deliberately records nothing.
         assert ps1.count("Write-StudioUvCacheMarker -StudioRoot") == 3, ps1.count(
             "Write-StudioUvCacheMarker -StudioRoot"
         )
-        # A marker is a preference, not a requirement, so neither installer may fail on it.
-        # Sliced at the first selection helper, not at the selector: the helpers between them
-        # do use -ErrorAction Stop, and on purpose.
+        # A marker is a preference, so writes must not fail; helpers after it use Stop on purpose.
         marker_write = ps1[
             ps1.index("function Write-StudioUvCacheMarker") : ps1.index(
                 "function Test-StudioUvNoCache"
             )
         ]
-        # Covers both marker functions, which sit together above the selector.
         assert "-ErrorAction Stop" not in marker_write
         assert marker_write.count("-ErrorAction SilentlyContinue") >= 2
         assert "|| true" in sh[sh.index("_record_uv_cache_choice() {") :]
-        # Windows PowerShell 5.1 writes -Encoding utf8 WITH a BOM, so the reader allows one.
+        # Windows PowerShell 5.1 writes utf8 with a BOM.
         assert "utf-8-sig" in cli
 
-        # Absolute on both sides: the update resolves it against its own directory.
         assert "_absolutize_uv_cache_dir() {" in sh
         assert "UV_CACHE_DIR=$(_absolutize_uv_cache_dir)" in sh
         assert "IsPathRooted" in ps1
 
-        # The selection rules, on both installers. install.sh gained them first, which left
-        # Windows abandoning a warm Studio cache on every rerun and selecting caches uv aborts
-        # on. The behaviour is asserted by running each installer; the PAIRING is asserted
-        # here, so a rule added to one side alone fails even where neither shell can run.
-        #   1. the marker outranks uv's default while it is still warm
+        # Asserts both installers carry the same selection rules, even where no shell can run.
+        # The marker outranks uv's default while it is still warm.
         assert "cache/uv-cache-dir" in sh
         assert "function Read-StudioUvCacheMarker" in ps1
-        #   2. UV_NO_CACHE stands the selection down, in every spelling uv honours
         for source in (sh, ps1):
             assert "UV_NO_CACHE" in source
-        # clap's literals, which is what uv binds UV_NO_CACHE to. All three copies, or one of
-        # them probes and records a cache uv is not using.
+        # clap's literals for UV_NO_CACHE; all three copies must match.
         assert "1|y|yes|t|true|on)" in sh
         assert '@("1", "y", "yes", "t", "true", "on")' in ps1
         assert '_UV_TRUE = ("1", "y", "yes", "t", "true", "on")' in cli
-        # and it is honoured BEFORE a caller's cache is recorded, on both sides: uv leaves
-        # UV_CACHE_DIR completely empty under --no-cache, so a marker naming it would send the
-        # next repair to a cache this install never filled. The CLI already checked first.
+        # uv leaves UV_CACHE_DIR empty under --no-cache, so check it before recording a cache.
         assert "_uv_no_cache_requested() {" in sh
         assert "function Test-StudioUvNoCache" in ps1
         sh_custom = sh[sh.index("_UV_CACHE_MODE=custom") :].split("return 0", 1)[0]
@@ -1238,22 +1078,17 @@ class TestInstallUvCacheRootParity:
             "Test-StudioUvNoCache)", 1
         )
         assert len(ps1_iso) == 2, "the isolated branch no longer guards its marker write"
-        #   3. only <kind>-v<N> is uv's to write, so a lookalike is neither probed nor warmth
         assert "_uv_is_bucket_name() {" in sh
         assert "function Test-StudioUvBucketName" in ps1
-        # and the version cannot be EMPTY on either side: `##*-v` strips through the last
-        # `-v`, so `archive-v1-v` leaves "" behind, which no `*[!0-9]*` matches. PowerShell
-        # rejected it from the start, so this was a real split.
+        # `##*-v` on archive-v1-v leaves an empty version, which must also be rejected.
         bucket_sh = sh.split("_uv_is_bucket_name() {", 1)[1].split("\n}", 1)[0]
         assert "''|*[!0-9]*) return 1 ;;" in bucket_sh, bucket_sh
-        # To the NEXT function: the body is indented, so splitting on "\n}" ran two
-        # functions on and every assertion below it read the wrong code.
+        # Split at the next function: bodies are indented, so "\n}" overshoots.
         bucket_ps1 = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
             "function Test-StudioUvCacheWritable", 1
         )[0]
         assert "IsNullOrEmpty($suffix)" in bucket_ps1, bucket_ps1
-        # Both sides MEASURE whether to fold: default APFS folds and ext4 does not, NTFS
-        # folds unless fsutil setCaseSensitiveInfo says otherwise. Blind folding condemns.
+        # Case folding is measured, not assumed: APFS/NTFS fold, ext4 does not.
         assert "ToLowerInvariant()" in bucket_ps1, bucket_ps1
         assert "-cin" not in bucket_ps1, bucket_ps1
         assert "[switch]$Fold" in bucket_ps1, bucket_ps1
@@ -1264,10 +1099,9 @@ class TestInstallUvCacheRootParity:
         assert "-Fold:$fold" in writable_ps1, writable_ps1
         writable_sh = sh.split("_uv_cache_is_writable() {", 1)[1].split("\n}", 1)[0]
         assert "tr '[:upper:]' '[:lower:]'" in writable_sh, writable_sh
-        # By a directory the probe MAKES: an existing pair cannot say whether it is one.
+        # Probe with a fresh directory: an existing pair cannot show case folding.
         assert ".unsloth-case-probe." in writable_sh, writable_sh
         assert "_uv_w_fold=1" in writable_sh, writable_sh
-        # and it decides only the NAME: a colliding file must reach the rejection below.
         assert writable_sh.index("_uv_w_fold") < writable_sh.index('[ ! -d "$_uv_w_dir" ]')
         probe_kinds = {
             "archive",
@@ -1294,47 +1128,34 @@ class TestInstallUvCacheRootParity:
             re.findall(r'"([a-z\-]+)"', bucket_ps1.split("-in @(", 1)[1].split("))", 1)[0])
         )
         assert kinds_ps1 == probe_kinds, sorted(kinds_ps1 ^ probe_kinds)
-        # and the CLI validates the whole suffix too, or `unsloth studio update` prefers a
-        # cache the installers just rejected. Its docstring claimed the same rule long before
-        # it had it.
+        # The CLI must apply the same suffix rule or update prefers a rejected cache.
         assert "def _uv_is_bucket_name(name: str) -> bool:" in cli
         assert (
             '_UV_CACHE_BUCKETS = ("archive", "builds", "built-wheels", "wheels", "sdists")' in cli
         )
-        #   4. readable is not usable: a real create-and-delete, root and every bucket
         assert ".unsloth-write-probe." in sh
         assert ".unsloth-write-probe." in ps1
         assert "function Test-StudioUvCacheWritable" in ps1
-        #   5. and a fallback we cannot write is not a fallback, on both sides
         assert "_uv_cache_root_is_writable() {" in sh
         assert "function Test-StudioUvCacheRootWritable" in ps1
-        # Root AND buckets there, and at the launch repoint: the root can be writable while a
-        # bucket uv renames into is not, which is what the candidate probe rejects a cache for.
-        # A root-only question at either site hands back the cache the probe just refused.
+        # Root writable does not imply buckets are; both sites must check both.
         assert "_uv_cache_is_writable() {" in sh
         assert "function Test-StudioUvCacheUsable" in ps1
         sh_launch = sh.split("_prepare_studio_uv_cache_for_launch() {", 1)[1].split("\n}", 1)[0]
         assert "_uv_cache_is_writable" in sh_launch, sh_launch
         ps1_launch = ps1.split("function Set-StudioUvCacheForLaunch", 1)[1].split("\n    }", 1)[0]
         assert "Test-StudioUvCacheUsable" in ps1_launch, ps1_launch
-        #   6. creating the probe is not enough: uv RENAMES into these directories, and NTFS
-        # carries DELETE as its own ACE while an append-only directory does the same on ext4,
-        # so a root can grant create and deny unlink.
+        # uv renames into these dirs, and create can be granted while unlink is denied.
         root_sh = sh.split("_uv_cache_root_is_writable() {", 1)[1].split("\n}", 1)[0]
-        # Judged by whether the probe is GONE, not by rm's exit status, and retried: a scanner
-        # holding the handle makes one delete fail and the next succeed, and Remove-Item throws
-        # for a probe something else already removed where rm -f exits 0.
+        # Judge by the probe being gone, with retries: scanners hold handles transiently.
         assert '[ -e "$_uv_root_probe" ] || break' in root_sh, root_sh
         assert "_uv_root_tries" in root_sh, root_sh
         root_ps1 = ps1.split("function Test-StudioUvCacheRootWritable", 1)[1].split("\n    }", 1)[0]
         assert "[System.IO.File]::Exists($probe)" in root_ps1, root_ps1
         assert "$attempt -lt 3" in root_ps1, root_ps1
 
-        # The reset must precede both consumers, the selector that writes the marker and
-        # every Exit-InstallFailure that restores it. Under `irm | iex` the script scope is
-        # the caller's session, so only the entry point is ahead of both.
+        # Under `irm | iex` script scope is the caller's session, so reset at the entry point.
         entry = ps1.index("function Install-UnslothStudio {")
-        # The call form, not the bare name, which also appears in prose above.
         first_consumer = min(
             ps1.index("Set-StudioUvCacheEnvironment -StudioRoot $StudioHome"),
             ps1.index('(Exit-InstallFailure "', entry),
@@ -1347,7 +1168,6 @@ class TestInstallUvCacheRootParity:
         ):
             assert variable in ps1[entry:first_consumer], variable
 
-        # Committing the environment commits the marker that came with it.
         assert (
             "$script:StudioUvMarkerSaved = $false"
             in ps1[
@@ -1359,8 +1179,7 @@ class TestInstallUvCacheRootParity:
         )
         commit_start = sh.index("_commit_studio_venv_replacement() {")
         commit_body = sh[commit_start : sh.index("\n}", commit_start)]
-        # Before the venv flag: a signal between the two keeps the environment and
-        # reverts its marker.
+        # Before the venv flag, so a signal between them reverts the marker.
         assert commit_body.index("_UV_MARKER_SAVED=false") < commit_body.index(
             "_VENV_ROLLBACK_ACTIVE=false"
         )
@@ -1368,7 +1187,6 @@ class TestInstallUvCacheRootParity:
         assert ps1_commit.index("$script:StudioUvMarkerSaved = $false") < ps1_commit.index(
             "$script:StudioVenvRollbackActive = $false"
         )
-        # And outside the rollback branch, which a first install skips entirely.
         assert commit_body.index("_UV_MARKER_SAVED=false") < commit_body.index(
             'if [ "$_VENV_ROLLBACK_ACTIVE" = true ]'
         )
@@ -1376,8 +1194,7 @@ class TestInstallUvCacheRootParity:
             "if (-not $script:StudioVenvRollbackActive) { return }"
         )
 
-        # Both writes are gated on the old entry being gone: the unlink is what keeps a
-        # symlinked marker from truncating its target, and it can fail silently.
+        # The unlink keeps a symlinked marker from truncating its target and can fail silently.
         for body in (
             sh[sh.index("_record_uv_cache_choice() {") : sh.index("_restore_uv_cache_marker() {")],
             sh[sh.index("_restore_uv_cache_marker() {") :][:600],
@@ -1390,30 +1207,24 @@ class TestInstallUvCacheRootParity:
                 "function Test-StudioUvNoCache"
             )
         ]
-        # One helper for every path that must end up absolute, or they disagree the moment
-        # UV_WORKING_DIR is set: the caller's value, the marker write, the marker READ, and
-        # uv's own answer, which comes back verbatim and may be relative.
+        # One resolver for all four paths, or they disagree once UV_WORKING_DIR is set.
         assert ps1.count("Resolve-StudioUvCachePath -Cache") == 4, ps1.count(
             "Resolve-StudioUvCachePath -Cache"
         )
         assert "$env:UV_CACHE_DIR = Resolve-StudioUvCachePath -Cache $env:UV_CACHE_DIR" in ps1
-        # And both sides consult UV_WORKING_DIR, itself resolvable against the run dir.
         assert "UV_WORKING_DIR" in sh[sh.index("_absolutize_uv_cache_dir() {") :][:600]
         assert "UV_WORKING_DIR" in ps1[ps1.index("function Resolve-StudioUvCachePath") :][:800]
         for start in _all_indexes(ps1_marker, "Remove-Item -LiteralPath $markerFile"):
-            # The call form: the comment above the gate names the cmdlet too.
             window = ps1_marker[
                 start : ps1_marker.index("Set-Content -LiteralPath $markerFile", start)
             ]
             assert "Get-Item -LiteralPath $markerFile -Force" in window, window
 
-        # UTF-8, not the ANSI code page: the update writes this file BOM-less UTF-8 and
-        # 5.1 would restore mojibake. Asserted on source, since pwsh 7 passes either way.
+        # 5.1 reads the BOM-less UTF-8 marker as ANSI; source check since pwsh 7 passes either way.
         read_back = ps1_marker.index("Get-Content -LiteralPath $markerFile")
         assert "-Encoding UTF8" in ps1_marker[read_back : read_back + 220], ps1_marker[read_back:]
 
-        # One flag decides both rollbacks. Clearing them separately leaves a window either
-        # way round, where a signal restores one half of a committed install.
+        # One flag decides both rollbacks, so a signal cannot restore half a committed install.
         assert commit_body.index("_STUDIO_INSTALL_COMMITTED=true") < commit_body.index(
             "_UV_MARKER_SAVED=false"
         )
@@ -1429,12 +1240,10 @@ class TestInstallUvCacheRootParity:
             body = ps1[ps1.index(f"function {name} {{") :][:800]
             assert "if ($script:StudioInstallCommitted) { return }" in body, name
 
-        # Restored whether or not a venv replacement was ever in flight.
         assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_exit() {") :]
         assert "_restore_uv_cache_marker" in sh[sh.index("_on_install_signal() {") :]
         assert ps1.count("Restore-StudioUvCacheMarker -StudioRoot") == 2
 
-        # And the marker travels with the environment: a rolled-back install puts it back.
         assert "_restore_uv_cache_marker" in sh
         assert sh.count("_restore_uv_cache_marker") >= 2, "defined but never called"
         assert "function Restore-StudioUvCacheMarker" in ps1
@@ -1442,9 +1251,7 @@ class TestInstallUvCacheRootParity:
         assert "${XDG_CACHE_HOME}/uv" in sh
         assert "${HOME}/.cache/uv" in sh
         assert 'Join-Path (Join-Path $env:LOCALAPPDATA "uv") "cache"' in ps1
-        # The warmth scan lives in Test-StudioUvCachePopulated now, so slicing at
-        # Set-StudioUvCacheEnvironment alone would assert on a body that no longer holds the
-        # scan and pass for the wrong reason.
+        # The warmth scan lives in Test-StudioUvCachePopulated, so slice from there.
         selector = ps1.split("function Test-StudioUvBucketName", 1)[1].split(
             "function Set-StudioUvCacheForLaunch", 1
         )[0]
@@ -1452,16 +1259,11 @@ class TestInstallUvCacheRootParity:
         assert "Get-ChildItem -LiteralPath $bucket.FullName -File -Recurse -Force" in selector
         # Must not fail closed: one denied subdirectory would read as an empty cache.
         assert "-ErrorAction SilentlyContinue -ErrorVariable scanErrors" in selector
-        # The scan only. The helpers after it DO use Stop, and have to: a marker or a write
-        # probe that fails is an answer, where a bucket that cannot be read is not.
-        # Ends at the next function, not two on: Test-StudioUvCacheRootWritable sits between
-        # this scan and the marker reader, and it uses Stop deliberately, so a slice reaching
-        # past it asserts the opposite of what this test says it is asserting.
+        # The scan only; later helpers use Stop on purpose, so the slice ends at the next function.
         bucket_loop = selector.split("foreach ($bucket in $buckets)", 1)[1].split(
             "function Test-StudioUvCacheRootWritable", 1
         )[0]
         assert "-ErrorAction Stop" not in bucket_loop, bucket_loop
-        # -L on the sh side for the same reason Get-ChildItem -Recurse follows links.
         assert "find -L " in sh
 
     def test_shell_order_wsl_handoff_and_autostart_boundary(self):
@@ -1519,12 +1321,7 @@ class TestInstallUvCacheRootParity:
 
 
 class TestWindowsMountPointVolumes:
-    """A Windows volume can be mounted at a DIRECTORY rather than a drive letter. GetPathRoot
-    reduces C:\\studio to C:\\, so DriveInfo answers for the host drive and two paths on
-    different mounted volumes compare equal on their root: the rollback-space warning is then
-    suppressed or falsely emitted, and the cross-volume cache notice never fires. Win32_Volume
-    lists mount points by the path they are mounted at. Pinned by text because no host in CI
-    has a directory mount point to exercise (#11313)."""
+    """Volumes can mount at a directory, so free space must come from Win32_Volume, not the drive root."""
 
     def test_free_space_asks_the_mounted_volume_first(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1538,7 +1335,7 @@ class TestWindowsMountPointVolumes:
         assert "DriveInfo" in helper, "the drive-root fallback was dropped"
 
     def test_the_probe_is_gated_on_windows(self):
-        # CimCmdlets ships only on Windows, and this helper is reached on every platform.
+        # CimCmdlets ships only on Windows, and this helper runs on every platform.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         helper = text.split("function Get-StudioMountedVolume", 1)[1].split("\n    }", 1)[0]
         assert (
@@ -1547,10 +1344,7 @@ class TestWindowsMountPointVolumes:
 
 
 class TestDiskFullDiagnosisReachesTauri:
-    """The desktop installer and its Repair flow run with --tauri, and there the only thing the
-    UI and its logs ever see is the message handed to the ERROR_DEFAULT marker. A disk-full
-    diagnosis printed beside that message is one the desktop user never reads, which is the
-    scenario #11313 was reported from."""
+    """The diagnosis must be folded into the ERROR_DEFAULT marker, the only text --tauri users see."""
 
     def test_shell_folds_the_diagnosis_into_the_marker(self):
         text = INSTALL_SH.read_text(encoding = "utf-8")
@@ -1569,7 +1363,7 @@ class TestDiskFullDiagnosisReachesTauri:
         assert append < marker, "the diagnosis is appended after the Tauri marker is written"
 
     def test_windows_measures_in_both_modes(self):
-        # The probe must sit OUTSIDE the non-Tauri console branch, or --tauri never measures.
+        # Outside the non-Tauri console branch, or --tauri never measures.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
         probe = body.index("Get-StudioFreeSpaceBytes")
@@ -1580,16 +1374,12 @@ class TestDiskFullDiagnosisReachesTauri:
 
 
 class TestDiskFullDiagnosisCoversTheBiggestWrites:
-    """The venv and the torch install are the largest writes an install makes, and both fail long
-    before studio setup is reached. A diagnosis attached only to the studio-setup branch therefore
-    misses the most likely moment for the disk to fill, and those exits report a bare exit code.
-    Both installers attach it to the one funnel every failure passes through instead."""
+    """Diagnosis goes on the shared exit funnel, as venv and torch writes fail long before studio setup."""
 
     def test_windows_attaches_it_to_the_shared_exit(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         body = text.split("function Exit-InstallFailure", 1)[1].split("\n    }", 1)[0]
         assert "Get-StudioFreeSpaceBytes" in body, "only the studio-setup branch is diagnosed"
-        # Probed rather than called outright: the early exits happen before it is defined.
         assert (
             "Get-Command Get-StudioFreeSpaceBytes" in body
         ), "an exit before the helper is defined would report command-not-found instead"
@@ -1610,10 +1400,7 @@ class TestDiskFullDiagnosisCoversTheBiggestWrites:
 
 
 class TestDiagnosticsNeverCostTheRollback:
-    """The diagnosis is the least important thing either installer does on a failure, and the
-    restore is the most important. A closed --tauri stdout or a redirected stderr fails the write,
-    and under `set -e` that used to abort the exit trap before the restore ran, leaving the
-    previous environment moved aside and the install gone (#11313)."""
+    """Measure, then restore, then report; a failed report write under set -e would abort the exit trap."""
 
     def test_the_shell_restores_before_it_reports(self):
         """Measure first, restore, then report. Reporting before the restore lets a failed write
@@ -1657,10 +1444,7 @@ class TestDiagnosticsNeverCostTheRollback:
 
 
 class TestDiskFullRemedyDescribesWhatHappened:
-    """A run that ran out of space must be told what would actually help, and that depends on what
-    became of the old environment rather than on which flag was passed. The case that matters is a
-    discard that FAILED: the tree is still on disk, deleting it is very likely what makes the retry
-    fit, and "there is nothing further to reclaim" points the user away from it."""
+    """The out-of-space remedy must depend on what happened to the old environment, not on the flag used."""
 
     @pytest.mark.parametrize(
         "path, leftover",
@@ -1711,10 +1495,7 @@ class TestDiskFullRemedyDescribesWhatHappened:
 
 
 class TestVolumeLookupsResolveLinks:
-    """Test-StudioSameVolume canonicalises because junctions and symlinks lie about which volume
-    a path is on. The free-space side has to as well, or a studio home behind a junction (or
-    under a junctioned profile) is measured on the link's host drive rather than the volume that
-    will hold the environment, suppressing or falsely emitting both disk warnings (#11313)."""
+    """Volume lookups must resolve junctions and symlinks, which misreport the volume a path is on."""
 
     def test_both_volume_lookups_go_through_the_resolver(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1729,7 +1510,6 @@ class TestVolumeLookupsResolveLinks:
             ), f"{name} asks the lexical path, which a junction answers for the wrong volume"
 
     def test_the_driveinfo_fallback_uses_the_resolved_path(self):
-        # The fallback is the path that runs off Windows and wherever CIM cannot answer.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         helper = text.split("function Get-StudioFreeSpaceBytes", 1)[1].split(
             "function Get-StudioTreeSizeBytes", 1
@@ -1740,10 +1520,7 @@ class TestVolumeLookupsResolveLinks:
 
 
 class TestNoRollbackDoesNotNarrowDeviceDetection:
-    """Opting out of the rollback copy must cost disk, never hardware. The Intel scan rescues an
-    adapter WMI cannot classify by asking the PREVIOUS environment's torch whether XPU works,
-    because the replacement venv has no torch yet; discarding that tree without taking the
-    verdict first routes an Arc machine to CPU wheels (#11313)."""
+    """Take the XPU verdict before discarding the old tree, or Intel Arc gets CPU wheels."""
 
     def test_the_verdict_is_taken_before_the_tree_is_deleted(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1763,8 +1540,7 @@ class TestNoRollbackDoesNotNarrowDeviceDetection:
         ), "the Intel scan never consults the verdict taken before the discard"
 
     def test_the_probe_is_defined_before_the_rollback_that_calls_it(self):
-        # PowerShell binds a function when the statement defining it runs, so a helper defined
-        # after its caller is CommandNotFoundException at the call.
+        # PowerShell binds a function when its definition runs; define helpers before callers.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert text.index("function Invoke-BoundedPythonProbe") < text.index(
             "function Start-StudioVenvRollback"
@@ -1772,10 +1548,7 @@ class TestNoRollbackDoesNotNarrowDeviceDetection:
 
 
 class TestTheVolumeQueryIsBounded:
-    """install.ps1 documents, in Invoke-BoundedVideoControllerScan, that a CIM query can block
-    forever on a degraded WMI repository and that -ErrorAction and try/catch do not bound it.
-    The Win32_Volume lookup runs on every Windows install before the venv exists and only decides
-    the wording of a disk warning, so it takes the same treatment (#11313)."""
+    """Win32_Volume query must run out of process with a deadline, as WMI can block forever."""
 
     def test_it_runs_out_of_process_with_a_deadline(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1792,7 +1565,6 @@ class TestTheVolumeQueryIsBounded:
         helper = text.split("function Get-StudioVolumeList", 1)[1].split(
             "function Get-StudioMountedVolume", 1
         )[0]
-        # Exactly one call site, and it is the bounded one.
         assert (
             text.count("Win32_Volume") == helper.count("Win32_Volume") + 1
         ), "Win32_Volume is queried somewhere other than the bounded helper"
@@ -1805,10 +1577,7 @@ class TestTheVolumeQueryIsBounded:
 
 
 class TestFreeSpaceIsNeverServedFromTheCache:
-    """The volume list is cached so a degraded WMI repository is paid for once, but FreeSpace in
-    a cached row is a snapshot. The failure handler asks after setup has consumed the disk, so a
-    number taken before the environment was built reports room that is gone and misses the
-    disk-full diagnosis this change exists to add (#11313)."""
+    """Cached volume rows are stale for FreeSpace, so the disk-full check must ask for a fresh figure."""
 
     def test_the_free_space_caller_asks_for_a_fresh_answer(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1819,10 +1588,7 @@ class TestFreeSpaceIsNeverServedFromTheCache:
 
 
 class TestVolumeLookupRefusesToGuess:
-    """Get-StudioFinalPath strips the \\\\?\\ prefix unconditionally and deliberately, so a volume
-    with no drive letter comes back as Volume{GUID}\\..., which is not rooted. GetFullPath would
-    anchor that to the current directory and match a volume that has nothing to do with the
-    install, which is worse than answering nothing (#11313)."""
+    """Unrooted Volume{GUID} paths are rejected, since GetFullPath would anchor them to the cwd."""
 
     def test_the_matcher_rejects_an_unrooted_path(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1840,10 +1606,7 @@ class TestVolumeLookupRefusesToGuess:
 
 
 class TestRemovalIsConfirmedWithLinkAwareSemantics:
-    """Test-Path follows a Windows directory reparse point, so a dangling one that could not be
-    unlinked reads as absent and the retry helper reports a removal that did not happen. Its
-    callers act on that: the --no-rollback discard clears the rollback state and says the
-    environment is gone (#11313)."""
+    """Removal is confirmed link-aware: Test-Path follows a dangling reparse point and reports it absent."""
 
     def test_the_retry_helper_uses_the_link_aware_check(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1857,10 +1620,7 @@ class TestRemovalIsConfirmedWithLinkAwareSemantics:
 
 
 class TestArm64MigrationDoesNotPromiseWhatTheFlagDeletes:
-    """The Windows-on-ARM rebuild tells the user the ARM64 environment is kept as
-    unsloth_studio.arm64.* so extra packages can be recovered. When no rollback has started yet
-    the migration calls Start-StudioVenvRollback itself, and under --no-rollback that call
-    discards, so the promise has to be gated on the flag and not only on an earlier discard."""
+    """Only promise the kept unsloth_studio.arm64.* environment when --no-rollback did not discard it."""
 
     def test_the_promise_is_gated_on_the_flag_too(self):
         text = INSTALL_PS1.read_text(encoding = "utf-8")
@@ -1902,6 +1662,5 @@ class TestNoRollbackNeverPromisesAKeptCopy:
         ), "the Windows-on-ARM migration rebuild promises a copy --no-rollback deletes"
 
     def test_every_rollback_call_site_was_audited(self):
-        # If a fourth call site appears, this fails and the promise above it has to be checked.
         text = INSTALL_PS1.read_text(encoding = "utf-8")
         assert text.count("Start-StudioVenvRollback -ExistingDir") == 3

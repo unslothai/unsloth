@@ -89,6 +89,46 @@ const VOXTRAL_LANGUAGES = [
   "hi",
   "ko",
 ] as const;
+// Primaries of audio.cpp model_specs/nemotron_asr.json, plus "no", the picker's code for nb/nn.
+const NEMOTRON_ASR_LANGUAGES = [
+  "ar",
+  "bg",
+  "cs",
+  "da",
+  "de",
+  "el",
+  "en",
+  "es",
+  "et",
+  "fi",
+  "fr",
+  "he",
+  "hi",
+  "hr",
+  "hu",
+  "it",
+  "ja",
+  "ko",
+  "lt",
+  "lv",
+  "mt",
+  "nb",
+  "nl",
+  "nn",
+  "no",
+  "pl",
+  "pt",
+  "ro",
+  "ru",
+  "sk",
+  "sl",
+  "sv",
+  "th",
+  "tr",
+  "uk",
+  "vi",
+  "zh",
+] as const;
 
 export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Kokoro-82M-GGUF"), task: "tts", needsEspeak: true },
@@ -175,7 +215,11 @@ export const AUDIO_CPP_MODELS: readonly AudioCppModel[] = [
   { id: folder("Parakeet-TDT-0.6B-v3-GGUF"), task: "asr" },
   { id: folder("Canary-180M-Flash-GGUF"), task: "asr", languages: ["en", "de", "es", "fr"] },
   { id: folder("Moonshine-Streaming-GGUF"), task: "asr", languages: ENGLISH },
-  { id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"), task: "asr", languages: ENGLISH },
+  {
+    id: folder("Nemotron-3.5-ASR-Streaming-0.6B-GGUF"),
+    task: "asr",
+    languages: NEMOTRON_ASR_LANGUAGES,
+  },
   // Diarizes; Transcribe offers it for the Speakers switch.
   { id: folder("MOSS-Transcribe-Diarize-GGUF"), task: "asr" },
   { id: folder("Citrinet-ASR-GGUF"), task: "asr", languages: ENGLISH },
@@ -331,6 +375,14 @@ export function audioCppDisplayName(id: string): string {
     return trimmed.slice(AUDIO_CPP_REPO.length + 1).split("/")[0] || trimmed;
   }
   return trimmed.split("/").pop() || trimmed;
+}
+
+/** Hub path of an umbrella folder (`<repo>/tree/main/<Folder>`); null for any other id. */
+export function audioCppHubPath(id: string): string | null {
+  if (!isAudioCppFolderId(id)) {
+    return null;
+  }
+  return `${AUDIO_CPP_REPO}/tree/main/${audioCppDisplayName(id)}`;
 }
 
 export function audioCppModelFor(id: string | null | undefined): AudioCppModel | null {

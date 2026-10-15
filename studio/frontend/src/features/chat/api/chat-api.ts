@@ -487,6 +487,10 @@ export async function validateModel(
       engine: payload.engine ?? "auto",
       engine_precision: payload.engine_precision ?? "auto",
       engine_parallelism: payload.engine_parallelism ?? "tensor",
+      engine_kv_cache_dtype: payload.engine_kv_cache_dtype ?? "auto",
+      engine_seed: payload.engine_seed ?? null,
+      engine_gpu_memory_utilization:
+        payload.engine_gpu_memory_utilization ?? null,
       // Intended load settings so validate's preflight matches the follow-up /load.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
@@ -642,6 +646,7 @@ export interface CachedGgufRepo {
   task?: string | null;
   audio_type?: string | null;
   audio_workflows?: string[] | null;
+  umbrella_folder?: boolean;
   /** True when some quant has a download manifest or cancel marker. Optional for older-backend compatibility. */
   has_variant_state?: boolean;
   partial?: boolean;
@@ -940,6 +945,104 @@ export async function listChatThreads(
   const data = await parseJsonOrThrow<{ threads: ThreadRecord[] }>(response);
   // Always hand back an array: an older or misbehaving backend may omit it or send a non-array.
   return Array.isArray(data.threads) ? data.threads : [];
+}
+
+export interface SidebarRowRecord {
+  id: string;
+  type: "single" | "compare";
+  threadIds: string[];
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  modifiedAt?: number | null;
+  modelIds?: string[] | null;
+  isFork?: boolean | null;
+  /** Compare rows: each pane's own title, by `threadIds` position. */
+  threadTitles?: string[] | null;
+  projectId?: string | null;
+}
+
+export interface SidebarRowsRequest {
+  archived: boolean;
+  projectId: string | null;
+  unfiledOnly: boolean;
+  includeIds: string[] | null;
+  excludeIds: string[];
+  sort: "updated" | "manual";
+  manualOrder: string[] | null;
+  limit: number;
+  cursor: string | null;
+}
+
+export interface SidebarRowsPage {
+  rows: SidebarRowRecord[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  total?: number | null;
+}
+
+export class SidebarCursorRejectedError extends Error {
+  readonly cursorRejected = true;
+  constructor() {
+    super("Sidebar page cursor rejected");
+    this.name = "SidebarCursorRejectedError";
+  }
+}
+
+/** Null on a server without the route: the caller falls back to the full list. */
+export async function fetchSidebarRows(
+  request: SidebarRowsRequest,
+): Promise<SidebarRowsPage | null> {
+  if (request.includeIds && request.includeIds.length === 0) {
+    return { rows: [], nextCursor: null, hasMore: false, total: 0 };
+  }
+  const body: SidebarRowsRequest = {
+    archived: request.archived,
+    projectId: request.projectId,
+    unfiledOnly: request.unfiledOnly,
+    includeIds: request.includeIds,
+    excludeIds: request.excludeIds,
+    sort: request.sort,
+    manualOrder: request.manualOrder,
+    limit: request.limit,
+    cursor: request.cursor,
+  };
+  const response = await authFetch("/api/chat/sidebar/rows", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (response.status === 404 || response.status === 405) return null;
+  if (response.status === 400 && request.cursor) throw new SidebarCursorRejectedError();
+  const data = await parseJsonOrThrow<SidebarRowsPage>(response);
+  return {
+    rows: Array.isArray(data.rows) ? data.rows : [],
+    nextCursor: data.nextCursor ?? null,
+    hasMore: Boolean(data.hasMore),
+    total: typeof data.total === "number" ? data.total : null,
+  };
+}
+
+// under the route's 500 cap: 500 ids make a ~24 KB request line, past h11's 16 KiB head limit
+const SIDEBAR_THREAD_ROWS_MAX = 200;
+
+export async function fetchSidebarThreadRows(
+  threadIds: string[],
+): Promise<Record<string, string> | null> {
+  const out: Record<string, string> = {};
+  for (let start = 0; start < threadIds.length; start += SIDEBAR_THREAD_ROWS_MAX) {
+    const params = new URLSearchParams();
+    for (const id of threadIds.slice(start, start + SIDEBAR_THREAD_ROWS_MAX)) {
+      params.append("thread_ids", id);
+    }
+    const response = await authFetch(`/api/chat/sidebar/thread-rows?${params}`);
+    if (response.status === 404 || response.status === 405) return null;
+    const data = await parseJsonOrThrow<{ rowIdByThreadId?: Record<string, string> }>(response);
+    for (const [threadId, rowId] of Object.entries(data.rowIdByThreadId ?? {})) {
+      if (typeof rowId === "string" && rowId) out[threadId] = rowId;
+    }
+  }
+  return out;
 }
 
 /** One chat message attachment, as listed for the settings uploaded-files view. */
@@ -1951,7 +2054,8 @@ export async function* streamChatCompletions(
           (parsed.type === "tool_start" ||
             parsed.type === "tool_end" ||
             parsed.type === "tool_output" ||
-            parsed.type === "tool_args")
+            parsed.type === "tool_args" ||
+            parsed.type === "tool_model_note")
         ) {
           yield { _toolEvent: parsed } as unknown as OpenAIChatChunk;
           separatorIndex = buffer.search(/\r?\n\r?\n/);

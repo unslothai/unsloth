@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The node harnesses must follow the helpers their slices call (#9490 broke this).
-
-``sanitizeAssistantReplayText`` gained a call to ``stripSearchImageTokens``, which lives in
-another module, and every harness that sliced it died with ``ReferenceError`` -- seventeen
-failures on main, on every open PR, in a test file nothing had touched. Naming that one helper
-in the prelude would have fixed the day and not the next one, so ``_ts_deps`` resolves
-references instead. These cases pin the resolver, because a harness generator that quietly
-stops following dependencies fails as a ``ReferenceError`` in an unrelated suite.
-"""
+"""Node harnesses must follow the helpers their slices call; a missing one fails as ReferenceError."""
 
 from __future__ import annotations
 
@@ -134,6 +126,21 @@ def test_a_pulled_const_that_needs_a_fixture_is_dropped_not_emitted(tmp_path):
     assert "const HEADERS" not in resolved.replace("const used = HEADERS;", "")
 
 
+def test_a_pulled_arrow_const_is_kept_like_a_function(tmp_path):
+    """An arrow const reads its references only when called, so one it cannot follow is fine."""
+    module = tmp_path / "src" / "m.ts"
+    module.parent.mkdir(parents = True)
+    module.write_text(
+        'import { store } from "./store";\n'
+        "const pick = () =>\n  store.getState().on === false ? [] : [1];\n"
+        "export function count() {\n  return pick().length;\n}\n"
+    )
+    (module.parent / "store.ts").write_text("export const store = create(() => ({ on: null }));\n")
+    resolved = resolve_dependencies("const used = count();\n", (module,), root = tmp_path / "src")
+    assert "const pick = () =>" in resolved
+    assert "create(" not in resolved
+
+
 def test_a_destructured_fixture_is_not_declared_twice(tmp_path):
     """``const { only, ...rest } = ...`` is a binding a declaration regex does not see."""
     module = tmp_path / "src" / "m.ts"
@@ -151,5 +158,5 @@ def test_every_harness_test_asks_for_resolution():
         text = path.read_text(encoding = "utf-8")
         for call in re.findall(r"run_harness\((?:[^()]|\([^()]*\))*\)", text):
             if "_harness_source()" not in call:
-                continue  # No slices to follow: this one builds its script inline.
+                continue
             assert "sources =" in call, f"{path.name}: {call}"

@@ -1,27 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Studio's local `python` tool must be EXECUTED, not merely offered.
-
-The vacuity this file exists against is a specific one. `assert_tool_calling`
-already proves the model can emit a tool call, and a weather tool is never run
-by Studio at all -- the caller runs it. The local `python` tool is different:
-Studio executes it in a per-session sandbox, and the failure worth catching is
-a loop that hands the model the schema, never runs the call, and lets the model
-narrate a plausible result. From the reply text that is indistinguishable from
-success, because a language model will happily report the output of code that
-never ran.
-
-So the pass condition must come off the FILESYSTEM. A per-run token is written
-by the executed code into `<studio home>/sandbox`, and only real execution puts
-those bytes on this disk.
-
-One configuration detail is load-bearing rather than incidental:
-`routes/inference.py` rejects a local python/terminal tool with a 400 under
-`permission_mode` `ask`, and under `auto` or the omitted default, because there
-is no confirmation channel on this path. A payload that left it unset would
-fail on configuration and read as a broken tool.
-"""
+"""The python tool must be executed, so the verdict is a token on disk, not the reply text."""
 
 from __future__ import annotations
 
@@ -34,12 +14,7 @@ SRC = PAYLOAD.read_text(encoding = "utf-8")
 
 
 def _func(name: str) -> ast.FunctionDef:
-    """The METHOD of that name, not a module-level function.
-
-    `run` is both: a module-level `subprocess` helper and the harness's own
-    sequencer. Walking the whole tree finds the helper first, and every
-    assertion about the sequence then reads a body that never mentions it.
-    """
+    """Matches the method, not the module-level subprocess helper that shares its name."""
     tree = ast.parse(SRC)
     for cls in ast.walk(tree):
         if not isinstance(cls, ast.ClassDef):
@@ -70,10 +45,7 @@ def test_the_python_tool_is_the_one_requested():
 
 
 def test_the_permission_mode_is_one_the_local_python_tool_survives():
-    """Not a style choice. `ask` is rejected outright for a local python tool,
-    and so are `auto` and the omitted default, with a 400 -- there is no
-    confirmation channel on this path. Either of those would fail the run on
-    configuration while looking like a broken tool."""
+    """Only permission_mode off survives a local python tool: ask, auto and the default all return 400."""
     body = _body()
     assert 'permission_mode = "off"' in body
     assert 'permission_mode = "ask"' not in body
@@ -96,16 +68,9 @@ def test_the_token_is_minted_per_run_and_not_hardcoded():
 
 
 def test_the_verdict_is_read_off_the_filesystem_and_not_off_the_reply():
-    """The rule this whole file is about. The failure must be raised by the
-    absence of a written file; a check on the reply text would pass on a model
-    that narrated an execution that never happened.
-
-    Asserted structurally rather than by message matching, because a message
-    is satisfied by its own surrounding text.
-    """
+    """The verdict comes from a file on disk, since a check on the reply passes a narrated run."""
     func = _func("assert_code_execution")
 
-    # Every `failures.append` that decides the verdict, and what it is guarded by.
     guarded_by_written = False
     for node in ast.walk(func):
         if not isinstance(node, ast.If):
@@ -130,7 +95,6 @@ def test_the_verdict_is_read_off_the_filesystem_and_not_off_the_reply():
         "would pass on a reply that merely claimed the code ran"
     )
 
-    # And the reply is recorded but never judged.
     for node in ast.walk(func):
         if isinstance(node, ast.If) and "reply" in ast.unparse(node.test):
             raise AssertionError(
@@ -149,10 +113,7 @@ def test_the_search_reads_content_rather_than_only_a_filename():
 
 
 def test_it_looks_under_the_studio_home_sandbox_and_not_a_stray_root():
-    """`sandbox_root()` puts the per-session working directories under the
-    studio home precisely so `UNSLOTH_STUDIO_HOME` keeps them together. Reading
-    a fixed `~/studio_sandbox` would search a directory this run never wrote
-    to, and report a correct execution as a failure."""
+    """Sandboxes sit under the studio home (UNSLOTH_STUDIO_HOME), not a fixed ~/studio_sandbox."""
     body = _body()
     assert 'self.studio_home / "sandbox"' in body
 

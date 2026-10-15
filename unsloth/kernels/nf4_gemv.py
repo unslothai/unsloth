@@ -8,18 +8,21 @@
 # Every weight row must start a new quantization block (K % blocksize == 0); callers check.
 
 import functools
+import os
 from typing import Optional
 
 import torch
 import triton
 import triton.language as tl
 
-from .nf4 import _HAS_MUL_RN, _mul
+from .nf4 import _HAS_MUL_RN, _HAS_TL_GATHER, _mul, _nf4_lut
 from .triton_launch import launch, relaunch, tag_compile_cache
 
 __all__ = [
     "gemv_nf4",
     "gemv_nf4_planned",
+    "gemv_nf4_rows",
+    "gemv_nf4_rows_planned",
     "triton_gemv_eager",
 ]
 
@@ -36,16 +39,24 @@ def _gemv_nf4_kernel(
     OUT,
     N,
     K,
+    M,
+    OUT_STRIDE,
     BLOCKSIZE: tl.constexpr,
     BLOCKSIZE2: tl.constexpr,
     NESTED: tl.constexpr,
     USE_MUL_RN: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
+    EVEN_K: tl.constexpr,
+    LUT_MODE: tl.constexpr,
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
+    # A tile's M rows run adjacently so the weight is read once.
     pid = tl.program_id(0)
+    X += (pid % M) * K
+    OUT += (pid % M) * OUT_STRIDE
+    pid = pid // M
     rows = pid * BLOCK_N + tl.arange(0, BLOCK_N)
     rmask = rows < N
     rows64 = rows.to(tl.int64)
@@ -59,18 +70,18 @@ def _gemv_nf4_kernel(
     if NESTED:
         offset = tl.load(OFFSET)
     for k0 in range(0, K, BLOCK_K):
-        kmask = (k0 + 2 * half_k) < K
+        kmask = ((k0 + 2 * half_k) < K) | EVEN_K
         m = rmask[:, None] & kmask[None, :]
         b = tl.load(W + rows64[:, None] * (K // 2) + (k0 // 2 + half_k)[None, :], mask = m, other = 0)
         b = b.to(tl.int32)
         # High nibble is the earlier element, as bitsandbytes packs it.
-        hi = tl.load(LUT + (b >> 4))
-        lo = tl.load(LUT + (b & 15))
+        hi = _nf4_lut(LUT, b >> 4, LUT_MODE)
+        lo = _nf4_lut(LUT, b & 15, LUT_MODE)
         w = tl.reshape(tl.join(hi, lo), (BLOCK_N, BLOCK_K))
         xk = k0 + ks
-        x = tl.load(X + xk, mask = xk < K, other = 0.0).to(tl.float32)
+        x = tl.load(X + xk, mask = (xk < K) | EVEN_K, other = 0.0).to(tl.float32)
         part = tl.sum(tl.reshape(w * x[None, :], (BLOCK_N, NB, BLOCKSIZE)), axis = 2)
-        bmask = rmask[:, None] & ((k0 + nbs * BLOCKSIZE) < K)[None, :]
+        bmask = rmask[:, None] & (((k0 + nbs * BLOCKSIZE) < K) | EVEN_K)[None, :]
         blk = rows64[:, None] * blocks_per_row + (k0 // BLOCKSIZE + nbs)[None, :]
         if NESTED:
             q = tl.load(ABSMAX + blk, mask = bmask, other = 0).to(tl.int32)
@@ -97,6 +108,8 @@ def _gemv_nf4_words_kernel(
     OUT,
     N,
     K,
+    M,
+    OUT_STRIDE,
     BLOCKSIZE: tl.constexpr,
     BLOCKSIZE2: tl.constexpr,
     NESTED: tl.constexpr,
@@ -106,7 +119,11 @@ def _gemv_nf4_words_kernel(
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
+    # A tile's M rows run adjacently so the weight is read once.
     pid = tl.program_id(0)
+    X += (pid % M) * K
+    OUT += (pid % M) * OUT_STRIDE
+    pid = pid // M
     rows = pid * BLOCK_N + tl.arange(0, BLOCK_N)
     rmask = rows < N
     rows64 = rows.to(tl.int64)
@@ -215,6 +232,8 @@ def _launch(
     # Under dynamic=True the weight sizes arrive as SymInts; specialize them (an unhashable SymInt
     # in the cached config made Dynamo skip the frame).
     N, K, blocksize, blocksize2 = int(N), int(K), int(blocksize), int(blocksize2)
+    # From X, not out: an out with spare rows must not read past X.
+    M = X.numel() // K
     use_words, grid, block_n, block_k, num_warps = _gemv_config(
         N, K, blocksize, _capability(X.device.index), _word_aligned(W), _FORCE_KERNEL
     )
@@ -230,7 +249,10 @@ def _launch(
         out,
         N,
         K,
+        M,
+        out.stride(0) if M > 1 else 0,
     )
+    grid = (grid[0] * M,)
     constexprs = dict(
         BLOCKSIZE = blocksize,
         BLOCKSIZE2 = blocksize2 if nested else 1,
@@ -239,12 +261,25 @@ def _launch(
         BLOCK_N = block_n,
         BLOCK_K = block_k,
     )
+    if not use_words:
+        # Even K skips K masks; register gather replaces LUT loads: 16-23% faster (A100/L4/T4, Triton 3.7).
+        constexprs["EVEN_K"] = K % block_k == 0
+        constexprs["LUT_MODE"] = 2 if _HAS_TL_GATHER else 0
     if kernel is _gemv_nf4_kernel or kernel is _gemv_nf4_words_kernel:
-        entry = launch(kernel, grid, args, 8, constexprs, X.device.index, num_warps = num_warps)
+        entry = launch(
+            kernel,
+            grid,
+            args,
+            8,
+            constexprs,
+            X.device.index,
+            num_warps = num_warps,
+            enable_fp_fusion = True,
+        )
         if plan:
             return _rerun(entry, grid, args, X.device.index)
     else:
-        kernel[grid](*args, **constexprs, num_warps = num_warps)
+        kernel[grid](*args, **constexprs, num_warps = num_warps, enable_fp_fusion = True)
     return out
 
 
@@ -375,6 +410,98 @@ def gemv_nf4_planned(
     """Eager gemv_nf4 into out on the current device, returning a function (X, out) that repeats
     the launch for this same weight, skipping the per-call argument handling (decode runs every
     weight once per token). None when that is unavailable."""
+    return _launch(
+        _KERNELS,
+        X,
+        W_u8,
+        absmax,
+        code2,
+        absmax2,
+        offset,
+        code,
+        out,
+        int(shape[0]),
+        int(shape[1]),
+        int(blocksize),
+        int(blocksize2) if code2 is not None else 0,
+        plan = True,
+    )
+
+
+# At 8 rows dequantize + matmul won end to end on A100 and RTX PRO 6000.
+GEMV_MAX_ROWS = int(os.environ.get("UNSLOTH_GEMV_MAX_ROWS", "4"))  # 1 = always dequantize
+
+
+@torch.library.triton_op("unsloth::gemv_nf4_rows", mutates_args = ())
+def _gemv_nf4_rows_op(
+    X: torch.Tensor,
+    W: torch.Tensor,
+    absmax: torch.Tensor,
+    code2: Optional[torch.Tensor],
+    absmax2: Optional[torch.Tensor],
+    offset: Optional[torch.Tensor],
+    code: torch.Tensor,
+    blocksize: int,
+    blocksize2: int,
+    out_features: int,
+    in_features: int,
+) -> torch.Tensor:
+    out = torch.empty((X.shape[0], 1, out_features), dtype = X.dtype, device = X.device)
+    return _launch(
+        (
+            torch.library.wrap_triton(_gemv_nf4_kernel),
+            torch.library.wrap_triton(_gemv_nf4_words_kernel),
+        ),
+        X,
+        W,
+        absmax,
+        code2,
+        absmax2,
+        offset,
+        code,
+        out,
+        out_features,
+        in_features,
+        blocksize,
+        blocksize2,
+    )
+
+
+def gemv_nf4_rows(X, W_u8, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out):
+    """X (M, 1, K) contiguous -> out (M, 1, N), maybe strided; each row bit-identical to gemv_nf4."""
+    N, K = int(shape[0]), int(shape[1])
+    blocksize, blocksize2 = int(blocksize), int(blocksize2) if code2 is not None else 0
+    if _is_compiling():
+        result = _gemv_nf4_rows_op(
+            X, W_u8, absmax, code2, absmax2, offset, code, blocksize, blocksize2, N, K
+        )
+        out.copy_(result)
+        return out
+    args = (
+        _KERNELS,
+        X,
+        W_u8,
+        absmax,
+        code2,
+        absmax2,
+        offset,
+        code,
+        out,
+        N,
+        K,
+        blocksize,
+        blocksize2,
+    )
+    if X.device.index == _current_device():
+        return _launch(*args)
+    with torch.cuda.device(X.device):
+        return _launch(*args)
+
+
+def gemv_nf4_rows_planned(
+    X, W_u8, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, out
+):
+    """gemv_nf4_planned for gemv_nf4_rows."""
     return _launch(
         _KERNELS,
         X,

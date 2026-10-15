@@ -25,6 +25,7 @@ import { useNativeBrowser } from "./native-view";
 import { NewTabPage } from "./new-tab-page";
 import { useBrowserPrefsStore } from "./prefs-store";
 import { fitZoomToPage, zoomTab } from "./zoom";
+import { frameNotice } from "./frame-message";
 import type { FrameMessage } from "./page-frame";
 import { PageFrame } from "./page-frame";
 import {
@@ -139,23 +140,38 @@ function useFrameMessages(tabId: string, origin: string | null) {
           store.reload(tabId);
           break;
         case "upload":
-        case "scriptNavigation": {
-          const tab = store.tabs.find((candidate) => candidate.id === tabId);
-          const entry = tab ? currentEntry(tab) : null;
-          const url = tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
-          toast(t(message.type === "upload" ? "browser.error.upload" : "browser.error.scriptNavigation"), {
-            action: url ? { label: t("browser.openExternal"), onClick: () => openExternalLink(url) } : undefined,
+        case "scriptNavigation":
+        case "needsBrowser": {
+          // Read at click time: the notice can outlive a pushState to another route.
+          const pageUrl = () => {
+            const tab = useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
+            const entry = tab ? currentEntry(tab) : null;
+            return tab?.displayUrl ?? (entry?.kind === "web" ? entry.url : null);
+          };
+          const shown = pageUrl();
+          toast(t(`browser.error.${message.type}`), {
+            ...frameNotice(message.type, tabId),
+            action: shown
+              ? { label: t("browser.openExternal"), onClick: () => openExternalLink(pageUrl() ?? shown) }
+              : undefined,
           });
           break;
         }
-        case "shortcut":
-          if (message.key === "l") store.focusAddress();
-          else if (message.key === "f") requestFind(BROWSER_FIND_TARGET);
-          else if (message.key === "t") store.newTab();
-          else if (message.key === "w") store.closeTab(tabId);
-          else if (message.key === "r") store.reload(tabId);
-          else if (message.key === "d") store.bookmarkPage();
+        case "shortcut": {
+          const { key } = message;
+          const run = () => {
+            if (key === "l") store.focusAddress();
+            else if (key === "f") requestFind(BROWSER_FIND_TARGET);
+            else if (key === "t") store.newTab();
+            else if (key === "w") store.closeTab(tabId);
+            else if (key === "r") store.reload(tabId);
+            else if (key === "d") store.bookmarkPage();
+          };
+          // A full screen page covers the panel; leave it first so the shortcut's result shows.
+          if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined).then(run);
+          else run();
           break;
+        }
         case "zoom":
           // A key goes through the scope, so the View menu repeating it doesn't zoom twice.
           if (message.wheel) zoomTab(tabId, message.direction);
@@ -252,6 +268,15 @@ function WebPage({
   const blocked = state.status === "error" && state.resubmit === true;
   const pageOrigin = state.status === "ready" ? new URL(state.page.url).origin : null;
   const onFrameMessage = useFrameMessages(tab.id, pageOrigin);
+  // A notice's action opens the tab's current address, so it goes with the page it is about.
+  useEffect(
+    () => () => {
+      for (const type of ["upload", "scriptNavigation", "needsBrowser"] as const) {
+        toast.dismiss(frameNotice(type, tab.id).id);
+      }
+    },
+    [tab.id],
+  );
   const updateTab = useBrowserStore((store) => store.updateTab);
   const reload = useBrowserStore((store) => store.reload);
 
@@ -352,6 +377,8 @@ function WebPage({
       html={page.html}
       url={page.url}
       base={page.base}
+      ownBase={page.ownBase === true}
+      anyOrigin={page.anyOrigin === true}
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}

@@ -131,6 +131,50 @@ def test_hopper_auto_prefers_fa3_then_fa4(fake, monkeypatch):
     assert fi.maybe_activate_flash_attention_impl(_model()) is None
 
 
+@pytest.mark.parametrize("hidden_size", [896, 1024, fi._HOPPER_AUTO_MIN_HIDDEN - 8])
+def test_hopper_auto_keeps_bundled_flash_for_narrow_models(fake, monkeypatch, hidden_size):
+    # H100: FA3's extra host time per call outweighs its kernel win while a narrow model is launch bound.
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    narrow = _model(hidden_size = hidden_size, head_dim = 128)
+    assert fi.maybe_activate_flash_attention_impl(narrow) is None
+    assert fake.probes == [] and fake.current_impl is None
+    assert str(hidden_size) in fi.FLASH_IMPL_STATE["reason"]
+    # No model: nothing to size, so auto stays off on sm90.
+    assert fi.maybe_activate_flash_attention_impl(None) is None
+    # fa3 / fa4 still opt in for any width.
+    for value, impl in (("fa3", "FA3"), ("fa4", "FA4")):
+        monkeypatch.setenv(fi._ENV, value)
+        assert fi.maybe_activate_flash_attention_impl(narrow) == impl
+        fi.deactivate_flash_attention_impl()
+    # sm100 is not gated on width.
+    monkeypatch.setenv(fi._ENV, "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {10})
+    assert fi.maybe_activate_flash_attention_impl(narrow) == "FA4"
+    fi.deactivate_flash_attention_impl()
+
+
+def test_hopper_auto_width_gate_reads_text_config_and_restores(fake, monkeypatch):
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    wide = fi._HOPPER_AUTO_MIN_HIDDEN
+    multimodal = types.SimpleNamespace(
+        config = types.SimpleNamespace(
+            text_config = _config(hidden_size = wide),
+            vision_config = types.SimpleNamespace(
+                hidden_size = 1152, num_attention_heads = 16, head_dim = 72
+            ),
+        ),
+        dtype = torch.bfloat16,
+    )
+    assert fi.maybe_activate_flash_attention_impl(multimodal) == "FA3"
+    # A later narrow model restores torch's bundled flash.
+    assert fi.maybe_activate_flash_attention_impl(_model(hidden_size = 1024)) is None
+    assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
+    assert (
+        fi._hidden_size(types.SimpleNamespace(config = types.SimpleNamespace(hidden_size = True)))
+        is None
+    )
+
+
 def test_hopper_auto_tries_fa4_when_fa3_fails_its_probe(fake, monkeypatch):
     monkeypatch.setattr(fi, "_device_majors", lambda: {9})
     tried = []
@@ -360,6 +404,135 @@ def test_flash_impl_allows_reads_torch_active_impl(monkeypatch):
     assert not fi.flash_impl_allows(160, None, torch.device("cuda", 0))
     assert not fi.flash_impl_allows(256, 4096, torch.device("cuda", 0))
     assert fi.flash_impl_allows(256, None, torch.device("cuda", 0))
+
+
+@pytest.mark.parametrize("mean_len", [150.0, 700, 1023])
+def test_blackwell_auto_keeps_bundled_flash_for_short_documents(fake, monkeypatch, mean_len):
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) is None
+    assert fake.probes == [] and fake.current_impl is None
+    assert f"{mean_len:.0f}" in fi.FLASH_IMPL_STATE["reason"]
+    for long_or_unknown in (fi._BLACKWELL_AUTO_MIN_MEAN_DOC_LEN, 8192, None):
+        assert (
+            fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = long_or_unknown)
+            == "FA4"
+        )
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) is None
+    assert fake.current_impl is None and fi.FLASH_IMPL_STATE["active"] is None
+    monkeypatch.setenv(fi._ENV, "fa4")
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) == "FA4"
+    fi.deactivate_flash_attention_impl()
+    monkeypatch.setenv(fi._ENV, "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {9})
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = mean_len) == "FA3"
+    fi.deactivate_flash_attention_impl()
+
+
+def test_mean_document_length_reads_packed_and_padding_free_rows():
+    datasets = pytest.importorskip("datasets")
+    packed = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], [6]]}
+    )
+    assert fi._mean_document_length(packed) == pytest.approx(14 / 3)
+    packed.set_format("torch")
+    assert fi._mean_document_length(packed) == pytest.approx(14 / 3)
+    rows = datasets.Dataset.from_dict({"input_ids": [[1] * 100, [1] * 300], "labels": [[1], [1]]})
+    assert fi._mean_document_length(rows) == 200
+    assert fi._mean_document_length(rows, rows = 1) == 100
+    longest_first = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * n for n in (400, 300, 200, 100)]}
+    )
+    assert fi._mean_document_length(longest_first, rows = 2) == 250
+    # The sample reaches the tail when the size is not a multiple of rows: 128 x 1200 then 72 x 100.
+    tail = datasets.Dataset.from_dict({"input_ids": [[1] * 1200] * 128 + [[1] * 100] * 72})
+    assert fi._mean_document_length(tail) < 1024
+    mixed = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 8, [1] * 6], "seq_lengths": [[3, 5], None]}
+    )
+    assert fi._mean_document_length(mixed) == pytest.approx(14 / 3)
+    # The last row is always sampled: 128 one-document rows, then one row of many short documents.
+    last = datasets.Dataset.from_dict(
+        {
+            "input_ids": [[1] * 1024] * 128 + [[1] * 1024],
+            "seq_lengths": [[1024]] * 128 + [[8] * 128],
+        }
+    )
+    assert fi._mean_document_length(last) < 1024
+    # Columns hidden by the format are not read: the collator sees one document per row.
+    hidden = datasets.Dataset.from_dict({"input_ids": [[1] * 8192], "seq_lengths": [[64] * 128]})
+    hidden.set_format("torch", columns = ["input_ids"])
+    assert fi._mean_document_length(hidden) == 8192
+    empty = datasets.Dataset.from_dict(
+        {"input_ids": [[1] * 100, [1] * 300], "seq_lengths": [[], []]}
+    )
+    assert fi._mean_document_length(empty) == 200
+    custom = datasets.Dataset.from_dict({"input_ids": [[1] * 2000], "doc_lens": [[100] * 20]})
+    assert fi._mean_document_length(custom, key = "doc_lens") == 100
+    assert fi._mean_document_length(custom) == 2000
+    assert fi._mean_document_length(None) is None
+    assert fi._mean_document_length(datasets.Dataset.from_dict({"text": ["a"]})) is None
+    assert fi._mean_document_length(rows.select([])) is None
+    streamed = rows.to_iterable_dataset()
+    assert fi._mean_document_length(streamed) is None
+
+
+def test_mean_document_length_with_dataset_transforms_is_unknown():
+    datasets = pytest.importorskip("datasets")
+    calls = [0]
+
+    def truncate(batch):
+        calls[0] += 1
+        return {"input_ids": [ids[:10] for ids in batch["input_ids"]]}
+
+    stored = datasets.Dataset.from_dict({"input_ids": [[1] * 4096, [1] * 4096]}).with_transform(
+        truncate
+    )
+    assert fi._mean_document_length(stored) is None
+
+    def tokenize(batch):
+        calls[0] += 1
+        return {"input_ids": [[1] * len(text) for text in batch["text"]]}
+
+    raw = datasets.Dataset.from_dict({"text": ["a" * 100]}).with_transform(tokenize)
+    assert fi._mean_document_length(raw) is None
+    assert calls[0] == 0
+
+
+def test_document_length_only_read_under_auto_on_sm100(fake, monkeypatch):
+    calls = []
+
+    def length():
+        calls.append(1)
+        return 100
+
+    for requested, majors in (("fa4", {10}), ("auto", {9}), ("off", {10})):
+        monkeypatch.setenv("UNSLOTH_FLASH_ATTENTION_IMPL", requested)
+        monkeypatch.setattr(fi, "_device_majors", lambda majors = majors: majors)
+        fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = length)
+        fi.deactivate_flash_attention_impl()
+    assert calls == []
+    monkeypatch.setenv("UNSLOTH_FLASH_ATTENTION_IMPL", "auto")
+    monkeypatch.setattr(fi, "_device_majors", lambda: {10})
+    assert fi.maybe_activate_flash_attention_impl(_model(), mean_document_length = length) is None
+    assert calls == [1]
+
+
+def test_scope_to_train_reads_the_train_dataset_document_length(fake):
+    datasets = pytest.importorskip("datasets")
+    seen = []
+
+    class Trainer:
+        def train(self):
+            seen.append(fake.current_impl)
+
+    short = datasets.Dataset.from_dict({"input_ids": [[1] * 8], "seq_lengths": [[200] * 40]})
+    long = datasets.Dataset.from_dict({"input_ids": [[1] * 8], "seq_lengths": [[4096, 4096]]})
+    for dataset in (short, long, None):
+        trainer = Trainer()
+        trainer.model, trainer.train_dataset = _model(), dataset
+        fi.scope_flash_attention_impl_to_train(trainer, trainer.model)
+        trainer.train()
+    assert seen == [None, "FA4", "FA4"] and fake.current_impl is None
+    assert len(fake.probes) == 1
 
 
 def _fa4_ready():
@@ -607,3 +780,21 @@ def test_hf_wrapper_skips_torch_varlen_for_shapes_the_impl_lacks(
         assert hpa.HF_PACKED_ATTENTION_STATS["efficient"] == before + 1
     else:
         assert out == ("orig", None) and not used
+
+
+@pytest.mark.parametrize("key", ["llm_config", "language_config"])
+def test_hidden_size_reads_a_decoder_exposed_only_as_llm_or_language_config(key):
+    # InternVL / Nemotron-style: a narrow vision tower, the wide decoder only under llm_config / language_config.
+    config = types.SimpleNamespace(vision_config = types.SimpleNamespace(hidden_size = 1024))
+    setattr(config, key, types.SimpleNamespace(hidden_size = 4096))
+    assert fi._hidden_size(types.SimpleNamespace(config = config)) == 4096
+
+
+def test_hidden_size_follows_get_text_config():
+    class Config:
+        vision_config = types.SimpleNamespace(hidden_size = 1152)
+
+        def get_text_config(self):
+            return types.SimpleNamespace(hidden_size = 3072)
+
+    assert fi._hidden_size(types.SimpleNamespace(config = Config())) == 3072
