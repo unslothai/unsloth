@@ -90,7 +90,6 @@ def unwrap_message_column(
         return dataset
     if features:
         from datasets import Features
-
         (inner,) = feature.values()
         features = Features({**features, column: inner})
     return dataset.map(
