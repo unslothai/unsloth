@@ -425,9 +425,14 @@ def test_diffusion_capability_labeled_image_video_gen():
         "features/hub/lib/model-type-filter.ts",
         "features/hub/lib/view-models.ts",
     ):
-        src = _read(rel)
-        assert "Image to text" not in src, rel
-        assert "Image/video gen" in src, rel
+        assert "Image to text" not in _read(rel), rel
+    assert '{ value: "diffusion", label: "Image/video gen" }' in _read(
+        "features/hub/lib/model-type-filter.ts"
+    )
+    # The Hub filter splits the capability into its two generator kinds (#13749).
+    hub = _read("features/hub/lib/view-models.ts")
+    assert '{ value: "image-gen", label: "Image gen" }' in hub
+    assert '{ value: "video-gen", label: "Video gen" }' in hub
 
 
 def test_active_model_config_round_trips_gpu_fields():
