@@ -37511,13 +37511,20 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     tracker.__enter__()
     watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
-        # Every prompt first, so an invalid one is a 400 before anything generates.
-        resolved = [
-            await asyncio.to_thread(backend.resolve_completion_prompt, prompt)
-            for prompt in _completion_prompts(body["prompt"])
-        ]
+        # Every prompt first, so an invalid one is a 400 before anything generates. Run as a
+        # generation unit, so the tracker covers the thread until a cancel actually ends it.
+        resolved = await _run_blocking_generation(
+            lambda: [
+                backend.resolve_completion_prompt(prompt, cancel_event = cancel_event)
+                for prompt in _completion_prompts(body["prompt"])
+            ],
+            cancel_event,
+            name = "openai-completions-prompt",
+        )
     except BaseException as exc:
         tracker.__exit__(None, None, None)
+        if isinstance(exc, InterruptedError):
+            raise HTTPException(status_code = 499, detail = "Request cancelled.")
         if not isinstance(exc, ValueError):
             raise
         raise HTTPException(

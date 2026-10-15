@@ -11746,7 +11746,14 @@ def test_admission_prices_replay_against_what_generation_really_sends():
 class _MLXCompletionBackend:
     active_model_name = "mlx/m"
 
-    def resolve_completion_prompt(self, prompt):
+    def resolve_completion_prompt(
+        self,
+        prompt,
+        cancel_event = None,
+    ):
+        if prompt == "stopped":
+            cancel_event.set()
+            raise InterruptedError("Request cancelled.")
         if prompt == [999]:
             raise ValueError("Prompt contains invalid tokens.")
         if prompt == "queued":
@@ -11868,6 +11875,10 @@ def test_mlx_completion_reads_the_body_as_llama_server_does(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         _run_mlx_completion(monkeypatch, {"prompt": [999]})
     assert exc.value.status_code == 400 and active_generations.count() == 0
+    # Stopped while queued behind another generation: the wait ends, nothing generates.
+    with pytest.raises(HTTPException) as exc:
+        _run_mlx_completion(monkeypatch, {"prompt": "stopped"})
+    assert exc.value.status_code == 499 and active_generations.count() == 0
 
 
 def test_mlx_completion_streams_text_completion_chunks(monkeypatch):

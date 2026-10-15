@@ -531,3 +531,19 @@ def test_a_raw_completion_prompt_crosses_the_worker_only_to_a_backend_that_serve
         queue.clear()
         _handle_resolve_prompt(backend, {"request_id": "r", "prompt": [10**9]}, queue)
         assert queue[0]["error"] and queue[0].get("invalid") is invalid
+
+
+def test_a_raw_prompt_queued_behind_a_generation_stops_waiting_on_cancel():
+    import time
+
+    from core.inference.orchestrator import InferenceOrchestrator
+
+    orch = InferenceOrchestrator.__new__(InferenceOrchestrator)
+    orch._gen_lock = threading.Lock()
+    orch._gen_lock.acquire()  # a running generation holds it
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    started = time.monotonic()
+    with pytest.raises(InterruptedError):
+        orch.resolve_completion_prompt("p", cancel_event = cancel)
+    assert time.monotonic() - started < 2

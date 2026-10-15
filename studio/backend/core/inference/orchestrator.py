@@ -2989,9 +2989,19 @@ class InferenceOrchestrator:
         self,
         prompt,
         timeout: float = 30.0,
+        cancel_event = None,
     ) -> dict:
-        """``ids`` and echo ``text`` for one raw completion prompt; ValueError if invalid."""
-        with self._gen_lock:
+        """``ids`` and echo ``text`` for one raw completion prompt; ValueError if invalid,
+        InterruptedError once *cancel_event* is set while it waits."""
+
+        def cancelled():
+            return cancel_event is not None and cancel_event.is_set()
+
+        # Polled, so a Stop or disconnect while queued behind a generation ends the wait.
+        while not self._gen_lock.acquire(timeout = 0.1):
+            if cancelled():
+                raise InterruptedError("Request cancelled.")
+        try:
             if self._unload_pending or not self.active_model_name:
                 raise RuntimeError("No active model")
             request_id = str(uuid.uuid4())
@@ -3010,10 +3020,14 @@ class InferenceOrchestrator:
                         timeout,
                     )
                     # A dispatched generation the worker runs alone answers first, however long.
-                    if self._replies_in_flight() <= 1:
+                    if self._replies_in_flight() <= 1 or cancelled():
                         break
             finally:
                 release_mailbox()
+        finally:
+            self._gen_lock.release()
+        if resp is None and cancelled():
+            raise InterruptedError("Request cancelled.")
         if resp is None:
             raise RuntimeError("Timed out resolving the prompt")
         if resp.get("error"):
