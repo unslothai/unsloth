@@ -19,7 +19,6 @@ pytest.importorskip("triton")
 def F():
     os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
     from unsloth.kernels import fp8
-
     return fp8
 
 

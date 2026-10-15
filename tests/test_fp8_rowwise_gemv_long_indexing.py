@@ -23,7 +23,6 @@ CUDA = torch.cuda.is_available()
 def F():
     os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
     from unsloth.kernels import fp8
-
     return fp8
 
 
@@ -66,7 +65,11 @@ def test_launch_widens_exactly_when_offsets_pass_int32(F, monkeypatch, N, K, exp
     assert kwargs.get("LONG_INDEXING", False) is expected, (N, K, kwargs)
 
 
-def _compile_ir(F, long_indexing, arch = 90):
+def _compile_ir(
+    F,
+    long_indexing,
+    arch = 90,
+):
     from triton.compiler import ASTSource
 
     fn = F._fp8_rowwise_gemv_kernel
@@ -90,7 +93,6 @@ def _compile_ir(F, long_indexing, arch = 90):
 def triton_compile(src, arch):
     import triton
     from triton.backends.compiler import GPUTarget
-
     return triton.compile(src, target = GPUTarget("cuda", arch, 32)).asm["ttir"]
 
 
@@ -99,7 +101,11 @@ def test_row_offset_multiply_width(F, long_indexing):
     """The weight-row multiply is i64 exactly on the LONG_INDEXING path (compile-only)."""
     ttir = _compile_ir(F, long_indexing)
     muls = [line for line in ttir.splitlines() if "arith.muli" in line]
-    wide = [line for line in muls if "i64>" in line or ": i64 " in line or line.rstrip().endswith(": i64")]
+    wide = [
+        line
+        for line in muls
+        if "i64>" in line or ": i64 " in line or line.rstrip().endswith(": i64")
+    ]
     assert muls, ttir
     if long_indexing:
         # Every multiply, including program_id * BLOCK_N (rows past 2^31 for an (N, 1) weight).
@@ -108,7 +114,12 @@ def test_row_offset_multiply_width(F, long_indexing):
         assert not wide, "\n".join(wide)
 
 
-def _operands(N, K, device = "cuda", seed = 0):
+def _operands(
+    N,
+    K,
+    device = "cuda",
+    seed = 0,
+):
     g = torch.Generator(device = device).manual_seed(seed)
     X = torch.randn(1, K, device = device, dtype = torch.bfloat16, generator = g)
     W = (torch.randn(N, K, device = device, generator = g) * 0.05).to(torch.float8_e4m3fn)
