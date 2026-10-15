@@ -215,6 +215,24 @@ def test_only_model_turns_change():
     assert new.replace(EMPTY, "") == old
 
 
+def test_tool_round_gets_one_empty_channel_and_stays_a_prefix():
+    call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": {"x": 1}}}
+    msgs = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": None, "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        {"role": "assistant", "content": "Done."},
+    ]
+    out = _render(NS["gemma4_empty_thought_template"], msgs)
+    assert out == (
+        "<bos><|turn>user\nHi<turn|>\n"
+        f"<|turn>model\n{EMPTY}<|tool_call>call:f{{x:1}}<tool_call|>"
+        '<|tool_response>response:f{value:<|"|>ok<|"|>}<tool_response|>Done.<turn|>\n'
+    )
+    prompt = _render(NS["gemma4_empty_thought_template"], msgs[:3], add_generation_prompt = True)
+    assert out == prompt + "Done.<turn|>\n"
+
+
 def test_roles_must_alternate_still_raises():
     with pytest.raises(TemplateError):
         _render(NS["gemma4_empty_thought_template"], [{"role": "assistant", "content": "x"}])

@@ -917,7 +917,156 @@ DEFAULT_SYSTEM_MESSAGE["gemma3n"] = None
 # Gemma-4 uses <|turn>role\n...<turn|>\n format
 # =========================================== Gemma-4
 gemma4_template = \
-"""{%- macro strip_thinking(text) -%}
+"""{%- macro format_parameters(properties, required, filter_keys=false) -%}
+    {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
+    {%- set ns = namespace(found_first=false) -%}
+    {%- for key, value in properties | dictsort -%}
+        {%- set add_comma = false -%}
+        {%- if not filter_keys or key not in standard_keys -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {{ key }}:{
+            {%- if value['description'] -%}
+                description:<|"|>{{ value['description'] }}<|"|>
+                {%- set add_comma = true -%}
+            {%- endif -%}
+            {%- if value['type'] | upper == 'STRING' -%}
+                {%- if value['enum'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    enum:{{ format_argument(value['enum']) }}
+                {%- endif -%}
+            {%- elif value['type'] | upper == 'ARRAY' -%}
+                {%- if value['items'] is mapping and value['items'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    items:{
+                    {%- set ns_items = namespace(found_first=false) -%}
+                    {%- for item_key, item_value in value['items'] | dictsort -%}
+                        {%- if item_value is not none -%}
+                            {%- if ns_items.found_first %},{% endif -%}
+                            {%- set ns_items.found_first = true -%}
+                            {%- if item_key == 'properties' -%}
+                                properties:{
+                                {%- if item_value is mapping -%}
+                                    {{- format_parameters(item_value, value['items']['required'] | default([])) -}}
+                                {%- endif -%}
+                                }
+                            {%- elif item_key == 'required' -%}
+                                required:[
+                                {%- for req_item in item_value -%}
+                                    <|"|>{{- req_item -}}<|"|>
+                                    {%- if not loop.last %},{% endif -%}
+                                {%- endfor -%}
+                                ]
+                            {%- elif item_key == 'type' -%}
+                                {%- if item_value is string -%}
+                                    type:{{ format_argument(item_value | upper) }}
+                                {%- else -%}
+                                    type:{{ format_argument(item_value | map('upper') | list) }}
+                                {%- endif -%}
+                            {%- else -%}
+                                {{ item_key }}:{{ format_argument(item_value) }}
+                            {%- endif -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    }
+                {%- endif -%}
+            {%- endif -%}
+            {%- if value['nullable'] %}
+                {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                nullable:true
+            {%- endif -%}
+            {%- if value['type'] | upper == 'OBJECT' -%}
+                {%- if value['properties'] is defined and value['properties'] is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value['properties'], value['required'] | default([])) -}}
+                    }
+                {%- elif value is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value, value['required'] | default([]), filter_keys=true) -}}
+                    }
+                {%- endif -%}
+                {%- if value['required'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    required:[
+                    {%- for item in value['required'] | default([]) -%}
+                        <|"|>{{- item -}}<|"|>
+                        {%- if not loop.last %},{% endif -%}
+                    {%- endfor -%}
+                    ]
+                {%- endif -%}
+            {%- endif -%}
+            {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+            type:<|"|>{{ value['type'] | upper }}<|"|>}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+{%- macro format_function_declaration(tool_data) -%}
+    declaration:{{- tool_data['function']['name'] -}}{description:<|"|>{{- tool_data['function']['description'] -}}<|"|>
+    {%- set params = tool_data['function']['parameters'] -%}
+    {%- if params -%}
+        ,parameters:{
+        {%- if params['properties'] -%}
+            properties:{ {{- format_parameters(params['properties'], params['required']) -}} },
+        {%- endif -%}
+        {%- if params['required'] -%}
+            required:[
+            {%- for item in params['required'] -%}
+                <|"|>{{- item -}}<|"|>
+                {{- ',' if not loop.last -}}
+            {%- endfor -%}
+            ],
+        {%- endif -%}
+        {%- if params['type'] -%}
+            type:<|"|>{{- params['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    {%- if 'response' in tool_data['function'] -%}
+        {%- set response_declaration = tool_data['function']['response'] -%}
+        ,response:{
+        {%- if response_declaration['description'] -%}
+            description:<|"|>{{- response_declaration['description'] -}}<|"|>,
+        {%- endif -%}
+        {%- if response_declaration['type'] | upper == 'OBJECT' -%}
+            type:<|"|>{{- response_declaration['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    }
+{%- endmacro -%}
+{%- macro format_argument(argument, escape_keys=True) -%}
+    {%- if argument is none -%}
+        {{- 'null' -}}
+    {%- elif argument is string -%}
+        {{- '<|"|>' + argument + '<|"|>' -}}
+    {%- elif argument is boolean -%}
+        {{- 'true' if argument else 'false' -}}
+    {%- elif argument is mapping -%}
+        {{- '{' -}}
+        {%- set ns = namespace(found_first=false) -%}
+        {%- for key, value in argument | dictsort -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {%- if escape_keys -%}
+                {{- '<|"|>' + key + '<|"|>' -}}
+            {%- else -%}
+                {{- key -}}
+            {%- endif -%}
+            :{{- format_argument(value, escape_keys=escape_keys) -}}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- elif argument is sequence -%}
+        {{- '[' -}}
+        {%- for item in argument -%}
+            {{- format_argument(item, escape_keys=escape_keys) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- ']' -}}
+    {%- else -%}
+        {{- argument -}}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro strip_thinking(text) -%}
     {%- set ns = namespace(result='') -%}
     {%- for part in text.split('<channel|>') -%}
         {%- if '<|channel>' in part -%}
@@ -928,9 +1077,23 @@ gemma4_template = \
     {%- endfor -%}
     {{- ns.result | trim -}}
 {%- endmacro -%}
+{%- macro format_tool_response_block(tool_name, response) -%}
+    {{- '<|tool_response>' -}}
+    {%- if response is mapping -%}
+        {{- 'response:' + tool_name + '{' -}}
+        {%- for key, value in response | dictsort -%}
+            {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- else -%}
+        {{- 'response:' + tool_name + '{value:' + format_argument(response, escape_keys=False) + '}' -}}
+    {%- endif -%}
+    {{- '<tool_response|>' -}}
+{%- endmacro -%}
 {%- set thinking = enable_thinking is defined and enable_thinking -%}
 {%- set loop_messages = messages -%}
-{%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
+{%- if messages[0]['role'] in ['system', 'developer'] or thinking or (tools is defined and tools) -%}
     {{ '<|turn>system\n' }}
     {%- if thinking -%}
         {{ '<|think|>\n' }}
@@ -939,10 +1102,18 @@ gemma4_template = \
         {{ messages[0]['content'] | trim }}
         {%- set loop_messages = messages[1:] -%}
     {%- endif -%}
+    {%- if tools is defined and tools -%}
+        {%- for tool in tools -%}
+            {{- '<|tool>' + format_function_declaration(tool) | trim + '<tool|>' -}}
+        {%- endfor -%}
+    {%- endif -%}
     {{ '<turn|>\n' }}
 {%- endif -%}
+{%- set ns_tool = namespace(turns=0, tool_calls=false, tool_response=false) -%}
 {%- for message in loop_messages -%}
-    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+    {%- if message['role'] != 'tool' -%}
+    {%- set continues = message['role'] == 'assistant' and ns_tool.tool_calls -%}
+    {%- if not continues and (message['role'] == 'user') != (ns_tool.turns % 2 == 0) -%}
         {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
     {%- endif -%}
     {%- if (message['role'] == 'assistant') -%}
@@ -950,7 +1121,73 @@ gemma4_template = \
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<|turn>' + role + '\n' }}
+    {%- if not continues -%}
+        {%- set ns_tool.turns = ns_tool.turns + 1 -%}
+        {{ '<|turn>' + role + '\n' }}
+    {%- endif -%}
+    {%- set ns_tool.tool_calls = message.get('tool_calls') -%}
+    {%- if ns_tool.tool_calls -%}
+        {%- for tool_call in ns_tool.tool_calls -%}
+            {%- set function = tool_call['function'] -%}
+            {{- '<|tool_call>call:' + function['name'] + '{' -}}
+            {%- if function['arguments'] is mapping -%}
+                {%- set ns_args = namespace(found_first=false) -%}
+                {%- for key, value in function['arguments'] | dictsort -%}
+                    {%- if ns_args.found_first %},{% endif -%}
+                    {%- set ns_args.found_first = true -%}
+                    {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+                {%- endfor -%}
+            {%- elif function['arguments'] is string -%}
+                {%- set argstr = function['arguments'] | trim -%}
+                {%- if argstr[:1] == '{' and argstr[-1:] == '}' -%}
+                    {{- argstr[1:-1] -}}
+                {%- else -%}
+                    {{- function['arguments'] -}}
+                {%- endif -%}
+            {%- endif -%}
+            {{- '}<tool_call|>' -}}
+        {%- endfor -%}
+        {%- set ns_tool.tool_response = false -%}
+        {%- set ns_scan = namespace(stopped=false, next_role=none) -%}
+        {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
+            {%- if ns_scan.stopped -%}
+            {%- elif loop_messages[k]['role'] != 'tool' -%}
+                {%- set ns_scan.stopped = true -%}
+                {%- set ns_scan.next_role = loop_messages[k]['role'] -%}
+            {%- else -%}
+                {%- set follow = loop_messages[k] -%}
+                {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
+                {%- for tc in ns_tool.tool_calls -%}
+                    {%- if tc.get('id') == follow.get('tool_call_id') -%}
+                        {%- set ns_tname.name = tc['function']['name'] -%}
+                    {%- endif -%}
+                {%- endfor -%}
+                {%- set tool_body = follow.get('content') -%}
+                {%- if tool_body is sequence and tool_body is not string -%}
+                    {%- set ns_txt = namespace(s='') -%}
+                    {%- for part in tool_body -%}
+                        {%- if part.get('type') == 'text' -%}
+                            {%- set ns_txt.s = ns_txt.s + (part.get('text') | default('')) -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    {{- format_tool_response_block(ns_tname.name, ns_txt.s) -}}
+                    {%- for part in tool_body -%}
+                        {%- if part.get('type') in ['image', 'image_url'] -%}
+                            {{- '<|image|>' -}}
+                        {%- elif part.get('type') in ['audio', 'input_audio'] -%}
+                            {{- '<|audio|>' -}}
+                        {%- elif part.get('type') == 'video' -%}
+                            {{- '<|video|>' -}}
+                        {%- endif -%}
+                    {%- endfor -%}
+                {%- else -%}
+                    {{- format_tool_response_block(ns_tname.name, tool_body) -}}
+                {%- endif -%}
+                {%- set ns_tool.tool_response = true -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+    {%- set captured_content -%}
     {%- if message['content'] is string -%}
         {%- if role == "model" -%}
             {{ strip_thinking(message['content']) }}
@@ -973,13 +1210,26 @@ gemma4_template = \
                 {%- endif -%}
             {%- endif -%}
         {%- endfor -%}
-    {%- else -%}
+    {%- elif not ns_tool.tool_calls -%}
         {{ raise_exception("Invalid content type") }}
     {%- endif -%}
-    {{ '<turn|>\n' }}
+    {%- endset -%}
+    {{- captured_content -}}
+    {%- if not ns_tool.tool_calls -%}
+        {{ '<turn|>\n' }}
+    {%- elif not ns_tool.tool_response -%}
+        {{- '<|tool_response>' -}}
+    {%- elif ns_scan.next_role != 'assistant' and (captured_content | trim | length > 0 or ns_scan.next_role) -%}
+        {{- '<turn|>\n' -}}
+    {%- endif -%}
+    {%- endif -%}
 {%- endfor -%}
 {%- if add_generation_prompt -%}
+    {%- if not ns_tool.tool_calls -%}
     {{'<|turn>model\n'}}
+    {%- elif ns_tool.tool_response and thinking -%}
+        {{- '<|channel>thought\n' -}}
+    {%- endif -%}
 {%- endif -%}
 """
 
@@ -996,7 +1246,156 @@ DEFAULT_SYSTEM_MESSAGE["gemma4"] = None
 
 # Gemma-4 thinking template
 gemma4_thinking_template = \
-"""{%- macro strip_thinking(text) -%}
+"""{%- macro format_parameters(properties, required, filter_keys=false) -%}
+    {%- set standard_keys = ['description', 'type', 'properties', 'required', 'nullable'] -%}
+    {%- set ns = namespace(found_first=false) -%}
+    {%- for key, value in properties | dictsort -%}
+        {%- set add_comma = false -%}
+        {%- if not filter_keys or key not in standard_keys -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {{ key }}:{
+            {%- if value['description'] -%}
+                description:<|"|>{{ value['description'] }}<|"|>
+                {%- set add_comma = true -%}
+            {%- endif -%}
+            {%- if value['type'] | upper == 'STRING' -%}
+                {%- if value['enum'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    enum:{{ format_argument(value['enum']) }}
+                {%- endif -%}
+            {%- elif value['type'] | upper == 'ARRAY' -%}
+                {%- if value['items'] is mapping and value['items'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    items:{
+                    {%- set ns_items = namespace(found_first=false) -%}
+                    {%- for item_key, item_value in value['items'] | dictsort -%}
+                        {%- if item_value is not none -%}
+                            {%- if ns_items.found_first %},{% endif -%}
+                            {%- set ns_items.found_first = true -%}
+                            {%- if item_key == 'properties' -%}
+                                properties:{
+                                {%- if item_value is mapping -%}
+                                    {{- format_parameters(item_value, value['items']['required'] | default([])) -}}
+                                {%- endif -%}
+                                }
+                            {%- elif item_key == 'required' -%}
+                                required:[
+                                {%- for req_item in item_value -%}
+                                    <|"|>{{- req_item -}}<|"|>
+                                    {%- if not loop.last %},{% endif -%}
+                                {%- endfor -%}
+                                ]
+                            {%- elif item_key == 'type' -%}
+                                {%- if item_value is string -%}
+                                    type:{{ format_argument(item_value | upper) }}
+                                {%- else -%}
+                                    type:{{ format_argument(item_value | map('upper') | list) }}
+                                {%- endif -%}
+                            {%- else -%}
+                                {{ item_key }}:{{ format_argument(item_value) }}
+                            {%- endif -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    }
+                {%- endif -%}
+            {%- endif -%}
+            {%- if value['nullable'] %}
+                {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                nullable:true
+            {%- endif -%}
+            {%- if value['type'] | upper == 'OBJECT' -%}
+                {%- if value['properties'] is defined and value['properties'] is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value['properties'], value['required'] | default([])) -}}
+                    }
+                {%- elif value is mapping -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    properties:{
+                    {{- format_parameters(value, value['required'] | default([]), filter_keys=true) -}}
+                    }
+                {%- endif -%}
+                {%- if value['required'] -%}
+                    {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+                    required:[
+                    {%- for item in value['required'] | default([]) -%}
+                        <|"|>{{- item -}}<|"|>
+                        {%- if not loop.last %},{% endif -%}
+                    {%- endfor -%}
+                    ]
+                {%- endif -%}
+            {%- endif -%}
+            {%- if add_comma %},{%- else -%} {%- set add_comma = true -%} {% endif -%}
+            type:<|"|>{{ value['type'] | upper }}<|"|>}
+        {%- endif -%}
+    {%- endfor -%}
+{%- endmacro -%}
+{%- macro format_function_declaration(tool_data) -%}
+    declaration:{{- tool_data['function']['name'] -}}{description:<|"|>{{- tool_data['function']['description'] -}}<|"|>
+    {%- set params = tool_data['function']['parameters'] -%}
+    {%- if params -%}
+        ,parameters:{
+        {%- if params['properties'] -%}
+            properties:{ {{- format_parameters(params['properties'], params['required']) -}} },
+        {%- endif -%}
+        {%- if params['required'] -%}
+            required:[
+            {%- for item in params['required'] -%}
+                <|"|>{{- item -}}<|"|>
+                {{- ',' if not loop.last -}}
+            {%- endfor -%}
+            ],
+        {%- endif -%}
+        {%- if params['type'] -%}
+            type:<|"|>{{- params['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    {%- if 'response' in tool_data['function'] -%}
+        {%- set response_declaration = tool_data['function']['response'] -%}
+        ,response:{
+        {%- if response_declaration['description'] -%}
+            description:<|"|>{{- response_declaration['description'] -}}<|"|>,
+        {%- endif -%}
+        {%- if response_declaration['type'] | upper == 'OBJECT' -%}
+            type:<|"|>{{- response_declaration['type'] | upper -}}<|"|>}
+        {%- endif -%}
+    {%- endif -%}
+    }
+{%- endmacro -%}
+{%- macro format_argument(argument, escape_keys=True) -%}
+    {%- if argument is none -%}
+        {{- 'null' -}}
+    {%- elif argument is string -%}
+        {{- '<|"|>' + argument + '<|"|>' -}}
+    {%- elif argument is boolean -%}
+        {{- 'true' if argument else 'false' -}}
+    {%- elif argument is mapping -%}
+        {{- '{' -}}
+        {%- set ns = namespace(found_first=false) -%}
+        {%- for key, value in argument | dictsort -%}
+            {%- if ns.found_first %},{% endif -%}
+            {%- set ns.found_first = true -%}
+            {%- if escape_keys -%}
+                {{- '<|"|>' + key + '<|"|>' -}}
+            {%- else -%}
+                {{- key -}}
+            {%- endif -%}
+            :{{- format_argument(value, escape_keys=escape_keys) -}}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- elif argument is sequence -%}
+        {{- '[' -}}
+        {%- for item in argument -%}
+            {{- format_argument(item, escape_keys=escape_keys) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- ']' -}}
+    {%- else -%}
+        {{- argument -}}
+    {%- endif -%}
+{%- endmacro -%}
+{%- macro strip_thinking(text) -%}
     {%- set ns = namespace(result='') -%}
     {%- for part in text.split('<channel|>') -%}
         {%- if '<|channel>' in part -%}
@@ -1007,9 +1406,23 @@ gemma4_thinking_template = \
     {%- endfor -%}
     {{- ns.result | trim -}}
 {%- endmacro -%}
+{%- macro format_tool_response_block(tool_name, response) -%}
+    {{- '<|tool_response>' -}}
+    {%- if response is mapping -%}
+        {{- 'response:' + tool_name + '{' -}}
+        {%- for key, value in response | dictsort -%}
+            {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+            {%- if not loop.last %},{% endif -%}
+        {%- endfor -%}
+        {{- '}' -}}
+    {%- else -%}
+        {{- 'response:' + tool_name + '{value:' + format_argument(response, escape_keys=False) + '}' -}}
+    {%- endif -%}
+    {{- '<tool_response|>' -}}
+{%- endmacro -%}
 {%- set thinking = enable_thinking is defined and enable_thinking -%}
 {%- set loop_messages = messages -%}
-{%- if messages[0]['role'] in ['system', 'developer'] or thinking -%}
+{%- if messages[0]['role'] in ['system', 'developer'] or thinking or (tools is defined and tools) -%}
     {{ '<|turn>system\n' }}
     {%- if thinking -%}
         {{ '<|think|>\n' }}
@@ -1018,10 +1431,18 @@ gemma4_thinking_template = \
         {{ messages[0]['content'] | trim }}
         {%- set loop_messages = messages[1:] -%}
     {%- endif -%}
+    {%- if tools is defined and tools -%}
+        {%- for tool in tools -%}
+            {{- '<|tool>' + format_function_declaration(tool) | trim + '<tool|>' -}}
+        {%- endfor -%}
+    {%- endif -%}
     {{ '<turn|>\n' }}
 {%- endif -%}
+{%- set ns_tool = namespace(turns=0, tool_calls=false, tool_response=false) -%}
 {%- for message in loop_messages -%}
-    {%- if (message['role'] == 'user') != (loop.index0 % 2 == 0) -%}
+    {%- if message['role'] != 'tool' -%}
+    {%- set continues = message['role'] == 'assistant' and ns_tool.tool_calls -%}
+    {%- if not continues and (message['role'] == 'user') != (ns_tool.turns % 2 == 0) -%}
         {{ raise_exception("Conversation roles must alternate user/assistant/user/assistant/...") }}
     {%- endif -%}
     {%- if (message['role'] == 'assistant') -%}
@@ -1029,7 +1450,73 @@ gemma4_thinking_template = \
     {%- else -%}
         {%- set role = message['role'] -%}
     {%- endif -%}
-    {{ '<|turn>' + role + '\n' }}
+    {%- if not continues -%}
+        {%- set ns_tool.turns = ns_tool.turns + 1 -%}
+        {{ '<|turn>' + role + '\n' }}
+    {%- endif -%}
+    {%- set ns_tool.tool_calls = message.get('tool_calls') -%}
+    {%- if ns_tool.tool_calls -%}
+        {%- for tool_call in ns_tool.tool_calls -%}
+            {%- set function = tool_call['function'] -%}
+            {{- '<|tool_call>call:' + function['name'] + '{' -}}
+            {%- if function['arguments'] is mapping -%}
+                {%- set ns_args = namespace(found_first=false) -%}
+                {%- for key, value in function['arguments'] | dictsort -%}
+                    {%- if ns_args.found_first %},{% endif -%}
+                    {%- set ns_args.found_first = true -%}
+                    {{- key -}}:{{- format_argument(value, escape_keys=False) -}}
+                {%- endfor -%}
+            {%- elif function['arguments'] is string -%}
+                {%- set argstr = function['arguments'] | trim -%}
+                {%- if argstr[:1] == '{' and argstr[-1:] == '}' -%}
+                    {{- argstr[1:-1] -}}
+                {%- else -%}
+                    {{- function['arguments'] -}}
+                {%- endif -%}
+            {%- endif -%}
+            {{- '}<tool_call|>' -}}
+        {%- endfor -%}
+        {%- set ns_tool.tool_response = false -%}
+        {%- set ns_scan = namespace(stopped=false, next_role=none) -%}
+        {%- for k in range(loop.index0 + 1, loop_messages | length) -%}
+            {%- if ns_scan.stopped -%}
+            {%- elif loop_messages[k]['role'] != 'tool' -%}
+                {%- set ns_scan.stopped = true -%}
+                {%- set ns_scan.next_role = loop_messages[k]['role'] -%}
+            {%- else -%}
+                {%- set follow = loop_messages[k] -%}
+                {%- set ns_tname = namespace(name=follow.get('name') or 'unknown') -%}
+                {%- for tc in ns_tool.tool_calls -%}
+                    {%- if tc.get('id') == follow.get('tool_call_id') -%}
+                        {%- set ns_tname.name = tc['function']['name'] -%}
+                    {%- endif -%}
+                {%- endfor -%}
+                {%- set tool_body = follow.get('content') -%}
+                {%- if tool_body is sequence and tool_body is not string -%}
+                    {%- set ns_txt = namespace(s='') -%}
+                    {%- for part in tool_body -%}
+                        {%- if part.get('type') == 'text' -%}
+                            {%- set ns_txt.s = ns_txt.s + (part.get('text') | default('')) -%}
+                        {%- endif -%}
+                    {%- endfor -%}
+                    {{- format_tool_response_block(ns_tname.name, ns_txt.s) -}}
+                    {%- for part in tool_body -%}
+                        {%- if part.get('type') in ['image', 'image_url'] -%}
+                            {{- '<|image|>' -}}
+                        {%- elif part.get('type') in ['audio', 'input_audio'] -%}
+                            {{- '<|audio|>' -}}
+                        {%- elif part.get('type') == 'video' -%}
+                            {{- '<|video|>' -}}
+                        {%- endif -%}
+                    {%- endfor -%}
+                {%- else -%}
+                    {{- format_tool_response_block(ns_tname.name, tool_body) -}}
+                {%- endif -%}
+                {%- set ns_tool.tool_response = true -%}
+            {%- endif -%}
+        {%- endfor -%}
+    {%- endif -%}
+    {%- set captured_content -%}
     {%- if message['content'] is string -%}
         {%- if role == "model" -%}
             {{ strip_thinking(message['content']) }}
@@ -1052,15 +1539,28 @@ gemma4_thinking_template = \
                 {%- endif -%}
             {%- endif -%}
         {%- endfor -%}
-    {%- else -%}
+    {%- elif not ns_tool.tool_calls -%}
         {{ raise_exception("Invalid content type") }}
     {%- endif -%}
-    {{ '<turn|>\n' }}
+    {%- endset -%}
+    {{- captured_content -}}
+    {%- if not ns_tool.tool_calls -%}
+        {{ '<turn|>\n' }}
+    {%- elif not ns_tool.tool_response -%}
+        {{- '<|tool_response>' -}}
+    {%- elif ns_scan.next_role != 'assistant' and (captured_content | trim | length > 0 or ns_scan.next_role) -%}
+        {{- '<turn|>\n' -}}
+    {%- endif -%}
+    {%- endif -%}
 {%- endfor -%}
 {%- if add_generation_prompt -%}
+    {%- if not ns_tool.tool_calls -%}
     {{'<|turn>model\n'}}
     {%- if not thinking -%}
         {{ '<|channel>thought\n<channel|>' }}
+    {%- endif -%}
+    {%- elif ns_tool.tool_response and thinking -%}
+        {{- '<|channel>thought\n' -}}
     {%- endif -%}
 {%- endif -%}
 """
