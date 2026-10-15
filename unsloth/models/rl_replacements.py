@@ -470,6 +470,79 @@ RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_compute_loss_liger)
 RL_EXTRA_ARGS["dpo_trainer"].append(dpo_trainer_data_collator_vision_keys)
 
 
+def _insert_after_docstring(function, lines):
+    """Put ``lines`` (body-relative) first in the method body, after any docstring."""
+    import ast
+
+    try:
+        node = ast.parse(textwrap.dedent(function)).body[0]
+    except SyntaxError:
+        return function
+    if not isinstance(node, ast.FunctionDef) or not node.body:
+        return function
+    first = node.body[0]
+    has_docstring = isinstance(first, ast.Expr) and isinstance(
+        getattr(first, "value", None), ast.Constant
+    ) and isinstance(first.value.value, str)
+    source_lines = function.split("\n")
+    anchor = node.body[1] if has_docstring and len(node.body) > 1 else first
+    indent = re.match(r"[ \t]*", source_lines[anchor.lineno - 1]).group(0)
+    insert_at = first.end_lineno if has_docstring else first.lineno - 1
+    block = [indent + line for line in lines]
+    return "\n".join(source_lines[:insert_at] + block + source_lines[insert_at:])
+
+
+def _fused_preference_dispatch(function_name, function, call, signature):
+    # Opt-in only, so the generated trainer is unchanged unless the flag is set.
+    if function_name != "concatenated_forward" or signature not in function:
+        return function
+    if os.environ.get("UNSLOTH_FUSED_PREFERENCE_LOSS", "0") != "1":
+        return function
+    if "_unsloth_fused_output" in function:
+        return function
+    return _insert_after_docstring(
+        function,
+        [
+            "from unsloth.models.dpo import " + call.split("(")[0],
+            "_unsloth_fused_output = " + call,
+            "if _unsloth_fused_output is not None:",
+            "    return _unsloth_fused_output",
+        ],
+    )
+
+
+def dpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        "unsloth_fused_dpo_concatenated_forward(self, model, batch, is_ref_model)",
+        "is_ref_model",
+    )
+
+
+def orpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        'unsloth_fused_orpo_concatenated_forward(self, model, batch, method = "orpo")',
+        "batch",
+    )
+
+
+def cpo_trainer_fused_preference_forward(function_name, function):
+    return _fused_preference_dispatch(
+        function_name,
+        function,
+        'unsloth_fused_orpo_concatenated_forward(self, model, batch, method = "cpo")',
+        "batch",
+    )
+
+
+RL_FUNCTIONS["dpo_trainer"].append(dpo_trainer_fused_preference_forward)
+RL_FUNCTIONS["orpo_trainer"].append(orpo_trainer_fused_preference_forward)
+RL_FUNCTIONS["cpo_trainer"].append(cpo_trainer_fused_preference_forward)
+
+
 # Unsloth's training forward drops the 2D mask, so right-align Online DPO rows (GRPO's left_pack_padding) before scoring.
 _ONLINE_DPO_MODEL_CALL = re.compile(
     r"^(?P<indent>[ \t]*)output = model\(prompt_completion_ids, "
