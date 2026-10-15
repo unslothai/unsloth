@@ -5949,7 +5949,6 @@ class MLXInferenceBackend:
         from mlx_lm.sample_utils import make_sampler
 
         if prompt_ids is not None:
-            # A raw completion prompt, planned as _generate_text runs one.
             prompt, reasoning_channel_markers, think_prefix = list(prompt_ids), None, ""
             _resumed_partial = False
         else:
@@ -6232,7 +6231,6 @@ class MLXInferenceBackend:
     ) -> "_VLMRowPlan":
         images = [image] if image is not None else None
         if prompt_ids is not None:
-            # A raw completion prompt, planned as _generate_vlm runs one.
             prompt, markers, think_prefix = list(prompt_ids), None, ""
         else:
             prompt, chat_target, markers = self._render_vlm_prompt(
@@ -6358,7 +6356,6 @@ class MLXInferenceBackend:
 
         images = list(images) if images else None
         if prompt_ids is not None:
-            # A raw completion prompt runs text-only and untemplated, as in _generate_text.
             prompt, chat_target, vlm_reasoning_markers, prefill = "", None, None, ""
         else:
             prompt, chat_target, vlm_reasoning_markers = self._render_vlm_prompt(
@@ -6642,8 +6639,7 @@ class MLXInferenceBackend:
                             if raw_id is not None and (
                                 filled is None or int(filled) == len(raw_ids) + 1
                             ):
-                                # The runtime's streaming detokenizer trims the first piece's leading
-                                # space, which a raw continuation keeps: decode the ids, as _generate_text.
+                                # The streaming detokenizer trims the first leading space; decode the ids.
                                 raw_ids.append(int(raw_id))
                                 decoded = self._tokenizer.decode(
                                     raw_ids,
@@ -6854,8 +6850,7 @@ class MLXInferenceBackend:
         if gap is not None:
             return gap
         if any(request.get("prompt_ids") is not None for request in requests):
-            # The batch's streaming detokenizer keeps control tokens and trims the first piece's
-            # leading space; the single path decodes a raw reply from its ids instead.
+            # The batch detokenizer keeps control tokens and trims the first leading space.
             return "a raw prompt on a vision model decodes on its own"
         if not getattr(self._model, "_is_vlm_model", False):
             return "this model was not loaded as a vision model"

@@ -37519,8 +37519,7 @@ async def _mlx_completions(request, current_subject, backend, body: dict, refusa
     tracker.__enter__()
     watcher = asyncio.create_task(_await_disconnect_then_cancel(request, cancel_event))
     try:
-        # Every prompt first, so an invalid one is a 400 before anything generates. Run as a
-        # generation unit, so the tracker covers the thread until a cancel actually ends it.
+        # Every prompt first (an invalid one is a 400), tracked until a cancel ends the thread.
         resolved = await _run_blocking_generation(
             lambda: [
                 backend.resolve_completion_prompt(prompt, cancel_event = cancel_event)
@@ -37818,8 +37817,7 @@ async def openai_completions(request: Request, current_subject: str = Depends(ge
     except (json.JSONDecodeError, ValueError):
         _pre = _UNPARSEABLE_BODY
     _mlx_device = await asyncio.to_thread(get_device) == DeviceType.MLX
-    # Only an MLX host can serve the body in process; elsewhere the GGUF route reads it as is.
-    # Compiling a client grammar can take a while, so it runs off the event loop as chat's does.
+    # MLX hosts only; grammar compiles off the event loop, as chat's does.
     _mlx_refusal = (
         await asyncio.get_running_loop().run_in_executor(
             _SCHEMA_VALIDATION_EXECUTOR, _mlx_completions_refusal, _pre
