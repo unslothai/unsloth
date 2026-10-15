@@ -124,6 +124,7 @@ from .diffusion_memory import (
     reclaim_host_memory,
     reclaim_offload_host_memory,
     refine_memory_plan_for_components,
+    applied_plan,
     finish_background_pins,
     release_pinned_host_memory,
     request_background_pins,
@@ -145,6 +146,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
+    rocm_probe_load_scoped,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -2674,19 +2676,16 @@ def _calibration_revision(state: Any) -> Optional[str]:
     cached = getattr(pipe, "_unsloth_calibration_revision", None)
     if cached is not None:
         return cached or None
-    from .diffusion_component_sizes import checkpoint_fingerprint
+    from .diffusion import _peak_model_identity
 
-    revision = checkpoint_fingerprint(
-        getattr(state, "repo_id", None), getattr(state, "gguf_filename", None)
+    # the image peak identity's rule: snapshot commit, or a local folder's manifests plus its weight files' size and
+    # mtime, plus the companion base for a GGUF / single-file load; "unknown" persists nothing
+    revision = _peak_model_identity(
+        getattr(state, "repo_id", None),
+        getattr(state, "gguf_filename", None),
+        getattr(state, "kind", None),
+        getattr(state, "base_repo", None),
     )
-    if getattr(state, "kind", "pipeline") != "pipeline":
-        # a GGUF / single-file load takes its companions from a base repo: its id and exact weights are part of it
-        base = getattr(state, "base_repo", None)
-        revision = (
-            f"{revision or ''}|base={base or ''}@{checkpoint_fingerprint(base) or ''}"
-            if base
-            else revision
-        )
     try:
         pipe._unsloth_calibration_revision = revision or ""
     except Exception:  # noqa: BLE001
@@ -4010,7 +4009,8 @@ class VideoBackend:
             listed_accelerator = accelerator_verdict_keeps_gpu(accelerator_verdict)
             if not accelerator_verdict:
                 fallback = fallback_accelerator_for(accelerator)
-                if fallback:
+                # The CPU rung is the branch below, which also releases the GPU placement.
+                if fallback and fallback != "cpu":
                     # Before the fallback ensure replaces the tree and its bundle tag.
                     failed_fingerprint = _accelerator_fingerprint(binary)
                     fallback_binary = usable_or_recorded_failure(
@@ -6456,6 +6456,7 @@ class VideoBackend:
     # ── the load itself ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("video load")
+    @rocm_probe_load_scoped
     @scoped_local_files_only
     def load_pipeline(
         self,
@@ -7715,6 +7716,8 @@ class VideoBackend:
             from .video_ltx25 import ltx25_te_outcome
             text_encoder_outcome = ltx25_te_outcome(ltx25_client)
         else:
+            from .diffusion_te_truncate import truncate_text_encoders
+            truncate_text_encoders(pipe, logger = logger)
             text_encoder_outcome = quantize_text_encoders(
                 pipe,
                 target,
@@ -7990,6 +7993,8 @@ class VideoBackend:
                 placement_device = target.torch_device,
                 logger = logger,
             )
+            # a transient OOM during setup may have re-planned to lower residency
+            plan = applied_plan(pipe, plan)
             ltx25_upsampler = getattr(pipe, "_unsloth_ltx25_upsampler", None)
             if ltx25_upsampler is not None and offload_policy == OFFLOAD_NONE:
                 # ~1 GB; resident with the rest, else render() moves it in for the upsample only.
@@ -10831,7 +10836,11 @@ class VideoBackend:
                 _log_failed_generation(request_shape, exc)
                 raise
             finally:
-                i2v_swap.close()
+                try:
+                    from . import video_stream_residency
+                    video_stream_residency.discard_request(getattr(state, "pipe", None))
+                finally:
+                    i2v_swap.close()
                 if bg_token is not None:
                     bg_compile._FORCE_EAGER.reset(bg_token)
                 with self._lock:

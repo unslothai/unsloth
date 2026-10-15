@@ -61,6 +61,8 @@ export const es = {
       never: "Nunca",
       scripts: "Ejecutar scripts",
       scriptsDescription: "Elige si los modelos pueden ejecutar scripts en las páginas. Verás cada script antes de que se ejecute",
+      cursor: "Mostrar cursor",
+      cursorDescription: "Muestra un puntero donde los modelos hacen clic, escriben y arrastran en la página",
       askEveryTime: "Preguntar cada vez",
       permissionsTitle: "Permisos del agente",
       permissionsDescription: "Elige los valores predeterminados y añade excepciones para sitios concretos. Los campos de contraseña y de pago nunca se rellenan, digan lo que digan estos ajustes.",
@@ -83,6 +85,9 @@ export const es = {
     },
     agent: {
       working: "Unsloth está navegando en esta pestaña",
+      waiting: "Unsloth necesita tu respuesta en el navegador para {chat}",
+      otherChat: "otro chat",
+      show: "Mostrar",
       stop: "Detener",
       allow: "Permitir",
       deny: "Denegar",
@@ -1366,6 +1371,7 @@ export const es = {
       installRuntimeFailed: "No se pudo instalar el runtime.",
       installRuntimeError: "No se pudo iniciar la instalación del runtime.",
       unsupportedArch: "El sandbox de Windows (MXC) solo funciona en Windows x64, así que no está disponible en este PC.",
+      builtinNeedsUpdate: "El contenedor integrado de Windows necesita la compilación {required} o posterior, y este PC usa {current}. Instala la última actualización de Windows para usarlo sin un paso de administrador, o activa el sandbox alternativo de abajo.",
       unsupportedBuild: "El sandbox de Windows (MXC) necesita Windows 11 24H2 (compilación 26100) o posterior, así que no está disponible en este PC.",
       permissionsIntro: "Elige cuándo preguntan primero las herramientas y si Python y Terminal también se ejecutan en el sandbox del sistema.",
       permissionLabel: "Permisos de herramientas",
@@ -1865,7 +1871,23 @@ export const es = {
           "Modelo de Hugging Face o ruta local usada para indexar y buscar tus documentos. El valor predeterminado es {defaultModel}.",
         searchPlaceholder: "Buscar cualquier modelo en HF",
         reindexWarning:
-          "Solo afecta a los documentos recién indexados. Vuelve a subir los existentes tras cambiar el modelo.",
+          "Solo afecta a los documentos recién indexados. Vuelve a incrustar los existentes tras cambiar el modelo.",
+        reembed: {
+          label: "Volver a incrustar documentos",
+          staleOne:
+            "1 documento se indexó con otro modelo de embeddings, así que la búsqueda semántica lo omite.",
+          staleMany:
+            "{count} documentos se indexaron con otro modelo de embeddings, así que la búsqueda semántica los omite.",
+          staleArchived:
+            "El historial de chat anterior se indexó con otro modelo de embeddings, así que la búsqueda semántica lo omite.",
+          running: "Volviendo a incrustar: {done} de {total}",
+          action: "Volver a incrustar",
+          stop: "Detener",
+          startFailed: "No se pudo iniciar la nueva incrustación",
+          stopped: "Nueva incrustación detenida",
+          finished: "Documentos incrustados de nuevo",
+          finishedWithFailures: "No se pudieron volver a incrustar {count}",
+        },
         emptyError:
           "Introduce un id de modelo de Hugging Face o una ruta local.",
         loadError:
@@ -2602,6 +2624,9 @@ export const es = {
         showMemoryBar: "Mostrar barra de uso de VRAM",
         showMemoryBarDescription:
           "Muestra debajo de la fila de cada modelo descargado su uso estimado de VRAM: pesos, caché KV con la longitud de contexto con la que se cargará y cualquier reserva de borrador especulativo.",
+        fitOnDeviceOnly: "Mostrar solo modelos que caben",
+        fitOnDeviceOnlyDescription:
+          "Oculta en el selector de modelos y en el Hub los modelos demasiado grandes para la memoria de GPU y la RAM de este dispositivo. Los modelos descargados siguen visibles.",
       },
       menu: {
         title: "Menú del chat",
@@ -3051,6 +3076,22 @@ export const es = {
         "Las apps que usan este token pierden el acceso de inmediato. Esto no se puede deshacer.",
       revokeAction: 'Revocar "{name}"',
       revoking: "Revocando...",
+      audioApi: {
+        title: "API de audio",
+        description: "Voz, clonación de voz, transcripción y los flujos de la página Audio.",
+        speak: "Hablar",
+        clone: "Clonar",
+        transcribe: "Transcribir",
+        workflows: "Flujos",
+        separate: "Separar",
+        convert: "Convertir",
+        music: "Música",
+        edit: "Editar",
+        placeholderModel: "Aún no hay ningún modelo descargado que pueda ejecutar este ejemplo, así que el modelo que aparece es provisional. Descarga uno primero en la página Audio.",
+        autoSwitchOff:
+          "El modelo solo se carga por su nombre con el cambio automático de modelo activado. Actívalo o carga antes el modelo en su página de Audio.",
+        useViaApi: "Usar por API",
+      },
       decisionApi: {
         title: "API de decisiones",
         docs: "Documentación",
@@ -3130,6 +3171,7 @@ export const es = {
       desktopAppVersion: "Versión de la app de escritorio",
       desktopAppVersionUnavailable: "No disponible",
       llamaCppVersion: "Versión de llama.cpp",
+      audioCppVersion: "Versión de audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

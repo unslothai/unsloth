@@ -24,7 +24,7 @@ import {
 import { OwnerAvatar, useAvatarImageUrl } from "./owner-avatar";
 import { AccessGlyphs, CapabilityPill } from "./shared";
 
-export const MODEL_CARD_WIDTH_PX = 204;
+export const MODEL_CARD_WIDTH_PX = 224;
 export const MODEL_CARD_HEIGHT_PX = 128;
 
 export type TrendingCardStyle = CSSProperties & {
