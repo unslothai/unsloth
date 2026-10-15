@@ -282,8 +282,7 @@ def _unfreeze_modules_to_save(model) -> None:
 
 
 def _norm_modules_to_save(model, name) -> bool:
-    """True if every module PEFT wraps for this entry (its plain endswith rule) is a norm layer,
-    which the fast RMSNorm kernel trains since #13594."""
+    """Every module PEFT's endswith rule wraps for this entry is a norm (fast kernel has dW, #13594)."""
     if type(name) is not str or not name:
         return False
     matched = [

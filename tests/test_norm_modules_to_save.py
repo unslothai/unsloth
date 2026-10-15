@@ -6,7 +6,7 @@
 import pytest
 from real_accelerator import (
     has_real_cuda,
-)  # tests/_shared, on sys.path via tests/conftest.py
+)
 
 torch = pytest.importorskip("torch")
 transformers = pytest.importorskip("transformers")
