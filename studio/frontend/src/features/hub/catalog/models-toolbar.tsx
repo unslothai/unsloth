@@ -36,7 +36,7 @@ import {
   removeRecentSearch,
   useRecentSearches,
 } from "../lib/recent-searches";
-import { FORMAT_FILTER_OPTIONS } from "../lib/view-models";
+import { FORMAT_FILTER_OPTIONS, type HubModelKind } from "../lib/view-models";
 import type {
   ModelFormatFilter,
   ModelsTab,
@@ -76,6 +76,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   capabilityFilters,
   onCapabilityFiltersChange,
   isolateFirstCapability,
+  modelKind,
+  onModelKindChange,
   fitOnDeviceOnly,
   onFitOnDeviceOnlyChange,
   onManageLocalFolders,
@@ -112,6 +114,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   onCapabilityFiltersChange: (value: HubCapabilityFilter[]) => void;
   /** Until the first change from the defaults, a capability pick keeps just that one. */
   isolateFirstCapability: boolean;
+  modelKind: HubModelKind;
+  onModelKindChange: (value: HubModelKind) => void;
   /** Shared with the chat model selector: hide models over the device budget. */
   fitOnDeviceOnly: boolean;
   onFitOnDeviceOnlyChange: (value: boolean) => void;
@@ -230,7 +234,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
   }, [tab, npuAvailable]);
   const hubSource = useHubSource();
   const showCapabilities = isDiscover && !isDataset && !npuList;
-  // The size and publisher limits are Hub search parameters, so only where it runs.
+  // The size and context limits read Hugging Face metadata, so only there.
   const showModelFilters = showCapabilities && hubSource !== "modelscope";
   const sortOptions = useMemo<HubOption<HfSortKey>[]>(
     () =>
@@ -515,6 +519,8 @@ export const ModelsToolbar = memo(function ModelsToolbar({
             capabilities={capabilityFilters}
             onCapabilitiesChange={onCapabilityFiltersChange}
             isolateFirstCapability={isolateFirstCapability}
+            modelKind={modelKind}
+            onModelKindChange={onModelKindChange}
             uploaders={uploaders}
             uploadersChanged={uploadersChanged}
             onUploadersChange={onUploadersChange}

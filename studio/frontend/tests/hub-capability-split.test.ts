@@ -92,8 +92,8 @@ test("the first pick from the default keeps just that capability", () => {
 
 test("size and context are stepped ranges whose ends mean no limit", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /labels: \["<1B", null, "6B", "12B", "32B", null, "128B", ">500B"\]/);
-  assert.match(popover, /"1M\+"\]/);
+  assert.match(popover, /\[1, 3, 6, 9, 12, 24, 32, 64, 128, 256, 500\]/);
+  assert.match(popover, /labels: \["<16K", "32K", "64K", "128K", "256K", "512K", ">1M"\]/);
   assert.match(popover, /\[spec\.min\]: next\[0\] === 0 \? undefined : spec\.stops\[next\[0\]\]/);
   assert.match(popover, /\[spec\.max\]: next\[1\] === last \? undefined : spec\.stops\[next\[1\]\]/);
   assert.doesNotMatch(popover, /Apply (filters|limits)/);
@@ -101,7 +101,36 @@ test("size and context are stepped ranges whose ends mean no limit", () => {
 
 test("Uploader is a two-way toggle between Unsloth and every uploader", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /role="radiogroup"\s+aria-label="Uploader"/);
-  assert.match(popover, /\["Unsloth", true\],\s*\["All uploaders", false\]/);
-  assert.match(popover, /unslothOption \? \["unsloth"\] : \[\.\.\.HUB_UPLOADERS\]/);
+  assert.match(popover, /role="radiogroup"\s+aria-label=\{label\}/);
+  assert.match(popover, /label="Uploader"/);
+  assert.match(popover, /\["unsloth", "Unsloth"\],\s*\["all", "All uploaders"\]/);
+  assert.match(popover, /next === "unsloth" \? \["unsloth"\] : \[\.\.\.HUB_UPLOADERS\]/);
+});
+
+test("a video signal wins over image tags, and family names are read from the repo name", () => {
+  // Several video repos carry an image tag for their first-frame path.
+  assert.deepEqual(generationKinds(["diffusers", "text-to-image"], "image-to-video", "Wan-AI/Wan2.2-I2V"), { image: false, video: true });
+  // An image model published by a video org stays an image model.
+  assert.deepEqual(generationKinds(["diffusers"], undefined, "hunyuanvideo-community/HunyuanImage-2.1"), { image: true, video: false });
+});
+
+test("the range thumbs can share a stop, so <1B and >500B are reachable as limits", () => {
+  assert.match(readSrc("features/hub/catalog/model-search-filters.tsx"), /minStepsBetweenThumbs=\{0\}/);
+});
+
+test("Model type splits base models from fine-tunes by the Hub's model-tree tags", async () => {
+  const { isFineTunedModel } = await import("../src/features/hub/lib/model-capabilities.ts");
+  // A lab's own instruct release is a finetune of its base on the model tree, but reads as base.
+  assert.equal(isFineTunedModel("Qwen/Qwen3-8B", ["base_model:finetune:Qwen/Qwen3-8B-Base"]), false);
+  assert.equal(isFineTunedModel("mlabonne/Qwen3-8B-abliterated", ["base_model:finetune:Qwen/Qwen3-8B"]), true);
+  assert.equal(isFineTunedModel("someone/lora", ["base_model:adapter:meta-llama/Llama-3.1-8B"]), true);
+  // Quantizations follow what they quantize; unsloth re-uploads are the model they copy.
+  assert.equal(isFineTunedModel("unsloth/Qwen3-8B-GGUF", ["gguf", "base_model:quantized:Qwen/Qwen3-8B"]), false);
+  assert.equal(isFineTunedModel("bartowski/x-GGUF", ["base_model:quantized:huihui-ai/Huihui-Qwen3-8B-abliterated"]), true);
+  assert.equal(isFineTunedModel("unsloth/Qwen3-8B", ["base_model:finetune:Qwen/Qwen3-8B"]), false);
+  assert.equal(isFineTunedModel("someone/Qwen3-8b-Text2SQL", undefined), true);
+  assert.equal(isFineTunedModel("Qwen/Qwen3-8B-Base", undefined), false);
+  const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
+  assert.match(popover, /label="Model type"/);
+  assert.match(popover, /\["finetuned", "Fine-tuned"\]/);
 });

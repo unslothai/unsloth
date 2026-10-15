@@ -33,6 +33,7 @@ export {
   localSourceLabel,
 } from "@/features/hub/inventory";
 export { isGgufLike } from "./hf-model-meta";
+export { type HubModelKind, isFineTunedModel } from "./model-capabilities";
 
 export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   value: HubCapabilityFilter;

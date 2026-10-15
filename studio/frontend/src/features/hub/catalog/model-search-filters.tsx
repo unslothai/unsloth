@@ -35,7 +35,10 @@ import {
   type ModelSearchFilters,
   hasModelSearchFilters,
 } from "../lib/model-search-filters";
-import { CAPABILITY_FILTER_OPTIONS } from "../lib/view-models";
+import {
+  CAPABILITY_FILTER_OPTIONS,
+  type HubModelKind,
+} from "../lib/view-models";
 
 // The Hub rows' capability icons (catalog/shared.tsx), with Image gen on diffusion's and Video gen
 // on the Video page's.
@@ -53,8 +56,8 @@ const CAPABILITY_ICONS: Record<HubCapabilityFilter, IconSvgElement | null> = {
 // The composer menu's label and separator.
 const SECTION_LABEL =
   "flex w-full items-center justify-between px-3 pt-2 pb-1.5 text-ui-12 text-muted-foreground";
-// my-2 keeps text 18px from each line: rows bring 2px margin and 8px of hover pill, the labels pt-2.
-const SEPARATOR = "mx-1 my-2 h-px bg-border/50";
+// Each section's content sits 17px from the lines on both sides; the instances trim or pad my-2 to it.
+const SEPARATOR = "mx-1 my-2 h-px bg-border";
 
 type LimitKey = "minParams" | "maxParams" | "minContext" | "maxContext";
 
@@ -78,8 +81,21 @@ const RANGES: readonly RangeSpec[] = [
       "Both limits are included. Models that don't publish a parameter count are left out.",
     min: "minParams",
     max: "maxParams",
-    stops: [1 * B, 3 * B, 6 * B, 12 * B, 32 * B, 70 * B, 128 * B, 500 * B],
-    labels: ["<1B", null, "6B", "12B", "32B", null, "128B", ">500B"],
+    // Labelled stops sit evenly with one step between each pair, as on the Hugging Face Hub.
+    stops: [1, 3, 6, 9, 12, 24, 32, 64, 128, 256, 500].map((n) => n * B),
+    labels: [
+      "<1B",
+      null,
+      "6B",
+      null,
+      "12B",
+      null,
+      "32B",
+      null,
+      "128B",
+      null,
+      ">500B",
+    ],
   },
   {
     label: "Context length",
@@ -87,18 +103,8 @@ const RANGES: readonly RangeSpec[] = [
       "In tokens. The model's published limit, not what your device can fit. Both limits are included; models that don't publish one are left out.",
     min: "minContext",
     max: "maxContext",
-    stops: [
-      4 * K,
-      8 * K,
-      16 * K,
-      32 * K,
-      64 * K,
-      128 * K,
-      256 * K,
-      512 * K,
-      K * K,
-    ],
-    labels: ["<4K", null, "16K", null, "64K", null, "256K", null, "1M+"],
+    stops: [16 * K, 32 * K, 64 * K, 128 * K, 256 * K, 512 * K, K * K],
+    labels: ["<16K", "32K", "64K", "128K", "256K", "512K", ">1M"],
   },
 ];
 
@@ -147,12 +153,8 @@ function RangeStops({
   const [lo, hi] = dragging ?? committed;
   const set = lo !== 0 || hi !== last;
   // Thumbs stay inside the track, so stop i sits half a thumb in from each end.
-  // A chip stands in for the label under it; one hugging an end also covers its neighbour.
-  const covered = (i: number) =>
-    i === lo ||
-    i === hi ||
-    (lo === 0 && i === 1) ||
-    (hi === last && i === last - 1);
+  // A chip stands in for the label under it.
+  const covered = (i: number) => i === lo || i === hi;
   // The end labels and chips hug the track's ends instead of hanging past them.
   const edge = (i: number) =>
     i === 0 ? { left: 0 } : i === last ? { right: 0 } : undefined;
@@ -164,10 +166,7 @@ function RangeStops({
   return (
     <fieldset>
       <legend className={SECTION_LABEL}>
-        <span className="flex items-center gap-1">
-          {spec.label}
-          <HoverInfo label={spec.label}>{spec.about}</HoverInfo>
-        </span>
+        <HoverInfo label={spec.label}>{spec.about}</HoverInfo>
         {set && (
           <button
             type="button"
@@ -193,7 +192,7 @@ function RangeStops({
                 key={i}
                 style={edge(i) ?? { left: at(i) }}
                 className={cn(
-                  "absolute top-0.5 whitespace-nowrap text-ui-12 text-muted-foreground tabular-nums",
+                  "absolute top-0.5 whitespace-nowrap text-ui-11 text-muted-foreground tabular-nums",
                   !edge(i) && "-translate-x-1/2",
                 )}
               >
@@ -206,7 +205,7 @@ function RangeStops({
           min={0}
           max={last}
           step={1}
-          minStepsBetweenThumbs={1}
+          minStepsBetweenThumbs={0}
           value={[lo, hi]}
           onValueChange={(next) => setDragging([next[0], next[1]])}
           onValueCommit={(next) => {
@@ -244,7 +243,7 @@ function RangeStops({
               <span
                 aria-hidden={true}
                 className={cn(
-                  "pointer-events-none absolute bottom-full mb-2 whitespace-nowrap rounded-md bg-foreground px-1.5 py-0.5 text-ui-12 font-medium text-background tabular-nums",
+                  "pointer-events-none absolute bottom-full mb-2 whitespace-nowrap rounded-md bg-foreground px-1.5 py-0.5 text-ui-11 font-medium text-background tabular-nums",
                   index === 0
                     ? "left-0"
                     : index === last
@@ -301,29 +300,84 @@ function MenuTick({
   );
 }
 
-/** An i that shows its note while hovered, not on focus, so opening the popover doesn't pop it. */
+/** A labelled pill toggle, the Hugging Face / ModelScope switch's look. */
+function SegmentedRow<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: readonly (readonly [T, string])[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-ui-12 text-muted-foreground">{label}</span>
+      <div
+        role="radiogroup"
+        aria-label={label}
+        className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
+      >
+        {options.map(([key, text]) => {
+          const active = value === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              role="radio"
+              aria-checked={active}
+              onClick={() => {
+                if (!active) {
+                  onChange(key);
+                }
+              }}
+              className={cn(
+                "relative flex h-8 cursor-pointer items-center rounded-full px-3 text-xs font-medium transition-colors",
+                active
+                  ? "hub-tab-toggle-pill text-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <span className="relative z-10">{text}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** A section label with an i. Its note shows while the label is hovered, not on focus (opening the
+ *  popover doesn't pop it), and to the left of the popover so it never covers the other section. */
 function HoverInfo({ label, children }: { label: string; children: string }) {
   const [open, setOpen] = useState(false);
   return (
     <Tooltip open={open}>
       <TooltipTrigger asChild={true}>
-        <button
-          type="button"
-          aria-label={`About ${label.toLowerCase()}`}
+        <span
           onPointerEnter={() => setOpen(true)}
           onPointerLeave={() => setOpen(false)}
-          className="inline-flex cursor-help items-center transition-colors hover:text-foreground"
+          className="flex cursor-help items-center gap-1 transition-colors hover:text-foreground"
         >
-          <HugeiconsIcon
-            icon={InformationCircleIcon}
-            strokeWidth={1.75}
-            className="size-3.5"
-          />
-        </button>
+          {label}
+          <button
+            type="button"
+            aria-label={`About ${label.toLowerCase()}`}
+            className="inline-flex cursor-help items-center"
+          >
+            <HugeiconsIcon
+              icon={InformationCircleIcon}
+              strokeWidth={1.75}
+              className="size-3.5"
+            />
+          </button>
+        </span>
       </TooltipTrigger>
       <TooltipContent
-        side="top"
-        sideOffset={6}
+        side="left"
+        sideOffset={24}
         className="max-w-[calc(240px*var(--ui-space-scale,1))]"
       >
         {children}
@@ -340,6 +394,8 @@ export function ModelSearchFiltersControl({
   capabilities,
   onCapabilitiesChange,
   isolateFirstCapability,
+  modelKind,
+  onModelKindChange,
   uploaders,
   uploadersChanged,
   onUploadersChange,
@@ -354,6 +410,8 @@ export function ModelSearchFiltersControl({
   onCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
   /** True until the first change from the defaults: that capability pick keeps just that one. */
   isolateFirstCapability: boolean;
+  modelKind: HubModelKind;
+  onModelKindChange: (value: HubModelKind) => void;
   uploaders: readonly HubUploader[];
   /** False while the default applies, which leaves the icon without its dot. */
   uploadersChanged: boolean;
@@ -367,7 +425,9 @@ export function ModelSearchFiltersControl({
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
   const filtered =
     capabilities.length > 0 ||
-    (showModelFilters && (hasModelSearchFilters(value) || uploadersChanged));
+    modelKind !== "all" ||
+    uploadersChanged ||
+    (showModelFilters && hasModelSearchFilters(value));
   return (
     <Popover open={open} onOpenChange={setOpen}>
       {/* Icon-sized so the Discover toolbar keeps its existing single-row layout. */}
@@ -462,7 +522,13 @@ export function ModelSearchFiltersControl({
           </fieldset>
           {showModelFilters && (
             <>
-              <div aria-hidden={true} className={SEPARATOR} />
+              <div
+                aria-hidden={true}
+                className={cn(
+                  SEPARATOR,
+                  "mt-[calc(5px*var(--ui-space-scale,1))]",
+                )}
+              />
               <div className="flex flex-col gap-2.5 pb-0.5">
                 {RANGES.map((spec) => (
                   <RangeStops
@@ -473,51 +539,43 @@ export function ModelSearchFiltersControl({
                   />
                 ))}
               </div>
-              <div aria-hidden={true} className={SEPARATOR} />
-              <div className="flex items-center justify-between gap-3 px-3 py-0.5">
-                <span className="text-ui-12 text-muted-foreground">
-                  Uploader
-                </span>
-                <div
-                  role="radiogroup"
-                  aria-label="Uploader"
-                  className="hub-tab-toggle inline-flex h-8 items-center rounded-full"
-                >
-                  {(
-                    [
-                      ["Unsloth", true],
-                      ["All uploaders", false],
-                    ] as const
-                  ).map(([label, unslothOption]) => {
-                    const active = unslothOnly === unslothOption;
-                    return (
-                      <button
-                        key={label}
-                        type="button"
-                        role="radio"
-                        aria-checked={active}
-                        onClick={() => {
-                          if (!active) {
-                            onUploadersChange(
-                              unslothOption ? ["unsloth"] : [...HUB_UPLOADERS],
-                            );
-                          }
-                        }}
-                        className={cn(
-                          "relative flex h-8 cursor-pointer items-center rounded-full px-3 text-xs font-medium transition-colors",
-                          active
-                            ? "hub-tab-toggle-pill text-foreground"
-                            : "text-muted-foreground hover:text-foreground",
-                        )}
-                      >
-                        <span className="relative z-10">{label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
             </>
           )}
+          {/* Uploader is the Hub search's own scope, so it stays on ModelScope too. */}
+          <div
+            aria-hidden={true}
+            className={cn(
+              SEPARATOR,
+              showModelFilters
+                ? "mt-2.5"
+                : "mt-[calc(5px*var(--ui-space-scale,1))]",
+            )}
+          />
+          <div className="flex flex-col gap-1.5 px-3 py-[calc(9px*var(--ui-space-scale,1))]">
+            <SegmentedRow
+              label="Uploader"
+              value={unslothOnly ? "unsloth" : "all"}
+              options={[
+                ["unsloth", "Unsloth"],
+                ["all", "All uploaders"],
+              ]}
+              onChange={(next) =>
+                onUploadersChange(
+                  next === "unsloth" ? ["unsloth"] : [...HUB_UPLOADERS],
+                )
+              }
+            />
+            <SegmentedRow
+              label="Model type"
+              value={modelKind}
+              options={[
+                ["all", "All"],
+                ["base", "Base"],
+                ["finetuned", "Fine-tuned"],
+              ]}
+              onChange={onModelKindChange}
+            />
+          </div>
         </div>
         <div aria-hidden={true} className={cn(SEPARATOR, "shrink-0")} />
         <div className="flex shrink-0 items-center justify-end px-3 pt-0.5">

@@ -24,7 +24,7 @@ test("Unsloth's uploads by default, every uploader once a search is typed", () =
 
 test("the popover's uploader toggle picks Unsloth or every uploader", () => {
   assert.match(readSrc("features/hub/lib/model-search-filters.ts"), /"unsloth",\s*"organization",\s*"personal",/);
-  assert.match(popover, /\["All uploaders", false\]/);
+  assert.match(popover, /\["all", "All uploaders"\]/);
   assert.doesNotMatch(popover, /Organizations only|Non-organization/);
 });
 
@@ -39,7 +39,7 @@ test("the Hub's menus take the composer + menu's shape", () => {
   assert.match(css, /\.hub-composer-menu\[data-slot\] \{\s*border-radius: 21px !important;/);
   assert.match(readSrc("features/hub/catalog/hub-option-menu.tsx"), /hub-composer-menu/);
   assert.match(popover, /hub-composer-menu/);
-  assert.match(popover, /const SEPARATOR = "mx-1 my-2 h-px bg-border\/50";/);
+  assert.match(popover, /const SEPARATOR = "mx-1 my-2 h-px bg-border";/);
 });
 
 test("Reasoning draws the composer's thinking bulb", () => {

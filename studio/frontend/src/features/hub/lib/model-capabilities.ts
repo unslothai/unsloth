@@ -48,16 +48,10 @@ const VIDEO_GEN_TAGS = new Set([
 ]);
 const VIDEO_GEN_ID_RE =
   /wan2|hunyuan[-_]?video|ltx[-_]?video|\bltxv\b|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
-const IMAGE_GEN_TAGS = new Set([
-  "text-to-image",
-  "image-to-image",
-  "unconditional-image-generation",
-]);
-const IMAGE_GEN_ID_RE =
-  /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?image|z[-_]image|dreamshaper|latent[-_]?consistency|[-_]lcm\b/;
 
-/** Which generation an image/video model does, from its tags and name. A generator with neither
- *  signal is taken for an image model, as most are. */
+/** Which generation an image/video model does, from its tags and name. A video signal wins: several
+ *  video repos carry an image tag for their first-frame path, and the picker reads them the same
+ *  way. Anything else is taken for an image model, as most are. */
 export function generationKinds(
   tags: string[] | undefined,
   pipelineTag: string | undefined,
@@ -65,13 +59,97 @@ export function generationKinds(
 ): { image: boolean; video: boolean } {
   const tagSet = lower(tags);
   const pipeline = pipelineTag?.toLowerCase();
-  const lowerId = modelId.toLowerCase();
-  const has = (set: ReadonlySet<string>) =>
-    [...set].some((tag) => tagSet.has(tag)) ||
-    (pipeline !== undefined && set.has(pipeline));
-  const video = has(VIDEO_GEN_TAGS) || VIDEO_GEN_ID_RE.test(lowerId);
-  const image = has(IMAGE_GEN_TAGS) || IMAGE_GEN_ID_RE.test(lowerId) || !video;
-  return { image, video };
+  // The repo name only: "hunyuanvideo-community/HunyuanImage-2.1" is an image model.
+  const repo = modelId.toLowerCase().split("/").pop() ?? "";
+  const video =
+    [...VIDEO_GEN_TAGS].some((tag) => tagSet.has(tag)) ||
+    (pipeline !== undefined && VIDEO_GEN_TAGS.has(pipeline)) ||
+    VIDEO_GEN_ID_RE.test(repo);
+  return { image: !video, video };
+}
+
+/** Base or fine-tuned: a lab's own release (and its quantizations or re-uploads) is base; anything
+ *  else, a finetune, adapter or merge or a quantization of one, is fine-tuned. */
+export type HubModelKind = "all" | "base" | "finetuned";
+
+// Orgs that publish original models. Their instruct releases are finetunes of their own base models
+// on the model tree, which a reader still calls a base model.
+const ORIGINAL_PUBLISHERS = new Set([
+  "qwen",
+  "meta-llama",
+  "google",
+  "mistralai",
+  "deepseek-ai",
+  "microsoft",
+  "nvidia",
+  "openai",
+  "liquidai",
+  "zai-org",
+  "thudm",
+  "moonshotai",
+  "minimaxai",
+  "ibm-granite",
+  "coherelabs",
+  "cohereforai",
+  "allenai",
+  "huggingfacetb",
+  "tencent",
+  "baidu",
+  "internlm",
+  "opengvlab",
+  "stepfun-ai",
+  "xai-org",
+  "apple",
+  "tiiuae",
+  "01-ai",
+  "bytedance-seed",
+  "inclusionai",
+  "black-forest-labs",
+  "stabilityai",
+  "wan-ai",
+  "lightricks",
+  "ai21labs",
+  "sesame",
+  "canopylabs",
+  "hexgrad",
+]);
+const MODEL_TREE_TAG_RE =
+  /^base_model:(finetune|adapter|merge|quantized):(.+)$/;
+// Re-uploaders: their copies are the model they copy.
+const REUPLOADERS = new Set(["unsloth"]);
+
+const ownerOf = (repo: string) => repo.split("/")[0]?.toLowerCase() ?? "";
+
+export function isFineTunedModel(
+  modelId: string,
+  tags: string[] | undefined,
+): boolean {
+  const owner = ownerOf(modelId);
+  if (ORIGINAL_PUBLISHERS.has(owner)) {
+    return false;
+  }
+  const links: [string, string][] = [];
+  for (const tag of tags ?? []) {
+    const match = MODEL_TREE_TAG_RE.exec(tag);
+    if (match) {
+      links.push([match[1], match[2]]);
+    }
+  }
+  // Outside the labs, a repo with no model tree is almost always someone's tune.
+  if (links.length === 0) {
+    return !REUPLOADERS.has(owner);
+  }
+  const original = (repo: string) => ORIGINAL_PUBLISHERS.has(ownerOf(repo));
+  const derived = links.filter(([kind]) => kind !== "quantized");
+  if (derived.length > 0) {
+    return !(
+      REUPLOADERS.has(owner) && derived.every(([, repo]) => original(repo))
+    );
+  }
+  // A quantization is the model it quantizes.
+  return !links.some(
+    ([, repo]) => original(repo) || REUPLOADERS.has(ownerOf(repo)),
+  );
 }
 
 const VISION_TAGS = new Set([
@@ -298,12 +376,7 @@ export function detectCapabilities(
     const kinds = generationKinds(tags, pipelineTag, modelId);
     out.push({
       key: "diffusion",
-      label:
-        kinds.image && kinds.video
-          ? "Image & video gen"
-          : kinds.video
-            ? "Video gen"
-            : "Image gen",
+      label: kinds.video ? "Video gen" : "Image gen",
     });
   }
   const languageCodes = new Set<string>();
