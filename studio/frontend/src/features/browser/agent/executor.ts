@@ -421,6 +421,8 @@ const DECLINED: Record<Question["ask"], string> = {
 
 /** Questions show in the panel's agent bar, so the panel has to be on screen to ask. A script is asked every time. */
 async function askInPanel(question: Question, signal?: AbortSignal): Promise<Answer> {
+  // As askUser does: a stopped action isn't answered, even by Always allow.
+  if (signal?.aborted) return false;
   // A click is asked about by its label, so Always allow covers that button, not every risky one.
   const key = [question.ask, question.host, question.ask === "click" ? question.name : ""].join("\n");
   // "__default" is a new chat's first turn that hasn't got its id yet, which another new chat can share.

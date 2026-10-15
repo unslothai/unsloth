@@ -7,7 +7,8 @@ import { test } from "node:test";
 
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
-const { answerQuestion, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
+const { answerQuestion, stopBrowserAgent, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
+const { useBrowserStore } = await import("../src/features/browser/store.ts");
 
 const globals = globalThis as Record<string, unknown>;
 const policy = { allowedDomains: [], blockedDomains: [] };
@@ -112,4 +113,29 @@ test("Always allow isn't kept for a new chat's first turn before it has an id", 
   const click = (id: string) => runBrowserAction({ id, sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat);
   assert.equal(await askedBy(click("e1"), (id) => answerQuestion(id, true, true)), "click");
   assert.equal(await askedBy(click("e2"), (id) => answerQuestion(id, true)), "click");
+});
+
+test("Always allow doesn't answer for an action that was stopped", async () => {
+  globals.__authFetch = async () => new Response(null, { status: 200 });
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
+    if (op.op === "describe") return { installed: true, result: { ok: true, info: { ...buy, name: "Next page" }, hit: "r5", sig: "s" } };
+    if (op.op === "click") {
+      // Stop lands while the click is out; the page then says the button opens a link.
+      stopBrowserAgent();
+      return { installed: true, result: { ok: true, navigate: "https://other.example.com/next" } };
+    }
+    return { installed: true, result: { ok: true, text: "page", links: [] } };
+  };
+  const chat = { runKey: "r", scope: "chat-d", userText: "open https://shop.example.com/" };
+  const go = (id: string, url: string, run: typeof chat) =>
+    runBrowserAction({ id, sessionId: "s", op: "navigate", url, direction: "down", policy }, run);
+  await go("f0", "https://shop.example.com/", chat);
+  assert.equal(await askedBy(go("f1", "https://other.example.com/", chat), (id) => answerQuestion(id, true, true)), "open");
+  // Another chat in between, so other.example.com is back to needing the grant.
+  await go("f2", "https://shop.example.com/", { ...chat, scope: "chat-e" });
+  await go("f3", "https://shop.example.com/", chat);
+  const click = runBrowserAction({ id: "f4", sessionId: "s", op: "click", x: 40, y: 20, direction: "down", policy }, chat);
+  assert.equal(await askedBy(click, (id) => answerQuestion(id, true)), null);
+  assert.ok(!JSON.stringify(useBrowserStore.getState().tabs).includes("other.example.com/next"), "a stopped action opened the link");
 });
