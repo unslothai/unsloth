@@ -2116,3 +2116,20 @@ def test_cfg_batch_pending_slowdown_applies_on_a_prediction_miss():
     _batch_loop(dit, torch.randn(2, 4), 4, cond, uncond.clone(), edit = edit)
     assert router.describe()["disabled_reason"] == "measured no gain"
     assert router.stats["batched_steps"] == 1
+
+
+def test_cfg_batch_headroom_is_the_denoise_phase_when_calibrated():
+    # FLUX.1-like: decode peaks far above denoise; the batched call only adds denoise activations
+    act = dm.CalibratedImageActivation(1_000, 892, 2_666, 600, 2_000)
+    plan = dm.plan_diffusion_memory(
+        target = _Target(),
+        device_memory = _memory(),
+        model_dense_mib = 20000,
+        companion_dense_mib = 9000,
+        text_encoder_dense_mib = 8500,
+        runtime_headroom_mib = 8192,
+        calibrated_activation = act,
+    )
+    assert mg.plan_denoise_headroom_mib(plan) == 892
+    # without a per-phase figure the conservative whole-request headroom stays
+    assert mg.plan_denoise_headroom_mib(_plan()) == _plan().estimates["runtime_headroom_mib"]

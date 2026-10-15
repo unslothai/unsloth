@@ -685,8 +685,11 @@ def refine_plan_for_multigpu(
 def plan_denoise_headroom_mib(plan: Any) -> Optional[int]:
     """The plan's activation room above the weights (measured, calibrated or estimated), None when unknown."""
     estimates = getattr(plan, "estimates", None) or {}
+    # The calibrated denoise phase when the family has one; else the whole-request figure (it includes the VAE decode
+    # peak, so it is conservative: video plans and uncalibrated image plans have no per-phase number).
     value = (
-        estimates.get("measured_runtime_headroom_mib")
+        estimates.get("calibrated_denoise_mib")
+        or estimates.get("measured_runtime_headroom_mib")
         or estimates.get("calibrated_headroom_mib")
         or estimates.get("runtime_headroom_mib")
     )

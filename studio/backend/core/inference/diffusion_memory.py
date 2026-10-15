@@ -1947,6 +1947,8 @@ def plan_diffusion_memory(
             any_offload = policy != OFFLOAD_NONE
             reasons.append(reason)
             estimates["calibrated_headroom_mib"] = calibrated_activation.headroom(tile)
+            # the denoise phase alone: what a second guidance branch in the same call adds (CFG-batch's memory gate)
+            estimates["calibrated_denoise_mib"] = int(calibrated_activation.denoise_mib)
     split = _multigpu_companion_split(
         target = target,
         device_memory = device_memory,
