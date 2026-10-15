@@ -4713,7 +4713,10 @@ def offload_to_disk(
     name,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
 ):
-    file_location = os.path.join(temporary_location, model.config._name_or_path)
+    # A local model's absolute path would discard temporary_location in the join (and write into
+    # the model's own folder), so keep only its relative part.
+    model_dir = os.path.splitdrive(str(model.config._name_or_path))[1].lstrip("\\/")
+    file_location = os.path.join(temporary_location, model_dir)
     if not os.path.exists(file_location):
         os.makedirs(file_location)
 
