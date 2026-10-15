@@ -2052,7 +2052,9 @@ def test_cfg_batch_accepts_a_studio_root_hook():
 
 def test_cfg_batch_declines_a_pre_existing_outer_forward_layer(monkeypatch):
     class Outer:
-        _unsloth_outer_forward = True  # e.g. the static step skip: per-branch state keyed on separate calls
+        _unsloth_outer_forward = (
+            True  # e.g. the static step skip: per-branch state keyed on separate calls
+        )
 
         def __init__(self, module):
             self.inner = type(module).forward.__get__(module)
@@ -2072,7 +2074,9 @@ def test_cfg_batch_declines_a_pre_existing_outer_forward_layer(monkeypatch):
     reason = mg.install_cfg_batch(pipe, offload_policy = "none")
     assert reason is not None and "outer forward" in reason
     plain = Pipe()
-    assert mg.install_cfg_batch(plain, offload_policy = "none") is None  # the class forward alone still arms
+    assert (
+        mg.install_cfg_batch(plain, offload_policy = "none") is None
+    )  # the class forward alone still arms
 
 
 def test_cfg_batch_output_rebuild_failure_runs_the_branch_plain(monkeypatch):
@@ -2084,7 +2088,11 @@ def test_cfg_batch_output_rebuild_failure_runs_the_branch_plain(monkeypatch):
     router = mg.CfgBatchRouter(dit)
     dit.forward = router
 
-    def bad_split(out, batch, depth = 0):
+    def bad_split(
+        out,
+        batch,
+        depth = 0,
+    ):
         raise TypeError("init=False field")
 
     monkeypatch.setattr(mg, "_split_output", bad_split)
