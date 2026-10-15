@@ -18,7 +18,6 @@ import type {
 import type { DrafterCapability } from "./api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
-/** Execution strategy for the selected physical GPU ids. */
 export type TrainingParallelismMode =
   | "auto"
   | "single"

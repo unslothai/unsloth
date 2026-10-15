@@ -97,7 +97,6 @@ def test_shared_stop_queue_reports_a_direct_cancel_once():
 
 
 def test_shared_stop_queue_waits_on_an_unset_event_after_delivery(monkeypatch):
-    # After a cancel there is nothing left to deliver; a blocking get must still block.
     stop_event, cancel_event = threading.Event(), threading.Event()
     stop_event.set()
     cancel_event.set()
@@ -135,7 +134,6 @@ def test_shared_stop_queue_waits_on_an_unset_event_after_delivery(monkeypatch):
 def test_dense_ddp_checkpointing_disables_unused_parameter_discovery(
     monkeypatch, world_size, checkpointing, family, audio, expected
 ):
-    # Execute the real configuration block without importing GPU dependencies.
     source = Path(__file__).parents[1] / "core" / "training" / "trainer.py"
     tree = ast.parse(source.read_text())
     blocks = [
@@ -156,7 +154,6 @@ def test_dense_ddp_checkpointing_disables_unused_parameter_discovery(
         )
     ]
     assert len(blocks) == 1
-    # Clear other launchers so this block reads only this test's WORLD_SIZE.
     from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
 
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
@@ -354,8 +351,6 @@ def test_rank_zero_forwards_normal_training_events():
 
 
 def test_rank_config_carries_full_ddp_world_size(monkeypatch):
-    # _rank_entry intentionally rewrites the child environment. Isolate that
-    # mutation so later CPU tests do not inherit a fictitious distributed run.
     monkeypatch.setattr(ddp.os, "environ", os.environ.copy())
     monkeypatch.setattr(ddp, "_bind_to_parent_lifetime", lambda: None)
     captured = []

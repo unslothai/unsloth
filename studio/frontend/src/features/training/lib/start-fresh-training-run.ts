@@ -273,7 +273,6 @@ export async function startFreshTrainingRun(): Promise<boolean> {
   }
 
   try {
-    // Automatic placement has no device ids to re-check before the token prompt.
     if (attempt.config.parallelismMode !== "auto") {
       const gpuCheck = await validateRefreshedTrainingGpuSelection({
         refresh: refreshTrainingGpuIndices,
