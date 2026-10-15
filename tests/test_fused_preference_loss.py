@@ -88,16 +88,16 @@ class HiddenStatesLlama(LlamaForCausalLM):
         return CausalLMOutputWithPast(logits = logits)
 
 
-def _model(seed, softcap = 0.0, bias = False):
+def _model(seed, softcap = 0.0, bias = False, vocab = VOCAB, hidden = HIDDEN):
     torch.manual_seed(seed)
     config = LlamaConfig(
-        vocab_size = VOCAB, hidden_size = HIDDEN, intermediate_size = 32, num_hidden_layers = 2,
+        vocab_size = vocab, hidden_size = hidden, intermediate_size = 32, num_hidden_layers = 2,
         num_attention_heads = 2, num_key_value_heads = 2, max_position_embeddings = 64,
         tie_word_embeddings = False,
     )
     model = HiddenStatesLlama(config).double()
     if bias:
-        model.lm_head.bias = torch.nn.Parameter(torch.randn(VOCAB, dtype = torch.float64))
+        model.lm_head.bias = torch.nn.Parameter(torch.randn(vocab, dtype = torch.float64))
     with torch.no_grad():
         model.lm_head.weight.mul_(8.0)
     model.softcap = softcap
@@ -342,8 +342,9 @@ def _orpo_trainer(module, model, method, fused, **overrides):
         def concatenated_forward(self, model, batch):
             if fused:
                 out = module.unsloth_fused_orpo_concatenated_forward(self, model, batch, method = method)
-                assert out is not None, "fused path declined a supported case"
-                return out
+                if out is not None:
+                    return out
+                assert fused == "auto", "fused path declined a supported case"
             return Trainer.concatenated_forward(self, model, batch)
 
     if method == "orpo":
@@ -390,6 +391,71 @@ def test_orpo_cpo_match_trl(dpo_module, monkeypatch, method, case):
         HiddenStatesLlama.hidden_calls = 0
         results.append(_run(trainer, model, batch))
         assert (HiddenStatesLlama.hidden_calls >= 1) == fused
+    _assert_same(*results)
+
+
+def test_orpo_under_ddp_find_unused_falls_back(dpo_module, monkeypatch, tmp_path):
+    """DDP(find_unused_parameters = True) would mark the trainable head ready twice."""
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel
+
+    if dist.is_initialized():
+        pytest.skip("a process group is already initialised")
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+
+    class Unwrapping(_Accelerator):
+        def unwrap_model(self, model):
+            return getattr(model, "module", model)
+
+    batch = _orpo_batch(seed = 4)
+    reference = _run(_orpo_trainer(dpo_module, _model(0), "orpo", False), _model(0), batch)
+    dist.init_process_group("gloo", init_method = f"file://{tmp_path / 'store'}", rank = 0, world_size = 1)
+    try:
+        for find_unused in (True, False):
+            model = _model(0)
+            ddp = DistributedDataParallel(model, find_unused_parameters = find_unused)
+            trainer = _orpo_trainer(dpo_module, model, "orpo", "auto", accelerator = Unwrapping())
+            HiddenStatesLlama.hidden_calls = 0
+            model.zero_grad(set_to_none = True)
+            loss, metrics, _ = _run(trainer, ddp, batch)
+            grads = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+            assert (HiddenStatesLlama.hidden_calls >= 1) == (not find_unused)
+            _assert_same(reference, (loss, metrics, grads))
+    finally:
+        dist.destroy_process_group()
+
+
+def _real_hidden_states_helpers():
+    text = (ROOT / "unsloth" / "models" / "rl_replacements.py").read_text()
+    start = text.index("def _unsloth_grpo_returns_hidden_states(")
+    end = text.index("_GRPO_HIDDEN_STATES_WIDTH_DISPATCH = ")
+    package = types.ModuleType("_fake_unsloth_models")
+    package.__path__ = []
+    helpers = types.ModuleType("_fake_unsloth_models.rl_replacements")
+    exec(text[start:end], helpers.__dict__)
+    return package, helpers
+
+
+@pytest.mark.parametrize("honours_flag", [False, True])
+def test_square_head_needs_explicit_hidden_states_signal(dpo_module, monkeypatch, honours_flag):
+    """vocab_size == hidden_size: logits look like hidden states, so only a marked forward is fused."""
+    package, helpers = _real_hidden_states_helpers()
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    monkeypatch.setitem(sys.modules, helpers.__name__, helpers)
+    monkeypatch.setattr(dpo_module, "__package__", package.__name__)
+    monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
+    if honours_flag:
+        monkeypatch.setattr(HiddenStatesLlama, "__UNSLOTH_SUPPORTS_RETURN_HIDDEN_STATES__", True, raising = False)
+    else:
+        monkeypatch.setattr(HiddenStatesLlama, "forward", lambda self, *a, **k: LlamaForCausalLM.forward(self, *a, **{x: y for x, y in k.items() if x != "use_cache"}))
+    batch = _orpo_batch(seed = 4)
+    results = []
+    for fused in (False, "auto"):
+        model = _model(0, vocab = 64, hidden = 64)
+        trainer = _orpo_trainer(dpo_module, model, "orpo", fused)
+        HiddenStatesLlama.hidden_calls = 0
+        results.append(_run(trainer, model, batch))
+        assert (HiddenStatesLlama.hidden_calls >= 1) == (honours_flag and bool(fused))
     _assert_same(*results)
 
 

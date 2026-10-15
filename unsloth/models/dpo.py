@@ -84,7 +84,26 @@ def _output_head(trainer, model):
     if type(weight).__name__ == "DTensor":
         return None, None
     bias = getattr(head, "bias", None)
-    return unwrapped, (weight, bias if isinstance(bias, torch.Tensor) else None)
+    bias = bias if isinstance(bias, torch.Tensor) else None
+    # DDP(find_unused_parameters = True) marks a trainable head unused once model(...) returns,
+    # so applying it afterwards makes backward mark it ready a second time and raise.
+    if isinstance(model, torch.nn.parallel.DistributedDataParallel) and getattr(
+        model, "find_unused_parameters", False
+    ):
+        if any(p is not None and p.requires_grad for p in (weight, bias)):
+            return None, None
+    # vocab_size == hidden_size: the output width cannot tell hidden states from logits, so
+    # only a forward that explicitly honours UNSLOTH_RETURN_HIDDEN_STATES is trusted.
+    if weight.shape[0] == weight.shape[1]:
+        try:
+            from .rl_replacements import _unsloth_grpo_hidden_states_signal
+
+            trusted = any(_unsloth_grpo_hidden_states_signal(m) is True for m in (model, unwrapped))
+        except Exception:
+            trusted = False
+        if not trusted:
+            return None, None
+    return unwrapped, (weight, bias)
 
 
 def _logit_transforms(unwrapped):
