@@ -175,7 +175,9 @@ def _self_check(q, k, v, g, beta):
         return False
     from fla.ops.gated_delta_rule import chunk_gated_delta_rule
 
-    do = torch.randn_like(v)
+    # Private generator: the default one feeds LoRA dropout, which checkpoint recompute replays.
+    gen = torch.Generator(device = v.device).manual_seed(0)
+    do = torch.randn(v.shape, dtype = v.dtype, device = v.device, generator = gen)
     ins = [t.contiguous().requires_grad_() for t in (q, k, v, g, beta)]
     ref, _ = chunk_gated_delta_rule(*ins, use_qk_l2norm_in_kernel = True)
     ref_g = torch.autograd.grad(ref, ins, do)

@@ -191,12 +191,72 @@ def test_kill_switch(monkeypatch):
     assert not M._enabled()
     monkeypatch.setenv("UNSLOTH_COMPILE_DISABLE", "0")
     assert M._enabled()
-    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
-    assert not M._enabled()
     monkeypatch.setattr(torch, "__version__", "2.6.0+cu124")
     assert not M._torch_supported()
     monkeypatch.setattr(torch, "__version__", "2.7.1+cu126")
     assert M._torch_supported()
+
+
+def test_forced_float32_is_decided_per_model(monkeypatch):
+    M = _load()
+    calls = []
+
+    def fake_compile(fn, **kwargs):
+        def compiled(*args, **kw):
+            calls.append(1)
+            return fn(*args, **kw)
+
+        return compiled
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(M, "_torch_supported", lambda: True)
+    cls = _toy_class()
+
+    def model_of(forced):
+        model = torch.nn.Module()
+        model.layers = torch.nn.ModuleList([cls(), cls()])
+        if forced is not None:
+            model._unsloth_forced_float32 = forced
+        return model
+
+    # Forced by this load's env (the stamp lands after the first post_patch_model).
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
+    forced = model_of(None)
+    assert M.patch_block_compile(forced) == []
+    # A later load of the same family without forcing wraps the class.
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "0")
+    plain = model_of(False)
+    assert M.patch_block_compile(plain) == [cls.__name__]
+    x = torch.randn(2, 4, 8)
+    with torch.no_grad():
+        forced.layers[0](x)
+    assert calls == []
+    with torch.no_grad():
+        plain.layers[0](x)
+    assert calls == [1]
+    # Env says forced, but this model was stamped otherwise: still compiled.
+    monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
+    with torch.no_grad():
+        plain.layers[1](x)
+    assert calls == [1, 1]
+
+
+def test_gdn_self_check_leaves_default_rng_alone():
+    # Checkpoint recompute replays the default generator for LoRA dropout masks.
+    pytest.importorskip("fla.ops.gated_delta_rule.chunk")
+    if not has_real_cuda():
+        pytest.skip("needs a real CUDA device")
+    G = _load("_gdn_op")
+    gen = torch.Generator(device = "cuda").manual_seed(0)
+    B, T, H, D = 1, 70, 2, 128
+    mk = lambda *s, dt = torch.bfloat16: torch.randn(*s, device = "cuda", dtype = dt, generator = gen)
+    q, k, v = mk(B, T, H, D), mk(B, T, H, D), mk(B, T, H, D)
+    g = -mk(B, T, H, dt = torch.float32).abs() * 0.1
+    beta = mk(B, T, H).sigmoid()
+    state = torch.cuda.get_rng_state()
+    assert G._fla_ops(lambda: (q, k, v, g, beta))
+    assert torch.equal(torch.cuda.get_rng_state(), state)
 
 
 def test_sm_count_is_read_outside_the_trace(monkeypatch):

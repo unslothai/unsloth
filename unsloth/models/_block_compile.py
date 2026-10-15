@@ -27,12 +27,18 @@ _SKIP = {"GptOssDecoderLayer"}
 
 
 def _enabled():
-    # UNSLOTH_FORCE_FLOAT32: zoo's patches round to fp16 on purpose; Inductor drops those roundings.
-    return (
-        os.environ.get("UNSLOTH_BLOCK_COMPILE", "1") != "0"
-        and os.environ.get("UNSLOTH_COMPILE_DISABLE", "0") not in ("1", "partial")
-        and os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") != "1"
-    )
+    return os.environ.get("UNSLOTH_BLOCK_COMPILE", "1") != "0" and os.environ.get(
+        "UNSLOTH_COMPILE_DISABLE", "0"
+    ) not in ("1", "partial")
+
+
+def _forced_float32(module):
+    # Zoo's float32-forced patches round to fp16 on purpose; Inductor drops those roundings.
+    # Stamped per layer at load: the env var only describes the latest load.
+    forced = module.__dict__.get("_unsloth_forced_float32")
+    if forced is None:
+        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    return forced
 
 
 def _writes_globals(code):
@@ -575,6 +581,7 @@ def _wrap(cls, compile_options):
             or not self.training
             or kwargs.get("past_key_values") is not None
             or not _enabled()
+            or _forced_float32(self)
         ):
             return original(self, hidden_states, *args, **kwargs)
         if not self.__dict__.get("_unsloth_block_moe_done", False):
@@ -693,7 +700,13 @@ def _experts_outside(layer):
 
 def patch_block_compile(model):
     """Compile every decoder-layer class of `model` as one region. Returns the classes wrapped."""
-    if not _enabled() or not torch.cuda.is_available() or not _torch_supported():
+    forced = model.__dict__.get("_unsloth_forced_float32")
+    if forced is None:
+        forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+    for layer_list in _layer_lists(model):
+        for layer in layer_list:
+            layer.__dict__["_unsloth_forced_float32"] = bool(forced)
+    if forced or not _enabled() or not torch.cuda.is_available() or not _torch_supported():
         return []
     classes = _decoder_layer_classes(model)
     if not classes:
