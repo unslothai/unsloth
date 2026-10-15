@@ -1712,6 +1712,11 @@ def _make_quant_config(scheme: str, fast_accum: Optional[bool] = None) -> Any:
     if scheme == TQ_NVFP4:
         from torchao.prototype.mx_formats import NVFP4DynamicActivationNVFP4WeightConfig
 
+        from .diffusion_nvfp4_act_quant import install_nvfp4_act_quant_patch
+
+        # Before quantize_: the load-time weight pass stays on torchao (eager); compiled activations use the kernel.
+        install_nvfp4_act_quant_patch()
+
         # Select the CUTLASS FP4 path, not the default Triton kernel (which needs MSLK): on a Blackwell box with
         # CUTLASS FP4 but no MSLK the default fails the smoke probe and falls back to GGUF.
         try:
