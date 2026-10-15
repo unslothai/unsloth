@@ -587,6 +587,10 @@ export const zhCN = {
   chatMenu: {
     more: "聊天选项",
     copy: "复制",
+    compact: "压缩对话",
+    compactQueued: "已请求在下一条消息时压缩对话",
+    compactEmpty: "暂无可压缩的内容",
+    compactUnsupported: "对话压缩需要支持工具调用的 GGUF 或 MLX 模型",
   },
   welcome: {
     goodToSeeYou: "很高兴见到你",
@@ -1357,6 +1361,8 @@ export const zhCN = {
       installRuntimeFailed: "运行时安装失败。",
       installRuntimeError: "无法开始安装运行时。",
       unsupportedArch: "Windows 沙箱 (MXC) 仅支持 x64 版 Windows，因此在此电脑上不可用。",
+      builtinNeedsUpdate:
+        "Windows 内置容器需要版本 {required} 或更高，而这台电脑运行的是 {current}。安装最新的 Windows 更新即可无需管理员步骤使用它，或在下方开启备用沙盒。",
       unsupportedBuild: "Windows 沙箱 (MXC) 需要 Windows 11 24H2（版本 26100）或更高版本，因此在此电脑上不可用。",
       permissionsIntro: "选择工具何时先询问，以及 Python 和终端是否也在操作系统沙盒中运行。",
       permissionLabel: "工具权限",
@@ -1821,8 +1827,20 @@ export const zhCN = {
         embeddingModelDescription:
           "用于为文档建立索引和搜索的 Hugging Face 模型或本地路径。默认值为 {defaultModel}。",
         searchPlaceholder: "搜索 HF 上的任意模型",
-        reindexWarning:
-          "仅影响新建立索引的文档。更改模型后请重新上传已有文档。",
+        reindexWarning: "仅影响新建立索引的文档。更改模型后请重新嵌入已有文档。",
+        reembed: {
+          label: "重新嵌入文档",
+          staleOne: "有 1 个文档使用其他嵌入模型建立索引，语义搜索会跳过它。",
+          staleMany: "有 {count} 个文档使用其他嵌入模型建立索引，语义搜索会跳过它们。",
+          staleArchived: "较早的聊天记录使用其他嵌入模型建立索引，语义搜索会跳过它。",
+          running: "正在重新嵌入：{done} / {total}",
+          action: "重新嵌入",
+          stop: "停止",
+          startFailed: "无法开始重新嵌入",
+          stopped: "重新嵌入已停止",
+          finished: "文档已重新嵌入",
+          finishedWithFailures: "{count} 个无法重新嵌入",
+        },
         emptyError: "请输入 Hugging Face 模型 ID 或本地路径。",
         loadError: "加载 embedding 模型设置失败。",
         saveError: "保存 embedding 模型失败。",
@@ -2959,6 +2977,22 @@ export const zhCN = {
         "使用此 token 的应用会立即失去访问权限。此操作无法撤销。",
       revokeAction: "撤销“{name}”",
       revoking: "撤销中...",
+      audioApi: {
+        title: "音频 API",
+        description: "语音合成、声音克隆、转写以及音频页面的工作流。",
+        speak: "朗读",
+        clone: "克隆",
+        transcribe: "转写",
+        workflows: "工作流",
+        separate: "分离",
+        convert: "转换",
+        music: "音乐",
+        edit: "编辑",
+        placeholderModel: "还没有能运行此示例的已下载模型，因此显示的模型只是示意。请先在音频页面下载一个模型。",
+        autoSwitchOff:
+          "只有开启模型自动切换时，才会按名称加载模型。请开启它，或先在该模型的音频页面加载模型。",
+        useViaApi: "通过 API 使用",
+      },
       decisionApi: {
         title: "决策 API",
         docs: "文档",
@@ -3037,6 +3071,7 @@ export const zhCN = {
       desktopAppVersion: "桌面应用版本",
       desktopAppVersionUnavailable: "不可用",
       llamaCppVersion: "llama.cpp 版本",
+      audioCppVersion: "audio.cpp 版本",
       hardware: "硬件",
       gpu: "GPU",
       cuda: "CUDA",

@@ -1271,6 +1271,7 @@ export const it = {
       installRuntimeFailed: "Installazione del runtime non riuscita.",
       installRuntimeError: "Impossibile avviare l'installazione del runtime.",
       unsupportedArch: "La sandbox di Windows (MXC) funziona solo su Windows x64, quindi non è disponibile su questo PC.",
+      builtinNeedsUpdate: "Il container integrato di Windows richiede la build {required} o successiva, e questo PC esegue {current}. Installa l'ultimo aggiornamento di Windows per usarlo senza un passaggio da amministratore, oppure attiva la sandbox di riserva qui sotto.",
       unsupportedBuild: "La sandbox di Windows (MXC) richiede Windows 11 24H2 (build 26100) o successivo, quindi non è disponibile su questo PC.",
       permissionsIntro: "Scegli quando gli strumenti chiedono prima e se Python e Terminale vengono eseguiti anche nella sandbox del sistema.",
       permissionLabel: "Autorizzazioni strumenti",
@@ -1795,7 +1796,23 @@ export const it = {
           "Modello Hugging Face o percorso locale usato per indicizzare e cercare nei tuoi documenti. Il valore predefinito è {defaultModel}.",
         searchPlaceholder: "Cerca qualsiasi modello su HF",
         reindexWarning:
-          "Vale solo per i documenti indicizzati da ora in poi. Ricarica quelli esistenti dopo aver cambiato modello.",
+          "Vale solo per i documenti indicizzati da ora in poi. Ricalcola gli embedding di quelli esistenti dopo aver cambiato modello.",
+        reembed: {
+          label: "Ricalcola gli embedding dei documenti",
+          staleOne:
+            "1 documento è stato indicizzato con un altro modello di embedding, quindi la ricerca semantica lo ignora.",
+          staleMany:
+            "{count} documenti sono stati indicizzati con un altro modello di embedding, quindi la ricerca semantica li ignora.",
+          staleArchived:
+            "La cronologia chat precedente è stata indicizzata con un altro modello di embedding, quindi la ricerca semantica la ignora.",
+          running: "Ricalcolo embedding: {done} di {total}",
+          action: "Ricalcola",
+          stop: "Interrompi",
+          startFailed: "Impossibile avviare il ricalcolo degli embedding",
+          stopped: "Ricalcolo degli embedding interrotto",
+          finished: "Embedding dei documenti ricalcolati",
+          finishedWithFailures: "Non è stato possibile ricalcolare {count}",
+        },
         emptyError:
           "Inserisci l'ID di un modello Hugging Face o un percorso locale.",
         loadError:
@@ -2965,6 +2982,22 @@ export const it = {
         "Le app che usano questo token perdono immediatamente l'accesso. L'operazione è irreversibile.",
       revokeAction: "Revoca «{name}»",
       revoking: "Revoca in corso...",
+      audioApi: {
+        title: "API audio",
+        description: "Sintesi vocale, clonazione della voce, trascrizione e i flussi della pagina Audio.",
+        speak: "Parla",
+        clone: "Clona",
+        transcribe: "Trascrivi",
+        workflows: "Flussi",
+        separate: "Separa",
+        convert: "Converti",
+        music: "Musica",
+        edit: "Modifica",
+        placeholderModel: "Nessun modello scaricato può ancora eseguire questo esempio, quindi il modello mostrato è solo indicativo. Scaricane prima uno dalla pagina Audio.",
+        autoSwitchOff:
+          "Il modello si carica per nome solo con il cambio automatico del modello attivo. Attivalo, oppure carica prima il modello dalla sua pagina Audio.",
+        useViaApi: "Usa via API",
+      },
       decisionApi: {
         title: "API decisionale",
         docs: "Documentazione",
@@ -3042,6 +3075,7 @@ export const it = {
       desktopAppVersionUnavailable: "Non disponibile",
       packageVersion: "Versione del pacchetto",
       llamaCppVersion: "Versione di llama.cpp",
+      audioCppVersion: "Versione di audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",
@@ -3165,6 +3199,10 @@ export const it = {
   chatMenu: {
     more: "Opzioni chat",
     copy: "Copia",
+    compact: "Compatta conversazione",
+    compactQueued: "Compattazione richiesta per il prossimo messaggio",
+    compactEmpty: "Ancora niente da compattare",
+    compactUnsupported: "La compattazione richiede un modello GGUF o MLX con supporto per gli strumenti",
   },
   welcome: {
     goodToSeeYou: "Che piacere vederti",

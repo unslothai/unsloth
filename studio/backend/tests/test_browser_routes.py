@@ -131,6 +131,7 @@ def test_the_shells_base_follows_the_router_only_without_a_page_base():
     # Chromium, as this suite has no browser to run the shell in.
     shell = browser_mod._FRAME_HTML
     assert "ownBase: data.ownBase === true" in shell
+    assert "anyOrigin: data.anyOrigin === true" in shell
     assert 'cfg.url && !cfg.ownBase ? document.querySelector("base") : null' in shell
     assert shell.index("pageUrl = next;") < shell.index(
         'routedBase?.setAttribute("href", pageUrl);'
@@ -255,7 +256,21 @@ def test_html_comes_back_as_json_with_its_final_url(monkeypatch):
     payload = json.loads(response.body)
     assert payload["url"] == payload["base"] == "https://example.com/final"
     assert payload["ownBase"] is False
+    assert payload["anyOrigin"] is False
     assert "<title>x</title>" in payload["html"]
+
+
+@pytest.mark.parametrize(
+    "allow, any_origin", [("*", True), ("null", True), ("https://a.test", False)]
+)
+def test_a_page_whose_site_answers_any_origin_says_so(monkeypatch, allow, any_origin):
+    # The shell then leaves the page's own-site requests to the browser, which can read them.
+    _fetch(
+        monkeypatch,
+        (None, b"<html></html>", "text/html"),
+        {"url": "https://example.com/", "charset": "utf-8", "allow_origin": allow},
+    )
+    assert json.loads(_call(url = "example.com").body)["anyOrigin"] is any_origin
 
 
 def test_a_page_base_equal_to_its_url_is_still_its_own(monkeypatch):

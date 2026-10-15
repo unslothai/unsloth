@@ -689,6 +689,10 @@ export const sv = {
   chatMenu: {
     more: "Chattalternativ",
     copy: "Kopiera",
+    compact: "Komprimera konversationen",
+    compactQueued: "Komprimering begärd för nästa meddelande",
+    compactEmpty: "Inget att komprimera än",
+    compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
   },
   welcome: {
     goodToSeeYou: "Kul att se dig",
@@ -1493,6 +1497,8 @@ export const sv = {
         "Det gick inte att starta installationen av körmiljön.",
       unsupportedArch:
         "Windows-sandlådan (MXC) körs bara på x64-Windows, så den är inte tillgänglig på den här datorn.",
+      builtinNeedsUpdate:
+        "Windows inbyggda container kräver version {required} eller senare, och den här datorn kör {current}. Installera den senaste Windows-uppdateringen för att använda den utan administratörssteg, eller slå på reservsandlådan nedan.",
       unsupportedBuild:
         "Windows-sandlådan (MXC) kräver Windows 11 24H2 (version 26100) eller senare, så den är inte tillgänglig på den här datorn.",
       permissionsIntro:
@@ -2026,7 +2032,23 @@ export const sv = {
           "Hugging Face-modell eller lokal sökväg som används för att indexera och söka i dina dokument. Standard är {defaultModel}.",
         searchPlaceholder: "Sök efter valfri modell på HF",
         reindexWarning:
-          "Påverkar endast nyindexerade dokument. Ladda upp befintliga dokument igen efter att du har bytt modell.",
+          "Påverkar endast nyindexerade dokument. Bädda in befintliga dokument på nytt efter att du har bytt modell.",
+        reembed: {
+          label: "Bädda in dokument på nytt",
+          staleOne:
+            "1 dokument indexerades med en annan inbäddningsmodell, så semantisk sökning hoppar över det.",
+          staleMany:
+            "{count} dokument indexerades med en annan inbäddningsmodell, så semantisk sökning hoppar över dem.",
+          staleArchived:
+            "Tidigare chatthistorik indexerades med en annan inbäddningsmodell, så semantisk sökning hoppar över den.",
+          running: "Bäddar in på nytt: {done} av {total}",
+          action: "Bädda in på nytt",
+          stop: "Stoppa",
+          startFailed: "Det gick inte att starta ominbäddningen",
+          stopped: "Ominbäddningen stoppades",
+          finished: "Dokumenten har bäddats in på nytt",
+          finishedWithFailures: "{count} kunde inte bäddas in på nytt",
+        },
         emptyError: "Ange ett Hugging Face-modell-ID eller en lokal sökväg.",
         loadError:
           "Det gick inte att läsa in inställningen för inbäddningsmodellen.",
@@ -3228,6 +3250,23 @@ export const sv = {
         "Appar som använder denna token förlorar åtkomsten omedelbart. Det går inte att ångra.",
       revokeAction: "Återkalla ”{name}”",
       revoking: "Återkallar ...",
+      audioApi: {
+        title: "Ljud-API",
+        description: "Tal, röstkloning, transkribering och ljudsidans arbetsflöden.",
+        speak: "Tala",
+        clone: "Klona",
+        transcribe: "Transkribera",
+        workflows: "Arbetsflöden",
+        separate: "Separera",
+        convert: "Konvertera",
+        music: "Musik",
+        edit: "Redigera",
+        placeholderModel:
+          "Ingen nedladdad modell kan köra det här exemplet än, så modellen som visas är en platshållare. Ladda ned en på ljudsidan först.",
+        autoSwitchOff:
+          "Modellen läses in via namn bara när automatiskt modellbyte är på. Slå på det, eller läs in modellen på dess ljudsida först.",
+        useViaApi: "Använd via API",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Dokumentation",
@@ -3311,6 +3350,7 @@ export const sv = {
       desktopAppVersion: "Skrivbordsappens version",
       desktopAppVersionUnavailable: "Inte tillgänglig",
       llamaCppVersion: "llama.cpp-version",
+      audioCppVersion: "audio.cpp-version",
       hardware: "Maskinvara",
       gpu: "GPU",
       cuda: "CUDA",
