@@ -6249,8 +6249,9 @@ def prepare_gpu_selection(
 def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
     """Replace a MIG card's whole-card nvidia-smi memory with the slice CUDA exposes
     for it (NVML), or drop the reading when no slice reading exists so the ranking
-    skips it. Devices on cards without MIG instances are returned unchanged."""
-    if IS_ROCM or not devices:
+    skips it. Devices on cards without MIG instances are returned unchanged. One selected
+    id is one worker device, so an R570+ card's GPU instances are not summed here."""
+    if IS_ROCM or not devices or get_device() != DeviceType.CUDA:
         return devices
     try:
         from . import nvidia
@@ -6262,7 +6263,10 @@ def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, A
     slices: Dict[int, tuple[int, int]] = {}
     try:
         from core.inference.llama_cpp import LlamaCppBackend
-        slices = {idx: (free, total) for idx, free, total in LlamaCppBackend._get_gpu_memory_nvml()}
+        slices = {
+            idx: (free, total)
+            for idx, free, total in LlamaCppBackend._get_gpu_memory_nvml(merge_slices = False)
+        }
     except Exception as e:
         logger.debug("NVML MIG slice probe failed: %s", e)
     out = []

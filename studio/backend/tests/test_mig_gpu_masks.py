@@ -80,6 +80,7 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_torch", staticmethod(lambda *a, **k: []))
     monkeypatch.setitem(sys.modules, "torch", None)
     monkeypatch.setattr(mod.sys, "platform", "linux")
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CUDA)
 
     payload_path = tmp_path / "payload.json"
     script = tmp_path / "nvidia_probe.py"
@@ -334,3 +335,21 @@ class TestMigSlicesAreNotGpus:
         assert nvidia.get_mig_gpu_indices() == {0}
         host([(GPU0, []), (GPU1, [("1g.5gb", MIG0A)])], [0, 0], None)
         assert nvidia.get_mig_gpu_indices() == {1}
+
+
+def test_auto_select_budgets_one_r570_gpu_instance_not_the_sum(host):
+    # A training worker takes one device per selected id; the card's other GPU instance is
+    # another CUDA device, so its memory must not be counted (llama.cpp still sums).
+    host(TWO_SLICES, [38000], TWO_SLICES_R570, driver = "570.86.15")
+    devices = [{"index": 0, "vram_total_gb": 40.0, "vram_used_gb": 2.0}]
+    out = hw._with_mig_instance_memory(devices)
+    assert out[0]["vram_total_gb"] == round(19968 / 1024, 2)
+    assert LlamaCppBackend._get_gpu_memory() == [(0, 34000, 2 * 19968)]
+
+
+def test_mig_overlay_skips_a_non_cuda_backend(host, monkeypatch):
+    # Intel XPU indices are not NVIDIA indices: an NVIDIA MIG card at 0 must not touch XPU 0.
+    host(TWO_SLICES, [38000], TWO_SLICES_NVML)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.XPU)
+    devices = [{"index": 0, "vram_total_gb": 24.0, "vram_used_gb": 2.0}]
+    assert hw._with_mig_instance_memory(devices) == devices

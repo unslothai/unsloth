@@ -14850,7 +14850,7 @@ class LlamaCppBackend:
         return find_installer_script(env_var = "UNSLOTH_NVIDIA_PROBE", script_name = "nvidia_probe.py")
 
     @staticmethod
-    def _nvml_rows_visible(rows: list[dict]) -> list[dict]:
+    def _nvml_rows_visible(rows: list[dict], merge: bool = True) -> list[dict]:
         """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
         uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
         ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
@@ -14858,7 +14858,9 @@ class LlamaCppBackend:
         so its first slice row stands in for the parent's whole-card memory and a second slice
         of the same card is dropped. R570+ enumerates one compute instance per GPU instance, so
         a card's visible slices merge into one row, one per GPU instance (memory summed, capped
-        at the card's, uuids joined for the child); without GPU instance ids, no sum."""
+        at the card's, uuids joined for the child); without GPU instance ids, no sum.
+        merge=False keeps the smallest of those slices: one selected id is one device to a
+        training worker, so its budget must not count the card's other GPU instances."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
         parents = [r for r in rows if not r.get("mig")]
         multi = (LlamaCppBackend._NVML_DRIVER_MAJOR or 0) >= 570
@@ -14866,6 +14868,8 @@ class LlamaCppBackend:
         def merged(slices: list[dict]) -> dict:
             if not multi or len(slices) == 1:
                 return slices[0]
+            if not merge:
+                return min(slices, key = lambda r: int(r.get("memory_total_mib") or 0))
             per_gi: dict[str, dict] = {}
             for s in slices:
                 gi = s.get("gpu_instance_id")
@@ -14993,7 +14997,7 @@ class LlamaCppBackend:
         return ",".join(tokens[i] for i in ids)
 
     @staticmethod
-    def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
+    def _get_gpu_memory_nvml(merge_slices: bool = True) -> list[tuple[int, int, int]]:
         """Free and total memory per NVIDIA GPU from NVML (studio/nvidia_probe.py in a child
         with a deadline), for a host whose nvidia-smi is absent, stale or hung: read as "no
         GPU", it pinned the embedding server to the CPU. Physical indices, masked like the
@@ -15025,7 +15029,7 @@ class LlamaCppBackend:
         _major = re.match(r"\s*(\d+)\.", str(payload.get("driver_version") or ""))
         LlamaCppBackend._NVML_DRIVER_MAJOR = int(_major.group(1)) if _major else None
         gpus: list[tuple[int, int, int]] = []
-        for row in LlamaCppBackend._nvml_rows_visible(LlamaCppBackend._NVML_ROWS):
+        for row in LlamaCppBackend._nvml_rows_visible(LlamaCppBackend._NVML_ROWS, merge_slices):
             try:
                 idx = int(row["index"])
                 free_mib = int(row.get("memory_free_mib") or 0)
