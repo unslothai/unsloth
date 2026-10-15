@@ -46,10 +46,19 @@ class _Events:
 
 
 def _fast_paths(folder: str) -> None:
-    # The same prebuilt causal-conv1d a Qwen3.5 training run gets; the gated delta kernels ship with
-    # unsloth_zoo. A failed install leaves transformers' torch path, which is slower but right.
+    # Clef is a Qwen3.5 backbone: unsloth_zoo ships its gated delta kernels and a Triton causal conv,
+    # so nothing is installed. Where that conv cannot run (switched off, ROCm, no Triton) it gets the
+    # prebuilt causal-conv1d a training run would; a failed install leaves transformers' torch path.
     try:
+        from utils.ssm_runtime import zoo_triton_causal_conv1d_usable
+
+        if zoo_triton_causal_conv1d_usable():
+            # The hooks below also steer FLA off TileLang where it faults; keep that part.
+            from core.training.worker import _guard_fla_tilelang
+            _guard_fla_tilelang()
+            return
         from core.training.worker import _ensure_causal_conv1d_fast_path, _install_fast_path_hooks
+
         _ensure_causal_conv1d_fast_path(_Events(), folder, required = True)
         _install_fast_path_hooks(_Events(), folder, install_causal_conv1d = True)
     except Exception as exc:
