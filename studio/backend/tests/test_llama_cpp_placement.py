@@ -6223,3 +6223,59 @@ def test_the_resident_share_removes_a_host_pinned_lazy_table_once(
         arch = "qwen4exp",
     )
     assert _has_moe_cache(cmd), cmd
+
+
+def _adapter_launch_total(tmp_path, monkeypatch, *, extra_args, host_pinned_gib):
+    """First planned total for a 4 GiB target whose 1 GiB token_embd.weight is host-pinned."""
+    gib = 1024**3
+    backend, gguf = _backend(tmp_path, vulkan = True, memory = [(0, 30_000, 32_000)])
+    monkeypatch.setattr(LlamaCppBackend, "_tied_output_bytes", staticmethod(lambda _path: 0))
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_weight_items",
+        staticmethod(lambda _path: (("token_embd.weight", host_pinned_gib * gib),)),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_weight_bytes",
+        staticmethod(lambda _path: host_pinned_gib * gib),
+    )
+    backend._get_gguf_size_bytes = lambda _path: 4 * gib
+    totals = []
+
+    def plan(total, gpus, *args, **kwargs):
+        totals.append(total)
+        return None, True
+
+    backend._select_gpus = plan
+    fits = []
+    backend._fit_derived_load_mode = lambda **kwargs: fits.append(kwargs) and None
+    _launch(backend, gguf, gpu_ids = [0], extra_args = extra_args)
+    return totals[0], fits
+
+
+@pytest.mark.parametrize("flag", ["--lora", "--control-vector"])
+def test_a_resident_adapter_keeps_the_host_pinned_slack(tmp_path, monkeypatch, flag):
+    # Nothing prices the adapter's resident tensors, so the embedding discount stays off.
+    adapter = tmp_path / "adapter.gguf"
+    adapter.write_bytes(b"GGUF")
+    extras = [flag, str(adapter)]
+    with_adapter, fits = _adapter_launch_total(
+        tmp_path, monkeypatch, extra_args = extras, host_pinned_gib = 1
+    )
+    no_discount, _ = _adapter_launch_total(
+        tmp_path, monkeypatch, extra_args = extras, host_pinned_gib = 0
+    )
+    assert with_adapter == no_discount
+    # The embedding is still in host RAM: the load-mode fit keeps it there.
+    assert fits and fits[-1]["host_only_bytes"] >= 1024**3
+    # Without an adapter the discount still applies.
+    plain, _ = _adapter_launch_total(tmp_path, monkeypatch, extra_args = None, host_pinned_gib = 1)
+    assert plain == no_discount - 1024**3
+
+
+def test_the_discount_itself_carries_the_adapter_guard():
+    from core.inference.llama_cpp import LlamaCppBackend as backend
+    with patch.object(backend, "_host_pinned_weight_bytes", staticmethod(lambda _p: 1024**3)):
+        assert backend._host_pinned_vram_discount("m.gguf", ["--lora", "a.gguf"]) == 0
+        assert backend._host_pinned_vram_discount("m.gguf", []) == 1024**3

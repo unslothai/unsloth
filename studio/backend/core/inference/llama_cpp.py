@@ -11233,6 +11233,10 @@ class LlamaCppBackend:
         draft_model: bool = False,
     ) -> int:
         """Bytes safe to remove from a discrete-device VRAM budget."""
+        # A pass-through adapter is resident beside the base tensors and nothing here
+        # charges it, as in _metal_demand_paged_embedding_bytes; keep the slack.
+        if _sidecar_adapter_paths(extra_args):
+            return 0
         if shared_memory or LlamaCppBackend._override_moves_host_pinned(
             extra_args, env, draft_model = draft_model
         ):
@@ -27150,7 +27154,8 @@ class LlamaCppBackend:
                             env = os.environ,
                         )
                         if self._override_moves_host_pinned(extra_args, os.environ)
-                        else _host_pinned_candidate
+                        # Not the candidate: the adapter guard zeroes it, not the RAM bytes.
+                        else self._host_pinned_weight_bytes(model_path)
                     )
                     # gpu_ids strips main-device flags and env twins before launch.
                     _placement_extras = extra_args
@@ -27662,7 +27667,7 @@ class LlamaCppBackend:
                                     os.environ,
                                     draft_model = True,
                                 )
-                                else _draft_host_pinned_candidate
+                                else self._host_pinned_weight_bytes(_mtp_draft_for_budget)
                             )
                             # _shared_memory describes the target's devices; a pinned
                             # drafter must name proved-discrete planned ones itself.
