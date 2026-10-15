@@ -92,7 +92,9 @@ def prepare_npu_model(
     )
     last_tenth = -1
     finished = False
-    response = _call(request, "POST", f"/api/npu/models/{quote(model_id, safe = '')}/download", 7200)
+    response = _call(
+        request, "POST", f"/api/npu/models/{quote(model_id, safe = '')}/download", 7200
+    )
     with response:
         for raw in response:
             line = (
