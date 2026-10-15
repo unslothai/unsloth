@@ -673,6 +673,18 @@ def test_run_automatically_asks_once_the_chat_folder_is_too_large_to_check(monke
     assert _first_python_call(big) == (False, ["required"])
 
 
+def test_windows_asks_the_model_to_retry_when_the_chat_folder_is_too_large(monkeypatch, tmp_path):
+    from core.inference import mxc_policy
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    for i in range(8):
+        (tmp_path / f"f{i}").write_text("")
+
+    with pytest.raises(mxc_policy.MxcPolicyError, match = "Call the tool again"):
+        mxc_policy._scan_workdir(str(tmp_path), required = True)
+    assert os_sandbox.workdir_scan_overran(str(tmp_path))
+
+
 def test_a_strict_launch_is_refused_when_the_sandbox_stopped_working(monkeypatch):
     from core.inference import tools
 
