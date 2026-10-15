@@ -1507,6 +1507,27 @@ def test_a_physical_nvidia_card_keeps_the_mixed_host_off_vulkan(_unpinned_amd_en
     assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is False
 
 
+def test_rocm_torch_preference_does_not_hide_nvidia_from_the_mixed_host_rule(
+    _unpinned_amd_env, monkeypatch
+):
+    # Following ROCm torch clears has_physical_nvidia; Vulkan would still enumerate the card.
+    host = _windows_amd_host(
+        nvidia_smi = r"C:\Windows\System32\nvidia-smi.exe",
+        compute_caps = ["89"],
+        physical_compute_caps = ["89"],
+        has_physical_nvidia = True,
+        has_usable_nvidia = True,
+        rocm_gfx_target = "gfx1010",
+        rocm_gfx_targets = ["gfx1010", "gfx1034"],
+    )
+    monkeypatch.setattr(ilp, "_rocm_torch_preferred", lambda: True)
+    route = ilp.route_backend_request(
+        backend = None, published_repo = FORK, published_release_tag = "pin", host = host
+    )
+    assert route.host.has_rocm is True
+    assert route.persist_llama_backend is None
+
+
 def test_the_mixed_host_rule_is_windows_only(_unpinned_amd_env):
     host = _windows_amd_host(
         system = "Linux",

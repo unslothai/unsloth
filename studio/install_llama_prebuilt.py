@@ -10207,10 +10207,12 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     # Mixed host whose active card has no HIP bundle (gfx1010 at device 0 beside a gfx1034):
     # no HIP prebuilt can serve the card HIP runs on, while Vulkan runs on both. Only when the
     # active arch is the unmasked probe's own pick: a forwarded arch the probe never reported,
-    # or UNSLOTH_ROCM_GFX_ARCH, keeps the all-cards rule.
+    # or UNSLOTH_ROCM_GFX_ARCH, keeps the all-cards rule. Any NVIDIA trace also keeps it:
+    # following ROCm torch clears has_physical_nvidia, but Vulkan would still see that card.
     if (
         not os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
         and not host.rocm_gfx_forwarded
+        and not (host.nvidia_smi or host.physical_compute_caps or host.compute_caps)
         and active == _pick_rocm_gfx_target(" ".join(targets))
         and not _gfx_is_windows_hip_supported(active, published_repo)
     ):
