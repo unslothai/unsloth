@@ -86,11 +86,7 @@ def _rms_backward_row(
     dY += row_idx * dY_row_stride
     X += row_idx * X_row_stride
     r += row_idx * r_row_stride
-
-    if GEMMA:
-        dX += row_idx * dX_row_stride
-    else:
-        dX = dY
+    dX += row_idx * dX_row_stride
 
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
     X_row = tl.load(X + col_offsets, mask = mask, other = 0).to(tl.float32)
@@ -359,10 +355,7 @@ def _rms_backward_rows_block(
     rowsum_dY_normed = _row_dot_in_row_kernel_order(dY_W, normed, ROWS, WARPS)
     # Spelled as in the one-row kernel: an explicit fma here turns -0 into +0 on sm75.
     output = (inv_var / n_cols)[:, None] * (n_cols * dY_W - normed * rowsum_dY_normed[:, None])
-    if GEMMA:
-        tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
-    else:
-        tl.store(dY + rows[:, None] * dY_row_stride + col_offsets[None, :], output, mask = mask)
+    tl.store(dX + rows[:, None] * dX_row_stride + col_offsets[None, :], output, mask = mask)
     # Masked rows load zeros, so they add nothing; dead code unless TRAIN_W.
     if not GEMMA:
         # The forward multiplies W by normed rounded to W's dtype.
@@ -521,8 +514,8 @@ def _multirow_self_check(device, dtype, W_dtype, n_cols, eps, gemma, multirow):
         results = []
         for rows in (False, multirow):
             Y, r = _rms_forward(X, W, eps, gemma, _eager_kernel, rows)
-            dX = dY.clone()
-            _rms_backward(dY.clone() if gemma else dX, dX, X, W, r, eps, gemma, _eager_kernel, rows)
+            dX = torch.empty_like(dY)
+            _rms_backward(dY, dX, X, W, r, eps, gemma, _eager_kernel, rows)
             results.append((Y, r, dX))
         return all(torch.equal(_bits(a), _bits(b)) for a, b in zip(*results))
 
@@ -672,7 +665,6 @@ def _rms_backward(
     multirow = None,
     train_w = False,
 ):
-    # Non-Gemma writes dX over dY (the kernel ignores dX); Gemma writes into dX.
     n_rows, n_cols = dY.shape
     if multirow is None:
         multirow = _multirow_checked(X, W, eps, gemma)
@@ -787,7 +779,8 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         dim: int = shape[-1]
         dY = dY.reshape(-1, dim).contiguous()
         X, W, r = ctx.saved_tensors
-        dX = torch.empty_like(dY) if ctx.GEMMA else dY
+        # Never into dY: autograd may hand the same grad to other nodes, or it is the caller's.
+        dX = torch.empty_like(dY)
         with torch_gpu_device(dY.device):
             dW = _rms_backward(
                 dY,
@@ -804,7 +797,7 @@ class Fast_RMS_Layernorm(torch.autograd.Function):
         return dX, dW, None, None
 
 
-# Compiled graphs take these ops: same kernels, fresh outputs (the Function writes dX over dY).
+# Compiled graphs take these ops: same kernels as the Function.
 _TRACEABLE = hasattr(torch.library, "triton_op") and hasattr(torch.library, "wrap_triton")
 
 
@@ -862,10 +855,9 @@ if _TRACEABLE:
         train_w: bool,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         dX = torch.empty_like(dY)
-        # Non-Gemma rewrites its dY argument, so it gets a copy.
         with torch_gpu_device(dY.device):
             dW = _rms_backward(
-                dY if gemma else dX.copy_(dY),
+                dY,
                 dX,
                 X,
                 W,
