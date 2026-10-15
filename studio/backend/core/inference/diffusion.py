@@ -2145,7 +2145,9 @@ def _peak_model_identity(
     from .diffusion_families import mirror_repo
 
     def _fingerprint(
-        repo: Any, filename: Optional[str] = None, fetched: Optional[str] = None
+        repo: Any,
+        filename: Optional[str] = None,
+        fetched: Optional[str] = None,
     ) -> tuple[Any, Any]:
         if fetched and str(fetched) != str(repo):
             return fetched, checkpoint_fingerprint(fetched, filename)
@@ -8518,7 +8520,9 @@ class DiffusionBackend:
                             "; ".join(refined_plan.reasons),
                         )
                     plan = refined_plan
-                    peak_model = _peak_model_identity(repo_id, gguf_filename, kind, base, fetch_base)
+                    peak_model = _peak_model_identity(
+                        repo_id, gguf_filename, kind, base, fetch_base
+                    )
                     if getattr(pipe, "_unsloth_loras", None):
                         peak_model = (
                             "unknown"  # adapters baked in at load: a build the key cannot name
