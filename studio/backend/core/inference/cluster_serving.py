@@ -1024,6 +1024,8 @@ class ClusterServing:
             except ValueError:
                 ctx = 0
         floor = fit_ctx_in(extras, os.environ)
+        if not ctx and floor is not None and floor < 0:
+            self._native_ctx = True  # llama.cpp reads a negative floor as the whole context
         if not ctx and floor and floor > 0:
             ctx = floor  # the fitter never goes below --fit-ctx
         kv = None

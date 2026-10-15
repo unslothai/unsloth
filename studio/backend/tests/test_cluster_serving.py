@@ -1770,6 +1770,16 @@ def test_a_zero_context_keeps_the_load_local(monkeypatch, env):
     assert "context size of 0" in ss.status()["reason"]
 
 
+@pytest.mark.parametrize("env", [False, True])
+def test_a_negative_fit_ctx_keeps_the_load_local(monkeypatch, env):
+    seen = _cluster_env(monkeypatch)
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_FIT_CTX", "-1")
+    extra = [] if env else ["--fit-ctx", "-1"]
+    request = _request(llama_extra_args = extra, max_seq_length = 0)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+
+
 def test_a_fit_ctx_floor_is_the_context_priced(monkeypatch):
     _cluster_env(monkeypatch)
     seen = []
