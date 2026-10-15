@@ -3525,6 +3525,7 @@ export const ja = {
         textHint: "アシスタントの応答のみの場合、アシスタントのマーカー以降のテキストだけが学習されます。",
         insertExample: "チャットの例を挿入",
         vocab: "語彙：{count} トークン",
+        retry: "再試行",
       },
       uploadFailed: "アップロードに失敗しました",
       unknownError: "不明なエラー",

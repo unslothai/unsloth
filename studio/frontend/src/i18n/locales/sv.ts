@@ -3791,6 +3791,7 @@ export const sv = {
         textHint: "Med endast assistentsvar tränas bara texten efter en assistentmarkör.",
         insertExample: "Infoga chattexempel",
         vocab: "Vokabulär: {count} tokens",
+        retry: "Försök igen",
       },
       uploadFailed: "Uppladdningen misslyckades",
       unknownError: "Okänt fel",

@@ -3588,6 +3588,7 @@ export const ptBR = {
         textHint: "Com apenas respostas do assistente, só o texto após um marcador do assistente é treinado.",
         insertExample: "Inserir exemplo de chat",
         vocab: "Vocabulário: {count} tokens",
+        retry: "Tentar novamente",
       },
       uploadFailed: "Falha no envio",
       unknownError: "Erro desconhecido",

@@ -3597,6 +3597,7 @@ export const it = {
         textHint: "Con solo risposte dell'assistente, viene addestrato solo il testo dopo un marcatore dell'assistente.",
         insertExample: "Inserisci esempio di chat",
         vocab: "Vocabolario: {count} token",
+        retry: "Riprova",
       },
       uploadFailed: "Caricamento non riuscito",
       unknownError: "Errore sconosciuto",

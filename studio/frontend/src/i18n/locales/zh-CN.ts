@@ -3486,6 +3486,7 @@ export const zhCN = {
         textHint: "仅训练助手回复时，只有助手标记之后的文本会参与训练。",
         insertExample: "插入对话示例",
         vocab: "词表：{count} 个 Token",
+        retry: "重试",
       },
       uploadFailed: "上传失败",
       unknownError: "未知错误",

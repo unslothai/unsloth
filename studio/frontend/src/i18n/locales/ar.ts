@@ -3561,6 +3561,7 @@ export const ar = {
         textHint: "مع ردود المساعد فقط، يتم تدريب النص الذي يلي علامة المساعد فقط.",
         insertExample: "إدراج مثال محادثة",
         vocab: "المفردات: {count} رمز",
+        retry: "إعادة المحاولة",
       },
       uploadFailed: "فشل الرفع",
       unknownError: "خطأ غير معروف",

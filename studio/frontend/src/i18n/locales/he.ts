@@ -3670,6 +3670,7 @@ export const he = {
         textHint: "במצב של רק תשובות העוזר, רק הטקסט שאחרי סמן העוזר מאומן.",
         insertExample: "הוסף דוגמת צ'אט",
         vocab: "אוצר מילים: {count} טוקנים",
+        retry: "נסה שוב",
       },
       uploadFailed: "ההעלאה נכשלה",
       unknownError: "שגיאה לא ידועה",

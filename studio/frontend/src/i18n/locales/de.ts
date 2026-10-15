@@ -3616,6 +3616,7 @@ export const de = {
         textHint: "Bei nur Assistentenantworten wird nur der Text nach einem Assistentenmarker trainiert.",
         insertExample: "Chat-Beispiel einfügen",
         vocab: "Vokabular: {count} Tokens",
+        retry: "Erneut versuchen",
       },
       uploadFailed: "Upload fehlgeschlagen",
       unknownError: "Unbekannter Fehler",

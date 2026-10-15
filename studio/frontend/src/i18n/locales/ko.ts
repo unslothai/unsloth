@@ -3550,6 +3550,7 @@ export const ko = {
         textHint: "어시스턴트 응답만 학습할 때는 어시스턴트 마커 뒤의 텍스트만 학습됩니다.",
         insertExample: "채팅 예시 넣기",
         vocab: "어휘: 토큰 {count}개",
+        retry: "다시 시도",
       },
       uploadFailed: "업로드에 실패했습니다",
       unknownError: "알 수 없는 오류",

@@ -3600,6 +3600,7 @@ export const en = {
         textHint: "With assistant completions only, just the text after an assistant marker is trained.",
         insertExample: "Insert chat example",
         vocab: "Vocabulary: {count} tokens",
+        retry: "Try again",
       },
       uploadFailed: "Upload failed",
       unknownError: "Unknown error",

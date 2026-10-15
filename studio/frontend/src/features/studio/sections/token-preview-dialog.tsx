@@ -286,7 +286,14 @@ function DatasetSamples({
 }) {
   const t = useT();
   if (state.error) {
-    return <p className="py-6 text-sm text-destructive">{state.error}</p>;
+    return (
+      <div className="flex flex-col items-start gap-3 py-6">
+        <p className="text-sm text-destructive">{state.error}</p>
+        <Button variant="outline" size="sm" onClick={onShuffle}>
+          {t("studio.dataset.tokenPreview.retry")}
+        </Button>
+      </div>
+    );
   }
   if (!state.data || state.loading) {
     return <LoadingRow />;

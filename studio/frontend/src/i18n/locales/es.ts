@@ -3612,6 +3612,7 @@ export const es = {
         textHint: "Con solo respuestas del asistente, solo se entrena el texto después de un marcador del asistente.",
         insertExample: "Insertar ejemplo de chat",
         vocab: "Vocabulario: {count} tokens",
+        retry: "Reintentar",
       },
       uploadFailed: "La subida falló",
       unknownError: "Error desconocido",

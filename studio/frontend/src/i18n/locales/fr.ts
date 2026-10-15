@@ -3625,6 +3625,7 @@ export const fr = {
         textHint: "Avec les réponses de l'assistant uniquement, seul le texte après un marqueur de l'assistant est entraîné.",
         insertExample: "Insérer un exemple de chat",
         vocab: "Vocabulaire : {count} tokens",
+        retry: "Réessayer",
       },
       uploadFailed: "Échec du téléversement",
       unknownError: "Erreur inconnue",
