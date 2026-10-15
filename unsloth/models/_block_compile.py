@@ -690,9 +690,16 @@ def _decoder_layer_classes(model):
     return classes
 
 
+def _torch_supported():
+    # torch 2.6 (T4, transformers 4.57.6): attention and Params4bit broke each block into
+    # 36-69 graphs and QLoRA grads moved 5.4% vs the stock forward; 2.7.1 matched exactly.
+    from packaging.version import Version
+    return Version(torch.__version__.split("+")[0]) >= Version("2.7")
+
+
 def patch_block_compile(model):
     """Compile every decoder-layer class of `model` as one region. Returns the classes wrapped."""
-    if not _enabled() or not torch.cuda.is_available():
+    if not _enabled() or not torch.cuda.is_available() or not _torch_supported():
         return []
     classes = _decoder_layer_classes(model)
     if not classes:

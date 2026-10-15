@@ -192,6 +192,10 @@ def test_kill_switch(monkeypatch):
     assert M._enabled()
     monkeypatch.setenv("UNSLOTH_FORCE_FLOAT32", "1")
     assert not M._enabled()
+    monkeypatch.setattr(torch, "__version__", "2.6.0+cu124")
+    assert not M._torch_supported()
+    monkeypatch.setattr(torch, "__version__", "2.7.1+cu126")
+    assert M._torch_supported()
 
 
 def test_sm_count_is_read_outside_the_trace(monkeypatch):
