@@ -165,7 +165,11 @@ class _FakeDrafterTrainer:
             cb.on_train_begin(self.args, self.state, control)
         for step in range(1, 5):
             self.state.global_step = step
-            logs = {"loss": 1.0 / step, "acc_0": 0.5}
+            logs = {
+                "loss": 1.0 / step,
+                "eagle3_loss_0": 1.0 / step,
+                "eagle3_acc_0": 0.5,
+            }  # UnslothEagle3Trainer keys
             self.state.log_history.append(logs)
             for cb in self.callbacks:
                 cb.on_log(self.args, self.state, control, logs = logs)
@@ -283,6 +287,14 @@ def test_phase_trains_saves_and_reports(fake_zoo, tmp_path):
     assert all(e["message"].startswith("Training drafter") for e in q if e["type"] == "status")
     assert q[-1]["type"] == "drafter_progress" and q[-1]["state"] == "done"
     assert not (tmp_path / "drafter_tmp").exists()
+    # The trainer's own per-step accuracy reaches the manifest and the progress shown in the UI.
+    assert manifest["metrics"]["eagle3_acc_0"] == 0.5
+    assert q[-1]["top1"] == 0.5
+    assert any(
+        e.get("top1") == 0.5
+        for e in q
+        if e["type"] == "drafter_progress" and e["state"] == "training"
+    )
 
 
 def test_phase_failure_keeps_the_fine_tune(fake_zoo, tmp_path):

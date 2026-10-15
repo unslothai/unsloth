@@ -336,7 +336,9 @@ def _progress_callback(event_queue, strategy: str, should_stop: Callable[[], boo
         ):
             logs = logs or {}
             loss = logs.get("loss", logs.get("mtp_loss_0"))
-            top1 = logs.get("mtp_top1_0", logs.get("top1", logs.get("acc_0")))
+            top1 = logs.get(
+                "mtp_top1_0", logs.get("eagle3_acc_0", logs.get("top1", logs.get("acc_0")))
+            )
             event_queue.put(
                 {
                     "type": "drafter_progress",
@@ -559,7 +561,9 @@ def run_drafter_phase(
         for entry in reversed(history):
             for key, value in entry.items():
                 if (
-                    key.startswith(("mtp_top1_", "mtp_loss_", "acc_", "top1"))
+                    key.startswith(
+                        ("mtp_top1_", "mtp_loss_", "eagle3_acc_", "eagle3_loss_", "acc_", "top1")
+                    )
                     and key not in metrics
                 ):
                     metrics[key] = value
@@ -610,7 +614,7 @@ def run_drafter_phase(
                 "step": None,
                 "total_steps": None,
                 "loss": metrics.get("train_loss"),
-                "top1": metrics.get("mtp_top1_0"),
+                "top1": metrics.get("mtp_top1_0", metrics.get("eagle3_acc_0")),
                 "state": "done",
                 "ts": time.time(),
             }
