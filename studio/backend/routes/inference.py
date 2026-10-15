@@ -30522,6 +30522,10 @@ def _ui_stream_events_enabled(request: Optional[Request]) -> bool:
     """Whether this request opted into Unsloth's UI control frames on an OpenAI stream."""
     if request is None:
         return False
+    # A compat route delegating to chat decides, since only it knows whether it relays them.
+    delegated = getattr(getattr(request, "state", None), "ui_stream_events", None)
+    if delegated is not None:
+        return bool(delegated)
     headers = getattr(request, "headers", None)
     if headers is None:
         return False
@@ -40012,7 +40016,11 @@ class _InProcessChatStream:
         chat_req.stream_options = {"include_usage": True}
         cancel_event = threading.Event()
         with _delegated_request_state(
-            request, skip_api_monitor = True, generation_cancel_event = cancel_event
+            request,
+            skip_api_monitor = True,
+            generation_cancel_event = cancel_event,
+            # The Responses translator drops control frames, so an approval prompt would be lost.
+            ui_stream_events = False,
         ):
             response = await openai_chat_completions(chat_req, request, current_subject)
         if getattr(response, "body_iterator", None) is None:
