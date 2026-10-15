@@ -270,12 +270,16 @@ def _linux_elevation() -> tuple[str | None, str | None]:
 
 
 def _bwrap_state() -> str:
-    """As the launcher sees it: "trusted", "missing", or "shadowed" (PATH finds an untrusted copy first)."""
+    """As the launcher sees it: "trusted", "missing", "shadowed" (PATH finds an untrusted copy first),
+    or "refused" (a pinned or namespace-hidden copy, which installing would not change)."""
     from . import sandbox_linux
 
     try:
         sandbox_linux._trusted_bwrap_path()
         return "trusted"
+    except sandbox_linux.BwrapUntrustedError as exc:
+        if exc.pinned or exc.hidden_root:
+            return "refused"
     except Exception:  # noqa: BLE001 - any refusal means the launcher will not run it
         pass
     if shutil.which("bwrap") is None or trusted_system_binary("bwrap") is None:
@@ -289,6 +293,8 @@ def _linux_plan() -> SetupPlan:
     reason = os_sandbox.linux_unavailable_remediation()
     manager = _package_manager()
     state = _bwrap_state()
+    if state == "refused":
+        return SetupPlan(platform = sys.platform, reason = reason)
     if state == "shadowed":
         # Installing changes nothing: the system copy is there, PATH just finds another one first.
         return SetupPlan(
