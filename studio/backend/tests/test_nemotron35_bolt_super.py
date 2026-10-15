@@ -10,8 +10,9 @@ Both repos ship files the quant parser did not know about:
   drafter, and loaded it as the main model.
 - Super's ``LiLiCorr/`` drafter was listed as a selectable quant. Super uses its embedded
   MTP head; the LiLiCorr drafter is never launched, so it must not appear as a variant.
-- Bolt's ``dspark-...-NVFP4.gguf`` sidecar kept ``-nvfp4`` in its pairing stem, so a local
-  folder load attached no DSpark drafter.
+- A ``dspark-...-NVFP4.gguf`` / ``dflash-...-NVFP4.gguf`` sidecar kept ``-nvfp4`` in its pairing
+  stem, so a local folder load attached no drafter. Bolt ships its LiLiCorr drafter as
+  ``dflash-...-NVFP4.gguf``.
 
 Sampling follows NVIDIA's recommendation for both: temperature 1.0, top_p 0.95.
 """
@@ -25,8 +26,10 @@ from types import SimpleNamespace
 import pytest
 
 _backend_root = Path(__file__).resolve().parent.parent
-if str(_backend_root) not in sys.path:
-    sys.path.insert(0, str(_backend_root))
+_tests_dir = Path(__file__).resolve().parent
+for _p in (_backend_root, _tests_dir):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
 
 SUPER_REPO = "unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF"
@@ -41,10 +44,11 @@ SUPER_FILES = [".gitattributes", "README.md", "mmproj-BF16.gguf",
     for q, n in _SUPER_SPLITS.items() for i in range(1, n + 1)
 ]
 
+BOLT_REPO = "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-GGUF"
 BOLT = "NVIDIA-Nemotron-3.5-Bolt-74B-A9B"
-BOLT_FILES = [".gitattributes", "mmproj-BF16.gguf", f"dspark-{BOLT}-NVFP4.gguf"] + [
-    f"{BOLT}-{q}.gguf" for q in ("UD-IQ1_M", "UD-IQ1_S", "UD-IQ2_XXS", "official-IQ2_XXS")
-]
+# NVIDIA's QAD IQ2_XXS, its LiLiCorr drafter (GGUF arch dflash, named for llama.cpp's dflash- sibling lookup) and mmproj.
+BOLT_FILES = [".gitattributes", "README.md", "mmproj-BF16.gguf", f"{BOLT}-IQ2_XXS.gguf",
+              f"dflash-{BOLT}-NVFP4.gguf"]
 
 
 def _model_info(files):
@@ -102,10 +106,35 @@ def test_super_variant_menu_lists_exactly_the_real_quants(monkeypatch):
     assert sorted(v.quant for v in variants) == sorted(_SUPER_SPLITS)
 
 
-def test_bolt_local_folder_finds_its_dspark_sidecar(tmp_path):
-    from utils.models.model_config import detect_dspark_file
+def test_bolt_variant_menu_is_the_single_iq2_xxs(monkeypatch):
+    from utils.models import model_config
+
+    monkeypatch.setattr(
+        model_config, "_hub_model_info_slow_link",
+        lambda repo, token, files_metadata = True: _model_info(BOLT_FILES),
+    )
+    variants, has_vision = model_config.list_gguf_variants(BOLT_REPO)
+    assert has_vision
+    assert [v.quant for v in variants] == ["IQ2_XXS"]
+
+
+def test_bolt_local_folder_finds_its_dflash_sidecar(tmp_path):
+    """detect_dflash_file trusts the header, not the prefix: the sidecar declares dflash."""
+    from test_kv_cache_estimation import _make_gguf_bytes
+    from utils.models.drafters.dflash import detect_dflash_file
 
     for name in BOLT_FILES:
+        arch = "dflash" if name.startswith("dflash-") else "nemotron_h_moe"
+        (tmp_path / name).write_bytes(_make_gguf_bytes(arch, {"general.architecture": arch}))
+    found = detect_dflash_file(str(tmp_path / f"{BOLT}-IQ2_XXS.gguf"))
+    assert found is not None and Path(found).name == f"dflash-{BOLT}-NVFP4.gguf"
+
+
+def test_nvfp4_suffixed_dspark_sidecar_pairs_with_its_weights(tmp_path):
+    """The quant token is stripped from the drafter's pairing stem, NVFP4 included."""
+    from utils.models.model_config import detect_dspark_file
+
+    for name in (f"{BOLT}-UD-IQ2_XXS.gguf", f"dspark-{BOLT}-NVFP4.gguf"):
         (tmp_path / name).write_bytes(b"GGUF")
     found = detect_dspark_file(str(tmp_path / f"{BOLT}-UD-IQ2_XXS.gguf"))
     assert found is not None and Path(found).name == f"dspark-{BOLT}-NVFP4.gguf"
@@ -116,12 +145,12 @@ EXPECTED_SAMPLING = {"temperature": 1.0, "top_p": 0.95}
 NEMOTRON35_IDS = [
     SUPER_REPO,
     f"{SUPER_REPO}:UD-Q4_K_XL",
-    "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-GGUF",
-    "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-GGUF:UD-IQ2_XXS",
+    BOLT_REPO,
+    f"{BOLT_REPO}:IQ2_XXS",
     "nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-BF16",
     "unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-NVFP4",
     "/home/u/.cache/huggingface/hub/models--unsloth--NVIDIA-Nemotron-3.5-Bolt-74B-A9B-GGUF/snapshots/deadbeef",
-    f"/data/models/{BOLT}-GGUF/{BOLT}-UD-IQ2_XXS.gguf",
+    f"/data/models/{BOLT}-GGUF/{BOLT}-IQ2_XXS.gguf",
 ]
 
 
