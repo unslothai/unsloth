@@ -281,6 +281,18 @@ def _unfreeze_modules_to_save(model) -> None:
         module.original_module.requires_grad_(False)
 
 
+def _norm_modules_to_save(model, name) -> bool:
+    """Every module PEFT's endswith rule wraps for this entry is a norm (fast kernel has dW, #13594)."""
+    if type(name) is not str or not name:
+        return False
+    matched = [
+        type(module).__name__
+        for key, module in model.named_modules(remove_duplicate = False)
+        if key.endswith(name)
+    ]
+    return bool(matched) and all("Norm" in cls for cls in matched)
+
+
 def _ensure_cache_is_dynamic(past_key_values):
     # transformers 5 rejects legacy tuple caches in generate().
     if past_key_values is None:
@@ -852,7 +864,8 @@ def fast_rms_layernorm_inference_gemma(
     X,
     out_weight = None,
 ):
-    XX = X.to(torch.float32)
+    # copy: for a float32 X, .to() returns X itself, and the decode loops keep X as the residual.
+    XX = X.to(torch.float32, copy = True)
     variance = XX.square().mean(-1, keepdim = True)
     variance += self.variance_epsilon
     XX *= variance.rsqrt_()
@@ -1080,6 +1093,27 @@ def _is_left_padded(attention_mask):
     return not bool(attention_mask[:, 0].all())
 
 
+class Gemma2AttentionMaskConverter(AttentionMaskConverter):
+    """Gemma2's window counts the current key as well as the preceding keys."""
+
+    @staticmethod
+    def _make_causal_mask(
+        input_ids_shape,
+        dtype,
+        device,
+        past_key_values_length = 0,
+        sliding_window = None,
+    ):
+        # The legacy converter counts preceding keys; its static helper also accepts zero for a one-key window.
+        return AttentionMaskConverter._make_causal_mask(
+            input_ids_shape,
+            dtype,
+            device,
+            past_key_values_length = past_key_values_length,
+            sliding_window = sliding_window - 1 if sliding_window is not None else None,
+        )
+
+
 # Ported from transformers models/llama/modeling_llama.py#L825
 def LlamaModel_fast_forward(
     self,
@@ -1296,7 +1330,7 @@ def LlamaModel_fast_forward(
             if attention_mask.dim() == 2:
                 # The SDPA helper returns None for an all-ones mask; the softcapping kernels need a tensor.
                 key_value_length = past_key_values_length + seq_length
-                dynamic_SWA_mask = AttentionMaskConverter(
+                dynamic_SWA_mask = Gemma2AttentionMaskConverter(
                     is_causal = True, sliding_window = self.config.sliding_window
                 ).to_4d(attention_mask, seq_length, inputs_embeds.dtype, key_value_length)
                 dynamic_GA_mask = AttentionMaskConverter(is_causal = True).to_4d(
@@ -1317,7 +1351,7 @@ def LlamaModel_fast_forward(
                 n = self.max_seq_length
                 # masked_fill makes things slower.
                 self.SWA_mask = (
-                    AttentionMaskConverter(
+                    Gemma2AttentionMaskConverter(
                         is_causal = True,
                         sliding_window = self.config.sliding_window,
                     )
@@ -4261,9 +4295,11 @@ class FastLlamaModel:
                     train_lm_head = True
                 elif leaf == "embed_tokens":
                     train_embed_tokens = True
-                else:
+                elif not _norm_modules_to_save(model, module):
                     raise TypeError(
-                        f"Unsloth: Module = {module} is not allowed. Only 'lm_head' and 'embed_tokens' is allowed."
+                        f"Unsloth: Module = {module} is not allowed. Only 'lm_head', 'embed_tokens' and "
+                        "normalization layers (e.g. 'input_layernorm', 'norm') are allowed. "
+                        "To fully train other modules, load and call get_peft_model through FastModel."
                     )
         if isinstance(modules_to_save, (tuple, list)):
             modules_to_save = list(set(modules_to_save))

@@ -16195,6 +16195,21 @@ def _github_repo_readme_api_url(url: str) -> str | None:
     return f"https://api.github.com/repos/{owner}/{repo}/readme"
 
 
+def _github_blob_raw_url(url: str) -> str | None:
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    if (parsed.hostname or "").lower() not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) < 5 or parts[2] != "blob":
+        return None
+    owner, repo = parts[:2]
+    if not (_GITHUB_NAME_RE.match(owner) and _GITHUB_NAME_RE.match(repo)):
+        return None
+    return f"https://raw.githubusercontent.com/{owner}/{repo}/" + "/".join(parts[3:])
+
+
 # A single fetch can chain several steps (README API attempt, HTML fallback, up to five redirect hops, each reading a
 # body). A per-operation socket timeout bounds one stalled step but not their sum, and nothing aborts on client
 # disconnect, so one overall wall-clock deadline (plus a cooperative cancel_event) bounds the whole fetch instead.
@@ -16632,7 +16647,12 @@ def _is_bot_check(status: int, headers) -> bool:
         return True
     # Rate limits and outages behind these CDNs carry the same Server header.
     server = (headers.get("Server") or "").lower()
-    return status == 403 and ("cloudflare" in server or "akamaighost" in server)
+    if status != 403:
+        return False
+    # Cloudflare names itself on every response it proxies; its own blocks skip the cache and send no CF-Cache-Status.
+    if "cloudflare" in server:
+        return headers.get("cf-cache-status") is None
+    return "akamaighost" in server
 
 
 def _fetch_url_raw(
@@ -16647,8 +16667,13 @@ def _fetch_url_raw(
     meta_out: dict | None = None,
     host_headers = None,
     error_page: bool = False,
+    method: str | None = None,
+    any_status: bool = False,
+    on_redirect = None,
 ) -> tuple[str | None, "str | bytes", str]:
-    """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads."""
+    """fetch with SSRF protection; binary reads stay capped, HTML error pages require binary mode, per-hop headers do not cross redirects, and deadlines cover redirects and body reads.
+    ``method`` replaces the GET/POST chosen from ``post_data``; with ``any_status`` (binary mode) every status returns its body, and ``meta_out`` gets the status and headers.
+    ``on_redirect(url, method, has_body, headers)`` runs before a redirect is followed, with the redirect's headers; a string it returns is the error, and the hop is never sent."""
     from urllib.parse import urlparse
     from .web_access_policy import check_url_access
 
@@ -16679,6 +16704,7 @@ def _fetch_url_raw(
         current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
         pending_post = post_data
+        pending_method = method
         http_error = None
 
         for _hop in range(5):
@@ -16728,9 +16754,11 @@ def _fetch_url_raw(
                 headers.update(extra_headers)
             if host_headers is not None:
                 headers.update(host_headers(current_host))
-            if pending_post is not None:
+            if pending_post is not None and pending_method is None:
                 headers.setdefault("Content-Type", "application/x-www-form-urlencoded")
-            req = urllib.request.Request(request_url, headers = headers, data = pending_post)
+            req = urllib.request.Request(
+                request_url, headers = headers, data = pending_post, method = pending_method
+            )
             try:
                 # cap the socket timeout at the remaining deadline so one slow hop cannot outlast the fetch budget.
                 resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
@@ -16740,11 +16768,13 @@ def _fetch_url_raw(
                         meta_out["bot_check"] = _is_bot_check(e.code, e.headers)
                     http_error = f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
                     declared = e.headers.get("Content-Type") and e.headers.get_content_type()
-                    if (
-                        not error_page
-                        or raw_bytes_max is None
-                        or declared not in (None, "", "text/html", "application/xhtml+xml")
-                    ):
+                    html_error_page = error_page and declared in (
+                        None,
+                        "",
+                        "text/html",
+                        "application/xhtml+xml",
+                    )
+                    if raw_bytes_max is None or not (any_status or html_error_page):
                         return http_error, "", ""
                     resp = e
                 else:
@@ -16752,9 +16782,23 @@ def _fetch_url_raw(
                     if not location:
                         return "Failed to fetch URL: redirect missing Location header.", "", ""
                     current_url = urljoin(current_url, location)
-                    # 307/308 preserve POST; other redirects switch to GET.
-                    if e.code not in (307, 308):
+                    # Fetch's HTTP-redirect fetch: 301/302 turn a POST, and 303 anything but GET/HEAD,
+                    # into a bodiless GET; otherwise the method and body go to the next hop.
+                    sent = pending_method or ("GET" if pending_post is None else "POST")
+                    if (e.code in (301, 302) and sent == "POST") or (
+                        e.code == 303 and sent not in ("GET", "HEAD")
+                    ):
                         pending_post = None
+                        pending_method = None
+                    if on_redirect is not None:
+                        refused = on_redirect(
+                            current_url,
+                            pending_method or ("GET" if pending_post is None else "POST"),
+                            pending_post is not None,
+                            e.headers,
+                        )
+                        if refused:
+                            return refused, "", ""
                     hop_error, current_host, pinned_ips = _redirect_hop(
                         current_url,
                         website_policy,
@@ -16814,6 +16858,9 @@ def _fetch_url_raw(
                     meta_out["allow_origin"] = resp.headers.get("Access-Control-Allow-Origin")
                     meta_out["cache_control"] = resp.headers.get("Cache-Control")
                     meta_out["age"] = resp.headers.get("Age")
+                    meta_out["status"] = resp.getcode()
+                    meta_out["reason"] = str(getattr(resp, "reason", "") or "")
+                    meta_out["headers"] = list(resp.headers.items())
                 return http_error, raw_bytes, content_type
             if not declared_pdf and _has_pdf_magic(raw_bytes):
                 tail_error, tail = _read_capped_body(
@@ -17670,14 +17717,33 @@ def _fetch_page_text(
                     max_chars,
                 )
 
+    raw_file_url = _github_blob_raw_url(url)
+    if raw_file_url:
+        err, body, _ctype = _fetch_url_raw(
+            raw_file_url,
+            timeout = timeout,
+            deadline = deadline,
+            cancel_event = cancel_event,
+            **policy_kwargs,
+        )
+        if err is None and body.strip():
+            return _truncate_page_text(body.strip(), max_chars)
+
+    meta: dict = {}
     err, body, content_type = _fetch_url_raw(
         url,
         timeout = timeout,
         deadline = deadline,
         cancel_event = cancel_event,
+        meta_out = meta,
         **policy_kwargs,
     )
     if err is not None:
+        if meta.get("bot_check"):
+            return (
+                f"{err.rstrip()}. The site's bot protection blocked this automated request; "
+                "fetching this site again will not help, so use another source."
+            )
         return err
 
     # Trust a declared HTML type, and otherwise sniff the body: servers with a missing or wrong Content-Type still get

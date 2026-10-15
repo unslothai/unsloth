@@ -61,6 +61,8 @@ export const ko = {
       never: "허용 안 함",
       scripts: "스크립트 실행",
       scriptsDescription: "모델이 페이지에서 스크립트를 실행할 수 있는지 선택합니다. 각 스크립트는 실행 전에 표시됩니다",
+      cursor: "커서 표시",
+      cursorDescription: "모델이 페이지에서 클릭, 입력, 드래그하는 위치에 포인터를 표시합니다",
       askEveryTime: "매번 묻기",
       permissionsTitle: "에이전트 권한",
       permissionsDescription: "기본값을 선택하고 특정 사이트에 대한 예외를 추가합니다. 비밀번호와 결제 정보 입력란은 이 설정과 관계없이 채우지 않습니다.",
@@ -83,6 +85,9 @@ export const ko = {
     },
     agent: {
       working: "Unsloth가 이 탭에서 탐색 중입니다",
+      waiting: "{chat}의 브라우저에서 Unsloth가 응답을 기다리고 있습니다",
+      otherChat: "다른 채팅",
+      show: "보기",
       stop: "중지",
       allow: "허용",
       deny: "거부",
@@ -256,7 +261,7 @@ export const ko = {
     annotationScreenshotsAlways: "항상 포함",
     annotationScreenshotsNever: "포함하지 않음",
     clearDataSetting: "인터넷 사용 기록 삭제",
-    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 쿠키나 사이트 데이터를 저장하지 않습니다.",
+    clearDataSettingDescription: "방문 기록, 다운로드 기록, 캐시된 페이지를 삭제합니다. 페이지는 Studio를 다시 불러올 때까지만 쿠키와 사이트 데이터를 저장합니다.",
     manage: "관리",
     fullView: {
       enter: "전체 보기",
@@ -432,7 +437,7 @@ export const ko = {
     },
     clearData: {
       title: "인터넷 사용 기록을 삭제할까요?",
-      description: "방문 기록, 다운로드 기록, 캐시된 페이지가 삭제됩니다. 다운로드한 파일은 컴퓨터에 그대로 남습니다.",
+      description: "방문 기록, 다운로드 기록, 캐시된 페이지, 사이트 쿠키와 데이터를 삭제하며 사이트에서 로그아웃됩니다. 다운로드한 파일은 컴퓨터에 남아 있습니다.",
       cancel: "취소",
       confirm: "데이터 삭제",
       done: "인터넷 사용 기록을 삭제했습니다",
@@ -448,6 +453,7 @@ export const ko = {
       resubmit: "이 페이지는 양식 제출 결과입니다. 다시 불러오면 양식이 다시 전송되어 같은 작업이 반복될 수 있습니다.",
       upload: "이 보기에서는 파일 업로드가 작동하지 않습니다. 보내려면 시스템 브라우저에서 페이지를 여세요.",
       scriptNavigation: "이 페이지가 스크립트로 다른 주소로 이동하려 했지만 이 보기에서는 따라갈 수 없습니다. 시스템 브라우저에서 여세요.",
+      needsBrowser: "이 페이지가 이 보기에서 차단하는 브라우저 기능을 사용하려고 해서 일부가 작동하지 않을 수 있습니다. 시스템 브라우저에서 여세요.",
     },
     native: {
       externalPrompt: "{host}에서 {url}을(를) 열려고 합니다",
@@ -1362,6 +1368,8 @@ export const ko = {
       installRuntimeFailed: "런타임을 설치하지 못했습니다.",
       installRuntimeError: "런타임 설치를 시작하지 못했습니다.",
       unsupportedArch: "Windows 샌드박스(MXC)는 x64 Windows에서만 실행되므로 이 PC에서는 사용할 수 없습니다.",
+      builtinNeedsUpdate:
+        "Windows 기본 제공 컨테이너에는 빌드 {required} 이상이 필요하지만 이 PC는 {current}입니다. 관리자 단계 없이 사용하려면 최신 Windows 업데이트를 설치하거나 아래의 대체 샌드박스를 켜세요.",
       unsupportedBuild: "Windows 샌드박스(MXC)는 Windows 11 24H2(빌드 26100) 이상이 필요하므로 이 PC에서는 사용할 수 없습니다.",
       permissionsIntro: "도구가 먼저 묻는 시점과 Python 및 터미널을 OS 샌드박스 안에서도 실행할지 선택합니다.",
       permissionLabel: "도구 권한",
@@ -1842,8 +1850,20 @@ export const ko = {
         embeddingModelDescription:
           "문서 인덱싱 및 검색에 사용할 Hugging Face 모델이나 로컬 경로를 지정합니다. 기본값은 {defaultModel}입니다.",
         searchPlaceholder: "HF의 모든 모델 검색",
-        reindexWarning:
-          "새로 인덱싱되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 업로드하세요.",
+        reindexWarning: "새로 인덱싱되는 문서에만 적용됩니다. 모델을 변경한 후 기존 문서를 다시 임베딩하세요.",
+        reembed: {
+          label: "문서 다시 임베딩",
+          staleOne: "문서 1개가 다른 임베딩 모델로 인덱싱되어 시맨틱 검색에서 제외됩니다.",
+          staleMany: "문서 {count}개가 다른 임베딩 모델로 인덱싱되어 시맨틱 검색에서 제외됩니다.",
+          staleArchived: "이전 채팅 기록이 다른 임베딩 모델로 인덱싱되어 시맨틱 검색에서 제외됩니다.",
+          running: "다시 임베딩 중: {done}/{total}",
+          action: "다시 임베딩",
+          stop: "중지",
+          startFailed: "다시 임베딩을 시작할 수 없습니다",
+          stopped: "다시 임베딩이 중지되었습니다",
+          finished: "문서를 다시 임베딩했습니다",
+          finishedWithFailures: "{count}개를 다시 임베딩하지 못했습니다",
+        },
         emptyError: "Hugging Face 모델 ID 또는 로컬 경로를 입력하세요.",
         loadError: "임베딩 모델 설정을 불러오지 못했습니다.",
         saveError: "임베딩 모델을 저장하지 못했습니다.",
@@ -2565,6 +2585,9 @@ export const ko = {
         showMemoryBar: "VRAM 사용량 막대 표시",
         showMemoryBarDescription:
           "다운로드한 모델의 행 아래에 예상 VRAM 사용량을 표시합니다. 가중치, 실제로 로드될 컨텍스트 길이 기준 KV 캐시, 그리고 추측 디코딩 초안용 예약 공간으로 나뉩니다.",
+        fitOnDeviceOnly: "맞는 모델만 표시",
+        fitOnDeviceOnlyDescription:
+          "이 기기의 GPU 메모리와 RAM보다 큰 모델을 모델 선택기와 Hub에서 숨깁니다. 다운로드한 모델은 계속 표시됩니다.",
       },
       menu: {
         title: "채팅 메뉴",
@@ -3003,6 +3026,22 @@ export const ko = {
         "이 토큰을 사용하는 앱은 즉시 접근 권한을 잃습니다. 이 작업은 되돌릴 수 없습니다.",
       revokeAction: '"{name}" 폐기',
       revoking: "폐기 중...",
+      audioApi: {
+        title: "오디오 API",
+        description: "음성 합성, 음성 복제, 받아쓰기, 오디오 페이지 워크플로.",
+        speak: "말하기",
+        clone: "복제",
+        transcribe: "받아쓰기",
+        workflows: "워크플로",
+        separate: "분리",
+        convert: "변환",
+        music: "음악",
+        edit: "편집",
+        placeholderModel: "아직 이 예제를 실행할 수 있는 다운로드한 모델이 없어 표시된 모델은 임시 예시입니다. 먼저 오디오 페이지에서 모델을 다운로드하세요.",
+        autoSwitchOff:
+          "모델 자동 전환이 켜져 있을 때만 이름으로 모델을 불러옵니다. 자동 전환을 켜거나 먼저 오디오 페이지에서 모델을 불러오세요.",
+        useViaApi: "API로 사용",
+      },
       decisionApi: {
         title: "판단 API",
         docs: "문서",
@@ -3081,6 +3120,7 @@ export const ko = {
       desktopAppVersion: "데스크톱 앱 버전",
       desktopAppVersionUnavailable: "확인할 수 없음",
       llamaCppVersion: "llama.cpp 버전",
+      audioCppVersion: "audio.cpp 버전",
       hardware: "하드웨어",
       gpu: "GPU",
       cuda: "CUDA",

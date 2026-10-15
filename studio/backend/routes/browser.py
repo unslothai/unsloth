@@ -35,6 +35,7 @@ from core.inference.tools import (
     _normalize_url_scheme,
     _sniff_meta_charset,
 )
+from core.inference.web_access_policy import normalize_domain
 from loggers import get_logger
 from routes.browser_network import BROWSER_NETWORK_JS
 
@@ -62,6 +63,34 @@ _HTML_TYPES = frozenset({"text/html", "application/xhtml+xml"})
 # Own pool, so slow sites can't starve chat inference's default executor.
 _FETCH_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-fetch")
 _DISCONNECT_POLL_S = 0.25
+# Pages' requests to their own sites (/request); a pool of their own, so a busy page can't hold up page loads.
+_REQUEST_POOL = ThreadPoolExecutor(max_workers = 8, thread_name_prefix = "browser-request")
+# Queued plus running; held until the worker ends, which a disconnect does not cut short, so a page
+# that aborts and resends can't pile request bodies up behind a stalled site.
+_PAGE_REQUEST_SLOTS = threading.BoundedSemaphore(64)
+_MAX_PAGE_REQUEST_BODY = 1024 * 1024
+_MAX_PAGE_RESPONSE_BYTES = 10 * 1024 * 1024
+_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,256}")
+# Fetch's forbidden methods and request headers: no page can send them, so neither does this.
+_FORBIDDEN_METHODS = frozenset({"CONNECT", "TRACE", "TRACK"})
+_FORBIDDEN_REQUEST_HEADERS = frozenset(
+    "accept-charset accept-encoding access-control-request-headers access-control-request-method "
+    "connection content-length cookie cookie2 date dnt expect host keep-alive origin referer "
+    "set-cookie te trailer transfer-encoding upgrade user-agent via".split()
+)
+# Fetch drops these, and the request's Origin, when a redirect turns a write into a bodiless GET.
+_REQUEST_BODY_HEADERS = frozenset(
+    "content-encoding content-language content-location content-type".split()
+)
+# What a page reads of a CORS response besides the headers it names in Access-Control-Expose-Headers.
+_CORS_SAFELISTED_RESPONSE_HEADERS = frozenset(
+    "cache-control content-language content-length content-type expires last-modified pragma".split()
+)
+# Unreadable by any page (Set-Cookie) or about the hop, not the response. Content-Length and
+# Content-Encoding stay: browsers show them with a decoded body too.
+_HIDDEN_RESPONSE_HEADERS = frozenset(
+    "set-cookie set-cookie2 connection keep-alive proxy-connection te trailer transfer-encoding upgrade".split()
+)
 
 # Quoted values are bounded and a bare "<" ends a tag, so stripping stays linear on hostile pages.
 _TAG_BODY = r"""(?:[^<>"']|"[^"]{0,4096}"|'[^']{0,4096}')*>"""
@@ -151,6 +180,200 @@ _FRAME_CSP = (
     "treat-as-public-address"
 )
 
+# Opaque origins throw on storage and cookies: these keep a site's data in the panel (page-storage.ts) for the session.
+_PAGE_STORAGE_JS = r"""
+        // Past the panel's quota (page-storage.ts) a value stays in this page only.
+        const kept = (key, value) => key.length + value.length <= 131072;
+        // Numbered so the panel's echo of an older write can't undo a newer one still on its way.
+        let writes = 0;
+        const sync = (area, key, value) => {
+          const seq = ++writes;
+          const store = pageStores[area];
+          if (key === null) {
+            store.clearedAt = seq;
+            store.latest.clear();
+          } else store.latest.set(key, seq);
+          post({
+            type: "storage", area, key, url: pageUrl, seq,
+            value: key !== null && value !== null && kept(key, value) ? value : null,
+          });
+        };
+        const pageStores = {};
+        const pageStore = (area) => {
+          const data = new Map(cfg.storage?.[area] || []);
+          const store = {
+            data,
+            latest: new Map(),
+            acked: new Map(),
+            clearedAt: 0,
+            clearAcked: 0,
+            set: (key, value) => {
+              data.set(key, value);
+              sync(area, key, value);
+            },
+            // Always sent: another tab may have written the key since this page loaded.
+            remove: (key) => {
+              data.delete(key);
+              sync(area, key, null);
+            },
+            clear: () => {
+              data.clear();
+              sync(area, null, null);
+            },
+          };
+          pageStores[area] = store;
+          return store;
+        };
+        const text = (value) => value === null || typeof value === "string";
+        const storages = {};
+        window.addEventListener("message", (event) => {
+          const data = event.data;
+          if (event.source !== parent || !data || data.type !== "unsloth:browser-command") return;
+          // Clearing browsing data empties the open page's copy too. The clear is sent back after any write
+          // still on its way to the panel, so that write can't refill the cleared store.
+          if (data.command === "clearStorage") {
+            for (const [area, store] of Object.entries(pageStores)) {
+              store.data.clear();
+              sync(area, null, null);
+            }
+          }
+          // Another open page of this site changed its data, as other tabs do in a browser.
+          else if (data.command === "storageSync" && (data.area === "local" || data.area === "cookie") && text(data.key) && text(data.value)) {
+            const store = pageStores[data.area];
+            if (!store) return;
+            // This page's write or clear of the key is still on its way: its own echo settles the key.
+            const pending = (key) =>
+              store.clearedAt > store.clearAcked || (key !== null && (store.latest.get(key) ?? 0) > (store.acked.get(key) ?? 0));
+            const oldValue = data.key === null ? null : (store.data.get(data.key) ?? null);
+            if (data.own === true) {
+              const seq = Number(data.seq) || 0;
+              if (data.key === null) store.clearAcked = Math.max(store.clearAcked, seq);
+              else store.acked.set(data.key, Math.max(store.acked.get(data.key) ?? 0, seq));
+              // Refused by the panel's quota: the value stays in this page only.
+              if (data.refused === true) return;
+              if (store.clearedAt > seq || (data.key !== null && (store.latest.get(data.key) ?? 0) > seq)) return;
+              if (data.key === null) {
+                // Keys written after the clear stay.
+                for (const key of Array.from(store.data.keys())) if ((store.latest.get(key) ?? 0) <= seq) store.data.delete(key);
+                return;
+              }
+              if (data.value === null && oldValue !== null && !kept(data.key, oldValue)) return;
+            } else if (data.key === null ? Array.from(store.data.keys()).some(pending) : pending(data.key)) {
+              if (data.key !== null) return;
+              for (const key of Array.from(store.data.keys())) if (!pending(key)) store.data.delete(key);
+              return;
+            }
+            // Like a browser, a write that changes nothing fires no event (two pages could echo it forever).
+            if (data.key === null ? !store.data.size : oldValue === data.value) return;
+            if (data.key === null) store.data.clear();
+            else if (data.value === null) store.data.delete(data.key);
+            else store.data.set(data.key, data.value);
+            // This page's own write, coming back in order to settle a race with another page: no event.
+            if (data.area === "local" && data.own !== true) {
+              try {
+                const url = typeof data.url === "string" ? data.url : "";
+                const change = new StorageEvent("storage", { key: data.key, oldValue, newValue: data.value, url });
+                // The init dictionary only takes a real Storage, so sites' `storageArea === localStorage` checks need this.
+                Object.defineProperty(change, "storageArea", { value: storages.local });
+                window.dispatchEvent(change);
+              } catch {}
+            }
+          }
+        });
+        for (const [name, area] of [["localStorage", "local"], ["sessionStorage", "session"]]) {
+          try { void window[name]; } catch {
+            const store = pageStore(area);
+            const methods = {
+              get length() { return store.data.size; },
+              key: (i) => Array.from(store.data.keys())[i] ?? null,
+              getItem: (k) => store.data.get(String(k)) ?? null,
+              setItem: (k, v) => store.set(String(k), String(v)),
+              removeItem: (k) => store.remove(String(k)),
+              clear: store.clear,
+              [Symbol.toStringTag]: "Storage",
+            };
+            // Keys are properties too, as on Storage: sites read and write localStorage.theme.
+            const named = (key) => typeof key === "string" && !(key in methods) && store.data.has(key);
+            const storage = new Proxy(Object.create(methods), {
+              get: (_, key) => (named(key) ? store.data.get(key) : Reflect.get(methods, key)),
+              set: (_, key, value) => {
+                if (typeof key === "string") store.set(key, String(value));
+                return true;
+              },
+              has: (_, key) => named(key) || key in methods,
+              deleteProperty: (_, key) => {
+                if (named(key)) store.remove(key);
+                return true;
+              },
+              ownKeys: () => Array.from(store.data.keys()),
+              getOwnPropertyDescriptor: (_, key) =>
+                named(key) ? { value: store.data.get(key), writable: true, enumerable: true, configurable: true } : undefined,
+            });
+            storages[area] = storage;
+            try { Object.defineProperty(window, name, { value: storage, configurable: true }); } catch {}
+          }
+        }
+        // Keyed "<name>=<path>" (a name has no "="), valued "<deadline>|<value>": a cookie keeps its
+        // path and its Max-Age or Expires across pages.
+        const cookies = pageStore("cookie");
+        const pagePath = () => {
+          try { return new URL(pageUrl).pathname; } catch { return "/"; }
+        };
+        const defaultPath = (path) => (path.startsWith("/") && path.lastIndexOf("/") > 0 ? path.slice(0, path.lastIndexOf("/")) : "/");
+        const pathMatch = (scope, path) =>
+          path === scope || (path.startsWith(scope) && (scope.endsWith("/") || path[scope.length] === "/"));
+        const setCookie = (raw) => {
+          const [pair, ...attributes] = String(raw).split(";");
+          const at = pair.indexOf("=");
+          const name = at < 0 ? "" : pair.slice(0, at).trim();
+          const value = (at < 0 ? pair : pair.slice(at + 1)).trim();
+          if ((!name && !value) || name.length + value.length > 4096) return;
+          let maxAge = null, expires = null, path = null, domain = "";
+          for (const attribute of attributes) {
+            const eq = attribute.indexOf("=");
+            const key = (eq < 0 ? attribute : attribute.slice(0, eq)).trim().toLowerCase();
+            const setting = eq < 0 ? "" : attribute.slice(eq + 1).trim();
+            if (key === "max-age" && /^-?\d+$/.test(setting)) maxAge = Number(setting);
+            else if (key === "expires") expires = Date.parse(setting);
+            else if (key === "path" && setting.startsWith("/")) path = setting;
+            else if (key === "domain") domain = setting.replace(/^\./, "").toLowerCase();
+          }
+          if (domain) {
+            let host = "";
+            try { host = new URL(pageUrl).hostname; } catch {}
+            // A browser refuses a Domain the page isn't on; one it is on still stays with this site only.
+            if (host !== domain && !host.endsWith("." + domain)) return;
+          }
+          const id = name + "=" + (path ?? defaultPath(pagePath()));
+          const deadline = maxAge !== null ? Date.now() + maxAge * 1000 : expires !== null && !Number.isNaN(expires) ? expires : null;
+          if (deadline !== null && deadline <= Date.now()) cookies.remove(id);
+          else cookies.set(id, (deadline ?? "") + "|" + value);
+        };
+        const liveCookies = () => {
+          const path = pagePath();
+          const live = [];
+          for (const [id, stored] of cookies.data) {
+            const at = stored.indexOf("|");
+            if (at > 0 && Number(stored.slice(0, at)) <= Date.now()) {
+              cookies.remove(id);
+              continue;
+            }
+            const eq = id.indexOf("=");
+            const scope = id.slice(eq + 1);
+            if (pathMatch(scope, path)) live.push([scope.length, eq ? id.slice(0, eq) + "=" + stored.slice(at + 1) : stored.slice(at + 1)]);
+          }
+          // Longer paths first, as browsers order them.
+          return live.sort((a, b) => b[0] - a[0]).map(([, cookie]) => cookie).join("; ");
+        };
+        try {
+          Object.defineProperty(document, "cookie", {
+            get: liveCookies,
+            set: setCookie,
+            configurable: true,
+          });
+        } catch {}
+"""
+
 # Page shell: injects <base> and a script turning navigations into panel messages. The page is a
 # srcdoc child; the shell then sets frame-src 'none' on itself so the child can't be navigated
 # (it keeps its own policy copy, so embeds still load), independent of the embedder's policy.
@@ -224,27 +447,43 @@ _FRAME_HTML = r"""<!doctype html>
           if (!cfg.url && new URL(url).origin === shellOrigin) return;
           post({ type: "navigate", url, newTab: Boolean(newTab), background: Boolean(background) });
         };
-        const fallbackStorage = () => {
-          const data = new Map();
-          return {
-            get length() { return data.size; },
-            key: (i) => Array.from(data.keys())[i] ?? null,
-            getItem: (k) => data.has(String(k)) ? data.get(String(k)) : null,
-            setItem: (k, v) => void data.set(String(k), String(v)),
-            removeItem: (k) => void data.delete(String(k)),
-            clear: () => data.clear(),
-          };
+        /* PAGE_STORAGE_JS */
+        let refused = false;
+        const tellRefused = () => {
+          if (refused) return;
+          refused = true;
+          post({ type: "needsBrowser" });
         };
-        // Opaque origins throw on storage and cookies; stub them so pages don't crash.
-        for (const name of ["localStorage", "sessionStorage"]) {
-          try { void window[name]; } catch {
-            try { Object.defineProperty(window, name, { value: fallbackStorage(), configurable: true }); } catch {}
-          }
+        // Only IndexedDB's refusals: a refused service worker or cache rarely breaks a page.
+        const refusals = new WeakSet();
+        // Other sites' scripts report errors as "Script error." with no error, so IndexedDB's is noted as thrown.
+        let indexedDbThrew = false;
+        const refusedByIndexedDb = (error) => {
+          if (error?.name !== "SecurityError") return false;
+          refusals.add(error);
+          return true;
+        };
+        for (const name of ["open", "deleteDatabase", "databases"]) {
+          const original = IDBFactory.prototype[name];
+          if (typeof original !== "function") continue;
+          IDBFactory.prototype[name] = function (...args) {
+            try {
+              const result = original.apply(this, args);
+              return name === "databases" ? result.catch((error) => { refusedByIndexedDb(error); throw error; }) : result;
+            } catch (error) {
+              if (refusedByIndexedDb(error)) {
+                indexedDbThrew = true;
+                setTimeout(() => { indexedDbThrew = false; });
+              }
+              throw error;
+            }
+          };
         }
-        try {
-          let jar = "";
-          Object.defineProperty(document, "cookie", { get: () => jar, set: () => {}, configurable: true });
-        } catch {}
+        window.addEventListener("error", (event) => { if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused(); });
+        window.addEventListener("unhandledrejection", (event) => { if (refusals.has(event.reason)) tellRefused(); });
+        for (const type of ["fullscreenerror", "webkitfullscreenerror"]) {
+          document.addEventListener(type, () => { if (!document.fullscreenEnabled) tellRefused(); }, true);
+        }
         /* BROWSER_NETWORK_JS */
         const shellPathname = location.pathname;
         // Throttle to 200 ms: some sites replaceState per scroll.
@@ -713,11 +952,12 @@ _FRAME_HTML = r"""<!doctype html>
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
         page.setAttribute("sandbox", "allow-scripts allow-forms");
+        page.setAttribute("allowfullscreen", "");
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);
         // A script navigation the page's hooks missed (no Navigation API) hits the lock below; the
@@ -738,6 +978,7 @@ _FRAME_HTML = r"""<!doctype html>
 </html>"""
 
 _FRAME_HTML = _FRAME_HTML.replace("/* BROWSER_NETWORK_JS */", BROWSER_NETWORK_JS.strip(), 1)
+_FRAME_HTML = _FRAME_HTML.replace("/* PAGE_STORAGE_JS */", _PAGE_STORAGE_JS.strip(), 1)
 
 # Annotate, the body of a function of `post` that the page shell's `install` runs on the panel's
 # request: while it is on, pointer input is the panel's, and the page only reports the block under
@@ -1542,6 +1783,8 @@ def _build_response(
             "url": final_url,
             "base": base_url,
             "ownBase": own_base is not None,
+            # Its site answers any origin, the sandbox's too: the page's requests to it stay native.
+            "anyOrigin": (meta.get("allow_origin") or "").strip() in ("*", "null"),
             "refresh": refresh,
             "html": page,
         }
@@ -1573,22 +1816,278 @@ def _build_response(
     )
 
 
+class BrowserPageRequest(BaseModel):
+    # The page's address as the panel loaded it; the request must be to its origin.
+    page: str = Field(..., min_length = 1, max_length = 8192)
+    url: str = Field(..., min_length = 1, max_length = 8192)
+    method: str = Field(default = "GET", pattern = r"^[A-Za-z]{1,16}$")
+    headers: list[tuple[str, str]] = Field(default_factory = list, max_length = 64)
+    # Base64.
+    body: Optional[str] = Field(default = None, max_length = 4 * (_MAX_PAGE_REQUEST_BODY // 3 + 1))
+    # Fetch's redirect mode: "error" fails at a redirect, "manual" stops there (an opaque redirect).
+    redirect: Literal["follow", "error", "manual"] = "follow"
+    # Fetch's integrity metadata; a body that doesn't match is a network error.
+    integrity: str = Field(default = "", max_length = 4096)
+
+
+def _origin(url: str) -> Optional[tuple[str, str, int]]:
+    """``(scheme, host, port)``, the host named as _fetch_url_raw names it to host_headers."""
+    try:
+        parts = urlsplit(url)
+        scheme = parts.scheme.lower()
+        if scheme not in ("http", "https") or not parts.hostname:
+            return None
+        return (
+            scheme,
+            normalize_domain(parts.hostname),
+            parts.port or (443 if scheme == "https" else 80),
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _cors_safelisted(name: str, value: str) -> bool:
+    """Fetch's CORS-safelisted request-header, for the headers a bodiless GET carries."""
+    lowered = name.lower()
+    unsafe = any(
+        (ord(char) < 0x20 and char != "\t") or char in '"():<>?@[\\]{}\x7f' for char in value
+    )
+    if len(value) > 128:
+        return False
+    if lowered == "accept":
+        return not unsafe
+    if lowered in ("accept-language", "content-language"):
+        return bool(re.fullmatch(r"[0-9A-Za-z *,.;=-]*", value))
+    if lowered == "range":
+        return bool(re.fullmatch(r"bytes=[0-9]+-[0-9]*", value))
+    if lowered == "content-type":
+        essence = value.split(";", 1)[0].strip().lower()
+        return not unsafe and essence in (
+            "application/x-www-form-urlencoded",
+            "multipart/form-data",
+            "text/plain",
+        )
+    return False
+
+
+def _allowed_header(name: str, value: str) -> bool:
+    lowered = name.lower()
+    return (
+        bool(_HEADER_NAME_RE.fullmatch(name))
+        and lowered not in _FORBIDDEN_REQUEST_HEADERS
+        and not lowered.startswith(("proxy-", "sec-"))
+        and "\r" not in value
+        and "\n" not in value
+    )
+
+
+def _page_request(request: BrowserPageRequest, cancel_event: threading.Event) -> dict:
+    """The page's request, made as its browser would make a same-origin one; every status is the page's."""
+    origin = _origin(request.page)
+    if origin is None or _origin(request.url) != origin:
+        raise HTTPException(status_code = 403, detail = "Only requests to the page's own site.")
+    method = request.method.upper()
+    if method in _FORBIDDEN_METHODS:
+        raise HTTPException(status_code = 400, detail = f"{method} is not allowed.")
+    body = None
+    if request.body is not None and method not in ("GET", "HEAD"):
+        try:
+            body = base64.b64decode(request.body, validate = True)
+        except ValueError:
+            raise HTTPException(status_code = 400, detail = "The body is not base64.")
+        if len(body) > _MAX_PAGE_REQUEST_BODY:
+            raise HTTPException(status_code = 413, detail = "The body is too large.")
+    # setRequestHeader combines a repeated name, in any case, into one value, as Headers does.
+    own: dict[str, str] = {}
+    named: dict[str, str] = {}
+    for name, value in request.headers:
+        if not _allowed_header(name, value):
+            continue
+        first = named.setdefault(name.lower(), name)
+        own[first] = f"{own[first]}, {value}" if first in own else value
+    scheme, host, port = origin
+    default_port = 443 if scheme == "https" else 80
+    serialized_origin = f"{scheme}://" + (f"[{host}]" if ":" in host else host)
+    serialized_origin += "" if port == default_port else f":{port}"
+    # Typed addresses can keep non-ASCII text, which no header can carry; a browser sends it encoded.
+    page = urlsplit(request.page)
+    path = (page.path or "/") + (f"?{page.query}" if page.query else "")
+    # What a browser adds to a same-origin request: Referer (the default policy keeps the whole
+    # address), fetch metadata, and Origin on anything but GET and HEAD.
+    added = {
+        "Referer": serialized_origin + quote(path, safe = ":/?#[]@!$&'()*+,;=%~"),
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    }
+    if method not in ("GET", "HEAD"):
+        added["Origin"] = serialized_origin
+    if "accept" not in named:
+        added["Accept"] = "*/*"
+    if "accept-language" not in named:
+        added["Accept-Language"] = "en-US,en;q=0.9"
+    page_headers = {**added, **own}
+    # Whether every hop so far stayed on the page's origin. Once one leaves it, only the page's
+    # CORS-safelisted headers go on (Range, never Authorization), since the rest would need a preflight
+    # this can't make; and the request is a CORS one carrying Origin: the page's, or "null" once a hop
+    # went from one other origin to another (Fetch's redirect-taint).
+    hops = {
+        "same_origin": True,
+        "stopped": False,
+        "last": origin,
+        "origin": serialized_origin,
+        "rewritten": False,
+        "redirected": False,
+    }
+
+    def allowed(allow_origin: Optional[str]) -> bool:
+        return (allow_origin or "").strip() in ("*", hops["origin"])
+
+    def on_redirect(url: str, hop_method: str, has_body: bool, headers) -> Optional[str]:
+        if request.redirect != "follow":
+            hops["stopped"] = True
+            return "Redirected, and the request asked not to follow."
+        # Mixed content: an https page never reads what came over plain http, so that hop is never sent.
+        if scheme == "https" and urlsplit(url).scheme.lower() != "https":
+            return "Redirected from https to an insecure address."
+        # A browser CORS-checks each response from another site, a redirect too, before following it.
+        if not hops["same_origin"] and not allowed(headers.get("Access-Control-Allow-Origin")):
+            return "Redirected through a site that does not allow it."
+        hops["redirected"] = True
+        hops["rewritten"] = hops["rewritten"] or hop_method != method
+        last, hops["last"] = hops["last"], _origin(url)
+        if hops["last"] != last and last != origin:
+            hops["origin"] = "null"
+        if hops["last"] == origin and hops["same_origin"]:
+            return None
+        hops["same_origin"] = False
+        # A browser preflights anything but a bare GET or HEAD to another origin; this can't, so a
+        # write is refused before it is sent rather than after it reached the other site.
+        if hop_method not in ("GET", "HEAD") or has_body:
+            return "Redirected a write to another site."
+        return None
+
+    def host_headers(current_host: str) -> dict:
+        own_headers = page_headers
+        if hops["rewritten"]:
+            own_headers = {
+                name: value
+                for name, value in own_headers.items()
+                if name.lower() not in _REQUEST_BODY_HEADERS and name != "Origin"
+            }
+        if not hops["same_origin"]:
+            own_headers = {
+                **{
+                    name: value
+                    for name, value in own_headers.items()
+                    if _cors_safelisted(name, value)
+                },
+                "Origin": hops["origin"],
+            }
+            # The default referrer policy sends another site only the page's origin.
+            own_headers["Referer"] = serialized_origin + "/"
+        return {**_studio_headers(current_host), **own_headers}
+
+    meta: dict = {}
+    error, raw, _content_type = _fetch_url_raw(
+        request.url,
+        timeout = _FETCH_TIMEOUT_S,
+        extra_headers = {"User-Agent": _BROWSER_UA},
+        deadline = time.monotonic() + _FETCH_TIMEOUT_S,
+        raw_bytes_max = _MAX_PAGE_RESPONSE_BYTES,
+        post_data = body,
+        meta_out = meta,
+        cancel_event = cancel_event,
+        host_headers = host_headers,
+        method = method,
+        any_status = True,
+        on_redirect = on_redirect,
+    )
+    # "manual" gets an opaque redirect: no status, headers or body reach the page.
+    if hops["stopped"] and request.redirect == "manual":
+        return {
+            "opaqueRedirect": True,
+            "status": 0,
+            "statusText": "",
+            "url": request.url,
+            "headers": [],
+            "body": "",
+        }
+    status = meta.get("status")
+    if not isinstance(status, int) or not isinstance(raw, bytes):
+        raise HTTPException(status_code = 502, detail = error or "The request failed.")
+    if not 200 <= status <= 599:
+        raise HTTPException(status_code = 502, detail = f"HTTP {status}.")
+    if not _integrity_ok(raw, request.integrity):
+        raise HTTPException(status_code = 502, detail = "The body does not match its integrity.")
+    final_url = meta.get("url") or request.url
+    headers = [
+        (name, value)
+        for name, value in meta.get("headers") or []
+        if name.lower() not in _HIDDEN_RESPONSE_HEADERS
+    ]
+    # Redirected through another site, it is a CORS request, as in a browser: read only with the
+    # consent of the site that answered, and only the headers it exposes.
+    if not hops["same_origin"]:
+        if not allowed(meta.get("allow_origin")):
+            raise HTTPException(status_code = 502, detail = "Redirected to another site.")
+        exposed = {
+            name.strip().lower()
+            for header, value in headers
+            if header.lower() == "access-control-expose-headers"
+            for name in value.split(",")
+        }
+        # Credentials are never sent, so "*" exposes every header.
+        if "*" not in exposed:
+            headers = [
+                (name, value)
+                for name, value in headers
+                if name.lower() in _CORS_SAFELISTED_RESPONSE_HEADERS or name.lower() in exposed
+            ]
+    return {
+        "status": status,
+        "statusText": meta.get("reason") or "",
+        "url": final_url,
+        "headers": [[name, value] for name, value in headers],
+        "body": base64.b64encode(raw).decode("ascii"),
+        # Fetch's response.redirected and type: a chain back to the page's origin stays "cors".
+        "redirected": hops["redirected"],
+        "cors": not hops["same_origin"],
+    }
+
+
 def _fetch_and_build(request: BrowserFetchRequest, cancel_event: threading.Event) -> Response:
     error, body, content_type, meta = _fetch(request, cancel_event)
     return _build_response(request.url, error, body, content_type, meta, cancel_event)
 
 
-@router.post("/fetch")
-async def browser_fetch(
-    request: BrowserFetchRequest,
+async def _run_in_pool(
+    pool: ThreadPoolExecutor,
+    work,
+    request,
     http_request: Request,
-    current_subject: str = Depends(get_current_subject),
+    slots = None,
 ):
-    """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
-    request.url = _normalize_url_scheme(request.url.strip())
+    """``work(request, cancel_event)`` in ``pool``, cancelled when the client goes away; ``slots`` bounds the calls queued or running."""
+    if slots is not None and not slots.acquire(blocking = False):
+        raise HTTPException(status_code = 503, detail = "Too many requests in flight.")
     cancel_event = threading.Event()
     loop = asyncio.get_running_loop()
-    task = loop.run_in_executor(_FETCH_POOL, _fetch_and_build, request, cancel_event)
+    if slots is not None:
+        held = work
+
+        def work(request, cancel_event):
+            try:
+                return held(request, cancel_event)
+            finally:
+                slots.release()
+
+    try:
+        task = loop.run_in_executor(pool, work, request, cancel_event)
+    except BaseException:
+        if slots is not None:
+            slots.release()
+        raise
     try:
         while True:
             done, _ = await asyncio.wait({task}, timeout = _DISCONNECT_POLL_S)
@@ -1599,6 +2098,29 @@ async def browser_fetch(
                 raise HTTPException(status_code = 499, detail = "Client closed request")
     finally:
         cancel_event.set()
+
+
+@router.post("/fetch")
+async def browser_fetch(
+    request: BrowserFetchRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """Fetch a page: HTML as JSON for the shell, anything else raw with its content type."""
+    request.url = _normalize_url_scheme(request.url.strip())
+    return await _run_in_pool(_FETCH_POOL, _fetch_and_build, request, http_request)
+
+
+@router.post("/request")
+async def browser_page_request(
+    request: BrowserPageRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
+):
+    """A page's fetch or XHR to its own site, which its opaque-origin sandbox can't make (browser_network.py)."""
+    return await _run_in_pool(
+        _REQUEST_POOL, _page_request, request, http_request, slots = _PAGE_REQUEST_SLOTS
+    )
 
 
 @router.get("/print", include_in_schema = False)
