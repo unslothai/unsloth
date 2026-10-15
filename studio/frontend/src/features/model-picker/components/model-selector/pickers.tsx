@@ -6086,7 +6086,7 @@ export function HubModelPicker({
     "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
-    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
+    "picker-option-menu !p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
   // Device-fit toggle inside the sort menu. The whole row is the button: a Checkbox renders as a
   // <button> and label-click forwarding is unreliable, so the Checkbox is presentational.
   const fitOnDeviceFooter = (
@@ -6138,6 +6138,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           RECOMMENDED_SORT_OPTIONS.find((o) => o.value === recommendedSort)
             ?.label ?? recommendedSort,
@@ -6153,6 +6154,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === downloadedSort)?.label ??
             downloadedSort,
@@ -6167,6 +6169,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === customSort)?.label ??
             customSort,
@@ -7288,6 +7291,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
               />
               <HubOptionMenu
                 value={connectedSort}
@@ -7297,6 +7301,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 triggerContent={sortTriggerContent(
                   CONNECTED_SORT_OPTIONS.find(
                     (option) => option.value === connectedSort,
@@ -7314,6 +7319,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 // Audio has no sort for its listing, so the fit toggle lives here.
                 footer={
                   audioTaskPicker && section === "recommended"
