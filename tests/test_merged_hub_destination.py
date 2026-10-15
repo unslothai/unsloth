@@ -187,6 +187,7 @@ def saving(monkeypatch, tmp_path):
         "_honours_safe_serialization",
         "_assert_export_target_is_not_base_with_lora_layers",
         "_refuse_unsaveable_text_core",
+        "_cast_state_dict_16bit",
         "_requests_float32",
     }
     nodes = []

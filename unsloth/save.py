@@ -5616,6 +5616,28 @@ def _refuse_unsaveable_text_core(model, save_method):
             )
 
 
+def _cast_state_dict_16bit(model, state_dict, target_dtype):
+    """Cast to `target_dtype`, except what transformers keeps in fp32 there (`_keep_in_fp32_modules[_strict]`)."""
+    names = set()
+    for module in model.modules() if hasattr(model, "modules") else ():
+        names.update(getattr(module, "_keep_in_fp32_modules_strict", None) or ())
+        if target_dtype == torch.float16:
+            names.update(getattr(module, "_keep_in_fp32_modules", None) or ())
+    # Whole dotted path components, as transformers matches them: "wo" is not "word_embeddings".
+    keep = (
+        re.compile("|".join(rf"(^|\.){re.escape(name)}($|\.)" for name in sorted(names)))
+        if names
+        else None
+    )
+    return {
+        k: v.to(dtype = target_dtype)
+        if v.is_floating_point()
+        and not (keep is not None and v.dtype == torch.float32 and keep.search(k))
+        else v
+        for k, v in state_dict.items()
+    }
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -5703,10 +5725,7 @@ def unsloth_generic_save(
                 }
             else:
                 _target_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-                state_dict = {
-                    k: v.to(dtype = _target_dtype) if v.is_floating_point() else v
-                    for k, v in state_dict.items()
-                }
+                state_dict = _cast_state_dict_16bit(model, state_dict, _target_dtype)
         if is_qwen3_5_vlm:
             state_dict = _qwen3_5_vlm_state_dict_for_save(state_dict)
         if state_dict is not None:
