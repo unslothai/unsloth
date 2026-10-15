@@ -45,7 +45,8 @@ export function deriveTrainingReadiness(
     state.modelType === "decision" && modelError !== null;
   const isModelCapabilitiesSettled = hasModel && !isLoadingModel;
   const isIncompatible =
-    isModelCapabilitiesSettled && hasIncompatibleTrainingModalities(state);
+    isModelCapabilitiesSettled &&
+    hasIncompatibleTrainingModalities(state, deviceType);
   const hasDatasetModalityMetadata = state.isDatasetImage !== null;
   const modelHandlesAllModalities = state.isVisionModel && state.isAudioModel;
   const datasetUnverified =

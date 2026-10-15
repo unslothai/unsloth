@@ -74,6 +74,7 @@ from core.inference.context_window import (
     fit_rolling_context,
     messages_without_unpriced_media,
     retrieval_budget,
+    fit_oversized_attachments,
     tool_result_budget,
     turn_is_servable,
 )
@@ -297,6 +298,16 @@ def _fit_context(messages, **kwargs):
     # /compact: only a checkpoint reset can honour it, since only its turns are archived.
     force_reset = bool(kwargs.pop("force_reset", False))
     sticky_manual = bool(kwargs.pop("sticky_manual", False))
+    if kwargs.get("count_tokens") is not None:
+        try:
+            messages = fit_oversized_attachments(
+                messages,
+                context_length = kwargs.get("context_length") or 0,
+                max_tokens = kwargs.get("max_tokens"),
+                count_tokens = kwargs["count_tokens"],
+            )
+        except Exception:  # noqa: BLE001 -- the fit below still refuses what cannot fit
+            logger.debug("attachment fit failed", exc_info = True)
     try:
         from core.inference import checkpoint
 
@@ -373,7 +384,27 @@ def _fit_context(messages, **kwargs):
                 return fitted, truncation
     except Exception:  # noqa: BLE001 -- a policy failure must never break a chat
         logger.warning("Checkpoint fit failed; falling back to the rolling window", exc_info = True)
-    return fit_rolling_context(messages, **kwargs)
+    return _fit_rolling_remembered(messages, kwargs)
+
+
+def _fit_rolling_remembered(messages, kwargs):
+    """`fit_rolling_context`, remembering the cut in memory when the caller has no thread to save it on.
+
+    A one-off request cuts as before; a returning one replays its cut and takes the usual headroom bite.
+    """
+    if kwargs.get("keeps_boundary") or int(kwargs.get("sticky_dropped") or 0) > 0:
+        return fit_rolling_context(messages, **kwargs)
+    from core.inference import prefix_boundary
+
+    scope = ("rolling", kwargs.get("context_length"))
+    remembered = prefix_boundary.recall(messages, scope)
+    fitted, truncation = fit_rolling_context(
+        messages,
+        **{**kwargs, "keeps_boundary": remembered > 0, "sticky_dropped": remembered},
+    )
+    if truncation and truncation.get("fits") and int(truncation.get("dropped_messages") or 0) > 0:
+        prefix_boundary.remember(messages, fitted, int(truncation["dropped_messages"]), scope)
+    return fitted, truncation
 
 
 def _fit_with_instruction_pins(
@@ -8244,6 +8275,10 @@ def _local_ssl_context() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
+# Freeing a large model's GPU memory on a busy driver took over 5 s after SIGKILL; this only bounds a stuck process.
+_SIGKILL_REAP_TIMEOUT_S = 30
+
+
 class LlamaCppBackend:
     """Manages a llama-server subprocess for GGUF model inference.
 
@@ -13780,7 +13815,7 @@ class LlamaCppBackend:
 
         No GPU is enumerated on Metal, so the context would default to native and
         over-commit unified memory ("Compute error." at decode, #5118/#6529). Use a
-        fraction of MLX's Metal working-set, else total RAM; 0 off Apple Silicon or
+        fraction of the Metal working set, else total RAM; 0 off Apple Silicon or
         when unresolvable, so callers skip the cap.
 
         Both of those inputs describe the MACHINE, not the moment. MLX's
@@ -13805,13 +13840,9 @@ class LlamaCppBackend:
 
         if not is_apple_silicon():
             return 0
-        rec_bytes = 0
-        try:
-            import mlx.core as mx
-            if mx.metal.is_available():
-                rec_bytes = int(mx.device_info().get("max_recommended_working_set_size") or 0)
-        except Exception:
-            rec_bytes = 0
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
+
+        rec_bytes = _metal_recommended_working_set_bytes()
         vm = None
         try:
             import psutil
@@ -14004,15 +14035,8 @@ class LlamaCppBackend:
             return 0
         # 0 means the kernel default, Metal's recommended working set.
         if cap_bytes <= 0:
-            try:
-                import mlx.core as mx
-                from utils.hardware.hardware import _mlx_device_info
-                if mx.metal.is_available():
-                    cap_bytes = int(
-                        _mlx_device_info(mx).get("max_recommended_working_set_size") or 0
-                    )
-            except Exception:
-                cap_bytes = 0
+            from utils.hardware.hardware import _metal_recommended_working_set_bytes
+            cap_bytes = _metal_recommended_working_set_bytes()
         if cap_bytes <= 0:
             return 0
         from utils.hardware.hardware import _read_apple_gpu_stats
@@ -14035,14 +14059,10 @@ class LlamaCppBackend:
         headroom = LlamaCppBackend._apple_metal_wired_ceiling_bytes()
         if headroom <= 0:
             return 0.0
-        try:
-            import mlx.core as mx
-            from utils.hardware.hardware import _mlx_device_info
+        from utils.hardware.hardware import _metal_recommended_working_set_bytes
 
-            if not mx.metal.is_available():
-                return 0.0
-            seen = int(_mlx_device_info(mx).get("max_recommended_working_set_size") or 0)
-        except Exception:
+        seen = _metal_recommended_working_set_bytes()
+        if seen <= 0:
             return 0.0
         return max(0.0, (seen - headroom) / (1024 * 1024))
 
@@ -35618,7 +35638,7 @@ class LlamaCppBackend:
             # raised from -- it escapes, and a truly unkillable server would then
             # be reported by nothing at all.
             logger.warning("llama-server did not exit on SIGTERM, sent SIGKILL")
-            self._process.wait(timeout = 5)
+            self._process.wait(timeout = _SIGKILL_REAP_TIMEOUT_S)
         except Exception as e:
             logger.warning(f"Error killing llama-server process: {e}")
         finally:
@@ -38909,10 +38929,15 @@ class LlamaCppBackend:
 
         # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
         # ORIGINAL tools list so a spent one-shot still reads as a tool name. None = no gate.
-        _enabled_names_gate = set(_gguf_active_tool_names(tools)) if tools else None
+        from core.inference.tools import mcp_loadable_specs
+
+        # Plus the MCP tools a search can load mid-turn (#10997).
+        _loadable_mcp = mcp_loadable_specs(tools)
+        _loadable_mcp_names = set(_gguf_active_tool_names(_loadable_mcp))
+        _detect_tools = list(tools or []) + _loadable_mcp
+        _enabled_names_gate = set(_gguf_active_tool_names(_detect_tools)) if tools else None
         # Detection must see the same names as the strip gate (ORIGINAL list, incl. a spent
         # one-shot), else its repeat is stripped but never drained and the turn ends blank.
-        _detect_tools = list(tools or [])
 
         def _reasoning_summary_event(started_at: float) -> dict:
             return {
@@ -39347,7 +39372,7 @@ class LlamaCppBackend:
                 (tool.get("function") or {}).get("name")
                 for tool in safe_tools
                 if (tool.get("function") or {}).get("name")
-            }
+            } | (set() if forced_name else _loadable_mcp_names)
             # Shared signal tuple so GGUF BUFFERING wakes on every format the parser knows (like safetensors).
             _tool_xml_signals = _SHARED_TOOL_XML_SIGNALS
 
@@ -41909,8 +41934,10 @@ class LlamaCppBackend:
                     # stall text over would read the same sentence as a repeat and
                     # swallow the one post-tool nudge.
                     _last_reprompt_text = ""
-                    # A tool ran this turn, so it counts against the caller's budget.
-                    _turn_executed_real_tool = True
+                    # A tool ran this turn, so it counts against the caller's budget. Loading
+                    # MCP tools does not, or a budget of one could never call what it found.
+                    if decision.tool_name != "mcp_tool_search":
+                        _turn_executed_real_tool = True
                     _forced_choice_resolved = True
                     _tool_end = completion.tool_end_event()
                     yield _tool_end
