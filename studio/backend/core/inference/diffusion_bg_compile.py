@@ -78,6 +78,7 @@ def eager_gate(inner: Any, eager: Any) -> Any:
 
     gate._unsloth_bg_gate = True  # type: ignore[attr-defined]
     gate._unsloth_bg_inner = inner  # type: ignore[attr-defined]
+    gate.__wrapped__ = inner  # type: ignore[attr-defined]
     return gate
 
 

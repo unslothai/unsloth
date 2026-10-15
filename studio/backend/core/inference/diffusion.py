@@ -11753,6 +11753,14 @@ class DiffusionBackend:
                 state.bg_compile.close()
             except Exception:  # noqa: BLE001 - teardown is best effort
                 pass
+        # A CFG-parallel replica (and what it registered on the source) is released through the routers' one teardown.
+        try:
+            from .diffusion_multigpu import uninstall_cfg_batch, uninstall_cfg_parallel
+
+            uninstall_cfg_parallel(state.pipe)
+            uninstall_cfg_batch(state.pipe)
+        except Exception:  # noqa: BLE001 - teardown is best effort
+            pass
         # Restore the process-wide backend flags this load flipped so the next `off` load is bit-identical. All
         # idempotent.
         restore_backend_flags(state.backend_flags_before)

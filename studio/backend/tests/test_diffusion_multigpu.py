@@ -3954,3 +3954,96 @@ def test_replica_refuses_an_unknown_compiled_wrapper():
     dit.proj._compiled_call_impl = foreign
     with pytest.raises(RuntimeError, match = "unknown wrapper"):
         mg.build_replica(dit, torch.device("cpu"))
+
+
+def test_replica_builder_walks_closure_wrappers_to_a_nested_guard():
+    from core.inference import diffusion_block_restride as restride
+    from core.inference.diffusion_speed import guard_compiled_blocks
+
+    mg.install_compile_recorder()
+    dit = _BatchDit()
+    dit.proj = _Block()
+    dit.proj.compile(backend = _counting_backend([]))
+    guard_compiled_blocks(dit)
+    # a closure wrapper outside the guard that does NOT copy the guard's marker: only the inner link reaches it
+    dit.proj._compiled_call_impl = restride.wrap(dit.proj._compiled_call_impl)
+    assert getattr(dit.proj._compiled_call_impl, "_unsloth_compile_guard", None) is None
+    replica = mg.build_replica(dit, torch.device("cpu"))
+    call = replica.proj._compiled_call_impl
+    assert getattr(call, "_unsloth_compile_guard", None) is dit._unsloth_compile_guard
+    assert getattr(call.__wrapped__, "_unsloth_block_restride", False)
+    mg.release_replica(replica)
+
+
+def test_replica_builder_refuses_a_studio_layer_it_cannot_see_below():
+    mg.install_compile_recorder()
+    dit = _BatchDit()
+    dit.proj = _Block()
+    dit.proj.compile(backend = _counting_backend([]))
+    inner = dit.proj._compiled_call_impl
+
+    def opaque(*a, **k):
+        return inner(*a, **k)
+
+    opaque._unsloth_block_restride = True  # a known marker, but no inner link to the rest of the chain
+    dit.proj._compiled_call_impl = opaque
+    with pytest.raises(RuntimeError, match = "cannot see below"):
+        mg.build_replica(dit, torch.device("cpu"))
+
+
+def _compiled_router():
+    from core.inference.diffusion_speed import guard_compiled_blocks
+
+    mg.install_compile_recorder()
+    dit = _BatchDit()
+    dit.proj = _Block()
+    dit.proj.compile(backend = _counting_backend([]))
+    guard_compiled_blocks(dit)
+    router = mg.CfgParallelRouter(
+        dit,
+        primary = "cpu",
+        secondary = "cpu",
+        replica_factory = lambda: mg.build_replica(dit, torch.device("cpu")),
+    )
+    dit.forward = router
+    router._build_replica()
+    assert router.replica is not None
+    return dit, router
+
+
+def _drop_by(path, dit, router, monkeypatch):
+    pipe = _RouterPipe(dit)
+    if path == "eviction":
+        monkeypatch.setattr(router, "_phase_need_mib", lambda phase: 9999)
+        monkeypatch.setattr(router, "_secondary_free_mib", lambda: 1)
+        assert router.ensure_phase_room("decode") is False
+    elif path == "invalidation":
+        mg._CFG_ROUTERS[pipe] = router
+        mg.invalidate_cfg_replica(pipe, "attention backend changed")
+    elif path == "disable":
+        router.disable("replica call failed")
+    elif path == "uninstall":
+        mg._CFG_ROUTERS[pipe] = router
+        mg.uninstall_cfg_parallel(pipe)
+    elif path == "stale":
+        with torch.no_grad():
+            dit.proj.lin.weight.add_(1.0)
+        router._drop_if_stale()
+
+
+@pytest.mark.parametrize("path", ["eviction", "invalidation", "disable", "uninstall", "stale"])
+def test_every_replica_drop_path_releases_it(monkeypatch, path):
+    import gc
+    import weakref as _weakref
+
+    dit, router = _compiled_router()
+    guard = dit._unsloth_compile_guard
+    ledger = router.replica.__dict__.get("_unsloth_replica_ledger")
+    assert len(guard.restores) == 2  # the source block's and the copy's
+    gone = _weakref.ref(router.replica)
+    _drop_by(path, dit, router, monkeypatch)
+    assert router.replica is None
+    assert len(guard.restores) == 1  # only the source's own registration remains
+    gc.collect()
+    assert gone() is None  # nothing on the source side keeps the dropped copy alive
+    assert ledger == []

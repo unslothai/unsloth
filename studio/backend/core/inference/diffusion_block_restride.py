@@ -70,6 +70,7 @@ def wrap(compiled: Any) -> Any:
         return compiled(*args, **kwargs)
 
     setattr(restride, _MARK, True)
+    restride.__wrapped__ = compiled  # the inner link a replica builder walks
     return restride
 
 

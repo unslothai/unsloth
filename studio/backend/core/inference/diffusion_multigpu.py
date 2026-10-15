@@ -1639,6 +1639,21 @@ def build_replica(module: Any, device: Any) -> Any:
         if hooks is not None:
             hooks.clear()
     compiled_subs = 0
+    ledger: list = []
+    replica.__dict__[_REPLICA_LEDGER] = ledger
+    try:
+        compiled_subs = _compile_replica_blocks(module, replica, device, ledger)
+    except BaseException:
+        release_replica(replica)  # a half-built copy leaves nothing registered behind
+        raise
+    replica._unsloth_replica_compiled = compiled_subs
+    replica.eval()
+    return replica
+
+
+def _compile_replica_blocks(module: Any, replica: Any, device: Any, ledger: list) -> int:
+    torch = _torch()
+    compiled_subs = 0
     for (name, src), (_rname, dst) in zip(module.named_modules(), replica.named_modules()):
         # Plain tensor attributes (cached RoPE tables and the like) were deep-copied on the source card.
         for key, value in list(dst.__dict__.items()):
@@ -1649,62 +1664,83 @@ def build_replica(module: Any, device: Any) -> Any:
             ):
                 dst.__dict__[key] = value.to(device)
         if getattr(src, "_compiled_call_impl", None) is not None:
-            compile_like_source(src, dst, owner = replica, name = name)
+            compile_like_source(src, dst, owner = replica, name = name, ledger = ledger)
             compiled_subs += 1
         elif "_compiled_call_impl" in dst.__dict__:
             dst._compiled_call_impl = None
-    replica._unsloth_replica_compiled = compiled_subs
-    replica.eval()
-    return replica
+    return compiled_subs
 
 
 # Studio wrappers a source block's ``_compiled_call_impl`` can carry, by marker. Each is rebuilt on the replica's copy
 # by compile_like_source (the guard and the background-compile gate keep the copy eager while the source is; the
 # restride keeps one compiled graph). CUDA-graph wrappers (GraphedForward, BlockGraph) hold graphs captured on the
 # source card: the copy runs the compiled call without them (same math, no replay).
-_WRAPPER_INNER_ATTRS = ("_unsloth_bg_inner", "compiled", "compute", "inner")
 _GRAPH_WRAPPERS = ("GraphedForward", "BlockGraph")
+_LAYER_MARKERS = ("_unsloth_bg_gate", "_unsloth_block_restride", "_unsloth_compile_guard", "_unsloth_stg_adapter")
+
+
+def _is_torch_compiled(fn: Any) -> bool:
+    """torch's own compiled call (Module.compile / torch.compile): the bottom of a wrapper chain."""
+    origin = _hook_origin(fn)
+    return origin.startswith("torch") or str(getattr(fn, "__module__", "") or "").startswith("torch")
+
+
+def _wrapper_inner(fn: Any) -> Any:
+    """The one link below a wrapper layer, or None: ``__wrapped__`` (Studio's closures and functools.wraps), the
+    background gate's ``_unsloth_bg_inner``, a ``functools.partial``'s ``func``, a bound method's owner object, a
+    graph wrapper's ``compiled`` / ``compute``."""
+    for attr in ("__wrapped__", "_unsloth_bg_inner"):
+        inner = getattr(fn, attr, None)
+        if inner is not None and inner is not fn:
+            return inner
+    if hasattr(fn, "func") and hasattr(fn, "args") and hasattr(fn, "keywords"):
+        return fn.func
+    if isinstance(fn, types.MethodType):
+        owner = fn.__self__
+        return owner if owner is not fn else None
+    for attr in ("compiled", "compute"):
+        inner = getattr(fn, attr, None)
+        if callable(inner) and inner is not fn:
+            return inner
+    return None
 
 
 def _source_wrapper_markers(outer: Any, name: str) -> dict:
-    """Walk ``outer`` (a source block's ``_compiled_call_impl``) down to torch's compiled call: the Studio wrappers on
-    it ({marker: value}). Raises on a layer it does not know (its semantics cannot be reproduced on a copy)."""
+    """Walk ``outer`` (a source block's ``_compiled_call_impl``) layer by layer down to torch's compiled call, through
+    one inner link per layer (:func:`_wrapper_inner`), recording the Studio layers ({marker: value}). Raises on a layer
+    it cannot rebuild exactly or cannot see below: a wrapper is never dropped silently."""
     found: dict = {}
     fn = outer
-    for _ in range(8):
+    for _ in range(16):
         if fn is None:
-            break
-        guard = getattr(fn, "_unsloth_compile_guard", None)
-        if guard is not None:
-            found.setdefault("guard", guard)
-        known = False
-        for marker in ("_unsloth_bg_gate", "_unsloth_block_restride", "_unsloth_compile_guard"):
-            if getattr(fn, marker, None) not in (None, False):
-                found[marker] = True
-                known = True
+            raise RuntimeError(f"compiled submodule '{name}': the wrapper chain ends without torch's compiled call")
+        if _is_torch_compiled(fn) and not any(getattr(fn, m, None) for m in _LAYER_MARKERS):
+            return found
         if getattr(fn, "_unsloth_stg_adapter", False):
             raise RuntimeError(f"compiled submodule '{name}' carries the LTX-2 STG adapter (not rebuilt on a copy)")
-        if type(fn).__name__ in _GRAPH_WRAPPERS and _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES):
-            known = True
-        if not known:
-            if _hook_origin(fn).startswith(("torch", "functools")) or getattr(fn, "__module__", "").startswith("torch"):
-                break  # torch's own compiled call: the bottom
+        markers = [m for m in _LAYER_MARKERS if getattr(fn, m, None) not in (None, False)]
+        graph = type(fn).__name__ in _GRAPH_WRAPPERS and _hook_origin(fn).startswith(_TRUSTED_HOOK_MODULES)
+        if not markers and not graph and not isinstance(fn, types.MethodType):
             raise RuntimeError(
                 f"compiled submodule '{name}' carries an unknown wrapper {type(fn).__name__} (not rebuilt on a copy)"
             )
-        below = None
-        for attr in _WRAPPER_INNER_ATTRS:
-            candidate = getattr(fn, attr, None)
-            if callable(candidate) and candidate is not fn:
-                below = candidate
-                break
+        guard = getattr(fn, "_unsloth_compile_guard", None)
+        if guard is not None:
+            found.setdefault("guard", guard)
+        for marker in markers:
+            found[marker] = True
+        below = _wrapper_inner(fn)
         if below is None:
-            break  # a closure wrapper (guard, restride): its markers are recorded, the bottom is torch's compile
+            raise RuntimeError(
+                f"compiled submodule '{name}': cannot see below wrapper {type(fn).__name__} (no inner link)"
+            )
         fn = below
-    return found
+    raise RuntimeError(f"compiled submodule '{name}': wrapper chain too deep to inspect")
 
 
-def compile_like_source(src: Any, dst: Any, *, owner: Any = None, name: str = "") -> None:
+def compile_like_source(
+    src: Any, dst: Any, *, owner: Any = None, name: str = "", ledger: Optional[list] = None
+) -> None:
     """Compile a replica block ``dst`` exactly the way its source ``src`` was: the recorded ``Module.compile``
     arguments, then the same Studio wrappers rebuilt around the copy's own compiled call (canonical order: restride,
     the shared compile guard, the background-compile gate). The one builder every replica block goes through."""
@@ -1725,16 +1761,43 @@ def compile_like_source(src: Any, dst: Any, *, owner: Any = None, name: str = ""
     if guard is not None:
         # the source's guard object: one compile failure drops the source and the copy to eager together
         call = guard.wrap(call, eager, owner if owner is not None else dst)
+        dst_ref = weakref.ref(dst)  # the long-lived source guard must never keep the copy alive
 
-        def restore(m: Any = dst) -> None:
-            m._compiled_call_impl = None
+        def restore(ref: Any = dst_ref) -> None:
+            m = ref()
+            if m is not None:
+                m._compiled_call_impl = None
 
         guard.restores.append(restore)
+        if ledger is not None:
+            ledger.append(lambda g = guard, f = restore: _remove_identity(g.restores, f))
     if markers.get("_unsloth_bg_gate"):
         from .diffusion_bg_compile import eager_gate
 
         call = eager_gate(call, eager)
     dst._compiled_call_impl = call
+
+
+def _remove_identity(items: list, value: Any) -> None:
+    for i in range(len(items) - 1, -1, -1):
+        if items[i] is value:
+            del items[i]
+
+
+_REPLICA_LEDGER = "_unsloth_replica_ledger"
+
+
+def release_replica(replica: Any) -> None:
+    """The one teardown for every replica drop path (eviction, invalidation, stale weights, disable, uninstall, unload):
+    every registration the replica made on source-side objects (compile-guard callbacks, ...) is undone, so nothing
+    long-lived keeps the copy, and its card memory, alive. Idempotent."""
+    if replica is None:
+        return
+    ledger = replica.__dict__.get(_REPLICA_LEDGER)
+    while ledger:
+        undo = ledger.pop()
+        with contextlib.suppress(Exception):
+            undo()
 
 
 _ADAPTER_ATTRS = (
@@ -2171,10 +2234,13 @@ class CfgParallelRouter:
         self.drop_replica()
 
     def drop_replica(self) -> None:
+        """Every drop path ends here: the worker, pending work, prefetched copies and the replica's registrations on
+        source-side objects (release_replica), so the copy and its card memory are freed."""
         if self.worker is not None:
             self.worker.close()
             self.worker = None
         self._drop_pending()
+        release_replica(self.replica)
         self.replica = None
         self.pairs = []
         self.prefetched.clear()

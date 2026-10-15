@@ -11764,6 +11764,14 @@ class VideoBackend:
                     state.bg_compile.close()
                 except Exception:  # noqa: BLE001 -- teardown is best effort
                     pass
+            # A CFG-parallel replica (and what it registered on the source) goes through the routers' one teardown.
+            try:
+                from .diffusion_multigpu import uninstall_cfg_batch, uninstall_cfg_parallel
+
+                uninstall_cfg_parallel(getattr(state, "pipe", None))
+                uninstall_cfg_batch(getattr(state, "pipe", None))
+            except Exception:  # noqa: BLE001 -- teardown is best effort
+                pass
             restore_backend_flags(state.backend_flags)
             # A GGUF load may have installed the compiled GGUF dequantizer; restore the stock kernels so a later
             # speed=off load is bit-identical.
