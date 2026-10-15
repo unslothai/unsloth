@@ -11,6 +11,7 @@ import {
 } from "../src/features/chat/lib/context-usage-bar-state.ts";
 import {
   branchContextUsage,
+  contextUsageMarkers,
   estimateBranch,
   isSummedToolLoopUsage,
   revisionTotal,
@@ -67,6 +68,17 @@ test("a local tool loop's rows show the last pass's reply, not every pass's", ()
   assert.deepEqual(
     contextUsageRows({ promptTokens: 625, completionTokens: 150, contextTokens: 654, cachedTokens: 500 }, false),
     { promptTokens: 625, completionTokens: 29, cached: 500, cacheWrites: undefined },
+  );
+});
+
+test("a managed engine's summed prompt hides the rows unless the turn was one pass", () => {
+  assert.deepEqual(
+    contextUsageRows({ promptTokens: 3000, completionTokens: 1550, contextTokens: 3500 }, true),
+    {},
+  );
+  assert.deepEqual(
+    contextUsageRows({ promptTokens: 2000, completionTokens: 1500, contextTokens: 3500 }, true),
+    { promptTokens: 2000, completionTokens: 1500, cached: undefined, cacheWrites: undefined },
   );
 });
 
@@ -137,6 +149,13 @@ const conversation = () => [
   row("u2", "user", 3, "x".repeat(40)),
   row("a2", "assistant", 4, "y".repeat(40), { contextUsage: usage(500, LOCAL) }),
 ];
+
+test("a reply's markers record its position, the edits before it and the branch's estimate", () => {
+  const branch = conversation();
+  branch[2] = { ...branch[2], metadata: { revision: 2 } };
+  assert.deepEqual(contextUsageMarkers(branch), { messageCount: 4, revision: 2, estimatedTokens: 40 });
+  assert.deepEqual(contextUsageMarkers([]), { messageCount: 0, revision: 0, estimatedTokens: 0 });
+});
 
 test("the tip's own count prices its branch", () => {
   const branch = conversation();

@@ -2783,9 +2783,14 @@ export function ChatPage({
     (state) => state.nativeContextLength,
   );
   const contextUsage = useChatRuntimeStore((state) => state.contextUsage);
+  const loadedEngine = useChatRuntimeStore((state) => state.loadedEngine);
   const usageRows = useMemo(
-    () => contextUsageRows(contextUsage, isExternalModelId(contextUsage?.modelId)),
-    [contextUsage],
+    () =>
+      contextUsageRows(
+        contextUsage,
+        isExternalModelId(contextUsage?.modelId) || loadedEngine !== "auto",
+      ),
+    [contextUsage, loadedEngine],
   );
   const loadedIsGguf = useChatRuntimeStore((state) => state.loadedIsGguf);
   const loadedContextUnboundedWhenBatched = useChatRuntimeStore(

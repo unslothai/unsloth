@@ -214,6 +214,7 @@ import {
 } from "./utils/message-order";
 import {
   branchContextUsage,
+  contextUsageMarkers,
   estimateBranch,
   revisionTotal,
   sameContextUsage,
@@ -1443,6 +1444,7 @@ const generationRecoveries = new Map<string, GenerationRecovery>();
 function scheduleGenerationRecovery(
   threadId: string,
   storedMessage: MessageRecord,
+  records: MessageRecord[],
   aui: ReturnType<typeof useAui>,
 ): void {
   const metadata = (storedMessage.metadata ?? {}) as Record<string, unknown>;
@@ -1457,6 +1459,7 @@ function scheduleGenerationRecovery(
     return;
   }
   const views = new Set([aui]);
+  const history = orderBySelectedBranch(records, storedMessage.id).slice(0, -1);
 
   const recovery = (async () => {
     let cursor = Number(metadata.generationSeq ?? 0);
@@ -1622,6 +1625,7 @@ function scheduleGenerationRecovery(
         timings: recoveryTimings,
       });
       if (nextMetadata.generationSettled === true) {
+        const content = rebuild();
         nextMetadata = recoveredGenerationFinalMetadata({
           current: nextMetadata,
           run,
@@ -1629,7 +1633,11 @@ function scheduleGenerationRecovery(
           timings: recoveryTimings,
           firstChunkAt,
           totalChunks,
-          toolCalls: toolNames(rebuild()),
+          toolCalls: toolNames(content),
+          markers: contextUsageMarkers([
+            ...history,
+            { id: storedMessage.id, role: "assistant", content },
+          ]),
         });
       }
       const settled = nextMetadata.generationSettled === true;
@@ -2517,7 +2525,7 @@ function useStudioRuntimeAdapters(
               typeof (message.metadata as Record<string, unknown> | undefined)
                 ?.generationRunId === "string"
             ) {
-              scheduleGenerationRecovery(remoteId, message, aui);
+              scheduleGenerationRecovery(remoteId, message, messages, aui);
             }
           }
         })
@@ -2869,6 +2877,7 @@ function useStudioRuntimeAdapters(
                 content: cloneContent(message.content),
                 metadata: { ...(message.metadata ?? {}) },
               },
+              msgs,
               aui,
             );
           }
@@ -3912,7 +3921,6 @@ function ThreadContextUsageRecount({
     ) {
       return;
     }
-    // Only the tip's count describes the branch: a later turn whose run never answered is unpriced.
     // The history loader's rules, keyed on the SELECTED model (a resident GGUF stays loaded under a
     // cloud pick): llama.cpp stops at its window (MLX runs past it), and legacy usage without a
     // modelId is trusted only under a local window.
@@ -3994,7 +4002,8 @@ function ThreadContextUsageRecount({
       store.setContextUsage(null);
       return;
     }
-    const next = usage ?? (shown != null && !shown.estimated ? null : estimateBranch(branch));
+    const next =
+      usage ?? (priced.ran && shown != null && !shown.estimated ? null : estimateBranch(branch));
     if (!next) return;
     store.setThreadContextUsage(activeThreadId, next);
     store.setContextUsage(next);

@@ -2616,23 +2616,28 @@ _BRANCH_SWITCH = """
             _SAVED_300_LOCAL,
             "{ promptTokens: 400, completionTokens: 100, totalTokens: 500, cachedTokens: 0, "
             'modelId: "unsloth/gguf-model" }',
-            {"counts": 0, "total": 500},
+            {"counts": 0, "total": 500, "estimated": None},
         ),
-        ("", _SAVED_300_LOCAL, "undefined", {"counts": 1, "total": 62}),
+        ("", _SAVED_300_LOCAL, "undefined", {"counts": 1, "total": 62, "estimated": None}),
         (
             "external::openai::gpt-x",
             _SAVED_300_CLOUD,
             "{ promptTokens: 400, completionTokens: 100, totalTokens: 500, cachedTokens: 0, "
             'modelId: "external::openai::gpt-x" }',
-            {"counts": 0, "total": 500},
+            {"counts": 0, "total": 500, "estimated": None},
         ),
-        ("external::openai::gpt-x", _SAVED_300_CLOUD, "undefined", {"counts": 0, "total": 300}),
+        (
+            "external::openai::gpt-x",
+            _SAVED_300_CLOUD,
+            "undefined",
+            {"counts": 0, "total": 6, "estimated": True},
+        ),
     ],
     ids = [
         "local_tip_with_its_own_count",
         "local_tip_is_recounted",
         "cloud_tip_with_its_own_count",
-        "cloud_tip_keeps_the_count_rather_than_a_guess",
+        "cloud_tip_without_a_count_is_estimated_as_reopening_shows",
     ],
 )
 def test_a_branch_switch_reprices_the_meter_from_the_new_tip(
@@ -2653,7 +2658,7 @@ def test_a_branch_switch_reprices_the_meter_from_the_new_tip(
     after = out["after"] or {}
     assert out["counts"] == expected["counts"]
     assert after.get("totalTokens") == expected["total"]
-    assert after.get("estimated") is None
+    assert after.get("estimated") == expected["estimated"]
 
 
 _SEND_WINDOW = """
@@ -2946,6 +2951,7 @@ _LIVE_CHANGES = {
     "delete_the_last_reply": "(live) => live.slice(0, 5)",
     "delete_the_last_turn": "(live) => live.slice(0, 4)",
     "delete_a_middle_turn": "(live) => [live[0], live[1], live[4], live[5]]",
+    "delete_every_reply": "(live) => live.slice(0, 1)",
     "delete_everything": "(live) => []",
 }
 
@@ -2982,6 +2988,12 @@ _LIVE_CHANGES = {
             "delete_a_middle_turn",
             "external::openai::gpt-x",
             {"counts": 0, "total": 320, "estimated": True},
+        ),
+        ("delete_every_reply", "", {"counts": 1, "total": 37, "estimated": None}),
+        (
+            "delete_every_reply",
+            "external::openai::gpt-x",
+            {"counts": 0, "total": 10, "estimated": True},
         ),
         ("delete_everything", "", {"counts": 1, "total": 12, "estimated": None}),
         (

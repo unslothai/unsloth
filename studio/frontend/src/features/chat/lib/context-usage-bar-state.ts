@@ -51,7 +51,7 @@ export function contextUsageRows(
       }
     | null
     | undefined,
-  external: boolean,
+  summedPrompt: boolean,
 ): ContextUsageRows {
   if (!usage) return {};
   const context = usage.contextTokens;
@@ -63,7 +63,7 @@ export function contextUsageRows(
       cacheWrites: usage.cacheWriteTokens,
     };
   }
-  const describesContext = external
+  const describesContext = summedPrompt
     ? context === usage.promptTokens + usage.completionTokens
     : context >= usage.promptTokens;
   if (!describesContext) return {};

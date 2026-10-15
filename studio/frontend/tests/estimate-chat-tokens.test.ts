@@ -105,3 +105,18 @@ test("a tool call Studio ran counts its arguments and the result the model read"
   assert.equal(estimateMessagesTokenCount([reply({ ...call, provenance: local, result: { rows: ["d".repeat(4000)] } })]), 20);
   assert.equal(estimateMessagesTokenCount([reply({ ...call, result: "c".repeat(320) })]), 10);
 });
+
+test("a retrieval result's source map feeds the citation card, not the model, so it is not counted", () => {
+  const map = JSON.stringify([{ chunkId: "c1", filename: "a.pdf", text: "c".repeat(400) }]);
+  const reply = (result: string): MessageRecord => ({
+    id: "2",
+    threadId: "t",
+    role: "assistant",
+    content: [
+      { type: "tool-call", toolCallId: "c1", toolName: "search_knowledge_base", args: {}, argsText: "", result, provenance: { source: "local", round_id: 1 } },
+    ] as unknown as MessageRecord["content"],
+    createdAt: 2,
+  });
+  assert.equal(estimateMessagesTokenCount([reply(`${"c".repeat(400)}\n__RAG_SOURCES__:${map}`)]), 100);
+  assert.equal(estimateMessagesTokenCount([reply("c".repeat(400))]), 100);
+});

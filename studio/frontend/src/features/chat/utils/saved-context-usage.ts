@@ -66,10 +66,26 @@ function inBranchOrder(branch: readonly Pick<BranchRecord, "id" | "role" | "cont
   );
 }
 
-export function branchTokenEstimate(
+function branchTokenEstimate(
   branch: readonly Pick<BranchRecord, "id" | "role" | "content">[],
 ): number | null {
   return estimateMessagesTokenCount(inBranchOrder(branch));
+}
+
+export type ContextUsageMarkers = {
+  messageCount: number;
+  revision: number;
+  estimatedTokens: number;
+};
+
+export function contextUsageMarkers(branch: readonly BranchRecord[]): ContextUsageMarkers {
+  let revision = 0;
+  for (const message of branch) revision += revisionOf(message.metadata);
+  return {
+    messageCount: branch.length,
+    revision,
+    estimatedTokens: branchTokenEstimate(branch) ?? 0,
+  };
 }
 
 export function estimateBranch(branch: readonly BranchRecord[]) {

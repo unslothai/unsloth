@@ -132,7 +132,7 @@ import {
   releasePreStreamRunReservation,
 } from "../utils/pre-stream-run-reservation";
 import { readThreadCreationClaim } from "../utils/chat-thread-creation-claim";
-import { branchTokenEstimate, revisionTotal } from "../utils/saved-context-usage";
+import { contextUsageMarkers, threadBranchRecords } from "../utils/saved-context-usage";
 import {
   apiCompactionRequestFields,
   ggufCompactionRequestFields,
@@ -8995,13 +8995,10 @@ export function createOpenAIStreamAdapter(
                     cachedTokens,
                     cacheWriteTokens,
                     modelId: params.checkpoint,
-                    messageCount: rawMessages.length + 1,
-                    revision: revisionTotal(rawMessages),
-                    estimatedTokens:
-                      branchTokenEstimate([
-                        ...rawMessages,
-                        { id: "", role: "assistant", content: finalContent },
-                      ]) ?? 0,
+                    ...contextUsageMarkers([
+                      ...threadBranchRecords(rawMessages),
+                      { id: "", role: "assistant", content: finalContent },
+                    ]),
                   }
                 : undefined,
               responseDetails: buildResponseDetails(finishedAt),

@@ -133,17 +133,24 @@ test("an edited reply keeps the metadata the turn was stored with", async () => 
   assert.deepEqual(withoutRevision(record.metadata), CUSTOM);
 });
 
-test("saving a reply unchanged does not mark it revised", async () => {
-  const h = harness();
-  const exported = thread([{ type: "text", text: "the original reply" }]);
-  await h.module.updateThreadMessage({
-    thread: { export: () => exported, import: () => {} },
-    messageId: "a0",
-    remoteId: "remote-1",
-    newText: h.module.extractTaggedText(exported.messages[1].message.content),
-    isIncognito: false,
-  });
-  assert.equal("revision" in ((h.saved[0].metadata ?? {}) as Record<string, unknown>), false);
+test("saving a reply unchanged does not mark it revised, however the parts were stored", async () => {
+  for (const content of [
+    [{ type: "text", text: "the original reply" }],
+    [{ type: "reasoning", text: "\nlet me think\n" }, { type: "text", text: "the reply" }],
+    [{ type: "text", text: "one" }, { type: "text", text: "two" }],
+    [{ type: "text", text: "the reply", status: { type: "complete" } }],
+  ]) {
+    const h = harness();
+    const exported = thread(content);
+    await h.module.updateThreadMessage({
+      thread: { export: () => exported, import: () => {} },
+      messageId: "a0",
+      remoteId: "remote-1",
+      newText: h.module.extractTaggedText(content),
+      isIncognito: false,
+    });
+    assert.equal("revision" in ((h.saved[0].metadata ?? {}) as Record<string, unknown>), false);
+  }
 });
 
 test("editing clears stale Gemini continuation replay and keeps other metadata", async () => {

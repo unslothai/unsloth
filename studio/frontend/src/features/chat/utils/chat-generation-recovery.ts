@@ -7,6 +7,7 @@ import {
   extractDeltaText,
   parseAssistantContent,
 } from "./parse-assistant-content";
+import type { ContextUsageMarkers } from "./saved-context-usage";
 
 export type StoredGenerationStatus = ChatGenerationStatus;
 
@@ -192,8 +193,9 @@ export function recoveredGenerationFinalMetadata(options: {
   firstChunkAt?: number;
   totalChunks: number;
   toolCalls?: string[];
+  markers: ContextUsageMarkers;
 }): Record<string, unknown> {
-  const { current, run, usage, timings, firstChunkAt, totalChunks } = options;
+  const { current, run, usage, timings, firstChunkAt, totalChunks, markers } = options;
   const modelId =
     typeof run.requestPayload.model === "string"
       ? run.requestPayload.model
@@ -238,6 +240,7 @@ export function recoveredGenerationFinalMetadata(options: {
           : 0),
       cacheWriteTokens: usageCacheWriteTokens(usage),
       modelId,
+      ...markers,
     };
   }
   if (next.responseDetails === undefined) {

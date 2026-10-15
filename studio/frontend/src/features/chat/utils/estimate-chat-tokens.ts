@@ -4,6 +4,13 @@
 import type { MessageRecord } from "../types";
 import { orderBySelectedBranch } from "./message-order.ts";
 
+const RAG_SOURCES_TAIL = "\n__RAG_SOURCES__:";
+
+function modelVisibleLength(resultText: string): number {
+  const tail = resultText.lastIndexOf(RAG_SOURCES_TAIL);
+  return tail < 0 ? resultText.length : tail;
+}
+
 function partChars(part: unknown): number {
   const value = part as {
     type?: unknown;
@@ -17,7 +24,10 @@ function partChars(part: unknown): number {
   const result = value.result as { text?: unknown } | string | null | undefined;
   const resultText =
     typeof result === "string" ? result : typeof result?.text === "string" ? result.text : "";
-  return (typeof value.argsText === "string" ? value.argsText.length : 0) + resultText.length;
+  return (
+    (typeof value.argsText === "string" ? value.argsText.length : 0) +
+    modelVisibleLength(resultText)
+  );
 }
 
 export function estimateMessagesTokenCount(

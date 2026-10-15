@@ -243,7 +243,7 @@ export async function updateThreadMessage(args: {
         ...m.message,
         content: finalContent,
         metadata:
-          JSON.stringify(finalContent) === JSON.stringify(originalContent)
+          newText === extractTaggedText(originalContent)
             ? withoutGeminiContinuationReplay(m.message.metadata)
             : withRevision(withoutGeminiContinuationReplay(m.message.metadata)),
       },
