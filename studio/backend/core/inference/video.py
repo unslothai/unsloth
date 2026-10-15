@@ -53,6 +53,7 @@ from .diffusion_attention import (
     apply_attention_backend,
     install_hunyuan_attention_trim,
     sdpa_math_only,
+    begin_attention_run,
     select_attention_backend,
     sync_attention_state,
 )
@@ -10010,8 +10011,9 @@ class VideoBackend:
                 if _resolved_inputs is not None and _resolved_inputs.state is not state:
                     raise RuntimeError(VIDEO_CANCELLED_MSG)
                 self._active_generate_cancel = cancel
-                # ROCm flash: report and key calibration on what the last runs executed, not the load-time pick.
-                sync_attention_state(state, logger)
+                # ROCm flash: a generation boundary. The calibration key below follows what the last run executed,
+                # and this run's attention tally starts at zero.
+                begin_attention_run(state, logger)
             # Bound below, once the request is resolved. None means the failure beat the resolution, and there is
             # nothing truthful to report.
             request_shape: Optional[dict[str, Any]] = None

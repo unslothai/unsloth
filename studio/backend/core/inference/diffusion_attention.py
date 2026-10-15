@@ -503,10 +503,10 @@ ROCM_FLASH_MIN_GAIN = 0.03
 ROCM_FLASH_BLOCK_TOL = 2e-2  # attention output rel L1 (bf16 rounding ~1e-3)
 ROCM_FLASH_MAX_TOL = 5e-2  # attention max abs error / max abs output
 ROCM_FLASH_PROBE_TOKENS = 4096  # the load-time bucket: a 1024^2 image DiT sequence
-# Calls are gated per sequence-length bucket (powers of two, by the longer of query / key): a bucket is timed at its
-# lower edge on first use, so the 4096 verdict never decides a 30k-token video call.
+# Calls are gated per sequence-length bucket (powers of two from 1024 up, open ended, by the longer of query / key): a
+# bucket is timed at its lower edge on first use, so the 4096 verdict never decides a 30k or 50k-token video call.
 ROCM_FLASH_MIN_BUCKET = 1024
-ROCM_FLASH_MAX_BUCKET = 32768
+ROCM_FLASH_LONG_PROBE = 16384  # from here the probe times fewer runs (one native SDPA call is seconds at 64k tokens)
 # (device, dtype, hidden, heads, head_dim, tokens) -> admission record.
 ROCM_FLASH_ADMISSIONS: dict[tuple, dict] = {}
 # Bump when the block probe changes what it measures: every stored verdict is then re-timed.
@@ -661,16 +661,19 @@ def _time_rocm_flash_block(
         max_rel = float(err.max() / ref.abs().max().clamp_min(1e-12))
         del ref, got, err
         # diagnostic only: how much of the attention error survives the residual + FFN
-        bref = block(native).float()
-        bgot = block(arms["flash"]).float()
-        block_rel = float((bgot - bref).abs().mean() / bref.abs().mean().clamp_min(1e-12))
-        del bref, bgot
+        block_rel = None
+        if tokens < ROCM_FLASH_LONG_PROBE:
+            bref = block(native).float()
+            bgot = block(arms["flash"]).float()
+            block_rel = float((bgot - bref).abs().mean() / bref.abs().mean().clamp_min(1e-12))
+            del bref, bgot
     times: dict[str, list] = {name: [] for name in arms}
-    for _ in range(2):  # warm both (Triton builds autotune on the first call)
+    long = tokens >= ROCM_FLASH_LONG_PROBE
+    for _ in range(1 if long else 2):  # warm both (Triton builds autotune on the first call)
         for fn in arms.values():
             block(fn)
     torch.cuda.synchronize(device)
-    for _ in range(5):
+    for _ in range(3 if long else 5):
         for name, fn in arms.items():
             torch.cuda.synchronize(device)
             t0 = time.perf_counter()
@@ -713,35 +716,47 @@ def _rocm_flash_block_admitted(
     # diffusers' flash backend raises on attn_mask: masked calls (e.g. mixed-padding batches) must run native
     if not _install_rocm_flash_dispatch_guard():
         return False
-    _register_rocm_flash_gate(device, dtype, geometries)
+    gate: dict[tuple, frozenset] = {}
+    for hidden, heads, head_dim in geometries:
+        shape = (device, str(dtype), heads, head_dim)
+        gate[shape] = gate.get(shape, frozenset()) | {hidden}
+    for dit in _attention_dits(pipe):
+        try:
+            setattr(dit, ROCM_FLASH_GATE_ATTR, gate)
+        except Exception:  # noqa: BLE001
+            pass
     return True
 
 
-# (device, dtype, heads, head_dim) -> the hidden sizes auto admitted with it: calls of that shape are gated per length.
-_ROCM_FLASH_GATED: dict[tuple, set] = {}
-# (device, dtype, heads, head_dim, bucket) -> flash serves this bucket. In memory: a failed bucket stays native.
+# Length gating belongs to the DiT an auto load admitted, not to a shape: the gate {(device, dtype, heads, head_dim):
+# hidden sizes} lives on that DiT and is active only while it runs (its forward hooks), so a model loaded with explicit
+# flash or UNSLOTH_DIFFUSION_ROCM_FLASH=1 is never gated, whichever loaded first.
+ROCM_FLASH_GATE_ATTR = "_unsloth_rocm_flash_gate"
+# (thread ident, gate) of the DiT forward running now; the ident is checked on eager calls.
+_ROCM_FLASH_ACTIVE: list = [None]
+# (device, dtype, hidden, heads, head_dim, bucket) -> flash serves it. In memory: a failed bucket stays native.
 _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
 _ROCM_FLASH_PROBING = threading.local()
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
 
 
-def _rocm_flash_bucket(tokens: int) -> int:
-    """Largest power of two <= tokens, clamped to [ROCM_FLASH_MIN_BUCKET, ROCM_FLASH_MAX_BUCKET]."""
-    tokens = max(int(tokens), 1)
-    return max(ROCM_FLASH_MIN_BUCKET, min(ROCM_FLASH_MAX_BUCKET, 1 << (tokens.bit_length() - 1)))
+def _rocm_flash_bucket(tokens: Any) -> int:
+    """Largest power of two <= tokens, at least ROCM_FLASH_MIN_BUCKET, open ended. Only comparisons: on a symbolic
+    length under a dynamic-shape compile this guards the bucket's range instead of specialising on the exact length."""
+    bucket = ROCM_FLASH_MIN_BUCKET
+    while tokens >= bucket * 2:
+        bucket *= 2
+    return bucket
 
 
-def _register_rocm_flash_gate(device: str, dtype: Any, geometries: tuple) -> None:
-    with _ROCM_FLASH_GATE_LOCK:
-        for hidden, heads, head_dim in geometries:
-            shape = (device, str(dtype), heads, head_dim)
-            hiddens = _ROCM_FLASH_GATED.setdefault(shape, set())
-            if hidden not in hiddens:
-                hiddens.add(hidden)
-                # a new hidden size joins this shape: its bucket verdicts must be re-derived to cover it
-                for k in [k for k in _ROCM_FLASH_BUCKETS if k[:4] == shape]:
-                    del _ROCM_FLASH_BUCKETS[k]
-            _ROCM_FLASH_BUCKETS[(*shape, ROCM_FLASH_PROBE_TOKENS)] = True
+def _active_rocm_flash_gate() -> Optional[dict]:
+    active = _ROCM_FLASH_ACTIVE[0]
+    if active is None:
+        return None
+    ident, gate = active
+    if not _compiling() and ident != threading.get_ident():
+        return None
+    return gate
 
 
 def _rocm_flash_capturing() -> bool:
@@ -753,9 +768,11 @@ def _rocm_flash_capturing() -> bool:
 
 
 def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
-    """None when flash serves this call's length bucket, else why not. Shapes no auto load admitted (explicit flash,
-    ``UNSLOTH_DIFFUSION_ROCM_FLASH=1``) are not gated. An unseen bucket is timed here, once, on its first eager call."""
-    if not _ROCM_FLASH_GATED:
+    """None when flash serves this call's length bucket, else why not. Only calls made inside a DiT an auto load
+    admitted are gated (explicit flash and ``UNSLOTH_DIFFUSION_ROCM_FLASH=1`` are not). An unseen bucket is timed here,
+    once, on its first eager call; under compile or graph capture it runs native."""
+    gate = _active_rocm_flash_gate()
+    if not gate:
         return None
     compiling = _compiling()
     if not compiling and getattr(_ROCM_FLASH_PROBING, "active", False):
@@ -767,29 +784,25 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
         shape = (device, str(query.dtype), int(heads), int(head_dim))
     except Exception:  # noqa: BLE001 - not an NHD tensor call: leave it to the kernel as before
         return None
-    hiddens = _ROCM_FLASH_GATED.get(shape)
+    hiddens = gate.get(shape)
     if not hiddens:
         return None
-    if not (isinstance(seq, int) and isinstance(kv, int)):
-        # A dynamic-shape compile: reading the length would specialise the graph on it. Flash only when every bucket
-        # timed so far admitted it.
-        known = [v for k, v in _ROCM_FLASH_BUCKETS.items() if k[:4] == shape]
-        return None if known and all(known) else "untimed length"
-    bucket = _rocm_flash_bucket(max(seq, kv))
-    verdict = _ROCM_FLASH_BUCKETS.get((*shape, bucket))
-    if verdict is None:
-        if compiling or _rocm_flash_capturing():  # cannot time here: native, timed on the first eager call
-            return "untimed length"
-        with _ROCM_FLASH_GATE_LOCK:
-            verdict = _ROCM_FLASH_BUCKETS.get((*shape, bucket))
-            if verdict is None:
-                verdict = all(
-                    _rocm_flash_geometry_admitted(
-                        device, query.dtype, (hidden, shape[2], shape[3]), tokens = bucket
-                    )
-                    for hidden in sorted(hiddens)
-                )
-                _ROCM_FLASH_BUCKETS[(*shape, bucket)] = verdict
+    bucket = max(_rocm_flash_bucket(seq), _rocm_flash_bucket(kv))
+    keys = [(device, shape[1], hidden, shape[2], shape[3], bucket) for hidden in sorted(hiddens)]
+    if all(_ROCM_FLASH_BUCKETS.get(k) is True for k in keys):
+        return None
+    if any(_ROCM_FLASH_BUCKETS.get(k) is False for k in keys):
+        return "slower or inexact at this length"
+    if compiling or _rocm_flash_capturing():  # cannot time here: native, timed on the first eager call
+        return "untimed length"
+    with _ROCM_FLASH_GATE_LOCK:
+        verdict = True
+        for k in keys:
+            ok = _ROCM_FLASH_BUCKETS.get(k)
+            if ok is None:
+                ok = _rocm_flash_geometry_admitted(device, query.dtype, k[2:5], tokens = bucket)
+                _ROCM_FLASH_BUCKETS[k] = ok
+            verdict = verdict and ok
     return None if verdict else "slower or inexact at this length"
 
 
@@ -1568,17 +1581,22 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
             continue
         if getattr(dit, _ROCM_FLASH_HOOKS_ATTR, None):
             continue
-        state: dict = {"start": None}
+        state: dict = {"start": None, "outer": None}
 
-        def pre(_module, _args, state = state) -> None:
-            if not _compiling():
-                state["start"] = _rocm_flash_counts()
+        def pre(_module, _args, state = state, dit = dit) -> None:
+            if _compiling():
+                return
+            state["outer"] = _ROCM_FLASH_ACTIVE[0]
+            gate = getattr(dit, ROCM_FLASH_GATE_ATTR, None)
+            _ROCM_FLASH_ACTIVE[0] = (threading.get_ident(), gate) if gate else None
+            state["start"] = _rocm_flash_counts()
 
         def post(_module, _args, _output, state = state, dit = dit) -> None:
             start = state["start"]
             if start is None or _compiling():
                 return
             state["start"] = None
+            _ROCM_FLASH_ACTIVE[0] = state["outer"]
             tally = getattr(dit, ROCM_FLASH_TALLY_ATTR, None)
             if not isinstance(tally, dict):
                 tally = {}
@@ -1592,7 +1610,11 @@ def _track_rocm_flash_calls(pipe: Any) -> None:
                 pass
 
         try:
-            handles = [register_pre(pre), register_post(post)]
+            try:  # also after a forward that raised, so a failed run never leaves its gate active
+                post_handle = register_post(post, always_call = True)
+            except TypeError:
+                post_handle = register_post(post)
+            handles = [register_pre(pre), post_handle]
             setattr(dit, _ROCM_FLASH_HOOKS_ATTR, handles)
             setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
         except Exception:  # noqa: BLE001
@@ -1622,6 +1644,18 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[Optional[str], str]]:
     return "flash", (
         f"ROCm flash_attn on {flash} of {flash + native} attention calls; the rest ran native SDPA ({why})"
     )
+
+
+def begin_attention_run(state: Any, logger: Any = None) -> None:
+    """A generation boundary: settle the state on what the previous run executed, then zero the per-DiT tallies so
+    status, recipes and calibration keys describe this run alone, never a lifetime mix."""
+    sync_attention_state(state, logger)
+    for dit in _attention_dits(getattr(state, "pipe", None)):
+        if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
+            try:
+                setattr(dit, ROCM_FLASH_TALLY_ATTR, {})
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def sync_attention_state(state: Any, logger: Any = None) -> None:
@@ -2680,6 +2714,11 @@ def apply_attention_backend(
         if target is not None:
             _configure_native_attention(pipe, target, logger)
         return None
+    for dit in _attention_dits(pipe):  # only an auto admission below re-arms per-length gating
+        try:
+            setattr(dit, ROCM_FLASH_GATE_ATTR, None)
+        except Exception:  # noqa: BLE001
+            pass
     if backend == ROCM_FLASH_CANDIDATE:
         backend = "flash" if _rocm_flash_block_admitted(pipe, target, logger) else None
     if backend is not None:

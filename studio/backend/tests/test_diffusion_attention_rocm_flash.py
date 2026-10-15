@@ -29,7 +29,7 @@ def _clean(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(att, "_cuda_capability", lambda: (9, 0))
     monkeypatch.setattr(att, "_INSTALL_ATTEMPTED", set())
-    monkeypatch.setattr(att, "_ROCM_FLASH_GATED", {}, raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_ACTIVE", [None], raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_RAN", [0], raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
@@ -1117,7 +1117,7 @@ def test_max_abs_error_alone_rejects(max_rel, wins):
 
 
 @pytest.mark.parametrize(
-    "tokens, bucket", [(1, 1024), (900, 1024), (4096, 4096), (4608, 4096), (8191, 4096), (27280, 16384), (50000, 32768)]
+    "tokens, bucket", [(1, 1024), (900, 1024), (4096, 4096), (4608, 4096), (8191, 4096), (27280, 16384), (50000, 32768), (140000, 131072)]
 )
 def test_length_buckets(tokens, bucket):
     assert att._rocm_flash_bucket(tokens) == bucket
@@ -1135,70 +1135,172 @@ def _length_env(monkeypatch, verdicts):
         return {**_GOOD, "flash_ms": verdicts[tokens], "tokens": tokens}
 
     monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
-    pipe, _ = _pipe_with_attention(hidden = 32, heads = 2, head_dim = 16)
-    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target(dtype = "torch.bfloat16")) == "flash"
+    dit = _Dit()
+    assert (
+        att.apply_attention_backend(
+            types.SimpleNamespace(transformer = dit), att.ROCM_FLASH_CANDIDATE, target = _target()
+        )
+        == "flash"
+    )
     monkeypatch.setattr(att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d)
-    return guarded, ran, timed
-
-
-def _call(guarded, tokens, kv_tokens = None):
-    import torch
-
-    q = torch.zeros(1, tokens, 2, 16, dtype = torch.bfloat16)
-    k = torch.zeros(1, kv_tokens or tokens, 2, 16, dtype = torch.bfloat16)
-    guarded(q, k, k, None)
+    return dit, guarded, ran, timed
 
 
 def test_unprobed_long_bucket_does_not_inherit_the_4096_verdict(monkeypatch):
-    guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 16384: 90.0, 1024: 70.0})
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 16384: 90.0, 1024: 70.0})
     assert timed == [4096]
-    _call(guarded, 4608)  # the load bucket: flash, no new timing
-    _call(guarded, 27280)  # bucket 16384: timed now, flash loses there
-    _call(guarded, 20000)  # same bucket: cached, not re-timed
-    _call(guarded, 16, kv_tokens = 1200)  # bucket by the longer side: 1024
+    # the load bucket: flash, no new timing; bucket 16384 timed now and flash loses there (twice, timed once); the
+    # longer side decides the bucket (1024)
+    dit.run(guarded, [(4608, None), (27280, None), (20000, None), (16, 1200)])
     assert timed == [4096, 16384, 1024]
     assert ran == ["flash", "native", "native", "flash"]
     assert att._ROCM_FLASH_ROUTED == {"slower or inexact at this length": 2}
 
 
+def test_50k_call_runs_flash_only_if_its_own_bucket_admitted_it(monkeypatch):
+    # buckets are open ended: a 50k call is in [32768, 65536) and a 70k one in [65536, 131072), each timed for itself
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 90.0, 65536: 60.0})
+    dit.run(guarded, [(50000, None), (70000, None), (140000, None)])
+    assert timed == [4096, 32768, 65536, 131072]  # 131072 -> KeyError in the fake timer: no verdict, native
+    assert ran == ["native", "flash", "native"]
+
+
 def test_bucket_probe_error_stays_native_without_retrying_every_call(monkeypatch):
-    guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0})  # 32768 -> KeyError in the fake timer
-    _call(guarded, 40000)
-    _call(guarded, 40000)
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0})  # 32768 -> KeyError in the fake timer
+    dit.run(guarded, [(40000, None), (40000, None)])
     assert timed == [4096, 32768] and ran == ["native", "native"]
 
 
 def test_unprobed_bucket_under_capture_runs_native_untimed(monkeypatch):
-    guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 8192: 70.0})
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 8192: 70.0})
     monkeypatch.setattr(att, "_rocm_flash_capturing", lambda: True)
-    _call(guarded, 9000)
+    dit.run(guarded, [(9000, None)])
     assert timed == [4096] and ran == ["native"]
     monkeypatch.setattr(att, "_rocm_flash_capturing", lambda: False)
-    _call(guarded, 9000)
+    dit.run(guarded, [(9000, None)])
     assert timed == [4096, 8192] and ran == ["native", "flash"]
 
 
 def test_bucket_verdicts_persist(monkeypatch, tmp_path):
-    guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 16384: 60.0})
-    _call(guarded, 20000)
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 16384: 60.0})
+    dit.run(guarded, [(20000, None)])
     assert timed == [4096, 16384]
     _restart(monkeypatch)
-    monkeypatch.setattr(att, "_ROCM_FLASH_GATED", {}, raising = False)
-    monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
-    guarded2, ran2, timed2 = _length_env(monkeypatch, {})
-    _call(guarded2, 20000)
+    monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {})
+    dit2, guarded2, ran2, timed2 = _length_env(monkeypatch, {})
+    dit2.run(guarded2, [(20000, None)])
     assert timed2 == [] and ran2 == ["flash"]
 
 
-def test_explicit_flash_is_not_length_gated(monkeypatch):
+@pytest.mark.parametrize("order", ["auto_first", "explicit_first"])
+@pytest.mark.parametrize("explicit", ["flash", "mode1"])
+def test_explicit_flash_is_never_length_gated(monkeypatch, order, explicit):
+    # an auto model and an explicitly selected one share (heads, head_dim): only the auto one's calls are gated
     _rocm(monkeypatch)
     guarded, ran = _guarded_flash(monkeypatch)
     _apply_env(monkeypatch)
-    monkeypatch.setattr(att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("timed"))
-    pipe, _ = _pipe_with_attention(hidden = 32, heads = 2, head_dim = 16)
-    assert att.apply_attention_backend(pipe, "flash", target = _target()) == "flash"
-    _call(guarded, 40000)
-    assert ran == ["flash"]
+    timed = []
+
+    def fake_time(device, dtype, hidden, heads, head_dim, tokens = 4096):
+        timed.append(tokens)
+        return {**_GOOD, "flash_ms": 70.0 if tokens == 4096 else 90.0, "tokens": tokens}
+
+    monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
+    auto_dit, explicit_dit = _Dit(), _Dit()
+
+    def load_auto():
+        assert att.apply_attention_backend(
+            types.SimpleNamespace(transformer = auto_dit), att.ROCM_FLASH_CANDIDATE, target = _target()
+        ) == "flash"
+
+    def load_explicit():
+        if explicit == "flash":
+            backend = att.apply_attention_backend(types.SimpleNamespace(transformer = explicit_dit), "flash", target = _target())
+        else:
+            monkeypatch.setenv(att.ROCM_FLASH_ENV, "1")
+            backend = att.apply_attention_backend(
+                types.SimpleNamespace(transformer = explicit_dit), att.ROCM_FLASH_CANDIDATE, target = _target()
+            )
+            monkeypatch.delenv(att.ROCM_FLASH_ENV)
+        assert backend == "flash"
+
+    for load in (load_auto, load_explicit) if order == "auto_first" else (load_explicit, load_auto):
+        load()
+    monkeypatch.setattr(att, "_indexed_cuda_device", lambda d: "cuda:0" if d in ("cuda", "cpu") else d)
+    explicit_dit.run(guarded, [(40000, None)])
+    assert ran == ["flash"] and timed == [4096]  # neither timed nor rerouted
+    auto_dit.run(guarded, [(40000, None)])
+    assert ran == ["flash", "native"] and timed == [4096, 32768]
+    explicit_dit.run(guarded, [(40000, None)])
+    assert ran[-1] == "flash" and att._ROCM_FLASH_ACTIVE[0] is None
+
+
+def test_reapplying_explicit_flash_disarms_the_gate(monkeypatch):
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 90.0})
+    assert att.apply_attention_backend(types.SimpleNamespace(transformer = dit), "flash", target = _target()) == "flash"
+    dit.run(guarded, [(40000, None)])
+    assert ran == ["flash"] and timed == [4096]
+
+
+def test_failed_forward_does_not_leave_its_gate_active(monkeypatch):
+    torch = pytest.importorskip("torch")
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
+
+    class Boom(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.attn = torch.nn.Module()
+            self.attn.heads = 2
+            self.attn.to_q = torch.nn.Linear(32, 32, bias = False)
+
+        def set_attention_backend(self, name):
+            pass
+
+        def forward(self, x):
+            raise RuntimeError("cancelled")
+
+    dit = Boom()
+    att.apply_attention_backend(types.SimpleNamespace(transformer = dit), att.ROCM_FLASH_CANDIDATE, target = _target())
+    with pytest.raises(RuntimeError):
+        dit(torch.zeros(1))
+    assert att._ROCM_FLASH_ACTIVE[0] is None
+
+
+@pytest.mark.parametrize("compiled", [False, True])
+def test_symbolic_length_guards_the_bucket_not_the_length(monkeypatch, compiled):
+    # comparisons only: on a SymInt each one is a range guard, never int() specialisation
+    class Sym:
+        def __init__(self, n):
+            self.n, self.compared = n, []
+
+        def __ge__(self, other):
+            self.compared.append(other)
+            return self.n >= other
+
+        def __int__(self):
+            raise AssertionError("specialised")
+
+        __index__ = __int__
+
+    n = Sym(27280)
+    assert att._rocm_flash_bucket(n) == 16384 and n.compared == [2048, 4096, 8192, 16384, 32768]
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0})
+    monkeypatch.setattr(att, "_compiling", lambda: compiled)
+    att._ROCM_FLASH_ACTIVE[0] = (0, getattr(dit, att.ROCM_FLASH_GATE_ATTR))
+    if not compiled:
+        att._ROCM_FLASH_ACTIVE[0] = (__import__("threading").get_ident(), att._ROCM_FLASH_ACTIVE[0][1])
+    q = types.SimpleNamespace(shape = (1, Sym(27280), 2, 16), device = "cuda:0", dtype = "torch.bfloat16")
+    k = types.SimpleNamespace(shape = (1, Sym(27280), 2, 16))
+    monkeypatch.setattr(att, "_rocm_flash_capturing", lambda: compiled)
+    # an untimed bucket under compile runs native and is not timed; eager times it
+    reason = att._rocm_flash_length_reason(q, k)
+    att._ROCM_FLASH_ACTIVE[0] = None
+    if compiled:
+        assert reason == "untimed length" and timed == [4096]
+    else:
+        assert timed == [4096, 16384] and reason == "slower or inexact at this length"
 
 
 # What Studio reports follows what ran: masked calls run native call by call, unmasked ones flash, nothing is switched
@@ -1226,9 +1328,22 @@ class _Dit:
         self.hooks["pre"].append(fn)
         return fn
 
-    def register_forward_hook(self, fn):
+    def register_forward_hook(self, fn, always_call = False):
         self.hooks["post"].append(fn)
         return fn
+
+    def run(self, guarded, specs):
+        """One forward making a call per ``(q_tokens, kv_tokens or None)``, unmasked."""
+        import torch
+
+        for fn in self.hooks["pre"]:
+            fn(self, ())
+        for tokens, kv in specs:
+            q = torch.zeros(1, tokens, 2, 16, dtype = torch.bfloat16)
+            k = torch.zeros(1, kv or tokens, 2, 16, dtype = torch.bfloat16)
+            guarded(q, k, k, None)
+        for fn in self.hooks["post"]:
+            fn(self, (), None)
 
     def __call__(self, guarded, masks):
         import torch
@@ -1335,15 +1450,43 @@ def test_mixed_mask_model_keeps_flash_for_unmasked_calls_across_loads(monkeypatc
     assert not list((tmp_path / "rocm_flash").glob("masked*"))
 
 
-@pytest.mark.parametrize("known, reason", [({16384: False}, "untimed length"), ({16384: True}, None)])
-def test_symbolic_length_never_specialises(monkeypatch, known, reason):
-    guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0})
-    for bucket, ok in known.items():
-        att._ROCM_FLASH_BUCKETS[("cuda:0", "torch.bfloat16", 2, 16, bucket)] = ok
 
-    class Sym:  # stands in for a SymInt: not an int, so the length is never read
-        pass
+def test_each_generation_reports_its_own_calls(monkeypatch):
+    # run 1 flash, run 2 masked only: run 2 reports native, not a lifetime "flash"
+    _rocm(monkeypatch)
+    guarded, ran = _guarded_flash(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
+    dit, pipe, state = _load(monkeypatch)
+    att.begin_attention_run(state)
+    dit(guarded, [False, False])
+    att.sync_attention_state(state)
+    assert state.attention_backend == "flash"
+    att.begin_attention_run(state)
+    assert state.attention_backend == "flash"  # settled on run 1, tally zeroed
+    dit(guarded, [True, True])
+    att.sync_attention_state(state)
+    assert state.attention_backend is None
+    assert "every attention call ran native SDPA (attn_mask: 2)" in state.resolved["attention_backend"]["reason"]
+    # a later boundary settles on run 2, then run 3 is flash again
+    att.begin_attention_run(state)
+    assert state.attention_backend is None
+    dit(guarded, [False])
+    att.sync_attention_state(state)
+    assert state.attention_backend == "flash" and "on every attention call" in state.resolved["attention_backend"]["reason"]
 
-    q = types.SimpleNamespace(shape = (1, Sym(), 2, 16), device = "cuda:0", dtype = "torch.bfloat16")
-    k = types.SimpleNamespace(shape = (1, Sym(), 2, 16))
-    assert att._rocm_flash_length_reason(q, k) == reason and timed == [4096]
+
+@pytest.mark.parametrize("module", ["core.inference.diffusion", "core.inference.video"])
+def test_both_generate_paths_mark_the_generation_boundary(module):
+    import ast
+    import importlib
+    import inspect
+
+    src = inspect.getsource(importlib.import_module(module))
+    tree = ast.parse(src)
+    gens = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "generate"]
+    assert gens and any(
+        isinstance(c, ast.Call) and getattr(c.func, "id", None) == "begin_attention_run"
+        for g in gens
+        for c in ast.walk(g)
+    )

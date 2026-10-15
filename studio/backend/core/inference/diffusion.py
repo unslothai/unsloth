@@ -211,6 +211,7 @@ from .diffusion_attention import (
     normalize_attention_backend,
     sdpa_math_only,
     sdpa_subquadratic_confirmed,
+    begin_attention_run,
     select_attention_backend,
     sync_attention_state,
     _ensure_attention_backend_installed,
@@ -10482,6 +10483,8 @@ class DiffusionBackend:
                 # Publish an active (step 0) state before the slow pre-denoise setup so a reload mount probe does not
                 # read idle.
                 self._gen = _GenState(total_steps = steps)
+                # ROCm flash: a generation boundary, so the recipe and status describe this run's attention calls.
+                begin_attention_run(state, logger)
             # Reset in the finally, so a failed or cancelled generation frees its reused outputs.
             static_skip_pipe = None
             restore_scheduler: Optional[tuple[Any, Any]] = None
