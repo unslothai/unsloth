@@ -320,7 +320,11 @@ def test_install_sh_strix_keeps_its_index_under_an_hsa_override(hsa, expected):
     script = (
         rocm_support._gpu_record_helpers(source)
         + "\nunset HIP_VISIBLE_DEVICES ROCR_VISIBLE_DEVICES CUDA_VISIBLE_DEVICES\n"
-        + (f"export HSA_OVERRIDE_GFX_VERSION={hsa}\n" if hsa else "unset HSA_OVERRIDE_GFX_VERSION\n")
+        + (
+            f"export HSA_OVERRIDE_GFX_VERSION={hsa}\n"
+            if hsa
+            else "unset HSA_OVERRIDE_GFX_VERSION\n"
+        )
         + "_amd_prefer_discrete_gfx \"$(printf 'gfx1151\\ngfx1201')\" gfx1151 torch\n"
     )
     out = subprocess.run(["bash", "-c", script], capture_output = True, text = True, timeout = 60)
