@@ -5581,9 +5581,7 @@ def _refuse_unsaveable_text_core(model, save_method):
 
 
 def _cast_state_dict_16bit(model, state_dict, target_dtype):
-    """Cast floating tensors to `target_dtype`, except what transformers keeps in fp32 at that dtype
-    (`_keep_in_fp32_modules_strict`, e.g. MoE router biases; `_keep_in_fp32_modules` for fp16),
-    collected from every submodule as transformers does."""
+    """Cast to `target_dtype`, except what transformers keeps in fp32 there (`_keep_in_fp32_modules[_strict]`)."""
     names = set()
     for module in model.modules() if hasattr(model, "modules") else ():
         names.update(getattr(module, "_keep_in_fp32_modules_strict", None) or ())
