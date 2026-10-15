@@ -357,7 +357,6 @@ def _install_fp8_unit_scale() -> None:
     """Every pre-quant container and rebuild mode: sm_89 precise-accumulate fp8 GEMMs take the unit-scale form."""
     try:
         from .diffusion_fp8_unit_scale import install
-
         install()
     except Exception:  # noqa: BLE001 - never block a load on a speed path
         pass
