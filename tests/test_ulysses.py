@@ -79,20 +79,28 @@ def _fake_run_attention(*, config, context, Q, K, V):
     return out.transpose(1, 2)
 
 
-def _reference(Q, K, V, lengths = None):
+def _reference(
+    Q,
+    K,
+    V,
+    lengths = None,
+):
     G = Q.shape[1] // K.shape[1]
     K = K.repeat_interleave(G, dim = 1)
     V = V.repeat_interleave(G, dim = 1)
     if lengths is None:
         out = F.scaled_dot_product_attention(Q, K, V, is_causal = True)
     else:
-        out = F.scaled_dot_product_attention(
-            Q, K, V, attn_mask = _segment_mask(lengths, Q.shape[2])
-        )
+        out = F.scaled_dot_product_attention(Q, K, V, attn_mask = _segment_mask(lengths, Q.shape[2]))
     return out.transpose(1, 2)
 
 
-def _spawn(fn, world, *args, start_method = "spawn"):
+def _spawn(
+    fn,
+    world,
+    *args,
+    start_method = "spawn",
+):
     with tempfile.TemporaryDirectory() as d:
         init_file = os.path.join(d, "init")
         mp.start_processes(
@@ -106,9 +114,7 @@ def _spawn(fn, world, *args, start_method = "spawn"):
 
 def _entry(rank, world, init_file, fn, args):
     torch.set_num_threads(1)
-    dist.init_process_group(
-        "gloo", init_method = f"file://{init_file}", rank = rank, world_size = world
-    )
+    dist.init_process_group("gloo", init_method = f"file://{init_file}", rank = rank, world_size = world)
     try:
         fn(rank, world, *args)
     finally:
@@ -262,7 +268,9 @@ def _real_dispatch_worker(rank, world, run_attention, AttentionConfig, Attention
         attention_mask = None,
         causal_mask = None,
     )
-    out = U.ulysses_attention(run_attention, config, context, Q[:, :, sl], K[:, :, sl], V[:, :, sl], None)
+    out = U.ulysses_attention(
+        run_attention, config, context, Q[:, :, sl], K[:, :, sl], V[:, :, sl], None
+    )
     torch.testing.assert_close(out, ref[:, sl], rtol = 1e-5, atol = 1e-5)
 
     lengths = torch.tensor([3, T - 5], dtype = torch.int32)
@@ -281,7 +289,9 @@ def _real_dispatch_worker(rank, world, run_attention, AttentionConfig, Attention
         attention_mask = None,
         causal_mask = None,
     )
-    out = U.ulysses_attention(run_attention, config, context, Q[:, :, sl], K[:, :, sl], V[:, :, sl], None)
+    out = U.ulysses_attention(
+        run_attention, config, context, Q[:, :, sl], K[:, :, sl], V[:, :, sl], None
+    )
     torch.testing.assert_close(out, ref[:, sl], rtol = 1e-5, atol = 1e-5)
 
 
