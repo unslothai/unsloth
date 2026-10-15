@@ -328,7 +328,10 @@ def _old_torch_worker(rank, world_size, port, case, queue):
     adapter would otherwise share it with them (`FSDP expects uniform original parameter dtype`)."""
     try:
         os.environ.update(
-            MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port), RANK = str(rank), WORLD_SIZE = str(world_size)
+            MASTER_ADDR = "127.0.0.1",
+            MASTER_PORT = str(port),
+            RANK = str(rank),
+            WORLD_SIZE = str(world_size),
         )
         import torch.distributed as dist
         from torch.distributed.device_mesh import init_device_mesh
@@ -352,24 +355,40 @@ def _old_torch_worker(rank, world_size, port, case, queue):
             state = getattr(module, "_get_fsdp_state", None)
             group = state()._fsdp_param_group if state is not None else None
             if group is not None:
-                unit_dtypes.append(sorted({str(fp.sharded_param.dtype) for fp in group.fsdp_params}))
+                unit_dtypes.append(
+                    sorted({str(fp.sharded_param.dtype) for fp in group.fsdp_params})
+                )
         out = model(x)
         out.float().sum().backward()
-        queue.put((rank, dict(
-            storage = info["storage"],
-            unit_dtypes = unit_dtypes,
-            uint8_sharded = sum(isinstance(p, DTensor) for p in model.parameters() if not p.is_floating_point()),
-            max_diff = (out.float() - expected.float()).abs().max().item(),
-            grad_ok = all(p.grad is not None for n, p in model.named_parameters() if "adapter" in n),
-        )))
+        queue.put(
+            (
+                rank,
+                dict(
+                    storage = info["storage"],
+                    unit_dtypes = unit_dtypes,
+                    uint8_sharded = sum(
+                        isinstance(p, DTensor)
+                        for p in model.parameters()
+                        if not p.is_floating_point()
+                    ),
+                    max_diff = (out.float() - expected.float()).abs().max().item(),
+                    grad_ok = all(
+                        p.grad is not None for n, p in model.named_parameters() if "adapter" in n
+                    ),
+                ),
+            )
+        )
         dist.destroy_process_group()
     except BaseException as error:
         import traceback
-
         queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 
-def _run(case, world_size = 2, target = None):
+def _run(
+    case,
+    world_size = 2,
+    target = None,
+):
     import torch.multiprocessing as mp
 
     ctx = mp.get_context("spawn")
@@ -524,10 +543,9 @@ def test_size_based_wrap_counts_packed_weights_as_uint8(storage):
     # Only the counting changes: accelerate's FSDP2 size policy compares with `>`, so does this one.
     for threshold in (uint8_numel - 1, uint8_numel):
         plugin.min_num_params = threshold
-        assert (
-            fsdp_utils.fsdp2_prepare_auto_wrap_policy(plugin, uint8_block)(uint8_block)
-            == original(plugin, uint8_block)(uint8_block)
-        )
+        assert fsdp_utils.fsdp2_prepare_auto_wrap_policy(plugin, uint8_block)(
+            uint8_block
+        ) == original(plugin, uint8_block)(uint8_block)
 
 
 def test_unquantized_params4bit_is_not_byte_viewed():

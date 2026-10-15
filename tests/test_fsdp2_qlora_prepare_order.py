@@ -19,10 +19,22 @@ def test_old_torch_float_packed_qlora_without_mixed_precision(monkeypatch):
     import accelerate.accelerator as accelerator_module
 
     torch.manual_seed(0)
-    lin = bnb.nn.Linear4bit(128, 64, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4",
-                            quant_storage = torch.bfloat16)
-    lin.weight = bnb.nn.Params4bit(torch.randn(64, 128) * 0.05, requires_grad = False, quant_type = "nf4",
-                                   quant_storage = torch.bfloat16, blocksize = 64, module = lin)
+    lin = bnb.nn.Linear4bit(
+        128,
+        64,
+        bias = False,
+        compute_dtype = torch.bfloat16,
+        quant_type = "nf4",
+        quant_storage = torch.bfloat16,
+    )
+    lin.weight = bnb.nn.Params4bit(
+        torch.randn(64, 128) * 0.05,
+        requires_grad = False,
+        quant_type = "nf4",
+        quant_storage = torch.bfloat16,
+        blocksize = 64,
+        module = lin,
+    )
     model = torch.nn.Sequential(lin.to("cpu"), torch.nn.Linear(64, 8))
     assert lin.weight.dtype == torch.bfloat16 and lin.weight.bnb_quantized
 
