@@ -341,6 +341,22 @@ def test_without_a_stop_a_finished_rank_waits_for_its_peers():
     assert not waiting.terminated
 
 
+def test_model_load_window_spans_every_rank(monkeypatch):
+    def _spawn(_fn, *, args, nprocs, join):
+        rank0, rank1 = _RankEvents(0, args[1], {}), _RankEvents(1, args[1], {})
+        rank0.put({"type": "model_load_started"})
+        rank1.put({"type": "model_load_started"})
+        rank0.put({"type": "model_load_completed"})
+        rank1.put({"type": "stall", "message": "Download stalled"})
+        rank1.put({"type": "model_load_completed"})
+
+    assert _run_launcher(monkeypatch, _spawn) == [
+        {"type": "model_load_started"},
+        {"type": "stall", "message": "Download stalled"},
+        {"type": "model_load_completed"},
+    ]
+
+
 def test_nonzero_rank_forwards_download_stalls_for_xet_recovery():
     events = _Events()
     rank_events = _RankEvents(1, events, {})

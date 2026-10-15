@@ -89,6 +89,10 @@ def _common_cuda_dtype(gpu_ids: list[int]) -> str:
         return "fp16"
 
 
+# The backend arms Xet->HTTP recovery only inside a model load, so the load window must span every rank's.
+_MODEL_LOAD_EVENTS = ("model_load_started", "model_load_resolved", "model_load_completed")
+
+
 class _RankEvents:
     def __init__(self, rank: int, event_queue: Any, failures: Any):
         self.rank = rank
@@ -104,6 +108,8 @@ class _RankEvents:
                 return
             self.error = dict(event)
             self.failures[self.rank] = self.error
+        elif event.get("type") in _MODEL_LOAD_EVENTS:
+            self.event_queue.put({**event, "_ddp_rank": self.rank})
         elif self.rank == 0 or event.get("type") == "stall":
             self.event_queue.put(event)
 
@@ -278,6 +284,8 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
     # Rank zero finishes before its peers: completion waits for the whole group to succeed.
     held_complete: list[dict[str, Any]] = []
 
+    loading_ranks: set[int] = set()
+
     def relay_events() -> None:
         while not done.is_set() or not rank_events.empty():
             try:
@@ -291,6 +299,18 @@ def run_ddp_training_process(*, event_queue: Any, stop_queue: Any, config: dict[
             if isinstance(event, dict) and event.get("type") == "complete":
                 held_complete[:] = [event]
                 continue
+            if isinstance(event, dict) and event.get("type") in _MODEL_LOAD_EVENTS:
+                event = dict(event)
+                rank = event.pop("_ddp_rank", 0)
+                if event["type"] == "model_load_started":
+                    was_loading = bool(loading_ranks)
+                    loading_ranks.add(rank)
+                    if was_loading:
+                        continue
+                elif event["type"] == "model_load_completed":
+                    loading_ranks.discard(rank)
+                    if loading_ranks:
+                        continue
             event_queue.put(event)
 
     def relay_stop() -> None:
