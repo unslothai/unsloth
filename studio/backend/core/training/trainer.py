@@ -554,6 +554,7 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
+        self._ddp_agreed_stop = None
         self._early_stopping = None
         self.load_in_4bit = True
 
@@ -1046,10 +1047,18 @@ class UnslothTrainer:
                     epoch = state.epoch * trainer_ref._kept_row_fraction, step = state.global_step
                 )
 
+            def on_train_end(self, args, state, control, **kwargs):
+                # Every rank takes the save path of the last agreement, not a stop that landed after it.
+                agreed = getattr(trainer_ref, "_ddp_agreed_stop", None)
+                if agreed is not None:
+                    trainer_ref.should_stop, trainer_ref.save_on_stop = agreed
+
             def on_step_end(self, args, state, control, **kwargs):
-                if world_size_from_env() > 1:
+                if (
                     trainer_ref._agree_on_ddp_stop(args.device)
-                if trainer_ref.should_stop:
+                    if world_size_from_env() > 1
+                    else trainer_ref.should_stop
+                ):
                     logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
                     return control
@@ -4141,6 +4150,7 @@ class UnslothTrainer:
         )
 
         self.should_stop = False
+        self._ddp_agreed_stop = None
         self.is_training = True
         try:
             self.training_thread.start()
@@ -5285,21 +5295,20 @@ class UnslothTrainer:
         except Exception as e:
             logger.warning(f"Failed to patch adapter_config.json: {e}")
 
-    def _agree_on_ddp_stop(self, device) -> None:
-        """Agree on stop once per step: a rank running one extra step hangs in all-reduce."""
+    def _agree_on_ddp_stop(self, device) -> bool:
+        """Agree on stop once per step: a rank running one extra step hangs in all-reduce. Control
+        flow must use the returned decision, since the poller can flip should_stop after the snapshot."""
         import torch.distributed as dist
 
         if not (dist.is_available() and dist.is_initialized()):
-            return
+            return self.should_stop
         flags = torch.tensor(
             [float(self.should_stop), float(self.should_stop and not self.save_on_stop)],
             device = device,
         )
         dist.all_reduce(flags, op = dist.ReduceOp.MAX)
-        if flags[0].item():
-            self.should_stop = True
-        if flags[1].item():
-            self.save_on_stop = False
+        self._ddp_agreed_stop = (bool(flags[0].item()), not flags[1].item())
+        return self._ddp_agreed_stop[0]
 
     def stop_training(self, save: bool = True):
         logger.info(f"\nStopping training (save={save})...")

@@ -90,3 +90,32 @@ def test_unsupported_ddp_rejected_before_vram_hook(monkeypatch, device, rocm):
             gpu_ids = [0, 1],
         )
     hook.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "peer_flags, expected",
+    [
+        ((0.0, 0.0), (False, (False, True))),
+        ((1.0, 0.0), (True, (True, True))),
+        ((1.0, 1.0), (True, (True, False))),
+    ],
+)
+def test_ddp_stop_decision_comes_from_the_agreement(monkeypatch, peer_flags, expected):
+    import torch
+    import torch.distributed as dist
+
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+
+    def all_reduce(tensor, op = None):
+        tensor.copy_(torch.maximum(tensor, torch.tensor(peer_flags)))
+
+    monkeypatch.setattr(dist, "all_reduce", all_reduce)
+    agree = _trainer_method("_agree_on_ddp_stop")
+    agree.__globals__["torch"] = torch
+    owner = SimpleNamespace(should_stop = False, save_on_stop = True)
+    assert agree(owner, "cpu") is expected[0]
+    assert owner._ddp_agreed_stop == expected[1]
+    # A stop polled in after the snapshot does not change this step's decision.
+    owner.should_stop = True
+    assert owner._ddp_agreed_stop == expected[1]
