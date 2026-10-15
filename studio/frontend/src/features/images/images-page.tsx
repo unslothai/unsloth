@@ -3079,6 +3079,7 @@ export function ImagesPage({
       // Reuse the pick toast when loading starts.
       pickToastId?: string,
     ): Promise<boolean> => {
+      setExternalModelId(null);
       // Cancel any prior poll loop so two cannot run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       // Read BEFORE the start request goes out: a Cancel pressed while it is in flight sends an
@@ -3622,7 +3623,10 @@ export function ImagesPage({
     // already staging with its claim, or resumePendingLoad drops that load once its files arrive.
     const downloadOnlyPick = modelSelectionAction === "download";
     const token = downloadOnlyPick ? undefined : pickGuard.claim();
-    if (!downloadOnlyPick) setFamilyOverride("auto");
+    if (!downloadOnlyPick) {
+      setFamilyOverride("auto");
+      setExternalModelId(null);
+    }
     void navigateSelf({ to: "/images", search: {}, replace: true });
     // A label means a GGUF repo whatever the catalog says, and is not loadable, so resolve it
     // rather than routing it as a filename.

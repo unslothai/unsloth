@@ -69,3 +69,11 @@ test("a connected pick retires a staged local pick and skips the hidden seed", a
   assert.match(body, /beginPick\(\);/);
   assert.match(page, /if \(seed\.trim\(\) && !external\) \{/);
 });
+
+test("any local load takes the page back from a connection", async () => {
+  const { readSrc } = await import("./helpers/kit.ts");
+  const page = readSrc("features/images/images-page.tsx");
+  const load = page.slice(page.indexOf("const handleLoad = useCallback("));
+  const head = load.slice(0, load.indexOf("if (pollTimer.current) clearTimeout(pollTimer.current);"));
+  assert.match(head, /setExternalModelId\(null\);/);
+});
