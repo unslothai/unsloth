@@ -783,8 +783,11 @@ ROCM_FLASH_GATE_ATTR = "_unsloth_rocm_flash_gate"
 # running now, and ``probing`` while a timing probe runs. Dynamo traces threading.local reads.
 _ROCM_FLASH_LOCAL = threading.local()
 # (device, dtype, *geometry, query bucket, key bucket, batch bucket) -> flash serves it, filled on an eager call's
-# first use (the probe or a stored verdict). In memory: a failed bucket stays native.
+# first use (the probe or a stored verdict). In memory: a bucket the probe rejected stays native.
 _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
+# Bucket keys whose probe could not run (no room beside the live forward, or it raised): native until the next
+# generation retries them. Never a verdict, so a transient shortfall cannot disable a working kernel.
+_ROCM_FLASH_DEFERRED: set[tuple] = set()
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
 
 
@@ -845,6 +848,8 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
         return None
     if any(_ROCM_FLASH_BUCKETS.get(k) is False for k in keys):
         return "slower or inexact at this size"
+    if any(k in _ROCM_FLASH_DEFERRED for k in keys):
+        return "timing deferred"
     with _ROCM_FLASH_GATE_LOCK:
         verdict = True
         for k, g in zip(keys, sorted(geometries)):
@@ -856,11 +861,42 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
                     g,
                     tokens = q_bucket,
                     batch = b_bucket,
+                    live = True,
                     **({} if kv_bucket == q_bucket else {"kv_tokens": kv_bucket}),
                 )
+                if ok is None:
+                    _ROCM_FLASH_DEFERRED.add(k)
+                    return "timing deferred"
                 _ROCM_FLASH_BUCKETS[k] = ok
             verdict = verdict and ok
     return None if verdict else "slower or inexact at this size"
+
+
+def _rocm_flash_probe_bytes(
+    geometry: tuple, tokens: int, kv_tokens: int, batch: int, dtype: Any
+) -> int:
+    """Upper bound on what ``_time_rocm_flash_block`` allocates: its weights, the block's widest activations and the
+    fp32 accuracy outputs (measured on gfx1151: 5.46 GiB at Wan's 64k tokens, this gives 8.1 GiB)."""
+    hidden, heads, head_dim = (int(v) for v in geometry[:3])
+    width = int(geometry[3]) if len(geometry) > 3 else hidden
+    inner = heads * head_dim
+    elem = getattr(dtype, "itemsize", 2) or 2
+    weights = (4 * inner * hidden + 8 * hidden * hidden + 2 * inner * width) * elem
+    per_query = (11 * hidden + 3 * inner) * elem + 2 * inner * 4
+    per_key = (width + 2 * inner) * elem
+    return weights + batch * (tokens * per_query + kv_tokens * per_key)
+
+
+def _rocm_flash_probe_fits(device: str, need: int) -> bool:
+    """Room for the probe beside the live forward: device free plus the allocator's cached-but-unused blocks, with
+    25% + 256 MiB to spare. Unknown memory state counts as no room."""
+    try:
+        import torch
+        free, _total = torch.cuda.mem_get_info(device)
+        cached = torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+        return free + max(int(cached), 0) >= need * 1.25 + (256 << 20)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _rocm_flash_geometry_admitted(
@@ -871,9 +907,11 @@ def _rocm_flash_geometry_admitted(
     tokens: int = ROCM_FLASH_PROBE_TOKENS,
     kv_tokens: Optional[int] = None,
     batch: int = 1,
-) -> bool:
+    live: bool = False,
+) -> Optional[bool]:
     """Whether flash is admitted for ``geometry`` (hidden, heads, head_dim[, context width]) at ``batch`` x ``tokens``
-    queries x ``kv_tokens`` keys (default square, batch 1)."""
+    queries x ``kv_tokens`` keys (default square, batch 1). None when the probe could not run (it raised, or ``live``,
+    inside a running forward, and there is no room for it beside that forward's tensors): nothing is cached."""
     kv = tokens if kv_tokens is None else int(kv_tokens)
     extra = (() if kv == tokens else (kv,)) + (() if batch == 1 else (f"b{batch}",))
     key = (device, str(dtype), *geometry, tokens) + extra
@@ -896,6 +934,16 @@ def _rocm_flash_geometry_admitted(
         ROCM_FLASH_ADMISSIONS[key] = rec
         _log_rocm_flash_verdict(logger, device, geometry, rec, "cached")
         return rec["admitted"]
+    if live:
+        need = _rocm_flash_probe_bytes(geometry, tokens, kv, batch, dtype)
+        if not _rocm_flash_probe_fits(device, need):
+            _module_logger().info(
+                "diffusion.attention: ROCm flash timing at %s tokens deferred, no room beside this forward "
+                "(needs about %.2f GiB); native SDPA for now",
+                size,
+                need / 2**30,
+            )
+            return None
     _ROCM_FLASH_LOCAL.probing = True  # the probe's own flash calls are neither gated nor counted
     try:
         shape = {} if kv == tokens else {"kv_tokens": kv}
@@ -908,7 +956,7 @@ def _rocm_flash_geometry_admitted(
         _module_logger().info(
             "diffusion.attention: ROCm flash timing probe could not run (%s); native SDPA", exc
         )
-        return False
+        return None
     finally:
         _ROCM_FLASH_LOCAL.probing = False
         try:
@@ -1828,7 +1876,9 @@ def rocm_flash_ran(pipe: Any) -> Optional[tuple[str, str]]:
 
 
 def begin_attention_run(state: Any) -> None:
-    """A generation boundary: the per-DiT route tallies restart, so the report after it describes this run alone."""
+    """A generation boundary: the per-DiT route tallies restart, so the report after it describes this run alone, and
+    buckets whose probe could not run are retried."""
+    _ROCM_FLASH_DEFERRED.clear()
     for dit in _rocm_flash_dits(getattr(state, "pipe", None)):
         if isinstance(getattr(dit, ROCM_FLASH_TALLY_ATTR, None), dict):
             try:

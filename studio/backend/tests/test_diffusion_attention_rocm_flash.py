@@ -21,6 +21,7 @@ except Exception:  # noqa: BLE001
     pass
 
 _REAL_TOOLCHAIN_KEY = att._rocm_flash_toolchain_key
+_REAL_PROBE_FITS = att._rocm_flash_probe_fits
 _REAL_GUARD = att._install_rocm_flash_dispatch_guard
 
 
@@ -37,6 +38,8 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_INSTALL_ATTEMPTED", set())
     monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_DEFERRED", set(), raising = False)
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
 
 
@@ -1187,9 +1190,59 @@ def test_50k_call_runs_flash_only_if_its_own_bucket_admitted_it(monkeypatch):
 
 
 def test_bucket_probe_error_stays_native_without_retrying_every_call(monkeypatch):
-    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0})  # 32768 -> KeyError in the fake timer
+    verdicts = {4096: 70.0}
+    dit, guarded, ran, timed = _length_env(monkeypatch, verdicts)  # 32768 -> KeyError in the fake timer
     dit.run(guarded, [(40000, None), (40000, None)])
     assert timed == [4096, 32768] and ran == ["native", "native"]
+    # A probe that raised is no verdict: the next generation retries it.
+    assert not att._ROCM_FLASH_BUCKETS.get(next(iter(att._ROCM_FLASH_DEFERRED)), False)
+    verdicts[32768] = 60.0
+    att.begin_attention_run(types.SimpleNamespace(pipe = None))
+    dit.run(guarded, [(40000, None)])
+    assert timed == [4096, 32768, 32768] and ran == ["native", "native", "flash"]
+
+
+# Review: an in-forward probe sits on top of the live request's tensors; no room for it defers, never rejects.
+
+
+def test_bucket_probe_without_room_beside_the_forward_is_deferred_not_rejected(monkeypatch):
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 32768: 60.0})
+    needs = []
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: needs.append(need) or False)
+    dit.run(guarded, [(40000, None), (40000, None)])
+    assert timed == [4096] and ran == ["native", "native"] and len(needs) == 1
+    assert att._ROCM_FLASH_BUCKETS == {} and len(att._ROCM_FLASH_DEFERRED) == 1
+    assert att._ROCM_FLASH_ROUTED == {"timing deferred": 2}
+    assert not any(k[-1] == 32768 or 32768 in k for k in att.ROCM_FLASH_ADMISSIONS)
+    # Room again at the next generation: timed and admitted.
+    monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True)
+    att.begin_attention_run(types.SimpleNamespace(pipe = None))
+    dit.run(guarded, [(40000, None)])
+    assert timed == [4096, 32768] and ran[-1] == "flash"
+
+
+def test_probe_byte_bound_covers_the_measured_peak():
+    torch = pytest.importorskip("torch")
+    # gfx1151, Wan2.2-5B layer (3072 hidden, 24 x 128), batch 1: measured probe peaks 0.31 GiB at 1024, 5.46 at 65536.
+    for tokens, peak in ((1024, 0.31), (65536, 5.46)):
+        need = att._rocm_flash_probe_bytes((3072, 24, 128), tokens, tokens, 1, torch.bfloat16) / 2**30
+        assert peak <= need < 2 * peak
+
+
+def test_probe_fits_counts_cached_blocks_and_fails_closed(monkeypatch):
+    torch = pytest.importorskip("torch")
+    gib = 1 << 30
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d: (2 * gib, 80 * gib))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda d: 10 * gib)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda d: 7 * gib)
+    assert _REAL_PROBE_FITS("cuda:0", 3 * gib)  # 2 free + 3 cached >= 3.75 + 0.25
+    assert not _REAL_PROBE_FITS("cuda:0", 4 * gib)
+
+    def boom(d):
+        raise RuntimeError("no device")
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", boom)
+    assert not _REAL_PROBE_FITS("cuda:0", 1)
 
 
 def test_unprobed_bucket_under_capture_runs_native_untimed(monkeypatch):
