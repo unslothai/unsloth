@@ -494,7 +494,6 @@ def test_reexec_forwards_engine_parallelism_and_gpus(monkeypatch):
 
 
 def test_reexec_omits_default_engine_parallelism_and_gpus(monkeypatch):
-    """Default runs keep the argv older studio-venv launchers already accept."""
     result, captured = _invoke_run(monkeypatch, _BASE)
     assert len(captured) == 1, result.output
     assert "--engine-parallelism" not in captured[0]["argv"]
