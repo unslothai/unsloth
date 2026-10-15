@@ -12,6 +12,7 @@ torch = pytest.importorskip("torch")
 
 from core.inference import diffusion_vae_oom as O  # noqa: E402
 from core.inference import diffusion_vae_fused as F  # noqa: E402
+from core.inference import decode_layers as L  # noqa: E402
 
 
 _REAL_RETURN_TO = O._return_to
@@ -193,10 +194,11 @@ def test_streamed_decode_that_breaks_fails_on_the_oom(monkeypatch):
     monkeypatch.setattr(O, "_apply_vae_offload", lambda vae, device: None)
     monkeypatch.setattr(O, "_undo_vae_offload", lambda vae, device: None)
     vae, pipe = _setup(cap = 1, untiled_need = 10**9, tiled_need = 10**9, tiled = True)
-    real = vae._unsloth_vae_oom_inner
+    real = L.find(vae, "_decode", O._RETRY_LAYER).inner
 
     def inner(z, *a, **k):
-        if vae.__dict__.get(O._SESSION_ATTR) is not None and vae.__dict__[O._SESSION_ATTR].vae_offloaded:
+        holder = vae.__dict__.get(O._SESSION_ATTR)
+        if holder is not None and holder["session"] is not None and holder["session"].vae_offloaded:
             raise NameError("send_to_device")
         return real(z, *a, **k)
 
@@ -272,7 +274,7 @@ def test_restore_that_runs_out_of_memory_returns_on_next_forward(monkeypatch):
     assert session.log == []
     assert next(m.parameters()).dtype == torch.float32  # whole on the host, not half moved
     # Item 4282775926: the card is still full at the next forward: the OOM surfaces and the way back STAYS
-    with pytest.raises(_FakeOOM):
+    with pytest.raises(RuntimeError, match = "still on the host.*out of memory"):
         m(torch.zeros(1, 8, dtype = _CARD))
     assert next(m.parameters()).dtype == torch.float32 and len(m._forward_pre_hooks) == 1
     assert isinstance(m.__dict__.get("_hf_hook"), O.DeferredReturn)
@@ -650,7 +652,7 @@ def _install_on_cpu(monkeypatch, vae):
     state = vae._unsloth_vae_structural
     # calibrate as on the first CUDA decode (CPU tensors take the reference GroupNorm, so it is exact here)
     z = torch.randn(1, 8, 6, 6)
-    inner = vae.__dict__["_unsloth_vae_structural_inner"]
+    inner = L.find(vae, "_decode", F._STRUCTURAL_LAYER).inner
     with torch.no_grad():
         calls, consumed, ref = F._trace_group_norm_silu(
             F._plain_group_norms(vae.decoder), F._plain_silus(vae.decoder), lambda: inner(z)[0]
@@ -670,7 +672,7 @@ def test_structural_patch_is_exact_when_pairing_is_right(monkeypatch):
     ]
     F._structural_patch(norms, paired, silus, state, None)
     with torch.no_grad():
-        out = vae.__dict__["_unsloth_vae_structural_inner"](z)[0]
+        out = L.find(vae, "_decode", F._STRUCTURAL_LAYER).inner(z)[0]
     assert torch.allclose(out, ref, atol = 1e-6)
     assert state.calls == 4
     F._structural_unpatch(norms, silus)
@@ -794,7 +796,7 @@ def test_uninstall_unwraps_structural_layer_under_the_oom_wrapper(monkeypatch):
     layers = _layers(vae)
     assert not any(getattr(f, "_unsloth_vae_fused", False) for f in layers), layers
     assert getattr(vae.__dict__.get("_decode"), "_unsloth_vae_oom_retry", False)
-    assert "_unsloth_vae_structural_inner" not in vae.__dict__
+    assert L.find(vae, "_decode", F._STRUCTURAL_LAYER) is None
     with torch.no_grad():
         out = vae._decode(torch.randn(1, 8, 6, 6))
     assert out[0].shape == (1, 8, 6, 6)
@@ -931,3 +933,121 @@ def test_structural_probe_does_not_leak_cache_into_the_real_decode(monkeypatch):
     assert torch.allclose(out, ref, atol = 1e-6), (out - ref).abs().max()
 
 
+
+
+# -- PR review round 9 ------------------------------------------------------------------------------------------
+
+
+def test_required_deferred_return_raises_on_any_failure():
+    """Item 4283031561: a required return that fails with a non-OOM error raised nothing before, so the forward ran
+    with its weights on the host. Now it raises a clear error, and the way back stays for a later retry."""
+    m = torch.nn.Linear(4, 4)
+    O._defer(m, _FakeDevice(), "moved:transformer", lambda: (_ for _ in ()).throw(ValueError("no such device")),
+             True, None)  # fmt: skip
+    with pytest.raises(RuntimeError, match = "transformer.*still on the host.*ValueError: no such device"):
+        m(torch.zeros(1, 4))
+    assert O._DEFERRED_ATTR in m.__dict__ and len(m._forward_pre_hooks) == 1
+    # not required (the VAE streams through its hooks): it runs as it is and retries next time
+    v = torch.nn.Linear(4, 4)
+    O._defer(v, _FakeDevice(), "vae_offload", lambda: (_ for _ in ()).throw(ValueError("x")), False, None)
+    v(torch.zeros(1, 4))
+    assert O._DEFERRED_ATTR in v.__dict__
+
+
+def _compiled_vae():
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    O.uninstall(vae)
+    calls = []
+
+    def compiled(z, return_dict = True):
+        calls.append("compiled")
+        raise _FakeOOM()
+
+    compiled._unsloth_compiled_decode = True
+    compiled._unsloth_eager_decode = lambda *a, **k: ("eager",)
+    vae.decode = compiled
+    assert O.install(vae, pipe = pipe)
+    return vae, pipe, compiled, calls
+
+
+def test_uninstall_neutralises_a_compiled_guard_under_a_later_wrapper():
+    """Item 4283031573: video.py wraps vae.decode (untiled gate, ROCm bf16) after the guard, capturing it. Before:
+    uninstall saw a different outermost decode, dropped its record, and the guard kept retrying. Now the buried guard
+    is a pass-through: an OOM out of the compiled decode surfaces, with no freeing and no eager retry."""
+    vae, pipe, compiled, calls = _compiled_vae()
+    guard = vae.__dict__["decode"]
+
+    def later(*a, **k):  # captures the guard, as the untiled gate does
+        return guard(*a, **k)
+
+    later.__wrapped__ = guard
+    vae.decode = later
+    O.uninstall(vae)
+    assert vae.__dict__["decode"] is later and later.__wrapped__ is compiled
+    with pytest.raises(_FakeOOM):
+        vae.decode(_z())
+    assert calls == ["compiled"] and _devices(pipe)["transformer"] == _CARD
+
+
+def test_uninstall_restores_compiled_decode_when_outermost():
+    vae, pipe, compiled, calls = _compiled_vae()
+    O.uninstall(vae)
+    assert vae.__dict__["decode"] is compiled
+
+
+@pytest.mark.parametrize("which", ["oom", "fused"])
+def test_uninstall_keeps_an_instance_bound_decode_override(monkeypatch, which):
+    """Item 4283031579: a VAE whose ``_decode`` was already an instance-bound override (types.MethodType) got the
+    class method back on uninstall before (the override was popped). Now exactly the override comes back."""
+    if which == "fused":
+        monkeypatch.setattr(F, "runtime_ok", lambda: True)
+        monkeypatch.delenv(F.STRUCTURAL_ENV, raising = False)
+        vae = AutoencoderKLSomethingNew()
+    else:
+        vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+        O.uninstall(vae)
+
+    def override(self, z, *a, **k):
+        return type(self)._decode(self, z, *a, **k)
+
+    bound = types.MethodType(override, vae)
+    vae._decode = bound
+    if which == "fused":
+        assert F.install_structural(vae) > 0
+        F.uninstall(vae)
+    else:
+        assert O.install(vae)
+        O.uninstall(vae)
+    assert vae.__dict__.get("_decode") is bound
+
+
+def test_uninstall_restores_the_class_decode_when_there_was_no_override():
+    vae, pipe = _setup(cap = 1 << 20, untiled_need = 1, tiled_need = 1)
+    O.uninstall(vae)
+    assert "_decode" not in vae.__dict__ and "decode" not in vae.__dict__ and L.LAYERS_ATTR not in vae.__dict__
+
+
+class _SlicedVae(_VaeLike):
+    def decode(self, z, return_dict = True):
+        # diffusers with use_slicing: one _decode per batch sample
+        return (torch.cat([self._decode(z[i:i + 1])[0] for i in range(z.shape[0])]),)
+
+
+def test_one_session_spans_a_sliced_batch_decode(monkeypatch):
+    """Item 4283031587: with slicing, every slice's _decode used to recover on its own: move the pipeline off,
+    restore it, then move it off again for the next slice. Now the public decode opens one session for the batch:
+    the pipeline moves off once and comes back once, after the last slice."""
+    moves = []
+    monkeypatch.setattr(O, "_to_host", lambda m: (moves.append("off"), m.to(torch.float32)))
+    monkeypatch.setattr(O, "_return_to", lambda m, d: (moves.append("on"), m.to(_CARD)))
+    budget = _Budget(16384 + 1000)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+    vae = _SlicedVae(budget, [transformer, text_encoder], 10000, 500)
+    vae.to(_CARD)
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+    assert O.install(vae, pipe = pipe)
+    out = vae.decode(torch.ones(3, 4, 1, 8, 8))[0]
+    assert out.shape[0] == 3
+    assert moves == ["off", "off", "on", "on"]  # once for the whole batch
+    assert [s[0] for s in vae.seen] == [False, False, False, False]  # slice 1 failed once; 2 and 3 fit freed
+    assert _devices(pipe)["transformer"] == _CARD and O._SESSION_ATTR not in vae.__dict__

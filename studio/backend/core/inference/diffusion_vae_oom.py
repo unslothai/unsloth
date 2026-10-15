@@ -25,6 +25,8 @@ import time
 import weakref
 from typing import Any, Callable, Optional
 
+from . import decode_layers
+
 OOM_RETRY_ENV = "UNSLOTH_VAE_OOM_RETRY"
 # Host RAM left free when a component moves off the card for a decode.
 HOST_MARGIN_MIB = 2048
@@ -234,9 +236,16 @@ class DeferredReturn:
             try:
                 undo()
             except Exception as exc:  # noqa: BLE001
-                if self.required and is_oom(exc):
-                    raise
-                return False
+                if not self.required:
+                    return False  # it runs where it is (streamed); retried next time
+                # its weights are on the host and nothing would move them: running it would fail on the wrong
+                # device, so say why (an out-of-memory keeps "out of memory" in the text for the OOM handlers)
+                module = self.module_ref()
+                raise RuntimeError(
+                    f"{type(module).__name__} ({label.split(':', 1)[-1]}) is still on the host after a VAE decode "
+                    f"ran out of memory and cannot return to {self.execution_device}: "
+                    + ("out of memory; free GPU memory and retry" if is_oom(exc) else f"{type(exc).__name__}: {exc}")
+                ) from exc
             self.pending.pop(0)
         self.detach()
         return True
@@ -476,8 +485,30 @@ def _device_of(z: Any) -> Any:
     return getattr(z, "device", None)
 
 
+_RETRY_LAYER = "vae_oom_retry"
+_SCOPE_LAYER = "vae_oom_scope"
+
+
+def _scope_session(vae: Any) -> Optional[dict]:
+    return vae.__dict__.get(_SESSION_ATTR)
+
+
+def _close_scope(vae: Any, holder: dict, z: Any) -> None:
+    vae.__dict__.pop(_SESSION_ATTR, None)
+    session = holder.get("session")
+    if session is None:
+        return
+    t0 = time.perf_counter()
+    session.restore()
+    stats = vae.__dict__.get("_unsloth_vae_oom_stats")
+    if isinstance(stats, dict):
+        stats["restore_s"] = round(time.perf_counter() - t0, 3)
+    _empty_cache(_device_of(z))
+
+
 def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
-    """Wrap ``vae._decode`` with the offload-first OOM ladder. Idempotent. ``pipe``: the pipeline whose other
+    """Wrap ``vae._decode`` with the offload-first OOM ladder, and the public ``decode`` with the scope one logical
+    decode's recovery spans (a compiled decode's guard included). Idempotent. ``pipe``: the pipeline whose other
     components step (a) may move off the card (kept as a weak reference; a reinstall keeps the last one)."""
     if vae is None or oom_retry_disabled():
         return False
@@ -486,59 +517,64 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
             vae.__dict__[_PIPE_ATTR] = weakref.ref(pipe)
         except TypeError:
             pass
-    inner = getattr(vae, "_decode", None)
-    if not callable(inner):
+    if not callable(getattr(vae, "_decode", None)):
         return False
-    if getattr(inner, "_unsloth_vae_oom_retry", False):
+    if decode_layers.find(vae, "_decode", _RETRY_LAYER) is not None:
         return True
     can_tile = callable(getattr(vae, "enable_tiling", None)) and hasattr(vae, "use_tiling")
     stats = {"calls": 0, "oom": 0, "freed_retry": 0, "tiled_retry": 0, "offload_retry": 0, "recovered": 0,
              "recovered_by": None, "failed": 0}  # fmt: skip
-    depth = [0]
 
-    def _attempt(z: Any, args: tuple, kwargs: dict, tiled: bool) -> Any:
-        prev = bool(getattr(vae, "use_tiling", False))
-        vae._unsloth_vae_oom_active = True
-        try:
-            if can_tile:
-                vae.use_tiling = tiled
-            return inner(z, *args, **kwargs)
-        finally:
-            if can_tile:
-                vae.use_tiling = prev
-            vae._unsloth_vae_oom_active = False
+    def make_retry(inner: Callable, layer: Any) -> Callable:
+        depth = [0]
 
-    @functools.wraps(inner)
-    def _decode(z: Any, *args: Any, **kwargs: Any) -> Any:
-        # Traced inside a compiled decode: a pass-through (no try/except in the graph; the compiled guard retries).
-        # Nested (a wide-tile override decoding one tile through _decode): the outermost call owns the retry.
-        if _compiling() or oom_retry_disabled() or depth[0]:
-            return inner(z, *args, **kwargs)
-        depth[0] += 1
-        try:
-            # a VAE left streamed by an earlier restore that ran out of memory comes back first, if it fits now
-            settle_deferred(vae)
-            return _retrying(z, args, kwargs)
-        finally:
-            depth[0] -= 1
+        def _attempt(z: Any, args: tuple, kwargs: dict, tiled: bool) -> Any:
+            prev = bool(getattr(vae, "use_tiling", False))
+            vae._unsloth_vae_oom_active = True
+            try:
+                if can_tile:
+                    vae.use_tiling = tiled
+                return inner(z, *args, **kwargs)
+            finally:
+                if can_tile:
+                    vae.use_tiling = prev
+                vae._unsloth_vae_oom_active = False
 
-    def _retrying(z: Any, args: tuple, kwargs: dict) -> Any:
-        stats["calls"] += 1
-        tiled_now = bool(getattr(vae, "use_tiling", False))
-        try:
-            return inner(z, *args, **kwargs)
-        except Exception as exc:  # noqa: BLE001
-            if not is_oom(exc) or (not tiled_now and _outer_gate_owns_untiled(vae)):
-                raise
-            exc.__traceback__ = None
-            stats["oom"] += 1
-        # Outside the handler: the failed attempt's tensors are gone.
-        outer = vae.__dict__.get(_SESSION_ATTR)
-        session = outer if outer is not None else DecodeSession(vae, _device_of(z), logger)
-        vae.__dict__[_SESSION_ATTR] = session
-        try:
-            steps: list = []
-            steps.append(("freed", tiled_now, False))
+        def _decode(z: Any, *args: Any, **kwargs: Any) -> Any:
+            # Traced inside a compiled decode: a pass-through (no try/except in the graph; the compiled guard
+            # retries). Nested (a wide-tile override decoding one tile through _decode): the outermost call retries.
+            if _compiling() or oom_retry_disabled() or depth[0]:
+                return inner(z, *args, **kwargs)
+            depth[0] += 1
+            holder = _scope_session(vae)
+            owns = holder is None  # called without the public decode (no scope): this call is the logical decode
+            if owns:
+                holder = {"session": None}
+                vae.__dict__[_SESSION_ATTR] = holder
+                settle_deferred(vae)
+            try:
+                return _retrying(z, args, kwargs, holder)
+            finally:
+                depth[0] -= 1
+                if owns:
+                    _close_scope(vae, holder, z)
+
+        def _retrying(z: Any, args: tuple, kwargs: dict, holder: dict) -> Any:
+            stats["calls"] += 1
+            tiled_now = bool(getattr(vae, "use_tiling", False))
+            try:
+                return inner(z, *args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                if not is_oom(exc) or (not tiled_now and _outer_gate_owns_untiled(vae)):
+                    raise
+                exc.__traceback__ = None
+                stats["oom"] += 1
+            # Outside the handler: the failed attempt's tensors are gone. One session per logical decode: a later
+            # slice / frame of the same decode reuses what an earlier one freed.
+            session = holder.get("session")
+            if session is None:
+                session = holder["session"] = DecodeSession(vae, _device_of(z), logger)
+            steps: list = [("freed", tiled_now, False)]
             if can_tile and not tiled_now:
                 steps.append(("tiled", True, False))
             steps.append(("offload", tiled_now or can_tile, True))
@@ -549,7 +585,7 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                     freed = session.free_others(_pipe_of(vae))
                     stats["free_s"] = round(time.perf_counter() - t0, 3)
                     if not freed:
-                        continue  # nothing was freed: the same decode would fail the same way
+                        continue  # nothing (more) was freed: the same decode would fail the same way
                 elif offload_vae and not session.offload_vae():
                     continue
                 if logger is not None:
@@ -583,20 +619,14 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                 "VAE decode ran out of memory even with the rest of the pipeline and the VAE weights off the card; "
                 "free GPU memory or lower the resolution"
             )
-        finally:
-            if outer is None:
-                vae.__dict__.pop(_SESSION_ATTR, None)
-                t0 = time.perf_counter()
-                session.restore()
-                stats["restore_s"] = round(time.perf_counter() - t0, 3)
-                _empty_cache(_device_of(z))
 
-    _decode._unsloth_vae_oom_retry = True
-    _decode._unsloth_vae_oom_stats = stats
-    vae._unsloth_vae_oom_inner = inner
+        _decode._unsloth_vae_oom_retry = True
+        _decode._unsloth_vae_oom_stats = stats
+        return _decode
+
+    decode_layers.wrap(vae, "_decode", _RETRY_LAYER, make_retry)
     vae._unsloth_vae_oom_stats = stats
-    vae._decode = _decode
-    _guard_compiled_decode(vae, logger)
+    _install_scope(vae, logger)
     if logger is not None:
         logger.info(
             "diffusion.vae_oom: %s decode recovers an out-of-memory by offloading, then tiling at stock sizes",
@@ -616,99 +646,99 @@ def _compiled_decode_owner(vae: Any) -> Any:
     return None
 
 
-def _guard_compiled_decode(vae: Any, logger: Any = None) -> bool:
-    """A compiled ``decode`` traces the ``_decode`` retry as a pass-through, so a runtime OOM escapes it. Wrap the
-    compiled callable: on an OOM (wrapped compiler errors included) free the rest of the pipeline and retry the
-    compiled decode (same kernels, same output); still out of memory, decode on the eager path, where the ``_decode``
-    ladder runs with that session. Installed after the speed layer compiled, so it sits directly over the compiled
-    callable."""
+def _install_scope(vae: Any, logger: Any = None) -> bool:
+    """Wrap the public ``decode`` (or, for a decode compiled whole, the slot holding it): the outermost call opens
+    the recovery scope every inner ``_decode`` (batch slices, frames, tiles) shares, and closes it, restoring what
+    the recovery moved, once the whole decode returns. A compiled decode that runs out of memory frees the card and
+    retries compiled first (same kernels, same output), then decodes on the eager path inside the same scope."""
     owner = _compiled_decode_owner(vae)
-    if owner is None:
-        return False
-    compiled = owner.__dict__["decode"]
-    if getattr(compiled, "_unsloth_vae_oom_guard", False):
+    compiled_slot = owner is not None
+    owner = owner if compiled_slot else vae
+    if decode_layers.find(owner, "decode", _SCOPE_LAYER) is not None:
         return True
-    eager = compiled._unsloth_eager_decode
+    if not callable(getattr(owner, "decode", None)):
+        return False
 
-    def _try(fn: Callable, args: tuple, kwargs: dict) -> tuple:
-        try:
-            return True, fn(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001
-            if not is_oom(exc) or (
-                not getattr(vae, "use_tiling", False) and _outer_gate_owns_untiled(vae)
-            ):
-                raise
-            exc.__traceback__ = None
-            return False, None
+    def make_scope(inner: Callable, layer: Any) -> Callable:
+        eager = getattr(inner, "_unsloth_eager_decode", None) if compiled_slot else None
 
-    @functools.wraps(compiled)
-    def decode(*args: Any, **kwargs: Any) -> Any:
-        if oom_retry_disabled() or vae.__dict__.get(_SESSION_ATTR) is not None:
-            return compiled(*args, **kwargs)
-        ok, out = _try(compiled, args, kwargs)
-        if ok:
-            return out
-        z = args[0] if args else kwargs.get("z")
-        stats = vae.__dict__.get("_unsloth_vae_oom_stats")
-        if isinstance(stats, dict):
-            stats["compiled_oom"] = stats.get("compiled_oom", 0) + 1
-        session = DecodeSession(vae, _device_of(z), logger)
-        vae.__dict__[_SESSION_ATTR] = session
-        try:
-            _release_cache(z, vae)
-            if session.free_others(_pipe_of(vae)):
-                if logger is not None:
-                    logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying with the "
-                                   "rest of the pipeline off the card", type(vae).__name__)  # fmt: skip
-                ok, out = _try(compiled, args, kwargs)
+        def _try(args: tuple, kwargs: dict) -> tuple:
+            try:
+                return True, inner(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                if not is_oom(exc) or (
+                    not getattr(vae, "use_tiling", False) and _outer_gate_owns_untiled(vae)
+                ):
+                    raise
+                exc.__traceback__ = None
+                return False, None
+
+        def decode(*args: Any, **kwargs: Any) -> Any:
+            if _compiling() or oom_retry_disabled() or _scope_session(vae) is not None:
+                return inner(*args, **kwargs)
+            holder: dict = {"session": None}
+            vae.__dict__[_SESSION_ATTR] = holder
+            z = args[0] if args else kwargs.get("z")
+            try:
+                # a VAE left streamed by an earlier restore that ran out of memory comes back first, if it fits now
+                settle_deferred(vae)
+                if eager is None:
+                    return inner(*args, **kwargs)
+                ok, out = _try(args, kwargs)
                 if ok:
-                    if isinstance(stats, dict):
-                        stats["recovered"] = stats.get("recovered", 0) + 1
-                        stats["recovered_by"] = "freed_compiled"
                     return out
+                stats = vae.__dict__.get("_unsloth_vae_oom_stats")
+                if isinstance(stats, dict):
+                    stats["compiled_oom"] = stats.get("compiled_oom", 0) + 1
+                session = holder["session"] = DecodeSession(vae, _device_of(z), logger)
                 _release_cache(z, vae)
-            if logger is not None:
-                logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying eager",
-                               type(vae).__name__)  # fmt: skip
-            return eager(*args, **kwargs)
-        finally:
-            vae.__dict__.pop(_SESSION_ATTR, None)
-            session.restore()
-            _empty_cache(_device_of(z))
+                if session.free_others(_pipe_of(vae)):
+                    if logger is not None:
+                        logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying with the "
+                                       "rest of the pipeline off the card", type(vae).__name__)  # fmt: skip
+                    ok, out = _try(args, kwargs)
+                    if ok:
+                        if isinstance(stats, dict):
+                            stats["recovered"] = stats.get("recovered", 0) + 1
+                            stats["recovered_by"] = "freed_compiled"
+                        return out
+                    _release_cache(z, vae)
+                if logger is not None:
+                    logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying eager",
+                                   type(vae).__name__)  # fmt: skip
+                return eager(*args, **kwargs)
+            finally:
+                _close_scope(vae, holder, z)
 
-    decode._unsloth_vae_oom_guard = True
-    decode._unsloth_compiled_decode = True
-    decode._unsloth_eager_decode = eager
-    owner.decode = decode
-    vae.__dict__.setdefault(_RECORD_ATTR, {})["guard"] = (owner, decode, compiled)
+        if eager is not None:
+            decode._unsloth_vae_oom_guard = True
+            decode._unsloth_compiled_decode = True
+            decode._unsloth_eager_decode = eager
+        decode._unsloth_vae_oom_scope = True
+        return decode
+
+    layer = decode_layers.wrap(owner, "decode", _SCOPE_LAYER, make_scope)
+    vae.__dict__.setdefault(_RECORD_ATTR, {})["scope"] = layer
     return True
 
 
 def uninstall(vae: Any) -> None:
-    """Remove everything ``install`` and its retries put in place: the ``_decode`` wrapper, the compiled-decode guard,
-    and every deferred return. A deferred return is settled first (its pending undo runs); one that still cannot run
-    (the card is full) stays, since it is that module's only way back to the card."""
+    """Remove everything ``install`` and its retries put in place: the ``_decode`` layer, the ``decode`` scope /
+    compiled guard (cut out exactly when outermost, a pass-through under later wrappers), and every deferred return.
+    A deferred return is settled first (its pending undo runs); one that still cannot run (the card is full) stays,
+    since it is that module's only way back to the card."""
     record = vae.__dict__.get(_RECORD_ATTR, {})
-    guard = record.pop("guard", None)
-    if guard is not None:
-        owner, decode, compiled = guard
-        if owner.__dict__.get("decode") is decode:
-            owner.__dict__["decode"] = compiled
+    decode_layers.unwrap(record.pop("scope", None))
     for ref in record.pop("deferred", []):
         module = ref()
         if module is not None and not settle_deferred(module):
             record.setdefault("deferred", []).append(ref)
     if not record:
         vae.__dict__.pop(_RECORD_ATTR, None)
-    inner = vae.__dict__.pop("_unsloth_vae_oom_inner", None)
-    if inner is None:
+    layer = decode_layers.find(vae, "_decode", _RETRY_LAYER)
+    if layer is None:
         return
-    if getattr(inner, "__self__", None) is vae and getattr(inner, "__func__", None) is getattr(
-        type(vae), "_decode", None
-    ):
-        vae.__dict__.pop("_decode", None)
-    else:
-        vae._decode = inner
+    decode_layers.unwrap(layer)
     vae.__dict__.pop("_unsloth_vae_oom_stats", None)
 
 

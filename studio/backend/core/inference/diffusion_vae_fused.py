@@ -1112,27 +1112,15 @@ def install_group_norm_vae(vae: Any, logger: Any = None) -> int:
     return n
 
 
+_STRUCTURAL_LAYER = "vae_fused_structural"
+
+
 def _restore_structural_decode(vae: Any) -> None:
-    """Put back the ``_decode`` the structural calibrator wrapped. The OOM retry (diffusion_vae_oom) may sit on top of
-    it: that wrapper is removed, the structural layer restored, and the retry reinstalled over the restored inner."""
-    inner = vae.__dict__.pop("_unsloth_vae_structural_inner", None)
-    if inner is None:
-        return
-    current = vae.__dict__.get("_decode")
-    oom_on_top = bool(getattr(current, "_unsloth_vae_oom_retry", False)) and getattr(
-        getattr(current, "__wrapped__", None), "_unsloth_vae_fused", False
-    )
-    if oom_on_top:
-        from . import diffusion_vae_oom  # noqa: PLC0415
-        diffusion_vae_oom.uninstall(vae)
-        current = vae.__dict__.get("_decode")
-    if getattr(current, "_unsloth_vae_fused", False):
-        if getattr(inner, "__self__", None) is vae:
-            vae.__dict__.pop("_decode", None)
-        else:
-            vae._decode = inner
-    if oom_on_top:
-        diffusion_vae_oom.install(vae)
+    """Remove the structural calibrator's ``_decode`` layer: exactly what it replaced comes back when it is outermost
+    (an instance-bound override included); under a later layer (the OOM retry) it becomes a pass-through."""
+    from . import decode_layers  # noqa: PLC0415
+
+    decode_layers.unwrap(decode_layers.find(vae, "_decode", _STRUCTURAL_LAYER))
 
 
 def uninstall(vae: Any) -> None:
@@ -2422,8 +2410,9 @@ def install_structural(vae: Any, logger: Any = None) -> int:
 
     _decode._unsloth_vae_fused = True
     vae._unsloth_vae_structural = state
-    vae._unsloth_vae_structural_inner = inner
-    vae._decode = _decode
+    from . import decode_layers  # noqa: PLC0415
+
+    decode_layers.wrap(vae, "_decode", _STRUCTURAL_LAYER, lambda _inner, _layer: _decode)
     if logger is not None:
         logger.info(
             "diffusion.vae_fused: %s is outside the measured set; %d GroupNorms will be matched by structure "
