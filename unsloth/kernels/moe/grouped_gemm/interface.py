@@ -109,7 +109,6 @@ def _grouped_gemm_forward_impl(
     permute_x: bool = False,
     permute_y: bool = False,
     fuse_mul_post: bool = False,
-    # Autotuning -- overrides manual kernel params when True
     autotune: bool = False,
     # Kernel tuning params: must be tuned, else poor performance.
     BLOCK_SIZE_M: int = 32,
@@ -533,7 +532,6 @@ def _grouped_gemm_dW_impl(
         "NUM_SMS": NUM_SMS,
         "PERMUTE_X": permute_x,
         "PERMUTE_Y": permute_y,
-        "FLATTEN": flatten,
     }
 
     if not autotune:
