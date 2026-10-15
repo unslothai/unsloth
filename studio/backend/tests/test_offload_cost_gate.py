@@ -528,9 +528,10 @@ def test_the_dense_fallback_moves_the_fitters_leading_block_prefix():
     )
 
 
-def test_the_fallback_charges_the_recurrent_state_once_per_slot():
+def test_the_fallback_reserves_the_recurrent_state_per_slot_but_reads_one():
     """The state is one copy per sequence, so a fitter modelled at one copy on a four-slot hybrid
-    stops at the wrong layer count and the gate scores an arm the child never runs."""
+    stops at the wrong layer count. A request reads only its own sequence's cells, though
+    (llama-memory-recurrent.cpp), so the traffic per moved layer does not grow with the slots."""
     import dataclasses
 
     hybrid = dataclasses.replace(dense_layout(), recurrent_bytes = GIB)
@@ -539,13 +540,16 @@ def test_the_fallback_charges_the_recurrent_state_once_per_slot():
     four = _fit_fallback_placement(hybrid, gated(), 12 * GIB, 32768, n_seq = 4, **args)
     assert one is not None and four is not None
 
-    def per_moved_layer(placement):
+    def moved_layers(placement):
         layers = next(g for g in placement.host_groups if g.name == "layers").bytes_total
-        moved = layers / hybrid.blocks[0].resident_bytes
-        state = next(g for g in placement.host_groups if g.name.startswith("recurrent"))
-        return state.bytes_total / moved
+        return layers / hybrid.blocks[0].resident_bytes
 
-    assert abs(per_moved_layer(four) / per_moved_layer(one) - 4) < 0.05
+    def per_moved_layer(placement):
+        state = next(g for g in placement.host_groups if g.name.startswith("recurrent"))
+        return state.bytes_total / moved_layers(placement)
+
+    assert moved_layers(four) > moved_layers(one), "the reservation must still be per slot"
+    assert abs(per_moved_layer(four) / per_moved_layer(one) - 1) < 0.05
 
 
 def test_the_moe_fallback_lowers_layers_once_every_expert_is_on_the_host():

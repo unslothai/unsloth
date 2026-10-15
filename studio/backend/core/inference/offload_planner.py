@@ -188,6 +188,9 @@ class PlanOptions:
     # ``--fit on`` at all.
     min_penalty_reduction: float = 0.10
     require_cost_win: bool = False
+    # False when ``--fit on`` cannot re-place this load: common/fit.cpp aborts on more than one
+    # device when the user set a nonzero tensor_split, so there is no fitter arm to rank against.
+    rank_against_fitter: bool = True
 
     # Every default below means "not supplied", so a call that sets none of them plans as before.
     mmproj_bytes: int = 0
@@ -828,8 +831,14 @@ def _fit_fallback_placement(
                 if host_layers:
                     groups.append(TensorGroup("layers", host_layers, Access.CONTIGUOUS))
                 if host_recurrent:
+                    # Reserved per slot, read per request: a ubatch gathers only its own
+                    # sequences' cells (llama-memory-recurrent.cpp), so the traffic is one slot.
                     groups.append(
-                        TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
+                        TensorGroup(
+                            "recurrent (moved layers)",
+                            host_recurrent // max(1, n_seq),
+                            Access.CONTIGUOUS,
+                        )
                     )
                 return Placement(host_groups = groups, kv_host_bytes = kv_live_freed(moved))
         return None
@@ -850,9 +859,14 @@ def _fit_fallback_placement(
         host_recurrent = recurrent_moved(moved)
         if host_recurrent:
             # CONTIGUOUS, not the cache rate: a small fixed-size conv and SSM state read straight
-            # through by the scan, not attention over a growing prefix.
+            # through by the scan, not attention over a growing prefix. One slot's share, as in
+            # the MoE branch: the request reads its own sequence's state.
             groups.append(
-                TensorGroup("recurrent (moved layers)", host_recurrent, Access.CONTIGUOUS)
+                TensorGroup(
+                    "recurrent (moved layers)",
+                    host_recurrent // max(1, n_seq),
+                    Access.CONTIGUOUS,
+                )
             )
         live_kv = kv_live_freed(moved)
         # ``kv_host_bytes``, so this is charged at ``Access.KV_CACHE``'s calibrated 20.1x and not
@@ -2203,6 +2217,10 @@ def _cost_gate(
             0.0,
             0.0,
         )
+    if not opts.rank_against_fitter:
+        # The fallback would be the launch as typed, which the fitter cannot rescue; the RAM and
+        # prompt-cache refusals above still hold.
+        return None, 0.0, 0.0
     n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
     # One shared stream under --kv-unified, so a single request may fill the whole n_ctx however
     # many slots are served; N private windows without it.
@@ -2302,6 +2320,8 @@ def _knob_only_gate(
     fallback_kv_bytes_floor: Optional[int] = None,
 ) -> tuple[Optional[Plan], float, float]:
     """The same ranking for a plan that spills nothing but gave a knob up."""
+    if not opts.rank_against_fitter:
+        return None, 0.0, 0.0
     n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
     kept_on_card = _outside_layout_bytes(opts) - _outside_layout_bytes(opts, knobs)
     fit_slots, fit_floor = _fit_arm_slots(opts, kv_bytes_floor, fallback_kv_bytes_floor)

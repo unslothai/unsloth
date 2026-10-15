@@ -38652,6 +38652,13 @@ class LlamaCppBackend:
                 # This is the only caller with somewhere else to go: declining here falls
                 # through to ``--fit on``.
                 require_cost_win = True,
+                # ...unless a user split spans the devices: common/fit.cpp aborts on a nonzero
+                # tensor_split over more than one device, so --fit on would not re-place it.
+                rank_against_fitter = not (
+                    _ts is not None
+                    and len(kept) > 1
+                    and any(float(_share) != 0.0 for _share in _ts[: len(kept)])
+                ),
                 # Scored at the batch that launches, not the dataclass default: rank() amortises
                 # the spilled-weight stream over one ubatch.
                 n_ubatch = (
