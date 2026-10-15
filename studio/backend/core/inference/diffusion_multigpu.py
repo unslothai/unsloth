@@ -3336,7 +3336,8 @@ class CfgBatchRouter:
                 self.state_watch.restore_changed(state_snapshot)
             with contextlib.suppress(Exception):
                 torch.cuda.empty_cache()
-            self.disable("out of memory on the batched call; one branch per call from here")
+            # a larger canvas or batch can run out where smaller ones fit: this shape only
+            self._disable_shape("out of memory on the batched call; one branch per call for this shape")
             return None
         except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
             with contextlib.suppress(Exception):

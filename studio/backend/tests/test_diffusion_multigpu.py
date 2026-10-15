@@ -1702,6 +1702,36 @@ def test_cfg_batch_out_of_memory_falls_back(monkeypatch):
     assert "out of memory" in router.describe()["disabled_reason"]
 
 
+def test_cfg_batch_out_of_memory_declines_only_that_shape():
+    # only the 3-row request runs out on its doubled call: a later 2-row request must still batch
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit)
+    inner = router.orig_forward
+
+    def oom_on_large_batch(*a, **k):
+        if k["hidden_states"].shape[0] == 6:
+            raise torch.OutOfMemoryError("fake")
+        return inner(*a, **k)
+
+    oom_on_large_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
+    router.orig_forward = oom_on_large_batch
+    dit.forward = router
+    pipe = _RouterPipe(dit)
+    mg._CFG_BATCH[pipe] = router
+    torch.manual_seed(0)
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 3, steps = 3)
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        out = _guided(dit, 3, steps = 3)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert router.disabled_reason is None and router.stats["batched_steps"] == 0
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)
+    assert router.stats["batched_steps"] > 0
+    mg._CFG_BATCH.pop(pipe, None)
+
+
 def test_cfg_batch_decline_rules(monkeypatch):
     class Flux2Transformer2DModel(_BatchDit):  # a listed class name from diffusers
         pass
