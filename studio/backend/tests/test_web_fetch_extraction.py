@@ -1177,6 +1177,24 @@ def test_fetch_page_text_falls_back_to_github_file_page_when_raw_fails(monkeypat
     assert "Unsloth Studio" in out
 
 
+def test_fetch_page_text_keeps_semicolon_in_github_file_name(monkeypatch):
+    calls = []
+
+    def fake_fetch(
+        url,
+        timeout = 30,
+        extra_headers = None,
+        deadline = None,
+        cancel_event = None,
+    ):
+        calls.append(url)
+        return None, "file body", "text/plain"
+
+    monkeypatch.setattr("core.inference.tools._fetch_url_raw", fake_fetch)
+    _fetch_page_text("https://github.com/owner/repo/blob/main/t/foo;bar.py")
+    assert calls == ["https://raw.githubusercontent.com/owner/repo/main/t/foo;bar.py"]
+
+
 @pytest.mark.parametrize(
     "url",
     [

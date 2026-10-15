@@ -16196,9 +16196,9 @@ def _github_repo_readme_api_url(url: str) -> str | None:
 
 
 def _github_blob_raw_url(url: str) -> str | None:
-    from urllib.parse import urlparse
+    from urllib.parse import urlsplit
 
-    parsed = urlparse(url)
+    parsed = urlsplit(url)
     if (parsed.hostname or "").lower() not in ("github.com", "www.github.com"):
         return None
     parts = [p for p in parsed.path.split("/") if p]
