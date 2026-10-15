@@ -48,3 +48,9 @@ test("Reasoning draws the composer's thinking bulb", () => {
   assert.match(shared, /capability\.key === "reasoning" \? \(\s*<BulbIcon className="size-3 shrink-0" \/>/);
   assert.doesNotMatch(shared + popover, /BrainIcon/);
 });
+
+test("a picked Unsloth during a search counts as a filter, and the row range resets the list", () => {
+  const page = readSrc("features/hub/hub-page.tsx");
+  assert.match(page, /\(isModelDiscover &&\s*uploaderPick !== null &&\s*ownerScope === "unsloth" &&\s*debouncedQuery\.trim\(\) !== ""\)/);
+  assert.match(page, /const filterResetSignature = useMemo\([\s\S]{0,400}minRows,\s*maxRows,/);
+});

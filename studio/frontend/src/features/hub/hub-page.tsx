@@ -1307,6 +1307,9 @@ export function ModelsPage() {
         deferredCapabilityFilters,
         deferredDatasetModalities,
         searchFilters,
+        // ModelScope drops searchFilters, but the dataset rows are filtered here either way.
+        minRows,
+        maxRows,
         inventoryTypeFilter,
         effectiveSort,
         effectiveDirection,
@@ -1320,6 +1323,8 @@ export function ModelsPage() {
       deferredCapabilityFilters,
       deferredDatasetModalities,
       searchFilters,
+      minRows,
+      maxRows,
       inventoryTypeFilter,
       effectiveSort,
       effectiveDirection,
@@ -1821,6 +1826,11 @@ export function ModelsPage() {
         hasActiveFilters:
           !isFeedMode &&
           ((isModelDiscover && hasSearchFilters) ||
+            // A search lists every uploader, so picking Unsloth narrows it.
+            (isModelDiscover &&
+              uploaderPick !== null &&
+              ownerScope === "unsloth" &&
+              debouncedQuery.trim() !== "") ||
             deferredFormatFilter !== "all" ||
             deferredCapabilityFilters.length > 0 ||
             (isDatasetMode &&
@@ -1863,6 +1873,9 @@ export function ModelsPage() {
       minRows,
       maxRows,
       hasSearchFilters,
+      uploaderPick,
+      ownerScope,
+      debouncedQuery,
       inventoryTypeFilter,
     ],
   );
