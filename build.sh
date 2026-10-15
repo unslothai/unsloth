@@ -4,20 +4,16 @@
 
 set -euo pipefail
 
-# PyPI/Unsloth release publishing must use `./build.sh publish` (or an
-# equivalent stamp -> build -> verify-dist -> upload flow) so packaged Unsloth
-# artifacts include the display-only Unsloth release version.
+# Releases must use `./build.sh publish` (or stamp -> build -> verify-dist -> upload) so
+# artifacts carry the display-only release version.
 
 # 1. Build frontend (Vite outputs to dist/)
 cd studio/frontend
 
-# Clean stale dist to force a full rebuild
 rm -rf dist
 
-# Tailwind v4's oxide scanner respects .gitignore in parent directories.
-# Python venvs create a .gitignore with "*" (ignore everything), which
-# prevents Tailwind from scanning .tsx source files for class names.
-# Temporarily hide any such .gitignore during the build, then restore it.
+# Tailwind v4's oxide scanner honours parent .gitignore files, and a venv's "*" .gitignore
+# hides the .tsx sources; hide them during the build.
 _HIDDEN_GITIGNORES=()
 _dir="$(pwd)"
 while [ "$_dir" != "/" ]; do
@@ -35,10 +31,7 @@ _restore_gitignores() {
 }
 trap _restore_gitignores EXIT
 
-# Corporate-mirror / proxy escape hatch (#6491). When UNSLOTH_NPM_REGISTRY is set we
-# thread it as `--registry <url>` into the installs (overrides frontend/.npmrc's pinned
-# registry for both bun and npm; min-release-age / save-exact stay in force). Empty
-# array (the default) expands to nothing under `set -u`.
+# UNSLOTH_NPM_REGISTRY overrides frontend/.npmrc's registry for corporate mirrors.
 _NPM_REGISTRY_ARGS=()
 if [ -n "${UNSLOTH_NPM_REGISTRY:-}" ]; then
     _NPM_REGISTRY_ARGS=(--registry "$UNSLOTH_NPM_REGISTRY")
@@ -64,12 +57,12 @@ if [ "$_install_ok" != "true" ]; then
         exit 1
     fi
 fi
-npm run build       # outputs to studio/frontend/dist/
+npm run build
 
 _restore_gitignores
 trap - EXIT
 
-# Validate CSS output -- catch truncated Tailwind builds before packaging
+# Catch truncated Tailwind builds before packaging.
 MAX_CSS_SIZE=$(find dist/assets -name '*.css' -exec wc -c {} + 2>/dev/null | sort -n | tail -1 | awk '{print $1}')
 if [ -z "$MAX_CSS_SIZE" ]; then
     echo "❌ ERROR: No CSS files were emitted into dist/assets."
@@ -115,15 +108,8 @@ fi
 _restore_studio_build_info
 trap - EXIT
 
-# 5. Optionally publish
-# Wheel only. The sdist is still built above, because --verify-dist checks the
-# release stamp in every artifact and a local sdist is the cheapest way to catch
-# a packaging change that only shows up in the source tree. It is not uploaded.
-# A release is ~169MB across both artifacts, and the PyPI project size limit is
-# 10GB; the sdist is the larger half. Uploading only the wheel halves what each
-# release costs against that limit. Nothing is lost for installers: the wheel is
-# py3-none-any, so pip and uv resolve to it on every platform and Python, and the
-# sdist is only reachable through --no-binary or a mirror that vendors sources.
+# 5. Optionally publish. Wheel only: the sdist is still built for --verify-dist, but the
+# py3-none-any wheel covers every installer and halves the size against PyPI's limit.
 if [ "${1:-}" = "publish" ]; then
     python -m twine upload dist/*.whl
 fi

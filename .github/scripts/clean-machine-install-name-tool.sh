@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-# Shared install_name_tool trace wrapper and CLT-absent sentinel contract.
 set -euo pipefail
 
 usage() {

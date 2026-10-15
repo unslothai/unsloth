@@ -1,25 +1,13 @@
 #!/bin/sh
-# Build whisper.cpp's whisper-server for Unsloth's GGUF dictation engine.
-# Installs into the managed Unsloth home so the backend's binary discovery
-# (core/inference/stt_ggml_sidecar.py::find_whisper_server_binary) picks it up:
-#   <UNSLOTH_HOME>/whisper.cpp/build/bin/whisper-server          (master root)
-#   <UNSLOTH_STUDIO_HOME>/whisper.cpp/build/bin/whisper-server   (custom home)
-#   ~/.unsloth/whisper.cpp/build/bin/whisper-server              (default)
-# Usage:
-#   ./scripts/build_whisper_cpp.sh              # build the pinned tag
-#   WHISPER_CPP_TAG=v1.9.0 ./scripts/build_whisper_cpp.sh
-# Requires: git, cmake, a C/C++ toolchain (the same prerequisites as a
-# llama.cpp source build). GPU backends are auto-detected by whisper.cpp's
-# CMake (Metal on macOS; set GGML_CUDA=1 to force a CUDA build on Linux).
+# Build whisper.cpp's whisper-server into the managed Unsloth home, where
+# stt_ggml_sidecar.find_whisper_server_binary looks. Override the tag with WHISPER_CPP_TAG.
 
 set -eu
 
 WHISPER_CPP_SOURCE="${WHISPER_CPP_SOURCE:-https://github.com/ggml-org/whisper.cpp}"
 WHISPER_CPP_TAG="${WHISPER_CPP_TAG:-v1.9.1}"
 
-# Stripped and tilde-expanded before it can outrank anything, as setup.sh and the Python
-# resolvers do: ${VAR:-} only treats the EMPTY string as unset, so a whitespace-only value
-# would win here and name a relative "   /whisper.cpp" the backend never looks in.
+# Strip and tilde-expand first: ${VAR:-} treats only the empty string as unset.
 _root_value() {
     _rv=$(printf '%s' "${1:-}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
     case "$_rv" in
@@ -29,9 +17,7 @@ _root_value() {
     printf '%s' "$_rv"
 }
 
-# UNSLOTH_HOME first: whisper.cpp is a SIBLING of studio/ under the master root, and the CLI
-# exports UNSLOTH_STUDIO_HOME=<root>/studio beside it, so taking that one would install a level
-# below where stt_ggml_sidecar._managed_whisper_cpp_dir() looks.
+# UNSLOTH_HOME first: whisper.cpp is a sibling of studio/ under the master root.
 _STUDIO_HOME_ALIAS="${STUDIO_HOME:-}"   # read before the name below is reassigned
 STUDIO_HOME="$(_root_value "${UNSLOTH_HOME:-}")"
 [ -n "$STUDIO_HOME" ] || STUDIO_HOME="$(_root_value "${UNSLOTH_STUDIO_HOME:-}")"
@@ -47,9 +33,7 @@ fi
 command -v git >/dev/null 2>&1 || { echo "ERROR: git is required" >&2; exit 1; }
 command -v cmake >/dev/null 2>&1 || { echo "ERROR: cmake is required" >&2; exit 1; }
 
-# Same policy as studio/setup.sh's _assert_studio_owned_or_absent: never delete
-# a directory under a custom Unsloth home unless Unsloth itself created it (the
-# marker file below). Protects a user-managed whisper.cpp/src from rm -rf.
+# Never delete a dir under a custom Unsloth home unless Unsloth created it (marker file).
 STUDIO_OWNED_MARKER=".unsloth-studio-owned"
 if [ "$CUSTOM_STUDIO_HOME" = true ] && [ -e "$INSTALL_DIR" ] && \
    [ ! -f "$INSTALL_DIR/$STUDIO_OWNED_MARKER" ]; then

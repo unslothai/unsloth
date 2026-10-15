@@ -1,11 +1,5 @@
-# pre-commit.ci reads its settings from here and only from here. These lived in a
-# root .pre-commit-ci.yaml for ten months, which is not a file pre-commit.ci looks
-# at, so none of them applied: every autoupdate commit on main used the default
-# message and arrived weekly, not monthly.
-#
-# autofix_prs is the default, but it is stated because the sync-allow-scripts-pins
-# hook below depends on it by name. skip and submodules are left out: they are
-# defaults that guard nothing, and unused settings are what produced this bug.
+# pre-commit.ci reads its settings only from this file. autofix_prs is stated because the
+# sync-allow-scripts-pins hook depends on it.
 ci:
   autofix_prs: true
   autoupdate_schedule: monthly
@@ -24,10 +18,7 @@ repos:
     hooks:
       - id: ruff-format-with-kwargs
         name: Ruff format with kwarg spacing
-        # `python <script>` not a direct exec, for the reason spelled out on the
-        # hook below: an autofix commit can drop the executable bit, and a
-        # shebang-style entry then dies with "Executable not found". That is
-        # twice now (#10519, #10523); this makes the mode bit irrelevant.
+        # `python <script>`, not a direct exec: autofix commits can drop the executable bit.
         entry: python scripts/run_ruff_format.py
         language: python
         types: [python]
@@ -37,13 +28,10 @@ repos:
         exclude: '(chat_templates|ollama_template_mappers|_auto_install|mapper)\.py$|^studio/backend/vendor/|^unsloth/_vendor/'
         additional_dependencies:
           - ruff==0.6.9
-      # Re-pins allowScripts entries after dependency bumps. pre-commit.ci
-      # pushes the fix to PR branches, Dependabot's included, so stale pins
-      # heal without a human in the loop.
+      # pre-commit.ci pushes the fix to PR branches (Dependabot's too), so stale pins heal.
       - id: sync-allow-scripts-pins
         name: Sync allowScripts pins with the frontend lockfile
-        # `python <script>` not a direct exec: autofix commits can drop the
-        # executable bit, which kills shebang-style entries.
+        # `python <script>`, not a direct exec: autofix commits can drop the executable bit.
         entry: python scripts/sync_allow_scripts_pins.py
         args: [--fix]
         language: python

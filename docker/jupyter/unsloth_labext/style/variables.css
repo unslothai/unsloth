@@ -1,13 +1,5 @@
-/* Unsloth Dark = Sublime/Colab "Monokai" palette, overriding JupyterLab Dark.
- * Applied on :root because the theme manager only loads this file while the
- * "Unsloth Dark" theme is active, so it never affects the light theme.
- *
- * Exact HSL from Sublime "Monokai":
- *   bg hsl(70,8%,15%)  fg hsl(60,30%,96%)  selection hsla(55,8%,31%,.7)
- *   comment hsl(50,11%,41%)  string hsl(54,70%,68%)  number hsl(261,100%,75%)
- *   keyword hsl(338,95%,56%)  function hsl(80,76%,53%)  builtin hsl(190,81%,67%)
- *   param hsl(32,98%,56%)  error hsl(0,93%,59%)
- */
+/* Monokai palette overriding JupyterLab Dark. :root is safe: the theme manager only
+ * loads this file while "Unsloth Dark" is active. */
 :root {
   /* surfaces */
   --jp-layout-color0: hsl(70, 8%, 12%);
@@ -88,7 +80,6 @@
   --jp-mirror-editor-matchingbracket-color: hsl(54, 70%, 68%);
 }
 
-/* Active line tint inside the code editor (Monokai line_highlight). */
 .cm-editor .cm-activeLine {
   background-color: hsla(55, 11%, 30%, 0.35);
 }

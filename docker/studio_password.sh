@@ -21,10 +21,8 @@ JUPYTER_PORT="${JUPYTER_PORT:-8888}"
 STATE="${UNSLOTH_STUDIO_PASSWORD_STATE:-}"
 [[ -z "$STATE" && -n "${UNSLOTH_STUDIO_PASSWORD:-}" ]] && STATE=initial
 
-# Same rules as studio/backend/auth/bootstrap_timeout.py: unset, blank or malformed
-# means the 3600 s default (a typo must not hide the note), 0 or negative disables.
-# Only the surrounding whitespace is stripped, as int() does: "- 5" is malformed,
-# "1_000" is 1000 (single underscores between digits).
+# Same rules as studio/backend/auth/bootstrap_timeout.py: unset/blank/malformed = 3600,
+# <= 0 disables; whitespace stripped and single underscores allowed, as int() does.
 raw="${UNSLOTH_STUDIO_BOOTSTRAP_TIMEOUT:-}"
 raw="${raw#"${raw%%[![:space:]]*}"}"
 raw="${raw%"${raw##*[![:space:]]}"}"
@@ -54,9 +52,7 @@ case "$STATE" in
     *)
         deadline=$(( $(date +%s) + WAIT ))
         STUDIO_LINE=""
-        # The file alone is not enough: the CLI writes it before committing the admin
-        # row, so a launch interrupted between the two leaves a file the next launch
-        # replaces. Wait for the row, and read the file after it.
+        # The CLI writes the file before committing the admin row, so wait for the row.
         while [[ ! -s "$FILE" ]] || ! unsloth-studio-run --initialized; do
             if (( $(date +%s) >= deadline )); then
                 STUDIO_LINE="the first-boot password did not appear in ${WAIT}s; check the Unsloth Studio log above"
@@ -76,8 +72,7 @@ case "$STATE" in
 esac
 echo "Unsloth Studio login -> ${STUDIO_LINE}"
 
-# The summary waits for real answers: Studio's socket opens before torch is loaded,
-# and /api/health only turns 200 once the app is serving.
+# Studio's socket opens before torch loads; wait for /api/health 200.
 studio_ok=""; jupyter_ok=""
 deadline=$(( $(date +%s) + READY_WAIT ))
 while :; do
@@ -100,11 +95,7 @@ studio_text="not answering"
 [[ -n "$studio_ok" ]] && studio_text="$STUDIO_LINE"
 jupyter_text="not answering"
 [[ -n "$jupyter_ok" ]] && jupyter_text="${UNSLOTH_JUPYTER_NOTE:-password from JUPYTER_PASSWORD env}"
-# This block is the only part of a long startup log the reader needs, and plain
-# echo left it indistinguishable from the supervisord and Jupyter noise around
-# it, so the URLs and the generated passwords went unread. Colour the rules and
-# title, the links, and the two credential fields. NO_COLOR (no-color.org) turns
-# it off for anything collecting these logs into a file.
+# Colour the summary so it stands out from the startup noise; NO_COLOR turns it off.
 if [[ -n "${NO_COLOR:-}" ]]; then
     _b=""; _g=""; _y=""; _r=""
 else

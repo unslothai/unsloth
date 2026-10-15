@@ -33,9 +33,6 @@ DEFAULT_PROMPTS = [
 ]
 
 
-# ── image metrics (pure numpy) ───────────────────────────────────────────────
-
-
 def _to_gray(img: Any) -> Any:
     import numpy as np
     return np.asarray(img.convert("L"), dtype = np.float64)
@@ -98,9 +95,6 @@ def ssim(
     return float(ssim_map.mean())
 
 
-# ── optional CLIP (perceptual) ───────────────────────────────────────────────
-
-
 class _Clip:
     """Lazy CLIP scorer: prompt-image alignment + image-image cosine similarity."""
 
@@ -132,9 +126,6 @@ class _Clip:
 
     def image_similarity(self, img: Any, ref_img: Any) -> float:
         return float((self._image_embed(img) * self._image_embed(ref_img)).sum().item())
-
-
-# ── GPU measurement helpers (mirrors diffusion_bench) ─────────────────────────
 
 
 def _cuda(call: str) -> Optional[int]:
@@ -170,7 +161,7 @@ def _wait_for_load(backend: Any, timeout_s: int = 3600) -> None:
 
 
 def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
-    # Local paths: stat directly, since the Hub lookup returns None and _recommend would drop them.
+    # Local paths: the Hub lookup returns None and _recommend would drop them.
     try:
         local = Path(repo).expanduser()
         if local.is_dir():
@@ -190,9 +181,6 @@ def _hf_file_size_mib(repo: str, filename: str) -> Optional[int]:
     except Exception:
         return None
     return None
-
-
-# ── one quant: load, render the grid, measure ────────────────────────────────
 
 
 def _render_grid(
@@ -280,9 +268,6 @@ def _compare(
         "mean_clip_text": _mean(clip_txt) if clip is not None else None,
         "mean_clip_sim": _mean(clip_sim) if clip is not None else None,
     }
-
-
-# ── sweep ─────────────────────────────────────────────────────────────────────
 
 
 def _sweep(args: argparse.Namespace) -> int:
@@ -384,7 +369,6 @@ def _print_table(rows: list[dict]) -> None:
 
 
 def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
-    # The smallest-on-disk non-reference quant that stays within the quality budget.
     passing = [
         r
         for r in rows
@@ -408,9 +392,6 @@ def _recommend(args: argparse.Namespace, rows: list[dict]) -> None:
     )
 
 
-# ── self-test (CPU, no GPU/model) ─────────────────────────────────────────────
-
-
 def _selftest() -> int:
     import numpy as np
     from PIL import Image
@@ -418,7 +399,7 @@ def _selftest() -> int:
     rng = np.random.default_rng(0)
     base = rng.integers(0, 256, (128, 128, 3), dtype = np.uint8)
     a = Image.fromarray(base)
-    b = Image.fromarray(base)  # identical
+    b = Image.fromarray(base)
     noisy = Image.fromarray(
         np.clip(base.astype(int) + rng.integers(-40, 40, base.shape), 0, 255).astype(np.uint8)
     )
@@ -431,7 +412,6 @@ def _selftest() -> int:
     )
     checks.append(("noisy SSIM < identical", ssim(a, noisy) < ssim(a, b)))
     checks.append(("shape mismatch -> 0", psnr(a, Image.fromarray(base[:64])) == 0.0))
-    # box mean of a constant field equals the constant
     const = np.full((32, 32), 7.0)
     checks.append(
         ("box mean of constant is constant", abs(_box_mean(const, 7).mean() - 7.0) < 1e-9)
@@ -443,9 +423,6 @@ def _selftest() -> int:
         ok = ok and passed
     print("SELFTEST OK" if ok else "SELFTEST FAILED", flush = True)
     return 0 if ok else 1
-
-
-# ── cli ───────────────────────────────────────────────────────────────────────
 
 
 def _build_parser() -> argparse.ArgumentParser:

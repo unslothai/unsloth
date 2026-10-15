@@ -49,18 +49,14 @@ warn()   { printf "${YELLOW}WARN${NC}  %s\n" "$*"; }
 err()    { printf "${RED}ERROR${NC} %s\n" "$*" >&2; }
 fail()   { err "$*"; exit 1; }
 
-# AMD GPU device flags used for all `docker run` invocations. --group-add needs
-# NUMERIC gids: a name is resolved inside the container, where the host's
-# video/render groups do not exist.
+# --group-add needs NUMERIC gids: names resolve inside the container.
 AMD_DEVICE_FLAGS=(--device /dev/kfd --device /dev/dri)
 for _grp in video render; do
     _gid="$(getent group "$_grp" 2>/dev/null | cut -d: -f3)" || _gid=""
     [[ -n "$_gid" ]] && AMD_DEVICE_FLAGS+=(--group-add "$_gid")
 done
 
-# ============================================================================
 # Block 1: pre-flight
-# ============================================================================
 banner "Block 1: host pre-flight"
 
 command -v docker >/dev/null 2>&1 || fail "docker not found on PATH"
@@ -97,7 +93,6 @@ else
     warn "Then: sudo usermod -aG video,render \$USER  (log out and back in)"
 fi
 
-# Check the user is in the video group -- required for /dev/dri access.
 if id -nG 2>/dev/null | grep -qw video; then
     echo "  video group:  ok (current user is a member)"
 else
@@ -107,9 +102,7 @@ fi
 
 ok "pre-flight done"
 
-# ============================================================================
 # Block 2: build
-# ============================================================================
 if [[ $SKIP_BUILD -eq 1 ]]; then
     warn "skipping build (--skip-build); expecting $TAG to exist"
 else
@@ -128,9 +121,7 @@ else
     BUILD_LOG="$LOG_DIR/build.log"
     echo "  log:           $BUILD_LOG"
 
-    # Through build.sh, not a bare docker build: it freezes UNSLOTH_REF and
-    # UNSLOTH_ZOO_REF to commits first, so a rerun after main moved cannot reuse
-    # the install layer of an earlier build and validate stale code.
+    # Through build.sh: it freezes the git refs so a rerun cannot reuse a stale install layer.
     IMAGE_NAME="${TAG%%:*}" TAG="${TAG#*:}" ROCM_VERSION="$ROCM_VERSION" \
         TORCH_INDEX_URL="$TORCH_INDEX_URL" ROCM_GFX="$ROCM_GFX" \
         bash "$BUILD_SH" --rocm 2>&1 | tee "$BUILD_LOG"
@@ -139,7 +130,6 @@ else
         fail "build exited $rc -- see $BUILD_LOG"
     fi
 
-    # Sanity-check the build's own self-test ran and passed.
     if grep -q "FAIL: missing packages\|Expected a ROCm torch wheel" "$BUILD_LOG"; then
         fail "build-time sanity check failed -- see $BUILD_LOG"
     fi
@@ -148,9 +138,7 @@ else
     ok "built $TAG"
 fi
 
-# ============================================================================
 # Block 3a: smoke test
-# ============================================================================
 banner "Block 3a: smoke test (5-step LoRA on Llama-3.2-1B)"
 SMOKE_LOG="$LOG_DIR/smoke.log"
 echo "  log: $SMOKE_LOG"
@@ -166,9 +154,7 @@ if ! grep -q "all checks passed" "$SMOKE_LOG"; then
 fi
 ok "smoke test passed"
 
-# ============================================================================
 # Block 3b: gpt-oss-20B fine-tuning notebook
-# ============================================================================
 if [[ $SKIP_NOTEBOOK -eq 1 ]]; then
     warn "skipping gpt-oss-20B notebook (--skip-notebook)"
 else
@@ -257,9 +243,6 @@ INNER
     ok "gpt-oss-20B notebook completed"
 fi
 
-# ============================================================================
-# Summary
-# ============================================================================
 banner "summary"
 echo "  image:    $TAG"
 echo "  log dir:  $LOG_DIR"

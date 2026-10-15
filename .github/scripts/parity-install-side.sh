@@ -1,29 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-# Install ONE side of a UI-parity comparison: run the checked-out tree's own
-# `install.sh --local --no-torch` into a home of its own.
-# Usage:
-#   parity-install-side.sh <tree> <studio-home> <log-path>
-# NOT `.github/actions/install-unsloth-local`. That action is ROOT-CHECKOUT ONLY
-# and says so: `uses: ./...` resolves from GITHUB_WORKSPACE and takes no
-# expressions, so it cannot be pointed at a second tree, and it installs into
-# the default home, so calling it twice would put the second build on top of the
-# first. A parity job needs exactly the two things it cannot give: another tree
-# and another home.
-# What IS carried over from it, because it is the part that matters:
-#  * `set -o pipefail` before the tee. Without it the step reports the exit
-#    status of `tee`, not of install.sh, and a failed install passes.
-#  * The elapsed-seconds prefix on the STEP LOG only. This is the largest step
-#    in the job and install.sh's output carries no timestamps anywhere, so which
-#    phase spent the time cannot be read off a CI log. Guessing has already been
-#    misleading in this repo. Downstream of `tee` deliberately: the log file
-#    keeps byte-for-byte what install.sh wrote.
-#  * UV_CACHE_DIR is inherited from the environment rather than set here, so one
-#    restored cache serves both sides.
-# `--no-torch` because studiobench drives an external provider through its own
-# pacer and loads no model. A parity digest of the DOM needs the frontend and
-# the backend, and nothing that torch provides.
+# Install one side of a UI-parity comparison via the tree's own `install.sh --local --no-torch`.
+# Usage: parity-install-side.sh <tree> <studio-home> <log-path>
+# Not the install-unsloth-local action: it only handles the root checkout and the default home.
 
 set -uo pipefail
 

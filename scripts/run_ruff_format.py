@@ -13,16 +13,11 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE.parent / ".pre-commit-config.yaml"
-# Set to run against whatever ruff is installed. For a one-off experiment; a commit
-# made under it will be reformatted by the hook and fail pre-commit.
+# One-off experiments only: commits made under it get reformatted by the hook.
 ANY_VERSION_ENV = "UNSLOTH_RUFF_FORMAT_ANY_VERSION"
 USAGE = "usage: run_ruff_format.py FILE [FILE ...]  (formats in place; no options)"
 
-# `- ruff==0.6.9` under the hook's additional_dependencies. Read out of the config
-# rather than copied here, because a second copy of the pin is a second thing to
-# forget; a regex rather than yaml.safe_load because this hook installs ruff and
-# nothing else, and adding PyYAML to run a version check would be the tail wagging
-# the dog.
+# Read the ruff pin from the pre-commit config (regex, to avoid a PyYAML dependency).
 _PIN_RE = re.compile(r"^\s*-\s*ruff\s*==\s*([0-9][^\s#]*)\s*(?:#.*)?$", re.MULTILINE)
 _VERSION_RE = re.compile(r"^ruff\s+([0-9][^\s]*)")
 
@@ -30,8 +25,6 @@ _VERSION_RE = re.compile(r"^ruff\s+([0-9][^\s]*)")
 def pinned_ruff_version(config_text: str) -> str | None:
     """The ruff this repo's formatting was produced with, or None if unpinned."""
     found = {match.group(1) for match in _PIN_RE.finditer(config_text)}
-    # Two different pins is not a question this script can answer, and guessing
-    # would enforce the wrong one.
     return found.pop() if len(found) == 1 else None
 
 
@@ -119,12 +112,7 @@ def main(argv: list[str]) -> int:
 
     pinned = pinned_ruff_version(CONFIG.read_text(encoding = "utf-8")) if CONFIG.exists() else None
 
-    # Both checks are made before anything is rewritten, because the pre-pass is
-    # itself a rewrite. Without this first one, a missing or broken ruff let the
-    # pre-pass strip every magic comma it was given and only then die on `ruff
-    # format`, leaving files in a shape the hook rejects -- the opposite of what
-    # a full run produces, and blamed on the next person to touch them. The
-    # override below is deliberately not honoured here: no ruff formats nothing.
+    # Check before any rewrite: the pre-pass itself rewrites files, so a missing ruff must stop first.
     unavailable = ruff_unavailable_reason()
     if unavailable is not None:
         print(
@@ -136,11 +124,7 @@ def main(argv: list[str]) -> int:
         )
         return 1
 
-    # ruff's own formatting is not stable across releases -- 0.9 changed which
-    # half of an `assert cond, "msg"` gets wrapped -- so running this with a newer
-    # ruff silently produces a style the pinned hook reformats back, and the
-    # commit fails pre-commit on files that are otherwise correct. It reached main
-    # twice before this check existed.
+    # ruff formatting changes across releases, so a different version fights the pinned hook.
     installed = installed_ruff_version()
     if version_mismatch(pinned, installed) and not os.environ.get(ANY_VERSION_ENV):
         print(
@@ -157,8 +141,6 @@ def main(argv: list[str]) -> int:
 
     spacing_script = HERE / "enforce_kwargs_spacing.py"
 
-    # Pre-ruff: normalize def-signature magic commas and strip the magic comma
-    # from short multi-line asserts so ruff wraps/joins accordingly.
     pre_cmd = [sys.executable, str(spacing_script), "--pre", *files]
     pre_proc = subprocess.run(pre_cmd)
     if pre_proc.returncode != 0:

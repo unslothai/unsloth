@@ -1,15 +1,6 @@
-# Put tauri-bundler's NSIS toolset and WebView2 bootstrapper where it looks for
-# them before downloading, so `tauri build` never fetches them mid-bundle.
-#
-# The bundler fetches each with one unretried GET after the compile and signing
-# passes. A single github.com 504 on nsis-3.11.zip failed the Windows x64 leg of
-# the v0.1.901-beta release that way. Here every download is retried and hash or
-# signature checked; if one still fails, the bundler is left to try as before.
-#
-# URLs, SHA1s and the required-file list mirror tauri-bundler 2.8.1
-# (src/bundle/windows/nsis/mod.rs, src/bundle/windows/util.rs), the bundler in
-# tauri-cli 2.10.1. On any other CLI version this skips rather than seed a
-# toolset the bundler may not expect: re-pin the constants from its source.
+# Pre-seed tauri-bundler's NSIS toolset and WebView2 bootstrapper so `tauri build` does not
+# fetch them unretried. Constants mirror tauri-bundler 2.8.1 (tauri-cli 2.10.1); other CLI
+# versions skip. Re-pin from its source when upgrading.
 
 param(
     # dirs::cache_dir()/tauri, the bundler's default tools directory.
@@ -90,12 +81,11 @@ try {
     if (Test-NsisComplete $nsisDir) {
         Write-Host "NSIS toolset already complete at $nsisDir"
     } else {
-        # Anything partial would be wiped and refetched by the bundler anyway.
         Remove-Item -LiteralPath $nsisDir -Recurse -Force -ErrorAction SilentlyContinue
         $zip = Join-Path $scratch 'nsis.zip'
         $dll = Join-Path $scratch 'nsis_tauri_utils.dll'
         if ((Save-WithRetry $nsisUrl $zip) -and (Save-WithRetry $utilsUrl $dll)) {
-            # A hash mismatch is not transient: fail instead of retrying it away.
+            # A hash mismatch is not transient: fail instead of retrying.
             if (-not (Test-Sha1 $zip $nsisSha1)) { throw "nsis-3.11.zip SHA1 mismatch, expected $nsisSha1" }
             if (-not (Test-Sha1 $dll $utilsSha1)) { throw "nsis_tauri_utils.dll SHA1 mismatch, expected $utilsSha1" }
             Expand-Archive -LiteralPath $zip -DestinationPath $scratch -Force
@@ -110,8 +100,7 @@ try {
         }
     }
 
-    # embedBootstrapper: the bundler reuses this file whenever it exists and
-    # checks nothing, so only a valid Microsoft-signed binary is put there.
+    # The bundler reuses this file unchecked, so only a valid Microsoft-signed binary goes here.
     $webview2 = Join-Path $ToolsDir 'MicrosoftEdgeWebview2Setup.exe'
     if (Test-Path -LiteralPath $webview2) {
         Write-Host "WebView2 bootstrapper already present at $webview2"

@@ -144,19 +144,11 @@ def requested_version():
         return None
 
 
-# --- install-cell pin scanning -------------------------------------------------
-# Lives here rather than in unsloth_run because this module is the one copied into
-# site-packages, so it is the only one a kernel can import; unsloth_run reads these
-# back out. One implementation, so the headless path and the IPython hook cannot
-# disagree about what an install line is.
+# Install-cell pin scanning lives here because this is the module copied into
+# site-packages; unsloth_run imports it, so both paths agree.
 
-# The requirement NAME is matched loosely and normalised afterwards, because pip
-# accepts every PEP 503 spelling of it and unsloth_pip_shim canonicalises before it
-# decides what to drop. `Transformers==5.5.0` and `transformers[torch]==5.5.0` install
-# exactly what the canonical spelling installs and the shim drops all three, so a
-# scanner that only knew the canonical form left the pin unseen while the install was
-# still suppressed. The cell then imported the base version, and that import freezes
-# the sidecar choice for the life of the kernel with nothing left to correct it.
+# The name is matched loosely and normalised (PEP 503), like unsloth_pip_shim, or
+# `Transformers[torch]==X` pins go unseen while the install is still suppressed.
 _PIN_RE = re.compile(
     r"(?<![\w.\-])([A-Za-z0-9][A-Za-z0-9._\-]*)[ \t]*(?:\[[^\]]*\])?[ \t]*=="
     r"[ \t]*([0-9][0-9A-Za-z.\-]*)"
@@ -214,9 +206,7 @@ def pin_from(text):
     return None
 
 
-# Only an actual install invocation may supply the pin: the pin outranks the model
-# tier, so a commented-out install line would pick the wrong sidecar with nothing
-# running afterwards to correct it.
+# Only an actual install line may supply the pin: it outranks the model tier.
 _INSTALL_RE = re.compile(
     r"""^[ \t]*(?![ \t]*\#)[!%]?[ \t]*
         (?: uv (?:[ \t]+-{1,2}\S+)* [ \t]+ )?
@@ -296,9 +286,7 @@ def activate(version: str | None, *, quiet: bool = False):
         return None
     if d not in sys.path:
         sys.path.insert(0, d)
-    # guarded like the sys.path insert above: the hook runs on EVERY cell until
-    # transformers is imported, so an unconditional prepend grows PYTHONPATH by one
-    # copy per cell and every child process inherits the pile
+    # Guarded: the hook runs on every cell until transformers is imported.
     _pp = os.environ.get("PYTHONPATH", "")
     if d not in _pp.split(os.pathsep):
         os.environ["PYTHONPATH"] = d + os.pathsep + _pp
@@ -322,11 +310,7 @@ def _pre_run_cell(info = None):
     and every later cell got "already imported; cannot switch"."""
     if "transformers" in sys.modules:
         return
-    # The cell's own pin outranks the marker, which is a record of an install that has
-    # ALREADY run. Within one notebook a later cell can pin a different version, and
-    # the marker still holds the earlier one; the marker path also falls back to
-    # pid-<pid> when the ipykernel connection file cannot be read, and /tmp is never
-    # swept, so a recycled pid inherits someone else's pin.
+    # The cell's own pin outranks the marker, which may be stale or from a recycled pid.
     v = pin_in_cell(getattr(info, "raw_cell", None)) or requested_version()
     if v:
         activate(v)

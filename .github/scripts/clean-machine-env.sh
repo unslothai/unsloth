@@ -1,25 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-# Simulate a virgin developer machine on a GitHub-hosted runner. Two modes, because
-# "the tool is absent" and "the installer never called the tool" need different
-# mechanisms:
-#   mask   Make the toolchain genuinely ABSENT: scrub PATH to OS defaults and (with
-#          --remove) move the real toolchain aside so `command -v git` correctly
-#          FAILS. Deliberately no general "poison shims": a failing shim is still FOUND
-#          by `command -v`, which reports the tool as present, the opposite of clean.
-#          macOS has one observation-only exception: install_name_tool gets a logging
-#          sentinel because the installer must shadow Apple's dialog-producing shim and
-#          never uses this command to decide whether a dependency is installed.
-#   trace  Leave the toolchain working behind wrappers that log the call then exec
-#          the real binary, answering whether the installer ever REACHES for a
-#          compiler/git without changing behaviour.
-# Writes shell exports to $CLEAN_ENV_FILE (default ./clean-machine.env) to `source`;
-# nothing is exported globally, so other steps keep a normal environment.
-# Usage:
-#   bash .github/scripts/clean-machine-env.sh mask [--remove]
-#   bash .github/scripts/clean-machine-env.sh trace
-#   source ./clean-machine.env
+# Simulate a virgin developer machine on a hosted runner.
+#   mask   Make the toolchain truly absent (scrubbed PATH, --remove moves it aside); no failing
+#          shims, since `command -v` would still find them.
+#   trace  Wrap tools to log each call then exec the real binary.
+# Writes exports to $CLEAN_ENV_FILE (default ./clean-machine.env) for `source`.
+# Usage: bash .github/scripts/clean-machine-env.sh mask [--remove] | trace
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -42,25 +29,19 @@ BIN="$WORK/bin"
 RESTORE="$WORK/restore.sh"
 mkdir -p "$BIN"
 : > "$TRACE"
-# The git wrapper appends where each git ran; a rerun must not inherit an older install's rows.
 : > "$TRACE.git-cwd"
 : > "$ENV_FILE"
 printf '#!/usr/bin/env bash\n# Undo clean-machine-env.sh --remove. Safe to run twice.\nset -uo pipefail\n' > "$RESTORE"
 chmod +x "$RESTORE"
 
-# The toolchain we care about: a consumer install must need none of it.
-# cctools binaries are included because their /usr/bin shims can trigger the same
-# developer-tools dialog. uv's exact optional install_name_tool self-ID patch is
-# observed separately and narrowly allow-listed by clean-machine-assert.sh.
+# cctools are included because their /usr/bin shims can trigger the developer-tools dialog.
 TOOLS="xcode-select xcrun clang clang++ cc c++ gcc g++ git cmake make brew ninja cargo rustc
 install_name_tool lipo otool objdump vtool strip nm"
 
 note() { echo "[clean-machine] $*"; }
 
-# Move a path aside and record the reverse in restore.sh. PATH scrubbing only HIDES
-# these -- uv, the py launcher and framework lookups find them anyway -- so absence has
-# to be real. The restore line is guarded: the install may have recreated the path, and
-# an unguarded `mv` would bury the original inside it.
+# PATH scrubbing only hides tools (uv and framework lookups still find them), so move them aside.
+# The restore line is guarded: the install may recreate the path, and a bare mv would bury the original in it.
 mask_aside() {
   local src="$1" dst="${2:-$1.masked}" as=""
   [ -e "$src" ] || return 0
@@ -73,9 +54,7 @@ mask_aside() {
   fi
 }
 
-# ── PATH scrub ────────────────────────────────────────────────────────────────
-# Keep only OS-default system dirs: drops Homebrew, the hosted Python toolcache,
-# setup-* shims, pipx, cargo and every other preinstalled developer dir.
+# Keep only OS-default system dirs.
 scrub_path() {
   local keep out=""
   if [ "$OS" = "Darwin" ]; then
@@ -90,22 +69,17 @@ scrub_path() {
   echo "$out"
 }
 
-# ── mask ──────────────────────────────────────────────────────────────────────
 if [ "$MODE" = "mask" ]; then
   NEWPATH="$(scrub_path)"
   if [ "$OS" = "Darwin" ]; then
-    # Do not execute /usr/bin/install_name_tool as a self-test on a CLT-free Mac: that
-    # is the GUI prompt this lane exists to prevent. This sentinel is ahead of /usr/bin,
-    # logs argv with explicit argc and hex-encoded argument boundaries, and fails without
-    # touching a dylib. install.sh's still-more-local uv guard must win over it.
+    # Never run /usr/bin/install_name_tool on a CLT-free Mac: it opens the GUI prompt.
+    # install.sh's more local uv guard must win over this sentinel.
     bash "$INSTALL_NAME_TOOL_HELPER" write sentinel "$BIN/install_name_tool"
     NEWPATH="$BIN:$NEWPATH"
   fi
   {
     echo "export PATH='$NEWPATH'"
-    # UNSET, not a fake path: `xcode-select -p` honours DEVELOPER_DIR and prints it
-    # verbatim with exit 0, so a nonexistent dir makes the probe SUCCEED. On a clean
-    # Mac it is unset and the missing xcode_select_link is what makes the probe fail.
+    # Unset, not faked: `xcode-select -p` prints DEVELOPER_DIR verbatim with exit 0 even if missing.
     echo "unset DEVELOPER_DIR || true"
     echo "unset SDKROOT CC CXX CFLAGS CXXFLAGS LDFLAGS CMAKE_GENERATOR CMAKE_PREFIX_PATH || true"
     echo "export HOMEBREW_NO_AUTO_UPDATE=1"
@@ -115,12 +89,7 @@ if [ "$MODE" = "mask" ]; then
   } >> "$ENV_FILE"
 
   if [ "$REMOVE" = "1" ] && [ "$OS" = "Darwin" ]; then
-    # Best effort, each step independent and recorded in restore.sh so an `if: always()`
-    # step can put the runner back. `xcode-select -p` reads xcode_select_link, so
-    # removing it reproduces a virgin Mac's gate; `--reset` can reselect Xcode.app.
-    # Captured now, re-selected LAST: restore.sh runs in order, and a --switch emitted here
-    # would name a directory the later lines have not moved back yet, fail, and be
-    # swallowed, leaving the link unrestored while the step reported success.
+    # Original selection is re-selected LAST in restore.sh, after the directories it names are back.
     _orig_dev=""
     if [ -e /var/db/xcode_select_link ]; then
       _orig_dev="$(xcode-select -p 2>/dev/null || true)"
@@ -131,8 +100,6 @@ if [ "$MODE" = "mask" ]; then
         _orig_dev=""
       fi
     fi
-    # Moving the CLT dir aside turns /usr/bin/{cc,clang,git} into dead shims, proving
-    # the install needs no compiler at all.
     if [ -d /Library/Developer/CommandLineTools ]; then
       if sudo mv /Library/Developer/CommandLineTools /Library/Developer/CommandLineTools.masked 2>/dev/null; then
         note "moved CommandLineTools aside"
@@ -141,9 +108,7 @@ if [ "$MODE" = "mask" ]; then
         note "WARN could not move CommandLineTools"
       fi
     fi
-    # Xcode.app too: with the link removed AND CommandLineTools moved, `xcode-select -p`
-    # still succeeds via the image's Xcode bundle (observed:
-    # /Applications/Xcode_16.4.app/Contents/Developer), which re-arms /usr/bin/{git,cc}.
+    # Xcode.app too, or `xcode-select -p` still succeeds via the image's Xcode bundle.
     for app in /Applications/Xcode*.app; do
       [ -d "$app" ] || continue
       if sudo mv "$app" "${app}.masked" 2>/dev/null; then
@@ -153,15 +118,11 @@ if [ "$MODE" = "mask" ]; then
         note "WARN could not move $app"
       fi
     done
-    # After both directory restores above, so the path it names is back. Still `|| true`:
-    # the runner is ephemeral and a failed re-selection must not fail an otherwise green
-    # job, but it can no longer fail for the trivial reason of running too early.
     if [ -n "$_orig_dev" ]; then
       echo "sudo xcode-select --switch '$_orig_dev' 2>/dev/null || true" >> "$RESTORE"
     fi
-    # /usr/local EXISTS on a factory-fresh Mac (a SIP-exempt firmlink) but is empty, so
-    # empty it rather than remove it. Before the Homebrew block, so /usr/local/Homebrew
-    # is stashed once, with one restore line, in the right order.
+    # /usr/local exists but is empty on a fresh Mac, so empty it rather than remove it.
+    # Must run before the Homebrew block so /usr/local/Homebrew is stashed once.
     if [ -d /usr/local ]; then
       STASH="$WORK/usr-local"
       mkdir -p "$STASH"
@@ -177,12 +138,9 @@ if [ "$MODE" = "mask" ]; then
         fi
       done
     fi
-    # The hosted toolcache and the python.org framework are what a PATH scrub cannot
-    # reach: uv discovers interpreters by probing well-known locations.
+    # uv probes well-known interpreter locations that a PATH scrub cannot hide.
     mask_aside "${AGENT_TOOLSDIRECTORY:-$HOME/hostedtoolcache}"
     mask_aside /Library/Frameworks/Python.framework
-    # A virgin $HOME has none of these, and a populated uv/pip cache can satisfy a
-    # resolution that would fail on a user's machine.
     for d in .cargo .rustup .nvm .rbenv .pyenv .local .cache \
              Library/Caches/uv Library/Caches/pip Library/Caches/Homebrew; do
       mask_aside "$HOME/$d"
@@ -200,13 +158,9 @@ if [ "$MODE" = "mask" ]; then
   fi
 
   if [ "$REMOVE" = "1" ] && [ "$OS" = "Linux" ]; then
-    # A hosted Linux runner keeps git, gcc, cmake and make in /usr/bin, which the PATH
-    # scrub must keep, so move the resolved binaries aside (recorded in restore.sh).
-    # Versioned siblings like gcc-11 survive; a consumer install invokes the unsuffixed
-    # names, which is what `absent` checks.
+    # Versioned siblings like gcc-11 survive; installs invoke the unsuffixed names.
     for tool in $TOOLS; do
-      # Repeated: the same name can sit in /usr/bin and /usr/local/bin, and moving only
-      # the first leaves the second on PATH.
+      # Repeated: the same name can exist in several PATH dirs.
       for _ in 1 2 3 4; do
         real="$(command -v "$tool" 2>/dev/null || true)"
         [ -n "$real" ] && [ -e "$real" ] || break
@@ -222,19 +176,15 @@ if [ "$MODE" = "mask" ]; then
   fi
 fi
 
-# ── trace ─────────────────────────────────────────────────────────────────────
 if [ "$MODE" = "trace" ]; then
   for tool in $TOOLS; do
     real="$(command -v "$tool" 2>/dev/null || true)"
     [ -n "$real" ] || continue
-    # Logs then execs the REAL binary, so behaviour is unchanged and the trace answers
-    # "did the installer reach for this?" honestly. install_name_tool needs preserved
-    # argument boundaries via hex so the assertion can require exact -id PATH PATH argv.
+    # install_name_tool argv is hex-encoded so the assertion can require exact argument boundaries.
     if [ "$tool" = "install_name_tool" ]; then
       bash "$INSTALL_NAME_TOOL_HELPER" write passthrough "$BIN/$tool" "$real"
     else
-      # git also records where it ran: `submodule update` fetches whatever the CURRENT
-      # checkout's .gitmodules names, so notools has to see that it ran inside uv's checkout.
+      # git records its cwd: notools must see that `submodule update` ran inside uv's checkout.
       cwd_line=""
       [ "$tool" = "git" ] && cwd_line="printf '%s\t%s\n' \"\$PWD\" \"\$*\" >> '$TRACE.git-cwd'"
       cat > "$BIN/$tool" <<WRAP

@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Runs test_vae_tile_geometry.py on CPU with the pinned diffusers, which Backend CI does not install
-# (there the guard would only skip).
+# Backend CI does not install the pinned diffusers, so the guard would only skip there.
 
 name: Studio VAE seam guard
 

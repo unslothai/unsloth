@@ -1,7 +1,6 @@
 name: Publish Desktop Release
 
-# Manual dispatch only: sharing release-desktop.yml's concurrency group, a publish-fired
-# run stalls the desktop build queued behind it -- and predates any bundles anyway.
+# Manual dispatch only: it shares release-desktop.yml's concurrency group.
 on:
   workflow_dispatch:
     inputs:
@@ -31,8 +30,6 @@ concurrency:
 jobs:
   publish-updater:
     name: Validate published desktop release
-    # A mistakenly flagged prerelease still reaches the job, so validation fails
-    # visibly instead of silently skipping.
     if: ${{ startsWith(inputs.release_tag, 'v') }}
     runs-on: ubuntu-latest
     permissions:
@@ -47,7 +44,6 @@ jobs:
         with:
           egress-policy: audit
 
-      # Only validate complete Desktop publications; bundleless releases are normal.
       - name: Check for desktop bundles
         id: gate
         env:
@@ -61,10 +57,8 @@ jobs:
             echo "Could not list assets on ${RELEASE_TAG}; refusing to advance the channel." >&2
             exit 1
           fi
-          # Releases built before the rename carry the version in each filename, so
-          # completeness is judged against this tag's own scheme. Both spellings are
-          # whole publications; only a mixture of the two is partial. The same rule
-          # decides a repair source below, and the two must not disagree.
+          # Older releases carry the version in each filename; only a mixture of schemes is partial.
+          # The repair source check below must use the same rule.
           version="$(printf '%s' "${RELEASE_TAG#v}" | sed 's/[^0-9A-Za-z][^0-9A-Za-z]*/_/g; s/^_//; s/_$//')"
           suffixes=(MacOS.dmg Linux.AppImage Ubuntu.deb Windows.exe)
           stable_count=0
@@ -84,10 +78,7 @@ jobs:
           if grep -Fxq 'latest.json' "$asset_names" && [ "$complete" = 'true' ]; then
             echo "proceed=true" >> "$GITHUB_OUTPUT"
           elif grep -Fxq 'latest.json' "$asset_names" || grep -q '^Unsloth-Desktop-' "$asset_names"; then
-            # Half a publication: bundles without a manifest, a manifest without
-            # bundles, or some of each. Never validate it. Never block the repair
-            # either: the repair reads other releases and writes nothing here, and
-            # this is one of the states that leaves the pointer needing repair.
+            # Partial publication: never validate it, but still allow the pointer repair.
             if [ "$REPAIR_POINTER" = 'true' ]; then
               echo "${RELEASE_TAG} carries no complete Desktop publication; repairing the pointer instead."
               echo "proceed=false" >> "$GITHUB_OUTPUT"
@@ -100,22 +91,13 @@ jobs:
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # /releases/latest is repo-wide. A bundleless release moves updater discovery
-      # and stable downloads to a 404, so restore the newest complete Desktop release
-      # as latest without duplicating its binaries.
+      # /releases/latest is repo-wide; restore the newest complete Desktop release as latest.
       - name: Restore latest complete Desktop release
         if: ${{ inputs.repair_pointer && steps.gate.outputs.proceed == 'false' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # The target's tag shape does not matter: nothing is written to it. A
-          # prebuilt llama.cpp release (b8475) or a dated one takes the repo-wide
-          # pointer exactly as a bundleless v... release does, and takes the stable
-          # download links down with it, so all of them are repairable here.
-          #
-          # 100 most recent releases: far more than the gap between desktop builds,
-          # and one page keeps this to a single API call.
           gh api "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
           python3 - "$RUNNER_TEMP/releases.json" "$RUNNER_TEMP/candidates.json" <<'PY'
           import json
@@ -208,8 +190,6 @@ jobs:
           pathlib.Path(sys.argv[2]).write_text(json.dumps(chosen))
           PY
 
-          # Validate candidates newest first and restore the first sound one. One bad
-          # manifest must not end the repair while a good pointer target is waiting.
           cat > "$RUNNER_TEMP/validate-source.py" <<'PY'
           import json
           import os
@@ -291,9 +271,7 @@ jobs:
             exit 1
           fi
 
-          # Re-read the pointer against the world as it is now, not as the listing
-          # above found it. Promoting an older release over a healthy newer one, or
-          # over one another job just published, hands every client an older manifest.
+          # Re-read the pointer now: promoting over a newer release hands clients an older manifest.
           current_latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
           if [ "$current_latest" != "$RELEASE_TAG" ]; then
             echo "GitHub latest is ${current_latest:-unset}, not ${RELEASE_TAG}; nothing to repair."
@@ -307,9 +285,6 @@ jobs:
 
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${source_id}" \
             -f make_latest=true > "$RUNNER_TEMP/restored-latest.json"
-          # The pointer is read back rather than assumed, with a little patience for
-          # propagation so a slow read does not report a repair that did happen as a
-          # failure. A disagreement that outlives the retries is a real one.
           restored=''
           for _ in 1 2 3 4 5; do
             restored="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name 2>/dev/null || true)"
@@ -321,7 +296,6 @@ jobs:
             exit 1
           fi
           echo "Restored ${source_tag} as GitHub latest while ${RELEASE_TAG} has no Desktop build."
-          # Record the gap while GitHub latest pointed at a bundleless release.
           {
             printf '### Desktop updater pointer\n\n'
             printf '%s carries no desktop bundles, so GitHub latest now points back to %s.\n\n' \
@@ -481,10 +455,7 @@ jobs:
           PY
 
 
-      # Deletion is permanent and the tag is now hand-typed, so every check that can
-      # reject the target runs above this. Validation only asks whether each manifest
-      # bundle is present, so the surviving .sig assets do not change its verdict.
-      # The re-fetch keeps source-release.json current for the promotion below.
+      # Deletion is permanent and the tag is hand-typed, so every rejecting check runs above.
       - name: Remove standalone signature assets
         if: ${{ steps.gate.outputs.proceed == 'true' && !inputs.bridge_legacy_channel }}
         env:
@@ -533,17 +504,14 @@ jobs:
               sys.exit(f'{tag} is GitHub latest but serves no complete Desktop download set')
           PY
 
-      # The gate conjunct is load-bearing: this step reads the manifest fetched by
-      # "Download updater metadata", itself gated on proceed == 'true'. Without it a
-      # repair_pointer run that also bridges would die on a file it never downloaded.
+      # The proceed gate is load-bearing: this step reads a manifest only downloaded when proceed.
       - name: Bridge legacy desktop-latest clients once
         if: ${{ steps.gate.outputs.proceed == 'true' && inputs.bridge_legacy_channel }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Never create or silently revive this deprecated release. It must be the
-          # existing channel established by publishing the final desktop-v bridge.
+          # Never create or revive this deprecated release.
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$RUNNER_TEMP/legacy-channel.json"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)" = "$RELEASE_TAG"
           mkdir -p "$RUNNER_TEMP/legacy-current"

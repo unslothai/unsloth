@@ -12,7 +12,7 @@ from pathlib import Path
 def backend_dir(explicit: str | None) -> Path:
     if explicit:
         return Path(explicit)
-    import studio  # the installed package, beside the interpreter this runs under
+    import studio
     return Path(studio.__file__).resolve().parent / "backend"
 
 

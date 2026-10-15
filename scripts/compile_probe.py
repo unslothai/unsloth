@@ -100,7 +100,6 @@ def main(argv = None) -> int:
     pipe.to("cuda")
     print("pipeline loaded on cuda", flush = True)
 
-    # warm eager once (allocator / cudnn), then time it
     _gen(
         pipe,
         args.prompt,
@@ -142,7 +141,6 @@ def main(argv = None) -> int:
         print(f"RESULT: compile_repeated_blocks RAISED: {type(exc).__name__}: {exc}", flush = True)
         return 1
 
-    # first compiled gen is the untimed compile warmup
     try:
         t0 = time.time()
         _gen(

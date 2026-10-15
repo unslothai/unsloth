@@ -59,14 +59,9 @@ from virustotal_scan import (  # noqa: E402
 )
 
 
-# The revision reported in #10805, hashed from this repository's own history rather than copied from
-# the report: `git show 1ad44677d:install.ps1 | sha256sum` gives exactly this, at exactly the 427,113
-# bytes the sample is recorded as. That is what makes it the file that user actually ran, and a test
-# recomputes it rather than trusting this constant.
+# `git show 1ad44677d:install.ps1 | sha256sum`; a test recomputes it.
 BASELINE_SHA256 = "ec29980bffff30740f876f4955d890e0f1a1c9fd681521be6fbfccd24ffae296"
 
-# What the baseline scored, recorded so a run can say "unchanged" or "moved" without a second network
-# call, and so a reader can sanity-check the live answer against what we believed.
 BASELINE_NOTE = (
     "install.ps1 at 1ad44677d: 1 malicious / 58 undetected, Skyhigh "
     "BehavesLike.PS.Suspicious.gr; 17 Sigma rules (1 high, 11 medium, 5 low); 2 YARA hits"
@@ -85,9 +80,7 @@ class Snapshot:
     size: int = 0
     first_seen: str = ""
     engines: list[str] = field(default_factory = list)
-    # Every engine that returned a verdict of ANY kind. Needed because an engine missing from the
-    # candidate's results has not cleared it -- it did not look -- and a set difference against the
-    # flagging engines alone cannot tell those two apart.
+    # An engine absent from the candidate's results has not cleared it.
     responders: set[str] = field(default_factory = set)
     malicious: int = 0
     suspicious: int = 0
@@ -109,10 +102,7 @@ def sha256_of(path: Path) -> str:
     return digest.hexdigest()
 
 
-# The only categories that mean "this engine looked and did not object". `timeout`,
-# `confirmed-timeout`, `failure` and `type-unsupported` are all entries an engine can return without
-# having reached a verdict, and treating them as answers is the same mistake as treating absence as
-# one: it lets a detection be reported as cleared by an engine that never decided.
+# timeout, failure and type-unsupported are not verdicts.
 CONCLUSIVE_CLEAN = ("undetected", "harmless")
 
 
@@ -142,7 +132,7 @@ def count_all_verdicts(raw: object, stats) -> int:
         return stats.total
     total = 0
     for value in raw.values():
-        # Booleans are ints in Python and would each add one; VirusTotal sends counts, not flags.
+        # bool is an int in Python; VirusTotal sends counts.
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         total += int(value)
@@ -159,11 +149,7 @@ def parse_sigma(raw: object) -> dict[str, int]:
     if not isinstance(raw, dict):
         return {}
     out: dict[str, int] = {}
-    # Every bucket VirusTotal reports, not only the four this tool knows how to rank. Iterating a
-    # fixed key list is what the docstring above warns about and then did anyway: a candidate that
-    # gained rules only in a renamed or newly added bucket produced a dictionary identical to the
-    # baseline's, so compare() called Sigma unchanged and the run exited 0 on a regression.
-    # Unrankable buckets are kept here and handled separately in compare().
+    # Every bucket, including unknown ones, so a renamed bucket cannot hide a regression.
     for key, value in raw.items():
         if not isinstance(key, str):
             continue
@@ -181,10 +167,7 @@ def parse_yara(raw: object) -> list[str]:
     for entry in raw:
         if not isinstance(entry, dict):
             continue
-        # Ruleset AND rule. Two crowdsourced rulesets can carry the same rule identifier, and
-        # keying on the rule alone let a candidate gain a hit from a different ruleset while the
-        # parsed list stayed equal to the baseline's, so the comparison reported YARA unchanged and
-        # the run exited 0.
+        # Keyed on ruleset AND rule: rule ids collide across rulesets.
         rule = entry.get("rule_name")
         ruleset = entry.get("ruleset_name")
         parts = [p for p in (ruleset, rule) if isinstance(p, str) and p]
@@ -220,17 +203,12 @@ def snapshot_from_payload(label: str, sha256: str, payload: object) -> Snapshot:
     snap.first_seen = str(first) if first else ""
 
     if snap.total_engines == 0:
-        # Zero verdicts of any kind means no engine has run, which is not the same as every engine
-        # having cleared it. Recorded so the verdict below can refuse to call it clean.
+        # Zero verdicts means not analysed, not clean.
         snap.note = "no engine verdicts at all: the file is known but has not been analysed"
     return snap
 
 
-# Below the 20 minutes the workflow gives the whole job. Without a deadline one lookup can spend
-# four 300-second socket attempts plus 20, 40 and 80 second backoffs, so the baseline alone can eat
-# the budget and the runner kills the step before it fetches the candidate or writes its summary --
-# which is a lost run rather than a reported one. `request` checks this BEFORE each attempt, because
-# a single attempt can block for the full socket timeout.
+# Under the job's 20 minutes; retries and backoffs could otherwise eat the whole budget.
 LOOKUP_BUDGET_SECONDS = 420.0
 
 
@@ -248,10 +226,7 @@ def fetch(
             deadline = deadline,
         )
     except (RuntimeError, TimeoutError) as exc:
-        # The retry budget or the deadline is spent. VOID, not clean and not a crash: we did not
-        # find out, and the summary has to say so while there is still time to write it.
-        # Both are needed: a spent retry budget raises RuntimeError, but a spent deadline raises
-        # TimeoutError, which is an OSError and would otherwise walk straight past this handler.
+        # VOID, not clean. A spent deadline raises TimeoutError (an OSError), not RuntimeError.
         snap = Snapshot(label = label, sha256 = sha256)
         snap.note = f"the lookup did not complete within its budget: {exc}"
         return snap
@@ -266,11 +241,6 @@ def fetch(
     return snapshot_from_payload(label, sha256, payload)
 
 
-# ---------------------------------------------------------------------------
-# The verdict
-# ---------------------------------------------------------------------------
-
-
 @dataclass
 class Delta:
     void: list[str] = field(default_factory = list)
@@ -279,9 +249,7 @@ class Delta:
     same: list[str] = field(default_factory = list)
 
     def exit_code(self) -> int:
-        # 3 = could not measure, 2 = worse than baseline, 0 = same or better. Distinct, because a
-        # tool whose "we could not look" is spelled the same as "it got worse" is unreadable, and one
-        # whose "we could not look" is spelled the same as "it is fine" is dangerous.
+        # 3 = could not measure, 2 = worse, 0 = same or better; kept distinct on purpose.
         if self.void:
             return 3
         if self.worse:
@@ -309,22 +277,16 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
     if candidate.found and candidate.total_engines == 0:
         delta.void.append(f"the candidate has no engine verdicts: {candidate.note}")
     if baseline.found and baseline.total_engines == 0:
-        # Same guard, same reason, other side. A baseline VirusTotal knows but has never analysed
-        # carries no engines, no Sigma and no YARA, so every finding on the candidate reads as newly
-        # introduced and the run exits 2 while having compared against nothing at all.
+        # An unanalysed baseline would make every candidate finding look new.
         delta.void.append(f"the baseline has no engine verdicts: {baseline.note}")
     if delta.void:
         return delta
 
-    # Engines, by name. A count alone hides the case that matters most: the same number of
-    # detections, but a different and more widely deployed engine.
+    # By name: same count from a different engine matters.
     base_engines = {e.split(" (")[0] for e in baseline.engines}
     cand_engines = {e.split(" (")[0] for e in candidate.engines}
     new_engines = sorted(cand_engines - base_engines)
-    # An engine that flagged the baseline and is simply ABSENT from the candidate's results has not
-    # cleared it: it did not evaluate it. Older or sparser analyses do this routinely, and counting
-    # it as an improvement is how a vendor that never looked turns into a vendor that passed us.
-    # Only an engine that answered on the candidate, and answered without flagging, has cleared it.
+    # Only an engine that answered on the candidate without flagging has cleared it.
     cleared = base_engines & candidate.responders - cand_engines
     silent = base_engines - candidate.responders
     gone_engines = sorted(cleared)
@@ -339,8 +301,6 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
             f"{', '.join(gone_engines)}"
         )
     if silent:
-        # Not an improvement and not a regression: an unanswered question. Reported so the summary
-        # cannot read as though the vendor that matters most had cleared us.
         delta.same.append(
             f"engines that flagged the baseline and returned no verdict at all on the candidate, "
             f"so they have NOT cleared it: {', '.join(sorted(silent))}"
@@ -351,12 +311,7 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
             f"{': ' + ', '.join(sorted(cand_engines)) if cand_engines else ''})"
         )
 
-    # Sigma, per severity and in severity ORDER. Trading one high for three lows is an improvement
-    # and a total would call it a regression; the reverse is a regression a total would call an
-    # improvement. Reporting each bucket independently does not express that either: a trade moves
-    # two buckets in opposite directions, so it lands in `worse` and in `better` at once, and
-    # exit_code answers `worse`. SEVERITIES is ordered most severe first, so the most severe bucket
-    # that moved is the one that decides; the rest are reported alongside it and do not flip it.
+    # Sigma by severity order: the most severe bucket that moved decides the verdict.
     movements = [
         (severity, baseline.sigma.get(severity, 0), candidate.sigma.get(severity, 0))
         for severity in SEVERITIES
@@ -376,12 +331,7 @@ def compare(baseline: Snapshot, candidate: Snapshot) -> Delta:
                 f"{detail}"
             )
 
-    # Buckets this tool cannot place in the severity order, which is what a VirusTotal rename or
-    # addition looks like on the day it happens. They are deliberately kept out of the ordered
-    # trade-off above, because that logic depends on knowing which of two buckets is more severe.
-    # A rise in one is reported as worse rather than assumed minor: an unrankable bucket could sit
-    # anywhere, including above critical, and calling it an improvement is the one answer that
-    # cannot be defended.
+    # Unrankable buckets: a rise is reported as worse since they could rank above critical.
     unknown = sorted(
         (key, baseline.sigma.get(key, 0), candidate.sigma.get(key, 0))
         for key in set(baseline.sigma) | set(candidate.sigma)
@@ -417,10 +367,7 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
     lines = [
         "### VirusTotal delta against the reported baseline",
         "",
-        # Only when the baseline really IS the recorded one. A dispatch can override the hash, and
-        # printing the recorded identity beside an override's live numbers produced an artifact that
-        # combined someone else's file with install.ps1's historical scores, which is a delta built
-        # to be misattributed.
+        # Only when the baseline is the recorded one; an overridden hash must not borrow its scores.
         (
             f"Baseline recorded as: {BASELINE_NOTE}"
             if baseline.sha256.lower() == BASELINE_SHA256.lower()
@@ -450,10 +397,7 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
         if rows:
             lines.append(f"**{heading}**")
             lines.append("")
-            # Escaped here rather than at every append site. Engine names, detection labels and
-            # YARA rule names all reach these bullets, all are third-party text, and this is
-            # appended to $GITHUB_STEP_SUMMARY where a newline ends the bullet, `|` opens a cell and
-            # `<` starts HTML that GitHub renders.
+            # Third-party text into $GITHUB_STEP_SUMMARY: escape newlines, | and <.
             lines.extend(f"- {_md_text(row)}" for row in rows)
             lines.append("")
     if not delta.void and not delta.worse and not delta.better:
@@ -462,13 +406,7 @@ def render(baseline: Snapshot, candidate: Snapshot, delta: Delta) -> str:
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Offline self-test
-# ---------------------------------------------------------------------------
-
-# Recorded shapes, not live answers, so the comparison logic is testable with no key and no network.
-# This is the half that can be wrong in a way nobody notices: a network call that fails is loud, and
-# a comparison that silently never reports a regression is not.
+# Recorded shapes, not live answers, so the comparison logic is testable offline.
 _BASELINE_FIXTURE = {
     "data": {
         "attributes": {
@@ -534,8 +472,6 @@ def self_test() -> list[str]:
     }
     swap = snapshot_from_payload("candidate", "e" * 64, swapped)
     delta = compare(baseline, swap)
-    # Same count, different engine, and vastly more consequential. A count-only comparison calls this
-    # unchanged, which is the failure mode this check exists for.
     if not delta.worse:
         failures.append(
             "one engine's detection being replaced by another's was not reported as worse. The "
@@ -571,9 +507,6 @@ def self_test() -> list[str]:
         )
 
     return failures
-
-
-# ---------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -621,7 +554,6 @@ def main(argv: list[str] | None = None) -> int:
         print("::error::give --candidate or --candidate-sha256")
         return 1
 
-    # Checked before the key, so a misconfigured run fails on the thing it can see.
     candidate_sha = args.candidate_sha256
     if args.candidate:
         if not args.candidate.is_file():
@@ -632,15 +564,13 @@ def main(argv: list[str] | None = None) -> int:
 
     api_key = os.environ.get(API_KEY_ENV, "").strip()
     if not api_key:
-        # VOID, and exit 3. A missing key is the most likely reason this ever produces no comparison,
-        # and it must not be spelled the same as "nothing got worse".
+        # Missing key is VOID (exit 3), not "nothing got worse".
         print(f"::warning::{API_KEY_ENV} is not set, so nothing was compared.")
         print("::warning::COULD NOT MEASURE. This is a missing key, not a clean result.")
         return 3
 
     client = VirusTotalClient(api_key, request_interval = args.request_interval)
-    # One budget shared across both lookups, so a slow baseline cannot leave the candidate with the
-    # whole remaining job timeout and still overrun it.
+    # One budget for both lookups so a slow baseline cannot overrun the job timeout.
     deadline = time.monotonic() + LOOKUP_BUDGET_SECONDS
     baseline = fetch(client, args.baseline_sha256, "baseline", deadline = deadline)
     candidate = fetch(client, candidate_sha, "candidate", deadline = deadline)

@@ -25,20 +25,20 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO / ".github" / "workflows" / "studio-backend-ci.yml"
 
-# Both trees the matrix legs actually execute. studio-backend-ci lists 'unsloth_cli/**' in its own paths filter and runs `pytest unsloth_cli/tests` on every leg, so a post-floor stdlib name on a shipped CLI path was covered by the old 3.10 leg exactly as a backend one was; scanning only the backend would have moved that coverage to the push to main while looking like it had replaced it.
+# Both trees the CI matrix legs execute: studio-backend-ci also runs `pytest unsloth_cli/tests`.
 ROOTS = (
     REPO / "studio" / "backend",
     REPO / "unsloth_cli",
 )
 
-# Everything shipped under studio/backend is scanned. The first version listed the packages instead, which is exactly the wrong shape for a floor check: it named core, utils and routes and silently missed 116 files, including all of hub, plugins, models, storage, auth, picker and state, plus _platform_compat.py which main.py imports directly, and it named "loggers.py", a directory, so that entry matched nothing. studio-backend-ci runs `pytest tests/` from studio/backend on every leg, so a 3.11 API in a test file is executed by the 3.10 leg exactly as one in a shipped module is, and with the pull request down to a single 3.13 leg that leg and this lint would both pass while the failure arrived on the push to main.
+# Scan everything under studio/backend, tests included: the CI legs execute all of it.
 EXCLUDE_PARTS = ("vendor", "node_modules", "__pycache__", ".venv")
 
 
 # An above-floor symbol reached deliberately is suppressed AT THE SITE, with `# novermin` and a comment saying why, not by dropping its file from the scan. The one live case is locale.getencoding() in the data-designer plugin's state_store, inside a try/except AttributeError with a pre-3.11 fallback.
 
 
-# The floor is DECLARED, in the workflow, next to where the legs used to be. Deriving it from the matrix became self-defeating once the matrix ran one interpreter: a 3.13-only matrix would move the floor to 3.13 and leave this asserting that code written for 3.13 runs on 3.13. pyproject.toml is not the answer either, because it says >= 3.9 and that is not true today: unsloth/models/_utils.py already uses tempfile.TemporaryDirectory(ignore_cleanup_errors), which is 3.10.
+# Floor is declared in the workflow; the matrix and pyproject (>= 3.9) cannot supply the real floor.
 FLOOR_KEY = "PYTHON_FLOOR"
 
 
@@ -74,7 +74,7 @@ def targets() -> list[str]:
 def main() -> int:
     floor = declared_floor()
     target = f"{floor[0]}.{floor[1]}"
-    # The console script, not `python -m vermin`: the package has no __main__, so that form exits nonzero for the wrong reason and this lint would fail on every run while looking like it had found something.
+    # The console script: vermin has no __main__, so `python -m vermin` always fails.
     vermin = shutil.which("vermin")
     if vermin is None:
         raise SystemExit(

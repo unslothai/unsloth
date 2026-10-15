@@ -23,26 +23,21 @@ param(
     [ValidateSet('prepare', 'run', 'collect', 'revert')]
     [string] $Stage,
 
-    # Where evidence and the baseline are kept. Must survive between stages.
     [string] $WorkDir = "$env:USERPROFILE\unsloth-sac-probe",
 
     # Path to SmartAppControlAuditNoISG.bin from https://aka.ms/sacauditpolicies.
     [string] $AuditPolicy,
 
-    # Label for this run, so the four matrix cells do not overwrite each other.
     [string] $Label = 'run',
 
     [string] $Model = 'unsloth/Qwen3.5-2B-MTP-GGUF:UD-Q4_K_XL',
 
-    # prepare only: skip the Defender signature update, which is slow.
     [switch] $SkipUpdates,
 
     [switch] $UpgradePackages,
 
-    # run only: skip the Studio scenario and just do the signature inventory.
     [switch] $SkipStudio,
 
-    # prepare only: do not install Unsloth Studio when it is missing.
     [switch] $SkipInstall,
 
     [switch] $SendSamples,
@@ -50,7 +45,6 @@ param(
     [int] $Port = 8888
 )
 
-# A relative -WorkDir resolves against this shell's location once, so every path below is absolute.
 $WorkDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkDir)
 
 $ErrorActionPreference = 'Stop'
@@ -59,7 +53,6 @@ $NOISG_GUID = '{5283AC0F-FFF1-49AE-ADA1-8A933130CAD6}'
 $NOISG_DEST = "S:\efi\microsoft\boot\cipolicies\active\$NOISG_GUID.cip"
 $CI_LOG = 'Microsoft-Windows-CodeIntegrity/Operational'
 
-# A configured path the way Studio normalises one (utils/paths/storage_roots.studio_root)
 function Resolve-ConfiguredPath([string] $value) {
     if (-not $value) { return $null }
     $trimmed = $value.Trim()
@@ -72,14 +65,12 @@ function Resolve-ConfiguredPath([string] $value) {
     try { return [IO.Path]::GetFullPath($trimmed) } catch { return $trimmed }
 }
 
-# The configured Studio home, in Studio's precedence
 function Get-StudioHomeOverride {
     $override = Resolve-ConfiguredPath $env:UNSLOTH_STUDIO_HOME
     if (-not $override) { $override = Resolve-ConfiguredPath $env:STUDIO_HOME }
     return $override
 }
 
-# UNSLOTH_HOME, the portable master root: studio\ is its child and llama.cpp\ its sibling
 function Get-UnslothMasterRoot {
     return (Resolve-ConfiguredPath $env:UNSLOTH_HOME)
 }
@@ -92,20 +83,18 @@ function Get-StudioHome {
     return (Join-Path $env:USERPROFILE '.unsloth\studio')
 }
 
-# The runtime Studio actually loads, in Studio's own order (llama_cpp.py _find_llama_server_binary)
+# In Studio's own order (llama_cpp.py _find_llama_server_binary).
 function Get-LlamaDir {
     $binary = Resolve-ConfiguredPath $env:LLAMA_SERVER_PATH
     if ($binary) { return (Split-Path -Parent $binary) }
     $installDir = Resolve-ConfiguredPath $env:UNSLOTH_LLAMA_CPP_PATH
     if ($installDir) { return $installDir }
-    # The master root outranks a studio home here, as in _resolved_studio_root_and_is_legacy
     $master = Get-UnslothMasterRoot
     if ($master) { return (Join-Path $master 'llama.cpp') }
     $override = Get-StudioHomeOverride
     if ($override) { return (Join-Path $override 'llama.cpp') }
     return (Join-Path $env:USERPROFILE '.unsloth\llama.cpp')
 }
-# The managed venv.
 $VENV_DIR = Join-Path (Get-StudioHome) 'unsloth_studio'
 
 function Resolve-LlamaDir([string] $dir) {
@@ -114,7 +103,6 @@ function Resolve-LlamaDir([string] $dir) {
         $sel = Get-Content -LiteralPath $selection -Raw | ConvertFrom-Json
         if ($sel.resolved_binary) {
             Write-Host ("runtime selected by Studio ({0}): {1}" -f $sel.source, $sel.resolved_binary)
-            # The selected root, not the binary's directory.
             if ($sel.path -and (Test-Path -LiteralPath $sel.path -PathType Container)) {
                 return $sel.path
             }
@@ -128,12 +116,12 @@ function Resolve-LlamaDir([string] $dir) {
 }
 $PE_EXT = @('.exe', '.dll', '.pyd', '.sys', '.ocx', '.cpl', '.scr')
 
-# unsloth_cli reads UNSLOTH_STUDIO_PASSWORD itself and treats it as set-the-initial-password, so launching with it set hard-errors on any Studio that already has one
+# unsloth_cli treats UNSLOTH_STUDIO_PASSWORD as the initial password and errors if one exists.
 $STUDIO_PASSWORD = $env:UNSLOTH_STUDIO_PASSWORD
 Remove-Item Env:\UNSLOTH_STUDIO_PASSWORD -ErrorAction SilentlyContinue
 $CI_EVENT_IDS = @(3033, 3076, 3077, 3089, 3090, 3091, 3092, 3099)
 
-# Native commands do not throw under $ErrorActionPreference = 'Stop' in Windows PowerShell
+# Native commands do not throw under ErrorActionPreference Stop in Windows PowerShell.
 function Invoke-Native([string] $Exe, [string[]] $Arguments) {
     & $Exe @Arguments
     if ($LASTEXITCODE -ne 0) {
@@ -141,7 +129,6 @@ function Invoke-Native([string] $Exe, [string[]] $Arguments) {
     }
 }
 
-# The audit policy lives in the EFI system partition.
 $EFI_OWNED_MARKER = Join-Path $WorkDir '.efi-mounted-by-probe'
 
 function Mount-Efi {
@@ -161,7 +148,6 @@ function Mount-Efi {
     return $true
 }
 
-# Set when a dismount failed, and read by prepare and revert before either reports success.
 $script:EfiStillMounted = $false
 
 function Dismount-Efi([bool] $Mounted) {
@@ -176,7 +162,6 @@ function Dismount-Efi([bool] $Mounted) {
     }
 }
 
-# Retries a dismount an earlier stage could not complete.
 function Clear-EfiOwnership {
     if (-not (Test-Path -LiteralPath $EFI_OWNED_MARKER)) { return }
     if (-not (Test-Path -LiteralPath 'S:\')) {
@@ -184,7 +169,6 @@ function Clear-EfiOwnership {
         return
     }
     if (-not (Test-Path -LiteralPath 'S:\EFI\Microsoft\Boot')) {
-        # Somebody else's volume took the letter after our mount went away.
         Write-Warning 'S: is no longer the EFI system partition; leaving the drive letter alone and dropping this probe''s claim on it'
         Remove-Item -LiteralPath $EFI_OWNED_MARKER -Force -ErrorAction SilentlyContinue
         return
@@ -193,7 +177,8 @@ function Clear-EfiOwnership {
     Dismount-Efi $true
 }
 
-# $null when CiTool could not list the policies. -lp also lists inactive policies, which carry IsEnforced=false.
+# $null when CiTool could not list the policies.
+# -lp also lists inactive policies, which carry IsEnforced=false.
 function Test-PolicyActive([string] $Guid) {
     $bare = $Guid.Trim('{', '}').ToLowerInvariant()
     $policies = (Get-SacState).Policies
@@ -219,7 +204,7 @@ function Get-CiLogSettings {
     return [pscustomobject]@{ Enabled = $enabled; MaxSize = $maxSize }
 }
 
-# Does a preference that reads back as $actual carry the value $expected asked for? $true match, $false mismatch, $null when it could not be decided.
+# $true match, $false mismatch, $null when it could not be decided.
 function Test-MpPreferenceMatch($actual, $expected, [Type] $type) {
     if ($null -eq $actual) { return $false }
     if ($expected -is [bool] -or $actual -is [bool]) { return ([bool]$actual -eq [bool]$expected) }
@@ -281,7 +266,6 @@ function Get-SacState {
         2 { 'evaluation' }
         default { 'absent' }
     }
-    # $null, not empty, when the listing failed or is not the expected JSON
     $policies = $null
     try {
         $raw = & CiTool.exe -lp --json 2>$null
@@ -319,9 +303,7 @@ function Get-StudioPython {
     return $null
 }
 
-# The venv the RUNNING Studio uses, not the default location.
 function Resolve-VenvDir([string] $dir) {
-    # Recorded by run and read back by collect when $dir is given, the way the llama.cpp selection already is.
     if ($dir) {
         $recorded = Join-Path $dir 'venv-selection.txt'
         if (Test-Path -LiteralPath $recorded) {
@@ -335,7 +317,6 @@ function Resolve-VenvDir([string] $dir) {
 }
 
 function Resolve-StudioHomeFor([string] $dir) {
-    # run records the home the backend was launched with.
     if ($dir) {
         $recordedHome = Join-Path $dir 'studio-home.txt'
         if (Test-Path -LiteralPath $recordedHome) {
@@ -364,7 +345,6 @@ function Test-StudioResponding([int] $port) {
     try {
         $r = Invoke-WebRequest -Uri "http://127.0.0.1:$port/api/liveness" -TimeoutSec 5 -UseBasicParsing
         if ($r.StatusCode -ne 200) { return $false }
-        # Identity, not a bare status code.
         $body = $null
         try { $body = $r.Content | ConvertFrom-Json } catch { return $false }
         return ($body.service -eq 'Unsloth UI Backend')
@@ -375,11 +355,11 @@ function Test-StudioResponding([int] $port) {
 
 function Get-ScopeTail([string] $root) {
     $trimmed = ($root -replace '^[A-Za-z]:', '').TrimEnd('\', '/')
-    # A runtime at the root of a volume trims to nothing, and the tail would then be a lone separator, which every path in this machine-wide channel contains.
+    # A volume-root runtime trims to nothing, and a lone separator would match every path.
     if (-not $trimmed) {
         throw "cannot scope CodeIntegrity events to '${root}': a runtime or venv at the root of a volume leaves no path tail, so every event on this machine would be counted as an Unsloth verdict. Move it into a subdirectory, point UNSLOTH_LLAMA_CPP_PATH or LLAMA_SERVER_PATH at that, and run this label again from prepare."
     }
-    # UNC names reach CodeIntegrity through \Device\Mup\server\share, with one separator before the server; the DOS spelling has two.
+    # UNC names reach CodeIntegrity as \Device\Mup\server\share, with one leading separator.
     if ($trimmed.StartsWith('\\')) { $trimmed = $trimmed.Substring(1) }
     return ([Management.Automation.WildcardPattern]::Escape($trimmed) + '\')
 }
@@ -401,12 +381,10 @@ function Get-EventDataMap($record) {
 
 function Install-Studio {
     Write-Section 'Install Unsloth Studio'
-    # The documented install command, run exactly as a user would.
     Write-Host 'irm https://unsloth.ai/install.ps1 | iex'
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        # Out-Host, not a bare call.
         Invoke-Expression (Invoke-RestMethod -Uri 'https://unsloth.ai/install.ps1' -TimeoutSec 120) | Out-Host
     } catch {
         Write-Warning "installer failed: $_"
@@ -418,9 +396,7 @@ function Install-Studio {
 
 function Start-Studio([string] $python, [int] $port, [string] $logPath) {
     Write-Host "starting Studio on port $port"
-    # -X utf8 -I -m unsloth_cli is the supported entry point on a locked-down machine, per unsloth_cli/__main__.py.
     $cliArgs = @('-X', 'utf8', '-I', '-m', 'unsloth_cli', 'studio', '-p', "$port")
-    # One record, so one probe Studio at a time.
     if (-not (Stop-ProbeStudio (Get-RunDir))) {
         throw "the Studio this probe started earlier (see probe-studio.json under $(Get-RunDir)) is still running and could not be stopped; stop it by hand and run this stage again."
     }
@@ -448,8 +424,7 @@ function Start-Studio([string] $python, [int] $port, [string] $logPath) {
 }
 
 function Stop-Studio([int] $port) {
-    <# Stop the Studio answering on $port, children (llama-server, workers) first. #>
-    # Only the listeners that can be serving the endpoint Test-StudioResponding actually verified, which is http://127.0.0.1:$port.
+    # Only listeners that can serve http://127.0.0.1:$port, the endpoint actually verified.
     $owners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
         Where-Object { $_.LocalAddress -eq '127.0.0.1' -or $_.LocalAddress -eq '0.0.0.0' } |
         Select-Object -ExpandProperty OwningProcess -Unique)
@@ -477,7 +452,6 @@ function Stop-ProcessTree([int] $id) {
 }
 
 function Stop-ProbeStudio([string] $dir) {
-    <# Stop the elevated Studio this probe started, if it is still that process. Returns $false if it survives. #>
     $record = Join-Path $dir 'probe-studio.json'
     if (-not (Test-Path -LiteralPath $record)) { return $true }
     $r = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
@@ -492,7 +466,6 @@ function Stop-ProbeStudio([string] $dir) {
 }
 
 function Initialize-Studio([string] $dir, [bool] $allowInstall) {
-    <# Only prepare may install. prepare restarts a running Studio so its native loads land inside the event window. #>
     Write-Section 'Unsloth Studio'
     if (Test-StudioResponding $Port) {
         if (-not $allowInstall) {
@@ -516,9 +489,7 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
             return
         }
         Write-Host 'Studio is not installed on this machine.'
-        # Which of the trees the installer creates did not exist beforehand.
         $unslothHome = Join-Path $env:USERPROFILE '.unsloth'
-        # node and whisper.cpp do NOT always live under %USERPROFILE%\.unsloth.
         $override = Get-StudioHomeOverride
         $installRoots = @($unslothHome, $override, (Split-Path -Parent (Get-LlamaDir))) |
             Where-Object { $_ } | Select-Object -Unique
@@ -536,14 +507,12 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         try {
             $python = Install-Studio
         } finally {
-            # The installer may be cancelled after creating administrator-owned trees.
-            # Record them even when Ctrl+C bypasses its catch and normal return.
+            # Record created trees even when Ctrl+C bypasses the catch.
             $created = @($absentBefore | Where-Object { Test-Path -LiteralPath $_ })
             $baselinePath = Join-Path $dir 'baseline.json'
             if ($created.Count -gt 0 -and (Test-Path -LiteralPath $baselinePath)) {
                 $b = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
                 $b.StudioInstalledByProbe = $true
-                # Merged, not replaced.
                 $b.StudioInstallRoots = @(@($b.StudioInstallRoots) + $created |
                     Where-Object { $_ } | Select-Object -Unique)
                 Save-ProbeBaseline $b $baselinePath
@@ -559,10 +528,8 @@ function Initialize-Studio([string] $dir, [bool] $allowInstall) {
         }
     }
     Write-Host "managed interpreter: $python"
-    # Under raw-logs\, which collect redacts into studio-logs\ and never archives as is
     New-Item -ItemType Directory -Force -Path (Join-Path $dir 'raw-logs') | Out-Null
     $startLog = Join-Path (Join-Path $dir 'raw-logs') 'studio-start.log'
-    # Not discarded.
     if (-not (Start-Studio $python $Port $startLog)) {
         if ($allowInstall) {
             throw "Studio did not answer on port $Port within 5 minutes, so its startup loads cannot be observed in this window. See $startLog, fix the cause and run prepare again."
@@ -579,7 +546,6 @@ function Save-Baseline([string] $dir) {
     try { $status = Get-MpComputerStatus } catch { }
     $ciLog = Get-CiLogSettings
 
-    # Fail before mutating anything whose old value we could not read.
     if (-not $mp) {
         throw "could not read the Defender preferences that prepare changes, so revert would not be able to restore them. Refusing to modify this machine. Underlying error: $mpError"
     }
@@ -607,13 +573,10 @@ function Save-Baseline([string] $dir) {
         AntivirusSignatureVersion = if ($status) { $status.AntivirusSignatureVersion } else { $null }
         CiLogEnabled            = $ciLog.Enabled
         CiLogMaxSize            = $ciLog.MaxSize
-        # revert repairs ACLs only on trees this run created; see Invoke-Revert.
         StudioInstalledByProbe  = $false
         StudioInstallRoots      = @()
         AuditPolicyApplied      = $false
-        # $true when an unsigned control raised 3076/3077 under the applied policy, $false never (prepare throws), $null when no control could be built.
         AuditPolicyControlFired = $null
-        # The same question for the cell that runs with no -AuditPolicy at all, where the only thing that can produce a verdict is Smart App Control enforcing for real.
         SacControlFired         = $null
         AuditPolicyPreexisting  = $false
         RevertCompletedAt       = $null
@@ -624,7 +587,6 @@ function Save-Baseline([string] $dir) {
     return $baseline
 }
 
-# Proves the audit policy is not merely listed but actually evaluating loads.
 function Save-ProbeBaseline($Baseline, [string] $Path) {
     $tmp = "$Path.tmp"
     $Baseline | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $tmp -Encoding UTF8
@@ -635,7 +597,7 @@ function Save-ProbeBaseline($Baseline, [string] $Path) {
     }
 }
 
-# A -WorkDir on roaming or shared storage can carry another machine's baseline; its settings are not this machine's.
+# A shared -WorkDir can carry another machine's baseline.
 function Assert-BaselineIsThisMachine($Baseline) {
     if ($Baseline -and $Baseline.ComputerName -and $Baseline.ComputerName -ne $env:COMPUTERNAME) {
         throw "label '$Label' was prepared on $($Baseline.ComputerName), not $($env:COMPUTERNAME); its baseline describes that machine, so no stage uses it here. Use a -WorkDir local to this machine, or a new -Label."
@@ -661,7 +623,6 @@ function Test-EventDataFromPolicy($data, [string] $Guid, [string] $NamePattern =
             $otherId = $true
         }
     }
-    # The name is a fallback for events without a policy ID; an ID naming another policy wins.
     return ($named -and -not $otherId)
 }
 
@@ -684,9 +645,7 @@ function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string]
             Write-Warning 'Add-Type reported success but produced no control binary; the audit policy has NOT been shown to evaluate loads here.'
             return $null
         }
-        # Launch failure is not an error here.
         try { & $control 2>&1 | Out-Null } catch { }
-        # Polled, not slept once.
         foreach ($attempt in 1..10) {
             Start-Sleep -Seconds 3
             $fired = @(Get-WinEvent -FilterHashtable @{
@@ -704,12 +663,10 @@ function Test-AuditPolicyEvaluating([int[]] $AcceptIds = @(3076, 3077), [string]
         }
         return $false
     } finally {
-        # Never left behind, and never staged into the evidence
         Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
-# Machine-wide, so a label prepared under another -WorkDir is seen too.
 function Get-PendingRegistry {
     return (Join-Path $env:ProgramData 'unsloth-sac-probe\pending')
 }
@@ -722,20 +679,17 @@ function Get-PendingEntry([string] $dir) {
     return (Join-Path (Get-PendingRegistry) ($hash.Substring(0, 16) + '.txt'))
 }
 
-# A label whose baseline is not spent still has its changes on this machine.
 function Get-UnrevertedLabel([string] $dir) {
     $candidates = @(Get-ChildItem -LiteralPath (Split-Path -Parent $dir) -Directory -ErrorAction SilentlyContinue |
         ForEach-Object { $_.FullName })
     $self = Get-PendingEntry $dir
     foreach ($entry in @(Get-ChildItem -LiteralPath (Get-PendingRegistry) -File -Filter '*.txt' -ErrorAction SilentlyContinue)) {
         if ($entry.FullName -eq $self) {
-            # Retry only against the original baseline. A missing WorkDir must
-            # not turn this label's installed policy into a fresh baseline.
+            # A missing WorkDir must not turn this label's installed policy into a fresh baseline.
             if (-not (Test-Path -LiteralPath (Join-Path $dir 'baseline.json'))) { return $dir }
             continue
         }
-        # A pending machine-wide claim remains authoritative when its WorkDir is
-        # disconnected, renamed or unreadable. Do not snapshot its changes as baseline.
+        # A pending machine-wide claim stays authoritative when its WorkDir is unreadable.
         $recorded = Get-Content -LiteralPath $entry.FullName -Raw -ErrorAction Stop
         if (-not $recorded -or -not $recorded.Trim()) {
             throw "pending probe entry $($entry.FullName) is empty; recover its baseline and revert before preparing another label"
@@ -775,11 +729,9 @@ function Invoke-Prepare {
         Assert-BaselineIsThisMachine $previous
     }
     if ($previous -and -not $previous.RevertCompletedAt) {
-        # A retry of this label whose changes are still on the machine.
         $baseline = $previous
         Write-Warning "reusing the baseline captured at $($baseline.CapturedAt) by an earlier prepare of this label; revert restores that state"
     } else {
-        # No baseline, or one whose revert completed
         if ($previous) {
             Write-Host "the previous run of label '$Label' was reverted at $($previous.RevertCompletedAt); capturing a fresh baseline"
         }
@@ -795,13 +747,11 @@ function Invoke-Prepare {
 
     if (-not $SkipUpdates) {
         Write-Section 'Updates'
-        # Best effort.
         try {
             Write-Host 'Update-MpSignature ...'
             Update-MpSignature -ErrorAction Stop
         } catch { Write-Warning "Update-MpSignature failed: $_" }
     }
-    # Always cleared, so the transcript in the run directory describes this pass
     Remove-Item -LiteralPath (Join-Path $dir 'winget-upgrade.log') -Force -ErrorAction SilentlyContinue
     if ($UpgradePackages) {
         try {
@@ -812,7 +762,6 @@ function Invoke-Prepare {
     }
 
     Write-Section 'Raise security settings'
-    # Deliberately only the reversible ones.
     $wanted = [ordered]@{
         DisableRealtimeMonitoring = $false
         MAPSReporting             = 'Advanced'
@@ -832,7 +781,7 @@ function Invoke-Prepare {
             Write-Warning "could not set Defender $name : $_"
         }
     }
-    # Read back, because a tamper-protected or policy-managed preference is IGNORED rather than refused
+    # Read back: a tamper-protected preference is ignored rather than refused.
     $applied = $null
     try { $applied = Get-MpPreference } catch { }
     if (-not $applied) {
@@ -862,7 +811,7 @@ function Invoke-Prepare {
     }
 
     Write-Section 'CodeIntegrity log'
-    # The default 1 MB fills quickly once a policy is auditing every load, and a wrapped log silently loses the events this whole exercise exists to catch.
+    # The default 1 MB log wraps quickly under auditing and silently loses events.
     try {
         Invoke-Native 'wevtutil.exe' @('sl', $CI_LOG, '/e:true', '/ms:67108864')
     } catch {
@@ -877,7 +826,6 @@ function Invoke-Prepare {
     }
     Write-Host ("CodeIntegrity/Operational enabled, max size {0} (was enabled={1}, maxSize={2})" -f $ciNow.MaxSize, $baseline.CiLogEnabled, $baseline.CiLogMaxSize)
 
-    # Every failure from here on rolls back the policy once it was copied.
     $policyCopied = $false
     $prepareCompleted = $false
   try {
@@ -886,12 +834,11 @@ function Invoke-Prepare {
         if (-not (Test-Path -LiteralPath $AuditPolicy)) {
             throw "audit policy not found: $AuditPolicy"
         }
-        # The NoISG policy checks signatures only and skips the cloud reputation lookup, which is why it works even with Smart App Control off.
+        # NoISG checks signatures only, so it works with Smart App Control off.
         $mounted = Mount-Efi
         try {
-            # A file already there is somebody's policy only if this label did not put it there
             if ((Test-Path -LiteralPath $NOISG_DEST) -and -not $baseline.AuditPolicyApplied) {
-                # Keep it so revert restores it instead of deleting an administrator's policy.
+                # Keep it so revert restores an administrator's policy instead of deleting it.
                 New-Item -ItemType Directory -Force -Path (Split-Path $ROLLBACK_POLICY) | Out-Null
                 Copy-Item -LiteralPath $NOISG_DEST -Destination $ROLLBACK_POLICY -Force
                 $baseline.AuditPolicyPreexisting = $true
@@ -917,7 +864,6 @@ function Invoke-Prepare {
         foreach ($p in $after.Policies) {
             Write-Host ("  policy {0} enforced={1}" -f $p.FriendlyName, $p.IsEnforced)
         }
-        # Printing whatever is listed is not verification.
         if ($null -eq $after.Policies) {
             throw "CiTool could not list the policies, so the audit policy cannot be verified as active"
         }
@@ -925,7 +871,7 @@ function Invoke-Prepare {
             throw "the audit policy $NOISG_GUID is not in the active policy set after refresh"
         }
         if ($after.Policies.Count -eq 0) {
-            # No policy list means no evidence the policy is active, and a run with no 3076 events would then read as an allow verdict.
+            # Without a policy list, a run with no 3076 events would wrongly read as an allow verdict.
             throw "CiTool listed no policies, so the audit policy cannot be verified as active"
         }
 
@@ -942,11 +888,9 @@ function Invoke-Prepare {
         Write-Host 'and re-run with -AuditPolicy <path to SmartAppControlAuditNoISG.bin> to log what'
         Write-Host 'would be blocked. Without it, only real enforcement (3077) shows up, and only on a'
         Write-Host 'machine where Smart App Control is genuinely on.'
-        # So establish that it is, rather than letting collect infer an allow from a registry read.
         $sacBefore = Get-SacState
         if ($sacBefore.Mode -eq 'enforcement') {
             Write-Section 'Positive control'
-            # 3077 only.
             $sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)
             if ($false -eq $sacFired) {
                 throw "Smart App Control reads as 'enforcement' but an unsigned control binary ran here without being refused with a 3077, so nothing is enforcing against unsigned code on this boot and a window with no events would be meaningless. Re-run prepare with -AuditPolicy, or on a machine where enforcement is live."
@@ -956,7 +900,6 @@ function Invoke-Prepare {
         }
     }
 
-    # Marks the window collect will export.
     foreach ($stale in @(
         'scenario-status.json', 'scenario-results.json', 'runtime-selection.json',
         'venv-selection.txt', 'studio-home.txt',
@@ -1002,7 +945,7 @@ function Invoke-Prepare {
             } elseif ($stillActive) {
                 Write-Warning "the audit policy $NOISG_GUID was removed but is still active until Windows restarts; restart, then run .\sac-probe.ps1 -Stage revert -Label $Label"
             } else {
-                # Re-read: Initialize-Studio may have recorded the roots it created since $baseline was loaded.
+                # Re-read: Initialize-Studio may have recorded new roots since $baseline was loaded.
                 $saved = Get-Content -LiteralPath $baselinePath -Raw | ConvertFrom-Json
                 $saved.AuditPolicyApplied = $false
                 Save-ProbeBaseline $saved $baselinePath
@@ -1043,7 +986,8 @@ function Get-SignatureInventory([string] $root) {
             }
         }
     if ($enumErrors.Count -gt 0) {
-        # A subtree that could not be read is exactly where the access-denied native module being investigated would sit, and the caller only rejects a completely empty result.
+        # An unreadable subtree is where a blocked module would sit, and the caller only
+        # rejects an empty result.
         $script:InventoryErrors += @($enumErrors | ForEach-Object { "${root}: $_" })
         Write-Warning "$($enumErrors.Count) path(s) under $root could not be enumerated; this inventory is PARTIAL. See inventory-enumeration-errors.txt."
     }
@@ -1053,7 +997,6 @@ function Invoke-Run {
     Assert-Elevated
     $dir = Get-RunDir
 
-    # Before anything else.
     if (-not (Test-Path -LiteralPath (Join-Path $dir 'baseline.json')) -or
         -not (Test-Path -LiteralPath (Join-Path $dir 'window-start.txt'))) {
         throw "label '$Label' has no baseline.json and window-start.txt under ${dir}: prepare did not complete for it, so there is nothing to run against. Check the -Label, or run prepare for it first."
@@ -1063,11 +1006,9 @@ function Invoke-Run {
     if (Test-Path -LiteralPath $runBaselinePath) {
         $runBaseline = Get-Content -LiteralPath $runBaselinePath -Raw | ConvertFrom-Json
         Assert-BaselineIsThisMachine $runBaseline
-        # A label whose revert already completed.
         if ($runBaseline.RevertCompletedAt) {
             throw "label '$Label' was reverted at $($runBaseline.RevertCompletedAt), so its baseline is spent and the event window on disk belongs to the run that was undone. Running now would file events from that window against this run's inventory. Run prepare for this label again (or use a new -Label) first."
         }
-        # The window on disk has to belong to THIS baseline, and the check above cannot see when it does not.
         $runStartPath = Join-Path $dir 'window-start.txt'
         if (Test-Path -LiteralPath $runStartPath) {
             $runStart = $null
@@ -1096,7 +1037,7 @@ function Invoke-Run {
             $bootedAt = $null
             try { $bootedAt = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch { }
             $preparedAt = $null
-            # Invariant, and on the string form, because CapturedAt arrives here in two shapes and the default parse reads neither safely.
+            # Invariant parse of the string form: CapturedAt arrives in two shapes.
             try {
                 $preparedAt = [datetime]::Parse([string]$runBaseline.CapturedAt,
                     [cultureinfo]::InvariantCulture)
@@ -1111,7 +1052,6 @@ function Invoke-Run {
                 Save-ProbeBaseline $runBaseline $runBaselinePath
             }
         } elseif ([string]$runBaseline.Sac.Mode -eq 'enforcement') {
-            # The same revalidation for the cell with no audit policy, where the only thing that can produce a verdict is Smart App Control refusing code for real.
             Write-Section 'Smart App Control still enforcing'
             $sacNow = Get-SacState
             if ($sacNow.Mode -ne 'enforcement') {
@@ -1121,7 +1061,7 @@ function Invoke-Run {
             $bootedAt = $null
             try { $bootedAt = (Get-CimInstance Win32_OperatingSystem).LastBootUpTime } catch { }
             $preparedAt = $null
-            # Invariant, and on the string form, because CapturedAt arrives here in two shapes and the default parse reads neither safely.
+            # Invariant parse of the string form: CapturedAt arrives in two shapes.
             try {
                 $preparedAt = [datetime]::Parse([string]$runBaseline.CapturedAt,
                     [cultureinfo]::InvariantCulture)
@@ -1129,7 +1069,6 @@ function Invoke-Run {
             if (($bootedAt -and $preparedAt -and $bootedAt -gt $preparedAt) -or
                 ($true -ne $runBaseline.SacControlFired)) {
                 Write-Host 'confirming on this boot that unsigned code is actually refused here'
-                # 3077 only, for the reason prepare gives
                 $sacFired = Test-AuditPolicyEvaluating -AcceptIds @(3077)
                 if ($false -eq $sacFired) {
                     throw "Smart App Control reads as 'enforcement' but an unsigned control ran on this boot without being refused with a 3077, so it is not enforcing against unsigned code and this run would be meaningless. Run revert and prepare again."
@@ -1140,15 +1079,13 @@ function Invoke-Run {
         }
     }
 
-    # A machine that was prepared earlier may have been rebooted since, which is itself part of the reported behaviour
     if (-not $SkipStudio -and -not (Test-StudioResponding $Port)) { Initialize-Studio $dir $false }
 
-    # The venv, separately.
     Write-Section 'Venv signature inventory'
     $studioPython = Get-StudioPython
     $venvDir = Resolve-VenvDir
     Write-Host "venv: $venvDir"
-    # Recorded for collect, which may run from a shell where a custom UNSLOTH_STUDIO_HOME was never set.
+    # collect may run where a custom UNSLOTH_STUDIO_HOME was never set.
     $venvDir | Set-Content -LiteralPath (Join-Path $dir 'venv-selection.txt') -Encoding UTF8
     Get-StudioHome | Set-Content -LiteralPath (Join-Path $dir 'studio-home.txt') -Encoding UTF8
     $venvInventory = @(Get-SignatureInventory $venvDir)
@@ -1157,7 +1094,6 @@ function Invoke-Run {
     $venvInventory | Export-Csv -LiteralPath (Join-Path $dir 'venv-signature-inventory.csv') -NoTypeInformation -Encoding UTF8
     $venvTotal = $venvInventory.Count
     if ($venvTotal -eq 0) {
-        # The venv is where the only enforced block so far landed
         throw "no PE files found under $venvDir; Studio's environment was not found, so the cell is invalid. Check UNSLOTH_STUDIO_HOME or install Studio first"
     }
     $venvValid = @($venvInventory | Where-Object { $_.Status -eq 'Valid' }).Count
@@ -1181,8 +1117,7 @@ function Invoke-Run {
             Write-Warning 'UNSLOTH_STUDIO_PASSWORD is not set; the scenario needs it (see README) and will stop at login'
         }
         $scenarioArgs = @($scenario, '--model', $Model, '--out', $dir, '--port', "$Port")
-        # Neither UNSLOTH_STUDIO_PASSWORD (unsloth_cli claims that name and hard-errors, see $STUDIO_PASSWORD) nor --password on the command line.
-        # Only the password captured from UNSLOTH_STUDIO_PASSWORD, never one inherited under this name.
+        # Not UNSLOTH_STUDIO_PASSWORD (unsloth_cli claims it) nor --password on the command line.
         Remove-Item Env:\SAC_PROBE_STUDIO_PASSWORD -ErrorAction SilentlyContinue
         if ($STUDIO_PASSWORD) { $env:SAC_PROBE_STUDIO_PASSWORD = $STUDIO_PASSWORD }
         Write-Host "python $scenario --model $Model --out $dir --port $Port"
@@ -1209,7 +1144,6 @@ function Invoke-Run {
         Set-Content -LiteralPath (Join-Path $dir 'scenario-status.json') -Encoding UTF8
 
 
-    # After the scenario, which records the runtime Studio resolved
     Write-Section 'Signature inventory'
     $llamaDir = Resolve-LlamaDir $dir
     Write-Host "runtime: $llamaDir"
@@ -1220,7 +1154,6 @@ function Invoke-Run {
 
     $total = $inventory.Count
     if ($total -eq 0) {
-        # A runtime with no PE files is a stale UNSLOTH_LLAMA_CPP_PATH, an absent install or a failed enumeration
         throw "no PE files found under ${llamaDir}: there is no llama.cpp runtime on this machine, so the cell is invalid. Run 'python -X utf8 -I -m unsloth_cli studio setup' to download one (or point UNSLOTH_LLAMA_CPP_PATH / UNSLOTH_STUDIO_HOME at an existing install), then re-run this stage"
     }
     $valid = @($inventory | Where-Object { $_.Status -eq 'Valid' }).Count
@@ -1241,14 +1174,13 @@ function Invoke-Run {
 
     Write-Host ''
     if (-not $SkipStudio -and $scenarioStatus.ExitCode -ne 0) {
-        # A scenario that never authenticated or never loaded a model produces a window with nothing in it, and an empty window reads exactly like a clean allow.
+        # An empty window from an incomplete scenario reads exactly like a clean allow.
         Write-Warning 'the scenario did NOT complete, so this cell has not exercised model loading.'
         Write-Warning "See $log. Fix the cause and re-run this stage before collecting."
     }
     Write-Host "run complete. Next: .\sac-probe.ps1 -Stage collect -Label $Label"
 }
 
-# Reads the event window until delivery has settled.
 function Read-SettledCiEvents([datetime] $Start, [int[]] $Ids, [int] $Attempts = 20, [int] $IntervalSeconds = 3, [int] $MinSettleSeconds = 30) {
     $previous = -1
     $waited = 0
@@ -1279,11 +1211,9 @@ function Invoke-Collect {
 
     $startPath = Join-Path $dir 'window-start.txt'
     if (-not (Test-Path -LiteralPath $startPath)) {
-        # Get-RunDir creates the directory, so a mistyped label or a collect without a prepare lands here.
         throw "no window-start.txt under ${dir}: prepare did not run for label '$Label', so there is no event window to collect"
     }
     $start = [datetime]::Parse((Get-Content -LiteralPath $startPath -Raw).Trim())
-    # The same window checks run makes: a reverted label no longer carries the state its events are judged by.
     $collectBaselinePath = Join-Path $dir 'baseline.json'
     if (Test-Path -LiteralPath $collectBaselinePath) {
         $collectBaseline = Get-Content -LiteralPath $collectBaselinePath -Raw | ConvertFrom-Json
@@ -1299,28 +1229,23 @@ function Invoke-Collect {
     }
     Write-Section "Events since $($start.ToString('o'))"
 
-    # Everything that went wrong while gathering evidence.
     $collectionProblems = @()
     $events = @()
     try {
         $events = @(Read-SettledCiEvents $start $CI_EVENT_IDS)
         if ($events.Count -eq 0) { Write-Host 'no CodeIntegrity events in the window' }
     } catch {
-        # Only "nothing matched" is an empty window, and Read-SettledCiEvents already treats it as one.
         $_.ToString() | Set-Content -LiteralPath (Join-Path $dir 'events-collection-error.txt') -Encoding UTF8
         throw "could not read $CI_LOG, so the event window was not collected: $_"
     }
-    # A retry that got through clears the earlier attempt's marker
     Remove-Item -LiteralPath (Join-Path $dir 'events-collection-error.txt') -Force -ErrorAction SilentlyContinue
 
     $tail = Get-ScopeTail (Resolve-LlamaDir $dir)
     $venvTail = Get-ScopeTail (Resolve-VenvDir $dir)
-    # Studio's CPU fallback copy of the runtime: <studio home>\runtime\llama-cpu-*, the home run.py exports
     $cpuTail = (Get-ScopeTail (Join-Path (Resolve-StudioHomeFor $dir) 'runtime')) + 'llama-cpu-*\'
     $shaped = @($events | ForEach-Object {
         $msg = $_.Message
         $data = Get-EventDataMap $_
-        # The evaluated file, not the whole message.
         $subject = $msg
         foreach ($field in @('File Name', 'FileNameBuffer')) {
             if ($data.Contains($field) -and $data[$field]) { $subject = [string]$data[$field]; break }
@@ -1343,7 +1268,6 @@ function Invoke-Collect {
             ScopeFrom   = 'path'
             ActivityID  = $_.ActivityId
             Message     = $msg
-            # 3089's rendered Message is the fixed string "Signature information for another event.
             EventData   = $data
         }
     })
@@ -1372,7 +1296,6 @@ function Invoke-Collect {
 
     $ours = @($shaped | Where-Object { $_.Scope -ne 'other' })
     $blocks = @($ours | Where-Object { $_.Id -eq 3077 }).Count
-    # A 3076 is this probe's audit verdict only when the NoISG policy it installed raised it.
     $auditApplied = $false
     $baselineForAttribution = Join-Path $dir 'baseline.json'
     if (Test-Path -LiteralPath $baselineForAttribution) {
@@ -1398,7 +1321,6 @@ function Invoke-Collect {
         $a = @($g.Group | Where-Object { & $isOurAudit $_ }).Count
         Write-Host ("  {0,-10} {1} x 3077, {2} x 3076, {3} event(s)" -f $g.Name, $b, $a, $g.Count)
     }
-    # Whether a model was actually loaded inside this window.
     $scenarioStatus = $null
     $statusPath = Join-Path $dir 'scenario-status.json'
     if (Test-Path -LiteralPath $statusPath) {
@@ -1428,14 +1350,12 @@ function Invoke-Collect {
     $sacNow = Get-SacState
     if ($verdicts -eq 0 -and (Test-Path -LiteralPath $baselineForControl)) {
         $b = Get-Content -LiteralPath $baselineForControl -Raw | ConvertFrom-Json
-        # Both ends of the window, and neither is redundant.
         $sacMode = [string]$sacNow.Mode
         $sacAtPrepare = [string]$b.Sac.Mode
         if ($b.AuditPolicyApplied -and $true -ne $b.AuditPolicyControlFired) {
             $collectionProblems += 'no positive control confirmed the audit policy was evaluating loads, so a window with no 3076 or 3077 here is a NULL result, not an allow'
             Write-Warning 'No Unsloth path raised a 3076 or 3077, but no positive control confirmed the audit policy was evaluating loads on this machine. Do NOT report this cell as "not blocked".'
         } elseif (-not $loadOk) {
-            # Recorded as a collection problem above
             Write-Warning 'No Unsloth path raised a 3076 or 3077, but nothing was observed loading in this window (see collection-warnings.txt in the zip). Do NOT report this cell as "not blocked".'
         } elseif ($b.AuditPolicyApplied) {
             Write-Host 'no Unsloth path raised a 3076 or 3077, and the positive control confirmed the policy was evaluating loads'
@@ -1451,7 +1371,6 @@ function Invoke-Collect {
         }
     }
 
-    # Reported, never folded into the totals above.
     Write-Host "unrelated to Unsloth: $foreign event(s) (kept in the export, excluded from the counts)"
     Write-Host "$($shaped.Count) event(s) in the window overall"
 
@@ -1465,7 +1384,6 @@ function Invoke-Collect {
     }
 
     try {
-        # Captured into an array first
         $detections = @(Get-MpThreatDetection -ErrorAction Stop |
             Where-Object { $_.InitialDetectionTime -ge $start } |
             Select-Object InitialDetectionTime, ThreatID, Resources)
@@ -1473,7 +1391,7 @@ function Invoke-Collect {
             Set-Content -LiteralPath (Join-Path $dir 'defender-detections.json') -Encoding UTF8
         Remove-Item -LiteralPath (Join-Path $dir 'defender-query-error.txt') -Force -ErrorAction SilentlyContinue
     } catch {
-        # A failed query wrote the same `[]` a clean machine writes, so the evidence claimed a quarantine-free window when Defender had simply not answered.
+        # A failed query writes the same [] a clean machine does, so record the error.
         $_.ToString() | Set-Content -LiteralPath (Join-Path $dir 'defender-query-error.txt') -Encoding UTF8
         Remove-Item -LiteralPath (Join-Path $dir 'defender-detections.json') -Force -ErrorAction SilentlyContinue
         Write-Warning "Defender detections were NOT collected: $_. defender-query-error.txt records why; do not read the absence of detections as a clean window."
@@ -1482,7 +1400,6 @@ function Invoke-Collect {
     $sacNow | ConvertTo-Json -Depth 6 |
         Set-Content -LiteralPath (Join-Path $dir 'sac-state-after.json') -Encoding UTF8
 
-    # Studio's own logs, which carry the request timings and the backend errors.
     $sources = @()
     $studioLogs = Join-Path (Resolve-StudioHomeFor $dir) 'logs'
     if (Test-Path -LiteralPath $studioLogs) { $sources += $studioLogs }
@@ -1503,17 +1420,14 @@ function Invoke-Collect {
                 }
             }
         } else {
-            # Same absence, same marker
             $collectionProblems += 'Studio logs were not copied: no managed interpreter to run the redactor, so studio-logs\ is missing from this zip'
             Write-Warning 'Studio logs were not copied: no managed interpreter to run the redactor'
         }
     }
 
-    # Stage a copy before compressing.
     $stage = Join-Path $WorkDir ".stage-$Label"
     Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    # Get-ChildItem returns absolute FullName values even for a relative -WorkDir.
     $dir = (Get-Item -LiteralPath $dir).FullName
     foreach ($item in Get-ChildItem -LiteralPath $dir -Recurse -File) {
         $rel = $item.FullName.Substring($dir.Length).TrimStart('\')
@@ -1521,7 +1435,7 @@ function Invoke-Collect {
         $target = Join-Path $stage $rel
         New-Item -ItemType Directory -Force -Path (Split-Path $target) | Out-Null
         try {
-            # FileShare::ReadWrite so a writer holding the file does not block the read, which Copy-Item cannot express.
+            # FileShare ReadWrite so an open writer does not block the read; Copy-Item cannot do this.
             $src = [System.IO.File]::Open($item.FullName, [System.IO.FileMode]::Open,
                 [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
             try {
@@ -1534,7 +1448,6 @@ function Invoke-Collect {
         }
     }
     if ($collectionProblems.Count -gt 0) {
-        # Into the staged copy, after the loop, so it is inside the archive the operator attaches rather than only in a console they will not send.
         $collectionProblems -join "`n" |
             Set-Content -LiteralPath (Join-Path $stage 'collection-warnings.txt') -Encoding UTF8
         Write-Warning "this collection is INCOMPLETE: $($collectionProblems.Count) problem(s), recorded in collection-warnings.txt inside the zip"
@@ -1544,7 +1457,6 @@ function Invoke-Collect {
     try {
         Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip -Force -ErrorAction Stop
     } catch {
-        # Never announce a path Compress-Archive did not produce.
         Write-Host "::error::could not write $zip : $_"
         throw
     } finally {
@@ -1557,7 +1469,6 @@ function Invoke-Collect {
     Write-Host ''
     Write-Host "evidence: $zip" -ForegroundColor Green
 
-    # An empty window is only a result if the scenario actually ran.
     if ($loadOk) {
         if ($scenarioStatus -and $scenarioStatus.ExitCode -ne 0) {
             Write-Warning "The model loaded, so the load-time events are valid; later scenario step(s) failed: $($failedSteps -join ', ') (exit $($scenarioStatus.ExitCode))."
@@ -1587,7 +1498,6 @@ function Invoke-Revert {
 
     Clear-EfiOwnership
 
-    # A baseline this script already considers spent.
     if ($baseline.RevertCompletedAt) {
         if ($script:EfiStillMounted) {
             throw "the EFI system partition is still mounted as S: and could not be unmounted; run 'mountvol S: /D' by hand"
@@ -1596,7 +1506,6 @@ function Invoke-Revert {
         return
     }
 
-    # The policy block may throw (mount, copy or CiTool).
     $policyError = $null
     if ($baseline.AuditPolicyApplied) {
       try {
@@ -1605,7 +1514,7 @@ function Invoke-Revert {
         $mounted = Mount-Efi
         try {
             if ($baseline.AuditPolicyPreexisting -and -not (Test-Path -LiteralPath $saved)) {
-                # Falling through to the removal branch would delete an administrator's policy and then report a completed rollback.
+                # Falling through would delete an administrator's policy and report success.
                 throw "the baseline says a policy with $NOISG_GUID was already installed, but the saved copy is missing from $saved, so it cannot be restored. Nothing was changed; restore that .cip by hand (or remove AuditPolicyPreexisting from baseline.json once you have) and run revert again."
             }
             if ($baseline.AuditPolicyPreexisting) {
@@ -1617,7 +1526,6 @@ function Invoke-Revert {
             } else {
                 Write-Host 'audit policy file already absent'
             }
-            # Refreshed in every branch
             Invoke-Native 'CiTool.exe' @('-r')
             Write-Host 'policy refreshed'
         } finally {
@@ -1626,7 +1534,6 @@ function Invoke-Revert {
         # Before Windows 11 24H2 a removed policy can stay active until a restart.
         $stillActive = Test-PolicyActive $NOISG_GUID
         if ($baseline.AuditPolicyPreexisting) {
-            # A restored policy has to be back in force, not merely copied into place.
             if ($null -eq $stillActive) {
                 throw "the pre-existing audit policy $NOISG_GUID was restored and refreshed but CiTool could not list the policies to confirm it is active; run .\sac-probe.ps1 -Stage revert -Label $Label again once CiTool -lp works"
             }
@@ -1641,7 +1548,6 @@ function Invoke-Revert {
         if ($stillActive) {
             throw "the audit policy $NOISG_GUID was removed and refreshed but is still active; restart Windows, then run .\sac-probe.ps1 -Stage revert -Label $Label again"
         }
-        # Only once the refresh succeeded and the policy is gone
         $baseline.AuditPolicyApplied = $false
         Save-ProbeBaseline $baseline (Join-Path $dir 'baseline.json')
       } catch {
@@ -1666,7 +1572,6 @@ function Invoke-Revert {
     }
 
     Write-Section 'Restore Defender preferences'
-    # Only what prepare changed, and only where a baseline value was captured.
     $restores = @(
         @{ Name = 'DisableRealtimeMonitoring'; Value = $baseline.DisableRealtimeMonitoring },
         @{ Name = 'MAPSReporting';             Value = $baseline.MAPSReporting },
@@ -1702,7 +1607,6 @@ function Invoke-Revert {
     }
     if ($failed -eq 0) { Write-Host 'Defender preferences restored' }
     else { Write-Warning "$failed Defender preference(s) were not restored; see above" }
-    # Carried to the exit status below rather than left as a console warning
     $restoreFailures = $failed
 
     Write-Section 'Stop the elevated Studio'
@@ -1711,7 +1615,7 @@ function Invoke-Revert {
     else { Write-Host 'no probe-started Studio left running; start Studio normally (unelevated) to use it' }
 
     Write-Section 'Restore Studio tree access'
-    # Every stage is elevated, so a Studio that prepare installs is installed as administrator, and the trees the installer creates (llama.cpp, whisper.cpp, node, .cache) come out owned by BUILTIN\Administrators.
+    # Elevated installs leave trees owned by BUILTIN\Administrators.
     $user = "$env:USERDOMAIN\$env:USERNAME"
     $override = Get-StudioHomeOverride
     $allowedRoots = @(
@@ -1742,11 +1646,9 @@ function Invoke-Revert {
     if ($trees.Count -eq 0 -and $rejected.Count -eq 0) {
         Write-Host 'nothing to repair: this run did not install Studio'
     }
-    # Counted, not just warned about.
     $aclFailures = $rejected.Count
     foreach ($tree in $trees) {
         try {
-            # Grants the invoking user only.
             & icacls.exe $tree /grant "${user}:(OI)(CI)F" /T /C /Q | Out-Null
             if ($LASTEXITCODE -eq 0) { Write-Host "restored $user access to $tree" }
             else {
@@ -1763,7 +1665,6 @@ function Invoke-Revert {
         throw "revert restored the log and Defender settings but the audit policy is still applied: $policyError"
     }
     Write-Host ''
-    # Every restoration is attempted first, then the failures decide the exit status.
     if ($restoreFailures -gt 0 -or $null -ne $ciRestoreError -or $aclFailures -gt 0 -or $studioStillRunning -or $script:EfiStillMounted) {
         if ($null -ne $ciRestoreError) {
             Write-Warning "the $CI_LOG channel settings were not restored: $ciRestoreError"
@@ -1773,7 +1674,6 @@ function Invoke-Revert {
         }
         throw "revert did not fully restore this machine: $restoreFailures Defender preference(s), $aclFailures Studio tree ACL repair(s), $(if ($null -ne $ciRestoreError) { 'the CodeIntegrity log settings' } else { 'no log settings' })$(if ($script:EfiStillMounted) { ' and the EFI mount' }) still differ from the baseline. See the warnings above."
     }
-    # Only here, past every failure check
     $baseline | Add-Member -NotePropertyName RevertCompletedAt `
         -NotePropertyValue ((Get-Date).ToString('o')) -Force
     Save-ProbeBaseline $baseline $baselinePath

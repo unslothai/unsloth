@@ -2,10 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Boot an API-only Unsloth and run the loaded-models indicator suite against it
-# in one browser engine. Sibling of run-studio-permission-browser.sh, same shape
-# and same bootstrap; the suite stubs the four /status endpoints with
-# page.route, so it needs no model, no GPU and no llama.cpp build.
+# Boot an API-only Unsloth and run the loaded-models indicator suite in one browser engine.
 
 set -euo pipefail
 
@@ -22,7 +19,7 @@ if [ -n "${STUDIO_INDICATOR_FRONTEND:-}" ]; then
 fi
 
 mkdir -p "$artifact_dir"
-# Wipe rather than reset: the boot below must mint a fresh .bootstrap_password.
+# Wipe rather than reset: the boot must mint a fresh .bootstrap_password.
 rm -rf "$studio_home/auth"
 UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$port" "$@" \
   >"$server_log" 2>&1 &
@@ -34,17 +31,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Same signal report as run-studio-permission-browser.sh; see the comment there for the
-# failure this exists to make readable. This script has the identical shape (background
-# server, EXIT trap, suite as the last command), so it can lose a passing run to a late
-# signal the same way, and it now runs concurrently with the chat lane on Windows.
+# Same signal report as run-studio-permission-browser.sh.
 suite_done=0
 _on_signal() {
   name="$1"; number="$2"
   echo "[indicator] SIG${name} received at $(date -u +%H:%M:%S) after suite_done=${suite_done}" >&2
-  # comm, not args: this lands in a public CI log, and a command line can carry a
-  # token that ::add-mask:: never saw. Process names answer "what was still alive"
-  # without quoting anyone's argv.
+  # comm, not args: a command line in this public log could carry an unmasked token.
   ps -o pid,ppid,comm 2>/dev/null | tail -20 >&2 || true
   exit $((128 + number))
 }
@@ -53,11 +45,7 @@ trap '_on_signal INT 2' INT
 trap '_on_signal HUP 1' HUP
 
 healthy=0
-# --max-time, or only the loop counter is bounded and a server that binds the
-# port then wedges parks the first iteration forever. And a real deadline
-# rather than an iteration count, because once a probe can cost --max-time,
-# 180 iterations is up to 18 minutes rather than the 180s it reads as. See
-# wait-for-health.sh, which had both halves of the same hole.
+# --max-time plus a real deadline, so a wedged server cannot stall the loop.
 health_deadline=$(( SECONDS + 180 ))
 while [ "$SECONDS" -lt "$health_deadline" ]; do
   if curl -fs --connect-timeout 3 --max-time 5 \
@@ -95,5 +83,4 @@ else
 fi
 
 python tests/studio/playwright_loaded_models_indicator.py
-# Only after a clean return; see the permission script's comment.
 suite_done=1

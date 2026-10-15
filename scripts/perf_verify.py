@@ -133,7 +133,7 @@ def main(argv = None) -> int:
     )
 
     print("== 2. TF32-leak fix: max then off must be byte-identical ==", flush = True)
-    timed("max", warmup = 0, iters = 1, tag = "max")  # flips + should restore globals
+    timed("max", warmup = 0, iters = 1, tag = "max")
     off2_img, _ = timed("off", warmup = 0, iters = 1, tag = "off2")
     leak_psnr = _psnr(off_img, off2_img)
     print(
@@ -153,7 +153,7 @@ def main(argv = None) -> int:
 
     ok = (
         (leak_psnr == float("inf"))
-        and (bal_psnr == float("inf"))  # check 3: balanced must be bit-identical to off
+        and (bal_psnr == float("inf"))
         and (def_t < off_t)
         and (_psnr(off_img, def_img) >= 30)
     )

@@ -47,7 +47,6 @@ def _notice(level: str, title: str, message: str) -> None:
     print(f"::{level} title={title}::{flat}", flush = True)
 
 
-# Order the assertions are presented in, and the one-line reminder of what each is actually worth: a reader who has never seen this job before should not have to open the payload to know whether a tick means anything.
 ASSERTION_BLURB = {
     "preflight": "a GPU is present and there is disk to use it",
     "studio_ready": "Unsloth answered /api/health as healthy, hardware detection settled",
@@ -123,7 +122,7 @@ def render(report: dict) -> list[str]:
     return lines
 
 
-# The label this payload reports under. Duplicated in kaggle_t4_ci/report.py; see the note there for why it is not shared.
+# Duplicated in kaggle_t4_ci/report.py on purpose; see the note there.
 STUDIO_LABEL = "studio-gpu"
 
 
@@ -147,7 +146,7 @@ def own_verdict(kernel_verdict: str, kernel_reason: str, reports: list, expect: 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--evidence", required = True)
-    # One, always: the payload's two notebooks are halves of one experiment and produce exactly one `studio-gpu` report between them. See the count note in kaggle_t4_ci/build_kernel.py's --all-kernels tail.
+    # Always one: the two notebooks are halves producing a single `studio-gpu` report.
     ap.add_argument("--expect", type = int, default = 1)
     args = ap.parse_args()
 
@@ -167,7 +166,7 @@ def main() -> int:
     reason = result.get("reason", "")
     reports = result.get("reports", [])
 
-    # This payload can share a kernel with the T4 notebook legs (see kaggle_t4_ci/build_kernel.py --with-studio), and every payload in that kernel reports through the same prefix. The legs are a different shape, a per-step metric trace rather than assertions, so rendering them here would produce Studio sections describing training runs. Each reporter owns its own labels.
+    # Shared kernels emit every payload's reports under one prefix; keep only ours.
     reports = [r for r in reports if r.get("label") == STUDIO_LABEL]
     verdict, reason = own_verdict(verdict, reason, reports, args.expect)
 

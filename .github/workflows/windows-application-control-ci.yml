@@ -1,41 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Regression leg for issue #8490: Windows Application Control blocks the
-# generated unsloth.exe console launcher, and the installer died on it at
-# "Running studio setup".
-#
-# The launcher pip generates for `[project.scripts] unsloth` is an unsigned PE
-# wrapper. AppLocker, WDAC and Smart App Control deny it. The managed python.exe
-# beside it is a copy of the signed CPython binary and still runs, so every
-# internal invocation goes through the interpreter instead.
-#
-# This job installs a local AppLocker policy that denies ONLY the generated
-# Scripts\unsloth.exe, for a purpose-made standard user, then requires the FULL
-# installer to SUCCEED under it. That inverts the maintainer's original
-# reproduction, which asserted the failure. The runner is ephemeral and the
-# policy is still removed in the final cleanup.
-#
-# What must hold under the deny rule:
-#   1. The deny rule is really enforced. A negative control runs the stub as the
-#      denied user on purpose and requires Windows error 1260 plus AppLocker
-#      event 8004. Enforcement cannot be inferred from the installer instead:
-#      the whole point of the fix is that nothing executes the stub, so a
-#      correct run produces no block event of its own, and Test-AppLockerPolicy
-#      only predicts a decision, it never records one. Without this control a
-#      policy that silently failed to apply would let a green installer run
-#      masquerade as a fix.
-#   2. install.ps1 exits 0 (the setup handoff no longer runs the stub) and never
-#      trips the block itself.
-#   3. bin\unsloth.cmd, the policy-safe PATH shim, runs the CLI.
-#
-# UNSLOTH_STUDIO_HOME is pinned to a fixed path for every step. The deny rule
-# names one absolute file, and the installer under test runs as a DIFFERENT user
-# whose profile install.ps1 would otherwise resolve on its own: without the pin
-# the job can install somewhere the rule never covered and pass having proved
-# nothing. Start-Process -Credential -LoadUserProfile gives the child the target
-# user's environment block rather than this job's, so the probe wrappers set the
-# variable themselves rather than relying on inheritance.
+# Regression leg for #8490: Windows Application Control denies the unsigned generated
+# unsloth.exe, so the installer must go through the managed python.exe instead. An
+# AppLocker policy denies ONLY that file for a standard user, and the full installer must
+# succeed. A negative control proves the rule is enforced (error 1260 + event 8004).
+# UNSLOTH_STUDIO_HOME is pinned so the rule covers the file the installer creates.
 
 name: Windows Application Control CI
 
@@ -52,15 +22,9 @@ on:
       - 'studio/src-tauri/src/desktop_auth.rs'
       - 'studio/src-tauri/src/preflight/managed.rs'
       - 'pyproject.toml'
-      # Reached by the installer this workflow already triggers on, so a commit touching
-      # only one of these changes what the job runs while matching nothing else in the
-      # list. install.sh --local hands off to the checked-out studio/setup.sh
-      # (install.sh:7351), setup.sh runs nvidia_probe.py (setup.sh:266), and setup.ps1
-      # runs install_python_stack.py and install_llama_prebuilt.py (setup.ps1:8127, 8655).
+      # Reached by the installers this workflow triggers on.
       - 'studio/nvidia_probe.py'
       - 'studio/prebuilt_core.py'
-      # setup.sh runs this at setup.sh:5130 and setup.ps1 at setup.ps1:9025, so it is the
-      # last executed edge of the installer chain that was not listed here.
       - 'studio/backend/utils/**'
       - 'studio/backend/requirements/**'
       - 'studio/install_*.py'
@@ -102,16 +66,12 @@ jobs:
     timeout-minutes: 45
 
     env:
-      # Outside any user profile, so the admin who installs and the standard
-      # user who re-runs the installer resolve the same absolute paths.
+      # Outside any user profile, so admin and standard user resolve the same paths.
       UNSLOTH_STUDIO_HOME: 'C:\Users\Public\issue-8490-home'
       UNSLOTH_PROBE_ROOT: 'C:\Users\Public\issue-8490-application-control'
       UNSLOTH_PROBE_USER: 'AppLockerProbe'
       UNSLOTH_PROBE_PASSWORD: 'Us8490!Probe'
-      # Not --tauri: the desktop mode refuses UNSLOTH_STUDIO_HOME, and the pinned home is
-      # what makes the file the deny rule names the file the installer actually creates.
-      # The blocked call site is the same in both modes, and the shell path additionally
-      # exercises the PATH shim and the launch instructions this fix changed.
+      # Not --tauri: desktop mode refuses UNSLOTH_STUDIO_HOME.
       UNSLOTH_SKIP_AUTOSTART: '1'
 
     steps:
@@ -137,9 +97,6 @@ jobs:
             exit 1
           }
 
-          # The exact file the deny rule will name. install.ps1 puts the venv at
-          # <UNSLOTH_STUDIO_HOME>\unsloth_studio, so this is fully determined by
-          # the pinned home rather than by whose profile is running.
           $unslothExe = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
           if (-not (Test-Path -LiteralPath $unslothExe -PathType Leaf)) {
             Write-Host "::error::Baseline install did not create $unslothExe."
@@ -190,10 +147,7 @@ jobs:
           Set-AppLockerPolicy -XmlPolicy $policyPath
           & gpupdate.exe /target:computer /force
           if ($LASTEXITCODE -ne 0) { throw "gpupdate failed (exit $LASTEXITCODE)" }
-          # AppIDSvc reads the effective policy when it starts. Starting it first
-          # and setting the policy afterwards left the service enforcing nothing,
-          # and the first run of this job watched the stub launch happily for the
-          # denied user. Restart AFTER the policy is in place, every time.
+          # Restart AppIDSvc AFTER setting the policy; it only reads the policy on start.
           Restart-Service -Name AppIDSvc -Force
           (Get-Service -Name AppIDSvc).WaitForStatus('Running', [timespan]::FromSeconds(60))
 
@@ -218,8 +172,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          # The probe user needs a writable place to work; its own profile is
-          # created by -LoadUserProfile.
           $probeRoot = $env:UNSLOTH_PROBE_ROOT
           New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
           & icacls.exe $probeRoot /grant "$($env:UNSLOTH_PROBE_USER):(OI)(CI)M" /Q | Out-Null
@@ -228,10 +180,7 @@ jobs:
           (Get-Date).ToString('o') |
             Set-Content -LiteralPath logs\negative-control-started-at.txt
 
-          # Run the stub on purpose, as the denied user, and require Windows to
-          # refuse it with ERROR_ACCESS_DISABLED_BY_POLICY. This is the only
-          # thing in the job that generates a block event, because everything
-          # else is supposed to avoid the stub entirely.
+          # Negative control: the stub must be refused with ERROR_ACCESS_DISABLED_BY_POLICY.
           $blockedExe = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
           $wrapperTemplate = @'
           $ErrorActionPreference = 'Stop'
@@ -264,10 +213,7 @@ jobs:
             "$env:COMPUTERNAME\$($env:UNSLOTH_PROBE_USER)",
             $securePassword
           )
-          # Enforcement goes live asynchronously: the service has to load the
-          # policy and the user's token has to pick it up, and neither is
-          # signalled. Retry rather than sample once, or the job fails on timing
-          # and reports a regression that is not there.
+          # Enforcement goes live asynchronously, so retry instead of sampling once.
           $exitCode = $null
           foreach ($attempt in 1..12) {
             $process = Start-Process -FilePath powershell.exe `
@@ -276,10 +222,7 @@ jobs:
               -RedirectStandardOutput $controlOut -RedirectStandardError $controlErr `
               -Wait -PassThru
             $exitCode = $process.ExitCode
-            # One file per attempt. Enforcement was observed going live on the
-            # fourth try, and a single overwritten log left the evidence artifact
-            # showing an earlier attempt's output next to a passing step, which
-            # reads like a contradiction.
+            # One log file per attempt so the artifact shows each attempt.
             "attempt ${attempt}: exit $exitCode" |
               Set-Content -LiteralPath "logs\negative-control-$attempt.log" -Encoding UTF8
             Get-Content -LiteralPath $controlOut, $controlErr |
@@ -314,9 +257,7 @@ jobs:
           & icacls.exe $PWD /grant "$($env:UNSLOTH_PROBE_USER):(OI)(CI)RX" /T /C /Q | Out-Null
           if ($LASTEXITCODE -ne 0) { throw "Could not grant repo read access to the probe user" }
 
-          # Re-run the whole installer as the denied user. This is the path that
-          # regressed in issue #8490: the setup handoff must reach the CLI
-          # through the managed interpreter, never through the blocked stub.
+          # Re-run the installer as the denied user: setup must not touch the blocked stub.
           $wrapperTemplate = @'
           $ErrorActionPreference = 'Continue'
           # Set here, not inherited: -Credential -LoadUserProfile hands the child
@@ -329,10 +270,8 @@ jobs:
             -File .\install.ps1 --no-torch *>&1
           exit $(if ($LASTEXITCODE) { $LASTEXITCODE } else { 0 })
           '@
-          # Two statements, not a chain with the dot at end of line: this step
-          # runs under Windows PowerShell 5.1, which does not accept that
-          # continuation. Both values are single-quoted in the template, so an
-          # apostrophe in either path is doubled to escape it.
+          # Two statements: Windows PowerShell 5.1 rejects a trailing-dot continuation.
+          # Apostrophes are doubled for the single-quoted template.
           $wrapper = $wrapperTemplate.Replace('__REPO__', "$PWD".Replace("'", "''"))
           $wrapper = $wrapper.Replace('__HOME__', $env:UNSLOTH_STUDIO_HOME.Replace("'", "''"))
           $wrapperPath = Join-Path $probeRoot 'invoke-installer.ps1'
@@ -362,9 +301,7 @@ jobs:
             exit 1
           }
 
-          # The installer must have written to the home the deny rule covers. If
-          # it resolved somewhere else, everything above passed against a file no
-          # policy ever touched.
+          # The installer must have written to the home the deny rule covers.
           $blockedExe = Join-Path $env:UNSLOTH_STUDIO_HOME 'unsloth_studio\Scripts\unsloth.exe'
           if (-not (Test-Path -LiteralPath $blockedExe -PathType Leaf)) {
             Write-Host "::error::The installer did not install to the denied home; $blockedExe is missing, so this run proved nothing."
@@ -372,13 +309,11 @@ jobs:
           }
 
           $installLog = Get-Content -LiteralPath logs\install.log -Raw
-          # A run that never reached the handoff would exit 0 having proved nothing.
           if ($installLog -notmatch 'Running studio setup|running unsloth studio setup') {
             Write-Host '::error::The installer exited 0 without reaching the studio setup handoff.'
             exit 1
           }
-          # Both wordings: the first is PowerShell's own launch failure, the
-          # second is install.ps1's diagnostic for a blocked managed interpreter.
+          # PowerShell's launch failure and install.ps1's own diagnostic.
           if ($installLog -match 'Application Control policy has blocked|Windows Application Control blocked') {
             Write-Host '::error::The installer still tried to execute a program the policy denies.'
             exit 1
@@ -397,7 +332,6 @@ jobs:
             Write-Host "::error::The installer left no policy-safe shim at $shim."
             exit 1
           }
-          # As the denied user, so the .exe next to it stays unrunnable.
           $probeRoot = $env:UNSLOTH_PROBE_ROOT
           $wrapperPath = Join-Path $probeRoot 'invoke-shim.ps1'
           @"
@@ -436,16 +370,12 @@ jobs:
             Write-Host '::warning::The negative control did not start; no AppLocker event is expected.'
             exit 0
           }
-          # Scoped to the negative control, the only thing in this job that
-          # deliberately starts the stub. The installer window is the wrong one
-          # to look in: a correct installer never touches it.
+          # Scoped to the negative control; a correct installer never starts the stub.
           $startedAt = [datetime](Get-Content -LiteralPath logs\negative-control-started-at.txt -Raw)
           $events = @(
             Get-WinEvent -FilterHashtable @{
               LogName = 'Microsoft-Windows-AppLocker/EXE and DLL'
-              # 8004 is "was prevented from running". 8002 ("was allowed") is
-              # also logged under EnforcementMode=Enabled, so without this an
-              # allowed launch would pass as proof of a block.
+              # 8002 ("allowed") is also logged, so require 8004 ("prevented").
               Id = 8004
               StartTime = $startedAt.AddSeconds(-5)
             } -ErrorAction SilentlyContinue |
@@ -454,8 +384,6 @@ jobs:
           $events | Format-List TimeCreated, Id, LevelDisplayName, Message |
             Out-File -LiteralPath logs\applocker-events.txt -Encoding utf8 -Width 300
 
-          # Without this the job is vacuous: an unenforced policy would let a
-          # green installer run masquerade as a fix.
           if ($events.Count -eq 0) {
             Write-Host '::error::No AppLocker 8004 event naming unsloth.exe was recorded; the deny rule never applied.'
             exit 1

@@ -65,9 +65,7 @@ permissions:
   contents: read
 
 concurrency:
-  # Per repository, not per ref. Two runs would fight over the same release tag and the same
-  # self-hosted GPU runner, and a wheel build is too expensive to cancel a running one for a
-  # newer dispatch, so they queue instead.
+  # Per repository: runs share a release tag and the self-hosted GPU runner, so they queue.
   group: prebuilt-cuda-wheels-${{ github.repository }}
   cancel-in-progress: false
 
@@ -101,10 +99,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      # Every dispatch input that later reaches a shell command -- the source repository, the
-      # git ref, the build environment -- is resolved here against the allowlist in
-      # prebuilt_wheels.py, and the raw text is never used again. The workflow is gated, but an
-      # input that becomes `git checkout $REF` is a command injection either way.
+      # Dispatch inputs are resolved against the prebuilt_wheels.py allowlist here, and the raw
+      # text is never used again (command injection).
       - name: Expand the dispatch inputs into a matrix
         id: plan
         env:
@@ -114,8 +110,6 @@ jobs:
           UW_PLATFORMS: ${{ inputs.platforms }}
         run: |
           set -euo pipefail
-          # --github writes matrix= and count= into $GITHUB_OUTPUT itself. The JSON is full of
-          # quotes and braces and there is no reason to send it through a shell round trip.
           python3 .github/scripts/prebuilt_wheels.py matrix --github
 
   warm:
@@ -183,9 +177,6 @@ jobs:
           submodules: ${{ matrix.submodules }}
           persist-credentials: false
 
-      # The CUDA toolkit is ~4 GB installed and the flash-attn build tree is another few, against
-      # ~25 GB free on a fresh runner. These three directories are ~13 GB of preinstalled
-      # toolchains this job never touches.
       - name: Free up disk space
         if: runner.os == 'Linux'
         run: |
@@ -198,11 +189,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
-      # From NVIDIA's apt repository rather than a third-party setup action: this job installs a
-      # compiler that then produces binaries we sign and publish, so the fewer parties between
-      # NVIDIA and nvcc the better. Bounded and retried through the same helper the rest of the
-      # repository uses, because an unbounded apt step does not fail, it spends the job's whole
-      # budget and is reported as "cancelled" with every later step skipped.
+      # From NVIDIA's apt repo, not a third-party action: this compiler builds binaries we sign.
       - name: Install the CUDA ${{ matrix.cuda_tag }} toolkit
         if: runner.os == 'Linux'
         timeout-minutes: 25
@@ -441,12 +428,8 @@ jobs:
           TORCH_INDEX_ARGS: ${{ matrix.torch_index_args }}
           PY_PLATFORM: ${{ matrix.py_platform }}
 
-      # The one source edit in this workflow, and only for mamba-ssm. Its setup.py compiles the
-      # Mamba-1 selective-scan kernels at -std=c++17; torch 2.13's headers require C++20, and
-      # nvcc stops at the first std::variant it cannot parse. flash-attn already made this change
-      # upstream (Dao-AILab/flash-attention#2899), which is part of why its pin is a commit and
-      # not the last tag. The script asserts on the text it replaces, so an upstream fix fails
-      # this step loudly rather than silently building something else.
+      # mamba-ssm builds at -std=c++17 but torch 2.13 headers need C++20. The script asserts
+      # on the text it replaces, so an upstream fix fails loudly.
       - name: Patch mamba-ssm for the torch 2.13 C++20 requirement
         if: matrix.patch == 'cxx20'
         run: python unsloth/.github/scripts/patch_mamba_cxx20.py src/setup.py
@@ -504,7 +487,6 @@ jobs:
           name: ccache-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard${{ matrix.shard }}
           path: ccache
           if-no-files-found: warn
-          # ccache compresses its own entries.
           compression-level: 0
           retention-days: 1
           # A re-run attempt uploads under the same name, which fails without this.
@@ -845,7 +827,6 @@ jobs:
           pattern: ccache-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}-shard*
           path: ccache-slices
 
-      # The slices are disjoint, so copying them over one another loses nothing.
       - name: Merge the warm slices into the ccache
         if: matrix.shards > 0
         run: |
@@ -872,8 +853,7 @@ jobs:
           WHEEL_PLATFORM: ${{ matrix.platform }}
         run: |
           set -euo pipefail
-          # Each entry is NAME=VALUE from the allowlisted table in prebuilt_wheels.py, so this is
-          # exporting constants, not dispatch input.
+          # BUILD_ENV comes from the allowlisted table in prebuilt_wheels.py, not dispatch input.
           for pair in $BUILD_ENV; do
             export "${pair?}"
             echo "export $pair"
@@ -905,10 +885,8 @@ jobs:
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then ccache -sv; else ccache -s; fi
 
-      # Upstream's own naming, reproduced rather than approximated: the local version segment is
-      # what stops pip installing a torch 2.13 wheel into a torch 2.14 environment. Asserting the
-      # pre-rename name first is what makes it honest -- it proves the version that was BUILT is
-      # the version the published name claims, rather than renaming whatever fell out of dist/.
+      # Upstream's naming: the local version segment stops pip installing into a different torch.
+      # Assert the pre-rename name first so the built version matches the published name.
       - name: Name the wheel the way upstream names it
         working-directory: src
         env:
@@ -1032,14 +1010,10 @@ jobs:
           name: wheel-${{ matrix.platform }}-${{ matrix.dist }}-torch${{ matrix.torch_mm }}-${{ matrix.python_tag }}
           path: src/dist/${{ matrix.wheel_name }}
           if-no-files-found: error
-          # Already a compressed zip. Recompressing 500 MB of it buys nothing and costs minutes.
           compression-level: 0
           retention-days: 7
 
-  # Optional, off by default, and the only job that touches a GPU. The import gate above catches
-  # the ABI failure this release exists to avoid; this catches the rarer one where the wheel
-  # imports but carries no cubin the card can run. It is a separate job because the build runners
-  # have no GPU and the self-hosted one is shared with the Docker smoke tests.
+  # Optional GPU job: catches a wheel that imports but has no cubin the card can run.
   gpu-smoke:
     name: GPU forward pass
     needs: [plan, build]
@@ -1088,16 +1062,11 @@ jobs:
     if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Named for the same reason release-desktop.yml and woa-wheelhouse.yml name it: it is what
-    # makes this job gateable. There are no secrets to scope here -- Sigstore uses an ephemeral
-    # certificate issued against the run's OIDC token, which is the point of choosing it -- but
-    # the identity that certificate binds to is ours, so approval belongs in front of it.
+    # Named environment makes this job gateable; Sigstore binds the certificate to our identity.
     environment: release-signing
     permissions:
-      # The OIDC token Sigstore and the attestation both exchange for a short-lived certificate.
       id-token: write
-      # actions/attest-build-provenance writes the attestation to the repository's attestation
-      # store. It is NOT contents: write; nothing in this job can touch a release.
+      # Writes to the attestation store only; not contents: write.
       attestations: write
       contents: read
     steps:
@@ -1120,9 +1089,7 @@ jobs:
           merge-multiple: true
           path: wheels
 
-      # A short matrix leg would otherwise publish a set missing an interpreter or a torch minor,
-      # which reads downstream as "no wheel for you" and sends the user into a source build. The
-      # plan job already counted the cells; this asserts the same number arrived.
+      # Assert every planned wheel arrived, so a partial set is never published.
       - name: Every planned wheel arrived
         env:
           EXPECTED: ${{ needs.plan.outputs.count }}
@@ -1143,29 +1110,18 @@ jobs:
           sha256sum -- *.whl | sort -k2 > SHA256SUMS
           cat SHA256SUMS
 
-      # Sigstore, with a GitHub OIDC identity: no key of ours exists to be stolen, and what a
-      # consumer verifies is the workflow ref and the issuer, not a fingerprint they have to have
-      # obtained from somewhere trustworthy first. One .sigstore.json bundle per wheel, published
-      # beside it.
       - name: Sign every wheel with Sigstore
         uses: sigstore/gh-action-sigstore-python@790bc6befb9d733738f18d8f895854b453640ec9  # v3.5.0
         with:
           inputs: ./wheels/*.whl
-          # Verified again immediately, in this job, against the identity the release notes tell
-          # consumers to check. A bundle that only verifies with different arguments than the
-          # documented ones is a bundle nobody can use.
+          # Verify against the identity the release notes tell consumers to check.
           verify: true
           verify-cert-identity: https://github.com/${{ github.repository }}/.github/workflows/prebuilt-cuda-wheels.yml@${{ github.ref }}
           verify-oidc-issuer: https://token.actions.githubusercontent.com
           upload-signing-artifacts: false
-          # Only meaningful on a `release` event, which this is not. Set anyway so a future
-          # trigger change cannot quietly start attaching assets from here.
+          # Only meaningful on a `release` event; set so a trigger change cannot attach assets.
           release-signing-artifacts: false
 
-      # SLSA provenance, which answers a different question than the signature does: the
-      # signature says we produced it, the provenance says which run, which commit and which
-      # workflow produced it, and `gh attestation verify` checks it with no extra tooling.
-      # subject-checksums takes the whole set in one attestation rather than one per wheel.
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8  # v4.2.2
         with:
@@ -1236,7 +1192,7 @@ jobs:
           TITLE: 'Flash-Attention2, Causal-Conv1D, Mamba_SSM Binaries'
         run: |
           set -euo pipefail
-          # A draft release has no tag yet, so it is found by listing, not by tag lookup.
+          # A draft release has no tag yet, so it is found by listing.
           # gh's --jq takes no --arg; env.TAG reads the step env instead.
           existing="$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName \
             --jq '.[] | select(.tagName == env.TAG) | .tagName')"
@@ -1262,7 +1218,6 @@ jobs:
           DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
-          # Listed rather than looked up by tag: a draft release has no tag object yet.
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
             --jq '.[] | select(.tag_name == env.TAG) | .assets[] | select(.name | endswith(".whl")) | "\(.digest // "-" | sub("^sha256:"; "")) \(.id) \(.name)"' \
             > assets.txt

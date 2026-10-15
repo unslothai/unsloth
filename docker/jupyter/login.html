@@ -15,13 +15,9 @@
     color: hsl(60, 30%, 96%);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
-  /* Hide the stock top header (jupyter_server's index.css uses a higher-
-     specificity selector, so force it); the centered card carries the brand. */
+  /* jupyter_server's index.css uses a higher-specificity selector, so force it. */
   #header, .header-bar { display: none !important; }
-  /* Column, not the flex default row: #site holds two children (the login card
-     and the AGPLv3 attribution). As a row they sat side by side, pushing the card
-     left of centre and the attribution up to the top-right. Stack them so the card
-     is horizontally centred and the attribution sits below it as a footer. */
+  /* Column: #site holds the card and the attribution footer. */
   #site { display: flex; flex-direction: column; align-items: center; justify-content: flex-start; }
   .unsloth-login-card {
     margin-top: 11vh;
@@ -35,7 +31,6 @@
     box-shadow: 0 10px 34px rgba(0, 0, 0, 0.45);
   }
   .unsloth-login-card img.logo { height: 72px; width: auto; margin-bottom: 14px; }
-  /* A random Unsloth Studio sloth sticker, shown like the Studio login screen. */
   .unsloth-login-card img.sloth {
     height: 104px; width: 104px; object-fit: contain;
     margin: 2px auto 10px; display: block;

@@ -57,7 +57,6 @@ def main(argv = None) -> int:
     from core.inference.diffusion_precision import _cast_fp8
     from core.inference.diffusion_te_prequant import TE_PREQUANT_FORMAT
 
-    # Family is forensic metadata; detection differs per branch, so resolve best-effort by name.
     family = args.family.strip().lower()
 
     subfolder = args.component if args.config_subfolder is None else args.config_subfolder
@@ -69,7 +68,7 @@ def main(argv = None) -> int:
     print(f"  loading dense encoder from {args.base} (subfolder={subfolder!r}) ...", flush = True)
     t0 = time.time()
     config = transformers.AutoConfig.from_pretrained(args.base, **from_pretrained_kwargs)
-    # Prefer the checkpoint's own architecture; AutoModel.from_config gives an unusable bare base class.
+    # AutoModel.from_config would give an unusable bare base class.
     arch = (getattr(config, "architectures", None) or [None])[0]
     if arch and hasattr(transformers, arch):
         encoder_cls_name = arch
