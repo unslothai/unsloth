@@ -408,18 +408,24 @@ def price_cfg_parallel(
     link_in_gib_s: Optional[float],
     link_out_gib_s: Optional[float],
     replica_bytes: int = 0,
+    primary_s: Optional[float] = None,
 ) -> dict[str, Any]:
-    """One card (``2 * branch``) vs CFG-parallel (``branch + copy``, if copy <= ``_PRICE_COPY_FRACTION``)."""
+    """One card (``primary + branch``) vs CFG-parallel (``max(primary, branch + copy)``: the primary keeps its branch,
+    the replica runs ``branch`` after its copies). Chosen when it is at most ``_PRICE_PARALLEL_FRACTION`` of one card.
+    ``branch_s`` = the measured odd branch, ``primary_s`` = the measured even branch of the same step (``branch_s``
+    when unmeasured). With equal branches this is the old rule: copy <= 0.8 of a branch."""
     if link_in_gib_s and link_out_gib_s:
         copy_s = in_bytes / (link_in_gib_s * (1 << 30)) + out_bytes / (link_out_gib_s * (1 << 30))
         build_s: Optional[float] = replica_bytes / (link_in_gib_s * (1 << 30))
     else:
         copy_s, build_s = 0.0, None
-    single = 2.0 * branch_s
-    parallel = max(branch_s, branch_s + copy_s)
-    chosen = "cfg_parallel" if copy_s <= _PRICE_COPY_FRACTION * branch_s else "single"
+    primary = branch_s if primary_s is None else primary_s
+    single = primary + branch_s
+    parallel = max(primary, branch_s + copy_s)
+    chosen = "cfg_parallel" if parallel <= _PRICE_PARALLEL_FRACTION * single else "single"
     return {
         "strategy": chosen,
+        "primary_branch_s": round(primary, 4),
         "branch_s": round(branch_s, 4),
         "copy_s": round(copy_s, 4),
         "single_step_s": round(single, 4),
@@ -430,7 +436,7 @@ def price_cfg_parallel(
     }
 
 
-_PRICE_COPY_FRACTION = 0.8
+_PRICE_PARALLEL_FRACTION = 0.9
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -1765,6 +1771,7 @@ class CfgParallelRouter:
         self.fingerprint: Optional[int] = None
         self.pairs: list = []
         self.pricing: Optional[dict[str, Any]] = None
+        self.b0_s: Optional[float] = None
 
     # -- status
     def describe(self) -> dict[str, Any]:
@@ -1819,6 +1826,7 @@ class CfgParallelRouter:
                 self._drop_if_stale()
             self._drop_pending()
             self.b0_leaves = dict(_leaves((args, kwargs)))
+            self.b0_s = None
             if self.cfg_seen and self.replica is not None and self.disabled_reason is None:
                 # Copy this step's inputs to the replica card BEFORE the primary branch is queued: a copy queued after
                 # it would wait for it on the source stream and serialise the two branches.
@@ -1842,8 +1850,9 @@ class CfgParallelRouter:
                     self.pricing = self._price(args, kwargs, out, branch_s)
                     if self.pricing["strategy"] != "cfg_parallel":
                         self.disable(
-                            "priced out: the link copies cost "
-                            f"{self.pricing['copy_s']:.4f}s per step against a {self.pricing['branch_s']:.4f}s branch"
+                            "priced out: one card takes "
+                            f"{self.pricing['single_step_s']:.4f}s per step, CFG-parallel "
+                            f"{self.pricing['cfg_parallel_step_s']:.4f}s (link copies {self.pricing['copy_s']:.4f}s)"
                         )
                         return out
                     self._build_replica()
@@ -1867,6 +1876,17 @@ class CfgParallelRouter:
                 except Exception as exc:  # noqa: BLE001 - this branch is recomputed on the primary below
                     self.disable(f"replica call failed: {type(exc).__name__}: {exc}")
             self.cfg_seen = True
+        if (
+            self.branch == 0
+            and self.replica is None
+            and self.pricing is None
+            and self.disabled_reason is None
+            and self.singles == 0
+            and self._should_price()
+        ):
+            # until the first guided step is priced (and only before any single-branch step): time the even branch
+            out, self.b0_s = self._timed_primary(args, kwargs)
+            return out
         self.stats["primary_calls"] += 1
         return self.orig_forward(*args, **kwargs)
 
@@ -1903,6 +1923,7 @@ class CfgParallelRouter:
             link_in_gib_s = link_gib_s(self.primary.index, self.secondary.index),
             link_out_gib_s = link_gib_s(self.secondary.index, self.primary.index),
             replica_bytes = replica_bytes,
+            primary_s = self.b0_s,
         )
         if self.logger is not None:
             self.logger.info("diffusion.multigpu: CFG strategy priced %s", pricing)
@@ -2356,6 +2377,28 @@ def _mutable_container(args: tuple, kwargs: dict) -> tuple[Optional[str], list]:
     return None, empties
 
 
+def _tensor_version(tensor: Any) -> Optional[int]:
+    try:
+        return int(tensor._version)
+    except Exception:  # noqa: BLE001 - inference tensors track no version
+        return None
+
+
+def _inputs_untouched(fresh_inputs: list, versions: list) -> bool:
+    """True when no fresh input of the batched call was written in place: its version counter unchanged, or, for an
+    inference tensor without one, its value still the concatenation (or copy) of the caller's untouched sources."""
+    torch = _torch()
+    for (tensor, sources), version in zip(fresh_inputs, versions):
+        if version is not None:
+            if _tensor_version(tensor) != version:
+                return False
+            continue
+        expected = sources[0] if len(sources) == 1 else torch.cat(sources, dim = 0)
+        if not _bitwise_equal(tensor, expected):
+            return False
+    return True
+
+
 def _batch_shareable(value: Any) -> bool:
     torch = _torch()
     if isinstance(value, (*_PLAIN_TYPES, torch.dtype, torch.device)):
@@ -2690,10 +2733,23 @@ class CfgBatchRouter:
             # The caller's empty dicts never reach the speculative call: each gets a fresh empty stand-in, so a
             # write during the doubled call cannot dirty the object the plain rerun and the caller will use.
             stand_ins = []
+            # Tensors likewise: a concatenation is already fresh storage; a tensor passed through by identity is
+            # cloned, so an in-place write by the model never reaches the caller's tensors. Each fresh input is
+            # checked after the call (version counter, else its value against the caller's untouched source).
+            first_by_path = dict(first)
+            fresh_inputs = []
             for path, value in list(merged.items()):
                 if type(value) is dict and not value:
                     merged[path] = {}
                     stand_ins.append(merged[path])
+                elif isinstance(value, torch.Tensor):
+                    source = first_by_path.get(path)
+                    if value is source:
+                        merged[path] = value.clone()
+                        fresh_inputs.append((merged[path], (source,)))
+                    else:
+                        fresh_inputs.append((value, (source, dict(second)[path])))
+            fresh_versions = [_tensor_version(t) for t, _src in fresh_inputs]
             b_args, b_kwargs = _rebuild((args, kwargs), merged)
             snapshots = [
                 (path, v.clone() if isinstance(v, torch.Tensor) else v) for path, v in second
@@ -2731,6 +2787,10 @@ class CfgBatchRouter:
             self.disable(
                 f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here"
             )
+            return None
+        if not _inputs_untouched(fresh_inputs, fresh_versions):
+            # the model writes its inputs in place: one doubled call is not two calls (the caller's are untouched)
+            self.disable("the batched call wrote into an input tensor in place; one branch per call from here")
             return None
         if any(stand_ins):
             # the model writes into that dict: one doubled call is not two calls (the caller's dict is untouched)

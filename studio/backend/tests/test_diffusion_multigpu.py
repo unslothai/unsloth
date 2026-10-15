@@ -2337,3 +2337,70 @@ def test_cfg_batch_speculation_never_writes_the_callers_empty_dict():
     assert caller == {}
     torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
     assert "dict" in router.describe()["disabled_reason"]
+
+
+def test_cfg_batch_in_place_write_to_an_input_never_reaches_the_caller():
+    torch.manual_seed(0)
+
+    class InPlaceDit(_BatchDit):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+            self.calls += 1
+            out = self.proj(hidden_states) * timestep + encoder_hidden_states.tanh()
+            encoder_hidden_states.mul_(0.5)  # writes its input in place: each branch must see its own write
+            timestep.add_(0.0)  # a shared, passed-through tensor written in place as well
+            return (out,)
+
+    def loop(dit, latents, cond, uncond):
+        for i in range(4):
+            t = torch.tensor(1.0 - i / 4)
+            c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond)[0]
+            u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond)[0]
+            latents = latents - 0.1 * (u + 4.0 * (c - u))
+        return latents
+
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    dit = InPlaceDit()
+    ref_cond, ref_uncond = cond.clone(), uncond.clone()
+    reference = loop(dit, latents.clone(), ref_cond, ref_uncond)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    c2, u2 = cond.clone(), uncond.clone()
+    out = loop(dit, latents.clone(), c2, u2)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert torch.equal(c2, ref_cond) and torch.equal(u2, ref_uncond)  # every per-branch write reached the caller
+    assert "in place" in router.describe()["disabled_reason"]
+
+
+def test_price_cfg_parallel_uses_both_measured_branches():
+    # a cheap even branch and an expensive odd one: parallel runs the odd one alone, barely faster than both
+    lopsided = mg.price_cfg_parallel(
+        branch_s = 1.0, primary_s = 0.1, in_bytes = 1 << 20, out_bytes = 1 << 20,
+        link_in_gib_s = 9.0, link_out_gib_s = 9.0,
+    )
+    assert lopsided["strategy"] == "single"
+    # the recorded T4x2 numbers (2.38 s branches, 0.001 s copies) still pick CFG-parallel
+    t4 = mg.price_cfg_parallel(
+        branch_s = 2.376, primary_s = 2.38, in_bytes = 8 << 20, out_bytes = 1 << 20,
+        link_in_gib_s = 9.14, link_out_gib_s = 9.13,
+    )
+    assert t4["strategy"] == "cfg_parallel"
+    # the forced 0.02 GiB/s link with a short branch stays priced out
+    slow = mg.price_cfg_parallel(
+        branch_s = 0.08, primary_s = 0.08, in_bytes = 5 << 20, out_bytes = 1 << 20,
+        link_in_gib_s = 0.02, link_out_gib_s = 0.02,
+    )
+    assert slow["strategy"] == "single"
+
+
+def test_cfg_parallel_router_times_both_branches_of_the_first_guided_step(monkeypatch):
+    dit = _Dit()
+    router, replicas = _router(dit)
+    times = iter([0.1, 1.0])  # even branch, odd branch
+    monkeypatch.setattr(router, "_should_price", lambda: True)
+    monkeypatch.setattr(router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), next(times)))
+    monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 9.0)
+    router.primary = router.secondary = torch.device("cpu")
+    _cfg_loop(dit, torch.randn(2, 4), steps = 3)
+    assert router.pricing["primary_branch_s"] == 0.1 and router.pricing["branch_s"] == 1.0
+    assert router.pricing["strategy"] == "single" and replicas == []
