@@ -1372,6 +1372,7 @@ export const ptBR = {
       installRuntimeFailed: "A instalação do runtime falhou.",
       installRuntimeError: "Não foi possível iniciar a instalação do runtime.",
       unsupportedArch: "O sandbox do Windows (MXC) só funciona no Windows x64, então não está disponível neste PC.",
+      builtinNeedsUpdate: "O contêiner integrado do Windows precisa da build {required} ou mais recente, e este PC usa {current}. Instale a atualização mais recente do Windows para usá-lo sem uma etapa de administrador, ou ative o sandbox alternativo abaixo.",
       unsupportedBuild: "O sandbox do Windows (MXC) precisa do Windows 11 24H2 (build 26100) ou mais recente, então não está disponível neste PC.",
       permissionsIntro: "Escolha quando as ferramentas perguntam antes e se Python e Terminal também rodam dentro do sandbox do sistema.",
       permissionLabel: "Permissões de ferramentas",
