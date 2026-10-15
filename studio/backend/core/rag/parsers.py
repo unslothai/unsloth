@@ -949,7 +949,11 @@ def _docx_number_lists(document) -> None:
     nums = {n.get(_W + "numId"): n for n in numbering.iterchildren(_W + "num")}
 
     # numId and ilvl inherit through basedOn independently, like any other paragraph property.
-    def style_num(style_id, name, depth = 0):
+    def style_num(
+        style_id,
+        name,
+        depth = 0,
+    ):
         style = style_by_id.get(style_id)
         if style is None or depth > 20:
             return None
