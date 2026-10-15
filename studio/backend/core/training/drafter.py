@@ -319,20 +319,55 @@ def _assistant_header(tokenizer) -> list[int]:
     return text_tokenizer(with_prompt[len(without) :], add_special_tokens = False)["input_ids"]
 
 
-def _prompt_end(ids: list[int], labels: list[int], header: list[int]) -> Optional[int]:
-    """Where the answer starts: the first trained label, or (rows trained on the whole sequence) after
-    the last assistant header. Shorter header prefixes cover templates that add a thinking block."""
-    first = next((i for i, t in enumerate(labels) if t != -100), None)
-    if first:
-        return first
-    for width in range(len(header), 0, -1):
-        part = header[:width]
+def _response_markers(tokenizer) -> list[list[int]]:
+    """Token ids that can open an answer: the chat template's assistant header, then every response
+    marker Studio's completion masking knows (rows rendered with a dataset template such as Alpaca's
+    "### Response:" carry no chat header)."""
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    markers = []
+    header = _assistant_header(tokenizer)
+    if header:
+        markers.append(header)
+    try:
+        from utils.datasets.model_mappings import TEMPLATE_TO_RESPONSES_MAPPER
+        texts = {
+            m.get("response") for m in TEMPLATE_TO_RESPONSES_MAPPER.values() if isinstance(m, dict)
+        }
+    except Exception:
+        texts = set()
+    for text in sorted(t for t in texts if isinstance(t, str) and t.strip()):
+        try:
+            ids = text_tokenizer(text, add_special_tokens = False)["input_ids"]
+        except Exception:
+            continue
+        if ids and ids not in markers:
+            markers.append(ids)
+    return markers
+
+
+def _marker_end(ids: list[int], marker: list[int]) -> Optional[int]:
+    """End of the marker's last occurrence; shorter prefixes cover a marker whose tail tokenizes into
+    the answer, or a template that adds a thinking block after the header."""
+    for width in range(len(marker), 0, -1):
+        part = marker[:width]
         for start in range(len(ids) - width, 0, -1):
             if ids[start : start + width] == part:
                 return start + width
         if width <= 2:
             break
     return None
+
+
+def _prompt_end(ids: list[int], labels: list[int], markers) -> Optional[int]:
+    """Where the answer starts: the first trained label, or (rows trained on the whole sequence) after
+    the last response marker found."""
+    first = next((i for i, t in enumerate(labels) if t != -100), None)
+    if first:
+        return first
+    if markers and isinstance(markers[0], int):
+        markers = [markers]
+    ends = [e for e in (_marker_end(ids, m) for m in markers or []) if e and e < len(ids)]
+    return max(ends) if ends else None
 
 
 def regenerate_examples(
@@ -351,10 +386,10 @@ def regenerate_examples(
     if pad_id is None:
         pad_id = text_tokenizer.eos_token_id
     eos_id = text_tokenizer.eos_token_id
-    header = _assistant_header(tokenizer)
+    markers = _response_markers(tokenizer)
     prompts = []
     for ex in examples:
-        end = _prompt_end(ex["input_ids"], ex["labels"], header)
+        end = _prompt_end(ex["input_ids"], ex["labels"], markers)
         if end:  # needs a prompt to answer
             prompts.append(ex["input_ids"][:end])
     out = []
@@ -544,12 +579,14 @@ def run_drafter_phase(
             p.requires_grad_(False)
         data_source = "dataset"
         if cfg.get("data_source") == "regenerate":
-            header = _assistant_header(tokenizer)
-            found = sum(bool(_prompt_end(ex["input_ids"], ex["labels"], header)) for ex in examples)
+            markers = _response_markers(tokenizer)
+            found = sum(
+                bool(_prompt_end(ex["input_ids"], ex["labels"], markers)) for ex in examples
+            )
             if not found and examples:
                 logger.warning(
-                    "Drafter regenerate found no prompts: header=%s first row ids=%s labels=%s",
-                    header,
+                    "Drafter regenerate found no prompts: markers=%s first row ids=%s labels=%s",
+                    markers,
                     examples[0]["input_ids"][:48],
                     examples[0]["labels"][:48],
                 )

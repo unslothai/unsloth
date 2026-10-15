@@ -687,3 +687,16 @@ def test_capability_child_process_runs_for_real(tmp_path):
     drafter._CAPABILITY_CACHE.clear()
     cap = drafter.drafter_capability(str(tmp_path))
     assert cap["strategy"] == "eagle3" and cap["supported"], cap
+
+
+def test_regenerate_finds_prompts_in_dataset_template_rows():
+    """Rows rendered with a dataset template (Alpaca) carry "### Response:", not the chat header."""
+    from core.training.drafter import _prompt_end, _response_markers
+
+    tok = _CharTokenizer()
+    markers = _response_markers(tok)
+    row = [ord(c) for c in "### Instruction:\nAdd\n\n### Response:\ndef add(a, b): pass"]
+    end = _prompt_end(row, list(row), markers)
+    assert "".join(map(chr, row[:end])).endswith("### Response:\n")
+    chat = [ord(c) for c in "<u>hi</u><a>hello"]
+    assert "".join(map(chr, chat[_prompt_end(chat, list(chat), markers) :])) == "hello"
