@@ -203,6 +203,23 @@ def cuda_visible_capabilities(with_index = False):
     return caps
 
 
+def cuda_gate_capabilities():
+    """Capabilities a process-wide gate should judge: every visible card when all were read,
+    else only the current device (the pre-mixed-host rule), since a partial scan could
+    hide the weakest card."""
+    caps = cuda_visible_capabilities()
+    try:
+        complete = len(caps) == torch.cuda.device_count()
+    except Exception:
+        complete = False
+    if complete and caps:
+        return caps
+    try:
+        return [tuple(torch.cuda.get_device_capability())]
+    except Exception:
+        return []
+
+
 # gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
 # (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
 # Any visible gfx906 counts: compile is process-wide and layers may land on it.
@@ -252,7 +269,7 @@ def apply_pre_volta_compile_workaround(
 
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
     # Weakest visible card: compile is process-wide and layers may land on any of them.
-    _cuda_major = min((cap[0] for cap in cuda_visible_capabilities()), default = None)
+    _cuda_major = min((cap[0] for cap in cuda_gate_capabilities()), default = None)
     if apply_pre_volta_compile_workaround(_cuda_major):
         print(
             "Unsloth: GPUs older than Volta (compute capability < 7.0) cannot run "

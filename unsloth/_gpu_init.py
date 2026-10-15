@@ -308,6 +308,7 @@ try:
         arch_lacks_bf16,
         arch_lacks_buffer_ops,
         apply_gfx101x_triton_workaround,
+        cuda_gate_capabilities,
         cuda_visible_capabilities,
         hip_visible_archs,
     )
@@ -541,7 +542,7 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
 elif DEVICE_TYPE == "cuda":
     # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
-    _cuda_caps = cuda_visible_capabilities()
+    _cuda_caps = cuda_gate_capabilities()
     SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
     if not SUPPORTS_BFLOAT16 and any(major >= 8 for major, _ in _cuda_caps):
         _old = [i for i, (major, _) in cuda_visible_capabilities(with_index = True) if major < 8]

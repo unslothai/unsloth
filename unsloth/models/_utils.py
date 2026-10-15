@@ -166,7 +166,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
     apply_gfx101x_triton_workaround,
-    cuda_visible_capabilities,
+    cuda_gate_capabilities,
     gfx101x_triton_workaround_applied,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
@@ -3888,7 +3888,7 @@ elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
     torch.cuda.get_device_capability = _cache_device_capability(torch.cuda.get_device_capability)
     # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
-    _cuda_caps = cuda_visible_capabilities()
+    _cuda_caps = cuda_gate_capabilities()
     SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
     del _cuda_caps
 

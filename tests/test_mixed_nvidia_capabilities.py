@@ -303,17 +303,28 @@ def test_grpo_tma_options_need_every_visible_card(caps, unreadable, expected):
     assert eval(expression, {"__builtins__": safe_builtins, "torch": fake}) is expected
 
 
-def test_bf16_notice_names_real_device_indices(monkeypatch, capsys):
-    # Device 0 unreadable, device 2 pre-Ampere: the notice must name 2, not the compacted 1.
+@pytest.mark.parametrize("current,bf16", [(0, True), (2, False)])
+def test_a_partial_scan_falls_back_to_the_current_device(monkeypatch, capsys, current, bf16):
+    # Card 1 unreadable: the readable cards are not "every visible card", so the gate keeps the
+    # pre-mixed-host rule (current device) instead of trusting a partial list.
     fake = _fake_torch([(9, 0), (9, 0), (7, 5)])
     real_cap = fake.cuda.get_device_capability
 
     def get_device_capability(device = None):
-        if device == 0:
+        if device == 1:
             raise RuntimeError("unreadable")
         return real_cap(device)
 
     fake.cuda.get_device_capability = get_device_capability
-    _run_gpu_init_chain(fake, monkeypatch)
+    fake.cuda.set_device(current)
+    namespace = _run_gpu_init_chain(fake, monkeypatch)
+    assert namespace["SUPPORTS_BFLOAT16"] is bf16
+    assert "lack bfloat16" not in capsys.readouterr().out
+    assert _run_model_utils_chain(fake, monkeypatch)["SUPPORTS_BFLOAT16"] is bf16
+
+
+def test_bf16_notice_names_real_device_indices(monkeypatch, capsys):
+    # Device 2 is the pre-Ampere card while device 0 is current: the notice names 2.
+    _run_gpu_init_chain(_fake_torch([(9, 0), (8, 6), (7, 5)]), monkeypatch)
     out = capsys.readouterr().out
-    assert "[2]" in out and "[1]" not in out
+    assert "[2]" in out and "[0]" not in out and "[1]" not in out
