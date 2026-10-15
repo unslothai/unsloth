@@ -16,7 +16,9 @@ __all__ = [
 ]
 
 import contextlib
+import datetime
 import functools
+import os
 
 import torch
 
@@ -64,6 +66,35 @@ def _dist():
     return None
 
 
+_SAVE_COUNTER = [0]
+
+
+def _save_timeout():
+    try:
+        return datetime.timedelta(seconds = float(os.environ.get("UNSLOTH_FSDP2_SAVE_TIMEOUT", 7 * 86400)))
+    except ValueError:
+        return datetime.timedelta(days = 7)
+
+
+def _wait_for_writer(dist, writer):
+    """The other ranks wait for rank 0's write, so no later collective overtakes it. A store key, not
+    a barrier: a merged or quantized export (and a Hub upload) can outlast the process group's
+    collective timeout, and NCCL ranks blocked in a barrier would abort before rank 0 arrives."""
+    _SAVE_COUNTER[0] += 1
+    key = f"unsloth_fsdp2_save_{_SAVE_COUNTER[0]}"
+    try:
+        store = dist.distributed_c10d._get_default_store()
+    except Exception:
+        store = None
+    if store is None:
+        dist.barrier()
+        return
+    if writer:
+        store.set(key, "done")
+    else:
+        store.wait([key], _save_timeout())
+
+
 def _gather_full(param, DTensor):
     """All ranks: the full tensor of a sharded parameter. Packed 4-bit bytes travel as uint8, so no
     float copy kernel can rewrite NaN bit patterns inside them."""
@@ -100,10 +131,11 @@ def _rebuild(param, full, module):
 
 
 @contextlib.contextmanager
-def fsdp2_gathered(model, trainable_only = False, offload_to_cpu = True):
+def fsdp2_gathered(model, trainable_only = False, offload_to_cpu = True, include = None):
     """Yields None for a model FSDP2 does not shard (nothing happens). Otherwise every rank must
     enter; rank 0 sees whole parameters (and yields True), the other ranks yield False and should
-    not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save).
+    not write. `trainable_only` gathers just the trainable parameters (enough for an adapter save),
+    plus those `include(name, param)` selects (frozen ones the save still writes).
     Packed 4-bit weights stay on their device: the merge dequantizes them there."""
     if _ACTIVE:
         yield _ACTIVE[-1]
@@ -134,7 +166,9 @@ def fsdp2_gathered(model, trainable_only = False, offload_to_cpu = True):
             if id(param) in seen:
                 continue
             seen.add(id(param))
-            if not isinstance(param, DTensor) or (trainable_only and not param.requires_grad):
+            if not isinstance(param, DTensor):
+                continue
+            if trainable_only and not param.requires_grad and not (include and include(name, param)):
                 continue
             full = _gather_full(param, DTensor)
             if not writer:
@@ -159,8 +193,7 @@ def fsdp2_gathered(model, trainable_only = False, offload_to_cpu = True):
                 module._parameters[name] = old
         replaced.clear()
         if dist is not None:
-            # The other ranks wait for rank 0's write, so no later collective overtakes it.
-            dist.barrier()
+            _wait_for_writer(dist, writer)
 
 
 def fsdp2_gather_active():
@@ -168,6 +201,7 @@ def fsdp2_gather_active():
 
 
 _DCP_DEPTH = [0]
+_ADAPTER_ONLY = [0]
 _DCP_FUNCTIONS = (
     "get_model_state_dict",
     "set_model_state_dict",
@@ -178,17 +212,51 @@ _DCP_FUNCTIONS = (
 )
 
 
+def _drops_frozen_weights(kwargs):
+    """Only adapter-only state dicts (accelerate's `adapter_only` path, or an explicit
+    `ignore_frozen_params`) may skip the QuantState: they never keep the frozen 4-bit weights. A full
+    DCP checkpoint still needs it to dequantize them."""
+    if _ADAPTER_ONLY[0]:
+        return True
+    return bool(getattr(kwargs.get("options", None), "ignore_frozen_params", False))
+
+
+def _wrap_accelerate_adapter_only():
+    try:
+        import accelerate.utils.fsdp_utils as fsdp_utils
+    except Exception:
+        return
+    for name in ("_get_model_state_dict", "_set_model_state_dict"):
+        fn = getattr(fsdp_utils, name, None)
+        if fn is None or getattr(fn, "_unsloth_adapter_only_flag", False):
+            continue
+
+        @functools.wraps(fn)
+        def wrapper(*args, _fn = fn, **kwargs):
+            if not kwargs.get("adapter_only", False):
+                return _fn(*args, **kwargs)
+            _ADAPTER_ONLY[0] += 1
+            try:
+                return _fn(*args, **kwargs)
+            finally:
+                _ADAPTER_ONLY[0] -= 1
+
+        wrapper._unsloth_adapter_only_flag = True
+        setattr(fsdp_utils, name, wrapper)
+
+
 def install_dcp_bnb_state_dict():
     """torch.distributed.checkpoint resolves every state dict key as an attribute path, and
     bitsandbytes' `weight.absmax` / `weight.quant_state.bitsandbytes__nf4` entries are not one
-    (AttributeError in `_get_fqns`). That breaks every FSDP2 Trainer checkpoint of a 4-bit model.
-    Inside those calls Linear4bit reports just its weight and bias; the QuantState is unchanged in
-    memory and the adapter-only checkpoints Trainer writes never needed it."""
+    (AttributeError in `_get_fqns`). That breaks every FSDP2 Trainer adapter checkpoint of a 4-bit
+    model. Inside adapter-only DCP calls (`_drops_frozen_weights`) Linear4bit reports just its weight
+    and bias; the QuantState is unchanged in memory. Other DCP calls keep bitsandbytes' entries."""
     try:
         import torch.distributed.checkpoint.state_dict as dcp_state_dict
         from bitsandbytes.nn import Linear4bit
     except Exception:
         return False
+    _wrap_accelerate_adapter_only()
     original_save = Linear4bit._save_to_state_dict
     if getattr(original_save, "_unsloth_fsdp2_patched", False):
         return True
@@ -205,6 +273,8 @@ def install_dcp_bnb_state_dict():
     def _wrap(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
+            if not _drops_frozen_weights(kwargs):
+                return fn(*args, **kwargs)
             _DCP_DEPTH[0] += 1
             try:
                 return fn(*args, **kwargs)

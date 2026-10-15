@@ -111,6 +111,12 @@ def _case_gather(rank, world_size, m):
             {("plain" if not _is_dtensor(p) else "dtensor", p.requires_grad) for p in model.parameters()}
         )
 
+    # A frozen parameter the save still writes (an inactive adapter, an embedding).
+    with m.fsdp2_gathered(model, trainable_only = True, include = lambda name, p: True) as writer:
+        out["included"] = sorted(
+            {("plain" if not _is_dtensor(p) else "dtensor", p.requires_grad) for p in model.parameters()}
+        )
+
     with m.fsdp2_gathered(model) as writer:
         out["writer"] = writer
         with m.fsdp2_gathered(model) as nested:
@@ -251,7 +257,51 @@ def _case_dcp_bnb(rank, world_size, m):
                              options = StateDictOptions(full_state_dict = True, broadcast_from_rank0 = True, strict = False))
     restored = model[1].weight.full_tensor()
     out["roundtrip"] = rank != 0 or torch.equal(restored, expected["1.weight"])
+    # A full DCP state dict of an unsharded 4-bit model keeps what dequantizes it.
+    plain = torch.nn.Sequential(
+        bnb.nn.Linear4bit(128, 64, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4")
+    )
+    plain[0].weight = bnb.nn.Params4bit(torch.randn(64, 128) * 0.05, requires_grad = False,
+                                        quant_type = "nf4", blocksize = 64, module = plain[0])
+    plain = plain.to("cpu")
+    out["full_keys"] = sorted(dcp.get_model_state_dict(plain, options = StateDictOptions(cpu_offload = True)))
+    # accelerate's adapter-only path drops it (and no longer fails).
+    import accelerate.utils.fsdp_utils as fsdp_utils
+
+    from peft import LoraConfig, get_peft_model
+
+    class _Net(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.q = bnb.nn.Linear4bit(128, 64, bias = False, compute_dtype = torch.bfloat16, quant_type = "nf4",
+                                       quant_storage = torch.bfloat16)
+            self.q.weight = bnb.nn.Params4bit(torch.randn(64, 128) * 0.05, requires_grad = False, quant_type = "nf4",
+                                              quant_storage = torch.bfloat16, blocksize = 64, module = self.q)
+
+        def forward(self, x):
+            return self.q(x)
+
+    peft_model = get_peft_model(_Net().to("cpu"), LoraConfig(r = 4, target_modules = ["q"]))
+    q.prepare_fsdp2_qlora(peft_model)
+    fully_shard(peft_model, mesh = init_device_mesh("cpu", (world_size,)))
+    sd = fsdp_utils._get_model_state_dict(peft_model, adapter_only = True, sd_options = StateDictOptions(
+        full_state_dict = True, cpu_offload = True))
+    out["adapter_keys"] = sorted(k.split("q.", 1)[-1] for k in sd)
     return out
+
+
+def _case_slow_writer(rank, world_size, m):
+    """rank 0's write (a merged or quantized export, a Hub upload) outlasts the collective timeout."""
+    import time
+
+    import torch.distributed as dist
+
+    model = _shard(_Model(), world_size)
+    with m.fsdp2_gathered(model) as writer:
+        if writer:
+            time.sleep(10)
+    dist.barrier()
+    return {"ok": True}
 
 
 def _worker(rank, world_size, port, case, queue):
@@ -260,9 +310,15 @@ def _worker(rank, world_size, port, case, queue):
                           RANK = str(rank), WORLD_SIZE = str(world_size))
         import torch.distributed as dist
 
-        dist.init_process_group("gloo", rank = rank, world_size = world_size)
+        import datetime
+
+        timeout = datetime.timedelta(seconds = 4) if case == "slow_writer" else None
+        dist.init_process_group("gloo", rank = rank, world_size = world_size,
+                                **({"timeout": timeout} if timeout else {}))
         m = _load("fsdp2_save")
-        if case == "gather":
+        if case == "slow_writer":
+            result = _case_slow_writer(rank, world_size, m)
+        elif case == "gather":
             result = _case_gather(rank, world_size, m)
         elif case == "gather_4bit":
             result = _case_gather_4bit(rank, world_size, m)
@@ -305,6 +361,7 @@ def test_gather_gives_rank0_the_full_model_and_restores_shards():
     # trainable_only: adapters plain on rank 0, frozen weights stay sharded.
     assert r0["trainable_only"] == [("dtensor", False), ("plain", True)], r0
     assert r1["trainable_only"] == [("dtensor", False), ("dtensor", True)], r1
+    assert r0["included"] == [("plain", False), ("plain", True)], r0
     assert r0["writer"] is True and r1["writer"] is False
     assert r0["nested"] is True and r1["nested"] is False
     assert r0["names_match"] and r0["plain_cpu"] and r0["exact"], r0
@@ -350,3 +407,10 @@ def test_dcp_state_dict_of_bitsandbytes_4bit():
     assert r["installed"], r
     assert r["after_keys"] == ["1.bias", "1.weight"], r
     assert all(x["roundtrip"] for x in results.values()), results
+    assert "0.weight.absmax" in r["full_keys"], r["full_keys"]
+    assert r["adapter_keys"] == ["lora_A.default.weight", "lora_B.default.weight"], r["adapter_keys"]
+
+
+def test_a_slow_writer_does_not_time_out_the_other_ranks():
+    results = _run("slow_writer")
+    assert all(r["ok"] for r in results.values()), results

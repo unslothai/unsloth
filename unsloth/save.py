@@ -5768,6 +5768,53 @@ def unsloth_generic_save(
     return
 
 
+def _fsdp2_save_arguments(fn, self, args, kwargs):
+    """The call's arguments by name, bound against `fn`, or against the wrapped original
+    save_pretrained when `fn` only forwards *args. {} when neither binds."""
+    import inspect
+
+    targets = [(fn, (self,) + tuple(args))]
+    original = getattr(self, "original_model_save_pretrained", None)
+    if callable(original):
+        targets.append((original, tuple(args)))
+    for target, positional in targets:
+        try:
+            signature = inspect.signature(target)
+            bound = signature.bind_partial(*positional, **kwargs)
+        except (TypeError, ValueError):
+            continue
+        if any(p.kind is p.VAR_POSITIONAL for p in signature.parameters.values()):
+            continue
+        arguments = dict(bound.arguments)
+        for p in signature.parameters.values():
+            if p.kind is p.VAR_KEYWORD:
+                arguments.update(arguments.pop(p.name, {}))
+        return arguments
+    return dict(kwargs)
+
+
+def _fsdp2_peft_saved_frozen(model, arguments):
+    """Frozen parameters a PEFT adapter save still writes: every adapter's (inactive ones are frozen,
+    `selected_adapters` defaults to all), `modules_to_save` copies, and the embeddings unless
+    `save_embedding_layers = False`."""
+    adapters = set(getattr(model, "peft_config", None) or {})
+    embeddings = set()
+    if arguments.get("save_embedding_layers", "auto") is not False:
+        for getter in ("get_input_embeddings", "get_output_embeddings"):
+            try:
+                weight = getattr(getattr(model, getter)(), "weight", None)
+            except Exception:
+                weight = None
+            if weight is not None:
+                embeddings.add(id(weight))
+
+    def include(name, param):
+        parts = name.split(".")
+        return id(param) in embeddings or "modules_to_save" in parts or any(a in parts for a in adapters)
+
+    return include
+
+
 def _fsdp2_collective_save(trainable_only):
     """Under FSDP2 every rank calls the save: the shards are gathered, rank 0 writes, the others
     return None. `trainable_only(self, args, kwargs)` says whether the adapter alone is enough.
@@ -5778,20 +5825,20 @@ def _fsdp2_collective_save(trainable_only):
         def wrapper(self, *args, **kwargs):
             from .models.fsdp2_save import fsdp2_units, fsdp2_gathered, fsdp2_gather_active
 
-            if (
-                kwargs.get("state_dict") is not None
-                or fsdp2_gather_active()
-                or not fsdp2_units(self)
-            ):
+            if fsdp2_gather_active() or not fsdp2_units(self):
+                return fn(self, *args, **kwargs)
+            arguments = _fsdp2_save_arguments(fn, self, args, kwargs)
+            if arguments.get("state_dict") is not None:
                 return fn(self, *args, **kwargs)
             only = trainable_only(self, args, kwargs)
+            include = _fsdp2_peft_saved_frozen(self, arguments) if only else None
             if _fsdp2_rank() == 0:
                 print(
                     "Unsloth: FSDP2 save: gathering the "
                     + ("trainable" if only else "sharded")
                     + " weights to rank 0, which writes. Every rank must make this call."
                 )
-            with fsdp2_gathered(self, trainable_only = only) as writer:
+            with fsdp2_gathered(self, trainable_only = only, include = include) as writer:
                 if writer is False:
                     return None
                 return fn(self, *args, **kwargs)
