@@ -5,6 +5,7 @@
 
 import itertools
 import os
+import socket
 import sys
 import threading
 import time
@@ -677,6 +678,7 @@ def test_a_chosen_project_folder_stops_asking_once_it_is_small_again(monkeypatch
     from core.inference import tools
 
     monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    monkeypatch.setattr(os_sandbox, "OVERRUN_RECHECK_SECONDS", 0.0)
     for i in range(8):
         (tmp_path / f"f{i}").write_text("")
     os_sandbox.scan_workdir_for_host_channels(str(tmp_path))
@@ -689,8 +691,36 @@ def test_a_chosen_project_folder_stops_asking_once_it_is_small_again(monkeypatch
 
     for i in range(8):
         (tmp_path / f"f{i}").unlink()
+    scratch = tmp_path / os_sandbox.TOOL_TEMP_DIRNAME
+    scratch.mkdir(mode = os_sandbox.TOOL_TEMP_MODE)
+    monkeypatch.chdir(scratch)
+    dead = socket.socket(socket.AF_UNIX)
+    dead.bind("s")
+    dead.close()
     tools._prepare_tool_launch(plan, user_folder = True)
     assert not os_sandbox.workdir_scan_overran(str(tmp_path))
+
+
+def test_an_oversized_project_folder_is_rechecked_at_most_once_a_minute(monkeypatch, tmp_path):
+    from core.inference import tools
+
+    monkeypatch.setattr(os_sandbox, "WORKDIR_SCAN_ENTRIES", 3)
+    for i in range(8):
+        (tmp_path / f"f{i}").write_text("")
+    os_sandbox.scan_workdir_for_host_channels(str(tmp_path))
+    walks = []
+    real = os_sandbox._walk_for_host_channels
+    monkeypatch.setattr(
+        os_sandbox, "_walk_for_host_channels", lambda *a: walks.append(a) or real(*a)
+    )
+    plan = os_sandbox.ToolLaunchPlan(
+        argv = ("/bin/true",), workdir = str(tmp_path), env = {}, requested_mode = "auto"
+    )
+
+    for _ in range(3):
+        tools._prepare_tool_launch(plan, user_folder = True)
+    assert len(walks) == 1
+    assert os_sandbox.workdir_scan_overran(str(tmp_path))
 
 
 def test_windows_asks_the_model_to_retry_when_the_chat_folder_is_too_large(monkeypatch, tmp_path):

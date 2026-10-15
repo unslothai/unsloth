@@ -233,6 +233,8 @@ CACHE_SCAN_ENTRIES = 50_000
 CACHE_SCAN_SECONDS = 3.0
 _SCAN_JOIN_GRACE_SECONDS = 0.5
 _overran_workdirs: set[str] = set()
+_overrun_recheck_after: dict[str, float] = {}
+OVERRUN_RECHECK_SECONDS = 60.0
 
 TOOL_TEMP_DIRNAME = "unsloth-tmp"
 TOOL_TEMP_MODE = 0o700
@@ -523,15 +525,25 @@ def workdir_scan_overran(workdir: str) -> bool:
 
 
 def recheck_overran_workdir(workdir: str) -> None:
-    """For a folder launched without a scan: forget the overrun once it scans clean within budget."""
+    """For a folder launched without a scan: forget the overrun once it scans clean, at most once a minute."""
     if not workdir_scan_overran(workdir):
         return
+    key = os.path.realpath(workdir)
+    now = time.monotonic()
+    if now < _overrun_recheck_after.get(key, 0.0):
+        return
+    _overrun_recheck_after[key] = now + OVERRUN_RECHECK_SECONDS
     try:
-        hazard = _hazard_within_wall_clock(workdir, WORKDIR_SCAN_ENTRIES, WORKDIR_SCAN_SECONDS)
+        hazard = _hazard_within_wall_clock(
+            workdir,
+            WORKDIR_SCAN_ENTRIES,
+            WORKDIR_SCAN_SECONDS,
+            prepare = lambda deadline: clear_stale_tool_ipc(workdir, deadline),
+        )
     except _ScanBudgetExceeded:
         return
     if hazard is None:
-        _overran_workdirs.discard(os.path.realpath(workdir))
+        _overran_workdirs.discard(key)
 
 
 def cache_share_hazard(path: str, witness: "list[tuple] | None" = None) -> str | None:
