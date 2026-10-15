@@ -6950,6 +6950,8 @@ class TestInProcessMessages:
             return inf._SameTaskStreamingResponse(body(), unstarted_cleanup = unstarted)
 
         entry = {"is_mlx": True, "is_vision": fields.pop("vision", False)}
+        if fields.pop("speech", False):
+            entry.update(is_audio = True, audio_type = "csm")
         backend = SimpleNamespace(active_model_name = "m", models = {"m": entry})
         backend.count_chat_tokens = lambda *a, **k: (5, "m")
         switch = lambda *a, **k: seen.update(switch = k) or asyncio.sleep(0)  # noqa: E731
@@ -7032,6 +7034,14 @@ class TestInProcessMessages:
         assert sw["gguf_only"] is (reason is not None)
         assert reason in sw["gguf_only_reason"] if reason else sw["gguf_only_reason"] is None
         assert (sw["image_preflight"] or {}).get("multiple") is multiple
+
+    @pytest.mark.parametrize("stream", [0, 1])
+    def test_a_resident_speech_model_is_not_served_through_chat(self, monkeypatch, stream):
+        # Chat answers a TTS model with a finished clip, never a text reply.
+        with pytest.raises(HTTPException) as err:
+            self._serve(monkeypatch, stream, speech = True)
+        assert "req" not in self.seen
+        assert "GGUF" in json.dumps(err.value.detail)
 
     @pytest.mark.parametrize("vision", [True, False])
     def test_an_image_on_a_text_only_model_names_its_block(self, monkeypatch, vision):

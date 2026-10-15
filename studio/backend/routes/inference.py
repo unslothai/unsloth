@@ -42525,7 +42525,14 @@ def _set_or_prepend_system_message(
 
 
 def _in_process_model_resident() -> bool:
-    return bool(getattr(_peek_inference_backend(), "active_model_name", None))
+    orchestrator = _peek_inference_backend()
+    entry = (getattr(orchestrator, "models", None) or {}).get(
+        getattr(orchestrator, "active_model_name", None)
+    )
+    # Chat answers a TTS model with a finished clip, not a text reply.
+    return isinstance(entry, dict) and not (
+        entry.get("is_audio") and entry.get("audio_type") != "whisper"
+    )
 
 
 async def _anthropic_in_process_input_tokens(fields: dict, request, current_subject) -> int:
