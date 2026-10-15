@@ -973,6 +973,7 @@ def _push_with_mtp_head(save_kwargs):
         )
         # The card the hub path writes, staged here so it lands in this commit on this revision.
         from huggingface_hub import ModelCard, hf_hub_download, metadata_save
+        from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
 
         readme = os.path.join(directory, "README.md")
         if not os.path.isfile(readme):
@@ -981,7 +982,9 @@ def _push_with_mtp_head(save_kwargs):
                     hf_hub_download(repo_id, "README.md", revision = revision, token = token),
                     readme,
                 )
-            except Exception:  # new repo or no card yet
+            except LocalEntryNotFoundError:
+                raise  # offline or unreachable: never replace a card that may exist
+            except EntryNotFoundError:  # no card yet; any other failure must not replace one
                 config = save_kwargs["model"].config
                 ModelCard(
                     MODEL_CARD.format(
