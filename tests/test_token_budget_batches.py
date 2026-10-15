@@ -394,10 +394,13 @@ def _shard_steps(n, bs, ga, ws, balance, **trainer_kwargs):
         if balance:
             loader = SimpleNamespace(batch_sampler = shard, dataset = dataset)
             kwargs = {"model_accepts_loss_kwargs": True, **trainer_kwargs}
+            optim = kwargs.pop("args_optim", "adamw_torch")
             trainer = SimpleNamespace(
                 training_step = None,
                 get_train_dataloader = lambda: loader,
-                args = SimpleNamespace(gradient_accumulation_steps = ga, average_tokens_across_devices = True),
+                args = SimpleNamespace(
+                    gradient_accumulation_steps = ga, average_tokens_across_devices = True, optim = optim
+                ),
                 **kwargs,
             )
             tb.install_token_budget(trainer)
@@ -444,3 +447,69 @@ def test_real_label_smoother_is_classified_by_its_signature():
     if int(transformers.__version__.split(".")[0]) < 5:
         assert not uses_count
     assert uses_count == ("num_items_in_batch" in __import__("inspect").signature(smoother.__call__).parameters)
+
+
+def test_split_refuses_pairwise_masks():
+    batch = _padding_free_batch([5, 9, 3, 12])
+    total = batch["input_ids"].shape[1]
+    batch["attention_mask"] = torch.ones(1, total, total, dtype = torch.bool).tril()
+    assert tb.split_batch_by_token_budget(batch, 10) == [batch]
+
+
+class _CountingTensor(torch.Tensor):
+    host_reads = 0
+
+    @classmethod
+    def __torch_function__(cls, func, types, args = (), kwargs = None):
+        if func in (torch.Tensor.__int__, torch.Tensor.item, torch.Tensor.tolist, torch.Tensor.__bool__):
+            cls.host_reads += 1
+        return super().__torch_function__(func, types, args, kwargs or {})
+
+
+def test_split_reads_boundary_labels_in_one_transfer():
+    batch = _padding_free_batch([3] * 40)
+    batch["labels"] = batch["labels"].as_subclass(_CountingTensor)
+    _CountingTensor.host_reads = 0
+    chunks = tb.split_batch_by_token_budget(batch, 6)
+    assert len(chunks) == 20
+    assert _CountingTensor.host_reads <= 1
+
+
+def test_lomo_steps_aside_for_split_and_balance(monkeypatch, capsys):
+    monkeypatch.setenv("UNSLOTH_TOKEN_BUDGET", "16")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BALANCE", raising = False)
+    for optim in ("lomo", "adalomo"):
+        trainer, seen = _fake_trainer()
+        trainer.args.optim = optim
+        tb.install_token_budget(trainer)
+        batch = _padding_free_batch([5, 9, 3, 12, 7, 4])
+        trainer.training_step(None, batch, 100)
+        trainer.training_step(None, batch, 100)
+        assert seen == [(40, 100), (40, 100)]
+        assert capsys.readouterr().out.count("UNSLOTH_TOKEN_BUDGET not splitting") == 1
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "1")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    plain, _ = _shard_steps(64, 2, 4, 1, balance = False)
+    balanced, active = _shard_steps(64, 2, 4, 1, balance = True, args_optim = "lomo")
+    assert active == [False] and balanced == plain
+
+
+def test_balance_steps_aside_for_multi_process_dispatched_dataloaders(monkeypatch, capsys):
+    accelerate_data_loader = pytest.importorskip("accelerate.data_loader")
+    datasets = pytest.importorskip("datasets")
+    monkeypatch.setenv("UNSLOTH_TOKEN_BALANCE", "1")
+    monkeypatch.delenv("UNSLOTH_TOKEN_BUDGET", raising = False)
+    dataset = datasets.Dataset.from_dict({"input_ids": [[1] * (1 + i % 7) for i in range(32)]})
+    loader = accelerate_data_loader.DataLoaderDispatcher(dataset, batch_size = 2)
+    loader.state = SimpleNamespace(num_processes = 2)
+    trainer = SimpleNamespace(
+        training_step = None,
+        get_train_dataloader = lambda: loader,
+        args = SimpleNamespace(gradient_accumulation_steps = 4, average_tokens_across_devices = True),
+        model_accepts_loss_kwargs = True,
+    )
+    tb.install_token_budget(trainer)
+    trainer.get_train_dataloader()
+    assert trainer._unsloth_token_balance_active is False
+    assert not isinstance(loader.batch_sampler.sampler, tb.TokenBalancedSampler)
+    assert "UNSLOTH_TOKEN_BALANCE ignored" in capsys.readouterr().out

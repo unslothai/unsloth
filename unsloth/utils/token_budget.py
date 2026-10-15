@@ -197,6 +197,9 @@ def _split_padding_free(batch, budget):
             continue
         if value.dim() < 2 or value.shape[0] != 1 or value.shape[1] != total:
             return None
+        # A pairwise [1, T, T] mask or bias would need both token axes cut.
+        if total in value.shape[2:]:
+            return None
     groups, current, used = [], [], 0
     for length in segments:
         if current and used + length > budget:
@@ -207,18 +210,15 @@ def _split_padding_free(batch, budget):
     groups.append(current)
     if len(groups) < 2:
         return None
+    stops = list(itertools.accumulate(sum(group) for group in groups))
     labels = batch.get("labels")
-    chunks, start = [], 0
-    for group in groups:
-        stop = start + sum(group)
-        # The last token of a chunk loses its next-token target, exact only when that target is masked.
-        if (
-            isinstance(labels, torch.Tensor)
-            and "shift_labels" not in batch
-            and stop < total
-            and int(labels[0, stop]) != -100
-        ):
+    # The last token of a chunk loses its next-token target, exact only when that target is masked.
+    if isinstance(labels, torch.Tensor) and "shift_labels" not in batch:
+        cuts = torch.tensor(stops[:-1], device = labels.device)
+        if bool((labels[0, cuts] != -100).any()):
             return None
+    chunks, start = [], 0
+    for group, stop in zip(groups, stops):
         chunk = {}
         for key, value in batch.items():
             if key == "packed_seq_lengths":
@@ -351,6 +351,9 @@ def _router_aux_loss_active(trainer):
 
 
 def _exactness_blocker(trainer):
+    # LOMO / AdaLomo update the weights inside every backward, so each chunk or slot is its own step.
+    if "lomo" in str(getattr(getattr(trainer, "args", None), "optim", "")).lower():
+        return "LOMO optimizers update the weights on every backward"
     if not _loss_uses_step_count(trainer):
         return "the loss is a per-micro-batch mean (no shared num_items_in_batch, or label smoothing)"
     if _router_aux_loss_active(trainer):
@@ -371,6 +374,10 @@ def _note_once(trainer, message):
 def _balance_dataloader(trainer, dataloader):
     if _exactness_blocker(trainer) is not None:
         return False
+    # accelerate's DataLoaderDispatcher deals successive inner batches to ranks behind a plain BatchSampler.
+    if any(c.__name__ == "DataLoaderDispatcher" for c in type(dataloader).__mro__):
+        if int(getattr(getattr(dataloader, "state", None), "num_processes", 1)) > 1:
+            return False
     batch_sampler = getattr(dataloader, "batch_sampler", None)
     world_size = 1
     keep_first_window = False
