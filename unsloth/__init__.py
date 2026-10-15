@@ -1639,6 +1639,14 @@ else:
     # GPU path: load everything from _gpu_init
     from ._gpu_init import *
     from ._gpu_init import __version__
+    from .fsdp2_launch import fsdp_version_from_env as _fsdp_version_from_env
+
+    # Raw `Accelerator.prepare()` loops never reach the Trainer init that also installs these.
+    if _fsdp_version_from_env() == 2:
+        from .models.fsdp2 import install_fsdp2_hooks as _install_fsdp2_hooks
+        _install_fsdp2_hooks()
+        del _install_fsdp2_hooks
+    del _fsdp_version_from_env
 
     def get_gpu_memory_stats():
         """Return CUDA/ROCm/XPU/NPU device stats, peak memory, and total memory in GiB."""

@@ -171,3 +171,13 @@ def test_uniform_or_autocast_runs_are_not_upcast():
     # Under autocast accelerate (>= 1.13) upcasts the trainable weights itself.
     assert fsdp2.unify_trainable_dtypes(_accelerator(None, "bf16"), mixed) is False
     assert mixed[0].weight.dtype == torch.bfloat16
+
+
+def test_install_fsdp2_hooks_patches_accelerate_without_a_trainer():
+    import accelerate.accelerator as accelerator_module
+    from accelerate import Accelerator
+    from accelerate.utils import FullyShardedDataParallelPlugin
+    fsdp2.install_fsdp2_hooks()
+    assert getattr(accelerator_module.fsdp2_prepare_model, fsdp2._PATCHED, False)
+    assert getattr(FullyShardedDataParallelPlugin.set_mixed_precision, fsdp2._PATCHED, False)
+    assert hasattr(Accelerator, "no_sync")

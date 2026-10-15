@@ -16,6 +16,7 @@ import torch
 
 __all__ = [
     "fsdp2_trainer_setup",
+    "install_fsdp2_hooks",
     "install_fsdp2_policy_provenance",
     "install_fsdp2_prepare_hook",
     "install_fsdp2_no_sync",
@@ -349,6 +350,13 @@ def install_fsdp2_no_sync():
     setattr(no_sync, _PATCHED, True)
     Accelerator.no_sync = no_sync
     return True
+
+
+def install_fsdp2_hooks():
+    """Everything FSDP2 needs before an Accelerator exists; also for raw `Accelerator.prepare()` loops."""
+    install_fsdp2_policy_provenance()
+    install_fsdp2_prepare_hook()
+    install_fsdp2_no_sync()
 
 
 def fsdp2_trainer_setup(trainer):
