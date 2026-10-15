@@ -1131,6 +1131,7 @@ def _restore_structural_decode(vae: Any) -> None:
 
 def uninstall(vae: Any) -> None:
     _restore_structural_decode(vae)
+    _restore_contiguous_layout(vae)  # no-op unless the speed layer recorded a relayout for the fused passes
     vae.__dict__.pop("_unsloth_vae_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)

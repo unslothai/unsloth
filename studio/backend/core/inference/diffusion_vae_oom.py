@@ -251,18 +251,26 @@ def install(vae: Any, logger: Any = None) -> bool:
     def _level_quality_ok(level: int, z: Any, args: tuple, kwargs: dict) -> Optional[bool]:
         """Halved tiles decode a corner crop (2 tiles a side, so one seam each way; 2 frames) within MIN_PSNR_DB of the
         untiled crop. Measured once per level. When the untiled crop itself runs out of memory, only tiles of at least
-        UNPROBED_MIN_LATENTS are allowed. None: the halved crop came back the wrong size (level unusable)."""
-        if level in quality:
-            return quality[level]
+        UNPROBED_MIN_LATENTS are allowed. None: the halved crop came back the wrong size (level unusable).
+        The verdict is kept per (latent shape, level): the probe measures how that shape's tile geometry blends."""
+        qkey = (_key(z), level)
+        if qkey in quality:
+            return quality[qkey]
         values = halved(stock_attrs, ratio, level, factor) or {}
-        lat = min(
-            [values[n] // ratio for n in values if n.startswith("tile_sample_min_") and "overlap" not in n]
-            + [values[n] for n in values if n.startswith("tile_latent_min_")]
-            or [MIN_TILE_LATENTS]
-        )
+
+        def axis_latents(axis: str) -> int:
+            # ``*_size`` attributes tile both axes
+            found = [
+                values[f"tile_sample_min_{a}"] // ratio for a in (axis, "size") if f"tile_sample_min_{a}" in values
+            ] + [values[f"tile_latent_min_{a}"] for a in (axis, "size") if f"tile_latent_min_{a}" in values]
+            return min(found) if found else MIN_TILE_LATENTS
+
+        lat_h, lat_w = axis_latents("height"), axis_latents("width")
+        lat = min(lat_h, lat_w)
         sl = [slice(None)] * z.dim()
-        sl[-1] = slice(0, min(int(z.shape[-1]), 2 * lat))
-        sl[-2] = slice(0, min(int(z.shape[-2]), 2 * lat))
+        # two tiles along each axis, so each axis gets a seam
+        sl[-1] = slice(0, min(int(z.shape[-1]), 2 * lat_w))
+        sl[-2] = slice(0, min(int(z.shape[-2]), 2 * lat_h))
         if z.dim() == 5:
             sl[2] = slice(0, min(int(z.shape[2]), 2))
         crop = z[tuple(sl)]
@@ -289,18 +297,18 @@ def install(vae: Any, logger: Any = None) -> bool:
             stats["probe_psnr"][level] = None
             if lat < UNPROBED_MIN_LATENTS:
                 return False  # not cached: with more memory free the probe may run next time
-            quality[level] = True  # a remembered working level must not rerun a probe known to run out of memory
+            quality[qkey] = True  # a remembered working level must not rerun a probe known to run out of memory
             return True
         if mse is None:
-            quality[level] = None
+            quality[qkey] = None
             stats["probe_psnr"][level] = "shape"
             _release_cache(z, vae)
             return None
         psnr = 99.0 if mse == 0 else 10.0 * math.log10(4.0 / mse)
-        quality[level] = psnr >= MIN_PSNR_DB
+        quality[qkey] = psnr >= MIN_PSNR_DB
         stats["probe_psnr"][level] = round(psnr, 1)
         _release_cache(z, vae)
-        return quality[level]
+        return quality[qkey]
 
     def _shape_ok(out: Any, z: Any) -> bool:
         dec = _decoded(out)
@@ -324,16 +332,18 @@ def install(vae: Any, logger: Any = None) -> bool:
     def _retrying(z: Any, args: tuple, kwargs: dict) -> Any:
         stats["calls"] += 1
         tiled_now = bool(getattr(vae, "use_tiling", False))
-        level_free = memo.get(_key(z)) if tiled_now else None
-        start = 0
+        # Tiled and untiled callers of one shape fail at different sizes: keyed apart.
+        mkey = (_key(z), tiled_now)
+        level_free = memo.get(mkey)
+        start: Optional[int] = None  # None: no remembered level; 0 is a remembered stock-tile recovery
         if level_free is not None:
             free = _free_bytes(z)
-            # More memory than when the stock tiles failed: try them again rather than keep the smaller tiles.
+            # More memory than when the caller's own decode failed: try it again rather than keep the fallback.
             if free is not None and level_free[1] is not None and free > 1.25 * level_free[1]:
-                memo.pop(_key(z), None)
+                memo.pop(mkey, None)
             else:
                 start = level_free[0]
-        if start == 0:
+        if start is None:
             try:
                 return inner(z, *args, **kwargs)
             except Exception as exc:  # noqa: BLE001
@@ -346,13 +356,17 @@ def install(vae: Any, logger: Any = None) -> bool:
             levels += list(range(1, MAX_HALVINGS + 1))
             if not tiled_now:
                 stats["tiled_retry"] += 1
+        elif start == 0:
+            free_at_fail = level_free[1]
+            levels = list(range(0, MAX_HALVINGS + 1))
         else:
             free_at_fail = level_free[1]
             levels = list(range(start, MAX_HALVINGS + 1)) + [0]
+        lowest = start or 0
         error = "VAE decode ran out of memory at every tile size; free GPU memory or lower the resolution"
         for level in levels:
             if level and halved(stock_attrs, ratio, level, factor) is None:
-                if level > start:
+                if level > lowest:
                     break
                 continue
             # Outside the handler, and before the probe: the failed attempt's tensors (and a causal decoder's frame
@@ -386,10 +400,11 @@ def install(vae: Any, logger: Any = None) -> bool:
             if not failed and _shape_ok(out, z):
                 stats["recovered"] += 1
                 stats["halvings"] = max(stats["halvings"], level)
-                if level:
-                    memo[_key(z)] = (level, free_at_fail)
+                if level or not tiled_now:
+                    # an untiled caller that recovered through the stock tiles goes straight to them next time
+                    memo[mkey] = (level, free_at_fail)
                 else:
-                    memo.pop(_key(z), None)
+                    memo.pop(mkey, None)
                 return out
             if not failed:
                 del out  # this VAE's stock tiling does not cover the latent at that size

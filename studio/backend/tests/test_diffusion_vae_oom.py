@@ -550,3 +550,93 @@ def test_ratio_from_tile_geometry_when_nothing_else_publishes_it():
         tile_latent_min_size = 32
 
     assert O._spatial_ratio(_Bare()) == 16
+
+
+# -- PR review round 3 regressions ------------------------------------------------------------------------------
+
+
+class _ShapeLog(_WanLike):
+    """Full latents are >= 48 latents wide; narrower calls are probe crops. Logs every call."""
+
+    def __init__(self, fits):
+        super().__init__(fits)
+        self.calls = []
+
+    def _decode(self, z, return_dict = True):
+        full = z.shape[-1] >= 48
+        self.calls.append((full, self.use_tiling, self.tile_sample_min_height, tuple(z.shape[-2:])))
+        side = z.shape[-1] * 8 if not self.use_tiling else self.tile_sample_min_height
+        if full and side > self.fits:
+            raise _FakeOOM()
+        return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
+
+
+def _probes(vae):
+    return [c for c in vae.calls if not c[0] and not c[1]]  # untiled decodes of a crop = probe references
+
+
+def test_quality_verdict_is_kept_per_shape():
+    """Round 3 item 1: a second latent shape is probed again; a known shape's memoised level stays probe-free."""
+    vae = _ShapeLog(fits = 128)
+    vae.use_tiling = True
+    O.install(vae)
+    vae._decode(torch.zeros(1, 4, 1, 64, 64))
+    assert len(_probes(vae)) == 1
+    vae._decode(torch.zeros(1, 4, 1, 48, 48))
+    assert len(_probes(vae)) == 2  # before: the 64x64 verdict was reused for 48x48
+    vae.calls.clear()
+    vae._decode(torch.zeros(1, 4, 1, 64, 64))
+    assert _probes(vae) == [] and [c[2] for c in vae.calls] == [128]
+
+
+@pytest.mark.parametrize("fits, level_side", [(256, 256), (128, 128)])
+def test_untiled_caller_reuses_the_remembered_level(fits, level_side):
+    """Round 3 item 3: an untiled caller that recovered through the stock tiles (256) or halved tiles (128) goes
+    straight to that size next time instead of retrying the untiled decode that failed."""
+    vae = _ShapeLog(fits = fits)
+    O.install(vae)
+    z = torch.zeros(1, 4, 1, 64, 64)
+    vae._decode(z)
+    vae.calls.clear()
+    out = vae._decode(z)
+    assert out[0].shape[-2:] == (512, 512)
+    full = [c for c in vae.calls if c[0]]
+    assert full == [(True, True, level_side, (64, 64))], full
+    assert vae.use_tiling is False and vae.tile_sample_min_height == 256
+    # a tiled caller of the same shape keeps its own memo
+    vae.use_tiling = True
+    vae.calls.clear()
+    vae._decode(z)
+    assert [c for c in vae.calls if c[0]][0][2] == 256
+
+
+class _NarrowWidth(_ShapeLog):
+    def __init__(self, fits):
+        super().__init__(fits)
+        self.tile_sample_min_width = 128
+        self.tile_sample_stride_width = 96
+
+
+def test_probe_crop_is_sized_per_axis():
+    """Round 3 item 4: level 1 halves height to 16 latents and width to 8; the crop spans two tiles on each axis
+    (32 x 16), not two of the smaller one on both (16 x 16)."""
+    vae = _NarrowWidth(fits = 128)
+    vae.use_tiling = True
+    O.install(vae)
+    vae._decode(torch.zeros(1, 4, 1, 64, 64))
+    assert [c[3] for c in _probes(vae)] == [(32, 16)]
+
+
+def test_uninstall_restores_contiguous_layout(monkeypatch):
+    """Round 3 item 2: uninstall undoes the channels_last_3d relayout recorded for the fused passes."""
+    from core.inference import diffusion_speed as S
+
+    monkeypatch.delenv(S.VAE_CHANNELS_LAST_3D_ENV, raising = False)
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    vae = AutoencoderKLTileableNew()
+    assert S._vae_channels_last_3d(vae, None, fused = True)
+    F.install_structural(vae)
+    assert not vae.decoder.proj3d.weight.is_contiguous()
+    F.uninstall(vae)
+    assert vae.decoder.proj3d.weight.is_contiguous()
+    assert "_unsloth_channels_last_modules" not in vae.__dict__
