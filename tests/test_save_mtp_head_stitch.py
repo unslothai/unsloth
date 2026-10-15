@@ -556,3 +556,45 @@ def test_modelscope_snapshot_wins_under_a_peft_wrapper(tmp_path):
     peft.base_model = torch.nn.Module()
     peft.base_model.model = inner
     assert _checkpoint_source(peft) == str(tmp_path)
+
+
+def test_mtp_push_never_replaces_a_card_it_could_not_read(save_module, monkeypatch):
+    import huggingface_hub
+
+    uploads = []
+
+    class Api:
+        def __init__(self, token = None):
+            pass
+
+        def create_repo(self, **kwargs):
+            pass
+
+        def upload_folder(self, **kwargs):
+            uploads.append(kwargs)
+
+    def unreachable(*args, **kwargs):
+        raise huggingface_hub.errors.LocalEntryNotFoundError("offline")
+
+    monkeypatch.setattr(save_module, "HfApi", Api)
+    monkeypatch.setattr(save_module, "_determine_username", lambda d, u, t: ("me/m", "me"))
+    monkeypatch.setattr(save_module, "unsloth_save_model", lambda **kwargs: None)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", unreachable)
+    with pytest.raises(huggingface_hub.errors.LocalEntryNotFoundError):
+        save_module._push_with_mtp_head(
+            dict(
+                is_main_process = True,
+                save_directory = "m",
+                token = "t",
+                private = False,
+                revision = None,
+                create_pr = False,
+                commit_message = None,
+                datasets = None,
+                tags = None,
+                model = SimpleNamespace(
+                    config = SimpleNamespace(_name_or_path = "org/base", model_type = "qwen3_5")
+                ),
+            )
+        )
+    assert uploads == []
