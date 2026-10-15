@@ -37,21 +37,38 @@ class _WanLike(torch.nn.Module):
     def enable_tiling(self):
         self.use_tiling = True
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         side = z.shape[-1] * 8 if not self.use_tiling else self.tile_sample_min_height
         if z.shape[-1] == 64:  # the full latent; the quality probe decodes a smaller corner crop
-            self.seen.append((self.use_tiling, self.tile_sample_min_height, self.tile_sample_stride_height))
+            self.seen.append(
+                (self.use_tiling, self.tile_sample_min_height, self.tile_sample_stride_height)
+            )
         else:  # the probe crop always fits
             out = z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1
             # tiles under ``seam_below`` px decode with a visible error
-            return (out + (1.0 if self.use_tiling and self.tile_sample_min_height < self.seam_below else 0.0),)
+            return (
+                out
+                + (
+                    1.0
+                    if self.use_tiling and self.tile_sample_min_height < self.seam_below
+                    else 0.0
+                ),
+            )
         if side > self.fits:
             raise _FakeOOM()
         return (z.repeat_interleave(8, -1).repeat_interleave(8, -2) + 1,)
 
 
 def test_halved_keeps_overlap_fraction_and_floor():
-    attrs = {"tile_sample_min_height": 256, "tile_sample_stride_height": 192, "tile_latent_min_size": 32}
+    attrs = {
+        "tile_sample_min_height": 256,
+        "tile_sample_stride_height": 192,
+        "tile_latent_min_size": 32,
+    }
     assert O.halved(attrs, 8, 1) == {
         "tile_sample_min_height": 128, "tile_sample_stride_height": 96, "tile_latent_min_size": 16,
     }  # fmt: skip
@@ -68,7 +85,9 @@ def test_halved_overlap_factor_geometry_tiles_exactly():
     assert O.halved(attrs, 32, 2, 0.25) is None
     kl = {"tile_sample_min_size": 1024, "tile_latent_min_size": 128}
     assert O.halved(kl, 8, 3, 0.25) == {"tile_sample_min_size": 128, "tile_latent_min_size": 16}
-    assert O.halved(kl, 8, 4, 0.25)["tile_latent_min_size"] == 8 and O.halved(kl, 8, 5, 0.25) is None
+    assert (
+        O.halved(kl, 8, 4, 0.25)["tile_latent_min_size"] == 8 and O.halved(kl, 8, 5, 0.25) is None
+    )
     ltx = {"tile_sample_min_height": 512, "tile_sample_stride_height": 448}
     assert O.halved(ltx, 32, 1) == {"tile_sample_min_height": 256, "tile_sample_stride_height": 224}
     assert O.halved(ltx, 32, 2) is None
@@ -196,7 +215,11 @@ class AutoencoderKLSomethingNew(torch.nn.Module):
         super().__init__()
         self.decoder = _Dec(c)
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         return (self.decoder(z),)
 
 
@@ -238,7 +261,10 @@ def test_structural_patch_is_exact_when_pairing_is_right(monkeypatch):
     norms = F._plain_group_norms(vae.decoder)
     silus = F._plain_silus(vae.decoder)
     names = {id(m): n for n, m in vae.decoder.named_modules()}
-    paired = [names[id(m)] in ("block.norm1", "norm_out") or (False if names[id(m)] else None) for m in norms]
+    paired = [
+        names[id(m)] in ("block.norm1", "norm_out") or (False if names[id(m)] else None)
+        for m in norms
+    ]
     F._structural_patch(norms, paired, silus, state, None)
     with torch.no_grad():
         out = vae.__dict__["_unsloth_vae_structural_inner"](z)[0]
@@ -362,7 +388,9 @@ def test_wide_tiles_defer_to_halved_stock_tiles_on_oom(monkeypatch):
     assert max(sides) > 16 and sides[-1] <= 16  # the wide / stock tiles were tried first
     stats = vae._unsloth_vae_oom_stats
     assert stats["halvings"] == 1 and stats["recovered"] == 1
-    assert vae.tile_sample_min_height == stock_tile and not vae.__dict__.get("_unsloth_vae_oom_halvings")
+    assert vae.tile_sample_min_height == stock_tile and not vae.__dict__.get(
+        "_unsloth_vae_oom_halvings"
+    )
     # the halved tiles still blend: no hard seam against the untiled decode
     assert (out - ref).abs().mean() < 0.1
 
@@ -380,7 +408,11 @@ class _StaleCacheWanLike(_WanLike):
     def clear_cache(self):
         self.stale = False
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         if self.stale:
             raise _FakeOOM()
         try:
@@ -406,7 +438,11 @@ def test_cache_released_before_the_quality_probe():
 class _WrongCropWanLike(_WanLike):
     """At 128 px tiles the tiled probe crop comes back a different size than the untiled crop."""
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         out = super()._decode(z, return_dict)
         if z.shape[-1] != 64 and self.use_tiling and self.tile_sample_min_height == 128:
             return (out[0][..., :-8],)
@@ -423,7 +459,10 @@ def test_probe_shape_mismatch_falls_through_to_the_next_level():
     assert out[0].shape[-2:] == (512, 512)
     stats = vae._unsloth_vae_oom_stats
     assert stats["probe_psnr"][1] == "shape" and stats["recovered"] == 1
-    assert [s[1] for s in vae.seen] == [256, 64]  # the unusable 128 px level was never attempted at full size
+    assert [s[1] for s in vae.seen] == [
+        256,
+        64,
+    ]  # the unusable 128 px level was never attempted at full size
 
 
 def test_untiled_gate_found_through_wrapped_chain():
@@ -456,7 +495,9 @@ class AutoencoderKLTileableNew(AutoencoderKLSomethingNew):
         self.tile_sample_min_width = 256
         self.tile_sample_stride_height = 192
         self.tile_sample_stride_width = 192
-        self.decoder.proj3d = torch.nn.Conv3d(c, c, 3)  # a 3-D conv the channels_last_3d relayout touches
+        self.decoder.proj3d = torch.nn.Conv3d(
+            c, c, 3
+        )  # a 3-D conv the channels_last_3d relayout touches
 
     def enable_tiling(self):
         self.use_tiling = True
@@ -523,7 +564,11 @@ class _UntiledProbeOOMWanLike(_WanLike):
         super().__init__(fits)
         self.untiled_probes = 0
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         if z.shape[-1] != 64 and not self.use_tiling:
             self.untiled_probes += 1
             raise _FakeOOM()
@@ -562,7 +607,11 @@ class _ShapeLog(_WanLike):
         super().__init__(fits)
         self.calls = []
 
-    def _decode(self, z, return_dict = True):
+    def _decode(
+        self,
+        z,
+        return_dict = True,
+    ):
         full = z.shape[-1] >= 48
         self.calls.append((full, self.use_tiling, self.tile_sample_min_height, tuple(z.shape[-2:])))
         side = z.shape[-1] * 8 if not self.use_tiling else self.tile_sample_min_height
@@ -572,7 +621,9 @@ class _ShapeLog(_WanLike):
 
 
 def _probes(vae):
-    return [c for c in vae.calls if not c[0] and not c[1]]  # untiled decodes of a crop = probe references
+    return [
+        c for c in vae.calls if not c[0] and not c[1]
+    ]  # untiled decodes of a crop = probe references
 
 
 def test_quality_verdict_is_kept_per_shape():

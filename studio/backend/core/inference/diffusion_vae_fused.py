@@ -1117,7 +1117,6 @@ def _restore_structural_decode(vae: Any) -> None:
     )
     if oom_on_top:
         from . import diffusion_vae_oom  # noqa: PLC0415
-
         diffusion_vae_oom.uninstall(vae)
         current = vae.__dict__.get("_decode")
     if getattr(current, "_unsloth_vae_fused", False):
@@ -1131,7 +1130,9 @@ def _restore_structural_decode(vae: Any) -> None:
 
 def uninstall(vae: Any) -> None:
     _restore_structural_decode(vae)
-    _restore_contiguous_layout(vae)  # no-op unless the speed layer recorded a relayout for the fused passes
+    _restore_contiguous_layout(
+        vae
+    )  # no-op unless the speed layer recorded a relayout for the fused passes
     vae.__dict__.pop("_unsloth_vae_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_structural", None)
     vae.__dict__.pop("_unsloth_vae_fused_installed", None)
@@ -2300,7 +2301,11 @@ def _structural_patch(norms: list, paired: list, silus: list, state: Any, logger
     return n
 
 
-def _structural_unpatch(norms: list, silus: list, vae: Any = None) -> None:
+def _structural_unpatch(
+    norms: list,
+    silus: list,
+    vae: Any = None,
+) -> None:
     for m in (*norms, *silus):
         m.__dict__.pop("forward", None)
         m.__dict__.pop("_unsloth_vae_fused_failed", None)
@@ -2344,10 +2349,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             calls, consumed, ref = _trace_group_norm_silu(
                 norms, silus, lambda: _decoded_tensor(inner(tiny, *args, **kwargs))
             )
-            paired = [
-                None if c == 0 else (c == k)
-                for c, k in zip(calls, consumed)
-            ]
+            paired = [None if c == 0 else (c == k) for c, k in zip(calls, consumed)]
             n = _structural_patch(norms, paired, silus, state, logger)
             if n == 0:
                 state.status = "no_match"
@@ -2358,11 +2360,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
             err = (out.float() - ref.float()).abs()
             state.max_abs, state.mean_abs = float(err.max()), float(err.mean())
             fused_ran = state.calls > calls_before
-        if (
-            fused_ran
-            and state.max_abs <= _PROBE_MAX_ABS
-            and state.mean_abs <= _PROBE_MEAN_ABS
-        ):
+        if fused_ran and state.max_abs <= _PROBE_MAX_ABS and state.mean_abs <= _PROBE_MEAN_ABS:
             state.status = "ok"
             state.gn_silu = sum(1 for p in paired if p)
             state.gn = sum(1 for p in paired if p is False)

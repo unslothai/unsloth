@@ -8036,7 +8036,6 @@ class VideoBackend:
             # Halved-tile retry on a decode OOM. Before untiled-when-fits, which keeps its own untiled -> tiled fallback.
             try:
                 from .diffusion_vae_oom import install as install_vae_oom_retry
-
                 install_vae_oom_retry(getattr(pipe, "vae", None), logger)
             except Exception as exc:  # noqa: BLE001 - a decode OOM then fails as before
                 logger.warning("video.vae_oom: not installed: %s", exc)

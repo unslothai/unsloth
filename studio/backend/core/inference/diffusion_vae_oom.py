@@ -60,13 +60,20 @@ def _spatial_ratio(vae: Any) -> int:
         r = getattr(type(vae), "spatial_compression_ratio", None)
         if isinstance(r, int) and r > 0:
             return r
-        boc = cfg.get("block_out_channels") if hasattr(cfg, "get") else getattr(cfg, "block_out_channels", None)
+        boc = (
+            cfg.get("block_out_channels")
+            if hasattr(cfg, "get")
+            else getattr(cfg, "block_out_channels", None)
+        )
         if boc:
             return 2 ** (len(boc) - 1)
     except Exception:  # noqa: BLE001
         pass
     for axis in _AXES:
-        sample, latent = _int_attr(vae, f"tile_sample_min_{axis}"), _int_attr(vae, f"tile_latent_min_{axis}")
+        sample, latent = (
+            _int_attr(vae, f"tile_sample_min_{axis}"),
+            _int_attr(vae, f"tile_latent_min_{axis}"),
+        )
         if sample and latent and sample % latent == 0:
             return sample // latent
     return 8
@@ -75,7 +82,12 @@ def _spatial_ratio(vae: Any) -> int:
 def tile_attrs(vae: Any) -> dict:
     out = {}
     for axis in _AXES:
-        for kind in ("tile_sample_min", "tile_latent_min", "tile_sample_stride", "tile_sample_min_overlap"):
+        for kind in (
+            "tile_sample_min",
+            "tile_latent_min",
+            "tile_sample_stride",
+            "tile_sample_min_overlap",
+        ):
             name = f"{kind}_{axis}"
             value = _int_attr(vae, name)
             if value is not None:
@@ -93,7 +105,9 @@ def _overlap_ok(latent: int, sample: int, factor: Optional[float]) -> bool:
     return abs(step - round(step)) < 1e-9 and abs(blend - round(blend)) < 1e-9 and round(step) > 0
 
 
-def _axis_latents(base_latent: int, ratio: int, level: int, overlap_factor: Optional[float]) -> Optional[int]:
+def _axis_latents(
+    base_latent: int, ratio: int, level: int, overlap_factor: Optional[float]
+) -> Optional[int]:
     """One axis's tile size in latents at ``level``, or None when it is under the floor or no smaller than at
     ``level - 1``."""
     scale = 2**level
@@ -106,7 +120,12 @@ def _axis_latents(base_latent: int, ratio: int, level: int, overlap_factor: Opti
     return lat
 
 
-def halved(attrs: dict, ratio: int, level: int, overlap_factor: Optional[float] = None) -> Optional[dict]:
+def halved(
+    attrs: dict,
+    ratio: int,
+    level: int,
+    overlap_factor: Optional[float] = None,
+) -> Optional[dict]:
     """``attrs`` with the tile geometry halved ``level`` times, every size a whole number of latents. An axis already
     at the floor keeps its last size while the others keep halving; None when no axis gets smaller at ``level``."""
     if level <= 0:
@@ -162,7 +181,6 @@ def _release_cache(z: Any, vae: Any = None) -> None:
         pass
     try:
         import torch
-
         if getattr(z, "device", None) is not None and z.device.type == "cuda":
             torch.cuda.empty_cache()
     except Exception:  # noqa: BLE001
@@ -176,7 +194,9 @@ def _free_bytes(z: Any) -> Optional[int]:
         if z.device.type != "cuda":
             return None
         free, _ = torch.cuda.mem_get_info(z.device)
-        return int(free + torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device))
+        return int(
+            free + torch.cuda.memory_reserved(z.device) - torch.cuda.memory_allocated(z.device)
+        )
     except Exception:  # noqa: BLE001
         return None
 
@@ -184,7 +204,6 @@ def _free_bytes(z: Any) -> Optional[int]:
 def _compiling() -> bool:
     try:
         import torch
-
         return bool(torch.compiler.is_compiling())
     except Exception:  # noqa: BLE001
         return False
@@ -224,7 +243,9 @@ def install(vae: Any, logger: Any = None) -> bool:
         return False
     ratio = _spatial_ratio(vae)
     factor = vae.__dict__.get("tile_overlap_factor")
-    factor = float(factor) if isinstance(factor, (int, float)) and not isinstance(factor, bool) else None
+    factor = (
+        float(factor) if isinstance(factor, (int, float)) and not isinstance(factor, bool) else None
+    )
     stats = {"calls": 0, "oom": 0, "tiled_retry": 0, "halvings": 0, "recovered": 0, "failed": 0,
              "quality_refused": 0, "probe_psnr": {}}  # fmt: skip
     memo: dict = {}
@@ -261,8 +282,14 @@ def install(vae: Any, logger: Any = None) -> bool:
         def axis_latents(axis: str) -> int:
             # ``*_size`` attributes tile both axes
             found = [
-                values[f"tile_sample_min_{a}"] // ratio for a in (axis, "size") if f"tile_sample_min_{a}" in values
-            ] + [values[f"tile_latent_min_{a}"] for a in (axis, "size") if f"tile_latent_min_{a}" in values]
+                values[f"tile_sample_min_{a}"] // ratio
+                for a in (axis, "size")
+                if f"tile_sample_min_{a}" in values
+            ] + [
+                values[f"tile_latent_min_{a}"]
+                for a in (axis, "size")
+                if f"tile_latent_min_{a}" in values
+            ]
             return min(found) if found else MIN_TILE_LATENTS
 
         lat_h, lat_w = axis_latents("height"), axis_latents("width")
@@ -277,7 +304,6 @@ def install(vae: Any, logger: Any = None) -> bool:
         prev_tiling = bool(getattr(vae, "use_tiling", False))
         try:
             import torch
-
             with torch.no_grad():
                 vae.use_tiling = False
                 try:
@@ -297,7 +323,9 @@ def install(vae: Any, logger: Any = None) -> bool:
             stats["probe_psnr"][level] = None
             if lat < UNPROBED_MIN_LATENTS:
                 return False  # not cached: with more memory free the probe may run next time
-            quality[qkey] = True  # a remembered working level must not rerun a probe known to run out of memory
+            quality[qkey] = (
+                True  # a remembered working level must not rerun a probe known to run out of memory
+            )
             return True
         if mse is None:
             quality[qkey] = None
@@ -335,7 +363,9 @@ def install(vae: Any, logger: Any = None) -> bool:
         # Tiled and untiled callers of one shape fail at different sizes: keyed apart.
         mkey = (_key(z), tiled_now)
         level_free = memo.get(mkey)
-        start: Optional[int] = None  # None: no remembered level; 0 is a remembered stock-tile recovery
+        start: Optional[int] = (
+            None  # None: no remembered level; 0 is a remembered stock-tile recovery
+        )
         if level_free is not None:
             free = _free_bytes(z)
             # More memory than when the caller's own decode failed: try it again rather than keep the fallback.
