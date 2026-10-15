@@ -2221,11 +2221,7 @@ def filled_options(model: "AudioCppModel", workflow: str, values: Optional[dict]
 
 
 def workflow_options(model: "AudioCppModel", workflow: str) -> tuple[dict, ...]:
-    """The options ``workflow`` shows in Advanced and accepts on a request.
-
-    Speak can pick a built-in voice; Clone, Edit and Convert speak in a given voice, so they never
-    offer one. Names the family's rules hide for the workflow are left out.
-    """
+    """The options ``workflow`` shows and accepts; only Speak offers a built-in voice."""
     if workflow == "convert":
         options = model.convert_options
     elif workflow == "clone":
@@ -2247,12 +2243,8 @@ def request_options(
     request_keys: Optional[frozenset[str]] = None,
     fill: Optional[Iterable[str]] = None,
 ) -> dict:
-    """The options a request sends: each option's recommended default, under the user's own values.
-
-    Only names in ``fill`` (all when None) get their default; a tool panel sends its own options.
-    ``voice`` is left to the request's own defaults, and a strict spec (``request_keys``) gets only
-    names it declares.
-    """
+    """Recommended defaults (names in ``fill``, never ``voice``; only ``request_keys`` when strict)
+    under the user's own values."""
     fill = None if fill is None else frozenset(fill)
     defaults = {
         o["name"]: o["default"]

@@ -150,10 +150,7 @@ def _primary_workflow(model: AudioCppModel) -> str:
 
 
 def options_by_workflow(model: AudioCppModel, primary: str) -> Optional[dict[str, list[dict]]]:
-    """Each workflow's options where they differ from ``audio_options`` (the primary workflow's).
-
-    Convert is always listed, as before this field covered other workflows.
-    """
+    """Each workflow's options where they differ from ``audio_options``; convert always listed."""
     base = workflow_options(model, primary)
     out = {
         name: [dict(option) for option in options]
@@ -165,13 +162,8 @@ def options_by_workflow(model: AudioCppModel, primary: str) -> Optional[dict[str
 
 
 def _reread_after_download(model: AudioCppModel, hf_token: Optional[str]) -> AudioCppModel:
-    """``model`` resolved again from the files just downloaded.
-
-    Before the download its spec came from whichever GGUF header could be read, which in a repo of
-    several quantizations may be another file than the one served (MagpieTTS's ``orig`` names an
-    option ``speaker`` that its Q8_0 calls ``voice_id``). The options a request fills must be the
-    served file's.
-    """
+    """``model`` re-resolved from the served file: quants can embed different specs (MagpieTTS
+    ``orig`` says ``speaker``, its Q8_0 ``voice_id``)."""
     forget(model.id)
     fresh = resolve(model.id, model.variant.key, hf_token, network = False)
     if fresh is None or fresh.unsupported or fresh.variant.key != model.variant.key:
