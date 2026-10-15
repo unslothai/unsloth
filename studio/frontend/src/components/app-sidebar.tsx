@@ -139,6 +139,7 @@ import {
   ArrowUpDownIcon,
   LayerIcon,
   ApiIcon,
+  TimeScheduleIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
@@ -3479,6 +3480,18 @@ export function AppSidebar() {
       },
       onIntent: () => {
         preloadSilently(router.preloadRoute({ to: "/api-monitor" }));
+      },
+    },
+    tasks: {
+      icon: TimeScheduleIcon,
+      label: t("shell.navigation.tasks"),
+      active: pathname === "/tasks",
+      onClick: () => {
+        navigateFromRow({ to: "/tasks" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/tasks" }));
       },
     },
   };

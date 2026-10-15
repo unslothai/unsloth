@@ -196,8 +196,15 @@ export const BUDGET = {
   // 95). Nearly all of it is searching a model maker in the Model hub (#13998, +3,038 B raw / +1,000 B transfer):
   // its owner-to-uploads search lives in use-hub-model-search, a hook the startup screen already loads, so there
   // is no separate module to lazy-load. #13999 and #13993 add 79 B raw / 58 B transfer. Raised by that growth.
-  transferBytes: 2_045_781,
-  rawBytes: 6_801_415,
+  // Scheduled tasks add 10,784 B raw / 4,214 B transfer (6,800,855 -> 6,811,639 B raw, 2,045,415 -> 2,049,629 B
+  // transfer against 2de9425750, one machine and build, Node 22): the notifier that announces finished runs on any
+  // page, with its per-account record and the API client it shares with the lazy Tasks page (6.1 KB raw in the entry
+  // chunk), the English strings (2.3 KB) and the Tasks icon (0.8 KB). The chunk count goes 95 -> 100 with no new
+  // module at startup: the page shares dropdown-menu, alert-dialog, use-mobile, native notifications and a Radix
+  // package with the startup set, so Rolldown splits them out of the chunks they were in; that and a few small
+  // helpers in other eager chunks are the other 1.6 KB. Raised by that growth.
+  transferBytes: 2_049_995,
+  rawBytes: 6_812_199,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

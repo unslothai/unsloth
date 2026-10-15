@@ -45,6 +45,7 @@ import {
   Sun03Icon,
   TestTube01Icon,
   ApiIcon,
+  TimeScheduleIcon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -301,6 +302,13 @@ function PaletteContent() {
           >
             <HugeiconsIcon icon={LibrariesIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.library")}</span>
+          </PaletteItem>
+          <PaletteItem
+            onSelect={runAndClose(() => void navigate({ to: "/tasks" }))}
+            keywords={["scheduled", "schedule", "tasks", "reminders"]}
+          >
+            <HugeiconsIcon icon={TimeScheduleIcon} strokeWidth={1.75} />
+            <span>{t("shell.navigation.tasks")}</span>
           </PaletteItem>
           <PaletteItem
             onSelect={runAndClose(() => void navigate({ to: "/api-monitor" }))}
