@@ -6,6 +6,7 @@
 import copy
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,24 @@ def _one_thread():
     torch.set_num_threads(1)
     yield
     torch.set_num_threads(threads)
+
+
+@pytest.fixture(autouse = True)
+def _float64_moe_backend(monkeypatch):
+    # These models are float64; Unsloth's grouped_mm MoE backend (picked when a GPU is visible) has no
+    # float64 kernel, so pin the looped backend. The backend choice is lru_cached per module copy.
+    monkeypatch.setenv("UNSLOTH_MOE_BACKEND", "native_torch")
+    caches = [
+        getattr(vars(module).get("select_moe_backend"), "cache_clear", None)
+        for module in list(sys.modules.values())
+        if module is not None and hasattr(module, "__dict__")
+    ]
+    caches = [clear for clear in caches if callable(clear)]
+    for clear in caches:
+        clear()
+    yield
+    for clear in caches:
+        clear()
 
 
 def _qwen3_moe(
@@ -247,6 +266,10 @@ def test_rejects_bad_requests():
     with pytest.raises(RuntimeError, match = "vLLM engine"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
     del model.vllm_engine
+    object.__setattr__(model, "_unsloth_mtp_head", torch.nn.Linear(1, 1))
+    with pytest.raises(RuntimeError, match = "MTP head"):
+        reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
+    del model.__dict__["_unsloth_mtp_head"]
     model.config.use_bidirectional_attention = "all"
     with pytest.raises(ValueError, match = "causal"):
         reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, device = "cpu")
@@ -316,13 +339,17 @@ def test_per_expert_router_tensors_in_child_modules_are_sliced(build, tmp_path):
         num_experts_per_tok = 2,
     )
     torch.manual_seed(0)
-    model = AutoModelForCausalLM.from_config(build(transformers, base), dtype = torch.float64).eval()
+    model = AutoModelForCausalLM.from_config(
+        build(transformers, base), dtype = torch.float64, experts_implementation = "eager"
+    ).eval()
     reap.reap_prune(model, None, sparsity = 0.25, dataset = _samples(), device = "cpu")
     for name, tensor in list(model.named_parameters()) + list(model.named_buffers()):
         if ".mlp." in name and "shared" not in name:
             assert 8 not in tuple(tensor.shape), (name, tuple(tensor.shape))
     model.save_pretrained(tmp_path)
-    reloaded = AutoModelForCausalLM.from_pretrained(tmp_path, dtype = torch.float64).eval()
+    reloaded = AutoModelForCausalLM.from_pretrained(
+        tmp_path, dtype = torch.float64, experts_implementation = "eager"
+    ).eval()
     ids = torch.tensor([_samples(n = 1, seed = 9)[0]])
     with torch.no_grad():
         torch.testing.assert_close(reloaded(ids).logits, model(ids).logits)

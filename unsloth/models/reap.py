@@ -492,6 +492,11 @@ def reap_prune(
             "Unsloth: REAP cannot update the attached vLLM engine, so `fast_generate` would keep the "
             "unpruned experts. Load the model without `fast_inference = True` to prune it."
         )
+    if model.__dict__.get("_unsloth_mtp_head") is not None:
+        raise RuntimeError(
+            "Unsloth: REAP does not prune the attached MTP head, so a save would write it with the "
+            "old expert count. Run `reap_prune` before `get_mtp_head`."
+        )
     if dataset is None or isinstance(dataset, str) or not _is_token_rows(dataset):
         if tokenizer is None:
             raise ValueError("Unsloth: REAP needs a tokenizer unless the dataset has `input_ids`.")
