@@ -1,18 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The model families the pinned audio.cpp runtime loads, for prebuilt bundles that ship no ``model_specs/``.
+"""The model families the prebuilt audio.cpp runtime loads, for bundles that ship no ``model_specs/``.
 
-A family Studio does not list is offered from the tasks its GGUF's spec declares, and that spec can
-be newer than the runtime. This set lets Studio refuse such a family up front instead of failing at
-load with "unsupported model family hint". It holds only for the tag it was generated from.
+A family Unsloth Studio does not list is offered from the tasks its GGUF's spec declares, and that
+spec can be newer than the runtime. This set lets Unsloth Studio refuse such a family up front instead
+of failing at load with "unsupported model family hint". It holds only for the tags it was checked against.
 """
 
 from __future__ import annotations
 
-AUDIO_CPP_SPEC_FAMILIES_TAG = "v0.9.0-unsloth.1"
+# The unslothai/audio.cpp releases whose model_specs/*.json stems equal the set below. Add a release
+# here once its stems are checked equal; on any change, regenerate the set and keep only matching tags.
+AUDIO_CPP_SPEC_FAMILIES_TAGS = frozenset({"v0.9.0-unsloth.1", "v0.9.1-unsloth.1"})
 
-# Regenerate on a pin bump: the stems of model_specs/*.json in unslothai/audio.cpp at that tag.
 AUDIO_CPP_SPEC_FAMILIES = frozenset(
     (
         "ace_step",

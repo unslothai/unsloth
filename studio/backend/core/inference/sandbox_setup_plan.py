@@ -347,6 +347,36 @@ def windows_runtime_unsupported() -> str | None:
     return "build" if build < MXC_MIN_WINDOWS_BUILD else None
 
 
+# First update revision (UBR) with Windows' built-in container (BaseContainer) per release, from MXC's
+# docs/backends/process-container/os-version-support.md ("Process Isolation"). Older revisions fall back to
+# AppContainer, which needs Unsloth's fallback sandbox and its administrator step.
+BUILTIN_CONTAINER_MIN_UBR = {26100: 9278, 26200: 9278, 26300: 9550, 28000: 2804}
+
+
+def windows_builtin_container_update() -> tuple[str, str] | None:
+    """(this PC's build, the first build with the built-in container) when a Windows update adds it, else None."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import winreg
+
+        version = sys.getwindowsversion()
+        # The table is Windows 11 only: Server 2025 shares build 26100 but has no BaseContainer.
+        if version.product_type != 1:  # VER_NT_WORKSTATION
+            return None
+        build = version.build
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
+        ) as key:
+            ubr = int(winreg.QueryValueEx(key, "UBR")[0])
+    except (OSError, ValueError, TypeError, AttributeError):  # unreadable: say nothing
+        return None
+    needed = BUILTIN_CONTAINER_MIN_UBR.get(build)
+    if needed is None or ubr >= needed:
+        return None
+    return f"{build}.{ubr}", f"{build}.{needed}"
+
+
 def windows_runtime_supported() -> bool:
     """The MXC runtime Unsloth installs is built for x64 Windows 11 build 26100 or newer."""
     return windows_runtime_unsupported() is None
