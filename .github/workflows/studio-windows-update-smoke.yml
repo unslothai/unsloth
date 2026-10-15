@@ -27,7 +27,6 @@ on:
       - 'studio/backend/utils/**'
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
-      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'unsloth_cli/**'
       # Mirrors the frontend-dist-restore cache key; a miss makes setup.ps1 run the build.
       - 'studio/frontend/*'
@@ -54,7 +53,6 @@ on:
       - 'studio/backend/utils/**'
       - 'studio/install_*.py'
       - 'studio/node_prebuilt_pins.json'
-      - 'studio/audio_cpp_prebuilt_pins.json'
       - 'unsloth_cli/**'
       - 'studio/frontend/*'
       - 'studio/frontend/src/**'

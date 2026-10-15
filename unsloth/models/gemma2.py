@@ -206,7 +206,7 @@ def Gemma2Attention_fast_forward(
         sliding_window = getattr(self.config, "sliding_window", None)
         if has_sliding_window:
             sliding_window = sliding_window if sliding_window is not None else kv_seq_len
-            window = (-1, -1) if kv_seq_len <= sliding_window else (sliding_window, sliding_window)
+            window = (-1, -1) if kv_seq_len <= sliding_window else (sliding_window - 1, 0)
 
         if not hasattr(self, "_flash_attention_softmax_scale"):
             self._flash_attention_softmax_scale = 1.0 / (self.config.query_pre_attn_scalar**0.5)

@@ -10,7 +10,11 @@ const frames: (() => void)[] = [];
 const mutations: (() => void)[] = [];
 const rect = (x: number, y: number, width: number, height: number) =>
   ({ left: x, top: y, right: x + width, bottom: y + height, width, height }) as DOMRect;
-type Overlay = { getBoundingClientRect: () => DOMRect; closest: () => null; querySelector: () => object | null };
+type Overlay = {
+  getBoundingClientRect: () => DOMRect;
+  closest: () => null;
+  querySelector: (selector: string) => object | null;
+};
 const overlay = (box: DOMRect): Overlay => ({
   getBoundingClientRect: () => box,
   closest: () => null,
@@ -199,7 +203,19 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     await frame();
     assert.deepEqual(lastInput(), { blocked: true, exclude: [] });
     blocking.length = 0;
-    blocking.push({ ...overlay(rect(0, 600, 200, 100)), querySelector: () => ({}) });
+    blocking.push({
+      ...overlay(rect(0, 600, 200, 100)),
+      querySelector: (selector: string) => (selector.includes("hover-card") ? {} : null),
+    });
+    await frame();
+    assert.deepEqual(lastInput(), { blocked: false, exclude: [] });
+
+    // the dialog the browser opens in (compare, projects, phones) holds the page: it isn't over it
+    blocking.length = 0;
+    blocking.push({
+      ...overlay(rect(0, 0, 1000, 800)),
+      querySelector: (selector: string) => (selector.startsWith("[data-native-page") ? placeholder : null),
+    });
     await frame();
     assert.deepEqual(lastInput(), { blocked: false, exclude: [] });
 

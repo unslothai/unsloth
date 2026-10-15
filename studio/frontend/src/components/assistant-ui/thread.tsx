@@ -6933,6 +6933,7 @@ const ComposerToolsMenu: FC<{
   // Match Search and Code: allow pre-selection before a local model loads.
   const researchDisabled =
     !researchAvailable ||
+    (modelLoaded && !externalSelection && !supportsTools) ||
     (Boolean(externalSelection) &&
       providerModelSupportsStudioTools(
         selectedExternalProvider?.providerType,

@@ -77,3 +77,31 @@ test("a snapshot is markup or nothing", () => {
   assert.deepEqual(from({ type: "snapshot", html: 5 }), { type: "snapshot", html: null });
   assert.deepEqual(from({ type: "snapshot", html: "x".repeat(8 * 1024 * 1024 + 1) }), { type: "snapshot", html: null });
 });
+
+test("a page's request is checked field by field, and one the panel won't make still gets an answer", () => {
+  const body = new ArrayBuffer(4);
+  const request = { url: "https://site.test/api", method: "POST", headers: [["X-A", "1"]], body, redirect: "manual", integrity: "sha256-x" };
+  assert.deepEqual(from({ type: "request", id: "q1", ...request }), { type: "request", id: "q1", request });
+  // Fetch's default redirect mode when the page names none.
+  assert.deepEqual(from({ type: "request", id: "q1", ...request, body: null, redirect: undefined, integrity: undefined }), {
+    type: "request",
+    id: "q1",
+    request: { ...request, body: null, redirect: "follow", integrity: "" },
+  });
+  // Without an id there is no one to answer.
+  assert.equal(from({ type: "request", ...request }), null);
+  for (const bad of [
+    { body: new ArrayBuffer(1024 * 1024 + 1) },
+    { body: "text" },
+    { method: "GET POST" },
+    { url: 7 },
+    { headers: [["X-A"]] },
+    { headers: [["X-A", 1]] },
+    { headers: Array.from({ length: 65 }, () => ["X-A", "1"]) },
+    { redirect: "skip" },
+  ]) {
+    assert.deepEqual(from({ type: "request", id: "q1", ...request, ...bad }), { type: "request", id: "q1", request: null });
+  }
+  assert.deepEqual(from({ type: "requestAbort", id: "q1" }), { type: "requestAbort", id: "q1" });
+  assert.equal(from({ type: "requestAbort", id: 3 }), null);
+});

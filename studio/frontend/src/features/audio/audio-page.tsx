@@ -55,7 +55,6 @@ import {
   settledDeleteMarkers,
 } from "./audio-page-policy";
 import { type AudioSourceSelection, clipReference } from "./audio-run-request";
-import { AudioRuntimeUpdateNotice } from "./components/audio-runtime-update-notice";
 import { AudioActiveProvider } from "./components/audio-source-input";
 import {
   audioModelLabel,
@@ -70,6 +69,7 @@ import {
 import type { ClipSendHandlers } from "./components/clip-card";
 import { sendClipToMusic } from "./components/music-send-to";
 import { SaveVoiceDialog } from "./components/save-voice-dialog";
+import { UseViaApiButton } from "./components/use-via-api-button";
 import { WorkflowTitleMenu } from "./components/workflow-title-menu";
 import { galleryCache, useAudioGallery, useWorkflowHistory } from "./hooks/use-audio-gallery";
 import { useAudioHandoff } from "./hooks/use-audio-handoff";
@@ -337,7 +337,6 @@ export function AudioPage({
     selectedSttRepoRef,
     sttStatusRefreshGeneration,
     audioCppRuntime,
-    runtimeUpdate,
     sttLoadGeneration,
     sttGgufVariants,
     sttEngines,
@@ -992,17 +991,18 @@ export function AudioPage({
     (state) => state.lastModelByWorkflow,
   );
   const forgetModel = useAudioWorkspaceStore((state) => state.forgetModel);
-  const modelInventory = useHubInventory({ kind: "models" });
-  // Deleted repos wait here, with the inventory listing current at the delete, until a newer
-  // settled listing shows whether the model is gone.
-  const deletedModelsRef = useRef(new Map<string, ReadonlySet<string>>());
-  const availableSetRef = useRef(modelInventory.availableSet);
-  availableSetRef.current = modelInventory.availableSet;
+  // Folder rows let a single audio.cpp folder delete show the folder is gone.
+  const modelInventory = useHubInventory({
+    kind: "models",
+    includeUmbrellaFolders: true,
+  });
+  // Deleted repo -> delete time, kept until a Hub cache fetch sent after it has settled.
+  const deletedModelsRef = useRef(new Map<string, number>());
   const [deletedModelsTick, setDeletedModelsTick] = useState(0);
   useEffect(
     () =>
       subscribeModelDeleted((repoId) => {
-        deletedModelsRef.current.set(repoId.toLowerCase(), availableSetRef.current);
+        deletedModelsRef.current.set(repoId.toLowerCase(), Date.now());
         setDeletedModelsTick((tick) => tick + 1);
       }),
     [],
@@ -1014,6 +1014,7 @@ export function AudioPage({
       settled: modelInventory.inventorySettled,
       error: modelInventory.inventoryError,
       available: modelInventory.availableSet,
+      refreshStartedAt: modelInventory.hubCacheRefreshStartedAt,
     };
     for (const id of new Set(Object.values(rememberedModels))) {
       if (
@@ -1037,6 +1038,7 @@ export function AudioPage({
     modelInventory.inventorySettled,
     modelInventory.inventoryError,
     modelInventory.availableSet,
+    modelInventory.hubCacheRefreshStartedAt,
     forgetModel,
   ]);
   const rememberedPageModel = rememberedModels[pageWorkflow] ?? null;
@@ -1805,6 +1807,10 @@ export function AudioPage({
           </div>
           <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
             <div className="pointer-events-auto flex min-w-0 items-center gap-2">
+              <UseViaApiButton
+                workflow={pageWorkflow}
+                model={selectorValue ?? null}
+              />
               <LibraryPageLink
                 tab="audio"
                 labelClassName="hidden @[50rem]:inline"
@@ -1846,14 +1852,6 @@ export function AudioPage({
                 <p className="text-xs leading-snug text-muted-foreground">
                   {capabilityLine}
                 </p>
-                {runtimeUpdate ? (
-                  <AudioRuntimeUpdateNotice
-                    update={runtimeUpdate}
-                    onUpdated={() =>
-                      Promise.all([refreshStatus(), refreshSttStatus()])
-                    }
-                  />
-                ) : null}
               </div>
 
               {mode === "speak" ? (

@@ -6776,8 +6776,8 @@ def _green(msg: str) -> str:
     return f"\033[38;5;108m{msg}\033[0m" if _HAS_COLOR else msg
 
 
-def _cyan(msg: str) -> str:
-    return f"\033[96m{msg}\033[0m" if _HAS_COLOR else msg
+def _warn(msg: str) -> str:
+    return f"\033[38;5;136m{msg}\033[0m" if _HAS_COLOR else msg
 
 
 def _red(msg: str) -> str:
@@ -7836,7 +7836,7 @@ def _build_flash_attn_wheel_url(env: dict[str, str]) -> str | None:
 
 
 def _print_optional_install_failure(label: str, result: subprocess.CompletedProcess[str]) -> None:
-    _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
+    _step("warning", f"{label} failed (exit code {result.returncode})", _warn)
     if result.stdout:
         _safe_print(_redact_install_output(result.stdout).strip())
 
@@ -7879,14 +7879,14 @@ def _remove_stale_flash_attn() -> None:
         _step(
             "warning",
             "flash-attn was built for another torch or CUDA and does not import; removed it",
-            _cyan,
+            _warn,
         )
     else:
         _step(
             "warning",
             "flash-attn was built for another torch or CUDA and could not be removed; "
             "uninstall flash-attn manually",
-            _cyan,
+            _warn,
         )
 
 
@@ -7932,7 +7932,7 @@ def _ensure_flash_attn() -> None:
                 _step(
                     "warning",
                     "flash-attn wheel installed but is not importable on this GPU; removed it",
-                    _cyan,
+                    _warn,
                 )
             else:
                 # the rejected native module remains discoverable and may terminate training.
@@ -7940,26 +7940,26 @@ def _ensure_flash_attn() -> None:
                     "warning",
                     "flash-attn wheel is not importable on this GPU and could not be "
                     "removed; uninstall flash-attn manually before training",
-                    _cyan,
+                    _warn,
                 )
         elif stale:
             _remove_stale_flash_attn()
-        _step("warning", "Continuing without flash-attn", _cyan)
+        _step("warning", "Continuing without flash-attn", _warn)
         return
 
     if wheel_url is None:
         if IS_WINDOWS:
             _note("no flash-attn prebuilt wheel for this torch build; skipped")
         else:
-            _step("warning", "No compatible flash-attn prebuilt wheel found", _cyan)
+            _step("warning", "No compatible flash-attn prebuilt wheel found", _warn)
     elif wheel_available is None:
         _step(
             "warning",
             "Could not check the flash-attn prebuilt wheel; skipped it",
-            _cyan,
+            _warn,
         )
     else:
-        _step("warning", "No published flash-attn prebuilt wheel found", _cyan)
+        _step("warning", "No published flash-attn prebuilt wheel found", _warn)
     if stale:
         _remove_stale_flash_attn()
 
@@ -8035,16 +8035,16 @@ def _ensure_ssm_kernels() -> None:
             except OSError:
                 removed = False
             if removed:
-                _step("warning", f"{name} does not load with this torch; removed it", _cyan)
+                _step("warning", f"{name} does not load with this torch; removed it", _warn)
             else:
                 _step(
                     "warning",
                     f"{name} does not load with this torch and could not be removed; "
                     f"uninstall {distribution} manually",
-                    _cyan,
+                    _warn,
                 )
         elif status:
-            _step("warning", f"Continuing without {name}", _cyan)
+            _step("warning", f"Continuing without {name}", _warn)
 
 
 # -- uv bootstrap ------------------------------------------------------
@@ -9623,7 +9623,7 @@ def _mirror_retry(args: "tuple[str, ...]", output: bytes, rerun) -> "bool | None
     _step(
         "mirror",
         f"{_MIRROR_NAMES[host]} failed; retrying through {next(iter(pairs.values()))}",
-        _cyan,
+        _warn,
     )
     saved = ({name: os.environ.get(name) for name in pairs}, _PYTORCH_WHL_BASE)
     os.environ.update(pairs)
@@ -10197,9 +10197,9 @@ def _report_mlx_stack_health(skipped: bool = False) -> None:
     if not blockers:
         _step("mlx", "training stack ready")
         return
-    _step("mlx", "Train and Export will stay off until this is resolved:", _cyan)
+    _step("mlx", "Train and Export will stay off until this is resolved:", _warn)
     for blocker in blockers:
-        _step("", blocker, _cyan)
+        _step("", blocker, _warn)
 
 
 # Idempotent dependency pass: skip only when (a) the last run recorded this exact work, (b) inputs

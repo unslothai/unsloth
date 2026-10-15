@@ -194,7 +194,7 @@ jobs:
                   return sorted(pathlib.Path(p) for p in os.fsdecode(out).split("\0") if p)
               import ast, pathlib, sys
 
-              SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+              SKIP_PARTS = {".venv", "venv", ".lanes", "build", "dist", ".git",
                             "unsloth_compiled_cache", "node_modules",
                             "unsloth.egg-info"}
 
@@ -262,7 +262,7 @@ jobs:
                   "General Public License",         # GPL / LGPL / AGPL long form
               )
               # "vendor" is upstream third-party source: it carries its own licence.
-              SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+              SKIP_PARTS = {".venv", "venv", ".lanes", "build", "dist", ".git",
                             "unsloth_compiled_cache", "node_modules",
                             "unsloth.egg-info", "vendor"}
 
@@ -332,7 +332,7 @@ jobs:
                   return sorted(pathlib.Path(p) for p in os.fsdecode(out).split("\0") if p)
               import pathlib, sys, yaml
 
-              SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+              SKIP_PARTS = {".venv", "venv", ".lanes", "build", "dist", ".git",
                             "node_modules", "unsloth_compiled_cache",
                             "unsloth.egg-info"}
 
@@ -376,7 +376,7 @@ jobs:
                   return sorted(pathlib.Path(p) for p in os.fsdecode(out).split("\0") if p)
               import fnmatch, json, pathlib, sys
 
-              SKIP_PARTS = {".venv", "venv", "build", "dist", ".git",
+              SKIP_PARTS = {".venv", "venv", ".lanes", "build", "dist", ".git",
                             "node_modules", "unsloth_compiled_cache",
                             "unsloth.egg-info"}
               SKIP_NAMES = {"package-lock.json", "bun.lock"}
