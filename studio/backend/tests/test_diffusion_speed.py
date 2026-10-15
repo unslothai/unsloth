@@ -2693,7 +2693,9 @@ def test_rocm_probe_oom_outside_a_load_is_never_cached(monkeypatch):
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
     monkeypatch.setattr(rc, "_index", lambda device: 0)
     calls = []
-    monkeypatch.setattr(rc, "_probe", lambda torch, index: calls.append(1) or (False, "OutOfMemoryError: x"))
+    monkeypatch.setattr(
+        rc, "_probe", lambda torch, index: calls.append(1) or (False, "OutOfMemoryError: x")
+    )
     rc._reset_for_tests()
     rc.rocm_block_compile_probe()
     rc.rocm_block_compile_probe()
@@ -2913,7 +2915,6 @@ def test_rocm_probe_wrapped_oom_stays_transient(monkeypatch, exc):
     rc._reset_for_tests()
 
 
-
 def test_rocm_probe_oom_of_one_load_is_never_reused_by_an_overlapping_load(monkeypatch):
     # Overlapping image / video loads: an older load's OOM, whenever it lands, belongs to that load alone.
     import threading
@@ -2970,11 +2971,9 @@ def test_every_load_pipeline_call_runs_in_its_own_rocm_probe_scope(monkeypatch, 
 
     if which == "image":
         from core.inference import diffusion as mod
-
         backend = mod.DiffusionBackend()
     else:
         from core.inference import video as mod
-
         backend = mod.VideoBackend()
     scopes = []
 

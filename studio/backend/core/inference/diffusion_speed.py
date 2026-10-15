@@ -420,7 +420,6 @@ def rocm_compile_probe_passes(target: Any, *, probe: bool = True) -> bool:
 def rocm_probe_load_scoped(fn: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap a load so a ROCm probe OOM is remembered for that load only (no re-probe within it, a retry in the next)."""
     from .diffusion_rocm_compile import load_scoped
-
     return load_scoped(fn)
 
 
