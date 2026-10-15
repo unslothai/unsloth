@@ -309,7 +309,13 @@ export function matchesHubCapability(
   if (key !== "image-gen" && key !== "video-gen")
     return matchesCapability(row.capabilities, key);
   // A video family is video gen from its name alone: LTX GGUFs carry no pipeline tag.
-  if (key === "video-gen" && isVideoFamilyName(row.result.id)) return true;
+  // Still through generationKinds, so a video-to-video family repo stays out.
+  if (key === "video-gen" && isVideoFamilyName(row.result.id))
+    return generationKinds(
+      row.result.tags,
+      row.result.pipelineTag,
+      row.result.id,
+    ).video;
   if (!matchesCapability(row.capabilities, "diffusion")) return false;
   const kinds = generationKinds(
     row.result.tags,

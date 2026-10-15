@@ -124,7 +124,7 @@ test("Base only is a switch, off by default, for the Hub's own base_model_relati
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
   assert.match(popover, /label="Base only"[\s\S]{0,200}checked=\{value\.baseOnly === true\}/);
   // Datasets only shares the row and flips the list to datasets, as the toolbar switch does.
-  assert.match(popover, /label="Datasets only"\s+checked=\{datasets\}/);
+  assert.match(popover, /label="Datasets only"[\s\S]{0,200}checked=\{datasets\}/);
   assert.match(readSrc("features/hub/catalog/models-toolbar.tsx"), /onResourceTypeChange\(on \? "datasets" : "models"\)/);
   assert.match(popover, /baseOnly: checked \|\| undefined/);
   assert.match(readSrc("features/hub/hooks/use-hub-model-search.ts"), /for \(const \[key, value\] of new URLSearchParams\(parameterFilter\)\)/);
@@ -148,10 +148,15 @@ test("Text only never lists a media pipeline, even one no capability box claims"
 
 test("audio Diffusers pipelines are neither image nor video gen; a video family name is video gen", () => {
   assert.deepEqual(generationKinds(["diffusers"], "text-to-audio", "someone/audio-ldm"), { image: false, video: false });
-  assert.match(readSrc("features/hub/lib/view-models.ts"), /key === "video-gen" && isVideoFamilyName\(row\.result\.id\)/);
+  assert.match(readSrc("features/hub/lib/view-models.ts"), /key === "video-gen" && isVideoFamilyName\(row\.result\.id\)\)\s*return generationKinds\(/);
+  assert.equal(generationKinds(["diffusers"], "video-to-video", "Lightricks/LTX-2.3-V2V").video, false);
 });
 
 test("a Diffusers pipeline that makes neither images nor video gets no generation pill", () => {
   const caps = detectCapabilities(["diffusers"], "text-to-audio", "someone/audio-ldm");
   assert.equal(caps.some((c) => c.key === "diffusion"), false);
+});
+
+test("a new search starts on every uploader", () => {
+  assert.match(readSrc("features/hub/hub-page.tsx"), /\} else if \(query\.trim\(\) === ""\) \{[\s\S]{0,160}setUploaderPick\(null\);/);
 });

@@ -1435,6 +1435,9 @@ export function ModelsPage() {
           setSortBy(preset.sort);
           setDirection("desc");
         }
+      } else if (query.trim() === "") {
+        // A new search starts on every uploader (Unsloth's still listed first), whatever was picked.
+        setUploaderPick(null);
       }
       if (urlModel || urlSection) {
         void navigate({
@@ -1449,7 +1452,7 @@ export function ModelsPage() {
       }
       setQuery(next);
     },
-    [urlSection, urlModel, navigate],
+    [query, urlSection, urlModel, navigate],
   );
 
   useEffect(() => {

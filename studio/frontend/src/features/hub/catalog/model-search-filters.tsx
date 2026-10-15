@@ -320,31 +320,26 @@ function MenuTick({
   );
 }
 
-/** A labelled switch, half of the switches row. */
+/** A labelled switch, half of the switches row; its note shows on hovering the label. */
 function SwitchField({
   label,
-  title,
+  about,
   checked,
   onCheckedChange,
 }: {
   label: string;
-  title?: string;
+  about: string;
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
 }) {
-  const id = useId();
   return (
-    <div
-      title={title}
-      className="flex flex-1 items-center justify-between gap-3"
-    >
-      <label
-        htmlFor={id}
-        className="cursor-pointer text-ui-12 text-muted-foreground"
-      >
-        {label}
-      </label>
-      <Switch id={id} checked={checked} onCheckedChange={onCheckedChange} />
+    <div className="flex flex-1 items-center justify-between gap-3 text-ui-12 text-muted-foreground">
+      <HoverInfo label={label}>{about}</HoverInfo>
+      <Switch
+        aria-label={label}
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+      />
     </div>
   );
 }
@@ -352,18 +347,22 @@ function SwitchField({
 /** A labelled pill toggle, the Hugging Face / ModelScope switch's look. */
 function SegmentedRow<T extends string>({
   label,
+  about,
   value,
   options,
   onChange,
 }: {
   label: string;
+  about: string;
   value: T;
   options: readonly (readonly [T, string])[];
   onChange: (value: T) => void;
 }) {
   return (
     <div className="flex items-center justify-between gap-3">
-      <span className="text-ui-12 text-muted-foreground">{label}</span>
+      <span className="text-ui-12 text-muted-foreground">
+        <HoverInfo label={label}>{about}</HoverInfo>
+      </span>
       <div
         role="radiogroup"
         aria-label={label}
@@ -592,6 +591,24 @@ export function ModelSearchFiltersControl({
                         onChange={onChange}
                       />
                     ))}
+                    <div className="px-3 pb-[calc(5px*var(--ui-space-scale,1))]">
+                      <SegmentedRow
+                        label="Uploader"
+                        about="Unsloth lists Unsloth's own uploads. All uploaders searches every account on the Hub; a search starts there."
+                        value={unslothOnly ? "unsloth" : "all"}
+                        options={[
+                          ["unsloth", "Unsloth"],
+                          ["all", "All uploaders"],
+                        ]}
+                        onChange={(next) =>
+                          onUploadersChange(
+                            next === "unsloth"
+                              ? ["unsloth"]
+                              : [...HUB_UPLOADERS],
+                          )
+                        }
+                      />
+                    </div>
                   </div>
                 </>
               )}
@@ -608,10 +625,11 @@ export function ModelSearchFiltersControl({
             </>
           )}
           <div className="flex flex-col gap-3 px-3 pt-[calc(9px*var(--ui-space-scale,1))] pb-[calc(7px*var(--ui-space-scale,1))]">
-            {/* Dataset search takes no owner scope. */}
-            {!datasets && (
+            {/* Dataset search takes no owner scope; with the ranges shown it sits under them. */}
+            {!datasets && !showModelFilters && (
               <SegmentedRow
                 label="Uploader"
+                about="Unsloth lists Unsloth's own uploads. All uploaders searches every account on the Hub; a search starts there."
                 value={unslothOnly ? "unsloth" : "all"}
                 options={[
                   ["unsloth", "Unsloth"],
@@ -629,7 +647,7 @@ export function ModelSearchFiltersControl({
               {!datasets && showModelFilters && (
                 <SwitchField
                   label="Base only"
-                  title="Hide quantizations, finetunes, adapters and merges"
+                  about="Hides quantizations, finetunes, adapters and merges, as the Hugging Face Hub's Base only does."
                   checked={value.baseOnly === true}
                   onCheckedChange={(checked) =>
                     onChange({ ...value, baseOnly: checked || undefined })
@@ -639,6 +657,7 @@ export function ModelSearchFiltersControl({
               {/* The toolbar's Models / Datasets switch, from here too. */}
               <SwitchField
                 label="Datasets only"
+                about="Lists datasets instead of models, like the Models / Datasets switch."
                 checked={datasets}
                 onCheckedChange={onDatasetsChange}
               />
