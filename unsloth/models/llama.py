@@ -1297,12 +1297,17 @@ def LlamaModel_fast_forward(
             ):
                 attention_mask = None
         else:
+            sliding_window = getattr(self.config, "sliding_window", None)
+            # transformers' window keeps k > q - sliding_window; the converter counts only the keys before the
+            # current one, so it sees one key too many.
+            if isinstance(sliding_window, int) and sliding_window > 1:
+                sliding_window -= 1
             attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
                 attention_mask,
                 (batch_size, seq_length),
                 inputs_embeds,
                 past_key_values_length,
-                sliding_window = getattr(self.config, "sliding_window", None),
+                sliding_window = sliding_window,
             )
         # Must NOT convert to bool; that weirdly causes errors.
 
