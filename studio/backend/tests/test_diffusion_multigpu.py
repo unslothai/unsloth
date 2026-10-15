@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import threading
+import types
 from collections import OrderedDict
 
 import pytest
@@ -1715,6 +1716,48 @@ def test_cfg_batch_out_of_memory_declines_only_that_shape():
 
     oom_on_large_batch.__module__ = mg.__name__  # stands in for a Studio forward patch under the router
     router.orig_forward = oom_on_large_batch
+    dit.forward = router
+    pipe = _RouterPipe(dit)
+    mg._CFG_BATCH[pipe] = router
+    torch.manual_seed(0)
+    plain = _BatchDit()
+    plain.load_state_dict(dit.state_dict())
+    reference = _guided(plain, 3, steps = 3)
+    with mg.cfg_request_scope(pipe, 1024, 1024):
+        out = _guided(dit, 3, steps = 3)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert router.disabled_reason is None and router.stats["batched_steps"] == 0
+    with mg.cfg_request_scope(pipe, 512, 512):
+        _guided(dit, 2, steps = 3)
+    assert router.stats["batched_steps"] > 0
+    mg._CFG_BATCH.pop(pipe, None)
+
+
+def test_shape_book_keeps_a_revisited_shape_when_full():
+    # cycling through one shape more than the book holds must not evict the shape being switched back to
+    book = mg._ShapeBook({"pricing": None})
+    router = types.SimpleNamespace(pricing = None)
+    keys = [f"shape{i}" for i in range(mg._SHAPE_BOOK_SIZE + 1)]
+    for key in keys:
+        book.switch(router, key)
+        router.pricing = f"price for {key}"
+    book.switch(router, keys[0])
+    assert router.pricing == f"price for {keys[0]}"
+    assert len(book.saved) <= mg._SHAPE_BOOK_SIZE
+
+
+def test_cfg_batch_merge_out_of_memory_declines_only_that_shape(monkeypatch):
+    # the branch concatenation of the 3-row request runs out: a later 2-row request must still batch
+    real = mg._batch_leaves
+
+    def merge(first, second, batch):
+        if any(isinstance(v, torch.Tensor) and v.dim() and v.shape[0] == 3 for _p, v in first):
+            raise torch.OutOfMemoryError("fake")
+        return real(first, second, batch)
+
+    monkeypatch.setattr(mg, "_batch_leaves", merge)
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit)
     dit.forward = router
     pipe = _RouterPipe(dit)
     mg._CFG_BATCH[pipe] = router

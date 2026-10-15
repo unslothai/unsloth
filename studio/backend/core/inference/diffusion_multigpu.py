@@ -487,12 +487,13 @@ class _ShapeBook:
             # the first shape owns whatever the router holds already
             self.key = key
             return True
+        # take the requested shape out before saving the outgoing one, so a full book never evicts it
+        state = self.saved.pop(key, None)
         if self.key is not None:
             self.saved[self.key] = {name: getattr(router, name) for name in self.defaults}
             self.saved.move_to_end(self.key)
             while len(self.saved) > _SHAPE_BOOK_SIZE:
                 self.saved.popitem(last = False)
-        state = self.saved.pop(key, None)
         for name, default in self.defaults.items():
             value = state[name] if state is not None else default
             setattr(router, name, list(value) if isinstance(value, list) else value)
@@ -3298,7 +3299,14 @@ class CfgBatchRouter:
         except _NotBatchable as exc:
             self._skip(str(exc))
             return None
-        except Exception as exc:  # noqa: BLE001 - incl. OOM in the concatenation: the branch runs plain
+        except torch.OutOfMemoryError:
+            # the concatenation of a larger canvas or batch ran out: this shape only, the branch runs plain
+            merged = b_args = b_kwargs = snapshots = None
+            with contextlib.suppress(Exception):
+                torch.cuda.empty_cache()
+            self._disable_shape("out of memory merging the branches; one branch per call for this shape")
+            return None
+        except Exception as exc:  # noqa: BLE001 - a structural merge failure: the branch runs plain
             merged = b_args = b_kwargs = snapshots = None
             with contextlib.suppress(Exception):
                 torch.cuda.empty_cache()
