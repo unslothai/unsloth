@@ -2270,8 +2270,11 @@ def grpo_trainer__move_model_to_vllm(function_name, function):
         function,
         re.MULTILINE | re.DOTALL,
     )
-    body_indent = re.search(r"^([ \t]+)\S", function[match.end() :], re.MULTILINE) if match else None
+    body_indent = (
+        re.search(r"^([ \t]+)\S", function[match.end() :], re.MULTILINE) if match else None
+    )
     if match is None or body_indent is None:
+
         def _move_model_to_vllm(self, *args, **kwargs):
             return None
 
