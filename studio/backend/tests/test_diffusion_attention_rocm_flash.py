@@ -15,10 +15,15 @@ import pytest
 import core.inference.diffusion_attention as att
 from core.inference.diffusion_attention import select_attention_backend
 
+_REAL_TOOLCHAIN_KEY = att._rocm_flash_toolchain_key
+
 
 @pytest.fixture(autouse = True)
-def _clean(monkeypatch):
+def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_ROCM_FLASH_PROBE_CACHE", {}, raising = False)
+    # The persisted block verdicts: a per-test dir and a fixed toolchain (the real one needs a ROCm card).
+    monkeypatch.setenv(att.ROCM_FLASH_CACHE_DIR_ENV, str(tmp_path / "rocm_flash"))
+    monkeypatch.setattr(att, "_rocm_flash_toolchain_key", lambda device: "tc-A", raising = False)
     monkeypatch.setattr(
         att, "_indexed_cuda_device", lambda d: "cuda:0" if d == "cuda" else d, raising = False
     )
@@ -632,3 +637,193 @@ def test_num_heads_attention_modules_are_measured():
         assert att._dit_attention_geometries(pipe) == ((3072, 24, 128),)
     finally:
         att._attention_dits = original
+
+
+def _timer(timed, flash_ms = 70.0):
+    def fake_time(device, dtype, hidden, heads, head_dim):
+        timed.append((hidden, heads, head_dim))
+        return {
+            "native_ms": 80.0,
+            "flash_ms": flash_ms,
+            "rel_l1": 1e-3,
+            "finite": True,
+            "tokens": 4096,
+        }
+
+    return fake_time
+
+
+def _restart(monkeypatch):
+    """A new process: the in-memory verdicts are gone, the cache dir is not."""
+    monkeypatch.setattr(att, "ROCM_FLASH_ADMISSIONS", {})
+    monkeypatch.setattr(att, "_ROCM_FLASH_PROBE_CACHE", {})
+
+
+def _cache_files(tmp_path):
+    root = tmp_path / "rocm_flash"
+    return sorted(root.glob("probe_*.json")) if root.is_dir() else []
+
+
+@pytest.mark.parametrize("flash_ms, engaged", [(70.0, "flash"), (90.0, None)])
+def test_block_verdict_persists_across_processes(monkeypatch, tmp_path, flash_ms, engaged):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    timed = []
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed, flash_ms))
+    pipe, _ = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == engaged
+    assert len(timed) == 1 and len(_cache_files(tmp_path)) == 1
+    _restart(monkeypatch)
+    monkeypatch.setattr(
+        att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("re-timed despite a stored verdict")
+    )
+    pipe2, set_to2 = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target()) == engaged
+    assert set_to2 == (["flash"] if engaged else [])
+    rec = next(iter(att.ROCM_FLASH_ADMISSIONS.values()))
+    assert rec["cached"] is True and rec["flash_ms"] == flash_ms
+
+
+@pytest.mark.parametrize("change", ["torch", "flash_attn", "probe_version", "geometry", "dtype"])
+def test_block_verdict_key_mismatch_retimes(monkeypatch, tmp_path, change):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    timed = []
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
+    toolchain = {"torch": "torch2.9", "flash_attn": "flash_attn2.8.3"}
+    monkeypatch.setattr(
+        att,
+        "_rocm_flash_toolchain_key",
+        lambda device: f"v{att.ROCM_FLASH_PROBE_VERSION}|{toolchain['torch']}|{toolchain['flash_attn']}",
+    )
+    pipe, _ = _pipe_with_attention()
+    att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target())
+    assert len(timed) == 1
+    _restart(monkeypatch)
+    target, geometry = _target(), {}
+    if change == "torch":
+        toolchain["torch"] = "torch2.10"
+    elif change == "flash_attn":
+        toolchain["flash_attn"] = "flash_attn2.8.4"
+    elif change == "probe_version":
+        monkeypatch.setattr(att, "ROCM_FLASH_PROBE_VERSION", att.ROCM_FLASH_PROBE_VERSION + 1)
+    elif change == "geometry":
+        geometry = {"hidden": 2048, "heads": 16, "head_dim": 128}
+    else:
+        target = _target(dtype = "torch.float16")
+    pipe2, _ = _pipe_with_attention(**geometry)
+    att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = target)
+    assert len(timed) == 2
+
+
+@pytest.mark.parametrize("payload", ["{not json", "", "[]", '{"key": "tc-A", "verdicts": {"x": 1}}'])
+def test_corrupt_cache_file_retimes(monkeypatch, tmp_path, payload):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    timed = []
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
+    pipe, _ = _pipe_with_attention()
+    att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target())
+    (path,) = _cache_files(tmp_path)
+    path.write_text(payload)
+    _restart(monkeypatch)
+    pipe2, _ = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
+    assert len(timed) == 2
+    # the re-timed verdict replaced the torn file
+    _restart(monkeypatch)
+    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    assert len(timed) == 2
+
+
+def test_probe_error_is_not_persisted(monkeypatch, tmp_path):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+
+    def boom(*a, **k):
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(att, "_time_rocm_flash_block", boom)
+    pipe, _ = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+    assert _cache_files(tmp_path) == []
+
+
+def test_unidentifiable_toolchain_stays_in_memory(monkeypatch, tmp_path):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    monkeypatch.setattr(att, "_rocm_flash_toolchain_key", lambda device: None)
+    timed = []
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed))
+    pipe, _ = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
+    assert _cache_files(tmp_path) == [] and not (tmp_path / "rocm_flash").exists()
+
+
+def test_unwritable_cache_dir_still_admits(monkeypatch, tmp_path):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    blocker = tmp_path / "file"
+    blocker.write_text("")
+    monkeypatch.setenv(att.ROCM_FLASH_CACHE_DIR_ENV, str(blocker / "sub"))
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer([]))
+    pipe, _ = _pipe_with_attention()
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
+
+
+@pytest.mark.parametrize("mode, engaged", [("0", None), ("1", "flash")])
+def test_forced_modes_neither_read_nor_write_the_cache(monkeypatch, tmp_path, mode, engaged):
+    _rocm(monkeypatch)
+    _apply_env(monkeypatch)
+    # a stored verdict that would say the opposite of the forced mode
+    timed = []
+    monkeypatch.setattr(att, "_time_rocm_flash_block", _timer(timed, 70.0 if mode == "0" else 90.0))
+    att.apply_attention_backend(_pipe_with_attention()[0], att.ROCM_FLASH_CANDIDATE, target = _target())
+    (path,) = _cache_files(tmp_path)
+    before = path.read_bytes()
+    _restart(monkeypatch)
+    monkeypatch.setenv(att.ROCM_FLASH_ENV, mode)
+    monkeypatch.setattr(att, "_load_rocm_flash_verdicts", lambda *a: pytest.fail("cache read"))
+    monkeypatch.setattr(att, "_save_rocm_flash_verdict", lambda *a: pytest.fail("cache write"))
+    monkeypatch.setattr(att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("timed"))
+    pipe, _ = _pipe_with_attention(hidden = 2048, heads = 16)
+    assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == engaged
+    assert path.read_bytes() == before and att.ROCM_FLASH_ADMISSIONS == {}
+
+
+def test_cache_dir_defaults_under_the_studio_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv(att.ROCM_FLASH_CACHE_DIR_ENV)
+    import utils.paths.storage_roots as roots
+
+    monkeypatch.setattr(roots, "cache_root", lambda: tmp_path / "cache")
+    path = att._rocm_flash_cache_path("tc-A")
+    assert path.startswith(str(tmp_path / "cache" / "diffusion_rocm_flash" / "probe_"))
+    assert att._rocm_flash_cache_path("tc-B") != path and att._rocm_flash_cache_path(None) is None
+
+
+def test_toolchain_key_names_the_flash_attn_build(monkeypatch):
+    import torch
+
+    props = types.SimpleNamespace(name = "AMD Radeon 8060S", gcnArchName = "gfx1151:sramecc-:xnack-")
+    monkeypatch.setattr(torch.cuda, "get_device_properties", lambda i: props)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(torch.version, "hip", "7.1.0", raising = False)
+    fa = types.ModuleType("flash_attn")
+    fa.__version__ = "2.8.3"
+    fa.__file__ = "/x/site-packages/flash_attn/__init__.py"
+    monkeypatch.setitem(sys.modules, "flash_attn", fa)
+    monkeypatch.delenv("FLASH_ATTENTION_TRITON_AMD_ENABLE", raising = False)
+    ck = _REAL_TOOLCHAIN_KEY("cuda:0")
+    assert ck is not None and ck.startswith(f"v{att.ROCM_FLASH_PROBE_VERSION}|")
+    for part in ("AMD Radeon 8060S", "|gfx1151|", "|hip7.1.0|", "|flash_attn2.8.3|", "/flash_attn|ck|"):
+        assert part in ck, part
+    fa.__version__ = "2.8.4"
+    assert _REAL_TOOLCHAIN_KEY("cuda:0") != ck
+    fa.__version__ = "2.8.3"
+    monkeypatch.setattr(att, "ROCM_FLASH_PROBE_VERSION", att.ROCM_FLASH_PROBE_VERSION + 1)
+    assert _REAL_TOOLCHAIN_KEY("cuda:0") != ck
+    monkeypatch.setattr(att, "ROCM_FLASH_PROBE_VERSION", att.ROCM_FLASH_PROBE_VERSION - 1)
+    assert _REAL_TOOLCHAIN_KEY("cuda:0") == ck
+    pytest.importorskip("triton")
+    monkeypatch.setenv("FLASH_ATTENTION_TRITON_AMD_ENABLE", "TRUE")
+    assert "|triton" in _REAL_TOOLCHAIN_KEY("cuda:0")

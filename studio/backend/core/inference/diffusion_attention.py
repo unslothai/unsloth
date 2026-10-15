@@ -25,7 +25,8 @@ Attention is bandwidth-bound, so a better kernel is a real win orthogonal to wei
            kernels-community build from the Hugging Face kernels hub (``sage_hub``, Ampere / Ada / Hopper).
   xformers / aiter - memory-efficient (NVIDIA) / AITER (AMD ROCm).
   flash on ROCm - only when the DAO-AILab ROCm build passes an on-card check; ``auto`` also needs a block timing win
-          (``UNSLOTH_DIFFUSION_ROCM_FLASH``: auto | 0 | 1).
+          (``UNSLOTH_DIFFUSION_ROCM_FLASH``: auto | 0 | 1). The timing persists per toolchain and geometry under
+          the Studio cache (``UNSLOTH_DIFFUSION_ROCM_FLASH_CACHE_DIR``), so a restart reads it instead of re-timing.
 
 Best-effort: an unavailable backend falls back to the diffusers default. torch/diffusers lazy.
 """
@@ -501,6 +502,9 @@ ROCM_FLASH_BLOCK_TOL = 2e-2  # block output rel L1 (bf16 rounding ~1e-3)
 ROCM_FLASH_PROBE_TOKENS = 4096  # 1024^2 image DiT sequence
 # (device, dtype, hidden, heads, head_dim) -> admission record.
 ROCM_FLASH_ADMISSIONS: dict[tuple, dict] = {}
+# Bump when the block probe changes what it measures: every stored verdict is then re-timed.
+ROCM_FLASH_PROBE_VERSION = 1
+ROCM_FLASH_CACHE_DIR_ENV = "UNSLOTH_DIFFUSION_ROCM_FLASH_CACHE_DIR"
 
 
 def _rocm_flash_mode() -> str:
@@ -684,6 +688,15 @@ def _rocm_flash_geometry_admitted(
     cached = ROCM_FLASH_ADMISSIONS.get(key)
     if cached is not None:
         return bool(cached.get("admitted"))
+    toolchain = _rocm_flash_toolchain_key(device)
+    path = _rocm_flash_cache_path(toolchain)
+    slot = "|".join((str(dtype), *(str(v) for v in geometry), str(ROCM_FLASH_PROBE_TOKENS)))
+    stored = _load_rocm_flash_verdicts(path, toolchain).get(slot)
+    if stored is not None:
+        rec = {**stored, "admitted": _rocm_flash_wins(stored), "cached": True}
+        ROCM_FLASH_ADMISSIONS[key] = rec
+        _log_rocm_flash_verdict(logger, device, geometry, rec, "cached")
+        return rec["admitted"]
     try:
         rec = _time_rocm_flash_block(device, dtype, *geometry)
     except Exception as exc:  # noqa: BLE001 - not cached: retried next load
@@ -697,27 +710,153 @@ def _rocm_flash_geometry_admitted(
             torch.cuda.empty_cache()
         except Exception:  # noqa: BLE001
             pass
-    rec["admitted"] = bool(
-        rec["finite"]
-        and rec["rel_l1"] <= ROCM_FLASH_BLOCK_TOL
-        and rec["flash_ms"] <= rec["native_ms"] * (1.0 - ROCM_FLASH_MIN_GAIN)
-    )
+    rec["admitted"] = _rocm_flash_wins(rec)
     rec["geometry"] = {"hidden": geometry[0], "heads": geometry[1], "head_dim": geometry[2]}
     ROCM_FLASH_ADMISSIONS[key] = rec
+    _save_rocm_flash_verdict(path, toolchain, slot, rec)
+    _log_rocm_flash_verdict(logger, device, geometry, rec, "probe")
+    return rec["admitted"]
+
+
+def _rocm_flash_wins(rec: dict) -> bool:
+    """Re-derived from the stored numbers on a cache hit, so a threshold change applies without re-timing."""
+    try:
+        return bool(
+            rec["finite"]
+            and float(rec["rel_l1"]) <= ROCM_FLASH_BLOCK_TOL
+            and float(rec["flash_ms"]) <= float(rec["native_ms"]) * (1.0 - ROCM_FLASH_MIN_GAIN)
+        )
+    except Exception:  # noqa: BLE001 - malformed record: never flash
+        return False
+
+
+def _log_rocm_flash_verdict(logger: Any, device: str, geometry: tuple, rec: dict, source: str) -> None:
     (logger or _module_logger()).info(
-        "diffusion.attention: ROCm flash block probe %s (hidden %d, heads %d, head_dim %d, %d tokens): flash %.2f ms "
+        "diffusion.attention: ROCm flash block %s %s (hidden %d, heads %d, head_dim %d, %d tokens): flash %.2f ms "
         "vs native %.2f ms, rel L1 %.2e -> %s",
+        source,
         device,
         geometry[0],
         geometry[1],
         geometry[2],
-        rec["tokens"],
-        rec["flash_ms"],
-        rec["native_ms"],
-        rec["rel_l1"],
+        int(rec.get("tokens", 0)),
+        float(rec["flash_ms"]),
+        float(rec["native_ms"]),
+        float(rec["rel_l1"]),
         "flash" if rec["admitted"] else "native",
     )
-    return rec["admitted"]
+
+
+def _rocm_flash_toolchain_key(device: str) -> Optional[str]:
+    """What the block timing depends on: card + gfx arch, torch, HIP, the flash_attn build (version, install path, CK or
+    Triton backend) and the probe itself. None (in-memory only) when any part is unreadable."""
+    try:
+        import hashlib
+        import importlib.metadata
+        import inspect
+        import sys
+
+        import torch
+        from utils.hardware.hardware import _props_gfx_arch
+
+        index = torch.device(device).index
+        index = torch.cuda.current_device() if index is None else index
+        props = torch.cuda.get_device_properties(index)
+        fa = sys.modules.get("flash_attn")
+        if fa is None:
+            import flash_attn as fa
+        fa_version = getattr(fa, "__version__", None) or importlib.metadata.version("flash_attn")
+        # flash_attn_interface reads exactly this to route to the Triton AMD kernels instead of the CK extension.
+        triton_amd = os.environ.get("FLASH_ATTENTION_TRITON_AMD_ENABLE", "FALSE") == "TRUE"
+        backend = "ck"
+        if triton_amd:
+            import triton
+
+            backend = f"triton{triton.__version__}"
+        src = inspect.getsource(_time_rocm_flash_block)
+        return "|".join(
+            (
+                f"v{ROCM_FLASH_PROBE_VERSION}",
+                str(props.name),
+                _props_gfx_arch(props) or "gfx?",
+                f"torch{torch.__version__}",
+                f"hip{getattr(torch.version, 'hip', None)}",
+                f"flash_attn{fa_version}",
+                os.path.dirname(os.path.realpath(fa.__file__)),
+                backend,
+                hashlib.sha1(src.encode("utf-8")).hexdigest()[:12],
+            )
+        )
+    except Exception:  # noqa: BLE001 - unidentifiable toolchain: never persisted
+        return None
+
+
+def _rocm_flash_cache_path(toolchain: Optional[str]) -> Optional[str]:
+    if toolchain is None:
+        return None
+    import hashlib
+
+    root = (os.environ.get(ROCM_FLASH_CACHE_DIR_ENV) or "").strip()
+    if not root:
+        try:
+            from utils.paths.storage_roots import cache_root
+
+            root = str(cache_root() / "diffusion_rocm_flash")
+        except Exception:  # noqa: BLE001 - outside Studio: in-memory only
+            return None
+    return os.path.join(
+        root, "probe_" + hashlib.sha1(toolchain.encode("utf-8")).hexdigest()[:16] + ".json"
+    )
+
+
+def _load_rocm_flash_verdicts(path: Optional[str], toolchain: Optional[str]) -> dict:
+    import json
+
+    if path is None or not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, encoding = "utf-8") as f:
+            data = json.load(f)
+        if data.get("key") != toolchain:
+            return {}
+        out = {}
+        for slot, rec in data.get("verdicts", {}).items():
+            if isinstance(rec, dict) and all(
+                k in rec for k in ("native_ms", "flash_ms", "rel_l1", "finite")
+            ):
+                out[str(slot)] = rec
+        return out
+    except Exception:  # noqa: BLE001 - a corrupt / unreadable file is re-timed
+        return {}
+
+
+def _save_rocm_flash_verdict(path: Optional[str], toolchain: Optional[str], slot: str, rec: dict) -> None:
+    """Best effort, under a file lock: merge what another process stored since, then write a temp file and replace."""
+    if path is None:
+        return
+    import contextlib
+    import json
+
+    tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok = True)
+        try:
+            from filelock import FileLock
+
+            lock: Any = FileLock(f"{path}.lock", timeout = 60)
+        except ImportError:
+            lock = contextlib.nullcontext()
+        with lock:
+            verdicts = _load_rocm_flash_verdicts(path, toolchain)
+            verdicts[slot] = {k: v for k, v in rec.items() if k not in ("admitted", "cached")}
+            with open(tmp, "w", encoding = "utf-8") as f:
+                json.dump({"key": toolchain, "verdicts": verdicts}, f, indent = 1, sort_keys = True)
+            os.replace(tmp, path)
+    except Exception:  # noqa: BLE001 - read-only cache / lock timeout: timed again next load
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 # Max abs error of the probe's flash_attn output against an fp32 reference (bf16 eps is ~4e-3).
