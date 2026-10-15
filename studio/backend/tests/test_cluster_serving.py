@@ -2355,7 +2355,7 @@ def test_context_compute_is_kept_free_on_every_device(monkeypatch):
     _cluster_env(monkeypatch)
     run(ss.before_load(_request(max_seq_length = 8192), 4))
     plain = cs.state().plan.reason
-    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 0 if a[7:] else 2 * GIB)
+    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 2 * GIB if not a[7:] else 0)
     run(ss.before_load(_request(max_seq_length = 8192), 4))
     # 4 devices x 2 GiB less usable.
     assert "277.5 GiB usable" in plain and "269.5 GiB usable" in cs.state().plan.reason
@@ -2449,7 +2449,9 @@ def test_an_invalid_config_keeps_a_served_splits_workers(monkeypatch, tmp_path):
 )
 def test_context_checkpoints_are_charged_to_this_machine(monkeypatch, kw, extra, count):
     _cluster_env(monkeypatch)
-    monkeypatch.setattr(cs, "_ctx_compute_bytes", lambda *a, **k: 10 * 2**20 if a[7:] else 0)
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: 10 * 2**20 if a[7:] == ("checkpoint",) else 0
+    )
     out = run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra, **kw), 4))
     plan = cs.state().plan
     charged = count * 4 * 10 * 2**20
@@ -2523,3 +2525,55 @@ def test_an_invalid_config_keeps_the_served_split_record(monkeypatch):
     run(ss.after_load(backend, 4))  # the route reused the loaded primary
     assert cs.state().block == block and cs.state().topology == "layer_split"
     assert "still serving" in ss.status()["reason"]
+
+
+def test_the_loaders_recurrent_estimate_is_charged(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(
+        cs, "_ctx_compute_bytes", lambda *a, **k: 3 * GIB if a[7:] == ("recurrent",) else 0
+    )
+    run(ss.before_load(_request(max_seq_length = 8192, ctx_checkpoints = 0), 4))
+    assert cs.state().plan.kv_bytes == 3 * GIB  # a KDA layout the header formula does not read
+
+
+def test_a_quantized_v_cache_without_flash_attention_is_sized_as_f16(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (_llama_header(8), {}))
+    extra = ["-ctk", "q8_0", "-ctv", "q4_0"]
+    for supports, v_type in ((True, "q4_0"), (False, "f16")):
+        monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: supports)
+        run(ss.before_load(_request(max_seq_length = 8192, llama_extra_args = extra), 4))
+        want = cs._kv_from_scalars(_llama_header(8), 8192, "q8_0", v_type, ss)
+        assert cs.state().plan.kv_bytes == want
+
+
+def test_a_served_split_planned_single_forces_a_relaunch(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: 10 * GIB if path else None)
+    out = run(ss.before_load(_request(), 4))
+    assert ss.status()["topology"] == "single" and out.force_reload is True
+
+
+def test_a_different_model_after_a_config_error_clears_the_split_record(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    monkeypatch.setenv(cs.ENV_NODES, "bad host!")
+    run(ss.before_load(_request(model_path = "/models/other.gguf"), 4))
+    other = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server", "-m", "/models/other.gguf"]),
+        is_loaded = True,
+    )
+    run(ss.after_load(other, 4))
+    assert cs.state().block == [] and cs.state().plan is None
+    assert cs.state().topology == "single"

@@ -268,12 +268,13 @@ def _ctx_compute_bytes(
     cache_type: Optional[str],
     flash_attn: bool,
     n_parallel: int,
-    checkpoint: bool = False,
+    what: str = "",
 ) -> Optional[int]:
     """The loader's per-device context-dependent compute scratch on a layer split (with
-    ``checkpoint``, one slot's context checkpoint), from its own estimator over this GGUF's
+    ``what="checkpoint"`` one slot's context checkpoint, with ``"recurrent"`` the per-slot recurrent
+    state of every slot), from its own estimator over this GGUF's
     header; None when the header cannot be read."""
-    if ctx <= 0:
+    if ctx <= 0 and what != "recurrent":
         return 0
     import tempfile
 
@@ -293,8 +294,10 @@ def _ctx_compute_bytes(
         est._read_gguf_metadata(path)
         if not getattr(est, "_embedding_length", None):
             return None
-        if checkpoint:
+        if what == "checkpoint":
             return int(est._ctx_checkpoint_bytes(cache_type, flash_attn = flash_attn))
+        if what == "recurrent":
+            return int(est._rollback_state_bytes(n_parallel))
         return int(
             est._compute_buffer_ctx_bytes(
                 ctx,
@@ -1291,6 +1294,10 @@ class ClusterServing:
         self.topology, self.reason = plan.topology, plan.reason
         if plan.topology != "layer_split":
             self.block = []
+            if self._serving_split():
+                # The route strips the old block, so equal arguments would keep the primary on
+                # remote buffers the new plan no longer has.
+                return ss.SparkServing._request_with(request, {"force_reload": True})
             return request
         # RPC<k> counts devices over the probed --rpc list, so every endpoint that exposed one stays
         # in it even at zero weight; one that exposed none takes no number and is left out.
@@ -1529,12 +1536,6 @@ class ClusterServing:
         unified = _kv_unified_from_args(extras, default = n_parallel > 1)
         _slots, streams, per_stream = _kv_cache_cell_layout(ctx, n_parallel, unified)
         cells = streams * per_stream if ctx else 0
-        if cells and size:
-            kv = _kv_from_scalars(header, cells, cache_type, cache_type_v, ss)
-        if kv is None and local_file and cells:
-            kv = await asyncio.to_thread(
-                ss.estimate_kv_bytes, local_file, cells, cache_type, cache_type_v
-            )
         batch, ubatch, _nb, _nu = _named_batch_sizes(
             extras,
             os.environ,
@@ -1557,6 +1558,13 @@ class ClusterServing:
             architecture = header.get("general.architecture"),
             env = os.environ,
         )
+        kv_v = cache_type_v
+        if not flash_attn and ss.kv_bytes_per_elem(v_type) < 2.0:
+            kv_v = "f16"  # without flash attention a quantized V cache starts as f16 (loader retry)
+        if cells and size:
+            kv = _kv_from_scalars(header, cells, cache_type, kv_v, ss)
+        if kv is None and local_file and cells:
+            kv = await asyncio.to_thread(ss.estimate_kv_bytes, local_file, cells, cache_type, kv_v)
         compute = await asyncio.to_thread(
             _ctx_compute_bytes,
             local_file,
@@ -1592,12 +1600,24 @@ class ClusterServing:
                 cache_type,
                 flash_attn,
                 n_parallel,
-                True,
+                "checkpoint",
             )
         # A recurrent checkpoint is one slot's state; the loader's probe misses gated-delta layers.
         per_checkpoint = max(per_checkpoint or 0, _ssm_state_bytes(header, 1) if count else 0)
         self._checkpoints = float(per_checkpoint * count * max(1, n_parallel))
-        recurrent = _ssm_state_bytes(header, n_parallel)
+        # The loader's probe covers Mamba and KDA layouts; the header formula, gated-delta ones.
+        loader_recurrent = await asyncio.to_thread(
+            _ctx_compute_bytes,
+            local_file,
+            header_kv,
+            ctx,
+            min(batch, ubatch),
+            cache_type,
+            flash_attn,
+            n_parallel,
+            "recurrent",
+        )
+        recurrent = max(loader_recurrent or 0, _ssm_state_bytes(header, n_parallel))
         if kv is None and ctx and size and not recurrent:
             self._unsized_kv = True  # a pure state-space model has no attention KV
         kv = float(kv or 0.0) + recurrent
@@ -1619,6 +1639,17 @@ class ClusterServing:
         # A local fit on several GPUs sends no device list, so which of them hold it is unknown.
         enforced = plan is not None and (plan.topology == "layer_split" or local_count <= 1)
         self._resident = plan.resident() if enforced else {}
+        argv = [
+            str(a) for a in (getattr(getattr(llama_backend, "_process", None), "args", None) or [])
+        ]
+        if (
+            self.block
+            and argv[-len(self.block) :] != self.block
+            and not _contains(argv, self.block)
+        ):
+            self.topology = "single"
+            self.reason = "llama-server launched without the planned split"
+            self.plan, self.block, self._resident = None, [], {}
         managed = {n.endpoint for n in self.nodes if n.managed}
         in_use = set(self.block[self.block.index("--rpc") + 1].split(",")) if self.block else set()
         down, self._down = self._down, set()
@@ -1632,17 +1663,6 @@ class ClusterServing:
                 await process.stop()
             except Exception:
                 logger.warning("cluster serving: stopping %s failed", endpoint, exc_info = True)
-        argv = [
-            str(a) for a in (getattr(getattr(llama_backend, "_process", None), "args", None) or [])
-        ]
-        if (
-            self.block
-            and argv[-len(self.block) :] != self.block
-            and not _contains(argv, self.block)
-        ):
-            self.topology = "single"
-            self.reason = "llama-server launched without the planned split"
-            self._resident = {}
 
     async def load_failed(self) -> None:
         self.in_flight = False
@@ -1664,6 +1684,14 @@ class ClusterServing:
         else:
             # The failed load got as far as tearing the old one down.
             self.forget_served()
+
+    def _serving_split(self) -> bool:
+        return bool(
+            self._pre_load
+            and self._pre_load[3]
+            and self._backend is not None
+            and getattr(self._backend, "is_loaded", False)
+        )
 
     def serving(self) -> bool:
         """Whether a split this planned is still what the primary serves, config or not."""
