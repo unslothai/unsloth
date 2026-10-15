@@ -2653,7 +2653,9 @@ class CfgBatchRouter:
             return None
         mutable, shared_empty = _mutable_container(args, kwargs)
         if mutable is not None:
-            self._skip(f"{mutable}: mutable container argument (the doubled call would not reach the caller's)")
+            self._skip(
+                f"{mutable}: mutable container argument (the doubled call would not reach the caller's)"
+            )
             return None
         structure, kinds = self.template
         values: dict = {}
@@ -2725,7 +2727,9 @@ class CfgBatchRouter:
             return None
         if any(d for d in shared_empty):
             # the model wrote into a dict both branches share: one doubled call is not two calls
-            self.disable("the batched call mutated a shared argument dict; one branch per call from here")
+            self.disable(
+                "the batched call mutated a shared argument dict; one branch per call from here"
+            )
             return None
         try:
             mine, other = _split_output(out, batch)
@@ -2815,7 +2819,11 @@ def _outer_forward_layer(module: Any, forward: Any = _DROP) -> Optional[str]:
             continue
         if getattr(fn, "_unsloth_outer_forward", False):
             return f"outer forward layer {type(fn).__name__}"
-        if isinstance(fn, types.MethodType) and fn.__self__ is module and fn.__func__ is class_forward:
+        if (
+            isinstance(fn, types.MethodType)
+            and fn.__self__ is module
+            and fn.__func__ is class_forward
+        ):
             return None
         if fn is class_forward:
             return None
