@@ -546,6 +546,7 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
+        self._early_stopping = None
         self.load_in_4bit = True
 
         self.is_cpt = False
@@ -1045,6 +1046,23 @@ class UnslothTrainer:
 
         return _ProgressCallback()
 
+    def _attach_early_stopping(self, training_args):
+        from core.training.early_stopping import attach_early_stopping
+        self._early_stopping = attach_early_stopping(
+            self.trainer,
+            training_args.get("early_stopping_patience"),
+            user_stopped = lambda: self.should_stop,
+        )
+
+    def _early_stopping_summary(self) -> str:
+        es = self._early_stopping
+        if es is None:
+            return ""
+        summary = f"Stopped early at step {es.stopped_at}. " if es.stopped_at is not None else ""
+        if es.restored:
+            summary += f"Kept the weights from step {es.best_step} (eval loss {es.best_loss:.4f}). "
+        return summary
+
     def _calculate_total_steps(self, num_samples, batch_size, grad_accum, num_epochs, max_steps):
         """Calculate total training steps from dataset size and training params."""
         if max_steps and max_steps > 0:
@@ -1124,7 +1142,9 @@ class UnslothTrainer:
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
                 is_training = False,
-                status_message = f"Training stopped. Model saved to {output_dir}",
+                status_message = (
+                    f"Training stopped. {self._early_stopping_summary()}Model saved to {output_dir}"
+                ),
             )
         elif self.should_stop:
             msg = f"{label} training cancelled" if label else "Training cancelled"
@@ -1139,7 +1159,9 @@ class UnslothTrainer:
             self._update_progress(
                 is_training = False,
                 is_completed = True,
-                status_message = f"Training completed! Model saved to {output_dir}",
+                status_message = (
+                    f"Training completed! {self._early_stopping_summary()}Model saved to {output_dir}"
+                ),
             )
 
     def _cleanup_audio_artifacts(self):
@@ -1749,6 +1771,7 @@ class UnslothTrainer:
         use_rslora,
         use_loftq,
         use_dora,
+        random_state = 3407,
     ) -> bool:
         """LoRA for a text-diffusion model through its profile. Studio's default target list names
         autoregressive projections (LLaDA has none of o/gate/down_proj, and the MoE families must keep their
@@ -1797,7 +1820,7 @@ class UnslothTrainer:
             lora_dropout = lora_dropout,
             bias = "none",
             use_gradient_checkpointing = bool(use_gradient_checkpointing),
-            random_state = 3407,
+            random_state = random_state,
         )
         if modules_to_save:
             peft_kwargs["modules_to_save"] = modules_to_save
@@ -1827,6 +1850,7 @@ class UnslothTrainer:
         use_loftq: bool = False,
         use_dora: bool = False,
         modules_to_save: list = None,
+        random_state: int = 3407,
     ) -> bool:
         try:
             if self.model is None:
@@ -1894,6 +1918,7 @@ class UnslothTrainer:
                     use_rslora = use_rslora,
                     use_loftq = use_loftq,
                     use_dora = use_dora,
+                    random_state = random_state,
                 )
 
             # LoRA/QLoRA. "all-linear" is a PEFT keyword targeting every linear layer.
@@ -1955,7 +1980,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -1987,7 +2012,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2007,7 +2032,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2032,7 +2057,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -2053,7 +2078,7 @@ class UnslothTrainer:
                     lora_dropout = lora_dropout,
                     bias = "none",
                     use_gradient_checkpointing = use_gradient_checkpointing,
-                    random_state = 3407,
+                    random_state = random_state,
                     use_rslora = use_rslora,
                     use_dora = use_dora,
                     **_loftq_peft_kwargs(use_loftq),
@@ -4427,6 +4452,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has
                 # no terminal; --verbose keeps them.
                 _drop_hf_stdout_callbacks(self.trainer)
@@ -4473,6 +4499,7 @@ class UnslothTrainer:
                     trainer_kwargs["eval_dataset"] = eval_dataset
                 self.trainer = HFTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -4525,6 +4552,7 @@ class UnslothTrainer:
 
                 self.trainer = Seq2SeqTrainer(**trainer_kwargs)
                 self.trainer.add_callback(self._create_progress_callback())
+                self._attach_early_stopping(training_args)
                 _drop_hf_stdout_callbacks(self.trainer)
 
                 batch_size = training_args.get("batch_size", 2)
@@ -5105,6 +5133,7 @@ class UnslothTrainer:
                     logger.info("Training on full sequences (including prompts)\n")
 
             self.trainer.add_callback(self._create_progress_callback())
+            self._attach_early_stopping(training_args)
             # Unsloth publishes progress itself, so HF's stdout callbacks are pure duplication in a log that has no
             # terminal; --verbose keeps them.
             _drop_hf_stdout_callbacks(self.trainer)

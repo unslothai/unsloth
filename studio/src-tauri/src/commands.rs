@@ -954,17 +954,41 @@ pub fn install_system_packages(
     Err("Elevated package install is only supported on Linux".to_string())
 }
 
-fn backend_update_confirmed(training_active: bool, confirm: impl FnOnce() -> bool) -> bool {
-    !training_active || confirm()
+// Each prompt blocks while the webview stays live, so re-check the other activity after every answer.
+fn backend_update_confirmed(
+    mut training_active: impl FnMut() -> bool,
+    mut downloads_active: impl FnMut() -> bool,
+    mut confirm_training: impl FnMut() -> bool,
+    mut confirm_downloads: impl FnMut() -> bool,
+) -> bool {
+    let (mut asked_training, mut asked_downloads) = (false, false);
+    loop {
+        if !asked_training && training_active() {
+            if !confirm_training() {
+                return false;
+            }
+            asked_training = true;
+        } else if !asked_downloads && downloads_active() {
+            if !confirm_downloads() {
+                return false;
+            }
+            asked_downloads = true;
+        } else {
+            return true;
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn confirm_backend_update(app: AppHandle) -> bool {
     // blocking_show parks its thread until the user answers: keep it off the async workers.
     tauri::async_runtime::spawn_blocking(move || {
-        backend_update_confirmed(crate::training_is_active(&app), || {
-            crate::confirm_update_during_training(&app)
-        })
+        backend_update_confirmed(
+            || crate::training_is_active(&app),
+            || crate::current_renderer_activity(&app).downloads,
+            || crate::confirm_update_during_training(&app),
+            || crate::confirm_update_during_downloads(&app),
+        )
     })
     .await
     .unwrap_or(false)
@@ -1356,22 +1380,128 @@ mod tests {
 
     #[test]
     fn keeping_training_at_the_update_prompt_declines_the_update() {
-        assert!(!super::backend_update_confirmed(true, || false));
+        assert!(!super::backend_update_confirmed(
+            || true,
+            || false,
+            || false,
+            || true
+        ));
     }
 
     #[test]
     fn updating_anyway_during_training_confirms_the_update() {
-        assert!(super::backend_update_confirmed(true, || true));
+        assert!(super::backend_update_confirmed(
+            || true,
+            || false,
+            || true,
+            || false
+        ));
     }
 
     #[test]
     fn updating_without_training_does_not_ask() {
         let mut asked = false;
-        assert!(super::backend_update_confirmed(false, || {
-            asked = true;
-            false
-        }));
+        assert!(super::backend_update_confirmed(
+            || false,
+            || false,
+            || {
+                asked = true;
+                false
+            },
+            || false
+        ));
         assert!(!asked);
+    }
+
+    #[test]
+    fn keeping_downloads_at_the_update_prompt_declines_the_update() {
+        assert!(!super::backend_update_confirmed(
+            || false,
+            || true,
+            || true,
+            || false
+        ));
+    }
+
+    #[test]
+    fn updating_anyway_during_downloads_confirms_the_update() {
+        assert!(super::backend_update_confirmed(
+            || false,
+            || true,
+            || false,
+            || true
+        ));
+    }
+
+    #[test]
+    fn keeping_training_does_not_also_ask_about_downloads() {
+        let mut asked = false;
+        assert!(!super::backend_update_confirmed(
+            || true,
+            || true,
+            || false,
+            || {
+                asked = true;
+                true
+            }
+        ));
+        assert!(!asked);
+    }
+
+    #[test]
+    fn downloads_started_during_the_training_prompt_are_still_asked_about() {
+        let downloading = std::cell::Cell::new(false);
+        let mut asked = false;
+        assert!(!super::backend_update_confirmed(
+            || true,
+            || downloading.get(),
+            || {
+                downloading.set(true);
+                true
+            },
+            || {
+                asked = true;
+                false
+            }
+        ));
+        assert!(asked);
+    }
+
+    #[test]
+    fn training_started_during_the_downloads_prompt_is_still_asked_about() {
+        let training = std::cell::Cell::new(false);
+        let mut asked = false;
+        assert!(!super::backend_update_confirmed(
+            || training.get(),
+            || true,
+            || {
+                asked = true;
+                false
+            },
+            || {
+                training.set(true);
+                true
+            }
+        ));
+        assert!(asked);
+    }
+
+    #[test]
+    fn each_prompt_is_shown_at_most_once() {
+        let (mut training_asks, mut download_asks) = (0, 0);
+        assert!(super::backend_update_confirmed(
+            || true,
+            || true,
+            || {
+                training_asks += 1;
+                true
+            },
+            || {
+                download_asks += 1;
+                true
+            }
+        ));
+        assert_eq!((training_asks, download_asks), (1, 1));
     }
 
     #[tokio::test]

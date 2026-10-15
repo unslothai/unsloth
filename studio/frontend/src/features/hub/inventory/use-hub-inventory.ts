@@ -63,6 +63,8 @@ export interface HubInventory {
   inventorySettled: boolean;
   inventoryError: boolean;
   inventoryWarning: boolean;
+  /** When the oldest of the latest confirmed Hub cache fetches was sent; null until each has one. */
+  hubCacheRefreshStartedAt: number | null;
   refreshInventory: () => Promise<void>;
   refreshInventoryIfOlderThan: (maxAgeMs: number) => Promise<void>;
 }
@@ -743,6 +745,12 @@ export function useHubInventory(
         INVENTORY_FRESHNESS_WINDOW_MS,
       ),
   );
+  const hubCacheStarts = isDatasetMode
+    ? [cachedDatasetsSource.refreshStartedAt]
+    : [cachedGgufSource.refreshStartedAt, cachedModelsSource.refreshStartedAt];
+  const hubCacheRefreshStartedAt = hubCacheStarts.some((start) => start === null)
+    ? null
+    : Math.min(...(hubCacheStarts as number[]));
   const { emptyRevalidationRequired, inventorySettled } =
     resolveInventorySettlement({
       downloadedReady,
@@ -773,6 +781,7 @@ export function useHubInventory(
     inventorySettled,
     inventoryError: inventoryFailed,
     inventoryWarning,
+    hubCacheRefreshStartedAt,
     refreshInventory,
     refreshInventoryIfOlderThan,
   };
