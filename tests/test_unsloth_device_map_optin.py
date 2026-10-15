@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Tests the opt-in multi-GPU planning in loader_utils.py. No GPU needed.
-
-`device_map = "unsloth"` asks unsloth_zoo's planner for a head-aware placement instead of
-accelerate's `"sequential"`. The Muse Glimmer GRPO notebook does this by hand today, in
-about 25 lines of mem_get_info arithmetic.
-
-It is opt-in because the alternative is not safe: an existing multi-GPU caller who never
-asked for planning must keep the placement they have. So most of this file is about what
-must NOT change, and only the last group is about planning working.
-
-Extracted with ast so nothing has to import torch's CUDA stack.
-"""
+"""Opt-in planning for device_map unsloth; most checks pin the placements existing callers keep."""
 
 import ast
 import os
@@ -28,9 +17,7 @@ _SRC = open(LOADER_UTILS, encoding = "utf-8").read()
 _SKIP_MODULES = ["lm_head", "vision_tower", "audio_tower"]
 
 
-# _load plants stand-ins for these, and the rest of the suite shares the interpreter: a later
-# `import unsloth_zoo.compiler` in the same xdist worker would pick up a peft_utils with no
-# get_lora_layer_modules and fail with "cannot import name ... (unknown location)".
+# _load stubs these; a later real import in the same xdist worker would get the stub.
 _STUBBED_ZOO_MODULES = ("unsloth_zoo.peft_utils", "unsloth_zoo.device_map_planner")
 
 
@@ -97,8 +84,7 @@ def _load(
         ):
             exec(ast.get_source_segment(_SRC, node), ns)
 
-    # planner_quantization_kwargs reads the shared skip list;
-    # stub it so the test never imports the real unsloth_zoo (and so the assertions do not track its contents).
+    # Stub so the test never imports the real unsloth_zoo or tracks its skip list contents.
     peft_utils = types.ModuleType("unsloth_zoo.peft_utils")
     peft_utils.SKIP_QUANTIZATION_MODULES = list(_SKIP_MODULES)
     sys.modules["unsloth_zoo.peft_utils"] = peft_utils
@@ -125,7 +111,7 @@ class _Plan:
         "auto",  # accelerate's, which this must never reinterpret
         "balanced",  # what Unsloth Studio passes
         "balanced_low_0",
-        None,  # a single device
+        None,
     ],
 )
 def test_every_existing_device_map_is_returned_untouched(device_map):
@@ -143,10 +129,7 @@ def test_an_explicit_dict_is_returned_untouched():
 
 @pytest.mark.parametrize("switch", [None, "1"])
 def test_only_the_default_is_ever_upgraded(monkeypatch, switch):
-    """Planning is what a caller who chose nothing gets, never a licence to override one
-    they did choose. "auto", a dict, and a "sequential" they typed out all survive it --
-    hence the marker, since the last of those is the same string as the default.
-    """
+    """Only the untouched default is upgraded; a typed sequential equals the default, hence the marker."""
     ns = _load()
     if switch is None:
         monkeypatch.delenv("UNSLOTH_AUTO_DEVICE_MAP", raising = False)
@@ -165,7 +148,6 @@ def test_the_env_var_can_turn_planning_back_off(monkeypatch):
     ns = _load()
     monkeypatch.setenv("UNSLOTH_AUTO_DEVICE_MAP", "0")
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "sequential"
-    # Still a plain "sequential" downstream, marker and all.
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == ns["DEFAULT_DEVICE_MAP"]
 
 
@@ -186,9 +168,6 @@ def test_an_unset_switch_plans_so_a_bare_from_pretrained_needs_no_device_map(mon
     )
     assert resolved == planned
     assert calls == ["unsloth/Muse-Glimmer-30B-unsloth-bnb-4bit"]
-
-
-# ------------------------------------------------------- where planning cannot apply
 
 
 @pytest.mark.parametrize(
@@ -213,13 +192,7 @@ def test_a_caller_that_vetoes_planning_is_obeyed():
 
 
 def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
-    """`text_only = True` loads a VLM's standalone decoder, so Gemma 3 builds
-    Gemma3ForCausalLM (`model.layers.0`). Given only `model_name`, the planner rebuilds the
-    repo's multimodal config and plans Gemma3ForConditionalGeneration
-    (`model.language_model.layers.0`, plus a vision tower this load never creates). Not one
-    decoder weight matches a key of that map, and transformers raises
-    "model.embed_tokens.weight doesn't have any device set" for the first of them.
-    """
+    """A text_only decoder must not be planned against the full VLM; no decoder weight matches its map."""
     models = os.path.join(HERE, "unsloth", "models")
 
     vision = open(os.path.join(models, "vision.py"), encoding = "utf-8").read()
@@ -235,10 +208,8 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
     for node in signature:
         args = {a.arg for a in node.args.args + node.args.kwonlyargs}
         assert "text_only_decoder" in args, f"vision.py:{node.lineno}"
-    # The direct-call path resolves the text config itself, so it has to raise the flag.
     assert "text_only_decoder = True" in vision
 
-    # The veto reaches the planner call, and whatever it is spelled as is decided by the flag.
     assignments = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
@@ -253,10 +224,8 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
         assert "text_only_decoder" in planned, f"vision.py:{call.lineno}"
         assert "skip_reason" in passed, f"vision.py:{call.lineno}"
         source = passed["skip_reason"] + assignments.get(passed["skip_reason"], "")
-        # The other way the load can diverge from the plan; see the task-head test.
         assert "planner_class_mismatch_reason" in source, f"vision.py:{call.lineno}"
 
-    # loader.py does the swap for FastModel/FastLanguageModel, so it has to say so too.
     loader = open(os.path.join(models, "loader.py"), encoding = "utf-8").read()
     assert "text_only_decoder = True" in loader
     forwarded = [
@@ -268,14 +237,7 @@ def test_a_text_only_decoder_is_never_planned_against_the_full_vlm():
 
 
 def test_a_task_head_the_planner_cannot_see_declines_planning():
-    """`num_labels` makes the load AutoModelForSequenceClassification, whose `score`
-    replaces `lm_head`. The planner sees only `model_name`, reads the repo's own
-    `LlamaForCausalLM` and emits units ending in `lm_head`, so dispatch refuses the map:
-    "does not give any device for ... score.weight".
-
-    Compared as model classes, since AutoModelForVision2Seq and AutoModelForImageTextToText
-    are different objects building the same VLM and would decline planning for every VLM.
-    """
+    """A task head the planner cannot see, like score from num_labels, must decline planning."""
     ns = _load()
     mismatch = ns["planner_class_mismatch_reason"]
 
@@ -297,14 +259,7 @@ def test_a_task_head_the_planner_cannot_see_declines_planning():
 
 
 def test_the_optimized_llama_path_also_declines_a_classification_load():
-    """The same veto has to live on llama.py's own planner call, not just vision.py's.
-
-    loader.py delegates to FastModel only for 8bit / full finetuning / QAT, so
-    `FastLanguageModel.from_pretrained(..., num_labels = 2, device_map = "unsloth")` on a
-    llama/mistral/gemma/qwen repo dispatches to FastLlamaModel, plans the repo's causal LM,
-    then loads AutoModelForSequenceClassification a few lines later. That model has `score`
-    and no `lm_head`, so `dispatch_model` -> `check_device_map` raises.
-    """
+    """The optimized Llama path must decline planning for num_labels loads; it would plan the causal LM."""
     llama = open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
     tree = ast.parse(llama)
 
@@ -336,13 +291,7 @@ def test_the_optimized_llama_path_also_declines_a_classification_load():
 
 
 def test_a_distributed_launch_never_gets_an_intra_model_split():
-    """torchrun/DDP/FSDP already put one whole model per rank; splitting a model across the
-    cards on top of that puts every rank on every card, which OOMs rather than fits.
-
-    prepare_device_map() in loader.py converts the string to a rank-local dict first, at
-    every precision since #3459. The gate still lives here too: loader.py is not the only
-    caller, and a rank-local dict is not a string, so the two never disagree.
-    """
+    """Distributed launches get one model per rank, so planning must never split a model across cards."""
     ns = _load(
         distributed = True, planner = lambda *a, **k: pytest.fail("planned inside a distributed launch")
     )
@@ -408,19 +357,9 @@ def test_an_infeasible_plan_is_raised_not_swallowed():
     ],
 )
 def test_the_balanced_sentinel_declines_to_balanced_not_sequential(kwargs, devices, planner):
-    """`"unsloth_balanced"` is the same plan with a different answer when it is declined.
-
-    "sequential" is not a shard: `get_max_memory` gives cuda:0 its whole free budget, so
-    `infer_auto_device_map` fills it first and a model that fits lands there whole. On
-    `unsloth/Qwen2.5-7B-Instruct` in bf16 across two cards, 16 GiB each, "sequential"
-    answers {'0': 1} where "balanced" answers {'0': 13, '1': 19}. A caller that asked to
-    plan across several cards wants a split even when the planner declines, and it
-    declines on more shapes than a caller can enumerate -- a full finetune, an
-    `auto_model` with no `_model_mapping`, a prequantized Falcon-H1 checkpoint.
-    """
+    """unsloth_balanced declines to balanced, since sequential fills cuda:0 first and never shards."""
     ns = _load(devices = devices, planner = planner)
     assert ns["resolve_unsloth_device_map"]("unsloth_balanced", "m", **kwargs) == "balanced"
-    # The plain sentinel is unchanged: an existing caller keeps the answer it had.
     assert ns["resolve_unsloth_device_map"]("unsloth", "m", **kwargs) == "sequential"
 
 
@@ -462,9 +401,6 @@ def test_the_default_device_map_still_resolves_to_the_plain_sentinel():
     assert ns["requested_device_map"](ns["DEFAULT_DEVICE_MAP"]) == "unsloth"
 
 
-# ------------------------------------------------------------- when it does plan
-
-
 def test_the_plan_is_returned_and_the_model_name_reaches_the_planner():
     seen = {}
 
@@ -498,11 +434,7 @@ def test_free_memory_is_planned_against_not_total():
 
 
 def test_planning_happens_only_where_the_model_name_is_final():
-    """loader.py remaps model_name (a -bnb-4bit repo can resolve to its 16-bit twin, and
-    BAD_MAPPINGS rewrites several Qwen3 repos outright) well after its device_map block.
-    A plan built up there is sized for a repo that is not the one loaded, so the call
-    belongs in llama.py and vision.py, where the name has stopped moving.
-    """
+    """Plan only in llama.py and vision.py: loader.py remaps model_name after its device_map block."""
     models = os.path.join(HERE, "unsloth", "models")
     loader = open(os.path.join(models, "loader.py"), encoding = "utf-8").read()
     assert (
@@ -550,11 +482,7 @@ def test_planner_kwargs_reach_the_planner():
 
 
 def test_a_user_quantization_config_replaces_the_flags_for_the_planner():
-    """loader.py forwards a caller's `quantization_config` through `**kwargs` and clears
-    `load_in_4bit` / `load_in_8bit`, because transformers refuses both at once. The cleared
-    flags describe a full-precision load, so a 70B QLoRA gets sized at bf16 and
-    `DeviceMapInfeasible` kills a load that would have fit.
-    """
+    """Planner must use the caller's quantization_config, else a QLoRA is sized as full precision."""
     ns = _load()
     config = types.SimpleNamespace(load_in_4bit = True, load_in_8bit = False)
     kwargs = ns["planner_quantization_kwargs"](
@@ -563,7 +491,7 @@ def test_a_user_quantization_config_replaces_the_flags_for_the_planner():
         quantization_config = config,
     )
     assert kwargs == {"quantization_config": config}
-    # Both at once is exactly what transformers and the planner reject.
+    # transformers and the planner reject both at once.
     assert "load_in_4bit" not in kwargs
     assert "load_in_8bit" not in kwargs
 
@@ -589,11 +517,7 @@ def test_a_16bit_load_is_planned_without_a_skip_list():
 
 
 def test_the_modules_unsloth_keeps_in_compute_dtype_are_sized_that_way():
-    """On-the-fly quantization keeps SKIP_QUANTIZATION_MODULES out of bnb, and transformers
-    reads llm_int8_skip_modules as `modules_to_not_convert`. Planning them at 4bit
-    understates the head device by GiBs on a large-vocab VLM (`lm_head` plus a whole
-    `vision_tower`), the number this plan exists to get right.
-    """
+    """Planner must size SKIP_QUANTIZATION_MODULES at compute dtype, not 4bit, as bnb keeps them dense."""
     seen = {}
     ns = _load(planner = lambda name, **kw: seen.update(kw) or _Plan({"": 0}))
     ns["resolve_unsloth_device_map"](
@@ -667,15 +591,7 @@ def _resolve_calls(source):
 
 @pytest.mark.parametrize("name", ["llama.py", "vision.py", "diffusion.py"])
 def test_the_planner_sizes_the_dtype_the_load_will_really_use(name):
-    """`from_pretrained`'s dtype overrides the one config.json declares, and the planner
-    only ever sees the config. So a float32 load of a bfloat16 checkpoint is sized at half
-    its real weight bytes, the map is accepted, and materializing it OOMs; the reverse is
-    the same error the other way, raising DeviceMapInfeasible on a load that would have fit.
-
-    `add_dtype_kwargs` rather than a literal keyword: transformers renamed `torch_dtype` to
-    `dtype`, and the planner hands these straight to AutoConfig, which only honours the
-    name its own version knows.
-    """
+    """Planner must size the dtype from_pretrained uses, not config.json's, via add_dtype_kwargs."""
     source = open(os.path.join(HERE, "unsloth", "models", name), encoding = "utf-8").read()
     calls = _resolve_calls(source)
     assert calls, f"{name} never resolves a device map"
@@ -689,11 +605,7 @@ def test_the_planner_sizes_the_dtype_the_load_will_really_use(name):
 
 
 def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
-    """diffusion.py keeps `lm_head`, `embed_tokens`, `experts`, `self_conditioning` and
-    `router` out of bnb, most of an MoE checkpoint's parameters. Planning on the bare flags
-    sizes all of them at 4 bits while the load materializes them in compute dtype, so the
-    one config object is built before the plan and reused by the load.
-    """
+    """Diffusion plan must use the config the load applies, since bnb keeps lm_head and experts dense."""
     path = os.path.join(HERE, "unsloth", "models", "diffusion.py")
     source = open(path, encoding = "utf-8").read()
     tree = ast.parse(source)
@@ -731,11 +643,6 @@ def test_the_diffusion_plan_is_sized_against_the_config_the_load_applies():
             ), f"diffusion.py:{call.lineno} plans without the skip list the load applies"
 
 
-# --------------------------------------------------------------------------------------
-# Planning by default reaches paths the opt-in never did.
-# --------------------------------------------------------------------------------------
-
-
 def _helpers():
     """`planner_kwargs_with_max_memory` / `planner_hub_kwargs`, without importing torch."""
     src = open(LOADER_UTILS, encoding = "utf-8").read()
@@ -761,11 +668,7 @@ def _helpers():
 
 
 def test_a_transformers_max_memory_reaches_the_planner():
-    """Before the default flipped, `max_memory` bounded placement because transformers saw
-    a string device_map. It only consults it then -- `_get_device_map` gates the whole
-    `infer_auto_device_map` branch on `isinstance(device_map, str)` -- so once a plan
-    returns a dict the budget is dropped and the map can exceed the caps or use a card the
-    caller withheld."""
+    """max_memory must reach the planner, since transformers ignores it once device_map is a dict."""
     ns = _helpers()
     merged = ns["planner_kwargs_with_max_memory"](None, {"max_memory": {0: "12GiB"}})
     assert merged["max_memory"] == {0: "12GiB"}
@@ -825,11 +728,7 @@ def test_every_leaf_planner_call_forwards_the_budget_and_the_hub(name):
 
 
 def test_the_wrapper_tells_the_leaf_the_config_was_the_callers():
-    """FastModel pops `config` out of kwargs at loader.py:1248 and forwards it as
-    `auto_config`, so by the time FastBaseModel looks, its own `kwargs.pop("config")` is
-    None and a veto keyed on that alone never fires on the path almost everyone uses.
-    The flag travels explicitly, the way `text_only_decoder` already does for the same
-    reason: `auto_config` no longer describing the repo cannot be inferred downstream."""
+    """The caller-config flag must be passed explicitly, since FastModel renames config to auto_config."""
     loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
     assert "auto_config_from_caller = user_config is not None" in loader
 
@@ -881,11 +780,7 @@ def test_the_optimized_path_honours_offload_embedding():
 
 
 def test_the_auto_mode_is_recognised_by_value_everywhere():
-    """`_resolve_offload_embedding` asks `== OFFLOAD_EMBEDDING_AUTO`, so a caller who
-    hands in an equal but non-interned `"auto"` (one read out of a JSON config, say) is
-    in automatic mode as far as the resolver is concerned. Any guard elsewhere that asks
-    `is` disagrees with it: the resize guard would leave the offload on and the optimized
-    path would print a notice for a request nobody made. Same question, same operator."""
+    """Auto mode must be tested with ==, not is, so an equal but non-interned auto string is recognised."""
     loader = open(os.path.join(MODELS, "loader.py"), encoding = "utf-8").read()
     for node in ast.walk(ast.parse(loader)):
         if not isinstance(node, ast.Compare):
@@ -899,10 +794,7 @@ def test_the_auto_mode_is_recognised_by_value_everywhere():
 
 
 def test_the_optimized_path_declines_a_caller_supplied_config():
-    """FastLanguageModel leaves `config` in kwargs, so the optimized Llama leaf pops its
-    own `user_config` and loads the weights against it while the planner rebuilds the
-    repo's from `model_name`. A caller who changed `num_hidden_layers` or `vocab_size`
-    would get a map for a different model, so the plan is declined rather than guessed."""
+    """The optimized path must decline planning for a caller config; the planner rebuilds from the name."""
     llama = open(os.path.join(MODELS, "llama.py"), encoding = "utf-8").read()
     tree = ast.parse(llama)
     body = None
@@ -916,7 +808,7 @@ def test_the_optimized_path_declines_a_caller_supplied_config():
         "a caller-supplied config may not describe the repo the planner rebuilds" in llama
     ), "the optimized path plans against a config the load does not use"
 
-    # The veto has to come first, or a later branch that finds no other reason overwrites it.
+    # The veto has to come first, or a later branch with no reason overwrites it.
     veto = llama.index("a caller-supplied config may not describe the repo the planner rebuilds")
     num_labels = llama.index("num_labels loads a task head the repo config does not describe")
     assert veto < num_labels, "the caller-config veto is set after another branch clears it"
@@ -924,10 +816,7 @@ def test_the_optimized_path_declines_a_caller_supplied_config():
 
 
 def test_the_diffusion_leaf_plans_with_the_locality_the_load_uses():
-    """diffusion.py pops `local_files_only` off kwargs and resolves the offline env vars
-    into it before the load, so handing the planner the raw kwargs would tell it nothing.
-    It gets the resolved value, or an offline load reaches the Hub behind the caller's
-    back and, when that lookup fails, silently loses the split the model needs to fit."""
+    """The planner needs the resolved local_files_only; raw kwargs would miss the offline env vars."""
     source = open(os.path.join(MODELS, "diffusion.py"), encoding = "utf-8").read()
     for node in ast.walk(ast.parse(source)):
         if not isinstance(node, ast.Call):
@@ -953,10 +842,7 @@ def test_a_code_revision_reaches_the_planner():
 
 
 def test_a_max_position_embeddings_override_reaches_the_planner():
-    """The planner rebuilds the repo config from a name, so an override that lives only in
-    the caller's kwargs never reaches it. Raising it on an architecture with learned
-    position embeddings makes the planned tensors smaller than the materialized ones, and
-    a map that fitted on paper OOMs."""
+    """Planner rebuilds config from the name, so a max_position_embeddings override must be forwarded."""
     ns = _helpers()
     assert ns["planner_config_overrides"]({"max_position_embeddings": 8192}) == {
         "max_position_embeddings": 8192,
@@ -980,16 +866,12 @@ def test_the_diffusion_leaf_plans_with_the_code_revision_too():
 
 
 def test_an_unresolvable_explicit_model_class_declines_planning():
-    """`resolve_model_class` reads `auto_model._model_mapping`, which a concrete
-    `PreTrainedModel` subclass does not have, so it returns None and
-    `planner_class_mismatch_reason` reads unknown as compatible. The planner would then
-    build whatever the repo config selects while the load builds the caller's class."""
+    """An explicit model class without an auto mapping must decline planning; unknown reads as a match."""
     vision = open(os.path.join(MODELS, "vision.py"), encoding = "utf-8").read()
     assert 'getattr(auto_model, "_model_mapping", None) is None' in vision
     assert "an explicit model class has no auto mapping" in vision
 
-    # Ahead of the class comparison it backstops, or that one returns None and the
-    # caller-config branch below claims the slot with the wrong reason.
+    # Ahead of the class comparison it backstops, or the caller-config branch claims the slot.
     veto = vision.index("an explicit model class has no auto mapping")
     caller = vision.index("a caller-supplied config may not describe the repo the planner")
     assert veto < caller, "the unresolvable-class veto never gets to run"
@@ -1039,20 +921,7 @@ def _prepare_device_map_guards():
 
 
 def test_every_rank_of_a_16bit_distributed_launch_still_gets_its_own_device():
-    """A distributed load must be pinned to the rank's card whatever its precision.
-
-    `prepare_device_map()` rewrites the string device_map into `{"": "cuda:<local_rank>"}`.
-    Gating that on the load being quantized left a 16-bit `accelerate launch` holding a
-    string, which `resolve_unsloth_device_map` turns into "sequential" -- and sequential
-    dispatch fills cuda:0 first, on every rank. Measured on 2 GPUs before the gate came
-    off: rank 0 and rank 1 both reported `param_devices=['cuda:0']` with 4245 MiB on card
-    0 and 0 MiB on card 1, for both FastLanguageModel and FastVisionModel. That is
-    unsloth#3459's "100% GPU utilisation, 0 VRAM, then it suddenly loads": the ranks are
-    queueing for one card.
-
-    Static, because the failure needs two real GPUs and a launcher. Re-adding a
-    quantization term to the guard turns this red.
-    """
+    """Every distributed rank must pin its own card at any precision, else all ranks queue on cuda:0."""
     calls = _prepare_device_map_guards()
     assert calls, "loader.py no longer pins a distributed rank to its own device"
     for lineno, guards in calls:
@@ -1063,9 +932,6 @@ def test_every_rank_of_a_16bit_distributed_launch_still_gets_its_own_device():
                 f"({guard!r}), so a 16-bit distributed load keeps a string device_map "
                 f"and every rank dispatches onto cuda:0"
             )
-
-
-# --- The rank a distributed launch is pinned to, and the placements it may pin ---
 
 
 class _FakeDistributed:
@@ -1167,14 +1033,7 @@ def _pinned_device_map(ns):
 
 
 def test_the_second_node_of_a_multi_node_job_pins_to_its_own_card():
-    """Global rank 8 of a 2 x 8 job is local rank 0, not card 8.
-
-    `torch.distributed.get_rank()` is documented as "a unique identifier assigned to each
-    process within a distributed process group ... 0 to world_size" -- global, across nodes.
-    Using it as a device index made every rank on the second node ask for cuda:8 on a host
-    with eight cards; `set_device` raises "invalid device ordinal", the except swallows it,
-    and the load then fails on the returned map. torchrun's LOCAL_RANK is the node-local one.
-    """
+    """Pin to LOCAL_RANK, not get_rank(): the global rank is not a device index on later nodes."""
     monkeypatch = pytest.MonkeyPatch()
     try:
         ns, accelerator = _load_distributed(
@@ -1281,12 +1140,7 @@ def test_an_unchosen_placement_is_the_one_a_rank_may_pin(device_map):
     "device_map", ["cpu", "cuda:2", "mps", "xpu:1", "meta", {"": "cpu"}, {"": 0}, 0, None]
 )
 def test_a_device_the_caller_named_survives_a_distributed_launch(device_map):
-    """`device_map = "cpu"` or `"cuda:2"` is a placement someone chose, and transformers
-    reads it as one: `from_pretrained` turns every string outside
-    ["auto", "balanced", "balanced_low_0", "sequential"] into `{"": torch.device(value)}`.
-    Replacing it with the rank's card loads the model on hardware the caller deliberately
-    avoided -- an unexpected GPU, or an OOM on a card they were keeping free.
-    """
+    """A device the caller named, like cpu or cuda:2, must not be replaced by the rank's own card."""
     monkeypatch = pytest.MonkeyPatch()
     try:
         ns, _ = _load_distributed(monkeypatch)

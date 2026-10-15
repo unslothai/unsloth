@@ -61,6 +61,8 @@ export const es = {
       never: "Nunca",
       scripts: "Ejecutar scripts",
       scriptsDescription: "Elige si los modelos pueden ejecutar scripts en las páginas. Verás cada script antes de que se ejecute",
+      cursor: "Mostrar cursor",
+      cursorDescription: "Muestra un puntero donde los modelos hacen clic, escriben y arrastran en la página",
       askEveryTime: "Preguntar cada vez",
       permissionsTitle: "Permisos del agente",
       permissionsDescription: "Elige los valores predeterminados y añade excepciones para sitios concretos. Los campos de contraseña y de pago nunca se rellenan, digan lo que digan estos ajustes.",
@@ -83,6 +85,9 @@ export const es = {
     },
     agent: {
       working: "Unsloth está navegando en esta pestaña",
+      waiting: "Unsloth necesita tu respuesta en el navegador para {chat}",
+      otherChat: "otro chat",
+      show: "Mostrar",
       stop: "Detener",
       allow: "Permitir",
       deny: "Denegar",
@@ -256,7 +261,7 @@ export const es = {
     annotationScreenshotsAlways: "Incluir siempre",
     annotationScreenshotsNever: "No incluir nunca",
     clearDataSetting: "Borrar datos de navegación",
-    clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas y las páginas en caché. Las páginas no guardan cookies ni datos de sitios.",
+    clearDataSettingDescription: "Borra el historial de navegación, el historial de descargas y las páginas en caché. Las páginas guardan cookies y datos de sitios solo hasta que se recarga Studio.",
     manage: "Administrar",
     fullView: {
       enter: "Vista completa",
@@ -432,7 +437,7 @@ export const es = {
     },
     clearData: {
       title: "¿Borrar datos de navegación?",
-      description: "Se borrarán tu historial de navegación, el historial de descargas y las páginas en caché. Los archivos descargados se quedan en tu equipo.",
+      description: "Esto borra el historial de navegación, el historial de descargas, las páginas en caché y las cookies y datos de sitios, lo que cierra tu sesión en los sitios. Los archivos descargados se quedan en tu equipo.",
       cancel: "Cancelar",
       confirm: "Borrar datos",
       done: "Datos de navegación borrados",
@@ -448,6 +453,7 @@ export const es = {
       resubmit: "Esta página proviene de un formulario. Volver a cargarla envía el formulario de nuevo, lo que podría repetir lo que hizo.",
       upload: "Las subidas de archivos no funcionan en esta vista. Abre la página en el navegador del sistema para enviarla.",
       scriptNavigation: "Esta página intentó ir a otra dirección mediante un script, algo que esta vista no puede seguir. Ábrela en el navegador del sistema.",
+      needsBrowser: "Esta página intentó usar una función del navegador que esta vista bloquea, así que puede que partes de ella no funcionen. Ábrela en el navegador del sistema.",
     },
     native: {
       externalPrompt: "{host} quiere abrir {url}",
@@ -586,6 +592,10 @@ export const es = {
   chatMenu: {
     more: "Opciones del chat",
     copy: "Copiar",
+    compact: "Compactar conversación",
+    compactQueued: "Se solicitó la compactación para el siguiente mensaje",
+    compactEmpty: "Aún no hay nada que compactar",
+    compactUnsupported: "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
   },
   welcome: {
     goodToSeeYou: "Me alegra verte",
@@ -1362,6 +1372,7 @@ export const es = {
       installRuntimeFailed: "No se pudo instalar el runtime.",
       installRuntimeError: "No se pudo iniciar la instalación del runtime.",
       unsupportedArch: "El sandbox de Windows (MXC) solo funciona en Windows x64, así que no está disponible en este PC.",
+      builtinNeedsUpdate: "El contenedor integrado de Windows necesita la compilación {required} o posterior, y este PC usa {current}. Instala la última actualización de Windows para usarlo sin un paso de administrador, o activa el sandbox alternativo de abajo.",
       unsupportedBuild: "El sandbox de Windows (MXC) necesita Windows 11 24H2 (compilación 26100) o posterior, así que no está disponible en este PC.",
       permissionsIntro: "Elige cuándo preguntan primero las herramientas y si Python y Terminal también se ejecutan en el sandbox del sistema.",
       permissionLabel: "Permisos de herramientas",
@@ -1736,6 +1747,19 @@ export const es = {
         apiOnlyDescription:
           "La liberación por inactividad mantiene en memoria el modelo que cargaste desde Unsloth y solo libera los que cargó una solicitud a la API.",
       },
+      modelAliases: {
+        sectionTitle: "Alias de modelos (OpenAI API)",
+        description:
+          "Nombres estables para clientes de la API, como fast-chat o code. Una solicitud que nombra un alias la atiende el modelo al que apunta, así las apps conectadas siguen funcionando cuando cambias de modelo. Activa Cambiar de modelo según la solicitud para que un alias pueda cargar el modelo al que apunta.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nombre del alias",
+        modelAriaLabel: "Modelo al que apunta el alias",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Quitar alias",
+        add: "Añadir alias",
+        loadError: "No se pudieron cargar los alias de modelos.",
+        saveError: "No se pudieron guardar los alias de modelos.",
+      },
       previewSharing: {
         sectionTitle: "Compartir vista previa",
         enableLabel: "Enlaces públicos de vista previa",
@@ -1861,7 +1885,23 @@ export const es = {
           "Modelo de Hugging Face o ruta local usada para indexar y buscar tus documentos. El valor predeterminado es {defaultModel}.",
         searchPlaceholder: "Buscar cualquier modelo en HF",
         reindexWarning:
-          "Solo afecta a los documentos recién indexados. Vuelve a subir los existentes tras cambiar el modelo.",
+          "Solo afecta a los documentos recién indexados. Vuelve a incrustar los existentes tras cambiar el modelo.",
+        reembed: {
+          label: "Volver a incrustar documentos",
+          staleOne:
+            "1 documento se indexó con otro modelo de embeddings, así que la búsqueda semántica lo omite.",
+          staleMany:
+            "{count} documentos se indexaron con otro modelo de embeddings, así que la búsqueda semántica los omite.",
+          staleArchived:
+            "El historial de chat anterior se indexó con otro modelo de embeddings, así que la búsqueda semántica lo omite.",
+          running: "Volviendo a incrustar: {done} de {total}",
+          action: "Volver a incrustar",
+          stop: "Detener",
+          startFailed: "No se pudo iniciar la nueva incrustación",
+          stopped: "Nueva incrustación detenida",
+          finished: "Documentos incrustados de nuevo",
+          finishedWithFailures: "No se pudieron volver a incrustar {count}",
+        },
         emptyError:
           "Introduce un id de modelo de Hugging Face o una ruta local.",
         loadError:
@@ -2598,6 +2638,9 @@ export const es = {
         showMemoryBar: "Mostrar barra de uso de VRAM",
         showMemoryBarDescription:
           "Muestra debajo de la fila de cada modelo descargado su uso estimado de VRAM: pesos, caché KV con la longitud de contexto con la que se cargará y cualquier reserva de borrador especulativo.",
+        fitOnDeviceOnly: "Mostrar solo modelos que caben",
+        fitOnDeviceOnlyDescription:
+          "Oculta en el selector de modelos y en el Hub los modelos demasiado grandes para la memoria de GPU y la RAM de este dispositivo. Los modelos descargados siguen visibles.",
       },
       menu: {
         title: "Menú del chat",
@@ -3047,6 +3090,22 @@ export const es = {
         "Las apps que usan este token pierden el acceso de inmediato. Esto no se puede deshacer.",
       revokeAction: 'Revocar "{name}"',
       revoking: "Revocando...",
+      audioApi: {
+        title: "API de audio",
+        description: "Voz, clonación de voz, transcripción y los flujos de la página Audio.",
+        speak: "Hablar",
+        clone: "Clonar",
+        transcribe: "Transcribir",
+        workflows: "Flujos",
+        separate: "Separar",
+        convert: "Convertir",
+        music: "Música",
+        edit: "Editar",
+        placeholderModel: "Aún no hay ningún modelo descargado que pueda ejecutar este ejemplo, así que el modelo que aparece es provisional. Descarga uno primero en la página Audio.",
+        autoSwitchOff:
+          "El modelo solo se carga por su nombre con el cambio automático de modelo activado. Actívalo o carga antes el modelo en su página de Audio.",
+        useViaApi: "Usar por API",
+      },
       decisionApi: {
         title: "API de decisiones",
         docs: "Documentación",
@@ -3126,6 +3185,7 @@ export const es = {
       desktopAppVersion: "Versión de la app de escritorio",
       desktopAppVersionUnavailable: "No disponible",
       llamaCppVersion: "Versión de llama.cpp",
+      audioCppVersion: "Versión de audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

@@ -1,15 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-"""The unsloth_zoo revision notice must never be the reason a Core cell goes red.
-
-It only says which revision was tested, and by the time it runs the clone, the install and
-the whole suite have passed. Under `set -euxo pipefail` that is easy to get wrong: for
-`head="$(a | b)"` the pipeline's status becomes the assignment's and `-e` ends the step, so
-a `git ls-remote` that loses a DNS lookup would take a green cell with it.
-
-Run rather than read: the block is extracted from the action and executed under the same
-shell flags, which is the only way to answer a question about `set -e` semantics.
-"""
+"""A failing revision lookup must not end the step: under set -e, an assignment takes its status."""
 
 from __future__ import annotations
 
@@ -28,12 +19,8 @@ import yaml
 _REPO = Path(__file__).resolve().parents[2]
 _ACTION = _REPO / ".github" / "actions" / "core-cpu-setup" / "action.yml"
 
-# The block is executed, not read, so the host has to be able to run it. bash is the shell
-# the step declares; GNU timeout is what bounds the lookup. Stock macOS ships bash and no
-# timeout -- it is gtimeout, from coreutils -- which tests/sh/test_llama_build_jobs.sh
-# already records. Without it the lookup fails, `|| true` absorbs it, head comes back empty
-# and the two tests that expect a warning fail on a developer's Mac. The action itself only
-# ever runs on ubuntu-24.04, so skipping here gives up no coverage that exists.
+# Executed, not read: needs bash and GNU timeout, which stock macOS lacks. The action
+# only runs on ubuntu-24.04, so skipping loses no coverage.
 _MISSING = [tool for tool in ("bash", "timeout") if shutil.which(tool) is None]
 
 pytestmark = pytest.mark.skipif(
@@ -55,8 +42,7 @@ def _revision_notice_block() -> str:
     body = _clone_step()["run"]
     start = body.index('head="$(')
     block = body[start:]
-    # The step interpolates nothing in this tail, but assert that rather than assume it:
-    # a ${{ }} left in would run as literal text and quietly test the wrong thing.
+    # A ${{ }} left in would run as literal text and quietly test the wrong thing.
     assert "${{" not in block, f"unexpected GitHub expression in the notice block:\n{block}"
     return block
 
@@ -95,13 +81,10 @@ def _run_notice(
         "#!/usr/bin/env bash\n"
         'if [ "$1" = "ls-remote" ]; then\n'
         f"  sleep {git_sleep}\n"
-        # %b, not %s: the repr below writes the tab and newline as backslash escapes, and
-        # ls-remote output is tab-separated. With %s they stay literal, cut -f1 finds no
-        # field separator and hands back the whole line, which reads as a mismatch.
+        # %b, not %s: the repr writes tabs as escapes, and cut -f1 needs a real tab.
         f"  printf '%b' {git_stdout!r}\n"
         f"  exit {git_exit}\n"
         "fi\n"
-        # rev-parse, standing in for the clone this test does not make.
         "echo 0000000000000000000000000000000000000000\n",
         encoding = "utf-8",
     )
@@ -115,10 +98,7 @@ def _run_notice(
         + "\necho NOTICE_BLOCK_SURVIVED\n",
         encoding = "utf-8",
     )
-    # The stub directory first so its git wins, then the caller's real PATH rather than a
-    # hardcoded pair of directories. Hardcoding meant the skip above and the run below could
-    # disagree: a Mac with coreutils installed has timeout on PATH, `shutil.which` finds it,
-    # and a fixed /usr/bin:/bin would still not.
+    # The caller's real PATH, not a fixed one, so the skip check and the run agree.
     env = {
         "PATH": f"{stub_dir}{os.pathsep}{os.environ.get('PATH', os.defpath)}",
         "RUNNER_TEMP": str(tmp_path),
@@ -180,12 +160,7 @@ def test_the_matching_revision_is_not_reported_as_stale(tmp_path):
 
 
 def test_the_lookup_absorbs_its_failure_inside_the_substitution():
-    """Structural companion to the behavioural tests above.
-
-    They would also pass if someone moved the guard to `|| true` AFTER the closing paren,
-    which silences the assignment's status but leaves the pipeline's own failure to be
-    caught by pipefail first in some shells. Pin the shape that is actually correct.
-    """
+    """The guard must sit inside the substitution: || true after the paren silences only the assignment."""
     block = _revision_notice_block()
     lookup = re.search(r'head="\$\((.*?)\)"', block, flags = re.S)
     assert lookup, f"the resolved-revision lookup changed shape:\n{block}"
@@ -196,11 +171,7 @@ def test_the_lookup_absorbs_its_failure_inside_the_substitution():
 
 
 def test_a_hanging_remote_lookup_does_not_hold_the_step(tmp_path):
-    """A lookup that stalls rather than fails must not run out the job's clock.
-
-    `|| true` cannot help: nothing has exited, so nothing is absorbed. Takes the bound in
-    real time, which is why it is the slowest test here.
-    """
+    """A stalled lookup never exits, so || true cannot absorb it; only a real-time bound stops it."""
     bound = _lookup_timeout_seconds()
     began = time.monotonic()
     proc = _run_notice(tmp_path, git_exit = 0, git_stdout = "", git_sleep = bound * 6)
@@ -236,9 +207,7 @@ def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
         "the warning tells the reader to re-run without allowing that the ref may have "
         f"been pinned on purpose, which re-running will not change:\n{warning}"
     )
-    # A first attempt can mismatch too: resolve-zoo-ref pins main in the gating job, and
-    # this step asks again only after the whole install, so main advancing in between is
-    # enough. Calling that a --failed re-run would be a wrong diagnosis, not a vague one.
+    # A first attempt can mismatch too: main may advance between resolve-zoo-ref and this step.
     assert (
         "advanced" in lowered
     ), f"the warning does not allow for main moving after the resolve job:\n{warning}"
@@ -248,13 +217,7 @@ def test_the_warning_does_not_prescribe_a_remedy_that_cannot_work(tmp_path):
 
 
 def test_the_suite_that_runs_this_guard_triggers_on_the_action_it_guards():
-    """A guard absent for the change it guards is not a guard.
-
-    Backend CI runs tests/studio and is path-filtered; without .github/actions in that
-    filter an action-only PR ran Core, which does not execute tests/studio, and skipped the
-    suite that does. test_local_actions_are_in_path_filters.py enforces that a workflow
-    lists the actions it `uses:`; this is the other direction, the ones its TESTS read.
-    """
+    """Backend CI's path filter must list .github/actions, or an action-only PR skips this suite."""
     workflow = yaml.safe_load(
         (_REPO / ".github" / "workflows" / "studio-backend-ci.yml").read_text(encoding = "utf-8")
     )

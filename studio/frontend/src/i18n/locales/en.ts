@@ -58,6 +58,8 @@ export const en = {
       never: "Never",
       scripts: "Run scripts",
       scriptsDescription: "Choose whether models can run scripts on pages. You see each script before it runs",
+      cursor: "Show cursor",
+      cursorDescription: "Show a pointer where models click, type and drag on the page",
       askEveryTime: "Ask every time",
       permissionsTitle: "Agent permissions",
       permissionsDescription: "Choose defaults and add exceptions for specific sites. Password and payment fields are never filled, whatever these say.",
@@ -80,6 +82,9 @@ export const en = {
     },
     agent: {
       working: "Unsloth is browsing in this tab",
+      waiting: "Unsloth needs your answer in the browser for {chat}",
+      otherChat: "another chat",
+      show: "Show",
       stop: "Stop",
       allow: "Allow",
       deny: "Deny",
@@ -253,7 +258,7 @@ export const en = {
     annotationScreenshotsAlways: "Always include",
     annotationScreenshotsNever: "Never include",
     clearDataSetting: "Clear browsing data",
-    clearDataSettingDescription: "Clear browsing history, download history and cached pages. Pages keep no cookies or site data.",
+    clearDataSettingDescription: "Clear browsing history, download history and cached pages. Pages keep cookies and site data only until Studio is reloaded.",
     manage: "Manage",
     fullView: {
       enter: "Enter full view",
@@ -429,7 +434,7 @@ export const en = {
     },
     clearData: {
       title: "Clear browsing data?",
-      description: "This clears your browsing history, download history and cached pages. Downloaded files stay on your computer.",
+      description: "This clears your browsing history, download history, cached pages, and site cookies and data, which signs you out of sites. Downloaded files stay on your computer.",
       cancel: "Cancel",
       confirm: "Clear data",
       done: "Browsing data cleared",
@@ -445,6 +450,7 @@ export const en = {
       resubmit: "This page came from a form. Loading it again sends the form again, which could repeat what it did.",
       upload: "File uploads don't work in this view. Open the page in your system browser to send it.",
       scriptNavigation: "This page tried to go to another address by script, which this view can't follow. Open it in your system browser instead.",
+      needsBrowser: "This page tried to use a browser feature this view blocks, so parts of it may not work. Open it in your system browser instead.",
     },
     native: {
       externalPrompt: "{host} wants to open {url}",
@@ -638,6 +644,10 @@ export const en = {
   chatMenu: {
     more: "Chat options",
     copy: "Copy",
+    compact: "Compact conversation",
+    compactQueued: "Compaction requested for the next message",
+    compactEmpty: "Nothing to compact yet",
+    compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
   },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
@@ -1416,6 +1426,7 @@ export const en = {
       installRuntimeFailed: "The runtime install failed.",
       installRuntimeError: "Could not start the runtime install.",
       unsupportedArch: "The Windows sandbox (MXC) only runs on x64 Windows, so it is not available on this PC.",
+      builtinNeedsUpdate: "Windows' built-in container needs build {required} or newer, and this PC runs {current}. Install the latest Windows update to use it without an administrator step, or turn on the fallback below.",
       unsupportedBuild: "The Windows sandbox (MXC) needs Windows 11 24H2 (build 26100) or newer, so it is not available on this PC.",
       permissionsIntro: "Choose when tools ask first, and whether Python and Terminal also run inside the OS sandbox.",
       permissionLabel: "Tool permissions",
@@ -1774,6 +1785,19 @@ export const en = {
         apiOnlyDescription:
           "Idle unload leaves a model you loaded from Unsloth in memory, and frees only the ones an API request loaded.",
       },
+      modelAliases: {
+        sectionTitle: "Model aliases (OpenAI API)",
+        description:
+          "Stable names for API clients, such as fast-chat or code. A request naming an alias is served by the model it points to, so connected apps keep working when you swap models. Turn on Switch model by request so an alias can load its model.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Alias name",
+        modelAriaLabel: "Model the alias points to",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Remove alias",
+        add: "Add alias",
+        loadError: "Failed to load model aliases.",
+        saveError: "Failed to save model aliases.",
+      },
       previewSharing: {
         sectionTitle: "Preview sharing",
         enableLabel: "Public preview links",
@@ -1913,7 +1937,23 @@ export const en = {
           "Hugging Face model or local path used to index and search your documents. Default is {defaultModel}.",
         searchPlaceholder: "Search any model on HF",
         reindexWarning:
-          "Only affects newly indexed documents. Re-upload existing ones after changing the model.",
+          "Only affects newly indexed documents. Re-embed existing ones after changing the model.",
+        reembed: {
+          label: "Re-embed documents",
+          staleOne:
+            "1 document was indexed with a different embedding model, so semantic search skips it.",
+          staleMany:
+            "{count} documents were indexed with a different embedding model, so semantic search skips them.",
+          staleArchived:
+            "Earlier chat history was indexed with a different embedding model, so semantic search skips it.",
+          running: "Re-embedding: {done} of {total}",
+          action: "Re-embed",
+          stop: "Stop",
+          startFailed: "Couldn't start re-embedding",
+          stopped: "Re-embedding stopped",
+          finished: "Documents re-embedded",
+          finishedWithFailures: "{count} could not be re-embedded",
+        },
         emptyError: "Enter a Hugging Face model id or local path.",
         loadError: "Failed to load the embedding model setting.",
         saveError: "Failed to save the embedding model.",
@@ -2616,6 +2656,9 @@ export const en = {
         showMemoryBar: "VRAM usage bar",
         showMemoryBarDescription:
           "Show estimated VRAM for model weights, context, and speculative decoding.",
+        fitOnDeviceOnly: "Only show models that fit",
+        fitOnDeviceOnlyDescription:
+          "Hide models too large for this device's GPU memory and RAM in the model picker and Hub. Downloaded models stay visible.",
       },
       menu: {
         title: "Chat menu",
@@ -3056,6 +3099,23 @@ export const en = {
         "Apps using this token immediately lose access. This cannot be undone.",
       revokeAction: 'Revoke "{name}"',
       revoking: "Revoking...",
+      audioApi: {
+        title: "Audio API",
+        description: "Speech, voice cloning, transcription and the Audio page workflows.",
+        speak: "Speak",
+        clone: "Clone",
+        transcribe: "Transcribe",
+        workflows: "Workflows",
+        separate: "Separate",
+        convert: "Convert",
+        music: "Music",
+        edit: "Edit",
+        placeholderModel:
+          "No downloaded model can run this example yet, so the model shown is a stand-in. Download one on the Audio page first.",
+        autoSwitchOff:
+          "The model loads by name only while Model auto-switch is on. Turn it on, or load the model on its Audio page first.",
+        useViaApi: "Use via API",
+      },
       decisionApi: {
         title: "Decision API",
         docs: "Docs",
@@ -3132,6 +3192,7 @@ export const en = {
       desktopAppVersion: "Desktop App Version",
       desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
+      audioCppVersion: "audio.cpp Version",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",
