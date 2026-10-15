@@ -19,7 +19,7 @@ import {
 import {
   gpuMemoryTotalsGb,
   gpuVramUsedIsPerDevice,
-  resolveGpuVramUsedGb,
+  resolveGpuVramUsage,
 } from "@/hooks/gpu-vram";
 import {
   aggregateGpuMemoryTotalGb,
@@ -327,14 +327,15 @@ export function ResourcesTab() {
         ? (modelsDiskUsed / modelsDisk.total_gb) * 100
         : 0;
     const display = gpuMemoryDisplay(displayedGpu);
-    const usageDevices = display.usageDevices;
-    const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
-    const vramTotal = gpuMemoryTotals.total;
     // null usage = unknown (e.g. Windows ROCm perf counter); 0 would fabricate a
     // total, so the device's own row stays unknown. The host figure can still be
-    // known when no device's is (#7452).
+    // known when no device's is (#7452). Totals cover only the devices it counts.
+    const vramUsage = resolveGpuVramUsage(display.usageGpu);
+    const usageDevices = vramUsage.devices;
+    const gpuMemoryTotals = gpuMemoryTotalsGb(usageDevices);
+    const vramTotal = gpuMemoryTotals.total;
     const perDeviceKnown = gpuVramUsedIsPerDevice(usageDevices);
-    const vramUsed = resolveGpuVramUsedGb(display.usageGpu);
+    const vramUsed = vramUsage.usedGb;
     const vramUsageKnown = vramUsed !== null;
     const vramFree = perDeviceKnown
       ? usageDevices.reduce(
