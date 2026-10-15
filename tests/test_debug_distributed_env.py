@@ -62,7 +62,7 @@ def test_new_buffer_name_is_mirrored_to_the_one_process_group_nccl_reads():
 
 
 def test_hook_runs_before_torch_is_imported():
-    tree = ast.parse((_UNSLOTH / "__init__.py").read_text())
+    tree = ast.parse((_UNSLOTH / "__init__.py").read_text(encoding = "utf-8"))
     hook = first_torch = None
     for node in tree.body:
         src = ast.unparse(node)
