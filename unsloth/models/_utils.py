@@ -166,6 +166,7 @@ from ..device_type import (
     DEVICE_COUNT,
     ALLOW_PREQUANTIZED_MODELS,
     apply_gfx101x_triton_workaround,
+    cuda_visible_capabilities,
     gfx101x_triton_workaround_applied,
 )
 from ..import_fixes import UNSLOTH_ENABLE_LOGGING, stale_kernel_hint
@@ -3845,6 +3846,35 @@ def _package_available(pkg_name: str) -> bool:
     return bool(result)
 
 
+def _cache_device_capability(get_device_capability):
+    """Cache per resolved device index: a no-arg call means the current device, so caching the
+    call itself returned device 0's answer after torch.cuda.set_device(1)."""
+    if getattr(get_device_capability, "_unsloth_per_device_cache", False):
+        return get_device_capability
+    from torch.cuda._utils import _get_device_index
+
+    cache = {}
+
+    @functools.wraps(get_device_capability)
+    def cached_get_device_capability(device = None):
+        if device is None:
+            index = torch.cuda.current_device()
+        elif isinstance(device, int):
+            index = device
+        else:
+            try:
+                index = _get_device_index(device, optional = True)
+            except Exception:
+                return get_device_capability(device)
+        capability = cache.get(index)
+        if capability is None:
+            capability = cache[index] = get_device_capability(index)
+        return capability
+
+    cached_get_device_capability._unsloth_per_device_cache = True
+    return cached_get_device_capability
+
+
 SUPPORTS_BFLOAT16 = False
 HAS_FLASH_ATTENTION = False
 HAS_FLASH_ATTENTION_SOFTCAPPING = False
@@ -3856,10 +3886,13 @@ if DEVICE_TYPE == "cuda" and not torch.cuda.is_available():
     HAS_FLASH_ATTENTION_SOFTCAPPING = False
 elif DEVICE_TYPE == "cuda":
     major_version, minor_version = torch.cuda.get_device_capability()
-    torch.cuda.get_device_capability = functools.cache(torch.cuda.get_device_capability)
+    torch.cuda.get_device_capability = _cache_device_capability(torch.cuda.get_device_capability)
+    # SUPPORTS_BFLOAT16 is process-wide, so one pre-Ampere card in the visible set disables it for all.
+    _cuda_caps = cuda_visible_capabilities()
+    SUPPORTS_BFLOAT16 = bool(_cuda_caps) and all(major >= 8 for major, _ in _cuda_caps)
+    del _cuda_caps
 
     if major_version >= 8:
-        SUPPORTS_BFLOAT16 = True
         if _package_available("flash_attn"):
             # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl" and for softcapping; see #1437.
             try:

@@ -167,14 +167,45 @@ else:
         ALLOW_PREQUANTIZED_MODELS = False
         ALLOW_BITSANDBYTES = False
     del _bnb_probe
+
+
+def hip_visible_archs():
+    """Guarded per device: one unreadable device must not discard the archs beside it, or a
+    gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return []
+    archs = []
+    for i in range(count):
+        try:
+            archs.append(str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")))
+        except Exception:
+            continue
+    return archs
+
+
+def cuda_visible_capabilities():
+    """(major, minor) of every visible CUDA device, guarded per device like hip_visible_archs:
+    process-wide gates (bf16, compile) must hold on the weakest card layers may land on."""
+    try:
+        count = torch.cuda.device_count()
+    except Exception:
+        return []
+    caps = []
+    for i in range(count):
+        try:
+            caps.append(tuple(torch.cuda.get_device_capability(i)))
+        except Exception:
+            continue
+    return caps
+
+
 # gfx906 (MI50 / Radeon VII / Vega 20): Dynamo/Inductor codegen is broken on this legacy GCN arch
 # (ROCm dropped it after 6.3), so compiled graphs crash or miscompile while eager trains fine.
+# Any visible gfx906 counts: compile is process-wide and layers may land on it.
 if DEVICE_TYPE == "hip":
-    try:
-        _gcn_arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0].strip().lower()
-    except Exception:
-        _gcn_arch = ""
-    if _gcn_arch == "gfx906":
+    if any(arch.split(":")[0].strip().lower() == "gfx906" for arch in hip_visible_archs()):
         os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
         os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
         os.environ.setdefault("UNSLOTH_COMPILE_DISABLE", "1")
@@ -218,10 +249,8 @@ def apply_pre_volta_compile_workaround(
 
 
 if DEVICE_TYPE == "cuda" and torch.cuda.is_available():
-    try:
-        _cuda_major = torch.cuda.get_device_capability()[0]
-    except Exception:
-        _cuda_major = None
+    # Weakest visible card: compile is process-wide and layers may land on any of them.
+    _cuda_major = min((cap[0] for cap in cuda_visible_capabilities()), default = None)
     if apply_pre_volta_compile_workaround(_cuda_major):
         print(
             "Unsloth: GPUs older than Volta (compute capability < 7.0) cannot run "
@@ -321,22 +350,6 @@ def _default_inductor_cache_dir():
         user = f"uid_{getuid()}" if callable(getuid) else "unknown_user"
     user = re.sub(r'[\\/:*?"<>|]', "_", user)
     return os.path.join(tempfile.gettempdir(), "torchinductor_" + user)
-
-
-def hip_visible_archs():
-    """Guarded per device: one unreadable device must not discard the archs beside it, or a
-    gfx10 keeps bf16 and dies in Triton (#7922). Only an unreadable count returns []."""
-    try:
-        count = torch.cuda.device_count()
-    except Exception:
-        return []
-    archs = []
-    for i in range(count):
-        try:
-            archs.append(str(getattr(torch.cuda.get_device_properties(i), "gcnArchName", "")))
-        except Exception:
-            continue
-    return archs
 
 
 def resolve_hip_gpu_stats_name(gpu_stats):
