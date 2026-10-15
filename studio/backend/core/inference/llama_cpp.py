@@ -31162,6 +31162,19 @@ class LlamaCppBackend:
                                 and not gpu_ids
                                 and self._inherited_child_gpu_order(list(gpu_indices)) is not None
                             )
+                            # The rows are nvidia-smi's PCI indices, and an inherited mask keeps
+                            # the parent's CUDA_DEVICE_ORDER (the launch pins PCI_BUS_ID only for
+                            # a picked set or with no mask). Studio's import sets PCI_BUS_ID by
+                            # default, so this binds only on a user's own FASTEST_FIRST, where
+                            # the child's device 0 is the fastest card and not the plan's row 0.
+                            # The same rule the probe applies (_cuda_compute_caps).
+                            or (
+                                not is_vulkan_backend
+                                and not gpu_ids
+                                and not self._host_torch_is_rocm()
+                                and os.environ.get("CUDA_VISIBLE_DEVICES") is not None
+                                and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID"
+                            )
                         )
                     ):
                         logger.info(
@@ -33968,6 +33981,11 @@ class LlamaCppBackend:
                     # Studio's -lzm was decided off the crashed devices' mmap support; with no
                     # device left, llama.cpp's auto decides again. _prepare_cpu_fallback_launch
                     # drops it (_drop_emitted_lazy_mode), so an explicit -lzm stays.
+                    # The plan first, on the argv that still carries its tokens: the conversion
+                    # strips -ngl/--fit/-ot one by one, after which the contiguous match in
+                    # _drop_tensor_spill fails and the context, slots and cache it priced
+                    # against GPU memory ride onto the host.
+                    failed_cmd = _revoke_spill_plan(failed_cmd, "CPU fallback")
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
                         binary,
@@ -34216,9 +34234,11 @@ class LlamaCppBackend:
                     if self._auto_vulkan_cpu_fallback_eligible(
                         binary, intent, extra_args, env, allow_manual_cpu = True
                     ):
+                        # Revoked before the conversion, for the same reason as the crash
+                        # path: the plan was priced against the GPU this replay drops.
                         prepared = self._prepare_cpu_fallback_launch(
                             binary,
-                            cmd,
+                            _revoke_spill_plan(cmd, "CPU fallback"),
                             env,
                             server_caps,
                             drop_full_offload_threads = _drop_full_offload_threads,
@@ -34876,6 +34896,10 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
+                        # The plan before the flip below: it rewrites the plan's own --fit off,
+                        # after which _spawn_and_wait's revocation no longer matches and the
+                        # retry, and any CPU replay after it, keeps the plan's -ot and context.
+                        _fa_cmd = _revoke_spill_plan(_fa_cmd, "noflash")
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _fa_cmd = _enable_managed_fit_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True
@@ -34949,6 +34973,10 @@ class LlamaCppBackend:
                                 "Dropped inherited LLAMA_ARG_FLASH_ATTN for the "
                                 "--flash-attn off retry."
                             )
+                        # The plan before the flip below: it rewrites the plan's own --fit off,
+                        # after which _spawn_and_wait's revocation no longer matches and the
+                        # retry, and any CPU replay after it, keeps the plan's -ot and context.
+                        _fa_cmd = _revoke_spill_plan(_fa_cmd, "noflash")
                         _fa_cmd = _drop_fit_load_mode_for_no_flash(_fa_cmd)
                         _fa_cmd = _enable_managed_fit_for_no_flash(_fa_cmd)
                         _flash_attn_known_off = True

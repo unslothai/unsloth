@@ -174,8 +174,8 @@ def test_the_fitters_live_cache_is_split_by_the_live_prefix(moe):
 
 def test_the_live_split_moves_the_gate_from_decline_to_accept():
     """The undercharge made the fitter look cheaper than it is: on this card the gate declined a
-    3-block spill (1026 ms against a 1026 ms fitter) that wins once the moved window layers carry
-    their live share (1514 ms)."""
+    spill (684 ms against a 667 ms fitter) that wins once the moved window layers carry their live
+    share (1155 ms)."""
     from core.inference.offload_planner import ContextPolicy, plan_placement
 
     layout = _gemma3(False)
@@ -198,7 +198,7 @@ def test_the_live_split_moves_the_gate_from_decline_to_accept():
         )
         return plan_placement(
             layout,
-            [44096 * 1024 * 1024],
+            [44336 * 1024 * 1024],
             128 * GIB,
             _RESERVED,
             opts = opts,

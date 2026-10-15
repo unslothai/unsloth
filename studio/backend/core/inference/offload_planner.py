@@ -798,7 +798,10 @@ def _fit_fallback_placement(
 
     # Dense, where the whole-layer model IS what happens: the fitter only lowers n_gpu_layers
     # (common/fit.cpp:551-559) and ``i_gpu_start`` sends every row BELOW it to the CPU
-    # (llama-model.cpp:1479-1484), so the host takes the LEADING blocks.
+    # (llama-model.cpp:1479-1484), so the host takes the LEADING blocks. It never overflows part
+    # of a dense layer's FFN: step 3 leaves ``n_part`` at 0 when ``hp_nex == 0`` and the function
+    # returns before step 4's partial-layer fitting (common/fit.cpp:730-733 at b11541), so a
+    # graded dense boundary is a placement only the planner's own ``-ot`` makes.
     def dense_placement(moved: int, spilled_ffn: int, attention: int) -> Placement:
         """``moved`` whole layers off the device, plus ``spilled_ffn`` FFN bytes."""
         groups: list[TensorGroup] = []
@@ -823,16 +826,6 @@ def _fit_fallback_placement(
     host_weights = 0
     host_spillable = 0
     for moved, block in enumerate(blocks, start = 1):
-        # fit.cpp's step 4 first: rather than lower ngl again it keeps this layer on the device
-        # and overrides part of its FFN, so its cache and state stay resident.
-        short = resident - (
-            host_weights + kv_freed(kv_total, moved - 1) + recurrent_moved(moved - 1)
-        )
-        overflow = _fit_boundary_overflow(block, short - budget)
-        if overflow is not None:
-            return dense_placement(
-                moved - 1, host_spillable + overflow, host_weights - host_spillable
-            )
         host_weights += block.spillable_bytes + block.resident_bytes
         host_spillable += block.spillable_bytes
         # lm_head is NOT in here: the output row stays on the device for any n_gpu_layers >= 1, so

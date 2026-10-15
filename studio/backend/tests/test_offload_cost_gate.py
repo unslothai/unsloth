@@ -755,17 +755,18 @@ def test_a_caller_nkvo_cache_is_host_ram_the_refusal_has_to_see():
 def test_the_fallback_places_the_cache_by_the_per_layer_vector():
     layout = dense_layout()
     args = dict(quantised = False, kv_bytes_floor = 0, kv_on_host = False)
-    uniform = _fit_fallback_placement(layout, gated(), 12 * GIB, 32768, **args)
+    # 11 GiB moves 28 whole layers, 5 of the 12 cache rows: 5/12 of the cache against 28/64.
+    uniform = _fit_fallback_placement(layout, gated(), 11 * GIB, 32768, **args)
     hybrid = [1 if i % 5 == 4 else 0 for i in range(layout.n_layers)]
     spread = _fit_fallback_placement(
-        layout, gated(), 12 * GIB, 32768, kv_layer_weights = hybrid, **args
+        layout, gated(), 11 * GIB, 32768, kv_layer_weights = hybrid, **args
     )
     assert uniform is not None and spread is not None
     assert spread.kv_host_bytes < uniform.kv_host_bytes
 
     recurrent_first = [1 if i >= layout.n_layers // 2 else 0 for i in range(layout.n_layers)]
     none = _fit_fallback_placement(
-        layout, gated(), 12 * GIB, 32768, kv_layer_weights = recurrent_first, **args
+        layout, gated(), 11 * GIB, 32768, kv_layer_weights = recurrent_first, **args
     )
     assert none is not None and none.kv_host_bytes == 0
     assert sum(g.bytes_total for g in none.host_groups) > sum(
@@ -791,9 +792,10 @@ def graded_dense_layout(n_blocks: int = 64) -> ModelLayout:
     return replace(dense_layout(n_blocks), blocks = blocks)
 
 
-def test_the_fallback_grades_its_boundary_layer_the_way_fit_cpp_does():
-    """fit.cpp step 4 keeps the boundary layer on the device and overrides part of its FFN rather
-    than lowering ngl again, so its attention and cache stay resident."""
+def test_the_dense_fallback_moves_whole_layers_however_finely_the_layout_is_graded():
+    """fit.cpp's partial-layer step is MoE-only: for hp_nex == 0 it returns after lowering
+    n_gpu_layers (common/fit.cpp:730-733 at b11541), so the boundary layer is never graded and a
+    graded and an ungraded copy of one dense model get the same fallback placement."""
     graded = graded_dense_layout()
     whole = replace(
         graded,
@@ -810,10 +812,11 @@ def test_the_fallback_grades_its_boundary_layer_the_way_fit_cpp_does():
     assert fine is not None and coarse is not None
     fine_bytes = sum(g.bytes_total for g in fine.host_groups)
     coarse_bytes = sum(g.bytes_total for g in coarse.host_groups)
-    assert fine_bytes < coarse_bytes, (fine_bytes, coarse_bytes)
+    assert fine_bytes == coarse_bytes, (fine_bytes, coarse_bytes)
+    assert fine.kv_host_bytes == coarse.kv_host_bytes
 
     per_block = graded.blocks[0].spillable_bytes + graded.blocks[0].resident_bytes
-    assert fine_bytes % per_block == graded.blocks[0].ffn_down_bytes
+    assert fine_bytes % per_block == 0
 
 
 def test_the_per_layer_vector_reaches_the_gate_from_plan_placement():
@@ -859,7 +862,7 @@ def test_a_slow_pcie_link_declines_the_spill_a_fast_one_takes():
     """55 GiB/s is a PCIe 5 x16 host, 6 a desktop x4 slot; the spill is identical and only its
     prefill stream is eight times slower, which is enough to lose to llama.cpp's own fit."""
     layout = dense_layout()
-    card = [11500 * MIB]
+    card = [11750 * MIB]
     fast = plan_placement(
         layout, card, 94 * GIB, 32768, opts = gated(host = HostProfile(threads = 6, link_gib_s = 55.0))
     )
@@ -932,7 +935,7 @@ def per_matrix_moe_layout(n_blocks: int = 40) -> ModelLayout:
     return replace(moe_layout(n_blocks), blocks = blocks)
 
 
-def test_the_moe_fallback_grades_its_boundary_block_like_the_dense_arm():
+def test_the_moe_fallback_grades_its_boundary_block():
     """fit.cpp grades the first partial layer it reaches and moves LAYER_FRACTION_MOE of every
     layer past it, so adding the boundary block's whole expert set made the fitter look costlier
     by up to one block."""
@@ -989,7 +992,7 @@ def test_the_windowed_split_moves_the_gate_verdict():
     n_ctx, floor, windowed = 131072, 5 * GIB, 4 * GIB
     # The margin brackets the two fit scores rather than the card size, which moves a whole
     # block at a time and cannot resolve them.
-    shape = dict(host = HostProfile(threads = 6), min_penalty_reduction = 0.80)
+    shape = dict(host = HostProfile(threads = 6), min_penalty_reduction = 0.885)
     card = [25 * GIB]
     accepted = plan_placement(
         layout, card, 200 * GIB, n_ctx, kv_bytes_floor = floor, opts = gated(**shape)
