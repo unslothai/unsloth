@@ -98,7 +98,9 @@ def test_rocm_unaskable_check_is_native_and_not_cached(monkeypatch):
 
 def test_rocm_auto_is_a_timed_candidate_not_flash(monkeypatch):
     calls = _rocm(monkeypatch)
-    assert select_attention_backend(_target(), "auto", speed_active = True) == att.ROCM_FLASH_CANDIDATE
+    assert (
+        select_attention_backend(_target(), "auto", speed_active = True) == att.ROCM_FLASH_CANDIDATE
+    )
     assert select_attention_backend(_target(), "auto", speed_active = False) is None
     assert calls == [("cuda:0", "torch.bfloat16")]
 
@@ -253,7 +255,10 @@ def _klein():
 def test_rocm_auto_candidate_for_every_family(monkeypatch, family):
     _rocm(monkeypatch)
     fam = None if family is None else types.SimpleNamespace(name = family)
-    assert select_attention_backend(_target(), "auto", speed_active = True, family = fam) == att.ROCM_FLASH_CANDIDATE
+    assert (
+        select_attention_backend(_target(), "auto", speed_active = True, family = fam)
+        == att.ROCM_FLASH_CANDIDATE
+    )
     assert (
         select_attention_backend(_target(), None, speed_active = False, family = fam, speed_unset = True)
         == att.ROCM_FLASH_CANDIDATE
@@ -279,7 +284,9 @@ def test_rocm_auto_failed_probe_stays_native(monkeypatch):
 def test_rocm_auto_explicit_native_wins(monkeypatch):
     calls = _rocm(monkeypatch)
     for alias in ("native", "sdpa"):
-        assert select_attention_backend(_target(), alias, speed_active = True, family = _klein()) is None
+        assert (
+            select_attention_backend(_target(), alias, speed_active = True, family = _klein()) is None
+        )
     assert calls == []
 
 
@@ -307,10 +314,18 @@ def test_rocm_gfx_arch_reads_the_selected_card(monkeypatch):
     assert asked == [1]
 
 
-def _pipe_with_attention(hidden = 3072, heads = 24, head_dim = 128, n = 3):
+def _pipe_with_attention(
+    hidden = 3072,
+    heads = 24,
+    head_dim = 128,
+    n = 3,
+):
     set_to = []
     mods = [
-        types.SimpleNamespace(heads = heads, to_q = types.SimpleNamespace(in_features = hidden, out_features = heads * head_dim))
+        types.SimpleNamespace(
+            heads = heads,
+            to_q = types.SimpleNamespace(in_features = hidden, out_features = heads * head_dim),
+        )
         for _ in range(n)
     ]
     dit = types.SimpleNamespace(set_attention_backend = set_to.append, modules = lambda: iter(mods))
@@ -335,7 +350,13 @@ def test_apply_resolves_candidate_by_block_timing(monkeypatch, flash_ms, rel, en
 
     def fake_time(device, dtype, hidden, heads, head_dim):
         timed.append((device, hidden, heads, head_dim))
-        return {"native_ms": 80.0, "flash_ms": flash_ms, "rel_l1": rel, "finite": True, "tokens": 4096}
+        return {
+            "native_ms": 80.0,
+            "flash_ms": flash_ms,
+            "rel_l1": rel,
+            "finite": True,
+            "tokens": 4096,
+        }
 
     monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
     pipe, set_to = _pipe_with_attention()
@@ -346,14 +367,20 @@ def test_apply_resolves_candidate_by_block_timing(monkeypatch, flash_ms, rel, en
     att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target())
     assert len(timed) == 1
     rec = next(iter(att.ROCM_FLASH_ADMISSIONS.values()))
-    assert rec["admitted"] is (engaged == "flash") and rec["geometry"] == {"hidden": 3072, "heads": 24, "head_dim": 128}
+    assert rec["admitted"] is (engaged == "flash") and rec["geometry"] == {
+        "hidden": 3072,
+        "heads": 24,
+        "head_dim": 128,
+    }
 
 
 def test_apply_candidate_kill_switch_one_skips_timing(monkeypatch):
     _rocm(monkeypatch)
     _apply_env(monkeypatch)
     monkeypatch.setenv(att.ROCM_FLASH_ENV, "1")
-    monkeypatch.setattr(att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("timed under =1"))
+    monkeypatch.setattr(
+        att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("timed under =1")
+    )
     pipe, set_to = _pipe_with_attention()
     assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
 
@@ -377,7 +404,9 @@ def test_apply_candidate_probe_error_is_native_and_retried(monkeypatch):
 def test_apply_candidate_without_geometry_is_native(monkeypatch):
     _rocm(monkeypatch)
     _apply_env(monkeypatch)
-    monkeypatch.setattr(att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("no geometry, nothing to time"))
+    monkeypatch.setattr(
+        att, "_time_rocm_flash_block", lambda *a, **k: pytest.fail("no geometry, nothing to time")
+    )
     set_to = []
     dit = types.SimpleNamespace(set_attention_backend = set_to.append, modules = lambda: iter(()))
     pipe = types.SimpleNamespace(transformer = dit)

@@ -560,7 +560,10 @@ def _dit_attention_geometry(pipe: Any) -> Optional[tuple[int, int, int]]:
                 to_q = getattr(module, "to_q", None)
                 fin = getattr(to_q, "in_features", None)
                 fout = getattr(to_q, "out_features", None)
-                if not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in (heads, fin, fout)):
+                if not all(
+                    isinstance(v, int) and not isinstance(v, bool) and v > 0
+                    for v in (heads, fin, fout)
+                ):
                     continue
                 if fout % heads:
                     continue
@@ -574,7 +577,12 @@ def _dit_attention_geometry(pipe: Any) -> Optional[tuple[int, int, int]]:
 
 
 def _time_rocm_flash_block(
-    device: str, dtype: Any, hidden: int, heads: int, head_dim: int, tokens: int = ROCM_FLASH_PROBE_TOKENS
+    device: str,
+    dtype: Any,
+    hidden: int,
+    heads: int,
+    head_dim: int,
+    tokens: int = ROCM_FLASH_PROBE_TOKENS,
 ) -> dict:
     """Median ms of one synthetic DiT block with native SDPA vs flash_attn, plus rel L1 of the outputs."""
     import time
@@ -589,9 +597,14 @@ def _time_rocm_flash_block(
     gen = torch.Generator().manual_seed(0)
 
     def w(rows: int, cols: int):
-        return (torch.randn((rows, cols), generator = gen) * cols ** -0.5).to(device, dtype)
+        return (torch.randn((rows, cols), generator = gen) * cols**-0.5).to(device, dtype)
 
-    w_qkv, w_out, w_fc1, w_fc2 = w(3 * inner, hidden), w(hidden, inner), w(4 * hidden, hidden), w(hidden, 4 * hidden)
+    w_qkv, w_out, w_fc1, w_fc2 = (
+        w(3 * inner, hidden),
+        w(hidden, inner),
+        w(4 * hidden, hidden),
+        w(hidden, 4 * hidden),
+    )
     x = torch.randn((1, tokens, hidden), generator = gen).to(device, dtype)
 
     def native(q, k, v):
@@ -603,7 +616,9 @@ def _time_rocm_flash_block(
             h = F.linear(F.layer_norm(x, (hidden,)), w_qkv).view(1, tokens, 3, heads, head_dim)
             a = attn(h[:, :, 0], h[:, :, 1], h[:, :, 2]).reshape(1, tokens, inner)
             x2 = x + F.linear(a, w_out)
-            return x2 + F.linear(F.gelu(F.linear(F.layer_norm(x2, (hidden,)), w_fc1), approximate = "tanh"), w_fc2)
+            return x2 + F.linear(
+                F.gelu(F.linear(F.layer_norm(x2, (hidden,)), w_fc1), approximate = "tanh"), w_fc2
+            )
 
     arms = {"native": native, "flash": lambda q, k, v: flash_attn_func(q, k, v)}
     ref = block(native).float()
@@ -624,11 +639,20 @@ def _time_rocm_flash_block(
             torch.cuda.synchronize(device)
             times[name].append((time.perf_counter() - t0) * 1000.0)
     med = {name: sorted(v)[len(v) // 2] for name, v in times.items()}
-    return {"native_ms": round(med["native"], 3), "flash_ms": round(med["flash"], 3), "rel_l1": round(rel, 6),
-            "finite": finite, "tokens": tokens}
+    return {
+        "native_ms": round(med["native"], 3),
+        "flash_ms": round(med["flash"], 3),
+        "rel_l1": round(rel, 6),
+        "finite": finite,
+        "tokens": tokens,
+    }
 
 
-def _rocm_flash_block_admitted(pipe: Any, target: Any, logger: Any = None) -> bool:
+def _rocm_flash_block_admitted(
+    pipe: Any,
+    target: Any,
+    logger: Any = None,
+) -> bool:
     """Resolve ``ROCM_FLASH_CANDIDATE``: flash only if it runs and (mode auto) wins the block timing with matching output."""
     if target is None or not _rocm_auto_flash(target):
         return False
@@ -649,7 +673,9 @@ def _rocm_flash_block_admitted(pipe: Any, target: Any, logger: Any = None) -> bo
     try:
         rec = _time_rocm_flash_block(device, dtype, *geometry)
     except Exception as exc:  # noqa: BLE001 - not cached: retried next load
-        _module_logger().info("diffusion.attention: ROCm flash timing probe could not run (%s); native SDPA", exc)
+        _module_logger().info(
+            "diffusion.attention: ROCm flash timing probe could not run (%s); native SDPA", exc
+        )
         return False
     finally:
         try:
