@@ -37265,6 +37265,8 @@ _MLX_COMPLETION_FIELDS_OFF = {
     "verbose": lambda v, b: v is False,
     "response_fields": lambda v, b: v == [],
     "lora": lambda v, b: v == [],
+    # A raw reply decodes without special tokens, so none can be kept.
+    "preserved_tokens": lambda v, b: v == [],
     "n_indent": lambda v, b: v == 0,
     "t_max_predict_ms": lambda v, b: v <= 0,
     "ignore_eos": lambda v, b: v is False,

@@ -11947,7 +11947,7 @@ _LLAMA_SERVED = (
 )
 _LLAMA_IGNORED = (
     "cache_prompt sse_ping_interval n_keep n_discard n_cache_reuse backend_sampling "
-    "post_sampling_probs grammar_triggers preserved_tokens chat_format "
+    "post_sampling_probs grammar_triggers chat_format "
     "reasoning_format generation_prompt parse_tool_calls chat_parser continue_final_message "
     "reasoning_control reasoning_budget_start_tag reasoning_budget_end_tags "
     "reasoning_budget_end_tag reasoning_budget_message"
@@ -11962,7 +11962,7 @@ _LLAMA_UNSERVED = json.loads(
     ' [true, false], "min_keep": [2, 0], "samplers": ["kt", "edskypmxt"], "typical_p": [0.5, 1.0],'
     ' "top_n_sigma": [1.0, -1.0], "xtc_probability": [0.5, 0.0], "dynatemp_range": [0.5, 0.0],'
     ' "mirostat": [2, 0], "dry_multiplier": [0.8, 0.0], "adaptive_target": [0.5, -1.0],'
-    ' "reasoning_budget_tokens": [0, -1]}'
+    ' "reasoning_budget_tokens": [0, -1], "preserved_tokens": [["<|im_start|>"], []]}'
 )
 # Read by llama-server only while the field named with it is on.
 _LLAMA_DEPENDENT = json.loads(
