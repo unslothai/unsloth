@@ -1906,7 +1906,11 @@ class CfgParallelRouter:
         return self.orig_forward(*args, **kwargs)
 
     # -- request lifecycle (Studio's generate path; without it the call pattern decides)
-    def begin_request(self, width: Any = None, height: Any = None) -> None:
+    def begin_request(
+        self,
+        width: Any = None,
+        height: Any = None,
+    ) -> None:
         self.release_inputs()
         self.branch = 0
         self.singles = 0
@@ -2372,7 +2376,11 @@ def _routers_of(pipe: Any) -> list:
 
 
 @contextlib.contextmanager
-def cfg_request_scope(pipe: Any, width: Any = None, height: Any = None) -> Iterator[None]:
+def cfg_request_scope(
+    pipe: Any,
+    width: Any = None,
+    height: Any = None,
+) -> Iterator[None]:
     """One Studio generate request around ``pipe()``: the routers forget every per-request field on entry and drop
     every retained tensor on exit. Outside this scope the routers infer request boundaries from the call pattern."""
     routers = _routers_of(pipe)
@@ -2525,11 +2533,15 @@ class _StateWatch:
         in place, or a buffer too large to copy, is reported but not restored."""
         torch = _torch()
         changed = None
-        for (name, t, _is_buffer), version, copy in zip(self.tensors, snap["versions"], snap["copies"]):
+        for (name, t, _is_buffer), version, copy in zip(
+            self.tensors, snap["versions"], snap["copies"]
+        ):
             now = _tensor_version(t)
             moved = version is not None and now is not None and now != version
             if copy is not None and version is None:
-                moved = not _bitwise_equal(t.detach(), copy)  # an inference tensor: compare the value
+                moved = not _bitwise_equal(
+                    t.detach(), copy
+                )  # an inference tensor: compare the value
             if moved:
                 changed = changed or name
                 if copy is not None:
@@ -2715,7 +2727,11 @@ class CfgBatchRouter:
         }
 
     # -- request lifecycle (Studio's generate path; without it the call pattern decides)
-    def begin_request(self, width: Any = None, height: Any = None) -> None:
+    def begin_request(
+        self,
+        width: Any = None,
+        height: Any = None,
+    ) -> None:
         self.release_inputs()
         self.branch = 0
         self.timing_off = False
@@ -2747,7 +2763,9 @@ class CfgBatchRouter:
         self.disabled_pending = None
         self.timing_off = False
         self.state_watch = None
-        if self.disabled_reason is not None and self.disabled_reason.startswith(("priced out", "measured no gain")):
+        if self.disabled_reason is not None and self.disabled_reason.startswith(
+            ("priced out", "measured no gain")
+        ):
             self.disabled_reason = None
 
     def disable(self, reason: str) -> None:
@@ -2992,7 +3010,9 @@ class CfgBatchRouter:
                 changed = self.state_watch.restore_changed(state_snapshot)
                 if changed is not None:
                     # its forward advances state once per call: one doubled call is not two (state restored)
-                    self.disable(f"the denoiser's forward changes its own state ({changed}); one branch per call")
+                    self.disable(
+                        f"the denoiser's forward changes its own state ({changed}); one branch per call"
+                    )
                     return None
             if verify:
                 torch.cuda.synchronize()
@@ -3168,10 +3188,16 @@ _CFG_BATCH_STATELESS_CLASSES = frozenset(
 def _denoiser_class(module: Any) -> type:
     """The real transformer class behind compile / PEFT wrappers (``_orig_mod``, ``base_model.model``)."""
     for _ in range(4):
-        inner = module.__dict__.get("_modules", {}).get("_orig_mod") if hasattr(module, "__dict__") else None
+        inner = (
+            module.__dict__.get("_modules", {}).get("_orig_mod")
+            if hasattr(module, "__dict__")
+            else None
+        )
         if inner is None:
             base = getattr(module, "base_model", None)
-            inner = getattr(base, "model", None) if base is not None and base is not module else None
+            inner = (
+                getattr(base, "model", None) if base is not None and base is not module else None
+            )
         if inner is None or inner is module:
             break
         module = inner
@@ -3182,7 +3208,9 @@ def cfg_batch_class_listed(module: Any) -> tuple[bool, str]:
     """(whether the denoiser's class is on the stateless-forward list, its qualified name)."""
     cls = _denoiser_class(module)
     name = f"{cls.__module__}.{cls.__qualname__}"
-    return cls.__module__.startswith("diffusers.") and cls.__qualname__ in _CFG_BATCH_STATELESS_CLASSES, name
+    return cls.__module__.startswith(
+        "diffusers."
+    ) and cls.__qualname__ in _CFG_BATCH_STATELESS_CLASSES, name
 
 
 def cfg_batch_decline(pipe: Any, *, offload_policy: str) -> Optional[str]:

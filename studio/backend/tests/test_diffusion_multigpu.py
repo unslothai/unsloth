@@ -1554,7 +1554,9 @@ class _BatchDit(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.proj = torch.nn.Linear(4, 4)
-        self._log = [0]  # the call counter is test bookkeeping, not model state the stateful-forward check should see
+        self._log = [
+            0
+        ]  # the call counter is test bookkeeping, not model state the stateful-forward check should see
         self.rows = []
 
     @property
@@ -2455,7 +2457,10 @@ def _distilled(dit, steps = 3):
     latents = torch.randn(2, 4)
     cond, _ = _embeds()
     for _ in range(steps):
-        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        latents = (
+            latents
+            - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+        )
 
 
 def test_request_scope_retimes_the_even_branch_after_a_distilled_request(monkeypatch):
@@ -2465,7 +2470,9 @@ def test_request_scope_retimes_the_even_branch_after_a_distilled_request(monkeyp
     times = []
     monkeypatch.setattr(router, "_should_price", lambda: True)
     monkeypatch.setattr(
-        router, "_timed_primary", lambda a, k: (router.orig_forward(*a, **k), times.append(1) or 0.5)
+        router,
+        "_timed_primary",
+        lambda a, k: (router.orig_forward(*a, **k), times.append(1) or 0.5),
     )
     monkeypatch.setattr(mg, "link_gib_s", lambda src, dst, probes = None: 9.0)
     router.primary = router.secondary = torch.device("cpu")
@@ -2506,7 +2513,13 @@ def test_cfg_batch_refuses_a_stateful_forward_and_restores_its_state():
             self.register_buffer("seen", torch.zeros(()))
             self.ticks = 0
 
-        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            encoder_hidden_states,
+            return_dict = False,
+        ):
             self.calls += 1
             self.seen.add_(1.0)
             self.ticks += 1
@@ -2577,11 +2590,22 @@ def test_cfg_batch_catches_a_forward_that_turns_stateful_later():
             super().__init__()
             self.register_buffer("seen", torch.zeros(()))
 
-        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            encoder_hidden_states,
+            return_dict = False,
+        ):
             self.calls += 1
-            if float(timestep) < 0.5:  # stateless for the early steps, then advances a buffer every call
+            if (
+                float(timestep) < 0.5
+            ):  # stateless for the early steps, then advances a buffer every call
                 self.seen.add_(1.0)
-            return (self.proj(hidden_states) * timestep * (1 + self.seen) + encoder_hidden_states.tanh(),)
+            return (
+                self.proj(hidden_states) * timestep * (1 + self.seen)
+                + encoder_hidden_states.tanh(),
+            )
 
     cond, uncond = _embeds()
     latents = torch.randn(2, 4)
@@ -2603,7 +2627,9 @@ def test_replica_refused_for_hooks_is_retried_once_they_are_gone():
     dit = _Dit()
     router, replicas = _router(dit)
     source = dit.proj
-    handle = dit.proj.register_forward_pre_hook(lambda m, a: source and None)  # a recording hook, e.g. bg compile
+    handle = dit.proj.register_forward_pre_hook(
+        lambda m, a: source and None
+    )  # a recording hook, e.g. bg compile
     _cfg_loop(dit, torch.randn(2, 4), steps = 2)
     assert replicas == [] and router.describe()["disabled_reason"] is None
     assert router.describe()["blocked_by"] is not None
@@ -2686,7 +2712,13 @@ def test_cfg_batch_restores_state_when_the_batched_call_raises():
             super().__init__()
             self.register_buffer("seen", torch.zeros(()))
 
-        def forward(self, hidden_states, timestep, encoder_hidden_states, return_dict = False):
+        def forward(
+            self,
+            hidden_states,
+            timestep,
+            encoder_hidden_states,
+            return_dict = False,
+        ):
             self.calls += 1
             self.seen.add_(1.0)  # advanced before the doubled batch is refused
             if hidden_states.shape[0] == 4:
@@ -2717,7 +2749,8 @@ def test_request_scope_gets_the_effective_canvas_in_both_generate_paths():
     def scope_args(name):
         tree = ast.parse((root / name).read_text())
         calls = [
-            n for n in ast.walk(tree)
+            n
+            for n in ast.walk(tree)
             if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "cfg_request_scope"
         ]
         assert len(calls) == 1, name
