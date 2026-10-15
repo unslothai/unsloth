@@ -265,6 +265,7 @@ def _patched_trainer(monkeypatch, **init_attrs):
 
         def compute_loss(self, model, inputs):
             # One unit of loss per target on this rank's shard, over the count it was given.
+            assert inputs["use_cache"] is False
             targets = inputs["shift_labels"].ne(-100).sum()
             return targets.float() / inputs["num_items_in_batch"]
 
@@ -273,6 +274,9 @@ def _patched_trainer(monkeypatch, **init_attrs):
 
         def evaluate(self, *a, **k):
             return "evaluated"
+
+        def predict(self, *a, **k):
+            return "predicted"
 
         def evaluation_loop(self, *a, **k):
             return self.gather_function(torch.arange(1.0, 3.0))
@@ -473,6 +477,20 @@ def test_iterable_eval_dataset_passed_to_evaluate_is_refused(monkeypatch):
         trainer.evaluate(eval_dataset = {"a": Stream()})
     trainer._context_parallel_manager = None
     assert trainer.evaluate(Stream()) == "evaluated"
+
+
+def test_iterable_predict_dataset_is_refused(monkeypatch):
+    class Stream(torch.utils.data.IterableDataset):
+        def __iter__(self):
+            return iter(())
+
+    Trainer = _patched_trainer(monkeypatch)
+    trainer = object.__new__(Trainer)
+    trainer._context_parallel_manager = _manager()
+    with pytest.raises(NotImplementedError, match = "iterable datasets"):
+        trainer.predict(Stream())
+    trainer._context_parallel_manager = None
+    assert trainer.predict(Stream()) == "predicted"
 
 
 def test_sliding_window_models_are_refused(monkeypatch):
@@ -855,6 +873,13 @@ def test_full_attention_layer_types_pass(monkeypatch):
     assert built
 
 
+def test_legacy_prediction_loop_is_refused(monkeypatch):
+    Trainer, _, built = _gated_trainer(monkeypatch, use_legacy_prediction_loop = True)
+    with pytest.raises(NotImplementedError, match = "use_legacy_prediction_loop"):
+        Trainer()
+    assert built == []
+
+
 def test_model_without_loss_kwargs_is_refused(monkeypatch):
     Trainer, _, _ = _gated_trainer(monkeypatch)
     monkeypatch.setattr(Trainer, "model_accepts_loss_kwargs", False, raising = False)
@@ -886,6 +911,10 @@ def test_training_step_refuses_a_missing_token_count_with_labels(monkeypatch):
         trainer.training_step(None, dict(batch))
     with pytest.raises(RuntimeError, match = "num_items_in_batch"):
         trainer.training_step(None, dict(batch), None)
+    # A collator may hand over pre-shifted targets only.
+    shifted = {"input_ids": torch.ones(1, 4, dtype = torch.long), "shift_labels": torch.ones(1, 4)}
+    with pytest.raises(RuntimeError, match = "num_items_in_batch"):
+        trainer.training_step(None, shifted)
     assert cp.get_cp_manager() is None
     # No labels (a custom loss path never gets this far) and a real count both run.
     trainer.training_step(None, {"input_ids": torch.ones(1, 4, dtype = torch.long)})

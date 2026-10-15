@@ -333,7 +333,7 @@ def patch_sft_trainer() -> None:
         if name in trainer_cls.__dict__:
             return trainer_cls.__dict__[name]
 
-        @functools.wraps(getattr(trainer_cls, name))
+        @functools.wraps(getattr(trainer_cls, name, None))
         def inherited(self, *args, **kwargs):
             return getattr(super(trainer_cls, self), name)(*args, **kwargs)
 
@@ -344,6 +344,7 @@ def patch_sft_trainer() -> None:
     original_training_step = _original("training_step")
     original_train = _original("train")
     original_evaluate = _original("evaluate")
+    original_predict = _original("predict")
     original_evaluation_loop = _original("evaluation_loop")
 
     def _install_accelerator_state(self):
@@ -428,6 +429,11 @@ def patch_sft_trainer() -> None:
                 "Unsloth: context parallelism needs a model whose forward accepts loss kwargs "
                 "(num_items_in_batch)."
             )
+        # prediction_loop gathers without the CP dedupe in evaluation_loop.
+        if getattr(self.args, "use_legacy_prediction_loop", False):
+            raise NotImplementedError(
+                "Unsloth: context parallelism needs use_legacy_prediction_loop = False."
+            )
         # Eval counts tokens per shard; only a cross-rank token count weights shards correctly (empty shard = NaN).
         if getattr(self.args, "average_tokens_across_devices", True) is False:
             raise NotImplementedError(
@@ -499,6 +505,8 @@ def patch_sft_trainer() -> None:
         # across transformers / TRL versions (none = per-shard means, NaN on an empty shard). Counted
         # before sharding, when every CP peer holds this replica's whole batch.
         inputs["num_items_in_batch"] = shift_labels.ne(-100).sum().clamp_min(1)
+        # A loss-only pass: no KV cache held across a long-context forward.
+        inputs.setdefault("use_cache", False)
         with manager.apply(inputs), torch.no_grad(), self.compute_loss_context_manager():
             loss = self.compute_loss(model, inputs).detach()
         # Sum of the shards = this replica's token mean, as a non-CP device returns for its batch,
@@ -530,6 +538,13 @@ def patch_sft_trainer() -> None:
         _install_accelerator_state(self)
         return original_evaluate(self, *args, **kwargs)
 
+    @functools.wraps(original_predict)
+    def patched_predict(self, test_dataset, *args, **kwargs):
+        if getattr(self, "_context_parallel_manager", None) is not None:
+            _refuse_iterable_datasets(test_dataset)
+        _install_accelerator_state(self)
+        return original_predict(self, test_dataset, *args, **kwargs)
+
     @functools.wraps(original_evaluation_loop)
     def patched_evaluation_loop(self, *args, **kwargs):
         manager = getattr(self, "_context_parallel_manager", None)
@@ -545,7 +560,11 @@ def patch_sft_trainer() -> None:
             num_items = args[0] if args else kwargs.get("num_items_in_batch")
             # Without a count the loss is a per-shard mean: wrong weights, NaN on an empty shard.
             # HF's None-ness does not depend on the rank, so every rank raises before any collective.
-            if num_items is None and hasattr(inputs, "get") and inputs.get("labels") is not None:
+            if (
+                num_items is None
+                and hasattr(inputs, "get")
+                and (inputs.get("labels") is not None or inputs.get("shift_labels") is not None)
+            ):
                 raise RuntimeError(
                     "Unsloth: context parallelism needs num_items_in_batch in training_step; "
                     "this transformers / trainer path did not pass one."
@@ -568,6 +587,7 @@ def patch_sft_trainer() -> None:
     trainer_cls.prediction_step = patched_prediction_step
     trainer_cls.train = patched_train
     trainer_cls.evaluate = patched_evaluate
+    trainer_cls.predict = patched_predict
     trainer_cls.evaluation_loop = patched_evaluation_loop
     trainer_cls.training_step = patched_training_step
     trainer_cls.__unsloth_context_parallel__ = True
