@@ -222,6 +222,8 @@ test("AUTOMATIC1111 parameters parse into settings", () => {
     width: 832,
     height: 1216,
     model: "sdxl_base",
+    sampler: "dpmpp_2m",
+    schedule_type: "karras",
   });
   assert.equal(
     parseA1111Parameters("just a caption")?.prompt,
@@ -498,5 +500,25 @@ test("imported steps, CFG and strength land inside the request bounds; A1111 str
   assert.equal(
     recipeSettings({ prompt: "p", strength: 3 }, defaults).strength,
     1,
+  );
+});
+
+test("sampler and schedule come back from the recipe and from A1111 labels", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  const fromRecipe = recipeSettings(
+    { prompt: "p", sampler: "euler_a", schedule_type: "karras" },
+    defaults,
+  );
+  assert.equal(fromRecipe.sampler, "euler_a");
+  assert.equal(fromRecipe.schedule_type, "karras");
+  assert.equal(recipeSettings({ prompt: "p", sampler: 3 }, defaults).sampler, undefined);
+  const parsed = parseA1111Parameters(
+    "a cat\nSteps: 20, Sampler: Euler a, Schedule type: Exponential, CFG scale: 7, Seed: 1",
+  );
+  assert.equal(parsed?.sampler, "euler_a");
+  assert.equal(parsed?.schedule_type, "exponential");
+  assert.equal(
+    parseA1111Parameters("a cat\nSteps: 20, Sampler: UniPC")?.sampler,
+    undefined,
   );
 });

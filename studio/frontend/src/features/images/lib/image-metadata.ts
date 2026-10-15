@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+import { SAMPLER_LABELS, SCHEDULE_LABELS } from "./sampler-choice.ts";
 
 /** Generation settings embedded in exported images, and read back from dropped ones.
  *  PNG: `unsloth` (recipe JSON) and `parameters` (AUTOMATIC1111 text) text chunks, as the backend
@@ -470,6 +471,8 @@ export interface ImportedRecipe {
 const A1111_FIELD =
   /\s*([A-Za-z][A-Za-z0-9 _-]*):\s*("(?:\\.|[^"\\])*"|[^,]*)(?:,|$)/g;
 const SIZE = /^(\d+)\s*x\s*(\d+)$/i;
+const labelId = (labels: Record<string, string>, label: string) =>
+  Object.keys(labels).find((id) => labels[id] === label);
 
 /** AUTOMATIC1111 `parameters` text: prompt, optional `Negative prompt:` line, then `Key: value, ...`. */
 export function parseA1111Parameters(text: string): ImportedRecipe | null {
@@ -503,6 +506,9 @@ export function parseA1111Parameters(text: string): ImportedRecipe | null {
     else if (key === "model" && value) out.model = value;
     else if (key === "denoising strength" && Number.isFinite(num))
       out.strength = num;
+    else if (key === "sampler") out.sampler = labelId(SAMPLER_LABELS, value);
+    else if (key === "schedule type")
+      out.schedule_type = labelId(SCHEDULE_LABELS, value);
     else if (key === "size") {
       const size = SIZE.exec(value);
       if (size) {
@@ -572,6 +578,8 @@ export interface RestorableRecipe {
   reference_image_count?: number;
   reference_resolution?: number;
   localized_edit?: string | null;
+  sampler?: string;
+  schedule_type?: string;
 }
 
 const clamp = (
@@ -617,6 +625,9 @@ export function recipeSettings(
     reference_image_count: clamp(int(r.reference_image_count), 0, 9),
     reference_resolution: int(r.reference_resolution),
     localized_edit: str(r.localized_edit) ?? null,
+    // Ids only; the page checks them against the loaded model's samplers.
+    sampler: str(r.sampler),
+    schedule_type: str(r.schedule_type),
   };
 }
 
