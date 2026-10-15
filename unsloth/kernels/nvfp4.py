@@ -405,7 +405,7 @@ _FUSED_FORCE = ("1", "true", "on", "yes", "force")
 _IS_HIP = torch.version.hip is not None
 
 
-def _fused_ok(A, packed, scale, inner):
+def _fused_ok(A, packed, scale, global_scale, inner):
     # Anything unusual keeps the dense path (and its errors).
     mode = _fused_mode()
     if mode in _FUSED_OFF or _IS_HIP or not A.is_cuda:
@@ -418,7 +418,10 @@ def _fused_ok(A, packed, scale, inner):
     if A.dtype == torch.bfloat16 and _device_capability(index) < (8, 0):
         return False
     return (
-        packed.dtype == torch.uint8
+        packed.device == A.device
+        and scale.device == A.device
+        and global_scale.device == A.device
+        and packed.dtype == torch.uint8
         and packed.dim() == 2
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
@@ -509,6 +512,11 @@ def _split_sum(partial, out):
     return out
 
 
+def _needs_int64(*tensors):
+    # Largest reachable element offset, not numel: a strided view can reach past 2**31 with fewer elements.
+    return max(sum((n - 1) * abs(st) for n, st in zip(t.shape, t.stride())) for t in tensors) >= 2**31
+
+
 def _per_split(k_red, split, block):
     return triton.cdiv(triton.cdiv(k_red, split), block) * block
 
@@ -521,7 +529,7 @@ def _nvfp4_matmul_fwd_fused(X, packed, scale, global_scale):
     scale, e4m3 = _scale_args(scale)
     BM, BN, BK, warps, stages, split = _CONFIG_HOOK(M, N, K, X.device, False)
     Y, buf, stride_s = _split_out(M, N, split, X.dtype, X.device)
-    int64 = max(X2.numel(), buf.numel(), packed.numel(), scale.numel()) >= 2**31
+    int64 = _needs_int64(X2, buf, packed, scale)
     grid = (triton.cdiv(M, BM) * triton.cdiv(N, BN), split)
     with _fp8_triton_device_context(packed):
         _nvfp4_matmul_fwd_kernel[grid](
@@ -547,7 +555,7 @@ def _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale):
     scale, e4m3 = _scale_args(scale)
     BM, BK, BN, warps, stages, split = _CONFIG_HOOK(M, K, N, grad.device, True)
     dX, buf, stride_s = _split_out(M, K, split, grad.dtype, grad.device)
-    int64 = max(G.numel(), buf.numel(), packed.numel(), scale.numel()) >= 2**31
+    int64 = _needs_int64(G, buf, packed, scale)
     grid = (triton.cdiv(M, BM) * triton.cdiv(K, BK), split)
     with _fp8_triton_device_context(packed):
         _nvfp4_matmul_dx_kernel[grid](
@@ -576,7 +584,7 @@ _CONFIG_HOOK = _fused_config
 def _nvfp4_matmul_fwd(
     X: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor, global_scale: torch.Tensor
 ) -> torch.Tensor:
-    if _fused_ok(X, packed, scale, packed.shape[1] * 2):
+    if _fused_ok(X, packed, scale, global_scale, packed.shape[1] * 2):
         return _nvfp4_matmul_fwd_fused(X, packed, scale, global_scale.reshape(-1)[:1])
     return torch.matmul(X, nvfp4_dequantize(packed, scale, global_scale, X.dtype).t())
 
@@ -590,7 +598,7 @@ def _nvfp4_matmul_fwd(
 def _nvfp4_matmul_bwd(
     grad: torch.Tensor, packed: torch.Tensor, scale: torch.Tensor, global_scale: torch.Tensor
 ) -> torch.Tensor:
-    if _fused_ok(grad, packed, scale, packed.shape[0]):
+    if _fused_ok(grad, packed, scale, global_scale, packed.shape[0]):
         return _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale.reshape(-1)[:1])
     return torch.matmul(grad, nvfp4_dequantize(packed, scale, global_scale, grad.dtype))
 

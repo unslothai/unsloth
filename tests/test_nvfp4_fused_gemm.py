@@ -9,6 +9,7 @@ torch = pytest.importorskip("torch")
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs CUDA"),
+    pytest.mark.skipif(torch.version.hip is not None, reason = "the fused path is CUDA only"),
 ]
 
 
@@ -257,6 +258,24 @@ def test_kill_switch_and_fallbacks(N, monkeypatch):
     assert _calls(N) == before
     with pytest.raises(ValueError):
         N.nvfp4_linear(X, packed, scale[:, :2], gs)
+
+
+def test_offset_width_follows_the_strided_span(N):
+    small = torch.empty((2, 4), device = "meta")
+    assert not N._needs_int64(small)
+    # 8 elements, but row 1 starts 2**31 elements in: int32 offsets would wrap.
+    assert N._needs_int64(small.as_strided((2, 4), (2**31, 1)))
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason = "needs two GPUs")
+def test_operands_on_another_device_stay_dense(N, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_NVFP4_FUSED_MAX_ROWS", "64")
+    dtype = _dtypes()[0]
+    packed, scale, gs = _random_nvfp4(64, 128)
+    X = torch.randn(4, 128, device = "cuda:1", dtype = dtype)
+    assert N._fused_ok(X.to("cuda:0"), packed, scale, gs, 128)
+    assert not N._fused_ok(X, packed, scale, gs, 128)
+    assert not N._fused_ok(X.to("cuda:0"), packed, scale, gs.to("cuda:1"), 128)
 
 
 @pytest.mark.parametrize("with_bias", [False, True])
