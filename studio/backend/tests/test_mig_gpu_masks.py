@@ -41,7 +41,13 @@ def _smi_list(cards):
     return "\n".join(lines) + "\n"
 
 
-def _nvml_row(index, uuid, free, total, mig = False):
+def _nvml_row(
+    index,
+    uuid,
+    free,
+    total,
+    mig = False,
+):
     row = {
         "index": str(index),
         "uuid": uuid,
@@ -71,9 +77,7 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(
         LlamaCppBackend, "_get_gpu_memory_amd_smi", staticmethod(lambda *a, **k: [])
     )
-    monkeypatch.setattr(
-        LlamaCppBackend, "_get_gpu_memory_torch", staticmethod(lambda *a, **k: [])
-    )
+    monkeypatch.setattr(LlamaCppBackend, "_get_gpu_memory_torch", staticmethod(lambda *a, **k: []))
     monkeypatch.setitem(sys.modules, "torch", None)
     monkeypatch.setattr(mod.sys, "platform", "linux")
 
@@ -104,7 +108,12 @@ def host(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod.subprocess, "run", run)
 
-    def set_host(cards, free, nvml_rows, driver = ""):
+    def set_host(
+        cards,
+        free,
+        nvml_rows,
+        driver = "",
+    ):
         state["cards"], state["free"] = cards, free
         payload = (
             {"source": "nvml", "driver_version": driver, "devices": nvml_rows}
@@ -124,7 +133,11 @@ TWO_SLICES_NVML = [
     _nvml_row(0, MIG0B, 19000, 19968, mig = True),
 ]
 # Three whole A100s, card 0 split into three 2g.10gb slices (9856 MiB each).
-MIXED = [(GPU0, [("2g.10gb", MIG0A), ("2g.10gb", MIG0B), ("2g.10gb", MIG0C)]), (GPU1, []), (GPU2, [])]
+MIXED = [
+    (GPU0, [("2g.10gb", MIG0A), ("2g.10gb", MIG0B), ("2g.10gb", MIG0C)]),
+    (GPU1, []),
+    (GPU2, []),
+]
 MIXED_NVML = [
     _nvml_row(0, GPU0, 39000, A100_MIB),
     _nvml_row(0, MIG0A, 9000, 9856, mig = True),

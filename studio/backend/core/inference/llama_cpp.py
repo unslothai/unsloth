@@ -15107,7 +15107,6 @@ class LlamaCppBackend:
                     gpus = []
                 elif gpus:
                     from utils.hardware import nvidia
-
                     mig = nvidia.get_mig_gpu_indices() & {g[0] for g in gpus}
                     if mig:
                         # A MIG card's row is the whole card: swap in its NVML slice reading,

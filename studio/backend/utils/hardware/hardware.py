@@ -6254,7 +6254,6 @@ def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, A
         return devices
     try:
         from . import nvidia
-
         mig = nvidia.get_mig_gpu_indices() & {d.get("index") for d in devices}
     except Exception:
         return devices
@@ -6263,7 +6262,6 @@ def _with_mig_instance_memory(devices: list[Dict[str, Any]]) -> list[Dict[str, A
     slices: Dict[int, tuple[int, int]] = {}
     try:
         from core.inference.llama_cpp import LlamaCppBackend
-
         slices = {idx: (free, total) for idx, free, total in LlamaCppBackend._get_gpu_memory_nvml()}
     except Exception as e:
         logger.debug("NVML MIG slice probe failed: %s", e)
@@ -6336,7 +6334,6 @@ def get_physical_gpu_count() -> int:
         try:
             if IS_ROCM:
                 from . import amd
-
                 count = amd.get_physical_gpu_count()
             else:
                 # MIG slices are indented `-L` rows under their card, not GPUs to offer.
