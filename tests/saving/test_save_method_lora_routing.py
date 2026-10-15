@@ -1,33 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""`save_method = "lora"` saves the adapter, and `safe_serialization = None` is safetensors.
-
-Two defects, one code path.
-
-`patch_saving_functions` binds `unsloth_generic_save_pretrained_merged` and
-`unsloth_generic_push_to_hub_merged` on every model, and the PEFT branch of
-`unsloth_generic_save` handed every `save_method` to
-`unsloth_zoo.saving_utils.merge_and_overwrite_lora`, which has no `"lora"` branch. The
-value matched nothing and fell through to a plain 16bit merge, so a caller asking for an
-adapter got a full-size merged checkpoint with no `adapter_config.json` (measured at
-2.47 GB for a 1B base). `unsloth_save_model` still had the adapter branch, but nothing
-reached it.
-
-`safe_serialization = None` is what Unsloth's own warning and the troubleshooting docs
-tell a caller to pass to FORCE safetensors, and `None` is falsy to peft and to
-transformers, so it wrote `adapter_model.bin` instead: the advice produced the file it
-exists to avoid (unslothai/unsloth#1792).
-
-`unsloth.save` cannot be imported on a GPU-less host, so the functions under test are
-extracted with `ast` and exec'd against fakes, like the other tests in this directory.
-This file therefore runs on Linux, macOS and Windows with no accelerator and no network.
-"""
+"""save_method='lora' must reach the adapter save, not a 16bit merge; None must mean safetensors."""
 
 from __future__ import annotations
 
 import ast
 import contextlib
+import json
 import os
 import sys
 import types
@@ -45,11 +25,9 @@ def _function_source(name: str) -> str:
     for node in ast.walk(_TREE):
         if isinstance(node, ast.FunctionDef) and node.name == name:
             segment = ast.get_source_segment(_SOURCE, node)
-            # Nested definitions carry their enclosing indentation.
             indent = len(segment) - len(segment.lstrip())
             if indent:
                 segment = "\n".join(line[indent:] for line in segment.split("\n"))
-            # The decorators are outside the segment already; nothing else to strip.
             return segment
     raise AssertionError(f"{name} not found in unsloth/save.py")
 
@@ -67,9 +45,6 @@ def _load(*names, **env):
     for name in names:
         exec(compile(_function_source(name), str(_SAVE_PY), "exec"), namespace)
     return namespace
-
-
-# --------------------------------------------------------------------------- helpers
 
 
 @pytest.mark.parametrize(
@@ -100,11 +75,7 @@ def test_none_means_the_safetensors_default(value, expected):
     ],
 )
 def test_the_adapter_save_method_is_spelled_the_same_way_everywhere(value, expected):
-    """Same normalisation the other `save_method` readers use, and never a crash on None.
-
-    Studio passes `save_method = None` for whisper, so a non-string must answer False
-    rather than raise.
-    """
+    """None and other non-strings must answer False, not raise; Studio passes None for whisper."""
     namespace = _load("_is_adapter_save_method")
     assert namespace["_is_adapter_save_method"](value) is expected
 
@@ -142,7 +113,6 @@ def test_push_keywords_this_transformers_cannot_take_are_dropped():
         ),
     )
     assert kept == dict(repo_id = "owner/model", max_shard_size = "5GB", tags = ["unsloth"])
-    # Neither loss changes the upload on this transformers, so neither is reported.
     assert warnings_seen == []
 
 
@@ -187,9 +157,6 @@ def test_an_unreadable_callable_is_left_alone():
     assert namespace["_filter_push_to_hub_kwargs"](object(), arguments) == arguments
 
 
-# --------------------------------------------------------------- the routing decision
-
-
 class _PeftModel:
     """Stands in for `peft.PeftModel`; the branch under test is an isinstance check."""
 
@@ -219,14 +186,16 @@ class _FullModel:
         self.saved.append((directory, kwargs))
 
 
-# Run as real code under the routing harness: each decides how a save is routed or refused, which is
-# what these tests assert on. Every other save.py helper unsloth_generic_save calls is stubbed below;
-# test_every_helper_the_generic_save_calls_is_loaded_or_stubbed keeps the two lists complete.
+# Run as real code: each decides how a save is routed or refused. Everything else is stubbed;
+# test_every_helper_the_generic_save_calls_is_loaded_or_stubbed keeps both lists complete.
 _GENERIC_SAVE_REAL_HELPERS = (
     "_normalize_safe_serialization",
     "_is_adapter_save_method",
     "_honours_safe_serialization",
     "_refuse_unsaveable_text_core",
+    "_cast_state_dict_16bit",
+    "_requests_float32",
+    "_stamp_saved_config_float32",
 )
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
@@ -256,6 +225,7 @@ def _routing_environment(monkeypatch, model):
         *_GENERIC_SAVE_REAL_HELPERS,
         "unsloth_generic_save",
         os = os,
+        json = json,
         PeftModel = _PeftModel,
         PreTrainedTokenizerBase = type("Tokenizer", (), {}),
         ProcessorMixin = type("Processor", (), {}),
@@ -276,6 +246,7 @@ def _routing_environment(monkeypatch, model):
         torch = types.SimpleNamespace(
             bfloat16 = "bfloat16",
             float16 = "float16",
+            float32 = "float32",
             save = lambda *args, **kwargs: None,
             cuda = types.SimpleNamespace(is_bf16_supported = lambda: False),
         ),
@@ -291,27 +262,15 @@ def test_an_adapter_save_never_reaches_the_merge(monkeypatch, tmp_path, spelling
     generic_save(model, None, save_directory = str(tmp_path), save_method = spelling)
     assert calls["merge"] == [], "save_method='lora' must not call merge_and_overwrite_lora"
     assert len(calls["adapter"]) == 1
-    # The canonical spelling, not the caller's: `unsloth_save_model` normalises with
-    # `.lower().replace(" ", "_")` and then rejects anything that is not exactly "lora",
-    # so `" lora "` forwarded verbatim becomes `"_lora_"` and raises. See
-    # test_the_adapter_save_method_the_router_forwards_is_one_unsloth_save_model_accepts.
+    # Canonical spelling: unsloth_save_model turns " lora " into "_lora_" and rejects it.
     assert calls["adapter"][0]["save_method"] == "lora"
     assert calls["adapter"][0]["save_directory"] == str(tmp_path)
-    # The base model is only needed to merge against, so nothing is downloaded for it.
+    # The base is only needed to merge against, so nothing is downloaded for it.
     assert calls["prewarm"] == []
 
 
 def test_the_adapter_save_method_the_router_forwards_is_one_unsloth_save_model_accepts():
-    """The two ends of the new route must agree on the spelling, or the route raises.
-
-    `_is_adapter_save_method` is deliberately lenient: it strips and case-folds, so
-    `" lora "` and `"LoRA"` select the adapter save. `unsloth_save_model` is not: it
-    normalises with `.lower().replace(" ", "_")`, which turns `" lora "` into `"_lora_"`,
-    and then raises RuntimeError on anything that is not exactly one of its three values.
-    Forwarding the caller's spelling verbatim would therefore trade a wrong merge for a
-    crash on the same input, so the router forwards the canonical value. Read out of the
-    source rather than asserted about a stub, so that renaming either end fails here.
-    """
+    """Forward the canonical spelling: unsloth_save_model rejects a padded ' lora ' value."""
     source = Path(_SAVE_PY).read_text(encoding = "utf-8")
     tree = ast.parse(source)
 
@@ -321,7 +280,6 @@ def test_the_adapter_save_method_the_router_forwards_is_one_unsloth_save_model_a
                 return node
         raise AssertionError(f"{name} is gone from unsloth/save.py")
 
-    # What the router hands to unsloth_save_model on the adapter branch.
     forwarded = [
         keyword.value.value
         for node in ast.walk(_find("unsloth_generic_save"))
@@ -335,7 +293,6 @@ def test_the_adapter_save_method_the_router_forwards_is_one_unsloth_save_model_a
         "the adapter branch must forward the canonical spelling, got " + repr(forwarded)
     )
 
-    # What unsloth_save_model does to it, and what it then insists on.
     accepted = {
         comparator.value
         for node in ast.walk(_find("unsloth_save_model"))
@@ -413,21 +370,13 @@ def test_none_is_normalised_before_the_merge_is_reached(monkeypatch, tmp_path):
     assert model.saved[0][1]["safe_serialization"] is True
 
 
-# --------------------------------------------------------- what the adapter save writes
-
-
 def _adapter_save_environment(monkeypatch):
-    # unsloth_save_model checks the credential with huggingface_hub.whoami before pushing,
-    # and these tests never reach the network.
+    # unsloth_save_model checks credentials via whoami before pushing; these tests stay offline.
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "whoami", lambda token = None: {"name": "owner"})
 
-    # `unsloth_save_model` does `from peft import PeftModelForCausalLM` inside its body, and
-    # uses it for one isinstance check that every model here answers False to. Stubbed like
-    # every other dependency in this file, rather than importorskip'd, so the whole file
-    # stays runnable on a bare interpreter: that is what lets it gate the cross-platform
-    # runners, which ship no peft.
+    # Stubbed, not importorskip'd, so this file still gates the cross-platform runners, which ship no peft.
     if "peft" not in sys.modules:
         peft = types.ModuleType("peft")
         peft.PeftModelForCausalLM = type("PeftModelForCausalLM", (), {})
@@ -471,8 +420,7 @@ class _AdapterModel:
         pass
 
     def push_to_hub(self, **kwargs):
-        # `getattr(model, "original_push_to_hub", model.push_to_hub)` evaluates its default
-        # eagerly, so the attribute has to exist; the patched model always has both.
+        # `getattr(model, "original_push_to_hub", model.push_to_hub)` evaluates its default eagerly.
         raise AssertionError("the unpatched push_to_hub must not be the one called")
 
     def save_pretrained(self, **kwargs):
@@ -494,17 +442,12 @@ def test_the_adapter_save_forwards_a_real_safe_serialization(monkeypatch, tmp_pa
     settings = model.saved[0]
     assert settings["safe_serialization"] is True
     assert settings["save_directory"] == str(tmp_path)
-    # A local kept for the normalisation must not be handed on as a save keyword.
     assert "_force_safe_serialization" not in settings
     assert "save_method" not in settings
 
 
 def test_an_adapter_push_survives_a_transformers_that_dropped_the_keywords(monkeypatch, tmp_path):
-    """transformers 5's push_to_hub has no `use_temp_dir`, and this call used to pass it.
-
-    The adapter branch was unreachable through save_pretrained_merged, so the TypeError
-    it raises on transformers 5 was invisible until the routing above was fixed.
-    """
+    """transformers 5's push_to_hub has no use_temp_dir, so the adapter push must not pass it."""
     namespace, uploads = _adapter_save_environment(monkeypatch)
 
     def transformers_5_signature(sink):
@@ -548,7 +491,7 @@ def test_an_adapter_push_survives_a_transformers_that_dropped_the_keywords(monke
     assert model.pushed[0]["repo_id"] == "owner/model"
     assert "unsloth" in model.pushed[0]["tags"]
     assert len(uploads) == 1
-    # Nothing was written locally: an adapter push goes straight to the Hub.
+    # An adapter push goes straight to the Hub, so nothing is written locally.
     assert model.saved == []
 
 
@@ -595,9 +538,6 @@ def test_an_adapter_push_still_passes_every_keyword_a_transformers_4_accepts(mon
     assert model.pushed == [dict(use_temp_dir = True, safe_serialization = True, revision = "candidate")]
 
 
-# ------------------------------------------------------- the model's own save_pretrained
-
-
 def test_the_model_save_pretrained_wrapper_rewrites_only_none():
     """`model.save_pretrained(..., safe_serialization = None)` is the call in #1792."""
     namespace = _load(
@@ -630,7 +570,7 @@ def test_the_wrapper_is_installed_on_models_and_is_idempotent():
     source = _function_source("patch_saving_functions")
     assert "model.original_model_save_pretrained = model.save_pretrained" in source
     assert '!= "unsloth_model_save_pretrained"' in source
-    # Its own attribute name, so the tokenizer wrapper above cannot be shadowed by it.
+    # A distinct attribute name, so the tokenizer wrapper above is not shadowed.
     assert "original_save_pretrained" in source and "original_model_save_pretrained" in source
 
 
@@ -647,11 +587,6 @@ def test_the_documented_advice_no_longer_tells_anyone_to_pass_none_for_a_pickle(
     assert "`safe_serialization` defaults to safetensors" in _SOURCE
 
 
-# ----------------------------------------------------------------------------------
-# What the caller is left holding: the SentenceTransformer wrapper.
-# ----------------------------------------------------------------------------------
-
-
 def _sentence_transformer_source():
     path = (
         Path(__file__).resolve().parent.parent.parent
@@ -663,12 +598,7 @@ def _sentence_transformer_source():
 
 
 def _modules_branch_save_pretrained_merged(tree):
-    """The second `_save_pretrained_merged`, the one that keeps `save_method`.
-
-    The first definition refuses everything but a merge outright; this is the branch that
-    forwards `save_method` on to `auto_model.save_pretrained_merged`, so it is the one
-    that inherits whatever `"lora"` now means.
-    """
+    """The second _save_pretrained_merged forwards save_method to auto_model, so it inherits 'lora'."""
     found = [
         node
         for node in ast.walk(tree)
@@ -689,20 +619,7 @@ def _modules_branch_save_pretrained_merged(tree):
 
 
 def test_sentence_transformer_merge_refuses_the_adapter_save_method():
-    """An adapter-only save leaves a SentenceTransformer directory with no model in it.
-
-    `self.save_pretrained(save_directory)` writes the scaffolding and, for a PEFT
-    auto_model, an adapter; the wrapper then deletes that adapter and hands the transformer
-    module to `save_pretrained_merged`. With `save_method = "lora"` that call now writes the
-    adapter back and nothing else, so the directory ends up with `modules.json` and
-    `adapter_config.json` but no `config.json` and no weights. `SentenceTransformer` cannot
-    load it, and `_push_to_hub_merged` uploads exactly that directory.
-
-    Before the routing fix, `"lora"` reached `merge_and_overwrite_lora`, matched no branch
-    and fell through to a 16-bit merge, so this path happened to write something loadable.
-    Both sibling branches in this file already refuse the method for the same reason; this
-    pins the third.
-    """
+    """lora' here leaves a SentenceTransformer dir with no model, so the merge branch must refuse it."""
     _, tree = _sentence_transformer_source()
     node = _modules_branch_save_pretrained_merged(tree)
     guards = [
@@ -735,13 +652,7 @@ def test_sentence_transformer_shares_the_router_definition_of_lora():
 
 
 def test_the_lora_docstring_does_not_promise_an_adapter_only_directory():
-    """`save_method="lora"` with a tokenizer writes tokenizer files too.
-
-    The adapter branch of `unsloth_save_model` calls `tokenizer.save_pretrained` when the
-    documented `tokenizer` argument is supplied, so "and nothing else" was false for the
-    ordinary supported call. What the route really guarantees is that no base-model
-    weights are written, which is the claim these docstrings now make.
-    """
+    """Adapter saves may write tokenizer files too; the guarantee is no base-model weights."""
     import re
     from pathlib import Path
 
@@ -760,15 +671,7 @@ def test_the_lora_docstring_does_not_promise_an_adapter_only_directory():
 
 @pytest.mark.parametrize("spelling", ["lora", "LoRA", " lora ", "  LORA", "lora\t", " Lora "])
 def test_the_sentence_transformer_normaliser_keeps_whitespace_aliases_recognisable(spelling):
-    """`_normalize_save_method` runs BEFORE the adapter guard, so it must not turn a
-    spelling `_is_adapter_save_method` accepts into one it does not.
-
-    It folded spaces to underscores without stripping first, so `" lora "` became
-    `"_lora_"`, the guard returned False, and the modules-based SentenceTransformer path
-    forwarded the value to `auto_model.save_pretrained_merged` instead of raising the
-    NotImplementedError the two sibling branches raise. That is the merge fallthrough this
-    PR exists to remove, reached through a spelling the router itself calls LoRA.
-    """
+    """_normalize_save_method must not turn an accepted spelling like ' lora ' into a rejected one."""
     from unsloth.models.sentence_transformer import _normalize_save_method
     from unsloth.save import _is_adapter_save_method
 
@@ -785,8 +688,7 @@ def test_the_sentence_transformer_normaliser_keeps_whitespace_aliases_recognisab
         ("merged_16bit", "merged_16bit"),
         (" MERGED 16BIT ", "merged_16bit"),
         ("merged 16bit", "merged_16bit"),
-        # NEGATIVE CONTROL: a non-string is handed back untouched (Studio passes None
-        # for whisper), and an unrelated method is not rewritten into a known one.
+        # NEGATIVE CONTROL: Studio passes None for whisper; unrelated methods are not rewritten.
         (None, None),
         ("fp8", "fp8"),
     ],
@@ -797,15 +699,7 @@ def test_the_sentence_transformer_normaliser_is_otherwise_unchanged(spelling, ex
 
 
 def test_the_docstrings_describe_none_as_the_stronger_safetensors_request():
-    """`None` is not a synonym for the default `True`.
-
-    On a host with at most two physical CPUs `unsloth_save_model` downgrades a default
-    `safe_serialization = True` to `fast_save_pickle`, warning that safetensors is 10x
-    slower there. `None` sets `_force_safe_serialization`, which is what makes the
-    branch above that downgrade fire instead. So a default merged_16bit save on a small
-    box can write a pickle, and a docstring saying only an explicit `False` does would
-    send that user looking for a file that is not there.
-    """
+    """None forces safetensors via _force_safe_serialization; it is not a synonym for the default True."""
     from pathlib import Path
 
     save_py = Path(__file__).resolve().parents[2] / "unsloth" / "save.py"
@@ -817,7 +711,6 @@ def test_the_docstrings_describe_none_as_the_stronger_safetensors_request():
     assert (
         source.count("`None` is stronger than the default") == 4
     ), "all four save_method docstrings have to describe None the same way"
-    # The behaviour the prose describes, read from the code rather than trusted.
     assert "elif safe_serialization and (n_cpus <= 2):" in source
     assert "if _force_safe_serialization:" in source
 

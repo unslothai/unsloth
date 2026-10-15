@@ -11,7 +11,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ApiProviderLogo } from "@/features/chat/api-provider-logo";
 
-import type { CapabilityKey } from "@/features/hub";
+import type { HubCapabilityFilter } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 // eslint-disable-next-line no-restricted-imports -- The settings barrel imports this feature back.
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
@@ -149,7 +149,7 @@ interface ModelSelectorProps {
   opaqueKind?: "diffusers_pipeline" | "diffusers_modular_pipeline";
   rowFilter?: ModelPickerRowFilter;
   /** Hub filter the Search Hub button opens with. Also shows Search Hub on curated task pickers. */
-  hubCapability?: CapabilityKey;
+  hubCapability?: HubCapabilityFilter;
   /** Tasks the Search Hub link narrows the Audio filter to, when the page's runs differ from `task`. */
   hubTask?: HfTaskFilter;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
