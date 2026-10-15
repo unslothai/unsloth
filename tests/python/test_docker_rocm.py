@@ -10,6 +10,7 @@ so every message a user can hit before torch loads is checked here.
 """
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -498,6 +499,7 @@ def _entrypoint(
     kfd = True,
     readable = True,
     dxg = False,
+    dri = False,
     smi_sees_gpu = True,
     python_body = None,
     env_extra = None,
@@ -514,6 +516,9 @@ def _entrypoint(
             os.chmod(dev_root / "dev" / "kfd", 0)
     if dxg:
         (dev_root / "dev" / "dxg").write_text("")
+    if dri:
+        (dev_root / "dev" / "dri").mkdir()
+        (dev_root / "dev" / "dri" / "renderD128").write_text("")
     _stub(
         str(bindir / "rocm-smi"),
         'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n",
@@ -600,6 +605,19 @@ class TestRocmEntrypoint:
     def test_a_happy_host_runs_the_command(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path)
         assert rc == 0 and ran, err
+
+    def test_studio_image_without_dri_says_gguf_chat_is_on_the_cpu(self, tmp_path):
+        """Vulkan llama.cpp opens /dev/dri, not /dev/kfd: torch works, chat would not."""
+        rc, ran, err = _entrypoint(tmp_path, env_extra = {"UNSLOTH_STUDIO_HOME": str(tmp_path)})
+        assert rc == 0 and ran, err
+        assert "GGUF chat will run on the CPU" in err and "--device /dev/dri" in err, err
+
+    @pytest.mark.parametrize("dri, studio", [(True, True), (False, False)])
+    def test_the_dri_note_is_only_for_the_studio_image_missing_it(self, tmp_path, dri, studio):
+        env = {"UNSLOTH_STUDIO_HOME": str(tmp_path)} if studio else {}
+        rc, ran, err = _entrypoint(tmp_path, dri = dri, env_extra = env)
+        assert rc == 0 and ran, err
+        assert "GGUF chat" not in err, err
 
     def test_dxg_is_accepted_when_kfd_is_absent(self, tmp_path):
         """WSL2 never has /dev/kfd. /dev/dxg plus librocdxg is the same GPU evidence
@@ -1103,3 +1121,30 @@ class TestStudioLaunchRocm:
         assert 'UNSLOTH_ROCM_GFX_ARCH="${ROCM_GFX}"' in body
         ignore = open(os.path.join(_DOCKER, ".dockerignore"), encoding = "utf-8").read()
         assert "!studio_launch.sh" in ignore and "!studio_run.sh" in ignore
+
+
+class TestStudioRocmGgufOnTheGpu:
+    """#5405: GGUF chat in the ROCm Studio image ran on the CPU (CPU llama.cpp bundle)."""
+
+    def _body(self):
+        return open(_STUDIO_DOCKERFILE, encoding = "utf-8").read()
+
+    def test_llama_cpp_is_installed_as_the_vulkan_bundle(self):
+        body = self._body()
+        install = body[
+            body.index(". /etc/unsloth-rocm-build") : body.index("bash install.sh --local")
+        ]
+        assert "UNSLOTH_LLAMA_CPP_BACKEND=vulkan" in install, install
+        assert "UNSLOTH_LLAMA_CPP_BACKEND=cpu" not in body
+        # install.sh falls back to the CPU bundle on a failed Vulkan install; the build
+        # has to refuse that rather than ship CPU-only chat again
+        assert "assert m.get('backend') == 'vulkan'" in body
+
+    def test_the_radv_driver_is_installed_and_pinned(self):
+        body = self._body()
+        apt = re.search(r"apt-get install -y --no-install-recommends \\\n\s+([^\n]+)", body).group(
+            1
+        )
+        assert "libvulkan1" in apt and "mesa-vulkan-drivers" in apt, apt
+        assert "ENV VK_DRIVER_FILES=/usr/share/vulkan/icd.d/radeon_icd.x86_64.json" in body
+        assert "test -f /usr/share/vulkan/icd.d/radeon_icd.x86_64.json" in body
