@@ -355,6 +355,7 @@ test("a ComfyUI PNG imports its prompt, seed, steps, CFG, size and checkpoint", 
     seed: 156680208700286,
     steps: 20,
     guidance: 8,
+    sampler: "euler",
     width: 512,
     height: 768,
     model: "v1-5-pruned-emaonly.safetensors",
@@ -368,6 +369,114 @@ test("a ComfyUI PNG imports its prompt, seed, steps, CFG, size and checkpoint", 
     importedRecipe({ recipe: RECIPE, comfyPrompt: COMFY_PROMPT })?.steps,
     4,
   );
+});
+
+// Written by Pillow the way ComfyUI's WebP save nodes do (comfy_api/latest/_ui.py
+// _create_webp_metadata): IFD0 Model = `prompt:{graph}`, Make = `workflow:{...}`, no Exif IFD.
+const COMFY_WEBP_B64 =
+  "UklGRvACAABXRUJQVlA4WAoAAAAIAAAABwAABwAAVlA4TBEAAAAvB8ABAAdQniKXov+BiOh/AABFWElGuAIAAE1NAC" +
+  "oAAAAIAAIBDwACAAAAFwAAACYBEAACAAACeQAAAD4AAAAAd29ya2Zsb3c6eyJub2RlcyI6IFtdfQAAcHJvbXB0Onsi" +
+  "MyI6IHsiY2xhc3NfdHlwZSI6ICJLU2FtcGxlciIsICJpbnB1dHMiOiB7InNlZWQiOiA0MiwgInN0ZXBzIjogMjUsIC" +
+  "JjZmciOiA3LjAsICJzYW1wbGVyX25hbWUiOiAiZXVsZXJfYW5jZXN0cmFsIiwgInNjaGVkdWxlciI6ICJrYXJyYXMi" +
+  "LCAiZGVub2lzZSI6IDEuMCwgIm1vZGVsIjogWyI0IiwgMF0sICJwb3NpdGl2ZSI6IFsiNiIsIDBdLCAibmVnYXRpdm" +
+  "UiOiBbIjciLCAwXSwgImxhdGVudF9pbWFnZSI6IFsiNSIsIDBdfX0sICI0IjogeyJjbGFzc190eXBlIjogIkNoZWNr" +
+  "cG9pbnRMb2FkZXJTaW1wbGUiLCAiaW5wdXRzIjogeyJja3B0X25hbWUiOiAic2RfeGxfYmFzZV8xLjAuc2FmZXRlbn" +
+  "NvcnMifX0sICI1IjogeyJjbGFzc190eXBlIjogIkVtcHR5TGF0ZW50SW1hZ2UiLCAiaW5wdXRzIjogeyJ3aWR0aCI6" +
+  "IDEwMjQsICJoZWlnaHQiOiAxMDI0LCAiYmF0Y2hfc2l6ZSI6IDF9fSwgIjYiOiB7ImNsYXNzX3R5cGUiOiAiQ0xJUF" +
+  "RleHRFbmNvZGUiLCAiaW5wdXRzIjogeyJ0ZXh0IjogImEgcmVkIGZveCIsICJjbGlwIjogWyI0IiwgMV19fSwgIjci" +
+  "OiB7ImNsYXNzX3R5cGUiOiAiQ0xJUFRleHRFbmNvZGUiLCAiaW5wdXRzIjogeyJ0ZXh0IjogImJsdXJyeSIsICJjbG" +
+  "lwIjogWyI0IiwgMV19fX0AAA==";
+
+test("a ComfyUI WebP imports its graph from EXIF Model, with sampler and schedule", () => {
+  const embedded = readEmbeddedRecipe(bytes(COMFY_WEBP_B64));
+  assert.ok(embedded.comfyPrompt?.startsWith("{"));
+  assert.deepEqual(importedRecipe(embedded), {
+    prompt: "a red fox",
+    negative_prompt: "blurry",
+    seed: 42,
+    steps: 25,
+    guidance: 7,
+    sampler: "euler_a",
+    schedule_type: "karras",
+    width: 1024,
+    height: 1024,
+    model: "sd_xl_base_1.0.safetensors",
+  });
+});
+
+// ComfyUI's Flux dev example: SamplerCustomAdvanced, guidance on FluxGuidance, size on
+// EmptySD3LatentImage, model through ModelSamplingFlux.
+const COMFY_FLUX_PROMPT = JSON.stringify({
+  "13": {
+    class_type: "SamplerCustomAdvanced",
+    inputs: {
+      noise: ["25", 0],
+      guider: ["22", 0],
+      sampler: ["16", 0],
+      sigmas: ["17", 0],
+      latent_image: ["27", 0],
+    },
+  },
+  "25": { class_type: "RandomNoise", inputs: { noise_seed: 219670278747233 } },
+  "22": {
+    class_type: "BasicGuider",
+    inputs: { model: ["30", 0], conditioning: ["26", 0] },
+  },
+  "26": {
+    class_type: "FluxGuidance",
+    inputs: { guidance: 3.5, conditioning: ["6", 0] },
+  },
+  "6": {
+    class_type: "CLIPTextEncode",
+    inputs: { text: "a fennec fox", clip: ["11", 0] },
+  },
+  "12": {
+    class_type: "UNETLoader",
+    inputs: { unet_name: "flux1-dev.safetensors", weight_dtype: "default" },
+  },
+  "30": {
+    class_type: "ModelSamplingFlux",
+    inputs: {
+      max_shift: 1.15,
+      base_shift: 0.5,
+      width: 1024,
+      height: 1024,
+      model: ["12", 0],
+    },
+  },
+  "16": { class_type: "KSamplerSelect", inputs: { sampler_name: "euler" } },
+  "17": {
+    class_type: "BasicScheduler",
+    inputs: { scheduler: "simple", steps: 20, denoise: 1, model: ["30", 0] },
+  },
+  "27": {
+    class_type: "EmptySD3LatentImage",
+    inputs: { width: 1024, height: 768, batch_size: 1 },
+  },
+});
+
+test("a ComfyUI Flux graph imports through SamplerCustomAdvanced and FluxGuidance", () => {
+  assert.deepEqual(parseComfyPrompt(COMFY_FLUX_PROMPT), {
+    prompt: "a fennec fox",
+    seed: 219670278747233,
+    steps: 20,
+    guidance: 3.5,
+    sampler: "euler",
+    width: 1024,
+    height: 768,
+    model: "flux1-dev.safetensors",
+  });
+  // Flux checkpoint example: KSampler at cfg 1, the real guidance on FluxGuidance.
+  const ksampler = JSON.parse(COMFY_PROMPT);
+  ksampler["3"].inputs.positive = ["26", 0];
+  ksampler["3"].inputs.cfg = 1;
+  ksampler["26"] = {
+    class_type: "FluxGuidance",
+    inputs: { guidance: 3.5, conditioning: ["6", 0] },
+  };
+  const flux = parseComfyPrompt(JSON.stringify(ksampler));
+  assert.equal(flux?.prompt, "beautiful scenery nature glass bottle");
+  assert.equal(flux?.guidance, 3.5);
 });
 
 // A little-endian EXIF block holding one UserComment, as a non-piexif writer lays it out.
@@ -564,4 +673,20 @@ test("a newer recipe loads what this build knows and names what it does not", ()
     new Set([...APPLIED_RECIPE_KEYS, ...INFO_RECIPE_KEYS]).size,
     APPLIED_RECIPE_KEYS.length + INFO_RECIPE_KEYS.length,
   );
+});
+
+test("an unmapped ComfyUI sampler is kept by name; prototype names map to nothing", () => {
+  const graph = (sampler_name: string, scheduler: string) =>
+    JSON.stringify({
+      "1": { class_type: "CLIPTextEncode", inputs: { text: "a fox" } },
+      "2": {
+        class_type: "KSampler",
+        inputs: { positive: ["1", 0], seed: 3, steps: 9, cfg: 4, sampler_name, scheduler },
+      },
+    });
+  assert.equal(parseComfyPrompt(graph("uni_pc", "normal"))?.sampler, "uni_pc");
+  assert.equal(parseComfyPrompt(graph("uni_pc", "normal"))?.schedule_type, undefined);
+  const hostile = parseComfyPrompt(graph("constructor", "toString"));
+  assert.equal(hostile?.sampler, "constructor");
+  assert.equal(hostile?.schedule_type, undefined);
 });

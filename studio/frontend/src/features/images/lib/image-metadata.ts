@@ -22,6 +22,7 @@ const RECIPE_KEY = "unsloth";
 const PARAMETERS_KEY = "parameters";
 const MAKER_NOTE_PREFIX = "Unsloth\0";
 const SOFTWARE = "Unsloth";
+const COMFY_EXIF_PREFIX = "prompt:";
 
 interface Chunk {
   type: string;
@@ -380,14 +381,22 @@ function readTiff(tiff: Uint8Array): EmbeddedRecipe {
     return out;
   };
   const ifd0 = entries(u32(4));
+  const out: EmbeddedRecipe = {};
+  // ComfyUI's WebP / AVIF writers put its API graph in IFD0 Model as `prompt:{...}`.
+  const model = ifd0.get(0x0110);
+  if (model) {
+    const text = new TextDecoder().decode(model).replace(/\0+$/, "");
+    if (text.startsWith(COMFY_EXIF_PREFIX)) {
+      out.comfyPrompt = text.slice(COMFY_EXIF_PREFIX.length);
+    }
+  }
   const pointer = ifd0.get(0x8769);
   if (!pointer || pointer.length < 4) {
-    return {};
+    return out;
   }
   const exif = entries(
     new DataView(pointer.buffer, pointer.byteOffset, 4).getUint32(0, little),
   );
-  const out: EmbeddedRecipe = {};
   const comment = exif.get(0x9286);
   if (comment && comment.length > 8) {
     const prefix = ascii(comment, 0, 8);
@@ -716,11 +725,28 @@ type ComfyGraph = Record<
   { class_type?: unknown; inputs?: Record<string, unknown> }
 >;
 
-const COMFY_SAMPLERS = new Set(["KSampler", "KSamplerAdvanced"]);
+const COMFY_SAMPLERS = new Set([
+  "KSampler",
+  "KSamplerAdvanced",
+  "SamplerCustomAdvanced",
+]);
 const COMFY_MODEL_INPUTS = ["ckpt_name", "unet_name", "model_name"];
+// ComfyUI sampler / scheduler names (comfy/samplers.py) that have a Studio equivalent.
+const COMFY_SAMPLER_IDS: Record<string, string> = {
+  euler: "euler",
+  euler_ancestral: "euler_a",
+  dpmpp_2m: "dpmpp_2m",
+  dpmpp_2m_sde: "dpmpp_2m_sde",
+  dpmpp_2m_sde_gpu: "dpmpp_2m_sde",
+};
+const COMFY_SCHEDULE_IDS: Record<string, string> = {
+  karras: "karras",
+  exponential: "exponential",
+};
 
-/** Prompt, seed, steps, CFG, size and model from a ComfyUI graph with a KSampler. Inputs wired to
- *  another node (`[id, slot]`) are followed a few hops to the value; anything else is skipped. */
+/** Prompt, seed, steps, CFG, sampler, size and model from a ComfyUI graph with a KSampler or
+ *  SamplerCustomAdvanced. Inputs wired to another node (`[id, slot]`) are followed a few hops to
+ *  the value; anything else is skipped. */
 export function parseComfyPrompt(text: string): ImportedRecipe | null {
   let graph: ComfyGraph;
   try {
@@ -756,8 +782,15 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
     }
     return undefined;
   };
+  // Flux graphs put FluxGuidance between the text encoder and the sampler.
+  let fluxGuidance: unknown;
   const textOf = (link: unknown): string | undefined => {
-    const v = value(node(link)?.inputs?.text, ["text", "value", "string"]);
+    let n = node(link);
+    for (let hop = 0; n?.class_type === "FluxGuidance" && hop < 4; hop++) {
+      fluxGuidance ??= value(n.inputs?.guidance, ["guidance", "value"]);
+      n = node(n.inputs?.conditioning);
+    }
+    const v = value(n?.inputs?.text, ["text", "value", "string"]);
     return typeof v === "string" ? v : undefined;
   };
   const sampler = Object.values(graph).find(
@@ -767,7 +800,23 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
   if (!sampler?.inputs) {
     return null;
   }
-  const inputs = sampler.inputs;
+  let inputs = sampler.inputs;
+  if (sampler.class_type === "SamplerCustomAdvanced") {
+    // Its settings live on the RandomNoise, guider, KSamplerSelect and BasicScheduler nodes.
+    const guider = node(inputs.guider)?.inputs ?? {};
+    const sigmas = node(inputs.sigmas)?.inputs ?? {};
+    inputs = {
+      positive: guider.positive ?? guider.conditioning,
+      negative: guider.negative,
+      cfg: guider.cfg,
+      model: guider.model,
+      noise_seed: node(inputs.noise)?.inputs?.noise_seed,
+      steps: sigmas.steps,
+      scheduler: sigmas.scheduler,
+      sampler_name: node(inputs.sampler)?.inputs?.sampler_name,
+      latent_image: inputs.latent_image,
+    };
+  }
   const out: ImportedRecipe = { prompt: textOf(inputs.positive) ?? "" };
   const negative = textOf(inputs.negative);
   if (negative !== undefined) out.negative_prompt = negative;
@@ -780,7 +829,21 @@ export function parseComfyPrompt(text: string): ImportedRecipe | null {
   const steps = value(inputs.steps, ["steps", "value"]);
   if (typeof steps === "number") out.steps = steps;
   const cfg = value(inputs.cfg, ["cfg", "value"]);
-  if (typeof cfg === "number") out.guidance = cfg;
+  if (typeof fluxGuidance === "number") out.guidance = fluxGuidance;
+  else if (typeof cfg === "number") out.guidance = cfg;
+  const samplerName = value(inputs.sampler_name, ["sampler_name", "value"]);
+  const scheduler = value(inputs.scheduler, ["scheduler", "value"]);
+  // An unmapped sampler stays as written so the import names it; ComfyUI's default schedulers
+  // (normal, simple) have no exact Studio match and leave the schedule automatic.
+  if (typeof samplerName === "string" && samplerName)
+    out.sampler = Object.hasOwn(COMFY_SAMPLER_IDS, samplerName)
+      ? COMFY_SAMPLER_IDS[samplerName]
+      : samplerName;
+  if (
+    typeof scheduler === "string" &&
+    Object.hasOwn(COMFY_SCHEDULE_IDS, scheduler)
+  )
+    out.schedule_type = COMFY_SCHEDULE_IDS[scheduler];
   const latent = node(inputs.latent_image)?.inputs;
   const width = value(latent?.width, ["width", "value"]);
   const height = value(latent?.height, ["height", "value"]);
