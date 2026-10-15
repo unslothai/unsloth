@@ -949,6 +949,15 @@ class UnslothTrainingArguments(TrainingArguments):
         self.q_galore_config = q_galore_config
         self.embedding_learning_rate = embedding_learning_rate
         self.loraplus_lr_ratio = loraplus_lr_ratio
+        # Imported here too: tests exec this class body in a namespace without the module imports.
+        from unsloth.optimizers.flash_adamw import (
+            _FLASH_ADAMW_PLACEHOLDER,
+            is_flash_adamw,
+            is_flash_adamw_marked,
+            mark_flash_adamw,
+            unmark_flash_adamw,
+        )
+
         flash_adamw = is_flash_adamw(kwargs.get("optim", None))
         if flash_adamw:
             kwargs["optim"] = _FLASH_ADAMW_PLACEHOLDER
