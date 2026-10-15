@@ -10,9 +10,9 @@ import {
   runAudio,
 } from "../api";
 import {
-  type AudioOptionSpec,
   type AudioOptionValues,
   audioOptionLabel,
+  audioOptionSpecsFor,
   audioOptionsForRequest,
   missingRequiredAudioOptions,
 } from "../audio-options";
@@ -119,7 +119,6 @@ export function useCloneGeneration({
   setSelectedId,
   pendingTranscribeRelease,
   replayQueuedTtsPick,
-  audioOptionSpecs,
   audioOptionValues,
   sttRepo,
   settleSttRepo,
@@ -141,7 +140,6 @@ export function useCloneGeneration({
     "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
   > &
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
-    audioOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
     settleSttRepo?: (repo: string | null) => Promise<string | null>;
@@ -152,6 +150,10 @@ export function useCloneGeneration({
   const language = useAudioCloneStore((state) => state.language);
   const storedToolValues = useAudioCloneStore((state) => state.toolValues);
   const model = status?.active_model ?? null;
+  const audioOptionSpecs = useMemo(
+    () => audioOptionSpecsFor(status, "clone"),
+    [status],
+  );
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [referenceStatus, setReferenceStatus] = useState<AudioSourceStatus>({
     phase: "idle",
@@ -448,6 +450,7 @@ export function useCloneGeneration({
     toolValues,
     handleToolValueChange,
     claimedOptions,
+    audioOptionSpecs,
     advancedOptionSpecs,
     blocker,
     inputsReady: inputBlocker === null,

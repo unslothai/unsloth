@@ -5,12 +5,11 @@ import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioApiError, runAudio } from "../api";
 import {
-  type AudioOptionSpec,
   type AudioOptionValues,
   audioOptionLabel,
+  audioOptionSpecsFor,
   audioOptionsForRequest,
   missingRequiredAudioOptions,
-  parseAudioOptions,
 } from "../audio-options";
 import {
   type AudioSourceSelection,
@@ -76,7 +75,6 @@ export function useConvertGeneration({
   setSelectedId,
   pendingTranscribeRelease,
   replayQueuedTtsPick,
-  audioOptionSpecs,
   audioOptionValues,
   sttRepo,
   settleSttRepo,
@@ -98,7 +96,6 @@ export function useConvertGeneration({
     "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
   > &
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
-    audioOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
     settleSttRepo?: (repo: string | null) => Promise<string | null>;
@@ -112,6 +109,10 @@ export function useConvertGeneration({
   const sourceText = useAudioConvertStore((state) => state.sourceText);
   const storedToolValues = useAudioCloneStore((state) => state.toolValues);
   const model = status?.active_model ?? null;
+  const audioOptionSpecs = useMemo(
+    () => audioOptionSpecsFor(status, "convert"),
+    [status],
+  );
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [sourceStatus, setSourceStatus] = useState<AudioSourceStatus>(IDLE);
   const [targetStatus, setTargetStatus] = useState<AudioSourceStatus>(IDLE);
@@ -188,12 +189,6 @@ export function useConvertGeneration({
         .setToolValue(toolValueKey(model, "convert", panelId), value),
     [model],
   );
-  const convertOptionSpecs = useMemo(() => {
-    const byWorkflow = status?.audio_options_by_workflow?.convert;
-    return byWorkflow === undefined
-      ? audioOptionSpecs
-      : parseAudioOptions(byWorkflow);
-  }, [status?.audio_options_by_workflow, audioOptionSpecs]);
   const toolRequest = useMemo(
     () =>
       collectToolRequest(
@@ -201,7 +196,7 @@ export function useConvertGeneration({
         toolValues,
         { text: "", referenceText: sourceText, hasReference: source !== null },
         { ...toolContext, convertMode: mode },
-        convertOptionSpecs,
+        audioOptionSpecs,
       ),
     [
       toolPanels,
@@ -210,7 +205,7 @@ export function useConvertGeneration({
       source,
       toolContext,
       mode,
-      convertOptionSpecs,
+      audioOptionSpecs,
     ],
   );
   const style = effectiveConvertStyle(
@@ -225,8 +220,8 @@ export function useConvertGeneration({
     [toolPanels],
   );
   const advancedOptionSpecs = useMemo(
-    () => convertOptionSpecs.filter((spec) => !claimedOptions.has(spec.name)),
-    [convertOptionSpecs, claimedOptions],
+    () => audioOptionSpecs.filter((spec) => !claimedOptions.has(spec.name)),
+    [audioOptionSpecs, claimedOptions],
   );
 
   const nextTask = convertServerTask(caps, status?.audio_workflow_tasks, mode);

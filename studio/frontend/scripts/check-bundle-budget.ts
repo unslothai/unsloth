@@ -136,12 +136,16 @@ export const BUDGET = {
   // Main was 48 B raw / 29 B transfer over at ffa8fc3b9 (6,771,709 B raw, 2,035,904 B transfer). The browser
   // panel's notice for pages that hit a sandbox limit (#13761) adds 143 B raw / 44 B transfer (-> 6,771,852 B raw,
   // 2,035,948 B transfer, one machine and build, Node 24, chunk count unchanged at 95). Raised by both.
+  // Keeping site storage across browser panel pages (#13762) adds 1,644 B raw / 466 B transfer, the page-storage
+  // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
+  // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
+  // that growth.
   // Retiring whisper.cpp (#13753: the voice settings v2 migration and settling a saved whisper.cpp pick for the
-  // host) adds 1,468 B raw / 508 B transfer to the eager settings and chat chunks (6,771,852 -> 6,773,320 B raw,
-  // 2,035,948 -> 2,036,456 B transfer against 82f16ca554, one machine and build, Node 24, chunk count unchanged at
+  // host) adds 1,468 B raw / 633 B transfer to the eager settings and chat chunks (6,773,496 -> 6,774,964 B raw,
+  // 2,036,386 -> 2,037,019 B transfer against 345217f185, one machine and build, Node 24, chunk count unchanged at
   // 95). Raised by that growth so main's margin stays where it was.
-  transferBytes: 2_036_456,
-  rawBytes: 6_773_320,
+  transferBytes: 2_037_047,
+  rawBytes: 6_774_964,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

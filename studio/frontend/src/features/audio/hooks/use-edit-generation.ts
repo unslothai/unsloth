@@ -5,9 +5,9 @@ import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioApiError, runAudio } from "../api";
 import {
-  type AudioOptionSpec,
   type AudioOptionValues,
   audioOptionLabel,
+  audioOptionSpecsFor,
   audioOptionsForRequest,
   missingRequiredAudioOptions,
 } from "../audio-options";
@@ -73,7 +73,6 @@ export function useEditGeneration({
   setSelectedId,
   pendingTranscribeRelease,
   replayQueuedTtsPick,
-  audioOptionSpecs,
   audioOptionValues,
   sttRepo,
   settleSttRepo,
@@ -95,7 +94,6 @@ export function useEditGeneration({
     "refreshGallery" | "selectClip" | "setFallbackClip" | "setSelectedId"
   > &
   Pick<AudioModelSlot, "pendingTranscribeRelease" | "replayQueuedTtsPick"> & {
-    audioOptionSpecs: AudioOptionSpec[];
     audioOptionValues: AudioOptionValues;
     sttRepo: string | null;
     settleSttRepo?: (repo: string | null) => Promise<string | null>;
@@ -108,6 +106,10 @@ export function useEditGeneration({
   const delivery = useAudioEditStore((state) => state.delivery);
   const storedToolValues = useAudioCloneStore((state) => state.toolValues);
   const model = status?.active_model ?? null;
+  const audioOptionSpecs = useMemo(
+    () => audioOptionSpecsFor(status, "edit"),
+    [status],
+  );
   const [generationError, setGenerationError] = useState<string | null>(null);
   const [phaseLabel, setPhaseLabel] = useState<string | null>(null);
   const [sourceStatus, setSourceStatus] = useState<AudioSourceStatus>({
@@ -410,6 +412,7 @@ export function useEditGeneration({
     toolValues,
     handleToolValueChange,
     claimedOptions,
+    audioOptionSpecs,
     advancedOptionSpecs,
     core,
     blocker,
