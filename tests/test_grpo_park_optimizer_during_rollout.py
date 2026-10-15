@@ -160,3 +160,15 @@ def test_gate_skips_without_optimizer_or_under_deepspeed():
     assert enabled(types.SimpleNamespace(optimizer = object())) is True
     multi = types.SimpleNamespace(world_size = 2)
     assert enabled(types.SimpleNamespace(optimizer = object(), args = multi)) is False
+
+
+def test_no_parked_tensor_is_alive_at_empty_cache():
+    import weakref
+    fns, cuda = _load()
+    trainer, model, optimizer = _trainer_after_one_step()
+    refs = [weakref.ref(p.grad) for p in model.parameters()]
+    refs += [weakref.ref(v) for s in optimizer.state.values() for v in s.values() if isinstance(v, torch.Tensor)]
+    alive = []
+    cuda.empty_cache = lambda: alive.append(sum(r() is not None for r in refs))
+    record = fns["_park_optimizer_to_host"](trainer)
+    assert record is not None and alive == [0]

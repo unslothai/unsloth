@@ -893,6 +893,8 @@ def _park_optimizer_to_host(trainer):
         state[name] = host
     for param, _ in grads:
         param.grad = None
+    # Loop locals still hold the last CUDA tensors; drop them so empty_cache can release those blocks.
+    value = grad = None
     # D2H copies must land before the CUDA blocks are handed to vLLM / released.
     torch.cuda.synchronize()
     torch.cuda.empty_cache()
