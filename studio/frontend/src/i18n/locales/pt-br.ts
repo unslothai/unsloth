@@ -83,6 +83,9 @@ export const ptBR = {
     },
     agent: {
       working: "O Unsloth está navegando nesta aba",
+      waiting: "O Unsloth precisa da sua resposta no navegador para {chat}",
+      otherChat: "outro chat",
+      show: "Mostrar",
       stop: "Parar",
       allow: "Permitir",
       deny: "Negar",

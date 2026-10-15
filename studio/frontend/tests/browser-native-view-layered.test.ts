@@ -103,7 +103,7 @@ const calls: Call[] = [];
 register("./helpers/browser-store-resolver.mjs", import.meta.url);
 register("./helpers/native-view-resolver.mjs", import.meta.url);
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
-const { startNativeViews } = await import("../src/features/browser/native-view.ts");
+const { keepInBackground, releaseBackground, startNativeViews } = await import("../src/features/browser/native-view.ts");
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
 async function frame(): Promise<void> {
@@ -273,4 +273,32 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
   }
   assert.equal(placeholder.attributes.has("data-native-hole"), false, "closing the panel fills the hole");
   assert.equal(html.vars.has("--native-hole-x"), false);
+});
+
+test("a page at work in a chat off screen opens hidden, follows its tab, and outlives the panel", async () => {
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:shown");
+  const tabId = store.openTabIn("single:away", "https://away.example/") ?? "";
+  calls.length = 0;
+  keepInBackground(tabId);
+  await settle();
+  const opened = calls.find(({ command }) => command === "browser_view_open_background");
+  assert.deepEqual([opened?.args?.tabId, opened?.args?.url], [tabId, "https://away.example/"]);
+  // The agent moves it on: the hidden page follows, and is never shown over this chat.
+  store.navigate(tabId, { url: "https://away.example/next" }, { replace: false });
+  await settle();
+  assert.ok(calls.some(({ command, args }) => command === "browser_view_navigate" && args?.url === "https://away.example/next"));
+  // A panel opening and closing over this chat leaves it open (closed pages go; a kept one is hidden).
+  store.openUrl("https://mine.example/");
+  const stop = startNativeViews();
+  await frame();
+  await frame();
+  stop();
+  assert.ok(!calls.some(({ command, args }) => command === "browser_view_show" && args?.tabId === tabId));
+  assert.ok(!calls.some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
+  assert.deepEqual(calls.at(-1), { command: "browser_view_show", args: { tabId: null } });
+  // Let go with no panel up, it closes.
+  releaseBackground(tabId);
+  assert.ok(calls.some(({ command, args }) => command === "browser_view_close" && args?.tabId === tabId));
 });

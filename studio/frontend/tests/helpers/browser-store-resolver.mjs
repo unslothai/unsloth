@@ -7,7 +7,10 @@ const CHAT_STUB =
   encodeURIComponent(
     "export const useChatArtifactsStore = { getState: () => ({ closeArtifactSurface() {} }) };" +
       " const runtime = { incognito: false, setIncognito: (incognito) => void (runtime.incognito = incognito) };" +
-      " export const useChatRuntimeStore = { getState: () => runtime };",
+      " export const useChatRuntimeStore = { getState: () => runtime };" +
+      " export const useChatNavigationStore = { getState: () => ({}) };" +
+      " export const visibleChatItems = () => globalThis.__chatItems ?? [];" +
+      " export const openChatItemById = (item) => void (globalThis.__openedChats ??= []).push(item);",
   );
 
 const I18N_STUB =

@@ -83,6 +83,9 @@ export const de = {
     },
     agent: {
       working: "Unsloth surft in diesem Tab",
+      waiting: "Unsloth braucht im Browser deine Antwort für {chat}",
+      otherChat: "einen anderen Chat",
+      show: "Anzeigen",
       stop: "Stopp",
       allow: "Erlauben",
       deny: "Ablehnen",
