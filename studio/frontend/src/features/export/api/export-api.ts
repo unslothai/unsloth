@@ -89,6 +89,14 @@ export interface ExportOperationResponse {
   details?: { output_path?: string | null } & Record<string, unknown>;
 }
 
+/** The trained speculative-decoding drafter an export carried (backend `details.drafter`). */
+export interface ExportDrafterInfo {
+  strategy: "mtp" | "eagle3";
+  files?: string[];
+  vllm_command?: string | null;
+  llama_cpp_args?: string[] | string | null;
+}
+
 /** GGUF export options for a decision model (Clef / Laya) checkpoint folder. */
 export interface DecisionExportInfo {
   is_decision: boolean;

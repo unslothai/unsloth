@@ -12,6 +12,7 @@ import {
   consumeTrainingProgressStream,
 } from "../lib/training-sse-stream";
 import type {
+  DrafterCapability,
   TrainingResetResponse,
   TrainingStartRequest,
   TrainingStartRequestStatusResponse,
@@ -366,6 +367,21 @@ export function getTrainingMetrics(
   return options?.fresh
     ? requestTrainingMetrics.refresh(scope, expectedJobId)
     : requestTrainingMetrics.run(scope, expectedJobId);
+}
+
+/** Which drafter `modelName` can train after fine-tuning (MTP retrain or EAGLE-3) and where it runs. */
+export async function getDrafterCapability(
+  modelName: string,
+  signal?: AbortSignal,
+): Promise<DrafterCapability> {
+  const response = await authFetch(
+    `/api/train/drafter-capability?model_name=${encodeURIComponent(modelName)}`,
+    { signal },
+  );
+  if (!response.ok) {
+    throw new Error(await readFastApiError(response));
+  }
+  return (await response.json()) as DrafterCapability;
 }
 
 export async function streamTrainingProgress(options: {

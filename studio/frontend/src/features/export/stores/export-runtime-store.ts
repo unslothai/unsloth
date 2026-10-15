@@ -11,12 +11,25 @@ import {
   getExportStatus,
   isRecoverableTransportError,
   loadCheckpoint,
+  type ExportDrafterInfo,
   type ExportLogEntry,
   type ExportLogPollEntry,
   type ExportOperationResponse,
   type ExportStatus,
 } from "../api/export-api";
 import type { ExportMethod } from "../constants";
+
+// Here, not in export-api: tests swap that module for a stub of its request functions.
+function exportDrafterFrom(
+  details: ExportOperationResponse["details"] | undefined,
+): ExportDrafterInfo | null {
+  const drafter = details?.drafter;
+  if (typeof drafter !== "object" || drafter === null) return null;
+  const strategy = (drafter as Record<string, unknown>).strategy;
+  return strategy === "mtp" || strategy === "eagle3"
+    ? (drafter as ExportDrafterInfo)
+    : null;
+}
 
 /** Thrown by status recovery when the backend reports the op was cancelled. */
 class ExportCanceledError extends Error {
@@ -205,6 +218,8 @@ interface ExportRuntimeState {
     outputPath: string | null;
     outputPaths: { label: string; path: string }[];
     destination: ExportDestination;
+    /** Set when the export carried a trained drafter (MTP head or EAGLE-3). */
+    drafter?: ExportDrafterInfo | null;
   } | null;
   error: string | null;
   cancelRequested: boolean;
@@ -479,6 +494,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
       // banner can list each sibling directory a multi-format run created.
       set({ phase: "exporting" });
       const outputs: { label: string; path: string }[] = [];
+      let drafter: ExportDrafterInfo | null = null;
 
       if (params.exportMethod === "merged") {
         // Each selected format writes its own sibling directory (PEFT or non-PEFT base alike).
@@ -490,7 +506,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           if (!isCurrent()) return;
           set({ quantIndex: i });
           const sel = selections[i];
-          const { outputPath } = await runRecoverableOp(() =>
+          const { outputPath, details: mergedDetails } = await runRecoverableOp(() =>
             exportMerged({
               save_directory: params.saveDirectory,
               format_type: sel.formatType,
@@ -505,6 +521,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             }),
           );
           if (outputPath) outputs.push({ label: sel.label, path: outputPath });
+          drafter = exportDrafterFrom(mergedDetails) ?? drafter;
           if (!isCurrent()) return;
           set({ quantIndex: i + 1 });
         }
@@ -538,6 +555,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
             path: outputPath,
           });
         }
+        drafter = exportDrafterFrom(details);
         if (outputPath && params.npuQ4nx) {
           const sep = outputPath.includes("\\") ? "\\" : "/";
           outputs.push({ label: "AMD NPU (Q4NX)", path: `${outputPath}${sep}npu-q4nx` });
@@ -576,6 +594,7 @@ export const useExportRuntimeStore = create<ExportRuntimeStore>()((set, get) => 
           outputPath: outputs[0]?.path ?? null,
           outputPaths: outputs,
           destination: params.destination,
+          drafter,
         },
       });
     } catch (err) {

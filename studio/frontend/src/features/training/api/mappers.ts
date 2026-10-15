@@ -6,6 +6,7 @@ import {
   toBackendTrainingType,
 } from "../lib/training-methods";
 import type { SystemInfoResponse } from "@/hooks/use-system";
+import { drafterEligible, drafterRequestFrom } from "../lib/drafter-config";
 import type { TrainingStartRequest } from "../types/api";
 import type { TrainingConfigState } from "../types/config";
 
@@ -317,5 +318,25 @@ export function buildTrainingStartPayload(
     tensorboard_dir: config.enableTensorboard
       ? config.tensorboardDir.trim() || null
       : null,
+    // Spread only when sent: a run without a drafter posts exactly the fields it did before.
+    ...(sendsDrafter(config, system)
+      ? { drafter: drafterRequestFrom(config) }
+      : {}),
   };
+}
+
+/** On, a model the backend said can train one, a run type with a drafter phase, and not MLX. */
+export function sendsDrafter(
+  config: TrainingConfigState,
+  system: SystemInfoResponse | null = null,
+): boolean {
+  const capability = config.drafterCapability;
+  return (
+    config.drafterEnabled &&
+    drafterEligible(config) &&
+    system?.device_backend !== "mlx" &&
+    capability !== null &&
+    capability.supported &&
+    capability.model_name === config.selectedModel
+  );
 }

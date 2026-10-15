@@ -86,8 +86,12 @@ export const BUDGET = {
   // Read aloud's token cap and length warning add 0.2 KB raw / 0.1 KB transfer to the eager chat chunk
   // (6,739,816 -> 6,740,052 B raw, 2,021,725 -> 2,021,835 B transfer against af9d97837e, one machine
   // and build), which took main over; raised by that.
-  transferBytes: 2_026_610,
-  rawBytes: 6_743_236,
+  // Drafter training in the Train tab adds 4.3 KB raw / 1.2 KB transfer to the eager startup JS
+  // (6,585.8 -> 6,590.1 KB raw, 1,979.1 -> 1,980.3 KB transfer against c6341b8, one machine and
+  // build): its persisted training-store fields, their migration and the en strings hydrate at
+  // startup; the section itself is not in the startup set. Raised by that growth.
+  transferBytes: 2_027_910,
+  rawBytes: 6_747_736,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
