@@ -196,7 +196,15 @@ def test_rocm_target(monkeypatch):
     t = dd.resolve_diffusion_device_target()
     assert (t.device, t.backend, t.vendor) == ("cuda", "rocm", "amd")
     assert t.dtype == BF16
-    assert t.supports_default_torch_compile is False  # ROCm disables default compile
+    assert t.supports_default_torch_compile is True
+
+
+def test_rocm_target_compile_kill_switch(monkeypatch):
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    torch = _make_torch(cuda_available = True, bf16_supported = True)
+    _install(monkeypatch, torch, studio_device = "cuda", is_rocm = True)
+    t = dd.resolve_diffusion_device_target()
+    assert t.backend == "rocm" and t.supports_default_torch_compile is False
 
 
 def test_rocm_without_bf16_uses_fp16(monkeypatch):
@@ -311,6 +319,18 @@ def test_from_torch_device_cuda(monkeypatch):
     t = dd.diffusion_device_target_from_torch_device("cuda:0", FP32)
     assert (t.device, t.backend, t.vendor, t.dtype) == ("cuda", "cuda", "nvidia", FP32)
     assert t.is_cuda_torch_device
+
+
+def test_from_torch_device_tag_only_rocm(monkeypatch):
+    # AMD SDK / Radeon wheels: no torch.version.hip, ROCm only in __version__. Must stay ROCm so the
+    # probe and UNSLOTH_DIFFUSION_ROCM_COMPILE apply.
+    torch = _make_torch()
+    torch.__version__ = "2.9.0+rocm7.1.0"
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_ROCM_COMPILE", "0")
+    t = dd.diffusion_device_target_from_torch_device("cuda:1", BF16)
+    assert (t.backend, t.vendor, t.ordinal) == ("rocm", "amd", 1)
+    assert t.supports_default_torch_compile is False
 
 
 def test_from_torch_device_mps_and_cpu(monkeypatch):

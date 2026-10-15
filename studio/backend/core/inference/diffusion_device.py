@@ -529,7 +529,11 @@ def diffusion_device_target_from_torch_device(
     if device == "cuda":
         try:
             import torch
-            is_rocm = bool(getattr(getattr(torch, "version", None), "hip", None))
+
+            from .rocm_bf16 import is_rocm_torch
+
+            # Tag-aware: AMD SDK / Radeon wheels leave torch.version.hip unset.
+            is_rocm = is_rocm_torch(torch)
         except Exception:
             is_rocm = False
         return DiffusionDeviceTarget(
@@ -538,7 +542,7 @@ def diffusion_device_target_from_torch_device(
             backend = "rocm" if is_rocm else "cuda",
             vendor = "amd" if is_rocm else "nvidia",
             supports_model_cpu_offload = True,
-            supports_default_torch_compile = not is_rocm,
+            supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
             supports_pinned_transfer = True,
             # An overriding caller's "cuda:1" is a device choice to keep, not one to drop back to ordinal 0.
             ordinal = int(index) if index.isdigit() else None,
@@ -571,6 +575,15 @@ def float64_device(device: Any) -> Any:
     """Device to build float64 values on before moving the result to ``device``: itself, or CPU when it has no float64."""
     target = diffusion_device_target_from_torch_device(str(device), None)
     return device if target.supports_float64 else "cpu"
+
+
+def _rocm_compile_allowed() -> bool:
+    """Kill switch only; the install probe runs at compile time (``diffusion_rocm_compile``)."""
+    try:
+        from .diffusion_rocm_compile import rocm_compile_allowed
+        return rocm_compile_allowed()
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _cuda_or_rocm_target(
@@ -607,7 +620,7 @@ def _cuda_or_rocm_target(
         backend = "rocm" if is_rocm else "cuda",
         vendor = "amd" if is_rocm else "nvidia",
         supports_model_cpu_offload = True,
-        supports_default_torch_compile = not is_rocm,
+        supports_default_torch_compile = (not is_rocm) or _rocm_compile_allowed(),
         supports_pinned_transfer = True,
         ordinal = ordinal,
     )
