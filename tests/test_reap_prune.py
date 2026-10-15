@@ -208,7 +208,7 @@ def test_pruned_model_saves_reloads_and_writes_report(tmp_path):
     reap.reap_prune(
         model, None, sparsity = 0.25, dataset = _samples(), device = "cpu", report_path = str(report)
     )
-    assert json.loads(report.read_text()) == model._unsloth_reap_report
+    assert json.loads(report.read_text(encoding = "utf-8")) == model._unsloth_reap_report
     model.save_pretrained(tmp_path / "pruned")
     reloaded = AutoModelForCausalLM.from_pretrained(
         tmp_path / "pruned", dtype = torch.float64, experts_implementation = "eager"
@@ -284,7 +284,7 @@ def test_save_directory_becomes_the_merge_base(tmp_path):
     # Later merged / GGUF saves of a LoRA on top read the base checkpoint from config._name_or_path.
     assert model.config._name_or_path == str((tmp_path / "pruned").resolve())
     assert model._unsloth_reap_saved == model.config._name_or_path == model.name_or_path
-    saved = json.loads((tmp_path / "pruned" / "config.json").read_text())
+    saved = json.loads((tmp_path / "pruned" / "config.json").read_text(encoding = "utf-8"))
     assert saved.get("num_experts", saved.get("num_local_experts")) == 12
 
 
