@@ -3067,8 +3067,8 @@ html[data-chat-font] .aui-root {
 	}
 
 	.dark .unsloth-model-selector-menu.menu-soft-surface {
-		/* Match the left sidebar background. */
-		background-color: var(--sidebar);
+		/* The left sidebar's background, a hair lighter. */
+		background-color: color-mix(in srgb, var(--sidebar), white 1.5%);
 		box-shadow: none;
 	}
 
