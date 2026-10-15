@@ -166,6 +166,12 @@ def saving(monkeypatch, tmp_path):
         _normalize_compressed_method = lambda method: None,
         _normalize_torchao_method = lambda method: None,
         _is_qwen3_5_vlm = lambda model: False,
+        # Trained MTP head hooks: no head is attached in these fixtures.
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        _internal_mtp_save = contextlib.nullcontext,
+        _stitch_mtp_head = lambda model, directory: None,
+        _mtp_head_tensor_names = lambda model: [],
         # A Mistral-format view (#12144) refuses merged saves; these fixtures are not one.
         raise_if_merging_mistral_format_view = lambda model, save_method: None,
         lora_relative_to_original_base = lambda model: contextlib.nullcontext(),

@@ -143,9 +143,14 @@ def _wrap_save_pretrained(model):
     @functools.wraps(original)
     def save_pretrained(save_directory, *args, **kwargs):
         result = original(save_directory, *args, **kwargs)
-        if kwargs.get("push_to_hub") or not os.path.isdir(save_directory):
+        from ..save import _INTERNAL_MTP_SAVE, _save_mtp_head_beside_adapter, _stitch_mtp_head
+
+        if (
+            _INTERNAL_MTP_SAVE.get()
+            or kwargs.get("push_to_hub")
+            or not os.path.isdir(save_directory)
+        ):
             return result
-        from ..save import _save_mtp_head_beside_adapter, _stitch_mtp_head
 
         if os.path.isfile(os.path.join(save_directory, "adapter_config.json")):
             _save_mtp_head_beside_adapter(model, save_directory)

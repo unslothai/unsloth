@@ -237,6 +237,12 @@ _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
         "_qwen3_5_vlm_state_dict_for_save",
         "_determine_username",
         "unsloth_save_model",
+        # Trained MTP head hooks: no head is attached in these fixtures.
+        "_refuse_mtp_variant",
+        "_attached_mtp_head",
+        "_internal_mtp_save",
+        "_stitch_mtp_head",
+        "_mtp_head_tensor_names",
     }
 )
 
@@ -268,6 +274,11 @@ def _routing_environment(monkeypatch, model):
         _qwen3_5_vlm_state_dict_for_save = _not_reached,
         _determine_username = lambda repo, old, token: (repo, "owner"),
         unsloth_save_model = lambda *args, **kwargs: calls["adapter"].append(kwargs),
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        _internal_mtp_save = contextlib.nullcontext,
+        _stitch_mtp_head = lambda model, directory: None,
+        _mtp_head_tensor_names = lambda model: [],
         lora_relative_to_original_base = lambda model: (
             calls["convert"].append(model) or contextlib.nullcontext()
         ),
@@ -457,6 +468,13 @@ def _adapter_save_environment(monkeypatch):
         ),
         fast_save_pickle = lambda *args, **kwargs: None,
         clean_gpu_cache = lambda: None,
+        # Trained MTP head hooks: no head is attached in these fixtures.
+        _refuse_mtp_variant = lambda model, variant: None,
+        _attached_mtp_head = lambda model: None,
+        _internal_mtp_save = contextlib.nullcontext,
+        _save_mtp_head_beside_adapter = lambda model, directory: None,
+        _stitch_mtp_head = lambda model, directory: None,
+        _mtp_head_tensor_names = lambda model: [],
     ), uploads
 
 
