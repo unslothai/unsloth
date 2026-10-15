@@ -117,8 +117,13 @@ export const BUDGET = {
   // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
   // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
   // main's margin stays where it was.
-  transferBytes: 2_033_684,
-  rawBytes: 6_765_306,
+  // The Recents header "Delete all chats" item (#13779) adds 1,299 B raw / 316 B transfer to the eager startup
+  // set (6,764,964 -> 6,766,263 B raw, 2,033,544 -> 2,033,860 B transfer from 6c3bd16 to the feature commit,
+  // one machine and build, Node 26, chunk count unchanged at 95). Its confirmation reuses the already-eager
+  // shared Dialog, so the growth is the menu item and its strings in every eager locale rather than a lazy-loadable
+  // import; raised by that growth so main's margin stays where it was.
+  transferBytes: 2_034_000,
+  rawBytes: 6_766_605,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
