@@ -202,6 +202,23 @@ def nvml_topology(pynvml, gpus: List[dict]):
             pass
 
 
+def p2p_copy_probe_with_deadline(torch, count: int, timeout: float):
+    """p2p_copy_probe in a daemon thread: a wedged peer copy cannot hold up the verdict.
+    Returns (results, hung)."""
+    import threading
+
+    box = {}
+    worker = threading.Thread(
+        target = lambda: box.setdefault("out", p2p_copy_probe(torch, count)), daemon = True
+    )
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        msg = f"error: peer copy probe did not finish within {timeout:.0f}s (hung)"
+        return {(a, b): msg for a in range(count) for b in range(count) if a != b}, True
+    return box.get("out", {}), False
+
+
 def p2p_copy_probe(
     torch,
     count: int,
@@ -458,8 +475,18 @@ def doctor(
         typer.echo("- Reinstall torch with a build matching this driver and CUDA / ROCm runtime.")
         raise typer.Exit(code = 1)
 
-    info = collect_gpus(torch)
+    try:
+        info = collect_gpus(torch)
+    except Exception as e:
+        # A driver / runtime mismatch or a faulted GPU fails here, after a clean torch import.
+        typer.echo(f"GPU enumeration failed: {type(e).__name__}: {e}")
+        typer.echo("\n=== Verdict: PROBLEMS FOUND ===")
+        typer.echo(
+            "- Check that the driver matches this torch build and that every visible GPU is healthy."
+        )
+        raise typer.Exit(code = 1)
     pynvml = _load_pynvml()
+    probe_hung = False
     typer.echo("=== Versions ===")
     typer.echo(f"torch {info['torch']}")
     if info["hip"]:
@@ -492,8 +519,11 @@ def doctor(
         if info["hip"]:
             typer.echo("  skipped on ROCm")
         else:
-            p2p = p2p_copy_probe(torch, count)
+            p2p, probe_hung = p2p_copy_probe_with_deadline(torch, count, timeout)
             for (a, b), v in sorted(p2p.items()):
+                if probe_hung:
+                    typer.echo(f"  {a}->{b}  {v}")
+                    continue
                 peer = "yes" if torch.cuda.can_device_access_peer(a, b) else "no"
                 typer.echo(f"  {a}->{b}  peer_access={peer}  {v}")
         typer.echo(f"\n=== all_reduce smoke ({count} ranks, nccl) ===")
@@ -519,4 +549,8 @@ def doctor(
     typer.echo(f"\n=== Verdict: {'OK' if healthy else 'PROBLEMS FOUND'} ===")
     for h in hints:
         typer.echo(f"- {h}")
+    if probe_hung:
+        # The wedged CUDA call would also hang interpreter shutdown.
+        sys.stdout.flush()
+        os._exit(1)
     raise typer.Exit(code = 0 if healthy else 1)

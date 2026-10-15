@@ -414,3 +414,30 @@ def test_allreduce_smoke_reaps_ranks_when_the_wait_is_interrupted(monkeypatch):
         doctor_mod.allreduce_smoke(2, "gloo", timeout = 60, numel = 1024)
     assert len(started) == 2
     assert all(p.poll() is not None for p in started)
+
+
+def test_peer_copy_probe_has_a_deadline(monkeypatch):
+    release = threading.Event()
+
+    def wedged(torch, count):
+        release.wait(30)
+        return {}
+
+    monkeypatch.setattr(doctor_mod, "p2p_copy_probe", wedged)
+    out, hung = doctor_mod.p2p_copy_probe_with_deadline(None, 2, 0.2)
+    release.set()
+    assert hung and set(out) == {(0, 1), (1, 0)}
+    assert all(v.startswith("error:") and "hung" in v for v in out.values())
+
+
+def test_doctor_reports_a_gpu_enumeration_failure(monkeypatch):
+    torch = _fake_torch(2)
+
+    def fault(i):
+        raise RuntimeError("CUDA error: unspecified launch failure")
+
+    torch.cuda.get_device_properties = fault
+    result, _ = _run_doctor(monkeypatch, torch, [_smoke(True)])
+    assert result.exit_code == 1
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "GPU enumeration failed" in result.output and "PROBLEMS FOUND" in result.output
