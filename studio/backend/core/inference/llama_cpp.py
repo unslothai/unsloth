@@ -13122,6 +13122,7 @@ class LlamaCppBackend:
     _GPU_IDS_ARE_PCI_INDICES = None
     # index -> inherited uuid, when CUDA_VISIBLE_DEVICES named the NVML rows by uuid.
     _NVML_ROWS: list = []  # the last NVML inventory; _child_visibility_for reads it
+    _NVML_DRIVER_MAJOR: Optional[int] = None  # its driver branch: R570+ enumerates every MIG slice
 
     # Boot-time property: read once, not per launch (the #10613 host has 175
     # groups). Only the default root is cached; an explicit root (tests) re-reads.
@@ -14853,12 +14854,29 @@ class LlamaCppBackend:
         """The NVML rows CUDA_VISIBLE_DEVICES permits, in mask order: an index or a GPU-/MIG-
         uuid prefix per entry, as the CUDA runtime reads it. An entry naming no single device
         ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
-        MIG mode is one slice to CUDA (the first, when the mask does not name one), so its
-        first slice row stands in for the parent's whole-card memory, and a second slice of
-        the same card is dropped: the rows are keyed by physical index, and one slice per
-        card is what the driver exposed before R570 and what the child is pinned to."""
+        MIG mode is one slice to CUDA before R570 (the first, when the mask does not name one),
+        so its first slice row stands in for the parent's whole-card memory and a second slice
+        of the same card is dropped. R570+ enumerates every slice, so a card's visible slices
+        merge into one row (memory summed, capped at the card's, uuids joined for the child)."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
         parents = [r for r in rows if not r.get("mig")]
+        multi = (LlamaCppBackend._NVML_DRIVER_MAJOR or 0) >= 570
+
+        def merged(slices: list[dict]) -> dict:
+            if not multi or len(slices) == 1:
+                return slices[0]
+            parent = next(
+                (p for p in parents if str(p.get("index")) == str(slices[0].get("index"))), {}
+            )
+            out = dict(slices[0], uuid = ",".join(str(s.get("uuid", "")) for s in slices))
+            for key in ("memory_total_mib", "memory_free_mib"):
+                try:
+                    total = sum(int(s.get(key) or 0) for s in slices)
+                    cap = int(parent.get(key) or 0)
+                except (TypeError, ValueError):
+                    return slices[0]
+                out[key] = str(min(total, cap) if cap > 0 else total)
+            return out
 
         def as_cuda_sees(r: dict) -> dict:
             if r.get("mig"):
@@ -14866,32 +14884,42 @@ class LlamaCppBackend:
             slices = [
                 s for s in rows if s.get("mig") and str(s.get("index")) == str(r.get("index"))
             ]
-            return slices[0] if slices else r
+            return merged(slices) if slices else r
 
         tokens = [t.strip() for t in (raw or "").split(",") if t.strip()]
         picked: list[dict] = []
         if raw is None:
             picked = [as_cuda_sees(r) for r in parents]
+        named: dict[str, list[dict]] = {}  # MIG slices the mask named, per card
         for token in tokens:
-            if token.isdigit():
-                hits = [r for r in parents if str(r.get("index")) == token]
-            elif token.startswith("GPU-"):
+            prefix = re.match(r"\+?\d+", token)
+            if token.startswith("GPU-"):
                 hits = [r for r in parents if str(r.get("uuid", "")).startswith(token)]
             elif token.startswith("MIG-"):
                 # A MIG- entry names a slice row the probe lists under its parent.
                 hits = [
                     r for r in rows if r.get("mig") and str(r.get("uuid", "")).startswith(token)
                 ]
+            elif prefix:
+                # CUDA reads an index strtoul-style: "1gpu2" is GPU 1.
+                hits = [r for r in parents if str(r.get("index")) == str(int(prefix.group()))]
             else:
                 hits = []
             if len(hits) != 1:
                 break
-            picked.extend(
-                r
-                for r in map(as_cuda_sees, hits)
-                if str(r.get("index")) not in {str(p.get("index")) for p in picked}
-            )
-        return picked
+            hit = hits[0]
+            if hit.get("mig"):
+                slices = named.setdefault(str(hit.get("index")), [])
+                if hit not in slices:
+                    slices.append(hit)
+            if str(hit.get("index")) not in {str(p.get("index")) for p in picked}:
+                picked.append(as_cuda_sees(hit))
+        return [
+            merged(named[str(r.get("index"))])
+            if r.get("mig") and str(r.get("index")) in named
+            else r
+            for r in picked
+        ]
 
     @staticmethod
     def _uuid_by_index(rows: list[dict]) -> dict[int, str]:
@@ -14963,6 +14991,8 @@ class LlamaCppBackend:
         if not isinstance(payload, dict) or payload.get("source") != "nvml":
             return []
         LlamaCppBackend._NVML_ROWS = list(payload.get("devices") or [])
+        _major = re.match(r"\s*(\d+)\.", str(payload.get("driver_version") or ""))
+        LlamaCppBackend._NVML_DRIVER_MAJOR = int(_major.group(1)) if _major else None
         gpus: list[tuple[int, int, int]] = []
         for row in LlamaCppBackend._nvml_rows_visible(LlamaCppBackend._NVML_ROWS):
             try:
@@ -15015,6 +15045,7 @@ class LlamaCppBackend:
             return LlamaCppBackend._get_gpu_free_memory_vulkan(binary)
         # ── NVIDIA via nvidia-smi ────────────────────────────────────
         unsized_ids: list[int] = []
+        mig_card_rows: list[tuple[int, int, int]] = []
         try:
             from utils.hardware import gpu_query
 
@@ -15035,6 +15066,10 @@ class LlamaCppBackend:
             )
             if result.returncode == 0:
                 allowed = LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES")
+                if allowed is None and (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip():
+                    # CUDA's numeric-prefix reading ("1gpu2" is 1, "0,1,abc" is 0,1).
+                    _ids = LlamaCppBackend._resolve_visible_physical_ids()
+                    allowed = set(_ids) if _ids is not None else None
                 gpus: list[tuple[int, int, int]] = []
                 for line in result.stdout.strip().splitlines():
                     parts = [p.strip() for p in line.split(",")]
@@ -15073,9 +15108,15 @@ class LlamaCppBackend:
                 elif gpus:
                     from utils.hardware import nvidia
 
-                    if nvidia.get_mig_gpu_indices() & {g[0] for g in gpus}:
-                        # A MIG card is one slice to CUDA, its row the whole card.
-                        gpus = []
+                    mig = nvidia.get_mig_gpu_indices() & {g[0] for g in gpus}
+                    if mig:
+                        # A MIG card's row is the whole card: swap in its NVML slice reading,
+                        # keeping the whole cards. No reading at all: the later probes decide,
+                        # then these rows as before.
+                        slices = {g[0]: g for g in LlamaCppBackend._get_gpu_memory_nvml()}
+                        mig_card_rows = gpus
+                        gpus = [slices.get(g[0], g) if g[0] in mig else g for g in gpus]
+                        gpus = [g for g in gpus if g[0] not in mig or g[0] in slices]
                 if gpus:
                     LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
                     # The CLI row is the carve-out, not the pool. Discrete rows unchanged.
@@ -15099,6 +15140,9 @@ class LlamaCppBackend:
 
         # ── Torch fallback (covers AMD ROCm and missing nvidia-smi) ──
         gpus = LlamaCppBackend._get_gpu_memory_torch(binary, for_llama_server)
+        if not gpus and mig_card_rows:
+            LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES = True
+            return LlamaCppBackend._widen_integrated_cuda_rows(mig_card_rows)
         if gpus or not (for_llama_server and unsized_ids):
             return gpus
         return LlamaCppBackend._tegra_unified_memory_rows(unsized_ids)

@@ -104,9 +104,13 @@ def host(tmp_path, monkeypatch):
 
     monkeypatch.setattr(mod.subprocess, "run", run)
 
-    def set_host(cards, free, nvml_rows):
+    def set_host(cards, free, nvml_rows, driver = ""):
         state["cards"], state["free"] = cards, free
-        payload = {"source": "nvml", "devices": nvml_rows} if nvml_rows is not None else None
+        payload = (
+            {"source": "nvml", "driver_version": driver, "devices": nvml_rows}
+            if nvml_rows is not None
+            else None
+        )
         payload_path.write_text(json.dumps(payload), encoding = "utf-8")
 
     return set_host
@@ -222,6 +226,39 @@ class TestAMigCardIsSizedByItsSlice:
         ]
         assert hw._with_mig_instance_memory(devices) == devices
         assert LlamaCppBackend._get_gpu_memory() == [(0, 39000, A100_MIB), (1, 30000, A100_MIB)]
+
+
+class TestR570EnumeratesEverySlice:
+    @pytest.mark.parametrize("mask", [None, "0", f"{MIG0A},{MIG0B}"])
+    def test_every_slice_of_a_card_counts_on_r570(self, host, monkeypatch, mask):
+        host(TWO_SLICES, [38000], TWO_SLICES_NVML, driver = "570.86.15")
+        if mask is not None:
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 34000, 2 * 19968)]
+        assert LlamaCppBackend._pinned_child_visibility([0]) == f"{MIG0A},{MIG0B}"
+
+    def test_before_r570_only_the_first_named_slice_counts(self, host, monkeypatch):
+        host(TWO_SLICES, [38000], TWO_SLICES_NVML, driver = "550.54.15")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", f"{MIG0A},{MIG0B}")
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 15000, 19968)]
+        assert LlamaCppBackend._pinned_child_visibility([0]) == MIG0A
+
+
+class TestTelemetryFailuresNeverDropCards:
+    @pytest.mark.parametrize("mask, expected", [("1gpu2", [1]), ("1,2,abc", [1, 2])])
+    def test_a_numeric_prefix_mask_keeps_its_cards(self, host, monkeypatch, mask, expected):
+        host(MIXED, [39000, 30000, 40000], None)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", mask)
+        free = {1: 30000, 2: 40000}
+        assert LlamaCppBackend._get_gpu_memory() == [(i, free[i], A100_MIB) for i in expected]
+
+    def test_whole_cards_survive_a_missing_slice_reading(self, host):
+        host(MIXED, [39000, 30000, 40000], None)
+        assert LlamaCppBackend._get_gpu_memory() == [(1, 30000, A100_MIB), (2, 40000, A100_MIB)]
+
+    def test_a_mig_only_host_without_any_reading_keeps_the_card_rows(self, host):
+        host(TWO_SLICES, [38000], None)
+        assert LlamaCppBackend._get_gpu_memory() == [(0, 38000, A100_MIB)]
 
 
 class TestMigSlicesAreNotGpus:

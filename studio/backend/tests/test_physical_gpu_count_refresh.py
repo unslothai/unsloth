@@ -82,6 +82,18 @@ def test_an_smi_that_answers_later_replaces_the_torch_fallback(smi):
     assert hw._physical_gpu_count_from_smi is True
 
 
+def test_a_lower_smi_count_replaces_a_torch_count(smi, monkeypatch):
+    # R570+ torch counts each MIG slice; the first SMI answer is the physical count.
+    monkeypatch.setattr(hw, "_torch_get_physical_gpu_count", lambda: 7)
+    smi(None, seconds = 0.0)
+    assert hw.get_physical_gpu_count() == 7
+    smi(1)
+    assert hw.get_physical_gpu_count() == 1
+    assert hw._physical_gpu_count_from_smi is True
+    smi(0)
+    assert hw.get_physical_gpu_count() == 1
+
+
 def test_non_cuda_counts_are_never_reprobed(smi, monkeypatch):
     monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.MLX)
     assert hw.get_physical_gpu_count() == 1

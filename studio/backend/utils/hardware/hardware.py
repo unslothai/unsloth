@@ -6292,15 +6292,17 @@ def _nvidia_physical_gpu_row_count() -> Optional[int]:
 
 
 def _run_physical_gpu_count_probe() -> None:
-    """Keep a re-read NVIDIA count only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows."""
+    """Keep a re-read NVIDIA count only if it grew: a failed probe or a lower count keeps the old one, so detection never narrows. The first SMI answer replaces a torch fallback count even when lower: torch counts CUDA devices, and R570+ enumerates each MIG slice as one."""
     global _physical_gpu_count, _physical_gpu_count_from_smi, _physical_gpu_count_checked_at
     count = _nvidia_physical_gpu_row_count()
     # Stamped after the probe, so the next expiry also outlives gpu_query's own cache entry for it.
     _physical_gpu_count_checked_at = time.monotonic()
     previous = _physical_gpu_count
-    if count is None or previous is None or count <= previous:
+    if count is None or previous is None:
         return
-    logger.info("Physical GPU count grew from %d to %d; using the new GPUs", previous, count)
+    if count <= previous and (_physical_gpu_count_from_smi or count < 1):
+        return
+    logger.info("Physical GPU count changed from %d to %d (nvidia-smi)", previous, count)
     _physical_gpu_count = count
     _physical_gpu_count_from_smi = True
 
