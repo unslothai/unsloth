@@ -165,6 +165,10 @@ _KV_KEY_SUFFIXES = (
     ".attention.head_count_kv",
     ".embedding_length",
     ".attention.key_length",
+    ".ssm.conv_kernel",
+    ".ssm.inner_size",
+    ".ssm.state_size",
+    ".ssm.group_count",
 )
 
 
@@ -231,14 +235,35 @@ def _read_gguf_header(f: Any, *, tensors: bool = False) -> Tuple[Dict[str, Any],
         ttype = struct.unpack("<I", read(4))[0]
         read(8)  # data offset
         match = re.match(r"blk\.(\d+)\.", name)
-        if match is None:
+        # The output matrix (or the token embedding tied embeddings copy there) is one more
+        # indivisible allocation, kept on the last device; -2 / -1 below.
+        index = int(match.group(1)) if match else _OUTPUT_KEYS.get(name)
+        if index is None:
             continue
         if ttype not in GGML_QUANT_SIZES:
             return out, {}
         block_size, type_size = GGML_QUANT_SIZES[ttype]
-        index = int(match.group(1))
         blocks[index] = blocks.get(index, 0) + elements // block_size * type_size
+    if -1 in blocks and -2 in blocks:
+        del blocks[-2]  # an untied output: the embedding stays on the host
     return out, blocks
+
+
+_OUTPUT_KEYS = {"output.weight": -1, "token_embd.weight": -2}
+
+
+def _ssm_state_bytes(vals: Dict[str, Any], n_parallel: int) -> int:
+    """f32 recurrent state per slot, as llama.cpp allocates for Mamba / gated-delta layers;
+    every block counted as recurrent, an upper bound for hybrids."""
+    arch = vals.get("general.architecture")
+    inner = vals.get(f"{arch}.ssm.inner_size") or 0
+    state = vals.get(f"{arch}.ssm.state_size") or 0
+    if not (arch and inner and state):
+        return 0
+    conv = max(0, (vals.get(f"{arch}.ssm.conv_kernel") or 0) - 1)
+    groups = vals.get(f"{arch}.ssm.group_count") or 0
+    per_layer = conv * (inner + 2 * groups * state) + state * inner
+    return int(per_layer * 4 * (vals.get(f"{arch}.block_count") or 0) * max(1, int(n_parallel)))
 
 
 def _gguf_kv_scalars(f: Any) -> Dict[str, Any]:
@@ -366,6 +391,26 @@ def _flag_args(args: Sequence[str], flags: frozenset) -> List[str]:
         if name in flags:
             out += [token] if sep else tokens[i : i + 2]
     return out
+
+
+def _locks_host_copy(request: Any, args: Sequence[str]) -> bool:
+    """mlock in any spelling: a pinned full host copy, on unified memory the pool the layers use."""
+    if "mlock" in str(getattr(request, "load_mode", None) or "").lower():
+        return True
+    for i, a in enumerate(args):
+        name, eq, inline = str(a).partition("=")
+        if name == "--mlock":
+            return True
+        if name == "--load-mode":
+            value = inline if eq else (str(args[i + 1]) if i + 1 < len(args) else "")
+            if "mlock" in value.lower():
+                return True
+    from core.inference.llama_cpp import _LLAMA_ARG_FALSE_VALUES
+
+    lock = (os.environ.get("LLAMA_ARG_MLOCK") or "").strip().lower()
+    if lock and lock not in _LLAMA_ARG_FALSE_VALUES:
+        return True
+    return "mlock" in (os.environ.get("LLAMA_ARG_LOAD_MODE") or "").lower()
 
 
 def _caller_placement(args: Sequence[str]) -> Optional[str]:
@@ -1003,6 +1048,12 @@ class ClusterServing:
                 "the caller keeps the KV cache in host memory; placement is theirs",
             )
             return request
+        if _locks_host_copy(request, flags):
+            self.topology, self.reason = (
+                "single",
+                "the caller locks a full host copy of the model (mlock); placement is theirs",
+            )
+            return request
         batch, ubatch, _named, _named_u = _named_batch_sizes(
             flags,
             os.environ,
@@ -1235,7 +1286,6 @@ class ClusterServing:
             env_projector = ""
         self._projector_url = bool(
             self._has_projector
-            and not host_projector
             and not disable_vision
             and (
                 (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
@@ -1316,6 +1366,9 @@ class ClusterServing:
             int(ss.gguf_size_bytes(p) or 0) for p in dict.fromkeys(projectors) if p not in dropped
         )
         sidecars += (_MMPROJ_VRAM_SAFETY - 1) * (named_bytes + auto_bytes)
+        if host_projector:
+            # Charged for unified memory, but a discrete GPU never held it: never freed.
+            self._uncertain_extra = _MMPROJ_VRAM_SAFETY * (named_bytes + auto_bytes)
         if size is None:
             size = await asyncio.to_thread(
                 ss.remote_gguf_size_bytes, model_path, variant, getattr(request, "hf_token", None)
@@ -1355,8 +1408,10 @@ class ClusterServing:
             )
         if kv is None and ctx and size:
             kv = _kv_from_scalars(header, ctx, cache_type, cache_type_v, ss)
-            self._unsized_kv = kv is None
-        kv = float(kv or 0.0)
+        recurrent = _ssm_state_bytes(header, n_parallel)
+        if kv is None and ctx and size:
+            self._unsized_kv = not recurrent  # a pure state-space model has no attention KV
+        kv = float(kv or 0.0) + recurrent
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:

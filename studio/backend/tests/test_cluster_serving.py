@@ -2036,7 +2036,11 @@ def test_the_header_reader_matches_the_local_kv_estimate(monkeypatch, tmp_path):
         "llama.attention.head_count_kv": 8,
         "llama.embedding_length": 8192,
     }
-    assert blocks == {0: 8192 * 8192 * 4, 1: 64 * 144 + 8192 * 8192 * 2}
+    # Tied embeddings: llama.cpp copies the embedding to the output device, one more lump.
+    assert blocks == {0: 8192 * 8192 * 4, 1: 64 * 144 + 8192 * 8192 * 2, -2: 8192 * 1000 * 2}
+    untied = tensors + [("output.weight", [8192, 1000], 1)]
+    _vals, untied_blocks = cs._read_gguf_header(io.BytesIO(_gguf_header(kvs, untied)), tensors = True)
+    assert untied_blocks[-1] == 8192 * 1000 * 2 and -2 not in untied_blocks
     kv = cs._kv_from_scalars(vals, 8192, None, None, ss)
     assert kv == 80 * 8192 * 8 * (8192 // 64) * 4  # f16 K + V, as estimate_kv_bytes computes
 
@@ -2228,3 +2232,92 @@ def test_retiring_a_served_split_forces_a_relaunch(monkeypatch):
     monkeypatch.setattr(ss, "is_spark", lambda: False)
     out = run(ss.before_load(_request(), 4))
     assert out.force_reload is True and cs.state().retire_on_commit
+
+
+def test_recurrent_state_is_charged_per_slot():
+    vals = {
+        "general.architecture": "qwen3next",
+        "qwen3next.block_count": 48,
+        "qwen3next.ssm.conv_kernel": 4,
+        "qwen3next.ssm.inner_size": 4096,
+        "qwen3next.ssm.state_size": 128,
+        "qwen3next.ssm.group_count": 16,
+    }
+    per_layer = 3 * (4096 + 2 * 16 * 128) + 128 * 4096
+    assert cs._ssm_state_bytes(vals, 8) == per_layer * 4 * 48 * 8
+    assert cs._ssm_state_bytes({"general.architecture": "llama"}, 8) == 0
+
+
+def test_a_state_space_model_without_attention_kv_is_sized(monkeypatch):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "estimate_kv_bytes", lambda *a, **k: None)
+    header = {
+        "general.architecture": "mamba2",
+        "mamba2.block_count": 64,
+        "mamba2.ssm.conv_kernel": 4,
+        "mamba2.ssm.inner_size": 8192,
+        "mamba2.ssm.state_size": 128,
+        "mamba2.ssm.group_count": 8,
+    }
+    monkeypatch.setattr(cs, "_local_gguf_header", lambda *a, **k: (header, {}))
+    run(ss.before_load(_request(max_seq_length = 8192), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert cs.state().plan.kv_bytes == cs._ssm_state_bytes(header, 4)
+
+
+@pytest.mark.parametrize("env", [False, True])
+def test_a_host_projector_url_keeps_the_load_local(monkeypatch, env):
+    seen = _cluster_env(monkeypatch)
+    if env:
+        monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.com/mmproj.gguf")
+    extra = ["--no-mmproj-offload"] + ([] if env else ["-mmu", "https://example.com/m.gguf"])
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "URL" in ss.status()["reason"]
+
+
+@pytest.mark.parametrize("extra, freed", [(["--no-mmproj-offload"], 0), ([], 21 * GIB)])
+def test_a_host_ram_projector_is_not_counted_as_freed(monkeypatch, tmp_path, extra, freed):
+    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    mmproj = tmp_path / "mmproj.gguf"
+    mmproj.write_bytes(b"x")
+    sizes = {str(mmproj): 15 * GIB}
+    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
+    out = run(ss.before_load(_request(llama_extra_args = ["--mmproj", str(mmproj)] + extra), 4))
+    assert ss.status()["topology"] == "layer_split"
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    assert sum(cs.state()._resident.values()) == pytest.approx(85 * GIB + freed)
+
+
+@pytest.mark.parametrize(
+    "kw, extra, env",
+    [
+        ({"load_mode": "mlock"}, [], {}),
+        ({"load_mode": "mmap+mlock"}, [], {}),
+        ({}, ["--mlock"], {}),
+        ({}, ["--load-mode", "mmap+mlock"], {}),
+        ({}, [], {"LLAMA_ARG_MLOCK": "1"}),
+        ({}, [], {"LLAMA_ARG_LOAD_MODE": "mlock"}),
+    ],
+)
+def test_a_locked_host_copy_keeps_the_load_local(monkeypatch, kw, extra, env):
+    seen = _cluster_env(monkeypatch)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    request = _request(llama_extra_args = extra, **kw)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "mlock" in ss.status()["reason"]
+
+
+@pytest.mark.parametrize("kw, env", [({"load_mode": "none"}, {}), ({}, {"LLAMA_ARG_MLOCK": "0"})])
+def test_load_modes_without_a_locked_copy_still_split(monkeypatch, kw, env):
+    _cluster_env(monkeypatch)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    run(ss.before_load(_request(**kw), 4))
+    assert ss.status()["topology"] == "layer_split"
