@@ -285,7 +285,8 @@ export function EditProjectDialog({
             Source folders
           </h3>
           <p className="text-ui-13 text-muted-foreground">
-            Indexed and kept in sync, for every chat in this project to search.
+            Keep supported documents in sync for chats to search. Linking does
+            not grant access to edit the original files.
           </p>
           <div className="mt-0.5">
             <LinkedFoldersManager
