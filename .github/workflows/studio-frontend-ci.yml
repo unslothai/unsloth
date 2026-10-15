@@ -333,22 +333,92 @@ jobs:
             tests/studio/test_heavy_thread_gap_contract.py \
             tests/studio/test_code_block_flicker_contract.py -q
 
-      - name: Browser smoke for ANSI tool output
+      # Keep data settings separate from the shorter checks. Each group owns its cache.
+      # The step bound fires before the job's: a job timeout is a cancellation, which skips the
+      # failure-only artifact upload, so a hung check would leave no log anywhere.
+      - name: Browser smoke groups for data settings and frontend controls
         working-directory: ${{ github.workspace }}
-        env:
-          PW_BROWSER: chromium
-        run: python3 tests/studio/playwright_strip_ansi_smoke.py
+        timeout-minutes: 15
+        run: |
+          mkdir -p logs
+          group_pids=()
+          # The groups write to files, so their output reaches the step log only here: on every
+          # exit, including a timeout or a cancel, after both groups have stopped.
+          cleanup() {
+            for pid in "${group_pids[@]}"; do
+              kill -TERM "$pid" 2>/dev/null || true
+            done
+            for pid in "${group_pids[@]}"; do
+              wait "$pid" 2>/dev/null || true
+            done
+            cat logs/playwright-frontend-data.log logs/playwright-frontend-controls.log 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' TERM
+
+          stop_check() {
+            if [ -n "$check_pid" ]; then
+              kill -TERM "$check_pid" 2>/dev/null || true
+              wait "$check_pid" 2>/dev/null || true
+            fi
+          }
+          run_check() {
+            local name=$1 status=0
+            shift
+            echo "::group::$name"
+            "$@" &
+            check_pid=$!
+            wait "$check_pid" || status=$?
+            check_pid=
+            echo "$name: exit $status"
+            echo "::endgroup::"
+            [ "$status" -eq 0 ] || { echo "::error title=Browser smoke $name::$name exited $status"; group_failed=1; }
+          }
+
+          (
+            group_failed=0 check_pid=
+            trap stop_check EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+            export VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-frontend-data"
+            run_check data_settings python3 tests/studio/playwright_data_settings.py
+            exit "$group_failed"
+          ) > logs/playwright-frontend-data.log 2>&1 &
+          group_pids+=("$!")
+          (
+            group_failed=0 check_pid=
+            trap stop_check EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+            export VITE_TEST_CACHE_DIR="$RUNNER_TEMP/vite-frontend-controls"
+            run_check settings_tabs python3 tests/studio/playwright_settings_tabs.py
+            run_check settings_tabs_blocked env PW_CHUNK_FAIL=data PW_PORT=5400 \
+              PW_OUT=logs/settings_tabs_blocked_report.json \
+              python3 tests/studio/playwright_settings_tabs.py
+            run_check find_in_page python3 tests/studio/playwright_find_in_page.py
+            run_check keyboard_shortcuts python3 tests/studio/playwright_keyboard_shortcuts.py
+            run_check strip_ansi env PW_BROWSER=chromium \
+              python3 tests/studio/playwright_strip_ansi_smoke.py
+            run_check composer_icons timeout --kill-after=10s 180s \
+              python3 tests/studio/playwright_composer_icons.py chromium
+            run_check research_review python3 tests/studio/playwright_research_review.py
+            exit "$group_failed"
+          ) > logs/playwright-frontend-controls.log 2>&1 &
+          group_pids+=("$!")
+
+          failed=0
+          for pid in "${group_pids[@]}"; do
+            wait "$pid" || failed=1
+          done
+          group_pids=()
+          exit "$failed"
 
       - name: Browser smoke for the MCP App tool bridge
         working-directory: ${{ github.workspace }}
         env:
           PW_BROWSER: chromium
         run: python3 tests/studio/playwright_mcp_app_bridge_smoke.py
-
-      - name: Composer icon alignment
-        working-directory: ${{ github.workspace }}
-        timeout-minutes: 3
-        run: python3 tests/studio/playwright_composer_icons.py chromium
 
       - name: Icon tooltips follow the pointer between neighbours
         working-directory: ${{ github.workspace }}
@@ -369,11 +439,10 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_research_freeze.py
 
-      - name: Browser smoke for reopening the research plan
-        working-directory: ${{ github.workspace }}
-        run: python3 tests/studio/playwright_research_review.py
-
-      # Gate: the released and streamdown variants are positive controls that MUST flicker.
+      # A gate, not a measurement. The released and streamdown variants are positive controls
+      # that MUST flicker: a run where neither collapses means the detector stopped seeing, not
+      # that the flicker stopped. Chromium only on a PR, the engine whose content-visibility
+      # fallback the index.css override exists for.
       - name: Browser smoke for code block flicker
         working-directory: ${{ github.workspace }}
         env:
@@ -420,41 +489,17 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tests/studio/playwright_nonmodal_menus.py
 
-      - name: Browser smoke for the settings tab panels
-        working-directory: ${{ github.workspace }}
-        run: python3 tests/studio/playwright_settings_tabs.py
-
-      - name: Data settings deletion choices
-        working-directory: ${{ github.workspace }}
-        run: python3 tests/studio/playwright_data_settings.py
-
-      # SMOKE_ENGINES=chromium,firefox,webkit runs all three engines.
-      - name: Browser smoke for keyboard shortcuts
-        working-directory: ${{ github.workspace }}
-        run: python3 tests/studio/playwright_keyboard_shortcuts.py
-
-      # Also degrades the engine three ways (no highlight registry, legacy and missing
-      # checkVisibility). SMOKE_ENGINES=chromium,firefox,webkit runs all three.
-      - name: Browser smoke for find in page
-        working-directory: ${{ github.workspace }}
-        run: python3 tests/studio/playwright_find_in_page.py
-
       - name: Browser smoke for tool activity collapse
         working-directory: ${{ github.workspace }}
         env:
           PW_ENGINE: chromium
         run: python3 tests/studio/playwright_tool_activity.py --json
 
-      # An unguarded panel load failure unmounts the whole app, not one panel.
-      - name: Browser smoke for a settings panel that cannot load
-        working-directory: ${{ github.workspace }}
-        env:
-          PW_CHUNK_FAIL: data
-          PW_PORT: '5400'
-          PW_OUT: logs/settings_tabs_blocked_report.json
-        run: python3 tests/studio/playwright_settings_tabs.py
-
-      # Reports only: budgets are calibrated on a developer machine. Tighten from runner data.
+      # Reports, does not gate, for now. The budgets inside are calibrated on a
+      # developer machine, and this measures a CPU-bound render on a shared runner
+      # under 6x throttling, so a budget set from one box is a flake waiting to
+      # happen. Tighten it from observed runs here and drop continue-on-error, the
+      # way the startup profile did.
       - name: Browser smoke for chat stream pacing
         id: stream_pacing
         working-directory: ${{ github.workspace }}

@@ -12,12 +12,10 @@ activated. Expects `pip` and `python` on PATH to point at the venv.
 from __future__ import annotations
 
 import ast
-import contextlib
 import functools
 import glob
 import importlib
 import importlib.util
-import io
 import json
 import locale
 import os
@@ -53,8 +51,6 @@ def _nvidia_library_inventory():
 
 
 from backend.utils.kernel_install import (
-    KERNELS,
-    install_kernel,
     install_prebuilt,
     uninstall_command,
 )
@@ -7964,89 +7960,6 @@ def _ensure_flash_attn() -> None:
         _remove_stale_flash_attn()
 
 
-def _ssm_kernel_install_disabled() -> bool:
-    return os.getenv("UNSLOTH_STUDIO_SKIP_SSM_KERNELS_INSTALL") == "1"
-
-
-def _ensure_ssm_kernels() -> None:
-    """causal-conv1d and mamba-ssm prebuilt wheels at setup, via the wheel-only install_kernel."""
-    if _ssm_kernel_install_disabled() or NO_TORCH or IS_MACOS:
-        return
-    # Bounded on every platform, and a probe that cannot launch skips this optional step.
-    try:
-        env = probe_torch_wheel_env(timeout = _FLASH_ATTN_IMPORT_PROBE_TIMEOUT, include_windows = True)
-    except OSError:
-        return
-    if env is None:
-        return
-
-    # A new runner per call resets install_kernel's per-runner GPU / Triton cache after a torch
-    # repair; it bounds import probes, not installs.
-    def run(cmd, *args, **kwargs):
-        if list(cmd[:2]) == [sys.executable, "-c"]:
-            kwargs.setdefault("timeout", _FLASH_ATTN_IMPORT_PROBE_TIMEOUT)
-        return subprocess.run(cmd, *args, **kwargs)
-
-    def loads(check: str) -> bool | None:
-        try:
-            return (
-                run(
-                    [sys.executable, "-c", check],
-                    stdout = subprocess.DEVNULL,
-                    stderr = subprocess.DEVNULL,
-                ).returncode
-                == 0
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            return None
-
-    for name in ("causal_conv1d", "mamba_ssm"):
-        distribution, check = KERNELS[name]
-        installed = _installed_distribution_version(distribution) is not None
-        # Local first, so an offline re-run does not wait on a wheel HEAD request.
-        if installed and loads(check):
-            _note(f"{name} already installed and loads.")
-            continue
-        status = 0
-        buffer = io.StringIO()
-        if _uv_is_offline():
-            # install_wheel's pip fallback ignores UV_OFFLINE; stale removal below still runs.
-            if not installed:
-                _note(
-                    f"{name} not installed: UV_OFFLINE is set; run `unsloth install-kernels` online"
-                )
-        else:
-            try:
-                with contextlib.redirect_stdout(buffer):
-                    status = install_kernel(name, env, run = run, install_without_gpu = True)
-            except Exception as exc:
-                status = 1
-                buffer.write(f"{type(exc).__name__}: {exc}")
-        # install_kernel redacts only the wheel URL; uv / pip failure text can name another index.
-        for line in _redact_install_output(buffer.getvalue()).splitlines():
-            if line.strip():
-                _note(line.removeprefix("Unsloth: "))
-        if status or f"Unsloth: installed {name} " in buffer.getvalue():
-            _count_install_action()
-        if _installed_distribution_version(distribution) is not None and loads(check) is False:
-            _count_install_action()
-            try:
-                removed = _uninstall_distribution(distribution)
-            except OSError:
-                removed = False
-            if removed:
-                _step("warning", f"{name} does not load with this torch; removed it", _warn)
-            else:
-                _step(
-                    "warning",
-                    f"{name} does not load with this torch and could not be removed; "
-                    f"uninstall {distribution} manually",
-                    _warn,
-                )
-        elif status:
-            _step("warning", f"Continuing without {name}", _warn)
-
-
 # -- uv bootstrap ------------------------------------------------------
 
 USE_UV = False  # Set by _bootstrap_uv() at the start of install_python_stack()
@@ -11573,7 +11486,6 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         base_total += 1  # ROCm torch check (step 2b), non-macOS
         base_total += 1  # flash-attn, Linux and Windows
-        base_total += 1  # causal-conv1d + mamba-ssm, same gate
         if not IS_WINDOWS:
             base_total += 1  # torch final repair (step 13), Linux
         else:
@@ -11943,8 +11855,6 @@ def install_python_stack() -> int:
     if not IS_MACOS and not NO_TORCH:
         _progress("flash-attn")
         _ensure_flash_attn()
-        _progress("mamba kernels")
-        _ensure_ssm_kernels()
 
     # 8. Unsloth dependencies
     if not _skip_step(REQ_ROOT / "studio.txt", "Unsloth Studio deps", no_deps = False):
@@ -12090,9 +12000,8 @@ def install_python_stack() -> int:
                 "flash-attn"
             )
             _install_torchao_for_torch(_torch_after_repair)
-            # resync the kernels because the repair can invalidate the wheels selected earlier.
+            # resync flash-attn because the repair can invalidate the wheel selected earlier.
             _ensure_flash_attn()
-            _ensure_ssm_kernels()
         # Unguarded: torch==2.10.0 accepts 2.10.0+rocm7.1, and an earlier run may have moved it.
         _evict_xformers_built_for_another_torch(scope = "linux torch repair", family_only = True)
         _evict_xformers_requiring_another_torch()
@@ -12106,9 +12015,8 @@ def install_python_stack() -> int:
             return 1
         _torch_after_flavor = str(_probe_installed_torch_version() or "")
         if _torch_after_flavor and _torch_after_flavor != _torch_before_flavor:
-            # The kernels were chosen for the torch the invariant just replaced, as in step 13.
+            # flash-attn was chosen for the torch the invariant just replaced, as in step 13.
             _ensure_flash_attn()
-            _ensure_ssm_kernels()
         # A direct run has no setup.ps1 postlude to swap triton back. After the invariant,
         # because the swap keys off the installed +xpu label.
         _ensure_xpu_triton()
