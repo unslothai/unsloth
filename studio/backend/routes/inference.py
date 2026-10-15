@@ -11205,8 +11205,9 @@ async def _auto_switch_npu_model(
 ) -> None:
     """Load a downloaded ``lemonade:<id>`` model a request names, when auto-switch is on.
 
-    Same lock and gates as a GGUF switch; ``_load_npu_model`` keeps the owner-only and
-    not-downloaded refusals. Off, the request still gets the not-loaded 404.
+    Same lock, gates, waiter count and cancellation as a GGUF switch; ``_load_npu_model``
+    drains active inference and keeps the owner-only and not-downloaded refusals. Off, the
+    request still gets the not-loaded 404.
     """
     from core.inference.gpu_arbiter import require_no_foreign_generations
     from core.inference.llama_keepwarm import inference_lifecycle_gate, model_load_gate
@@ -11216,23 +11217,42 @@ async def _auto_switch_npu_model(
         return
     if await asyncio.to_thread(_loaded_satisfies, named_model):
         return
+    cancel_event = getattr(getattr(fastapi_request, "state", None), "generation_cancel_event", None)
+
+    def _raise_if_cancelled() -> None:
+        if cancel_event is not None and cancel_event.is_set():
+            raise HTTPException(status_code = 409, detail = "Generation cancelled")
+
+    _raise_if_cancelled()
     switch_path = getattr(getattr(fastapi_request, "url", None), "path", None)
-    async with _auto_switch_lock():
-        await _acquire_swap_gate()
-        try:
-            async with model_load_gate(), inference_lifecycle_gate():
-                # Re-read under the gate: another request may have loaded it while this one waited.
-                if await asyncio.to_thread(_loaded_satisfies, named_model):
-                    return
-                require_no_foreign_generations(path = switch_path)
-                await _load_model_impl(
-                    LoadRequest(model_path = named_model),
-                    fastapi_request,
-                    current_subject,
-                    current_request_counted = True,
-                )
-        finally:
-            _auto_switch_process_lock.release()
+    # Counted as a queued switch, so another switch's drain does not wait on this request.
+    key = _switch_key(named_model, None)
+    _note_switch_waiter(key, 1)
+    try:
+        async with _auto_switch_lock():
+            await _acquire_swap_gate()
+            try:
+                async with model_load_gate(), inference_lifecycle_gate():
+                    # Re-read under the gate: another request may have loaded it while this one waited.
+                    if await asyncio.to_thread(_loaded_satisfies, named_model):
+                        return
+                    require_no_foreign_generations(path = switch_path)
+                    await _load_model_impl(
+                        LoadRequest(model_path = named_model),
+                        fastapi_request,
+                        current_subject,
+                        current_request_counted = True,
+                        **({"load_cancel_event": cancel_event} if cancel_event is not None else {}),
+                    )
+                    _raise_if_cancelled()
+            finally:
+                # Deregister before releasing the gate, as the GGUF switch does.
+                _note_switch_waiter(key, -1)
+                key = None
+                _auto_switch_process_lock.release()
+    finally:
+        if key is not None:
+            _note_switch_waiter(key, -1)
 
 
 async def _maybe_auto_switch_model(
@@ -11433,7 +11453,8 @@ async def _maybe_auto_switch_model(
             named_model,
             fastapi_request,
             gguf_only = gguf_only,
-            needs_vision = gguf_requires_vision,
+            # Not gguf_requires_vision: NPU chat rejects tool-result images too.
+            needs_vision = require_vision,
             needs_audio = bool(
                 require_audio_input
                 or require_video
@@ -18616,6 +18637,23 @@ async def _load_npu_model(
         await asyncio.to_thread(npu.loadable_model, model_id)
     except NpuError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
+    llama_backend = get_llama_cpp_backend()
+    unsloth_backend = _peek_inference_backend()
+    serving = bool(
+        getattr(llama_backend, "is_active", getattr(llama_backend, "is_loaded", False))
+        or (unsloth_backend is not None and unsloth_backend.active_model_name)
+        or resident is not None
+    )
+    if serving:
+        # As for GGUF: refuse a non-forced swap fast, then drain active inference (the caller
+        # holds the lifecycle gate) before anything is unloaded. An auto-switch has no
+        # on_reload_confirmed, so this drain is all that keeps it from cutting a reply short.
+        if on_reload_confirmed is not None:
+            on_reload_confirmed(cancel = False)
+        await _wait_for_model_switch_idle(
+            current_request_counted = current_request_counted,
+            cancel_pending = on_reload_confirmed is not None and bool(request.force_cancel_active),
+        )
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
     if on_reload_confirmed is not None:
@@ -18626,7 +18664,7 @@ async def _load_npu_model(
                 timeout_s = _POST_CANCEL_DRAIN_TIMEOUT_S,
             )
     _set_preview_resident(None)
-    await _unload_llama_before_standard_load(get_llama_cpp_backend())
+    await _unload_llama_before_standard_load(llama_backend)
     backend = _peek_inference_backend()
     if backend is not None and backend.active_model_name:
         logger.info(

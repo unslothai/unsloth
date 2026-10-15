@@ -12481,3 +12481,42 @@ def test_an_image_request_switches_to_a_vision_npu_model(monkeypatch):
         )
     )
     assert [call.model_path for call in rec.calls] == [_NPU_MODEL]
+
+
+def test_a_cancelled_request_never_switches_to_an_npu_model(monkeypatch):
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    cancel = threading.Event()
+    cancel.set()
+    request = SimpleNamespace(state = SimpleNamespace(generation_cancel_event = cancel))
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route._maybe_auto_switch_model(_NPU_MODEL, request, "tester"))
+    assert excinfo.value.status_code == 409
+    assert rec.calls == []
+
+
+def test_a_tool_result_image_never_switches_to_a_text_only_npu_model(monkeypatch):
+    # A text-only GGUF reads a tool-result image as a note; NPU chat rejects it after the load.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            inference_route._maybe_auto_switch_model(
+                _NPU_MODEL, object(), "tester", require_vision = True, tool_images_only = True
+            )
+        )
+    assert "cannot read images" in str(excinfo.value.detail)
+    assert rec.calls == []
+
+
+def test_an_npu_switch_counts_as_a_queued_switch_while_it_loads(monkeypatch):
+    # Uncounted, a GGUF switch waiting on the lock this one holds kept its drain from finishing.
+    _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    seen = []
+
+    async def _load(*_args, **_kwargs):
+        seen.append(inference_route._switch_waiter_count())
+
+    monkeypatch.setattr(inference_route, "_load_model_impl", _load)
+    _run_hook(_NPU_MODEL)
+    assert seen == [1]
+    assert inference_route._switch_waiter_count() == 0

@@ -857,6 +857,50 @@ def test_an_npu_load_it_would_refuse_keeps_the_gpu_resident(monkeypatch):
     assert teardowns == []
 
 
+def test_an_npu_load_drains_active_inference_before_unloading(monkeypatch):
+    # An auto-switch passes no on_reload_confirmed, so without the drain it cut a reply short.
+    import routes.inference as routes
+    from core.inference import npu_backend as nb
+    from models.inference import LoadRequest
+
+    order: list[str] = []
+    model = SimpleNamespace(id = "qwen3-0.6b-FLM", model_path = "lemonade:qwen3-0.6b-FLM")
+
+    class _Npu:
+        def resident(self):
+            return None
+
+        def loadable_model(self, model_id):
+            return model
+
+        def load(self, model_id, ctx):
+            order.append("load")
+
+    async def _drain(**kwargs):
+        order.append("drain")
+
+    async def _unload_gpu(_backend):
+        order.append("unload")
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_active = True))
+    monkeypatch.setattr(routes, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(routes, "_wait_for_model_switch_idle", _drain)
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _unload_gpu)
+    monkeypatch.setattr(routes, "release_chat_gpu_claim", lambda: True)
+    with pytest.raises(HTTPException):
+        # The stub never becomes resident, so the load ends in a 409 after the steps above.
+        asyncio.run(
+            routes._load_npu_model(
+                LoadRequest(model_path = model.model_path),
+                current_request_counted = True,
+                on_reload_confirmed = None,
+                load_cancel_event = None,
+            )
+        )
+    assert order == ["drain", "unload", "load"]
+
+
 def test_a_reply_cut_short_is_not_reported_complete(flm):
     flm()
     status, body = _call(stream = False, messages = [{"role": "user", "content": "CUT"}])
