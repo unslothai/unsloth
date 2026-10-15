@@ -2646,12 +2646,16 @@ export function ImagesPage({
       }
       // A newer Unsloth or another tool can record settings this build cannot apply: name them.
       const notApplied = unknownRecipeKeys(recipe);
-      if (
-        settings.sampler &&
-        samplerOptions.length > 0 &&
-        !samplerOptions.some((o) => o.id === settings.sampler)
-      ) {
-        notApplied.unshift(`sampler ${settings.sampler}`);
+      if (samplerOptions.length > 0) {
+        const offered = samplerOptions.find((o) => o.id === (settings.sampler ?? DEFAULT_SAMPLER));
+        if (!offered) {
+          notApplied.unshift(`sampler ${settings.sampler}`);
+        } else if (
+          settings.schedule_type &&
+          !offered.schedule_types.includes(settings.schedule_type)
+        ) {
+          notApplied.unshift(`schedule ${settings.schedule_type}`);
+        }
       }
       if (notApplied.length > 0 || newerRecipeSchema(recipe)) {
         toast.warning("Some settings in this image were not applied", {

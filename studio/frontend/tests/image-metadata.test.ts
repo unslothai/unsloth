@@ -690,3 +690,13 @@ test("an unmapped ComfyUI sampler is kept by name; prototype names map to nothin
   assert.equal(hostile?.sampler, "constructor");
   assert.equal(hostile?.schedule_type, undefined);
 });
+
+test("the import names a sampler or schedule the loaded model does not offer", () => {
+  const page = readSrc("features/images/images-page.tsx");
+  const start = page.indexOf("const notApplied = unknownRecipeKeys(recipe);");
+  assert.ok(start > 0);
+  const block = page.slice(start, page.indexOf("[restoreSettings,", start));
+  assert.match(block, /notApplied\.unshift\(`sampler \$\{settings\.sampler\}`\)/);
+  assert.match(block, /offered\.schedule_types\.includes\(settings\.schedule_type\)/);
+  assert.match(block, /newerRecipeSchema\(recipe\)/);
+});
