@@ -2868,8 +2868,8 @@ def test_a_complete_quant_family_does_not_vouch_for_a_torn_sibling(tmp_path):
     """One quant label can cover several shard families and the lister offers only the
     lexicographically first file under it, so grouping on the shard total alone let the complete B
     family mark the torn A file downloadable."""
-    snapshot = tmp_path / "snap"
-    snapshot.mkdir()
+    snapshot = tmp_path / "models--org--Model-GGUF" / "snapshots" / "rev1"
+    snapshot.mkdir(parents = True)
     for name in (
         "A-Q4_K_M-00001-of-00002.gguf",
         "B-Q4_K_M-00001-of-00002.gguf",
@@ -3805,12 +3805,19 @@ def test_an_unreadable_manifest_keeps_the_fixed_denoiser_pair(tmp_path):
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
-def _snapshot_with(tmp_path, files: dict) -> Path:
-    snapshot = tmp_path / "snap"
-    snapshot.mkdir()
+def _snapshot_with(
+    tmp_path,
+    files: dict,
+    subdir: str = "snap",
+) -> Path:
+    snapshot = tmp_path / subdir
+    snapshot.mkdir(parents = True)
     for name, size in files.items():
         (snapshot / name).write_bytes(b"\0" * size)
     return snapshot
+
+
+_HF_SNAPSHOT = "models--org--Model-GGUF/snapshots/rev1"
 
 
 def test_a_torn_sibling_family_does_not_veto_the_quant_that_loads(tmp_path):
@@ -3820,6 +3827,7 @@ def test_a_torn_sibling_family_does_not_veto_the_quant_that_loads(tmp_path):
     snapshot = _snapshot_with(
         tmp_path,
         {"a-Q4_K_M.gguf": 64, "z-Q4_K_M-00001-of-00002.gguf": 16},
+        _HF_SNAPSHOT,
     )
     assert inventory_scan._completed_gguf_variants(snapshot) == {"Q4_K_M"}
     assert _local_offer(snapshot) == [("Q4_K_M", True)]
@@ -3831,9 +3839,26 @@ def test_a_whole_sibling_family_does_not_vouch_for_the_torn_one_that_loads(tmp_p
     snapshot = _snapshot_with(
         tmp_path,
         {"a-Q4_K_M-00001-of-00002.gguf": 16, "z-Q4_K_M.gguf": 64},
+        _HF_SNAPSHOT,
     )
     assert inventory_scan._completed_gguf_variants(snapshot) == set()
     assert _local_offer(snapshot) == [("Q4_K_M", False)]
+
+
+def test_a_custom_folder_judges_each_build_at_one_quant_on_its_own_files(tmp_path):
+    """Outside the HF cache both builds are listed (#13926), so each row is ready only when its own
+    files are."""
+    for files, offer in (
+        (
+            {"a-Q4_K_M.gguf": 64, "z-Q4_K_M-00001-of-00002.gguf": 16},
+            [("Q4_K_M", True), ("z-Q4_K_M", False)],
+        ),
+        (
+            {"a-Q4_K_M-00001-of-00002.gguf": 16, "z-Q4_K_M.gguf": 64},
+            [("Q4_K_M", False), ("z-Q4_K_M", True)],
+        ),
+    ):
+        assert _local_offer(_snapshot_with(tmp_path, files, f"folder-{offer[0][1]}")) == offer
 
 
 def test_the_selected_family_is_judged_on_its_own_shards(tmp_path):

@@ -444,12 +444,14 @@ def test_loadable_variants_include_the_relative_fallback_label(in_tmp_cwd):
 
 def test_a_torn_split_keeps_its_quant_partial(in_tmp_cwd):
     # A short shard-like name is ready alone, but not when the file the resolver binds for
-    # that quant is an earlier torn five-digit split.
-    (in_tmp_cwd / "config.json").write_text("{}")
-    (in_tmp_cwd / "a-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
-    (in_tmp_cwd / "z-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
+    # that quant is an earlier torn five-digit split. An HF snapshot, where a quant lists one build.
+    snapshot = in_tmp_cwd / "models--org--Model-GGUF" / "snapshots" / "rev1"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "a-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+    (snapshot / "z-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
 
-    response = _variants(os.fspath(in_tmp_cwd))
+    response = _variants(os.fspath(snapshot))
     assert response.variants[0].partial is True
     assert response.loadable_variants == []
 

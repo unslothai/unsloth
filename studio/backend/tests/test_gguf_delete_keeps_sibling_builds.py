@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF listings expose one build per quant (#13327), but deletion must preserve cached siblings."""
+"""HF cache GGUF listings expose one build per quant (#13327), but deletion must preserve cached siblings."""
 
 from __future__ import annotations
 
@@ -60,13 +60,26 @@ def test_only_a_different_build_leaves_the_key():
 
 
 def test_the_listing_still_offers_one_build_per_quant(tmp_path):
-    snapshot = tmp_path / "snap"
-    snapshot.mkdir()
-    for name in BUILDS:
-        (snapshot / name).write_bytes(b"x" * 64)
-    (snapshot / "config.json").write_text("{}")
+    _repo, snapshot = _cache_repo(tmp_path, BUILDS)
     variants, _ = list_local_gguf_variants(str(snapshot))
     assert [(v.quant, v.filename) for v in variants] == [("IQ3_S", LISTED)]
+
+
+def test_a_custom_folder_lists_every_build_at_one_quant(tmp_path):
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    # No remote listing has to agree with a custom folder's keys, so every build keeps a row (#13926).
+    folder = tmp_path / "esatapedico" / "Qwen3.8-27B-NVFP4-MTP-GGUF"
+    folder.mkdir(parents = True)
+    names = [f"Qwen3.8-27B-NVFP4-MTP-{build}.gguf" for build in ("HIGHEST", "LOW", "MID-HIGH_enru")]
+    for name in names:
+        (folder / name).write_bytes(b"x" * 64)
+    variants, _ = list_local_gguf_variants(str(folder))
+    listed = {v.quant: v.filename for v in variants}
+    # The first build keeps the bare quant, so a pin made before still names the same file.
+    assert listed == {"NVFP4": names[0], **{name[: -len(".gguf")]: name for name in names[1:]}}
+    for quant, filename in listed.items():
+        assert Path(_find_local_gguf_by_variant(str(folder), quant)).name == filename
 
 
 def test_quant_key_case_exposes_and_deletes_the_same_build(tmp_path):
@@ -76,19 +89,14 @@ def test_quant_key_case_exposes_and_deletes_the_same_build(tmp_path):
 
     alpha = "alpha-Q4_K_M.gguf"
     beta = "beta-q4_k_m.gguf"
-    snapshot = tmp_path / "snapshot"
-    snapshot.mkdir()
-    for name in (alpha, beta):
-        (snapshot / name).write_bytes(b"x" * 64)
-    (snapshot / "config.json").write_text("{}")
+    repo, cache_snapshot = _cache_repo(tmp_path / "cache", [alpha, beta])
 
-    variants, _ = list_local_gguf_variants(str(snapshot))
+    variants, _ = list_local_gguf_variants(str(cache_snapshot))
     assert [(variant.quant, variant.filename) for variant in variants] == [("Q4_K_M", alpha)]
     hub_grouped = group_gguf_variant_files([(alpha, 64), (beta, 128)])
     inference_grouped = _group_gguf_variant_files([(alpha, "Q4_K_M", 64), (beta, "q4_k_m", 128)])
     assert inference_grouped == hub_grouped == {"Q4_K_M": (alpha, 64)}
 
-    repo, cache_snapshot = _cache_repo(tmp_path / "cache", [alpha, beta])
     _delete_gguf_variant_from_repos(repo.repo_id, variants[0].quant, [repo], None, root = tmp_path)
     assert not (cache_snapshot / alpha).is_symlink()
     assert (cache_snapshot / beta).is_symlink()

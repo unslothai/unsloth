@@ -999,18 +999,24 @@ def _apply_gguf_display_labels(variants: list[GgufVariantInfo], *repo_ids: objec
             variant.display_label = f"{variant.quant} · {root_label}"
 
 
-def group_gguf_variant_files(entries) -> dict[str, tuple[str, int]]:
-    """map each variant key to the loader's first shard set and its total bytes."""
+def group_gguf_variant_files(
+    entries, keys: Optional[dict[str, str]] = None
+) -> dict[str, tuple[str, int]]:
+    """map each variant key to the loader's first shard set and its total bytes. *keys* overrides the key of the paths it names."""
+
+    def key_of(path: str) -> str:
+        return (keys or {}).get(path) or gguf_variant_key(path)
+
     families: dict[str, dict[tuple[str, int], list[tuple[str, int]]]] = {}
     for path, size in entries:
-        families.setdefault(gguf_variant_key(path).casefold(), {}).setdefault(
+        families.setdefault(key_of(path).casefold(), {}).setdefault(
             gguf_shard_set(path), []
         ).append((path, int(size or 0)))
     grouped: dict[str, tuple[str, int]] = {}
     for by_family in families.values():
         chosen = min(by_family.values(), key = lambda members: min(path for path, _ in members))
         first = min(path for path, _ in chosen)
-        grouped[gguf_variant_key(first)] = (first, sum(size for _, size in chosen))
+        grouped[key_of(first)] = (first, sum(size for _, size in chosen))
     return grouped
 
 
@@ -1489,9 +1495,15 @@ def list_local_gguf_variants(
             continue
         main_files.append((rel, size))
 
+    # Outside the HF cache no remote listing has to agree with these keys, so builds sharing a quant (five NVFP4 builds in one custom folder, #13926) each keep a row instead of all but the first being hidden. The first keeps the bare quant, so a pin on it still names the same file.
+    keys = (
+        None
+        if any(segment.startswith("models--") for segment in segments)
+        else gguf_variant_keys_by_checkpoint(rel for rel, _size in main_files)
+    )
     variants = [
         GgufVariantInfo(filename = filename, quant = quant, size_bytes = size)
-        for quant, (filename, size) in group_gguf_variant_files(main_files).items()
+        for quant, (filename, size) in group_gguf_variant_files(main_files, keys).items()
     ]
     variants.sort(key = lambda variant: -variant.size_bytes)
     _apply_gguf_display_labels(variants, directory, model_root)
