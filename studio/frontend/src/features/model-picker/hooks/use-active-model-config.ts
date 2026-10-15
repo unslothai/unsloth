@@ -30,6 +30,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const engineGpuMemoryUtilization = useChatRuntimeStore(
     (s) => s.params.engineGpuMemoryUtilization ?? null,
   );
+  const loadIn4bit = useChatRuntimeStore((s) => s.params.loadIn4bit !== false);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
   const loadedIsGguf = useChatRuntimeStore((s) => s.loadedIsGguf);
   const loadedIsMlx = useChatRuntimeStore((s) => s.loadedIsMlx);
@@ -140,7 +141,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
             selectedGpuIds,
             selectedGpuIndexKind,
           }
-        : base;
+        : isMlx
+          ? base
+          : { ...base, loadIn4bit };
     }
     return {
       ...base,
@@ -166,6 +169,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     engineKvCacheDtype,
     engineSeed,
     engineGpuMemoryUtilization,
+    loadIn4bit,
     customContextLength,
     kvCacheDtype,
     effectiveMlxKvQuant,

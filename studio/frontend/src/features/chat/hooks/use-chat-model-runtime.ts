@@ -2010,7 +2010,8 @@ export function useChatModelRuntime() {
         liveBeforeLoad.params.checkpoint &&
         (liveBeforeLoad.params.checkpoint !== modelId ||
           (liveBeforeLoad.activeGgufVariant ?? null) !== (ggufVariant ?? null)) &&
-        (liveBeforeLoad.params.engine ?? "auto") !== "auto"
+        ((liveBeforeLoad.params.engine ?? "auto") !== "auto" ||
+          liveBeforeLoad.params.loadIn4bit === false)
       ) {
         liveBeforeLoad.setParams({
           ...liveBeforeLoad.params,
@@ -2020,6 +2021,7 @@ export function useChatModelRuntime() {
           engineKvCacheDtype: "auto",
           engineSeed: null,
           engineGpuMemoryUtilization: null,
+          loadIn4bit: true,
         });
       }
       const requestedEngine =
@@ -2292,6 +2294,8 @@ export function useChatModelRuntime() {
               stateBeforeUnload.ctxCheckpoints,
             cacheRam: pendingLoadConfig?.cacheRam ?? stateBeforeUnload.cacheRam,
           };
+          // Default engine only; vLLM / SGLang take their precision from engine_precision.
+          const loadIn4bitChoice = stateBeforeUnload.params.loadIn4bit !== false;
           let loadEngineFields = {
             engine: stateBeforeUnload.params.engine ?? "auto",
             engine_precision: stateBeforeUnload.params.enginePrecision ?? "auto",
@@ -2399,7 +2403,9 @@ export function useChatModelRuntime() {
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
-              load_in_4bit: (stateBeforeUnload.params.engine ?? "auto") === "auto",
+              load_in_4bit:
+                (stateBeforeUnload.params.engine ?? "auto") === "auto" &&
+                stateBeforeUnload.params.loadIn4bit !== false,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               cache_type_kv: loadKvCacheDtype,
@@ -2784,7 +2790,8 @@ export function useChatModelRuntime() {
                 loadCustomContextLength,
                 loadMaxSeqLength,
               ),
-              load_in_4bit: loadEngineFields.engine === "auto",
+              load_in_4bit:
+                loadEngineFields.engine === "auto" && loadIn4bitChoice,
               is_lora: isLora,
               gguf_variant: ggufVariant ?? null,
               trust_remote_code: trustRemoteCode,
@@ -3181,7 +3188,9 @@ export function useChatModelRuntime() {
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
-                  load_in_4bit: stateBeforeUnload.loadedEngine === "auto",
+                  load_in_4bit:
+                    stateBeforeUnload.loadedEngine === "auto" &&
+                    rollbackConfig?.loadIn4bit !== false,
                   is_lora: previousIsLora,
                   gguf_variant: previousVariant,
                   trust_remote_code:
