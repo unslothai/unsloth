@@ -113,6 +113,10 @@ export const BUDGET = {
   // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
   // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
   // against 97ed9415f7, before #13649, one machine and build), raised by that.
+  // Offering the newest audio.cpp release in updates (#13589) adds 385 B raw / 80 B transfer to the eager set
+  // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
+  // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
+  // main's margin stays where it was.
   // The paused and queued chat states (admission status, the paused continuation reason) add 2.3 KB
   // raw / 1.0 KB transfer to the eager chat chunk (6,570.6 -> 6,572.9 KB raw, 1,975.5 -> 1,976.5 KB
   // transfer against b8d76e169, one machine and build). They render on the first chat screen, so
@@ -123,11 +127,11 @@ export const BUDGET = {
   // Together they measure 7,058 B raw / 2,903 B transfer against c77695db2 (6,743,283 -> 6,750,341 B
   // raw, 2,026,381 -> 2,029,284 B transfer, one machine and build).
   // Re-measured on main at 5e927b0fa: +7,064 B raw / +2,314 B transfer (6,764,333 -> 6,771,397 B raw,
-  // 2,033,495 -> 2,035,809 B transfer, one machine and build), added to main's figures after #13621.
-  // The CI runner measures this branch 0.6 KB raw higher than that machine (6,613.3 KB raw, 1,988.2 KB
-  // transfer at 6535ea37c), so the budget sits 0.5 KB above the runner's figure.
-  transferBytes: 2_036_400,
-  rawBytes: 6_772_600,
+  // 2,033,495 -> 2,035,809 B transfer, one machine and build).
+  // On main's figures after #13589 plus that growth, with 0.9 KB raw / 0.4 KB transfer above it: the CI runner
+  // measured this branch 0.6 KB raw higher than that machine (6,613.3 KB raw, 1,988.2 KB transfer at 6535ea37c).
+  transferBytes: 2_036_438,
+  rawBytes: 6_773_270,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
