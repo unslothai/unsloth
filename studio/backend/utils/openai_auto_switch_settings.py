@@ -547,6 +547,10 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_int8_prefill")):
         entry["mlx_int8_prefill"] = True
 
+    # Stored only when off: absent is the 4-bit default, so an untouched model follows it.
+    if payload.get("load_in_4bit") is False:
+        entry["load_in_4bit"] = False
+
     # Stored only when set. Like tensor_parallel: absent means the default, so an override that never touched the switch does not pin it off for a later load.
     if _coerce_bool(payload.get("disable_vision")):
         entry["disable_vision"] = True
@@ -655,6 +659,8 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         kwargs["load_in_4bit"] = False
         if override.get("gpu_ids") is not None:
             kwargs["gpu_ids"] = override["gpu_ids"]
+    elif not is_gguf and override.get("load_in_4bit") is False:
+        kwargs["load_in_4bit"] = False
 
     max_seq_length = resolve_fit_max_seq_length(override, is_gguf = is_gguf)
     if max_seq_length is not None:
