@@ -3,6 +3,7 @@
 
 """Pre-tokenized datasets (input_ids / attention_mask / labels) route to training as-is (#7139), and nothing else moves."""
 
+import inspect
 import sys
 from pathlib import Path
 
@@ -15,6 +16,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from hub.utils.dataset_format import check_dataset_format as hub_check_dataset_format  # noqa: E402
 from utils.datasets.dataset_utils import (  # noqa: E402
+    _format_dataset,
     check_dataset_format,
     format_and_template_dataset,
     format_dataset,
@@ -152,3 +154,12 @@ def test_any_format_but_raw_routes_token_ids(format_type):
     info = format_dataset(_pretokenized(), format_type = format_type)
     assert info["final_format"] == "pretokenized"
     assert info["requires_manual_mapping"] is False
+
+
+def test_positional_custom_format_mapping_still_binds():
+    params = inspect.signature(_format_dataset).parameters
+    names = list(params)
+    defaults = [params[n].default for n in names[1 : names.index("custom_format_mapping")]]
+    assert format_dataset(_pretokenized(), *defaults, None)["final_format"] == "pretokenized"
+    mapped = format_dataset(_pretokenized(), *defaults, {"input_ids": "user"})
+    assert mapped["final_format"] != "pretokenized"

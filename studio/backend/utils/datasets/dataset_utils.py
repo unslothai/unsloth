@@ -3,6 +3,8 @@
 
 """Dataset utilities for format detection, conversion, and template application. Entry points: check_dataset_format (lightweight check whether manual mapping is needed, for the frontend), format_dataset (detects and normalizes dataset formats) and format_and_template_dataset (end-to-end processing with chat template). Internal utilities live in format_detection, format_conversion, chat_templates, vlm_processing, data_collators and model_mappings."""
 
+import inspect
+
 from .format_detection import (
     detect_dataset_format,
     detect_multimodal_dataset,
@@ -371,23 +373,17 @@ def _apply_user_mapping_alpaca(
     )
 
 
-def format_dataset(
-    dataset,
-    format_type = "auto",
-    *args,
-    custom_format_mapping = None,
-    **kwargs,
-):
+def format_dataset(dataset, *args, **kwargs):
     """``_format_dataset``, except a dataset no format matched that holds token ids routes as pre-tokenized. Any
     format_type but raw: a format the dropdown kept from an earlier run must not strand a dataset the check calls
     ready."""
-    info = _format_dataset(
-        dataset, format_type, *args, custom_format_mapping = custom_format_mapping, **kwargs
-    )
+    bound = inspect.signature(_format_dataset).bind(dataset, *args, **kwargs)
+    bound.apply_defaults()
+    info = _format_dataset(*bound.args, **bound.kwargs)
     if (
         info["final_format"] == "unknown"
-        and format_type != "raw"
-        and not custom_format_mapping
+        and bound.arguments["format_type"] != "raw"
+        and not bound.arguments["custom_format_mapping"]
         and is_pretokenized_dataset(dataset)
     ):
         info = {
