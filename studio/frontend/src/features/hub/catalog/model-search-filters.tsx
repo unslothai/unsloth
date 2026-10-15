@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   Popover,
   PopoverContent,
@@ -28,7 +29,7 @@ import {
   ViewIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import type { HubCapabilityFilter } from "../lib/model-capabilities";
 import {
   HUB_UPLOADERS,
@@ -193,7 +194,8 @@ function RangeStops({
           </button>
         )}
       </legend>
-      <div className="relative mx-3 pt-7 pb-1">
+      {/* Inset by an end pill's overhang, so the pills line up with the labels above. */}
+      <div className="relative mx-4.5 pt-7 pb-1">
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
             label === null && !covered(i) ? null : (
@@ -429,6 +431,7 @@ export function ModelSearchFiltersControl({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const baseOnlyId = useId();
   const unslothOnly = uploaders.length === 1 && uploaders[0] === "unsloth";
   const filtered =
     capabilities.length > 0 ||
@@ -557,7 +560,7 @@ export function ModelSearchFiltersControl({
                 : "mt-[calc(5px*var(--ui-space-scale,1))]",
             )}
           />
-          <div className="flex flex-col gap-1.5 px-3 py-[calc(9px*var(--ui-space-scale,1))]">
+          <div className="flex flex-col gap-3 px-3 py-[calc(9px*var(--ui-space-scale,1))]">
             <SegmentedRow
               label="Uploader"
               value={unslothOnly ? "unsloth" : "all"}
@@ -573,22 +576,28 @@ export function ModelSearchFiltersControl({
             />
             {/* A Hub listing parameter (base_model_relation=base), so only where the Hub search runs. */}
             {showModelFilters && (
-              <SegmentedRow
-                label="Model type"
-                value={value.baseOnly ? "base" : "all"}
-                options={[
-                  ["all", "All models"],
-                  ["base", "Base only"],
-                ]}
-                onChange={(next) =>
-                  onChange({ ...value, baseOnly: next === "base" || undefined })
-                }
-              />
+              <div
+                title="Hide quantizations, finetunes, adapters and merges"
+                className="flex h-8 items-center justify-between gap-3"
+              >
+                <label
+                  htmlFor={baseOnlyId}
+                  className="cursor-pointer text-ui-12 text-muted-foreground"
+                >
+                  Base only
+                </label>
+                <Switch
+                  id={baseOnlyId}
+                  checked={value.baseOnly === true}
+                  onCheckedChange={(checked) =>
+                    onChange({ ...value, baseOnly: checked || undefined })
+                  }
+                />
+              </div>
             )}
           </div>
         </div>
-        <div aria-hidden={true} className={cn(SEPARATOR, "shrink-0")} />
-        {/* The line's my-2 above and the popover's padding below keep it centred. */}
+        <div aria-hidden={true} className={cn(SEPARATOR, "mb-1.5 shrink-0")} />
         <div className="flex shrink-0 items-center justify-end px-3">
           <Button
             type="button"

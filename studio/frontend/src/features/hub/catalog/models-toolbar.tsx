@@ -467,7 +467,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 <HugeiconsIcon
                   icon={ArrowUpDownIcon}
                   strokeWidth={1.75}
-                  className="size-3.5 shrink-0 text-foreground"
+                  className="size-3.5 shrink-0"
                 />
                 <span className="truncate">
                   {sortOptions.find((option) => option.value === sortBy)

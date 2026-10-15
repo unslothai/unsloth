@@ -118,10 +118,10 @@ test("the range thumbs can share a stop, so <1B and >500B are reachable as limit
   assert.match(readSrc("features/hub/catalog/model-search-filters.tsx"), /minStepsBetweenThumbs=\{0\}/);
 });
 
-test("Model type is All models or the Hub's Base only", () => {
+test("Base only is a switch, off by default, for the Hub's own base_model_relation=base", () => {
   const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
-  assert.match(popover, /\["all", "All models"\],\s*\["base", "Base only"\]/);
-  assert.match(popover, /baseOnly: next === "base" \|\| undefined/);
+  assert.match(popover, /<Switch\s+id=\{baseOnlyId\}\s+checked=\{value\.baseOnly === true\}/);
+  assert.match(popover, /baseOnly: checked \|\| undefined/);
   assert.match(readSrc("features/hub/hooks/use-hub-model-search.ts"), /for \(const \[key, value\] of new URLSearchParams\(parameterFilter\)\)/);
 });
 
