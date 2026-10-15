@@ -16,7 +16,10 @@ import {
   ruleFor,
 } from "./permissions";
 
-export type AgentPrompt = Question & { id: number };
+/** `always`: the bar offers Always allow, as the answer can be kept for this chat. */
+export type AgentPrompt = Question & { id: number; always: boolean };
+/** `always`: allowed, and not asked again for this kind of action on this site in this chat. */
+export type Answer = false | "once" | "always";
 
 /** One chat's use of the browser tools; chats run theirs side by side, each in its own tab. */
 export type AgentChat = {
@@ -132,18 +135,18 @@ export function adoptAgentChat(from: string, to: string): void {
   });
 }
 
-const answers = new Map<number, (allow: boolean) => void>();
+const answers = new Map<number, (answer: Answer) => void>();
 let nextQuestion = 1;
 
 /** Ask the user in `chat`'s agent bar; false when they decline or the run ends first. */
-export function askUser(chat: string, question: Question, signal?: AbortSignal): Promise<boolean> {
+export function askUser(chat: string, question: Question, signal?: AbortSignal, always = false): Promise<Answer> {
   return new Promise((resolve) => {
     const id = nextQuestion++;
-    const finish = (allow: boolean) => {
+    const finish = (answer: Answer) => {
       answers.delete(id);
       signal?.removeEventListener("abort", onAbort);
       if (agentChat(chat).question?.id === id) patchAgentChat(chat, { question: null });
-      resolve(allow);
+      resolve(answer);
     };
     const onAbort = () => finish(false);
     if (signal?.aborted) {
@@ -155,12 +158,12 @@ export function askUser(chat: string, question: Question, signal?: AbortSignal):
     const current = agentChat(chat).question;
     if (current) answers.get(current.id)?.(false);
     answers.set(id, finish);
-    patchAgentChat(chat, { question: { ...question, id } });
+    patchAgentChat(chat, { question: { ...question, id, always } });
   });
 }
 
-export function answerQuestion(id: number, allow: boolean): void {
-  answers.get(id)?.(allow);
+export function answerQuestion(id: number, allow: boolean, always = false): void {
+  answers.get(id)?.(allow && (always ? "always" : "once"));
 }
 
 const DOWNLOAD_STRICTNESS: Record<DownloadsRule, number> = { allow: 0, ask: 1, block: 2 };

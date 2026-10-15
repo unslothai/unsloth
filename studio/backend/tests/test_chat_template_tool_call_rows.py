@@ -259,6 +259,31 @@ def test_sharegpt_function_call_and_observation_train_as_tool_turns():
     assert "observation" not in text
 
 
+class _JinjaProcessor(_JinjaTokenizer):
+    # Processor-shaped: the standardizer wraps every turn in text parts.
+    @property
+    def tokenizer(self):
+        return self
+
+
+def test_sharegpt_tool_turns_train_natively_on_a_processor_loaded_gemma4():
+    call = json.dumps({"name": "get_weather", "arguments": {"city": "Paris"}})
+
+    result = format_and_template_dataset(
+        Dataset.from_list([_sharegpt_tool_row(call)]),
+        model_name = "stub-model",
+        tokenizer = _JinjaProcessor(_GEMMA4_TEMPLATE.read_text(encoding = "utf-8")),
+        num_proc = 1,
+    )
+
+    assert result["success"] is True, result["errors"]
+    text = result["dataset"][0]["text"]
+    assert 'call:get_weather{city:<|"|>Paris<|"|>}' in text
+    assert "<|tool_response>" in text
+    assert "function_call" not in text
+    assert "observation" not in text
+
+
 def test_sharegpt_function_call_list_trains_every_call():
     call = json.dumps(
         [
