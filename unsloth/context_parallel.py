@@ -210,8 +210,15 @@ class ContextParallelManager:
         ulysses = self.backend == "ulysses"
         if packed_seq_lengths is not None and not ulysses:
             raise ValueError("Unsloth: ring context parallelism does not support packing.")
-        if packed_seq_lengths is not None and bsz != 1:
-            raise ValueError(f"Unsloth: packed batches must be a single row, got {bsz} rows.")
+        if packed_seq_lengths is not None:
+            if bsz != 1:
+                raise ValueError(f"Unsloth: packed batches must be a single row, got {bsz} rows.")
+            # Attention sees these global lengths; they must fit the row before anything is built.
+            used = int(torch.as_tensor(packed_seq_lengths).sum())
+            if used > seq_len:
+                raise ValueError(
+                    f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {seq_len} tokens."
+                )
         # .get: a collator may carry the key with None, which would leave positions shard-local.
         if inputs.get("position_ids") is None and packed_seq_lengths is not None:
             inputs["position_ids"] = _document_positions(

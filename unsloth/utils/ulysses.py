@@ -135,13 +135,10 @@ def ulysses_attention(run_attention_fn, config, context, Q, K, V, group):
 
 
 def _document_positions(packed_seq_lengths, total, device):
+    # Callers check sum(lengths) <= total first.
     lengths = [int(x) for x in torch.as_tensor(packed_seq_lengths).reshape(-1).tolist()]
     pieces = [torch.arange(length, device = device) for length in lengths]
     used = sum(lengths)
-    if used > total:
-        raise ValueError(
-            f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {total} tokens."
-        )
     if used < total:
         pieces.append(torch.arange(total - used, device = device))
     return torch.cat(pieces)[None]

@@ -1104,6 +1104,16 @@ def test_ulysses_packed_batch_keeps_global_lengths_and_masks_document_starts():
     assert shift == [[11, 12, -100, 21, 22, 23, -100, -100]]
 
 
+def test_ulysses_refuses_packed_lengths_longer_than_the_row():
+    inputs = {
+        "input_ids": torch.ones(1, 4, dtype = torch.long),
+        "position_ids": torch.arange(4)[None],
+        "packed_seq_lengths": torch.tensor([3, 10**9]),
+    }
+    with pytest.raises(ValueError, match = "packed row has 4 tokens"):
+        _ulysses_manager(0)._prepare_inputs(inputs)
+
+
 def test_ring_refuses_packed_batches():
     inputs = {"input_ids": torch.ones(1, 4, dtype = torch.long), "packed_seq_lengths": torch.tensor([4])}
     manager = _manager()

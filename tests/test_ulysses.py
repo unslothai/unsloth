@@ -305,6 +305,8 @@ def test_real_run_attention_sdpa_path():
         pytest.skip(f"unsloth.utils.attention_dispatch does not import here: {type(exc).__name__}")
     # Forked, not spawned: a fresh interpreter would re-import unsloth without the test GPU spoof.
     # The workers only touch CPU tensors.
+    if "fork" not in mp.get_all_start_methods():
+        pytest.skip("needs the fork start method")
     _spawn(
         _real_dispatch_worker,
         2,
