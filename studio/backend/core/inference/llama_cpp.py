@@ -6442,6 +6442,45 @@ def _extra_args_draft_gpu_layers(
     return last_ngl
 
 
+# The separate drafter's tensor placement (common/arg.cpp): each appends to
+# params.speculative.draft.tensor_buft_overrides, independent of -ngld.
+_DRAFT_TENSOR_OVERRIDE_FLAGS = frozenset(
+    {"--spec-draft-override-tensor", "-otd", "--override-tensor-draft"}
+)
+_DRAFT_CPU_MOE_FLAGS = frozenset({"--spec-draft-cpu-moe", "-cmoed", "--cpu-moe-draft"})
+_DRAFT_CPU_MOE_COUNT_FLAGS = frozenset(
+    {"--spec-draft-n-cpu-moe", "--spec-draft-ncmoe", "-ncmoed", "--n-cpu-moe-draft"}
+)
+
+
+def _draft_tensors_placed_off_card(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True when the separate drafter's TENSOR placement is set: ``-otd``, ``-cmoed``,
+    or a positive ``-ncmoed``, or their env twins ``LLAMA_ARG_SPEC_DRAFT_CPU_MOE`` /
+    ``LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE`` (``-otd`` has none).
+
+    The drafter twin of ``_args_place_tensors_on_cpu`` / ``_env_places_tensors_on_cpu``,
+    with the same rules: any ``-otd`` counts (guessing at the pattern is not worth it),
+    and a count only when positive (``-ncmoed 0`` places nothing). llama.cpp applies the
+    env first and argv on top, and both append overrides, so either side placing
+    anything is enough; a later ``-ncmoed 0`` does not undo an env count."""
+    values = [str(raw) for raw in extra_args or ()]
+    for i, raw in enumerate(values):
+        flag = _flag_name(raw)
+        if flag in _DRAFT_TENSOR_OVERRIDE_FLAGS or flag in _DRAFT_CPU_MOE_FLAGS:
+            return True
+        if flag in _DRAFT_CPU_MOE_COUNT_FLAGS:
+            _, eq, inline = raw.partition("=")
+            if _is_positive_int(inline if eq else (values[i + 1] if i + 1 < len(values) else "")):
+                return True
+    source = os.environ if env is None else env
+    return bool(
+        source.get("LLAMA_ARG_SPEC_DRAFT_CPU_MOE") in _LLAMA_ARG_TRUE_VALUES
+        or _is_positive_int(source.get("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE"))
+    )
+
+
 def _draft_is_split_across_host(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
@@ -26256,6 +26295,7 @@ class LlamaCppBackend:
                 model_size = None  # set in the fit try; used by the APU RAM guard
                 _mtp_will_engage = False
                 _separate_draft_launches = False  # a sidecar displaces an embedded head
+                _draft_on_cpu = False  # the separate drafter is off the budget (-ngld 0 / CPU pin)
                 # "none" once the fit proves the load needs no demand paging, else None
                 # for llama.cpp's own default. Bound before the try like the verdict
                 # flags above: the except path falls through to the launch, which reads it.
@@ -28820,8 +28860,13 @@ class LlamaCppBackend:
                         # estimate cannot map to the card (common_base_params_to_speculative,
                         # common/speculative.cpp); a CPU / none pin is already priced off
                         # the GPU by _mtp_bytes. An embedded MTP head follows the target.
-                        if _mtp_will_engage and (
-                            _separate_draft_launches or not self._nextn_predict_layers
+                        # -ngld 0 under a GPU name is a CPU drafter too (llama.cpp gives every
+                        # layer the CPU buffer list), and _draft_on_cpu already dropped it
+                        # from the budget, so the name places nothing this estimate prices.
+                        if (
+                            _mtp_will_engage
+                            and not _draft_on_cpu
+                            and (_separate_draft_launches or not self._nextn_predict_layers)
                         ):
                             _draft_dev = _extra_args_draft_device(_child_extras)
                             if _draft_dev is not None:
@@ -28838,17 +28883,22 @@ class LlamaCppBackend:
                         # fit treats as _draft_split_across_host). -ngld 0 is already off
                         # the budget (_cpu_draft_path), and -1 / a count above the block
                         # count is the whole drafter on the card _mtp_bytes prices.
+                        # Draft tensor overrides and draft CPU-MoE controls move drafter
+                        # weights to the host whatever -ngld says, the same unknown slice.
                         if (
                             _mtp_will_engage
                             and _mtp_draft_for_budget
-                            and _draft_is_split_across_host(
-                                _child_extras,
-                                _child_env,
-                                n_draft_layers = getattr(
-                                    self._draft_backend_for(_mtp_draft_for_budget),
-                                    "_n_layers",
-                                    None,
-                                ),
+                            and (
+                                _draft_tensors_placed_off_card(_child_extras, _child_env)
+                                or _draft_is_split_across_host(
+                                    _child_extras,
+                                    _child_env,
+                                    n_draft_layers = getattr(
+                                        self._draft_backend_for(_mtp_draft_for_budget),
+                                        "_n_layers",
+                                        None,
+                                    ),
+                                )
                             )
                         ):
                             return None

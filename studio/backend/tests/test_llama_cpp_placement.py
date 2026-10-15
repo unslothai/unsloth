@@ -5420,6 +5420,130 @@ def test_a_zero_draft_ngl_is_priced_off_the_card(tmp_path, _moe_cache_host, monk
 
 
 @pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--spec-draft-device", "CUDA0", "-ngld", "0"], {}),
+        (["-devd=CUDA1", "--spec-draft-ngl=0"], {}),
+        (["--spec-draft-device", "CUDA0"], {"LLAMA_ARG_N_GPU_LAYERS_DRAFT": "0"}),
+    ],
+    ids = ["argv", "equals", "env_count"],
+)
+def test_a_gpu_named_drafter_with_zero_layers_is_priced_off_the_card(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """-ngld 0 keeps the drafter on the host whatever --spec-draft-device names, and the
+    budget already drops it (_draft_on_cpu), so the device pin must not abstain: the
+    share is the plain CPU-placed drafter's and the cache stays."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    _cmd, on_gpu = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    _cmd, zero = _drafter_cache_launch(tmp_path / "zero", monkeypatch, ["-ngld", "0"])
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "named", monkeypatch, extra_args)
+    assert seen and seen[-1] is not None, cmd
+    assert seen[-1] == pytest.approx(zero[-1])
+    assert on_gpu[-1] - seen[-1] >= 0.5 * _GIB
+    assert _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args",
+    [["--spec-draft-device", "CUDA0", "-ngld", "1"], ["-devd", "CUDA0", "-ngld", "-1"]],
+    ids = ["split", "whole"],
+)
+def test_a_gpu_named_drafter_with_layers_on_the_card_stays_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args
+):
+    """Negative control: a GPU-pinned drafter with layers on a card still abstains."""
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _drafter_with_blocks(monkeypatch)
+    cmd, seen = _drafter_cache_launch(tmp_path / "pin", monkeypatch, extra_args)
+    assert seen == [], cmd
+    assert not _has_moe_cache(cmd), cmd
+
+
+_DRAFT_PLACEMENT_ENV = ("LLAMA_ARG_SPEC_DRAFT_CPU_MOE", "LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE")
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["--spec-draft-override-tensor", ".*=CPU"], {}),
+        (["-otd", "exps=CPU"], {}),
+        (["--override-tensor-draft=.*=CPU"], {}),
+        (["--spec-draft-cpu-moe"], {}),
+        (["-cmoed"], {}),
+        (["--cpu-moe-draft"], {}),
+        (["--spec-draft-n-cpu-moe", "2"], {}),
+        (["--spec-draft-ncmoe=1"], {}),
+        (["-ncmoed", "3"], {}),
+        (["--n-cpu-moe-draft", "1"], {}),
+        # Env first, argv appended on top (common/arg.cpp): a later 0 adds nothing.
+        (["-ncmoed", "0"], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "2"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "1"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "on"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "4"}),
+    ],
+)
+def test_a_drafter_with_tensors_on_the_host_is_unpriced(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """Draft tensor overrides and draft CPU-MoE controls move drafter weights off the
+    card whatever -ngld says, while _mtp_bytes charges the drafter whole to the GPU, so
+    the share is unknown (the same case as a drafter split by -ngld)."""
+    for name in _DRAFT_PLACEMENT_ENV:
+        monkeypatch.delenv(name, raising = False)
+    _cmd, base = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    assert base and base[-1] is not None
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "placed", monkeypatch, extra_args)
+    assert seen == [], cmd
+    assert not _has_moe_cache(cmd), cmd
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [
+        (["-ncmoed", "0"], {}),
+        (["--spec-draft-n-cpu-moe=0"], {}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE": "0"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "0"}),
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "off"}),
+        # llama.cpp's is_truthy is exact: "TRUE" is not a true value.
+        ([], {"LLAMA_ARG_SPEC_DRAFT_CPU_MOE": "TRUE"}),
+    ],
+)
+def test_zero_draft_placement_controls_keep_the_share(
+    tmp_path, _moe_cache_host, monkeypatch, extra_args, env
+):
+    """Negative control: zero / false draft placement controls place nothing."""
+    for name in _DRAFT_PLACEMENT_ENV:
+        monkeypatch.delenv(name, raising = False)
+    _cmd, base = _drafter_cache_launch(tmp_path / "base", monkeypatch, [])
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    cmd, seen = _drafter_cache_launch(tmp_path / "zero", monkeypatch, extra_args)
+    assert seen and seen[-1] is not None, cmd
+    assert seen[-1] == pytest.approx(base[-1])
+    assert _has_moe_cache(cmd), cmd
+
+
+def test_draft_tensor_placement_on_a_cpu_drafter_is_priced(tmp_path, _moe_cache_host, monkeypatch):
+    """A drafter already off the budget by -ngld 0 keeps its share: there is no
+    whole-drafter GPU charge for its tensor placement to contradict."""
+    for name in _DRAFT_PLACEMENT_ENV:
+        monkeypatch.delenv(name, raising = False)
+    monkeypatch.delenv("LLAMA_ARG_N_GPU_LAYERS_DRAFT", raising = False)
+    _cmd, zero = _drafter_cache_launch(tmp_path / "zero", monkeypatch, ["-ngld", "0"])
+    cmd, seen = _drafter_cache_launch(
+        tmp_path / "both", monkeypatch, ["-ngld", "0", "-otd", ".*=CPU", "-cmoed"]
+    )
+    assert seen and seen[-1] == pytest.approx(zero[-1]), cmd
+
+
+@pytest.mark.parametrize(
     "switch, free_mib, cached",
     [
         ("on", 24_000, True),
