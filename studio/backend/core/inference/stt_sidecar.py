@@ -266,8 +266,7 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
 
 
-# Whisper language codes -> the names Qwen3-ASR prompts with: its config.support_languages, and
-# audio.cpp's built-in list (src/models/qwen3_asr/assets.cpp) when a GGUF omits that.
+# Whisper code -> Qwen3-ASR prompt name (config.support_languages; audio.cpp qwen3_asr/assets.cpp).
 QWEN3_ASR_LANGUAGE_NAMES = {
     "ar": "Arabic",
     "cs": "Czech",

@@ -89,8 +89,7 @@ const VOXTRAL_LANGUAGES = [
   "hi",
   "ko",
 ] as const;
-// Nemotron's spec locales (audio.cpp model_specs/nemotron_asr.json) as primaries, plus "no": the
-// code the picker and the backend's Whisper aliases use for nb and nn.
+// Primaries of audio.cpp model_specs/nemotron_asr.json, plus "no", the picker's code for nb/nn.
 const NEMOTRON_ASR_LANGUAGES = [
   "ar",
   "bg",

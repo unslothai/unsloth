@@ -896,9 +896,7 @@ _FAMILY_LIST: tuple[AudioCppFamily, ...] = (
         ),
     ),
     # Speech to text.
-    # Parakeet encodes a whole upload with full attention by default, which fails past its 5000-frame
-    # encoder ceiling (~400 s); auto switches to bounded windows above the threshold. The windows drop
-    # about a third of the words, so they take over only where full context cannot run.
+    # Full context fails past the ~400 s encoder ceiling; windows drop about a third of the words.
     AudioCppFamily(
         "parakeet_tdt",
         "asr",
@@ -2467,9 +2465,7 @@ def _raw_request_options(spec: Optional[dict], embedded: Optional[dict]) -> list
 
 
 def _request_keys(spec: Optional[dict], embedded: Optional[dict]) -> Optional[frozenset[str]]:
-    # The server checks a request against the GGUF's own contract when it embeds a v1 one, and against
-    # model_specs/ only for a legacy GGUF (audio.cpp src/framework/model_spec/package.cpp). The two can
-    # differ: DotTTS-MF's model_specs entry declares instruct, its GGUF does not.
+    # The server prefers an embedded v1 contract over model_specs/ (model_spec/package.cpp).
     if isinstance(embedded, dict) and embedded.get("schema_version") is not None:
         if (embedded.get("options") or {}).get("request"):
             spec = None

@@ -723,12 +723,10 @@ class AudioCppBackend:
             body["voice"] = voice
         default_options.update(chosen)
         requested: dict[str, Any] = {}
-        # A strict contract refuses an option it does not declare, and that refusal would cost the retry
-        # below the description too, so each hint goes under the name the contract has, or not at all.
+        # A strict contract refuses undeclared options; the retry would then drop the description too.
         keys = model.request_keys
         if instructions and str(instructions).strip():
-            # Voice-design and style-capable families read the description as the instruction; Breeze
-            # and Irodori v4 call it instruction, DramaBox has neither.
+            # Breeze and Irodori v4 call it instruction, DramaBox has neither.
             name = next((n for n in ("instruct", "instruction") if keys is None or n in keys), None)
             if name:
                 requested[name] = str(instructions).strip()

@@ -97,8 +97,7 @@ _TIMESTAMP_OPTIONS = {
     "qwen3_asr.preserve_punctuation": "true",
 }
 
-# Nemotron 3.5 ASR's locales (audio.cpp v0.9.0-unsloth.1 model_specs/nemotron_asr.json "languages").
-# Its prompt dictionary keys each of these, plus a bare code for every multi-locale language.
+# model_specs/nemotron_asr.json "languages"; the prompt dictionary also keys en/es/fr/pt/no.
 _NEMOTRON_ASR_LOCALES = (
     "ar-AR", "bg-BG", "cs-CZ", "da-DK", "de-DE", "el-GR", "en-GB", "en-US", "es-ES", "es-US",
     "et-EE", "fi-FI", "fr-CA", "fr-FR", "he-IL", "hi-IN", "hr-HR", "hu-HU", "it-IT", "ja-JP",
@@ -120,7 +119,6 @@ def _nemotron_language(language: str, code: str) -> Optional[str]:
         if len(matches) == 1:
             return matches[0]
         if matches:
-            # en, es, fr, pt and no have several locales; the model keys the bare code itself.
             return code
     return None
 
@@ -131,7 +129,6 @@ def _runtime_language(family: str, language: Optional[str]) -> Optional[str]:
     if not code:
         return None
     if family == "qwen3_asr":
-        # The runtime pastes it into the prompt, which wants a name ("language English").
         return QWEN3_ASR_LANGUAGE_NAMES.get(code)
     if family == "nemotron_asr":
         return _nemotron_language(language, code)
@@ -1102,8 +1099,7 @@ class AudioCppSttSidecar:
             except AudioCppRequestError as exc:
                 if "language" not in body or not 400 <= exc.status < 500:
                     raise
-                # A family can refuse a language it does not take; a dictation language preference is
-                # a hint, so transcribe without it rather than fail.
+                # A dictation language is a hint: transcribe without it rather than fail.
                 logger.info(
                     "audio.cpp: %s rejected language %r (%s); retrying without it",
                     server.model.family,
