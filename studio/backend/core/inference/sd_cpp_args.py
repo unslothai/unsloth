@@ -136,8 +136,7 @@ class SdCppUpscaleParams:
     tile_size: Optional[int] = None
 
 
-# Native (sd.cpp) speed profiles, the engine-side analogue of diffusion_speed. off: nothing. default: --diffusion-fa +
-# --diffusion-conv-direct (numerically exact), except Apple Metal keeps only --diffusion-fa. max keeps it (profiles chain).
+# Native speed profiles. default/max: --diffusion-fa + --diffusion-conv-direct (exact); Metal/Vulkan/ROCm get fa only.
 NATIVE_SPEED_OFF = "off"
 NATIVE_SPEED_DEFAULT = "default"
 NATIVE_SPEED_MAX = "max"
@@ -145,19 +144,43 @@ NATIVE_SPEED_MODES = (NATIVE_SPEED_OFF, NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX)
 
 
 def native_speed_flags(
-    speed_mode: Optional[str], backend_args: Optional[Sequence[str]] = None
+    speed_mode: Optional[str],
+    backend_args: Optional[Sequence[str]] = None,
+    accelerator: Optional[str] = None,
 ) -> list[str]:
     """sd-cli speed flags for a native speed mode (empty for off / None). Separate from offload:
     ``--diffusion-fa`` is a win in its own right. De-duplicated against offload at the call site.
-    ``backend_args``: the other argv flags, whose ``--backend`` decides whether the graph runs on Metal."""
+    ``backend_args``: the other argv flags (``--backend`` picks the device); ``accelerator``: build class or None."""
     mode = (speed_mode or NATIVE_SPEED_OFF).strip().lower()
     if mode in ("", NATIVE_SPEED_OFF):
         return []
     if mode in (NATIVE_SPEED_DEFAULT, NATIVE_SPEED_MAX):
-        if _runs_on_apple_metal(backend_args or ()):
+        if not conv_direct_wanted(backend_args or (), accelerator):
             return ["--diffusion-fa"]
         return ["--diffusion-fa", "--diffusion-conv-direct"]
     raise ValueError(f"native speed_mode must be one of {NATIVE_SPEED_MODES}, got '{speed_mode}'")
+
+
+# Direct conv loses to im2col here: Vulkan (sd.cpp #2137, 10.9 -> 73.4 s) and HIP (#2085; gfx1151 never faster).
+_CONV_DIRECT_SLOW_BACKENDS = ("vulkan", "rocm", "hip")
+
+
+def conv_direct_wanted(backend_args: Sequence[str] = (), accelerator: Optional[str] = None) -> bool:
+    """``UNSLOTH_SD_CPP_CONV_DIRECT`` = 1/0 forces it (Metal too); else off on Metal, and a ``--backend diffusion=``
+    pin beats ``accelerator``."""
+    import os
+
+    forced = (os.environ.get("UNSLOTH_SD_CPP_CONV_DIRECT") or "").strip().lower()
+    if forced in ("1", "on", "true", "yes"):
+        return True
+    if forced in ("0", "off", "false", "no"):
+        return False
+    if _runs_on_apple_metal(backend_args):
+        return False
+    args = list(backend_args)
+    target = _diffusion_backend([args[i + 1] for i, f in enumerate(args[:-1]) if f == "--backend"])
+    name = (target or accelerator or "").strip().lower().rstrip("0123456789")
+    return name not in _CONV_DIRECT_SLOW_BACKENDS
 
 
 def _diffusion_backend(specs: Sequence[str]) -> Optional[str]:
@@ -697,6 +720,7 @@ def build_sd_cpp_server_command(
     scratch_dir: Optional[str] = None,
     verbose: bool = False,
     extra_args: Optional[list[str]] = None,
+    accelerator: Optional[str] = None,
 ) -> list[str]:
     """Build the ``sd-server`` argv: model + hardware/server flags only.
 
@@ -745,7 +769,9 @@ def build_sd_cpp_server_command(
     # De-dup speed flags against offload (may already include --diffusion-fa).
     placement = metal_placement_flags(offload)
     backend_args = [*offload, *placement, *(extra_args or ())]
-    cmd += [f for f in native_speed_flags(native_speed, backend_args) if f not in offload]
+    cmd += [
+        f for f in native_speed_flags(native_speed, backend_args, accelerator) if f not in offload
+    ]
     cmd += placement
     cmd += mac_mmap_flags(binary, extra_args)
     if verbose:

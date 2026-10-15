@@ -389,6 +389,41 @@ def test_native_speed_flags():
         native_speed_flags("ludicrous")
 
 
+def test_native_speed_flags_drop_conv_direct_on_vulkan_and_rocm(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
+    monkeypatch.setattr(_sd_cpp_args_module, "_runs_on_apple_metal", lambda *_a, **_k: False)
+    fa_only = ["--diffusion-fa"]
+    full = ["--diffusion-fa", "--diffusion-conv-direct"]
+    for accel in ("vulkan", "rocm", "ROCm"):
+        assert native_speed_flags("default", [], accel) == fa_only
+        assert native_speed_flags("max", [], accel) == fa_only
+    for accel in ("cuda", "cpu", None):
+        assert native_speed_flags("default", [], accel) == full
+    assert (
+        native_speed_flags("default", ["--backend", "diffusion=Vulkan0,te=cpu"], "cuda") == fa_only
+    )
+    assert native_speed_flags("default", ["--backend", "diffusion=ROCm1"], None) == fa_only
+    assert native_speed_flags("default", ["--backend", "diffusion=CUDA0"], "vulkan") == full
+    assert native_speed_flags("default", ["--backend", "diffusion=cpu"], "vulkan") == full
+    monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "1")
+    assert native_speed_flags("default", [], "vulkan") == full
+    monkeypatch.setenv("UNSLOTH_SD_CPP_CONV_DIRECT", "0")
+    assert native_speed_flags("default", [], "cuda") == fa_only
+
+
+def test_server_command_carries_accelerator(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
+    monkeypatch.setattr(_sd_cpp_args_module, "_runs_on_apple_metal", lambda *_a, **_k: False)
+    files = SdCppModelFiles(diffusion_model = "/m/dit.gguf")
+    kw = dict(host = "127.0.0.1", port = 1, native_speed = "default")
+    assert "--diffusion-conv-direct" not in build_sd_cpp_server_command(
+        "sd-server", files, accelerator = "vulkan", **kw
+    )
+    assert "--diffusion-conv-direct" in build_sd_cpp_server_command(
+        "sd-server", files, accelerator = "cuda", **kw
+    )
+
+
 def test_offload_none_is_empty():
     assert offload_flags(OFFLOAD_NONE) == []
 
@@ -1037,6 +1072,17 @@ def test_device_backend_flags_are_appended_not_folded_into_the_policy():
     before = list(policy)
     device_backend_flags("CUDA1", policy)
     assert policy == before
+
+
+def test_conv_direct_force_on_reaches_apple_metal(monkeypatch):
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("platform.machine", lambda: "arm64")
+    monkeypatch.delenv("UNSLOTH_SD_CPP_CONV_DIRECT", raising = False)
+    assert native_speed_flags("default") == ["--diffusion-fa"]
+    monkeypatch.setenv(
+        "UNSLOTH_SD_CPP_CONV_DIRECT", "1"
+    )  # an explicit force beats the Metal default
+    assert native_speed_flags("default") == ["--diffusion-fa", "--diffusion-conv-direct"]
 
 
 # ── Metal mmap (leejet/stable-diffusion.cpp#2037) ───────────────────────────
