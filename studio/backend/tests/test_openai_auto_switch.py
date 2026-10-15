@@ -4408,34 +4408,62 @@ def test_count_tokens_rejects_malformed_tool_before_switch(monkeypatch):
     assert rec.calls == []
 
 
-def test_count_tokens_forwards_vision_guard_to_switch(monkeypatch):
-    # An image count_tokens request needs the require_vision guard so it cannot evict a vision model.
+@pytest.mark.parametrize(
+    "image, server_tools, device, gguf_only, reason",
+    [
+        (True, False, "mlx", True, "Cannot count tokens for messages containing images."),
+        ("mcp", False, "mlx", True, "Cannot count tokens for messages containing images."),
+        (False, True, "mlx", False, None),
+        (False, False, "mlx", False, None),
+        (False, False, "cuda", True, None),
+    ],
+    ids = ["image", "mcp_replay", "server_tools", "mlx_text", "transformers"],
+)
+def test_count_tokens_forwards_vision_guard_to_switch(
+    monkeypatch, image, server_tools, device, gguf_only, reason
+):
+    # Codex P2: an image /v1/messages/count_tokens naming a text-only GGUF must
+    # carry the same require_vision guard as /messages, so it can't evict a loaded
+    # vision model for a swap that can't serve the request. A non-GGUF target is
+    # loaded only when the resident-MLX count can price the request.
+    from utils.hardware import DeviceType
+
     captured = {}
 
-    async def _capture(
-        model,
-        request,
-        subject,
-        *,
-        require_vision = False,
-        claim_resident = True,
-        require_audio_input = False,
-        gguf_only = False,
-    ):
-        captured["require_vision"] = require_vision
-        captured["claim_resident"] = claim_resident
-        captured["gguf_only"] = gguf_only
+    async def _capture(model, request, subject, **kwargs):
+        captured.update(kwargs)
         raise _Reached()
 
-    monkeypatch.setattr(inference_route, "_anthropic_request_has_image", lambda p, **_: True)
+    from core.inference import mcp_images
+    from models.inference import AnthropicMessage
+
+    monkeypatch.setattr(
+        inference_route, "_anthropic_request_has_image", lambda p, **_: image is True
+    )
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
-    payload = _anthropic_payload_with_tools(None)
+    monkeypatch.setattr("utils.hardware.get_device", lambda: DeviceType(device))
+    payload = _anthropic_payload_with_tools(None)  # no tools -> tool validation passes
+    payload.enable_tools = server_tools
+    if image == "mcp":
+        envelope = json.dumps([{"data": "QUJD", "mimeType": "image/png"}])
+        call = {"type": "tool_use", "id": "toolu_0", "name": "mcp__shot__capture", "input": {}}
+        result = {
+            "type": "tool_result",
+            "tool_use_id": "toolu_0",
+            "content": "out\n" + mcp_images.SENTINEL + envelope,
+        }
+        payload.messages += [
+            AnthropicMessage(role = "assistant", content = [call]),
+            AnthropicMessage(role = "user", content = [result]),
+        ]
     with pytest.raises(_Reached):
         asyncio.run(inference_route.anthropic_count_tokens(payload, object(), "tester"))
-    assert captured["require_vision"] is True
+    assert captured["require_vision"] is (image is True)
     assert captured["claim_resident"] is False
-    # llama.cpp serves this endpoint alone, so a non-GGUF swap must not be attempted.
-    assert captured["gguf_only"] is True
+    assert captured["gguf_only"] is gguf_only
+    assert (
+        reason in captured["gguf_only_reason"] if reason else captured["gguf_only_reason"] is None
+    )
 
 
 def _count_tokens_backend(
@@ -5842,53 +5870,6 @@ def test_no_model_loaded_detail_appends_hint_only_when_off(monkeypatch):
     assert inference_route._no_model_loaded_detail(base) == base
 
 
-def _run_responses_stream_no_model(
-    monkeypatch,
-    *,
-    enabled,
-    active_model_name,
-    resolves_to = None,
-):
-    from models.inference import ResponsesRequest, ChatMessage
-
-    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: enabled)
-    monkeypatch.setattr(resolver, "resolve_local_gguf", lambda name: resolves_to)
-    monkeypatch.setattr(
-        inference_route, "get_llama_cpp_backend", lambda: _FakeBackend(loaded_id = None)
-    )
-    monkeypatch.setattr(
-        inference_route,
-        "get_inference_backend",
-        lambda: type("_B", (), {"active_model_name": active_model_name})(),
-    )
-    payload = ResponsesRequest(model = "unsloth/Qwen3.5-4B-GGUF", stream = True)
-    messages = [ChatMessage(role = "user", content = "hi")]
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(inference_route._responses_stream(payload, messages, None))
-    return exc.value.status_code, exc.value.detail
-
-
-def test_responses_stream_hint_matches_toggle_regardless_of_active_model(monkeypatch):
-    off_status, hinted = _run_responses_stream_no_model(
-        monkeypatch, enabled = False, active_model_name = None
-    )
-    assert off_status == 400
-    assert "Model auto-switch" in hinted
-
-    on_status, on = _run_responses_stream_no_model(
-        monkeypatch, enabled = True, active_model_name = None
-    )
-    assert on_status == 404
-    assert "Model auto-switch" not in on
-    assert "unsloth/Qwen3.5-4B-GGUF" in on
-
-    non_gguf_status, non_gguf_loaded = _run_responses_stream_no_model(
-        monkeypatch, enabled = False, active_model_name = "unsloth/Llama-3.2-1B-Instruct"
-    )
-    assert non_gguf_status == 400
-    assert "Model auto-switch" in non_gguf_loaded
-
-
 def _wire_unloaded_chat(
     monkeypatch,
     *,
@@ -6108,22 +6089,6 @@ def test_chat_undownloaded_model_uses_the_openai_envelope(monkeypatch):
     assert err["param"] == "model"
 
 
-def test_gguf_only_paths_keep_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
-    # The catalog lists a resident Transformers model the resolver misses, so avoid "not downloaded".
-    resident = "unsloth/Qwen3.5-4B-GGUF"  # the id _run_responses_stream_no_model asks for
-
-    async def _catalog():
-        return [{"id": resident}]
-
-    monkeypatch.setattr(inference_route, "_openai_catalog_objects", _catalog)
-    status, detail = _run_responses_stream_no_model(
-        monkeypatch, enabled = True, active_model_name = resident
-    )
-    assert status == 400
-    assert "requires a GGUF model" in detail
-    assert "not downloaded" not in detail
-
-
 def test_completions_keeps_the_generic_error_for_the_resident_non_gguf_model(monkeypatch):
     resident = "unsloth/Llama-3.2-1B-Instruct"
     _wire_unloaded_chat(monkeypatch, enabled = True, catalog = (resident,))
@@ -6143,15 +6108,7 @@ def test_completions_keeps_the_generic_error_for_the_resident_non_gguf_model(mon
     assert "not downloaded" not in exc.value.detail
 
 
-def test_responses_stream_keeps_generic_error_when_target_is_local(monkeypatch):
-    status, detail = _run_responses_stream_no_model(
-        monkeypatch,
-        enabled = True,
-        active_model_name = None,
-        resolves_to = ("/p/A", "Q4_K_M", "unsloth/Qwen3.5-4B-GGUF"),
-    )
-    assert status == 400
-    assert "not downloaded" not in detail
+# ── idle-unload KV persistence (slot save/restore) ──────────────────
 
 
 def _seed_kv_manifest(
@@ -9725,8 +9682,30 @@ def test_an_embedding_checkpoint_is_not_switchable(tmp_path):
     assert resolver.local_servable_model(info) is None
 
 
-def test_streaming_responses_refuses_a_non_gguf_swap(monkeypatch):
-    # _responses_stream only reads llama.cpp, so a non-GGUF target must not unload the GGUF.
+_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+
+
+@pytest.mark.parametrize(
+    "stream, text, images, mlx_host",
+    [
+        (True, None, [_PNG, _PNG], True),
+        (True, None, ["ftp://example.com/a.png"], True),
+        (True, {"format": {"type": "json_object"}}, [], True),
+        (True, {"format": {"type": "json_object"}}, [], False),
+        (False, {"format": {"type": "json_object"}}, [], False),
+    ],
+)
+def test_streaming_responses_refuses_before_load_what_chat_refuses(
+    monkeypatch, stream, text, images, mlx_host
+):
+    # Either source may serve the stream, so its switch carries chat's image facts (a
+    # one-image non-GGUF target refuses two, or a URL it cannot fetch). A grammar-constrained
+    # text.format pins the switch to GGUF only off an MLX host, where the non-GGUF target is
+    # transformers. Non-streaming leaves its preflight to chat.
+    import utils.hardware as hardware
+
+    device = hardware.DeviceType.MLX if mlx_host else hardware.DeviceType.CUDA
+    monkeypatch.setattr(hardware, "get_device", lambda: device)
     captured = {}
 
     async def _capture(model, request, subject, **kwargs):
@@ -9734,16 +9713,45 @@ def test_streaming_responses_refuses_a_non_gguf_swap(monkeypatch):
         raise RuntimeError("reached the switch")
 
     monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _capture)
-    for streaming in (True, False):
-        captured.clear()
-        payload = _responses_payload(stream = streaming)
-        with pytest.raises(RuntimeError):
-            asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
-        # Assert the key is absent, since the non-streaming branch must not pin GGUF at all.
-        if streaming:
-            assert captured["gguf_only"] is True
-        else:
-            assert "gguf_only" not in captured
+    parts = [{"type": "input_text", "text": "hi"}]
+    parts += [{"type": "input_image", "image_url": url} for url in images]
+    payload = ResponsesRequest(
+        model = "org/B", stream = stream, text = text, input = [{"role": "user", "content": parts}]
+    )
+    with pytest.raises(RuntimeError):
+        asyncio.run(inference_route.openai_responses(payload, object(), "tester"))
+    pinned = stream and text is not None and not mlx_host
+    assert captured.get("gguf_only", False) is pinned
+    assert ("grammar engine" in (captured.get("gguf_only_reason") or "")) is pinned
+    if images:
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(
+                inference_route._preflight_image_for_switch(captured["image_preflight"], False)
+            )
+        assert exc.value.status_code == 400
+
+
+def test_streaming_responses_setup_failures_leave_nothing_behind(monkeypatch):
+    # A cancel while the stream is being built still closes the monitor entry.
+    from starlette.requests import Request
+
+    async def _switch(*_a, **_kw):
+        pass
+
+    async def _cancelled(*_a, **_kw):
+        raise asyncio.CancelledError
+
+    finished = []
+    monkeypatch.setattr(inference_route, "_maybe_auto_switch_model", _switch)
+    monkeypatch.setattr(inference_route, "_responses_stream", _cancelled)
+    monkeypatch.setattr(inference_route.api_monitor, "start", lambda **_kw: "m")
+    monkeypatch.setattr(inference_route.api_monitor, "finish", lambda *a: finished.append(a))
+    request = Request({"type": "http", "headers": [], "path": "/v1/responses", "method": "POST"})
+
+    payload = ResponsesRequest(stream = True, input = "hi")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(inference_route.openai_responses(payload, request, "tester"))
+    assert finished == [("m", "cancelled")]
 
 
 def test_a_pickle_checkpoint_is_not_switchable(tmp_path):

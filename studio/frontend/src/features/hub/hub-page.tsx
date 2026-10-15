@@ -133,6 +133,7 @@ import {
   buildDiscoverRows,
   detectResultFormat,
   discoveryInventorySignature,
+  hasRecommendedCheckpointLikes,
   isUnslothFinetunable,
   matchesHubCapability,
   matchesFormat,
@@ -157,7 +158,6 @@ import type {
 const NO_SEARCH_FILTERS: ModelSearchFilters = {};
 const UNSLOTH_UPLOADER: readonly HubUploader[] = ["unsloth"];
 
-const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
@@ -237,29 +237,6 @@ function buildFocusedHeading({
   return isDataset ? "Datasets" : "Models";
 }
 
-function readModelsTabPreference(): ModelsTab | null {
-  if (typeof window === "undefined") {
-    return null;
-  }
-  try {
-    const value = window.localStorage.getItem(MODELS_TAB_STORAGE_KEY);
-    return value === "discover" || value === "downloaded" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function writeModelsTabPreference(tab: ModelsTab): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(MODELS_TAB_STORAGE_KEY, tab);
-  } catch {
-    return;
-  }
-}
-
 // "All models" defaults to split layout; the choice persists across sessions.
 function readAllModelsViewPreference(): AllModelsView {
   if (typeof window === "undefined") {
@@ -321,12 +298,8 @@ function useModelsTabState(): {
   const navigate = useNavigate();
   const search = useSearch({ from: "/hub" });
   const urlTab: ModelsTab | null = search.tab ?? null;
-  const hasModelDeepLink =
-    typeof search.model === "string" && search.model.length > 0;
-  const [fallbackTab, setFallbackTab] = useState<ModelsTab>(
-    () => readModelsTabPreference() ?? "discover",
-  );
-  const tab = urlTab ?? (hasModelDeepLink ? "discover" : fallbackTab);
+  // Opening the Hub without an explicit ?tab= always lands on Discover; the last tab is not remembered.
+  const tab = urlTab ?? "discover";
 
   useEffect(() => {
     if (urlTab !== null) return;
@@ -339,8 +312,6 @@ function useModelsTabState(): {
 
   const setTab = useCallback(
     (next: ModelsTab) => {
-      setFallbackTab(next);
-      writeModelsTabPreference(next);
       void navigate({
         to: "/hub",
         search: (prev) => ({
@@ -1112,12 +1083,15 @@ export function ModelsPage() {
       (row) =>
         !isHiddenModelId(row.id) &&
         !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id) &&
-        // Recommended curates browsing to logo'd models plus well-liked iconless ones; a typed
-        // search and every other format show all matches.
+        // Recommended curates browsing to logo'd models plus well-liked iconless ones, and to
+        // well-liked checkpoints; a typed search and every other format show all matches.
         (effectiveDiscoverFormat !== "recommended" ||
           hasQuery ||
           resolveOwnerProviderLogo(row.owner, row.repo) !== null ||
           (row.result.likes ?? 0) >= MIN_ICONLESS_MODEL_LIKES) &&
+        (effectiveDiscoverFormat !== "recommended" ||
+          hasQuery ||
+          hasRecommendedCheckpointLikes(row.result)) &&
         (effectiveDiscoverFormat === "recommended"
           ? matchesRecommended(
               row.result,
@@ -1179,6 +1153,8 @@ export function ModelsPage() {
             !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id),
         )
         .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
+        // Catches low-like safetensors repos cross-tagged "gguf" for a stray .gguf export.
+        .filter((row) => hasRecommendedCheckpointLikes(row.result))
         // Same fit filter as the main Discover list, so the feed carousel honors the toggle too.
         .filter(
           (row) =>
