@@ -15,9 +15,11 @@ accelerate (`fsdp2_prepare_model`) already shards one unit per `_no_split_module
 the [final norm, lm_head] tail gathered from forward to backward, groups tied embeddings, and
 (>= 1.11) turns `no_sync` into `set_requires_gradient_sync(False)`. Unsloth fills in around it:
 
-1. Mixed precision: accelerate's automatic policy reduces gradients in the compute dtype and casts
-   the model outputs (the loss included) to it. Unsloth keeps the compute dtype for the gathered
-   weights but reduces in float32 and leaves outputs alone.
+1. Mixed precision: accelerate's automatic policy gathers weights in the compute dtype, reduces
+   gradients in it and casts the model outputs (the loss included) to it. Unsloth reduces in float32
+   and leaves outputs alone; bfloat16 keeps bfloat16 gathers, float16 gathers the stored dtype and
+   leaves the casting to autocast (as the single GPU run does) so the loss scaler sees the same
+   gradients.
 2. The last decoder block keeps its weights gathered after forward (backward starts with it).
 3. Unsloth's forwards read `lm_head.weight` and the final norm's weight directly (fused CE loss,
    fast RMSNorm) instead of calling those modules, so FSDP's pre-forward hook would never gather
@@ -88,8 +90,9 @@ def _compute_dtype(accelerator):
 
 
 def fill_fsdp2_mixed_precision(accelerator):
-    """Reduce gradients in float32 and stop casting the model outputs, only when the policy is
-    the one accelerate derived from `mixed_precision` (every dtype equal to the compute dtype).
+    """Reduce gradients in float32, stop casting the model outputs, and for float16 gather the stored
+    dtype; only when the policy is the one accelerate derived from `mixed_precision` (every dtype
+    equal to the compute dtype).
     A policy the user wrote is left alone. Returns the policy in force."""
     plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
     policy = getattr(plugin, "mixed_precision_policy", None)
@@ -109,6 +112,12 @@ def fill_fsdp2_mixed_precision(accelerator):
     ):
         return policy
     changes = {"reduce_dtype": torch.float32}
+    if compute == torch.float16:
+        # float16 trains with a loss scaler and float32 master weights under autocast. Gathering
+        # float16 copies instead moves the embedding / norm / lm_head backward into float16, where
+        # the scaled gradients overflow and the scaler skips steps the unsharded run takes. Gather
+        # the stored dtype and let autocast cast, exactly like the single GPU run.
+        changes["param_dtype"] = None
     if hasattr(policy, "output_dtype"):
         changes["output_dtype"] = None
     plugin.mixed_precision_policy = dataclasses.replace(policy, **changes)

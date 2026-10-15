@@ -42,7 +42,8 @@ def _accelerator(policy, mixed_precision = "fp16", version = 2, auto_wrap_policy
 def test_accelerates_auto_policy_reduces_in_fp32(dtype, name):
     acc = _accelerator(MixedPrecisionPolicy(param_dtype = dtype, reduce_dtype = dtype, output_dtype = dtype), name)
     policy = fsdp2.fill_fsdp2_mixed_precision(acc)
-    assert policy.param_dtype == dtype
+    # float16 gathers the stored dtype and leaves the casting to autocast, like the unsharded run.
+    assert policy.param_dtype == (None if dtype == torch.float16 else dtype)
     assert policy.reduce_dtype == torch.float32
     assert policy.output_dtype is None
     assert acc.state.fsdp_plugin.mixed_precision_policy is policy
