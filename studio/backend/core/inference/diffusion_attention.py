@@ -790,6 +790,20 @@ _ROCM_FLASH_BUCKETS: dict[tuple, bool] = {}
 # kernel; per DiT, so another pipeline's generation boundary does not clear it.
 ROCM_FLASH_DEFERRED_ATTR = "_unsloth_rocm_flash_deferred"
 _ROCM_FLASH_GATE_LOCK = threading.Lock()
+# The native SDPA baseline the in-memory verdicts were timed against; when it moves (a later load re-enables or disables
+# the fused SDPA kernels), both in-memory caches are dropped and the disk cache, keyed on it, decides again.
+_ROCM_FLASH_BASELINE: list = [None]
+
+
+def _sync_rocm_flash_baseline() -> None:
+    try:
+        current = _native_sdpa_baseline()
+    except Exception:  # noqa: BLE001
+        current = None
+    if current != _ROCM_FLASH_BASELINE[0]:
+        ROCM_FLASH_ADMISSIONS.clear()
+        _ROCM_FLASH_BUCKETS.clear()
+        _ROCM_FLASH_BASELINE[0] = current
 
 
 def _rocm_flash_bucket(tokens: Any) -> int:
@@ -842,6 +856,7 @@ def _rocm_flash_length_reason(query: Any, key: Any) -> Optional[str]:
     geometries = gate.get(shape)
     if not geometries:
         return None
+    _sync_rocm_flash_baseline()
     q_bucket, kv_bucket = _rocm_flash_bucket(int(seq)), _rocm_flash_bucket(int(kv))
     b_bucket = _rocm_flash_batch_bucket(int(batch))
     keys = [(device, shape[1], *g, q_bucket, kv_bucket, b_bucket) for g in sorted(geometries)]
@@ -931,6 +946,7 @@ def _rocm_flash_geometry_admitted(
     kv = tokens if kv_tokens is None else int(kv_tokens)
     extra = (() if kv == tokens else (kv,)) + (() if batch == 1 else (f"b{batch}",))
     key = (device, str(dtype), *geometry, tokens) + extra
+    _sync_rocm_flash_baseline()
     cached = ROCM_FLASH_ADMISSIONS.get(key)
     if cached is not None:
         return bool(cached.get("admitted"))

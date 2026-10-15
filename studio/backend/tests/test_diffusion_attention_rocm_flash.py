@@ -38,6 +38,7 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_INSTALL_ATTEMPTED", set())
     monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_BASELINE", [None], raising = False)
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
 
@@ -1237,6 +1238,21 @@ def test_deferral_belongs_to_its_dit_not_to_other_generations(monkeypatch):
     att.begin_attention_run(types.SimpleNamespace(pipe = types.SimpleNamespace(transformer = dit)))
     dit.run(guarded, [(40000, None)])
     assert timed == [4096, 32768] and ran[-1] == "flash"
+
+
+def test_a_moved_sdpa_baseline_drops_the_in_memory_verdicts(monkeypatch):
+    baseline = ["sdpafem,aotriton-exp1"]
+    monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: baseline[0])
+    dit, guarded, ran, timed = _length_env(monkeypatch, {4096: 70.0, 16384: 60.0})
+    # As the real key: the persisted verdicts are scoped by the baseline too.
+    monkeypatch.setattr(att, "_rocm_flash_toolchain_key", lambda device: "tc-" + baseline[0])
+    dit.run(guarded, [(20000, None), (20000, None)])
+    assert timed == [4096, 16384] and ran == ["flash", "flash"]
+    baseline[0] = "sdpa--m,aotriton-exp1"  # a later load turned the fused SDPA kernels off
+    dit.run(guarded, [(20000, None)])
+    assert timed == [4096, 16384, 16384] and len(att.ROCM_FLASH_ADMISSIONS) == 1
+    dit.run(guarded, [(20000, None)])
+    assert timed == [4096, 16384, 16384]
 
 
 def test_probe_bound_adds_math_sdpa_scores_when_fused_sdpa_is_off(monkeypatch):
