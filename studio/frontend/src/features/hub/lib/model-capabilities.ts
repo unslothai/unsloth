@@ -22,6 +22,7 @@ export interface Capability {
 /** What the Hub's filter picks from. Image and video generation share the "diffusion" capability
  *  everywhere else (loading, the Images and Video pages) but are different models to look for. */
 export type HubCapabilityFilter =
+  | "text"
   | "reasoning"
   | "vision"
   | "audio"
@@ -30,6 +31,7 @@ export type HubCapabilityFilter =
   | "video-gen";
 
 export const HUB_CAPABILITY_FILTERS: readonly HubCapabilityFilter[] = [
+  "text",
   "reasoning",
   "vision",
   "audio",
@@ -38,10 +40,18 @@ export const HUB_CAPABILITY_FILTERS: readonly HubCapabilityFilter[] = [
   "video-gen",
 ];
 
-const VIDEO_GEN_TAGS = new Set(["text-to-video", "image-to-video", "video-to-video"]);
+const VIDEO_GEN_TAGS = new Set([
+  "text-to-video",
+  "image-to-video",
+  "video-to-video",
+]);
 const VIDEO_GEN_ID_RE =
   /wan2|hunyuan[-_]?video|ltx[-_]?video|\bltxv\b|cogvideo|mochi|skyreels|[-_]t2v\b|[-_]i2v\b/;
-const IMAGE_GEN_TAGS = new Set(["text-to-image", "image-to-image", "unconditional-image-generation"]);
+const IMAGE_GEN_TAGS = new Set([
+  "text-to-image",
+  "image-to-image",
+  "unconditional-image-generation",
+]);
 const IMAGE_GEN_ID_RE =
   /stable[-_]?diffusion|\bsdxl\b|\bflux\b|qwen[-_]?image|hunyuan[-_]?image|z[-_]image|dreamshaper|latent[-_]?consistency|[-_]lcm\b/;
 
@@ -56,7 +66,8 @@ export function generationKinds(
   const pipeline = pipelineTag?.toLowerCase();
   const lowerId = modelId.toLowerCase();
   const has = (set: ReadonlySet<string>) =>
-    [...set].some((tag) => tagSet.has(tag)) || (pipeline !== undefined && set.has(pipeline));
+    [...set].some((tag) => tagSet.has(tag)) ||
+    (pipeline !== undefined && set.has(pipeline));
   const video = has(VIDEO_GEN_TAGS) || VIDEO_GEN_ID_RE.test(lowerId);
   const image = has(IMAGE_GEN_TAGS) || IMAGE_GEN_ID_RE.test(lowerId) || !video;
   return { image, video };
@@ -285,7 +296,12 @@ export function detectCapabilities(
     const kinds = generationKinds(tags, pipelineTag, modelId);
     out.push({
       key: "diffusion",
-      label: kinds.image && kinds.video ? "Image & video gen" : kinds.video ? "Video gen" : "Image gen",
+      label:
+        kinds.image && kinds.video
+          ? "Image & video gen"
+          : kinds.video
+            ? "Video gen"
+            : "Image gen",
     });
   }
   const languageCodes = new Set<string>();

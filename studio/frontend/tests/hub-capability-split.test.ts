@@ -59,3 +59,17 @@ test("capabilities are picked in the filter popover, which sits by the Models / 
   assert.match(popover, /role="checkbox"\s+aria-checked=\{checked\}/);
   assert.match(popover, /\{showModelFilters && \(/);
 });
+
+test("Text only lists the models no other box covers, so every box ticked lists every model", () => {
+  assert.equal(HUB_CAPABILITY_FILTERS[0], "text");
+  const viewModels = readSrc("features/hub/lib/view-models.ts");
+  assert.match(viewModels, /\{ value: "text", label: "Text only" \}/);
+  assert.match(viewModels, /if \(key === "text"\) \{\s*return !HUB_CAPABILITY_FILTERS\.some\(\s*\(other\) => other !== "text" && matchesHubCapability\(row, other\),/);
+});
+
+test("every capability starts ticked, and the last tick can't be removed", () => {
+  const popover = readSrc("features/hub/catalog/model-search-filters.tsx");
+  assert.match(popover, /capabilities\.length === 0 \|\| capabilities\.includes\(key\)/);
+  assert.match(popover, /const locked = next\.length === 0;/);
+  assert.match(popover, /icon=\{FilterMailIcon\}/);
+});

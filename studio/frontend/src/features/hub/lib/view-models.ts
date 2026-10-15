@@ -19,6 +19,7 @@ import {
   detectBaseModel,
   detectCapabilities,
   generationKinds,
+  HUB_CAPABILITY_FILTERS,
   type HubCapabilityFilter,
 } from "./model-capabilities";
 export {
@@ -37,6 +38,8 @@ export const CAPABILITY_FILTER_OPTIONS: ReadonlyArray<{
   value: HubCapabilityFilter;
   label: string;
 }> = [
+  // Models with none of the others, so ticking every box lists every model.
+  { value: "text", label: "Text only" },
   { value: "reasoning", label: "Reasoning" },
   { value: "vision", label: "Vision" },
   { value: "audio", label: "Audio" },
@@ -271,12 +274,25 @@ export function buildDiscoverRows(
 
 /** One Hub filter pick against a row; image and video gen split the shared "diffusion" capability. */
 export function matchesHubCapability(
-  row: { capabilities: Array<{ key: CapabilityKey }>; result: Pick<HfModelResult, "tags" | "pipelineTag" | "id"> },
+  row: {
+    capabilities: Array<{ key: CapabilityKey }>;
+    result: Pick<HfModelResult, "tags" | "pipelineTag" | "id">;
+  },
   key: HubCapabilityFilter,
 ): boolean {
-  if (key !== "image-gen" && key !== "video-gen") return matchesCapability(row.capabilities, key);
+  if (key === "text") {
+    return !HUB_CAPABILITY_FILTERS.some(
+      (other) => other !== "text" && matchesHubCapability(row, other),
+    );
+  }
+  if (key !== "image-gen" && key !== "video-gen")
+    return matchesCapability(row.capabilities, key);
   if (!matchesCapability(row.capabilities, "diffusion")) return false;
-  const kinds = generationKinds(row.result.tags, row.result.pipelineTag, row.result.id);
+  const kinds = generationKinds(
+    row.result.tags,
+    row.result.pipelineTag,
+    row.result.id,
+  );
   return key === "image-gen" ? kinds.image : kinds.video;
 }
 

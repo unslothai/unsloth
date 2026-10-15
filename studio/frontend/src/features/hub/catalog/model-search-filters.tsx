@@ -15,7 +15,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import { FilterIcon } from "@hugeicons/core-free-icons";
+import { FilterMailIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState } from "react";
 import {
@@ -40,7 +40,7 @@ export function ModelSearchFiltersControl({
 }: {
   value: ModelSearchFilters;
   onChange: (value: ModelSearchFilters) => void;
-  /** None picked means every capability; a model with any of the picks is listed. */
+  /** Empty means every box ticked (no filter); otherwise a model with any of the picks is listed. */
   capabilities: HubCapabilityFilter[];
   onCapabilitiesChange: (value: HubCapabilityFilter[]) => void;
   showModelFilters: boolean;
@@ -72,9 +72,9 @@ export function ModelSearchFiltersControl({
           <PopoverTrigger asChild={true}>
             <button type="button" className={className} aria-label="Filters">
               <HugeiconsIcon
-                icon={FilterIcon}
+                icon={FilterMailIcon}
                 strokeWidth={1.75}
-                className="size-4"
+                className="size-5"
               />
               {((showModelFilters && hasModelSearchFilters(value)) ||
                 capabilities.length > 0) && (
@@ -100,42 +100,44 @@ export function ModelSearchFiltersControl({
         <fieldset className="flex flex-col gap-1">
           <legend className="mb-1.5 flex w-full items-baseline justify-between px-0.5 text-ui-12p5 font-medium text-foreground">
             Capabilities
-            {capabilities.length > 0 ? (
+            {capabilities.length > 0 && (
               <button
                 type="button"
                 onClick={() => onCapabilitiesChange([])}
                 className="cursor-pointer text-ui-11 font-normal text-muted-foreground transition-colors hover:text-foreground"
               >
-                Clear
+                Select all
               </button>
-            ) : (
-              <span className="text-ui-11 font-normal text-muted-foreground">
-                any match
-              </span>
             )}
           </legend>
           <div className="grid grid-cols-2 gap-x-2">
             {CAPABILITY_FILTER_OPTIONS.map((option) => {
-              const checked = capabilities.includes(option.value);
+              const ticked = (key: HubCapabilityFilter) =>
+                capabilities.length === 0 || capabilities.includes(key);
+              const checked = ticked(option.value);
+              // Kept in the list's order, so it doesn't depend on click order.
+              const next = CAPABILITY_FILTER_OPTIONS.map((o) => o.value).filter(
+                (key) => (key === option.value ? !checked : ticked(key)),
+              );
+              // The last tick stays: none would list nothing.
+              const locked = next.length === 0;
               return (
                 <button
                   key={option.value}
                   type="button"
                   role="checkbox"
                   aria-checked={checked}
-                  onClick={() =>
-                    // Kept in the list's order, so it doesn't depend on click order.
+                  aria-disabled={locked || undefined}
+                  onClick={() => {
+                    if (locked) return;
                     onCapabilitiesChange(
-                      CAPABILITY_FILTER_OPTIONS.map((o) => o.value).filter(
-                        (key) =>
-                          key === option.value
-                            ? !checked
-                            : capabilities.includes(key),
-                      ),
-                    )
-                  }
+                      next.length === CAPABILITY_FILTER_OPTIONS.length
+                        ? []
+                        : next,
+                    );
+                  }}
                   className={cn(
-                    "flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-0.5 py-1.5 text-left text-ui-12p5 transition-colors hover:text-foreground",
+                    "flex cursor-pointer select-none items-center gap-2 rounded-[10px] px-0.5 py-1.5 text-left text-ui-12p5 transition-colors hover:text-foreground aria-disabled:cursor-default",
                     checked ? "text-foreground" : "text-muted-foreground",
                   )}
                 >
