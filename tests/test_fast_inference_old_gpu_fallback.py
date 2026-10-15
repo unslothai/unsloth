@@ -64,3 +64,22 @@ def test_failed_probe_keeps_vllm(monkeypatch):
 
     f = _helper(monkeypatch, "cuda", broken)
     assert f(["gemma4"]) is None
+
+
+def test_fallback_drops_max_num_batched_tokens(capsys):
+    # load_vllm takes it; transformers' from_pretrained rejects it once vLLM is switched off.
+    tree = ast.parse(LOADER.read_text(encoding = "utf-8"))
+    wanted = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name == "_drop_vllm_engine_kwargs")
+        or (
+            isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == "_VLLM_ENGINE_KWARGS" for t in node.targets)
+        )
+    ]
+    namespace = {}
+    exec(compile(ast.Module(body = wanted, type_ignores = []), "loader.py", "exec"), namespace)
+    kwargs = {"max_num_batched_tokens": 4096, "token": "x"}
+    namespace["_drop_vllm_engine_kwargs"](kwargs)
+    assert kwargs == {"token": "x"}
