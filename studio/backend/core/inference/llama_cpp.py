@@ -14856,14 +14856,24 @@ class LlamaCppBackend:
         ends the mask there: "0,2,-1,1" exposes 0 and 2, "-1" alone hides every GPU. A GPU in
         MIG mode is one slice to CUDA before R570 (the first, when the mask does not name one),
         so its first slice row stands in for the parent's whole-card memory and a second slice
-        of the same card is dropped. R570+ enumerates every slice, so a card's visible slices
-        merge into one row (memory summed, capped at the card's, uuids joined for the child)."""
+        of the same card is dropped. R570+ enumerates one compute instance per GPU instance, so
+        a card's visible slices merge into one row, one per GPU instance (memory summed, capped
+        at the card's, uuids joined for the child); without GPU instance ids, no sum."""
         raw = os.environ.get("CUDA_VISIBLE_DEVICES")
         parents = [r for r in rows if not r.get("mig")]
         multi = (LlamaCppBackend._NVML_DRIVER_MAJOR or 0) >= 570
 
         def merged(slices: list[dict]) -> dict:
             if not multi or len(slices) == 1:
+                return slices[0]
+            per_gi: dict[str, dict] = {}
+            for s in slices:
+                gi = s.get("gpu_instance_id")
+                if gi is None:
+                    return slices[0]  # compute instances of one GPU instance share its memory
+                per_gi.setdefault(str(gi), s)
+            slices = list(per_gi.values())
+            if len(slices) == 1:
                 return slices[0]
             parent = next(
                 (p for p in parents if str(p.get("index")) == str(slices[0].get("index"))), {}
@@ -14958,8 +14968,29 @@ class LlamaCppBackend:
             and LlamaCppBackend._visible_devices_mask("CUDA_VISIBLE_DEVICES") is None
             and LlamaCppBackend._visibility_mask_is_unmappable()
         ):
-            return None
+            return LlamaCppBackend._mig_tokens_for_ordinals(cvd, gpu_indices)
         return mask
+
+    @staticmethod
+    def _mig_tokens_for_ordinals(cvd: str, gpu_indices) -> Optional[str]:
+        """The inherited MIG- entries behind torch ordinals, or None (keep the whole mask). Only
+        when torch enumerated every entry, so ordinal i is entry i in mask order."""
+        tokens = [t.strip() for t in cvd.split(",") if t.strip()]
+        if LlamaCppBackend._GPU_IDS_ARE_PCI_INDICES is not False or not all(
+            t.startswith("MIG-") for t in tokens
+        ):
+            return None
+        try:
+            import torch
+
+            if torch.cuda.device_count() != len(tokens):
+                return None
+            ids = [int(i) for i in gpu_indices]
+        except Exception:
+            return None
+        if not ids or len(set(ids)) != len(ids) or not all(0 <= i < len(tokens) for i in ids):
+            return None
+        return ",".join(tokens[i] for i in ids)
 
     @staticmethod
     def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:

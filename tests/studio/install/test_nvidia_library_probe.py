@@ -495,3 +495,34 @@ def test_setup_sh_probe_hook_runs(tmp_path):
             timeout = 60,
         )
         assert result.stdout.strip() == expect, result.stderr
+
+
+def test_mig_children_report_their_gpu_instance():
+    """R570+ CUDA exposes one compute instance per GPU instance, so callers group by it."""
+    import ctypes
+
+    class FakeNvml:
+        def nvmlDeviceGetMaxMigDeviceCount(self, handle, count):
+            ctypes.cast(count, ctypes.POINTER(ctypes.c_uint))[0] = 2
+            return 0
+
+        def nvmlDeviceGetMigDeviceHandleByIndex(self, handle, index, mig):
+            ctypes.cast(mig, ctypes.POINTER(ctypes.c_void_p))[0] = index + 1
+            return 0
+
+        def nvmlDeviceGetUUID(self, mig, buf, size):
+            buf.value = f"MIG-{mig.value}".encode()
+            return 0
+
+        def nvmlDeviceGetMemoryInfo(self, mig, memory):
+            return 0
+
+        def nvmlDeviceGetGpuInstanceId(self, mig, gi):
+            ctypes.cast(gi, ctypes.POINTER(ctypes.c_uint))[0] = 7
+            return 0
+
+    children = PROBE._mig_children(FakeNvml(), ctypes.c_void_p(0))
+    assert [(c[1], c[3]) for c in children] == [("MIG-1", 7), ("MIG-2", 7)]
+    nvml = FakeNvml()
+    del FakeNvml.nvmlDeviceGetGpuInstanceId
+    assert [c[3] for c in PROBE._mig_children(nvml, ctypes.c_void_p(0))] == [None, None]
