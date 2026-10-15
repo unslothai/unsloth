@@ -2541,8 +2541,12 @@ def test_a_raw_vision_prompt_decodes_on_its_own_even_when_zoo_could_batch_it(mon
 
     engine = types.ModuleType("unsloth_zoo.mlx.generate")
     engine.VLM_TOKEN_ID_PROMPTS = True
+    package = types.ModuleType("unsloth_zoo.mlx")
+    package.generate = engine
+    monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx", package)
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", engine)
-    monkeypatch.setattr(sys.modules["unsloth_zoo.mlx"], "generate", engine, raising = False)
+    sys.modules["unsloth_zoo"].mlx = package
     monkeypatch.setattr(mlx_inference, "_batched_vision_engine_gap", lambda _e: None)
     monkeypatch.setattr(mlx_inference, "_row_processor_gap", lambda _e, _r: None)
     backend = mlx_inference.MLXInferenceBackend()

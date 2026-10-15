@@ -100,12 +100,15 @@ def test_raw_vision_prompt_matches_the_decoded_sampled_ids():
     if not backend._is_vlm:
         pytest.skip("loaded as a text model")
     ids = backend.resolve_completion_prompt(_PROMPT)["ids"]
-    tokens = [
-        r.token
+    # Keyed by count: the closing summary repeats the last token.
+    by_count = {
+        r.generation_tokens: int(r.token)
         for r in stream_generate(
             backend._model, backend._processor, "", None, input_ids = mx.array([ids]), max_tokens = 8
         )
-    ]
+        if r.token is not None
+    }
+    tokens = [by_count[n] for n in sorted(by_count)]
     # Leading space included: the runtime's own text trims it, a raw continuation keeps it.
     direct = backend._tokenizer.decode(
         tokens, skip_special_tokens = True, clean_up_tokenization_spaces = False
