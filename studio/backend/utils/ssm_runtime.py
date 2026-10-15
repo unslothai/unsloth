@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import functools
 import importlib
+import importlib.metadata
 import importlib.util
 import os
 import shutil
@@ -112,15 +113,22 @@ def zoo_triton_causal_conv1d_enabled() -> bool:
 def _zoo_triton_platform_usable() -> bool:
     """Whether zoo's Triton conv can engage here: a CUDA torch (not ROCm) with Triton importable.
     macOS, ROCm and a Windows install without triton-windows keep the prebuilt causal-conv1d.
-    The torch probe runs in a child process, so the caller's process never imports torch."""
+    Read from torch's distribution version, so no model load pays for importing torch: ROCm and
+    CPU builds carry `+rocm` / `+cpu`, a Windows CUDA build `+cu`, and a Linux PyPI torch with no
+    local version is the CUDA build."""
     if sys.platform == "darwin" or importlib.util.find_spec("triton") is None:
         return False
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        version = getattr(torch, "version", None)
+        return bool(getattr(version, "cuda", None)) and not getattr(version, "hip", None)
     try:
-        env = probe_torch_wheel_env(timeout = 120, include_windows = True)
-    except Exception as exc:
-        logger.debug("torch probe for zoo's Triton conv failed: %s", exc)
+        local = importlib.metadata.version("torch").partition("+")[2].lower()
+    except importlib.metadata.PackageNotFoundError:
         return False
-    return bool(env and env.get("cuda_major") and not env.get("hip_version"))
+    if local.startswith(("rocm", "cpu")):
+        return False
+    return local.startswith("cu") or (not local and sys.platform.startswith("linux"))
 
 
 def zoo_triton_causal_conv1d_usable() -> bool:

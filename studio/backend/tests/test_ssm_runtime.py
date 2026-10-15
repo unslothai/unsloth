@@ -1064,20 +1064,33 @@ _REAL_PLATFORM_USABLE = ssm_runtime._zoo_triton_platform_usable.__wrapped__
 
 
 @pytest.mark.parametrize(
-    "platform, triton, env, usable",
+    "platform, triton, torch_version, usable",
     [
-        ("linux", True, {"cuda_major": "13", "hip_version": ""}, True),
-        ("win32", True, {"cuda_major": "13", "hip_version": ""}, True),
-        ("linux", True, {"cuda_major": "", "hip_version": "6.4.43483"}, False),
-        ("win32", False, {"cuda_major": "13", "hip_version": ""}, False),
-        ("darwin", True, {"cuda_major": "", "hip_version": ""}, False),
+        ("linux", True, "2.13.0", True),
+        ("linux", True, "2.13.0+cu130", True),
+        ("win32", True, "2.13.0+cu130", True),
+        ("linux", True, "2.11.0+rocm7.1", False),
+        ("win32", False, "2.13.0+cu130", False),
+        ("darwin", True, "2.13.0", False),
         ("linux", True, None, False),
-        ("linux", True, {"cuda_major": "", "hip_version": ""}, False),
+        ("linux", True, "2.13.0+cpu", False),
+        ("win32", True, "2.13.0", False),
     ],
-    ids = ["cuda", "windows-triton", "rocm", "windows-no-triton", "macos", "no-torch", "cpu-torch"],
+    ids = [
+        "linux-pypi-cuda",
+        "linux-cu130",
+        "windows-triton",
+        "rocm",
+        "windows-no-triton",
+        "macos",
+        "no-torch",
+        "cpu-torch",
+        "windows-pypi-cpu",
+    ],
 )
-def test_zoo_triton_conv_platform_check(monkeypatch, platform, triton, env, usable):
+def test_zoo_triton_conv_platform_check(monkeypatch, platform, triton, torch_version, usable):
     monkeypatch.setattr(ssm_runtime.sys, "platform", platform)
+    monkeypatch.delitem(ssm_runtime.sys.modules, "torch", raising = False)
     real_find_spec = ssm_runtime.importlib.util.find_spec
     monkeypatch.setattr(
         ssm_runtime.importlib.util,
@@ -1086,8 +1099,26 @@ def test_zoo_triton_conv_platform_check(monkeypatch, platform, triton, env, usab
             (object() if triton else None) if name == "triton" else real_find_spec(name, *a)
         ),
     )
-    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda **kwargs: env)
+
+    def _version(name):
+        if torch_version is None:
+            raise ssm_runtime.importlib.metadata.PackageNotFoundError(name)
+        return torch_version
+
+    monkeypatch.setattr(ssm_runtime.importlib.metadata, "version", _version)
     assert _REAL_PLATFORM_USABLE() is usable
+
+
+def test_zoo_triton_conv_platform_check_reads_an_imported_torch(monkeypatch):
+    import types
+
+    monkeypatch.setattr(ssm_runtime.sys, "platform", "linux")
+    monkeypatch.setattr(ssm_runtime.importlib.util, "find_spec", lambda name, *a: object())
+    fake = types.SimpleNamespace(version = types.SimpleNamespace(cuda = None, hip = "7.1"))
+    monkeypatch.setitem(ssm_runtime.sys.modules, "torch", fake)
+    assert _REAL_PLATFORM_USABLE() is False
+    fake.version = types.SimpleNamespace(cuda = "13.0", hip = None)
+    assert _REAL_PLATFORM_USABLE() is True
 
 
 @pytest.mark.parametrize("name", ["unsloth/Qwen3.5-2B", "Qwen/Qwen3-Next-80B-A3B"])
@@ -1100,7 +1131,7 @@ def test_qwen_keeps_causal_conv1d_where_zoo_triton_conv_cannot_run(monkeypatch, 
 
 def test_the_platform_check_is_not_run_for_unrelated_models(monkeypatch):
     def _boom():
-        raise AssertionError("torch probe must not run for a non-Qwen model")
+        raise AssertionError("the platform check must not run for a non-Qwen model")
 
     monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", _boom)
     assert ssm_runtime.model_wants_causal_conv1d("unsloth/Llama-3.2-1B") is False
