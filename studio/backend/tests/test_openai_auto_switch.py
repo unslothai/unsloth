@@ -4410,6 +4410,7 @@ def test_chat_audio_input_guards_target_before_switch(monkeypatch):
         audio_preflight = None,
         image_preflight = None,
         tool_images_only = False,
+        npu_request_check = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -9973,6 +9974,7 @@ def test_a_video_request_labels_the_switch_refusal_video(monkeypatch):
         audio_preflight = None,
         image_preflight = None,
         tool_images_only = False,
+        npu_request_check = None,
     ):
         captured.update(
             require_vision = require_vision,
@@ -12480,11 +12482,11 @@ def test_messages_with_switching_on_and_an_npu_model_loaded_names_it(monkeypatch
     assert _NPU_MODEL in str(excinfo.value.detail)
 
 
-def _npu_catalog_entry(monkeypatch, *, vision):
+def _npu_catalog_entry(monkeypatch, *, vision, tools = False):
     from core.inference import npu_backend as nb
     class _Npu:
         def loadable_model(self, model_id):
-            return SimpleNamespace(id = model_id, vision = vision)
+            return SimpleNamespace(id = model_id, vision = vision, tools = tools)
 
     monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
 
@@ -12508,6 +12510,29 @@ def test_a_request_the_npu_model_cannot_serve_never_switches(monkeypatch, kwargs
         )
     assert excinfo.value.status_code == 400
     assert words in str(excinfo.value.detail)
+    assert rec.calls == []
+    assert backend.model_identifier == "unsloth/A-GGUF"
+
+
+@pytest.mark.parametrize(
+    ("fields", "param"),
+    [
+        (
+            {"tools": [{"type": "function", "function": {"name": "f", "parameters": {}}}]},
+            "tools",
+        ),
+        ({"n": 2}, "n"),
+    ],
+)
+def test_a_chat_request_the_npu_model_would_refuse_never_switches(monkeypatch, fields, param):
+    # NPU chat checked these only after the switch had already evicted the resident GGUF.
+    backend, rec = _wired(monkeypatch, _FakeBackend("unsloth/A-GGUF"), None)
+    _npu_catalog_entry(monkeypatch, vision = False, tools = False)
+    payload = _chat_request(model = _NPU_MODEL, **fields)
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(inference_route.openai_chat_completions(payload, object(), "tester"))
+    assert excinfo.value.status_code == 400
+    assert param in str(excinfo.value.detail)
     assert rec.calls == []
     assert backend.model_identifier == "unsloth/A-GGUF"
 

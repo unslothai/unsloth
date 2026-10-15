@@ -1121,7 +1121,10 @@ def connect_studio_server(
     backend = HttpChatBackend(base_url, token)
     from unsloth_cli._npu import npu_model_path, prepare_npu_model
 
-    if npu_model_path(model):
+    npu_path = npu_model_path(model)
+    if npu_path:
+        # `unsloth inference` passes the bare id the picker shows; load it by its model path.
+        model = npu_path
         try:
             prepare_npu_model(
                 lambda method, path, payload, timeout: backend._request(

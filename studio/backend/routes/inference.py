@@ -11166,8 +11166,12 @@ async def _refuse_unservable_npu_switch(
     needs_vision: bool,
     needs_audio: bool,
     rejection_prefix: str,
+    request_check: Optional[Callable[[Any], None]] = None,
 ) -> None:
-    """400 for a request naming an NPU model that could not serve it once loaded."""
+    """400 for a request naming an NPU model that could not serve it once loaded.
+
+    ``request_check`` runs the serving route's own checks against the target's catalog entry.
+    """
     from core.inference.npu_backend import NpuError, get_npu_backend, model_id_from_path
 
     message = None
@@ -11178,15 +11182,19 @@ async def _refuse_unservable_npu_switch(
         )
     elif needs_audio:
         message = f"{rejection_prefix}The NPU model '{named_model}' takes no audio or video input."
-    elif needs_vision and not await asyncio.to_thread(_loaded_satisfies, named_model):
+    elif (needs_vision or request_check is not None) and not await asyncio.to_thread(
+        _loaded_satisfies, named_model
+    ):
         try:
             model = await asyncio.to_thread(
                 get_npu_backend().loadable_model, model_id_from_path(named_model)
             )
         except NpuError:
             model = None  # Not downloaded or unknown: the load reports that itself.
-        if model is not None and not model.vision:
+        if model is not None and needs_vision and not model.vision:
             message = f"{rejection_prefix}The NPU model '{named_model}' cannot read images."
+        elif model is not None and request_check is not None:
+            request_check(model)
     if message is None:
         return
     path = getattr(getattr(fastapi_request, "url", None), "path", None)
@@ -11289,6 +11297,7 @@ async def _maybe_auto_switch_model(
     require_audio_workflow: Optional[str] = None,
     speech_budget: Optional[dict] = None,
     tool_images_only: bool = False,
+    npu_request_check: Optional[Callable[[Any], None]] = None,
 ) -> None:
     """Load a downloaded local model named by an OpenAI request when auto-switch is on.
 
@@ -11316,7 +11325,8 @@ async def _maybe_auto_switch_model(
     checks only the resolved target can decide; see
     :func:`_preflight_audio_for_switch`. ``image_preflight`` does the same for
     non-GGUF image count and byte validation. ``require_audio_workflow`` refuses a target that
-    cannot run that Audio page workflow (``separate``, ``clone``...).
+    cannot run that Audio page workflow (``separate``, ``clone``...). ``npu_request_check``
+    refuses a request an NPU target would reject once loaded, given its catalog entry.
     """
     # A text-only GGUF reads tool-result images as a note, so only audio or video needs its mmproj.
     gguf_requires_vision = (
@@ -11478,6 +11488,7 @@ async def _maybe_auto_switch_model(
                 or audio_preflight
             ),
             rejection_prefix = rejection_prefix,
+            request_check = npu_request_check,
         )
         await _auto_switch_npu_model(
             named_model, fastapi_request, current_subject, claim_resident = claim_resident
@@ -30134,18 +30145,8 @@ class _NpuStreamRelay:
         return body
 
 
-async def _npu_chat_completions(payload, request: Request, current_subject: str):
-    """Proxy NPU chat, rejecting unsupported parameters.
-
-    Always stream upstream: FastFlowLM's non-streaming replies mishandle reasoning
-    and finish reasons on length cutoffs. Collect the stream for JSON callers.
-    """
-    from core.inference.npu_backend import NpuError, get_npu_backend
-
-    try:
-        upstream = await asyncio.to_thread(get_npu_backend().upstream)
-    except NpuError as exc:
-        raise HTTPException(status_code = 400, detail = str(exc)) from None
+def _refuse_npu_chat_request(payload, *, supports_vision: bool, supports_tools: bool) -> None:
+    """Reject a chat request FastFlowLM cannot serve; also run before a switch to an NPU model."""
     if _wants_multiple_choices(payload):
         _raise_unsupported_n("NPU chat completions")
     if _response_format_constrains_decoding(payload):
@@ -30176,32 +30177,52 @@ async def _npu_chat_completions(payload, request: Request, current_subject: str)
         raise HTTPException(
             status_code = 400, detail = "Audio and video input are not supported on the NPU."
         )
-    if not upstream.supports_vision and _request_has_attached_image(payload):
+    if not supports_vision and _request_has_attached_image(payload):
         raise HTTPException(
             status_code = 400,
             detail = "This NPU model does not read images. Load a vision model to send one.",
         )
+    if payload.tools and payload.tool_choice != "none":
+        if payload.parallel_tool_calls is False:
+            _raise_unsupported_openai_parameter(
+                "parallel_tool_calls", "FastFlowLM on the NPU cannot limit a reply to one tool call."
+            )
+        if payload.tool_choice not in (None, "auto"):
+            _raise_unsupported_openai_parameter(
+                "tool_choice", "FastFlowLM on the NPU chooses its own tool; use auto or none."
+            )
+        if not supports_tools:
+            raise HTTPException(
+                status_code = 400,
+                detail = openai_error_body(
+                    "This NPU model does not support tool calling.",
+                    status = 400,
+                    code = "unsupported_parameter",
+                    param = "tools",
+                ),
+            )
+
+
+async def _npu_chat_completions(payload, request: Request, current_subject: str):
+    """Proxy NPU chat, rejecting unsupported parameters.
+
+    Always stream upstream: FastFlowLM's non-streaming replies mishandle reasoning
+    and finish reasons on length cutoffs. Collect the stream for JSON callers.
+    """
+    from core.inference.npu_backend import NpuError, get_npu_backend
+
+    try:
+        upstream = await asyncio.to_thread(get_npu_backend().upstream)
+    except NpuError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+    _refuse_npu_chat_request(
+        payload,
+        supports_vision = upstream.supports_vision,
+        supports_tools = upstream.supports_tools,
+    )
     if payload.tool_choice == "none":
         # FastFlowLM 1.0.3 ignores tool_choice and calls a tool anyway.
         payload.tools = None
-    elif payload.tools and payload.parallel_tool_calls is False:
-        _raise_unsupported_openai_parameter(
-            "parallel_tool_calls", "FastFlowLM on the NPU cannot limit a reply to one tool call."
-        )
-    elif payload.tools and payload.tool_choice not in (None, "auto"):
-        _raise_unsupported_openai_parameter(
-            "tool_choice", "FastFlowLM on the NPU chooses its own tool; use auto or none."
-        )
-    elif payload.tools and not upstream.supports_tools:
-        raise HTTPException(
-            status_code = 400,
-            detail = openai_error_body(
-                "This NPU model does not support tool calling.",
-                status = 400,
-                code = "unsupported_parameter",
-                param = "tools",
-            ),
-        )
 
     _normalize_chat_reasoning_controls(payload)
     if not upstream.supports_reasoning:
@@ -31126,6 +31147,9 @@ async def produce_openai_chat_completions(
         audio_preflight = _audio_preflight,
         image_preflight = _image_preflight,
         tool_images_only = _tool_images_only,
+        npu_request_check = lambda model: _refuse_npu_chat_request(
+            payload, supports_vision = model.vision, supports_tools = model.tools
+        ),
     )
     if _audio_preflight is not None:
         _predecoded_audio = _audio_preflight.get("decoded")

@@ -122,6 +122,34 @@ def test_a_failed_or_cut_download_fails(events):
         prepare_npu_model(_Studio(ready = True, events = events), "lemonade:qwen3-0.6b-FLM", print)
 
 
+def test_a_running_studio_prepares_and_loads_a_bare_npu_id(monkeypatch):
+    # `unsloth inference qwen3-0.6b-FLM` cut the prefix length off the bare id and loaded it as is.
+    import unsloth_cli._inference as inference
+    import unsloth_cli._npu as npu
+
+    seen = {}
+
+    class _Backend:
+        def __init__(self, *_args):
+            pass
+
+        def ensure_loaded(self, model, **_kwargs):
+            seen["loaded"] = model
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888")
+    monkeypatch.setattr(inference, "find_studio_server", lambda *a, **k: "http://127.0.0.1:8888")
+    monkeypatch.setattr(inference, "verify_studio_identity", lambda *a, **k: True)
+    monkeypatch.setattr(inference, "_studio_token", lambda: "token")
+    monkeypatch.setattr(inference, "HttpChatBackend", _Backend)
+    monkeypatch.setattr(
+        npu, "prepare_npu_model", lambda _request, model, _echo: seen.setdefault("prepared", model)
+    )
+    inference.connect_studio_server(
+        "qwen3-0.6b-FLM", hf_token = None, max_seq_length = 0, load_in_4bit = None
+    )
+    assert seen == {"prepared": "lemonade:qwen3-0.6b-FLM", "loaded": "lemonade:qwen3-0.6b-FLM"}
+
+
 def test_run_refuses_gguf_flags_for_an_npu_model():
     from unsloth_cli import app
 
