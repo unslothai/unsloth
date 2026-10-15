@@ -93,6 +93,8 @@ def _train(optimizer_factory, offload, steps = 6, seed = 0, chunk_bytes = None):
         torch.nn.Linear(64, 8192), torch.nn.GELU(), torch.nn.Linear(8192, 64)
     ).cuda()
     optimizer = optimizer_factory(model.parameters())
+    # Bound before offloading, as accelerate keeps it and swaps it back in on every fp16 step.
+    step_fn = optimizer.step
     if offload:
         assert module.offload_optimizer_state(optimizer, chunk_bytes = chunk_bytes) is not None
     x = torch.randn(32, 64, device = "cuda", generator = None)
@@ -101,7 +103,7 @@ def _train(optimizer_factory, offload, steps = 6, seed = 0, chunk_bytes = None):
         loss = (model(x + step) ** 2).mean()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+        step_fn()
         optimizer.zero_grad(set_to_none = True)
         losses.append(loss.item())
     return model, optimizer, losses

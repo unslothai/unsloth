@@ -71,6 +71,8 @@ class _StateOffloader:
         self.offloaded = {}
         self.offloaded_bytes = 0
         self.steps = 0
+        self.inside = False
+        self.hidden = None
 
     def _host_buffer(self, param, key, src):
         buffer = self.buffers.get((param, key))
@@ -153,37 +155,54 @@ class _StateOffloader:
             chunks.append(chunk)
         return chunks
 
-    def step(self, step, args, kwargs):
-        self.steps += 1
+    def _pre_step(self, optimizer, args, kwargs):
+        if self.inside:
+            return
+        # torch passes the step's own args to hooks, self included.
+        if args and args[0] is optimizer:
+            args = args[1:]
         params = [
-            p for group in self.optimizer.param_groups for p in group["params"] if p.grad is not None
+            p for group in optimizer.param_groups for p in group["params"] if p.grad is not None
         ]
         chunks = self._chunks(params)
         closure = args[0] if args else kwargs.get("closure")
         # A closure recomputes the loss on every call, so it must run once over all parameters.
         if len(chunks) <= 1 or closure is not None:
             self.restore()
-            try:
-                return step(*args, **kwargs)
-            finally:
-                self.finish(self.offload())
+            return
+        # Step each chunk here through the class step (the hooks see `inside` and return), then
+        # hide every gradient so the caller's own step call finds nothing left to update.
         grads = [p.grad for p in params]
         devices = set()
+        self.inside = True
         try:
             for chunk in chunks:
                 members = set(chunk)
                 for p, g in zip(params, grads):
                     p.grad = g if p in members else None
                 self.restore(chunk)
-                result = step(*args, **kwargs)
+                type(optimizer).step(optimizer, *args, **kwargs)
                 devices |= self.offload(chunk)
-        finally:
+        except BaseException:
             for p, g in zip(params, grads):
                 p.grad = g
-            # A failed chunk can leave restored state of other params on device.
-            devices |= self.offload()
-            self.finish(devices)
-        return result
+            self.finish(devices | self.offload())
+            raise
+        finally:
+            self.inside = False
+        for p in params:
+            p.grad = None
+        self.hidden = (params, grads)
+
+    def _post_step(self, optimizer, args, kwargs):
+        if self.inside:
+            return
+        if self.hidden is not None:
+            for p, g in zip(*self.hidden):
+                p.grad = g
+            self.hidden = None
+        self.steps += 1
+        self.finish(self.offload())
 
 
 def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
@@ -203,13 +222,10 @@ def offload_optimizer_state(optimizer, pin_memory = True, chunk_bytes = None):
         return None
 
     offloader = _StateOffloader(optimizer, pin_memory = pin_memory, chunk_bytes = chunk_bytes)
-    # Instance attribute: accelerate, GradScaler and LR schedulers all call optimizer.step.
-    step = optimizer.step
-
-    def _step_offloaded(*args, **kwargs):
-        return offloader.step(step, args, kwargs)
-
-    optimizer.step = _step_offloaded
+    # Hooks, not an optimizer.step override: accelerate swaps the instance's step attribute on
+    # every fp16 step, and hooks run whichever bound step a caller kept.
+    optimizer.register_step_pre_hook(offloader._pre_step)
+    optimizer.register_step_post_hook(offloader._post_step)
 
     # Instance override, not register_load_state_dict_post_hook: bitsandbytes replaces
     # Optimizer.load_state_dict and does not run torch's post hooks. Loading moves every
