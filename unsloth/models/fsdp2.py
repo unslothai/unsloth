@@ -202,7 +202,11 @@ def _fsdp2_checks_frozen_dtypes():
         return False
 
 
-def unify_frozen_dtypes(accelerator, model, frozen_checked = None):
+def unify_frozen_dtypes(
+    accelerator,
+    model,
+    frozen_checked = None,
+):
     """LoRA on torch < 2.8: float32 adapters next to frozen 16-bit weights in one unit. Upcast the
     frozen weights too (what accelerate <= 1.12 did with `model.to(float32)`); the gather policy
     casts them back down for compute."""
@@ -263,15 +267,14 @@ def _decoder_blocks(model):
     if not names:
         return []
     # fully_shard swaps a module's class for an FSDP<Name> subclass, so match along the MRO.
-    return [
-        m for m in model.modules() if any(c.__name__ in names for c in type(m).__mro__)
-    ]
+    return [m for m in model.modules() if any(c.__name__ in names for c in type(m).__mro__)]
 
 
 def _all_ranks_agree(value, device):
     """True only when every rank says True, so every rank takes the same branch."""
     try:
         import torch.distributed as dist
+
         if not (dist.is_available() and dist.is_initialized()):
             return value
         flag = torch.tensor([1 if value else 0], dtype = torch.int32, device = device)
@@ -361,6 +364,7 @@ def _gather_units_read_directly(model, blocks, parents, FSDPModule):
             units.append(owner)
     if not units:
         return 0
+
     # On the root: peft's LoraModel calls the CausalLM's .forward directly, skipping its hooks.
     def _unsloth_gather_direct_reads(module, args):
         for unit in units:
@@ -413,6 +417,7 @@ def install_fsdp2_prepare_hook():
         unify_trainable_dtypes(accelerator, model)
         unify_frozen_dtypes(accelerator, model)
         from .fsdp2_qlora import fsdp2_qlora_wrap
+
         with fsdp2_qlora_wrap(model, original) as qlora:
             model = original(accelerator, model, *args, **kwargs)
         if qlora is not None:
