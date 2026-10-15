@@ -72,7 +72,11 @@ if triton is not None:
         blocks = pid_k * G + tl.arange(0, G)
         lane = tl.arange(0, 8)
         rmask = (rows < M)[:, None, None]
-        base = rows[:, None, None].to(tl.int64) * K + blocks[None, :, None] * 16 + lane[None, None, :] * 2
+        base = (
+            rows[:, None, None].to(tl.int64) * K
+            + blocks[None, :, None] * 16
+            + lane[None, None, :] * 2
+        )
         xe = tl.load(x_ptr + base, mask = rmask, other = 0.0).to(tl.float32)
         xo = tl.load(x_ptr + base + 1, mask = rmask, other = 0.0).to(tl.float32)
         s = tl.load(s_ptr).to(tl.float32)
@@ -86,17 +90,30 @@ if triton is not None:
         lo = _e2m1_code(xe * recip)
         hi = _e2m1_code(xo * recip)
         packed = lo | (hi << 4)
-        qoffs = rows[:, None, None].to(tl.int64) * (K // 2) + blocks[None, :, None] * 8 + lane[None, None, :]
+        qoffs = (
+            rows[:, None, None].to(tl.int64) * (K // 2)
+            + blocks[None, :, None] * 8
+            + lane[None, None, :]
+        )
         tl.store(q_ptr + qoffs, packed, mask = rmask)
         # cuBLAS / torchao ``to_blocked`` layout: 128 x 4 tiles, (row % 32) * 16 + (row // 32 % 4) * 4 + col % 4.
         rr = rows % 128
         tile = (rows // 128)[:, None] * NCB + (blocks // 4)[None, :]
-        soffs = tile.to(tl.int64) * 512 + ((rr % 32) * 16 + (rr // 32) * 4)[:, None] + (blocks % 4)[None, :]
+        soffs = (
+            tile.to(tl.int64) * 512
+            + ((rr % 32) * 16 + (rr // 32) * 4)[:, None]
+            + (blocks % 4)[None, :]
+        )
         tl.store(sf_ptr + soffs, sf8.to(tl.uint8, bitcast = True), mask = (rows < M)[:, None])
 
 
 def fast_act_quant_enabled() -> bool:
-    return os.environ.get(FAST_ACT_QUANT_ENV, "1").strip().lower() not in ("0", "false", "no", "off")
+    return os.environ.get(FAST_ACT_QUANT_ENV, "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
 
 
 def describe() -> dict:
@@ -118,7 +135,9 @@ def _build_op():
     globals().setdefault("torch", torch)
 
     @triton_op("unsloth_nvfp4::act_quant", mutates_args = ())
-    def act_quant(x: torch.Tensor, per_tensor_scale: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def act_quant(
+        x: torch.Tensor, per_tensor_scale: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         m, k = x.shape
         kb = k // 16
         ncb = (kb + 3) // 4
@@ -143,7 +162,9 @@ def _build_op():
     return _OP
 
 
-def _eligible(data_hp: Any, block_size: int, per_tensor_scale: Any, is_swizzled: bool, use_triton: bool) -> bool:
+def _eligible(
+    data_hp: Any, block_size: int, per_tensor_scale: Any, is_swizzled: bool, use_triton: bool
+) -> bool:
     import torch
     return (
         is_swizzled
@@ -152,7 +173,8 @@ def _eligible(data_hp: Any, block_size: int, per_tensor_scale: Any, is_swizzled:
         and per_tensor_scale is not None
         and isinstance(per_tensor_scale, torch.Tensor)
         and per_tensor_scale.numel() == 1
-        and per_tensor_scale.device == data_hp.device  # a host scalar would hand the kernel a host pointer
+        and per_tensor_scale.device
+        == data_hp.device  # a host scalar would hand the kernel a host pointer
         and data_hp.dim() == 2
         and data_hp.dtype == torch.bfloat16
         and data_hp.is_cuda
@@ -173,14 +195,12 @@ def _traced(data_hp: Any) -> bool:
         return True
     try:
         from torch._subclasses.fake_tensor import is_fake
-
         if is_fake(data_hp):
             return True
     except Exception:  # noqa: BLE001 - older torch: fall through to the tracing context
         pass
     try:
         from torch._guards import TracingContext
-
         return TracingContext.try_get() is not None
     except Exception:  # noqa: BLE001
         return False
@@ -201,7 +221,9 @@ def _patched_to_nvfp4(
     counting = not _traced(data_hp)
     # Eager calls (the load-time weight pass, speed tier off) keep torchao's own eager arithmetic, which divides by 6
     # where Inductor multiplies by 1/6: the kernel matches the COMPILED path bit for bit, so only traced calls use it.
-    if counting or not _eligible(data_hp, block_size, per_tensor_scale, is_swizzled_scales, use_triton_kernel):
+    if counting or not _eligible(
+        data_hp, block_size, per_tensor_scale, is_swizzled_scales, use_triton_kernel
+    ):
         if counting:
             _STATE["fallback"] += 1
         return _ORIGINAL(
@@ -312,7 +334,9 @@ def install_nvfp4_act_quant_patch(logger: Any = None) -> bool:
             _STATE["installed"] = True
     if logger is not None:
         try:
-            logger.info(f"[nvfp4] one-pass activation quantiser: {'on' if ok else 'off'} ({reason})")
+            logger.info(
+                f"[nvfp4] one-pass activation quantiser: {'on' if ok else 'off'} ({reason})"
+            )
         except Exception:  # noqa: BLE001
             pass
     return ok

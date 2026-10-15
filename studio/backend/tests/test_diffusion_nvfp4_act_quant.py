@@ -40,7 +40,6 @@ def test_eligibility_is_structural():
 def test_host_scalar_scale_falls_back_to_torchao():
     # torchao accepts a CPU 0-d per-tensor scale with a CUDA activation; the kernel would read a host pointer.
     from torch._subclasses.fake_tensor import FakeTensorMode
-
     with FakeTensorMode(allow_non_fake_inputs = True):
         x = torch.empty(4, 32, dtype = torch.bfloat16, device = "cuda")
         assert aq._eligible(x, 16, torch.empty((), device = "cuda"), True, False)
@@ -66,7 +65,6 @@ def test_bit_identical_to_compiled_torchao():
 def test_fake_tensors_count_as_traced():
     # AOTAutograd traces torchao's subclass dispatch with fake tensors while is_compiling() is False.
     from torch._subclasses.fake_tensor import FakeTensorMode
-
     assert not aq._traced(torch.zeros(2, 16))
     with FakeTensorMode():
         assert aq._traced(torch.empty(2, 16))

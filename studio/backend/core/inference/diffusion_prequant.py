@@ -2412,6 +2412,7 @@ def load_prequantized_transformer(
                 # Layers left on torchao quantise activations through NVFP4Tensor.to_nvfp4 at run time.
                 install_nvfp4_act_quant_patch(logger)
                 from .diffusion_nvfp4_ops import select_nvfp4_backend
+
                 convert_nvfp4_backend(
                     transformer, metadata, select_nvfp4_backend(device), logger = logger
                 )
