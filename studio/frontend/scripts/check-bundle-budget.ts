@@ -113,8 +113,12 @@ export const BUDGET = {
   // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
   // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
   // against 97ed9415f7, before #13649, one machine and build), raised by that.
-  transferBytes: 2_033_604,
-  rawBytes: 6_764_921,
+  // Offering the newest audio.cpp release in updates (#13589) adds 385 B raw / 80 B transfer to the eager set
+  // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
+  // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
+  // main's margin stays where it was.
+  transferBytes: 2_033_684,
+  rawBytes: 6_765_306,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
