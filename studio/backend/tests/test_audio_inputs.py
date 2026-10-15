@@ -154,6 +154,15 @@ def test_an_upload_decodes_dedupes_and_deletes(client, fmt, codec, rate, layout,
     assert not list(directory.iterdir())
 
 
+def test_an_upload_with_a_damaged_frame_keeps_the_audio_after_it(client):
+    data = bytearray(encode("mp3", "libmp3lame", 44100, "mono", 20.0))
+    middle = len(data) // 2
+    data[middle : middle + 2048] = bytes(range(256)) * 8
+    response = _upload(client, bytes(data), "damaged.mp3")
+    assert response.status_code == 201, response.text
+    assert response.json()["duration_s"] > 19
+
+
 def test_an_oversize_body_is_refused_while_streaming():
     seen: list[int] = []
     with pytest.raises(audio_inputs.AudioInputError) as refused:
