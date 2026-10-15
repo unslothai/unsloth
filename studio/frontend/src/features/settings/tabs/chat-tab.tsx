@@ -328,6 +328,10 @@ export function ChatTab() {
   const setShowMemoryBar = useChatRuntimeStore(
     (state) => state.setShowMemoryBar,
   );
+  const fitOnDeviceOnly = useChatRuntimeStore((state) => state.fitOnDeviceOnly);
+  const setFitOnDeviceOnly = useChatRuntimeStore(
+    (state) => state.setFitOnDeviceOnly,
+  );
   const showModelDisclaimer = useChatPreferencesStore(
     (state) => state.showModelDisclaimer,
   );
@@ -806,6 +810,18 @@ export function ChatTab() {
           <Switch
             checked={showAllQuantizations}
             onCheckedChange={setShowAllQuantizations}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
+          description={t(
+            "settings.chat.modelSelection.fitOnDeviceOnlyDescription",
+          )}
+        >
+          <Switch
+            aria-label={t("settings.chat.modelSelection.fitOnDeviceOnly")}
+            checked={fitOnDeviceOnly}
+            onCheckedChange={setFitOnDeviceOnly}
           />
         </SettingsRow>
       </SettingsSection>
