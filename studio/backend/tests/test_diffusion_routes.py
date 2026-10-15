@@ -3091,6 +3091,7 @@ def test_external_connection_refuses_a_key_read_after_the_connection_moved(clien
     )
     resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image")
     assert resp.status_code == 409
+    assert "Provider changed" in resp.json()["detail"]
     assert sent == []
 
 
