@@ -399,6 +399,7 @@ def _residual_split(layer, block):
     return None
 
 
+@torch.no_grad()
 def reap_prune(
     model,
     tokenizer = None,
@@ -673,9 +674,12 @@ def reap_prune(
         model.save_pretrained(save_directory)
         if tokenizer is not None:
             tokenizer.save_pretrained(save_directory)
-        # Merged / GGUF saves of a LoRA on top read the base checkpoint from here, not the original.
+        # Merged / GGUF saves read config._name_or_path; PEFT's adapter config reads model.name_or_path.
         for config in configs:
             config._name_or_path = save_directory
+        for module in model.modules():
+            if "name_or_path" in module.__dict__:
+                module.name_or_path = save_directory
     model._unsloth_reap_saved = save_directory
     if report_path is not None:
         os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok = True)

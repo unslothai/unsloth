@@ -160,8 +160,16 @@ def test_matches_sequential_oracle_with_padded_batches():
     model = _qwen3_moe()
     samples = _samples()
     kept, scores = _oracle(model, samples, n_drop = 4)
+    grad_modes = []
+    hook = model.model.layers[1].register_forward_hook(
+        lambda *_: grad_modes.append(torch.is_grad_enabled())
+    )
     # A small token budget forces several right-padded batches.
     reap.reap_prune(model, None, sparsity = 0.25, dataset = samples, max_batch_tokens = 40, device = "cpu")
+    hook.remove()
+    # No autograd graph may keep calibration activations alive, and weights stay trainable.
+    assert grad_modes and not any(grad_modes)
+    assert model.model.layers[1].mlp.experts.gate_up_proj.requires_grad
     assert model._unsloth_reap_report == kept
     for name, oracle in scores.items():
         torch.testing.assert_close(
@@ -267,7 +275,7 @@ def test_save_directory_becomes_the_merge_base(tmp_path):
     )
     # Later merged / GGUF saves of a LoRA on top read the base checkpoint from config._name_or_path.
     assert model.config._name_or_path == str((tmp_path / "pruned").resolve())
-    assert model._unsloth_reap_saved == model.config._name_or_path
+    assert model._unsloth_reap_saved == model.config._name_or_path == model.name_or_path
     saved = json.loads((tmp_path / "pruned" / "config.json").read_text())
     assert saved.get("num_experts", saved.get("num_local_experts")) == 12
 
