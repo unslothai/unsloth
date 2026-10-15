@@ -3406,7 +3406,8 @@ def test_a_kda_hybrid_is_charged_its_recurrent_state():
     assert layout.recurrent_bytes == 69 * (110592 + 1572864) * 4
     assert round(layout.recurrent_bytes / MIB) == 443
 
-    # GLM-5.3-Flash: 46 blocks, one of them nextn, 11 of the remaining 45 attention.
+    # GLM-5.3-Flash: 46 blocks, one of them nextn, 11 of the remaining 45 attention. Its indexer
+    # cache is priced by neither reader, so the layout abstains and --fit on keeps the placement.
     glm_heads = [1 if (i % 4) == 3 else 0 for i in range(46)]
     glm_heads[45] = 1
     glm = _layout_from_reader(
@@ -3429,7 +3430,7 @@ def test_a_kda_hybrid_is_charged_its_recurrent_state():
             _shard_tensors(range(46)),
         )
     )
-    assert round(glm.recurrent_bytes / MIB) == 146
+    assert not glm.complete
 
 
 def _lfm2_fields(**extra):

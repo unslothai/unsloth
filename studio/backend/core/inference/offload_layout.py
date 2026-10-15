@@ -336,8 +336,11 @@ def indexer_cache_widths(
 # Architectures whose recurrent rows hold a Kimi-Delta-Attention state rather than a Mamba one, so
 # llama.cpp sizes them from kda.head_dim and the head count (llama-hparams.cpp:n_embd_r, n_embd_s).
 # Named rather than derived from the key: an unlisted KDA family (kimi-linear, bailingmoe3) has no
-# measured figure to check the shape against, so abstaining is the safe answer.
-_KDA_STATE_ARCHS: frozenset[str] = frozenset({"kimi-k3", "glm5next"})
+# measured figure to check the shape against, so abstaining is the safe answer. glm5next
+# (GLM-5.3-Flash) is left out too: its llama_memory_hybrid_idx indexer cache is priced by neither
+# reader (INDEXER_CACHE_ARCHS and the build thresholds are qwen4exp's), so a complete layout would
+# let the planner pin -ngl -1 --fit off over a cache it never charged.
+_KDA_STATE_ARCHS: frozenset[str] = frozenset({"kimi-k3"})
 
 
 # llama.cpp refuses a file whose block_count is above this (LLAMA_MAX_LAYERS, src/llama-hparams.h;

@@ -1696,6 +1696,9 @@ def _plan_at(
     priced = price(knobs)
     assert priced is not None  # the caller's own slot count is always priceable
     needed, budget, floor = priced
+    # Declining a plan launches the caller's own --parallel, so the fitter arm of either gate is
+    # priced with the cache that slot count allocates, not the one rung 1 shrank it to.
+    fallback_floor = floor
 
     if needed > budget and opts.mmproj_movable and opts.mmproj_bytes > 0:
         knobs = _Knobs(knobs.n_parallel, True, knobs.draft_dropped)
@@ -1782,6 +1785,7 @@ def _plan_at(
                     knobs = knobs,
                     kv_layer_weights = kv_layer_weights,
                     requested_ctx = requested_ctx,
+                    fallback_kv_bytes_floor = fallback_floor,
                     reason = (
                         f"the pooled budget fits{after}, but {uneven}; spilled "
                         f"{_rung_description(per_device, layout)} ({moved_gib:.2f} GiB) "
@@ -1802,6 +1806,7 @@ def _plan_at(
             knobs = knobs,
             kv_layer_weights = kv_layer_weights,
             requested_ctx = requested_ctx,
+            fallback_kv_bytes_floor = fallback_floor,
             reason = (
                 f"the whole load fits in VRAM ({needed / GIB:.2f} of "
                 f"{budget / GIB:.2f} GiB usable"
@@ -1850,6 +1855,7 @@ def _plan_at(
             knobs = knobs,
             kv_layer_weights = kv_layer_weights,
             requested_ctx = requested_ctx,
+            fallback_kv_bytes_floor = fallback_floor,
             reason = (
                 "spilled the output head after its device could not cover "
                 "the local shortfall with FFN blocks alone"
@@ -1925,6 +1931,7 @@ def _plan_at(
             knobs = knobs,
             kv_layer_weights = kv_layer_weights,
             requested_ctx = requested_ctx,
+            fallback_kv_bytes_floor = fallback_floor,
             reason = reason,
         )
 
@@ -2056,6 +2063,40 @@ def _host_ram_refusal(
     )
 
 
+def _fit_arm_slots(
+    opts: PlanOptions, kv_bytes_floor: int, fallback_kv_bytes_floor: Optional[int]
+) -> tuple[int, int]:
+    """(slots, cache floor) of the launch a declined plan leaves to ``--fit on``.
+
+    Declining keeps the caller's own --parallel, so the fitter places that many slots and the
+    cache they allocate; pricing it at the count rung 1 lowered to hands it memory it never gets.
+    """
+    floor = kv_bytes_floor if fallback_kv_bytes_floor is None else fallback_kv_bytes_floor
+    return max(1, opts.n_parallel), max(0, int(floor))
+
+
+def _score_arms(
+    plan: Placement,
+    fallback: Placement,
+    opts: PlanOptions,
+    n_prompt: int,
+    plan_slots: int,
+    fit_slots: int,
+) -> tuple[float, float]:
+    """Request cost of each arm at the micro-batch its own launch runs with."""
+
+    def score(placement: Placement, slots: int) -> float:
+        return rank(
+            [placement],
+            opts.host,
+            n_generated = opts.workload_generated_tokens,
+            n_prompt = n_prompt,
+            n_ubatch = opts.n_ubatch_by_parallel.get(slots) or opts.n_ubatch,
+        )[0][1]
+
+    return score(plan, plan_slots), score(fallback, fit_slots)
+
+
 def _cost_gate(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -2070,6 +2111,7 @@ def _cost_gate(
     host_ram_bytes: Optional[int] = None,
     knobs: Optional[_Knobs] = None,
     kv_layer_weights: Sequence[int] = (),
+    fallback_kv_bytes_floor: Optional[int] = None,
 ) -> tuple[Optional[Plan], float, float]:
     """An abstaining Plan when ``--fit on`` is as good as this spill, else None."""
     plan = _spill_placement(layout, units, spill_lm_head)
@@ -2122,15 +2164,16 @@ def _cost_gate(
     # The fitter keeps whatever the knobs gave up (the drafter, the projector), as in
     # _knob_only_gate, so it places the model in what is left after them.
     kept_on_card = _outside_layout_bytes(opts) - _outside_layout_bytes(opts, knobs)
+    fit_slots, fit_floor = _fit_arm_slots(opts, kv_bytes_floor, fallback_kv_bytes_floor)
     fallback = _fit_fallback_placement(
         layout,
         opts,
         budget - max(0, kept_on_card),
         n_ctx,
         quantised = quantised,
-        kv_bytes_floor = kv_bytes_floor,
+        kv_bytes_floor = fit_floor,
         kv_on_host = opts.kv_on_host,
-        n_seq = n_slots,
+        n_seq = fit_slots,
         kv_layer_weights = kv_layer_weights,
     )
     if fallback is None:
@@ -2153,15 +2196,7 @@ def _cost_gate(
     # lowering the slot count leaves it alone.
     window = n_ctx if opts.kv_unified else n_ctx // n_slots
     n_prompt = min(max(1, opts.workload_prompt_tokens), max(1, window))
-    scored = rank(
-        [plan, fallback],
-        opts.host,
-        n_generated = opts.workload_generated_tokens,
-        n_prompt = n_prompt,
-        n_ubatch = opts.n_ubatch_by_parallel.get(n_slots) or opts.n_ubatch,
-    )
-    plan_ms = _score_of(plan, scored)
-    fit_ms = _score_of(fallback, scored)
+    plan_ms, fit_ms = _score_arms(plan, fallback, opts, n_prompt, n_slots, fit_slots)
     if knobs is not None and knobs.draft_dropped and opts.draft_drop_penalty_frac > 0:
         plan_ms *= 1.0 + opts.draft_drop_penalty_frac
     if plan_ms <= fit_ms * (1.0 - opts.min_penalty_reduction):
@@ -2194,19 +2229,21 @@ def _knob_only_gate(
     kv_bytes_floor: int,
     knobs: Optional[_Knobs],
     kv_layer_weights: Sequence[int] = (),
+    fallback_kv_bytes_floor: Optional[int] = None,
 ) -> tuple[Optional[Plan], float, float]:
     """The same ranking for a plan that spills nothing but gave a knob up."""
     n_slots = max(1, knobs.n_parallel if knobs is not None else opts.n_parallel)
     kept_on_card = _outside_layout_bytes(opts) - _outside_layout_bytes(opts, knobs)
+    fit_slots, fit_floor = _fit_arm_slots(opts, kv_bytes_floor, fallback_kv_bytes_floor)
     fallback = _fit_fallback_placement(
         layout,
         opts,
         budget - max(0, kept_on_card),
         n_ctx,
         quantised = quantised,
-        kv_bytes_floor = kv_bytes_floor,
+        kv_bytes_floor = fit_floor,
         kv_on_host = opts.kv_on_host,
-        n_seq = n_slots,
+        n_seq = fit_slots,
         kv_layer_weights = kv_layer_weights,
     )
     if fallback is None:
@@ -2226,15 +2263,8 @@ def _knob_only_gate(
         )
     plan = Placement(host_groups = [])
     window = n_ctx if opts.kv_unified else n_ctx // n_slots
-    scored = rank(
-        [plan, fallback],
-        opts.host,
-        n_generated = opts.workload_generated_tokens,
-        n_prompt = min(max(1, opts.workload_prompt_tokens), max(1, window)),
-        n_ubatch = opts.n_ubatch_by_parallel.get(n_slots) or opts.n_ubatch,
-    )
-    plan_ms = _score_of(plan, scored)
-    fit_ms = _score_of(fallback, scored)
+    n_prompt = min(max(1, opts.workload_prompt_tokens), max(1, window))
+    plan_ms, fit_ms = _score_arms(plan, fallback, opts, n_prompt, n_slots, fit_slots)
     if knobs is not None and knobs.draft_dropped and opts.draft_drop_penalty_frac > 0:
         plan_ms += opts.draft_drop_penalty_frac * fit_ms
     if plan_ms <= fit_ms * (1.0 - opts.min_penalty_reduction):
@@ -2283,14 +2313,6 @@ def _patterns_for(layout: ModelLayout, units: Sequence[SpillUnit]) -> list[str]:
     return patterns
 
 
-def _score_of(placement: Placement, scored: Sequence[tuple[Placement, float]]) -> float:
-    """``rank`` sorts, so the order it returns is not the order it was given."""
-    for candidate, score in scored:
-        if candidate is placement:
-            return score
-    raise KeyError("placement was not ranked")
-
-
 def _finish(
     layout: ModelLayout,
     opts: PlanOptions,
@@ -2307,6 +2329,7 @@ def _finish(
     kv_layer_weights: Sequence[int] = (),
     requested_ctx: int = 0,
     reason: str = "",
+    fallback_kv_bytes_floor: Optional[int] = None,
 ) -> Plan:
     """Assemble patterns, decide the load mode, and account for both sides."""
     # The bottom rung moved the cache, so from here this load behaves like a -nkvo one.
@@ -2375,6 +2398,7 @@ def _finish(
             host_ram_bytes = host_ram_bytes,
             knobs = knobs,
             kv_layer_weights = kv_layer_weights,
+            fallback_kv_bytes_floor = fallback_kv_bytes_floor,
         )
         if declined is not None:
             return declined
@@ -2388,6 +2412,7 @@ def _finish(
             kv_bytes_floor = kv_bytes_floor,
             knobs = knobs,
             kv_layer_weights = kv_layer_weights,
+            fallback_kv_bytes_floor = fallback_kv_bytes_floor,
         )
         if declined is not None:
             return declined

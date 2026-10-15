@@ -33914,6 +33914,11 @@ class LlamaCppBackend:
                     )
                     if not _crashed or not _cpu_fallback_eligible or _load_cancelled():
                         return False
+                    # Studio's -lzm was decided off the crashed devices' mmap support; with no
+                    # device left, llama.cpp's auto decides again. Only the run Studio appended
+                    # goes (it precedes the user's extras), so an explicit -lzm stays.
+                    if _emitted_lazy_mode:
+                        failed_cmd = _without_subsequence(failed_cmd, ["-lzm", _emitted_lazy_mode])
                     fallback_has_mmproj = self._launch_has_mmproj(failed_cmd, env)
                     prepared = self._prepare_cpu_fallback_launch(
                         binary,

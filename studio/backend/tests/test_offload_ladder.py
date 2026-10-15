@@ -1038,10 +1038,11 @@ def test_the_gate_scores_a_reduced_slot_plan_at_the_micro_batch_it_launches(monk
         opts = opts(**base, n_ubatch_by_parallel = {2: 256, 1: 64}),
     )
     assert plan.n_parallel == 1, plan.reason
-    assert seen and seen[-1] == 64, seen
+    # The plan arm at the cut count's 64; the fitter arm launches the caller's 2 slots, so 256.
+    assert seen[-2:] == [64, 256], seen
     seen.clear()
     plan_placement(layout, [card], 64 * GIB, ctx, kv_bytes_floor = floor, opts = opts(**base))
-    assert seen and seen[-1] == 256, seen
+    assert seen[-2:] == [256, 256], seen
 
 
 def test_the_slot_rung_keeps_the_slots_it_cannot_buy_anything_with():
