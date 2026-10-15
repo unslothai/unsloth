@@ -615,7 +615,9 @@ def _native_qwen3_moe_4x_model(with_visual = False, dense_first = False):
     class _Body(torch.nn.Module):
         def __init__(self):
             super().__init__()
-            self.layers = torch.nn.ModuleList([_DecoderLayer(dense_first and i == 0) for i in range(2)])
+            self.layers = torch.nn.ModuleList(
+                [_DecoderLayer(dense_first and i == 0) for i in range(2)]
+            )
 
     class _Qwen3Moe(torch.nn.Module):
         def __init__(self):
@@ -761,7 +763,9 @@ def test_explicit_leaf_list_keeps_mixtral_names_and_the_gate_up_shorthand():
         model, regex, leaves, auto_regex = True, explicit_leaves = True
     )
     assert found == ["w1", "w2", "w3"]
-    assert {n for n in names if re.fullmatch(widened, n)} == {n for n in names if n.rpartition(".")[2] in leaves}
+    assert {n for n in names if re.fullmatch(widened, n)} == {
+        n for n in names if n.rpartition(".")[2] in leaves
+    }
 
     model = _native_qwen3_moe_4x_model()
     names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
@@ -771,7 +775,9 @@ def test_explicit_leaf_list_keeps_mixtral_names_and_the_gate_up_shorthand():
     )
     assert found == ["gate_proj", "up_proj"]
     matched = {n for n in names if re.fullmatch(widened, n) and ".experts." in n}
-    assert matched == {n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))}
+    assert matched == {
+        n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))
+    }
 
 
 def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
@@ -782,7 +788,9 @@ def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
     with pytest.raises(RuntimeError):
         _explicit_list_regex(model, ["w1", "w2", "w3"])
     regex = U.native_expert_only_regex(model, ["w1", "w2", "w3"])
-    assert {n for n in names if re.fullmatch(regex, n)} == {n for n in names if n.endswith((".w1", ".w2", ".w3"))}
+    assert {n for n in names if re.fullmatch(regex, n)} == {
+        n for n in names if n.endswith((".w1", ".w2", ".w3"))
+    }
     assert U.native_expert_only_regex(model, ["q_proj"]) is None
     regex = U.native_expert_only_regex(model, ["w1", "w2", "w3", "gate"])
     want = {n for n in names if n.endswith((".w1", ".w2", ".w3", ".gate"))}
@@ -790,7 +798,9 @@ def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
     assert {n for n in names if re.fullmatch(regex, n)} == want
     # Zoo already dropped the other families (finetune_attention_modules=False).
     regex = U.native_expert_only_regex(model, ["q_proj", "w1", "w2", "w3"])
-    assert {n for n in names if re.fullmatch(regex, n)} == {n for n in names if n.endswith((".w1", ".w2", ".w3"))}
+    assert {n for n in names if re.fullmatch(regex, n)} == {
+        n for n in names if n.endswith((".w1", ".w2", ".w3"))
+    }
     model = _native_qwen3_moe_4x_model()
     model.get_decoder = lambda: model.model
     names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]

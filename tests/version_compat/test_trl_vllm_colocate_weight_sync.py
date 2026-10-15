@@ -76,7 +76,11 @@ def _rl_replacements():
     return rl_replacements
 
 
-def _build_fake_trl(monkeypatch, sync_src = _SYNC_WEIGHTS, version = "1.15.0"):
+def _build_fake_trl(
+    monkeypatch,
+    sync_src = _SYNC_WEIGHTS,
+    version = "1.15.0",
+):
     class_src = (
         "class VLLMGeneration:\n"
         + "\n".join(
@@ -129,7 +133,13 @@ def _params():
     ]
 
 
-def _make_generation(cls, params, deepspeed = None, fsdp = None, peft = False):
+def _make_generation(
+    cls,
+    params,
+    deepspeed = None,
+    fsdp = None,
+    peft = False,
+):
     self = cls.__new__(cls)
     self.mode = "colocate"
     self.llm = FakeEngine()
@@ -147,7 +157,9 @@ def _sent(self):
 
 def _assert_same_tensors(sent, params):
     assert [n for n, _ in sent] == [n for n, _ in params]
-    assert all(s is p for (_, s), (_, p) in zip(sent, params)), "tensors must be passed by reference"
+    assert all(
+        s is p for (_, s), (_, p) in zip(sent, params)
+    ), "tensors must be passed by reference"
 
 
 def test_full_finetune_sync_is_one_load_weights_call(monkeypatch):
@@ -157,7 +169,9 @@ def test_full_finetune_sync_is_one_load_weights_call(monkeypatch):
     params = _params()
     self = _make_generation(cls, params)
     cls.sync_weights(self)
-    assert len(self.llm.model.calls) == 1, f"expected one load_weights call, got {len(self.llm.model.calls)}"
+    assert (
+        len(self.llm.model.calls) == 1
+    ), f"expected one load_weights call, got {len(self.llm.model.calls)}"
     _assert_same_tensors(_sent(self), params)
     assert self.llm.resets == 1
     assert self._unsloth_bucketed_weight_syncs == 1

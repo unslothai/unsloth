@@ -9233,7 +9233,9 @@ def _native_expert_parents(model, target_modules, requested):
         if key not in in_scope:
             layer = parent.rpartition(".")[0]
             # Mixtral's block_sparse_moe has no MLP keyword; this keeps vision towers out.
-            in_scope[key] = any(pattern.fullmatch(f"{parent}.{t}") for t in requested | {leaf}) or bool(
+            in_scope[key] = any(
+                pattern.fullmatch(f"{parent}.{t}") for t in requested | {leaf}
+            ) or bool(
                 layer and any(r == layer or r.startswith(layer + ".") for r in reached_layers)
             )
         if not in_scope[key]:
@@ -9261,6 +9263,7 @@ def native_expert_only_regex(model, target_modules):
     requested = {t for t in target_modules if isinstance(t, str) and "." not in t}
     if "gate_up_proj" in requested:  # the shorthand reaches split gate / up experts too
         requested |= {"gate_proj", "up_proj"}
+
     def generic(path):
         return r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in path.split("."))
 
