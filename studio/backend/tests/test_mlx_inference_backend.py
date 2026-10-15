@@ -33,6 +33,10 @@ FUSIONS = (
     "residual_norm_handoff",
     "packed_gated_delta",
 )
+# Fused scopes zoo's own generate.py enters that Studio does not wrap itself, so they get no
+# _mlx_fused_* helper and stay out of the FUSIONS parametrisations: unsloth_zoo #1757 added
+# fused_verify_attention around speculative verify. The stub still has to answer them.
+ZOO_ONLY_FUSIONS = ("verify_attention",)
 
 
 @pytest.fixture(autouse = True)
@@ -41,7 +45,7 @@ def mlx_inference_patches(monkeypatch, native_vlm_generation_context):
 
     monkeypatch.setattr(mlx_inference, "_vlm_generation_context", contextlib.nullcontext)
     module = types.ModuleType("unsloth_zoo.mlx.inference")
-    for name in FUSIONS:
+    for name in FUSIONS + ZOO_ONLY_FUSIONS:
         setattr(module, f"fused_{name}", _neutral_scope)
     for name, helper in PLAIN_HELPERS.items():
         setattr(module, name, helper)
