@@ -18702,8 +18702,16 @@ async def _load_npu_model(
     await asyncio.to_thread(release_chat_gpu_claim)
     if load_cancel_event is not None and load_cancel_event.is_set():
         raise HTTPException(status_code = 409, detail = "Model load cancelled")
+    load = asyncio.ensure_future(asyncio.to_thread(npu.load, model_id, requested_ctx))
+    if load_cancel_event is not None:
+        # Stop the load mid-way, as a GGUF load polls its cancel event.
+        while not load.done():
+            await asyncio.wait({load}, timeout = 0.25)
+            if load_cancel_event.is_set() and not load.done():
+                await asyncio.to_thread(npu.cancel_load, model_id)
+                break
     try:
-        await asyncio.to_thread(npu.load, model_id, requested_ctx)
+        await load
     except NpuLoadCancelled:
         raise HTTPException(status_code = 409, detail = "Model load cancelled") from None
     except NpuError as exc:

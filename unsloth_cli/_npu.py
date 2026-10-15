@@ -67,6 +67,18 @@ def prepare_npu_model(
 
     `request(method, path, payload, timeout)` returns an open HTTP response for that Studio.
     """
+    import http.client
+
+    try:
+        _prepare_npu_model(request, model_path, echo)
+    except (OSError, http.client.HTTPException) as exc:
+        # A refused or dropped connection, or a timeout: Studio stopped or restarted mid-way.
+        raise NpuCliError(f"Lost the connection to Unsloth Studio: {exc}") from None
+
+
+def _prepare_npu_model(
+    request: Callable[..., object], model_path: str, echo: Callable[[str], None]
+) -> None:
     model_id = model_path[len(NPU_MODEL_PREFIX) :]
     status = _read_json(_call(request, "GET", "/api/npu/status", 60))
     if not status.get("supported"):

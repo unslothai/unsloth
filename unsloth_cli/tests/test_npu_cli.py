@@ -122,6 +122,19 @@ def test_a_failed_or_cut_download_fails(events):
         prepare_npu_model(_Studio(ready = True, events = events), "lemonade:qwen3-0.6b-FLM", print)
 
 
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionResetError("reset"), TimeoutError("timed out"), OSError("refused")],
+)
+def test_a_lost_studio_connection_is_a_cli_error(error):
+    # Only HTTP errors were converted, so a dropped connection surfaced as a traceback.
+    def _request(*_args):
+        raise error
+
+    with pytest.raises(NpuCliError, match = "Lost the connection to Unsloth Studio"):
+        prepare_npu_model(_request, "lemonade:qwen3-0.6b-FLM", print)
+
+
 def test_a_running_studio_prepares_and_loads_a_bare_npu_id(monkeypatch):
     # `unsloth inference qwen3-0.6b-FLM` cut the prefix length off the bare id and loaded it as is.
     import unsloth_cli._inference as inference

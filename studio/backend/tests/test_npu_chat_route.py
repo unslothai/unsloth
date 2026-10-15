@@ -901,6 +901,60 @@ def test_an_npu_load_drains_active_inference_before_unloading(monkeypatch):
     assert order == ["drain", "unload", "load"]
 
 
+def test_a_stop_during_an_npu_load_cancels_it(monkeypatch):
+    # The cancel event was read only before and after the blocking load, so a Stop waited it out.
+    import routes.inference as routes
+    from core.inference import npu_backend as nb
+    from models.inference import LoadRequest
+
+    model = SimpleNamespace(id = "qwen3-0.6b-FLM", model_path = "lemonade:qwen3-0.6b-FLM")
+    loading = threading.Event()
+    stopped = threading.Event()
+    stop = threading.Event()
+
+    class _Npu:
+        def resident(self):
+            return None
+
+        def loadable_model(self, model_id):
+            return model
+
+        def load(self, model_id, ctx):
+            loading.set()
+            if not stopped.wait(10):
+                raise AssertionError("the load was never cancelled")
+            raise nb.NpuLoadCancelled("cancelled")
+
+        def cancel_load(self, model_id):
+            stopped.set()
+            return True
+
+    def _stop_once_loading():
+        loading.wait(10)
+        stop.set()
+
+    async def _nothing(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(nb, "get_npu_backend", lambda: _Npu())
+    monkeypatch.setattr(routes, "get_llama_cpp_backend", lambda: SimpleNamespace(is_active = False))
+    monkeypatch.setattr(routes, "_peek_inference_backend", lambda: None)
+    monkeypatch.setattr(routes, "_unload_llama_before_standard_load", _nothing)
+    monkeypatch.setattr(routes, "release_chat_gpu_claim", lambda: True)
+    threading.Thread(target = _stop_once_loading, daemon = True).start()
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            routes._load_npu_model(
+                LoadRequest(model_path = model.model_path),
+                current_request_counted = True,
+                on_reload_confirmed = None,
+                load_cancel_event = stop,
+            )
+        )
+    assert excinfo.value.status_code == 409
+    assert stopped.is_set()
+
+
 def test_a_reply_cut_short_is_not_reported_complete(flm):
     flm()
     status, body = _call(stream = False, messages = [{"role": "user", "content": "CUT"}])
