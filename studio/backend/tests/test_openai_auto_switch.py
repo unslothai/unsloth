@@ -617,7 +617,7 @@ def test_responses_endpoint_wires_auto_switch_before_streaming_dispatch():
     src = inspect.getsource(inference_route.openai_responses)
     assert "_maybe_auto_switch_model" in src
     hook_at = src.index("_maybe_auto_switch_model")
-    assert src.index("if payload.stream:") < hook_at
+    assert src.index("if payload.stream or connection is not None:") < hook_at
     assert hook_at < src.index("_responses_stream")
 
 
@@ -4614,6 +4614,32 @@ def test_require_vision_rejects_text_target_before_switch(monkeypatch):
         )
     assert exc.value.status_code == 400
     assert rec.calls == []  # rejected before the load
+
+
+def test_anthropic_text_target_rejection_names_the_image_block(monkeypatch):
+    from models.inference import AnthropicImageBlock, AnthropicMessage, AnthropicMessagesRequest
+
+    backend, rec = _wired(
+        monkeypatch, _FakeBackend("org/A-GGUF"), ("/local/B.gguf", "Q8_0", "org/B-GGUF")
+    )
+    monkeypatch.setattr(inference_route, "_target_is_vision", lambda _p, _v = None, _i = True: False)
+    image = AnthropicImageBlock(
+        type = "image", source = {"type": "base64", "media_type": "image/png", "data": "AAAA"}
+    )
+    payload = AnthropicMessagesRequest(
+        model = "org/B-GGUF",
+        max_tokens = 16,
+        messages = [
+            AnthropicMessage(role = "user", content = "hi"),
+            AnthropicMessage(role = "assistant", content = "hello"),
+            AnthropicMessage(role = "user", content = [{"type": "text", "text": "what?"}, image]),
+        ],
+    )
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(inference_route.anthropic_messages(payload, object(), "tester"))
+    assert exc.value.status_code == 400
+    assert exc.value.detail["error"]["message"].startswith("messages.2.content.1.image: ")
+    assert rec.calls == []
 
 
 def test_require_vision_allows_vision_target(monkeypatch):

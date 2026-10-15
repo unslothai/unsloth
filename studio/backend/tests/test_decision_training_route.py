@@ -497,6 +497,30 @@ def test_a_hub_checkpoint_downloads_under_the_stall_watchdog(monkeypatch, tmp_pa
     assert events == [] and len(downloads) == 1
 
 
+def test_an_offline_decision_start_does_not_wait_for_a_pin_it_never_uses(tmp_path):
+    from core.training.training import _apply_cache_pins
+    from core.training.worker import _verify_config_pins
+
+    events = []
+    queue = SimpleNamespace(put = events.append)
+    # Offline, the start route pins the cached snapshot of an LLM given a decision head, as of any LLM.
+    snapshot = str(tmp_path / "snapshot")
+    pinned = {
+        "model_name": "unsloth/Qwen3.5-0.8B",
+        "actual_model_repo_id": "unsloth/Qwen3.5-0.8B",
+        "model_snapshot_path": snapshot,
+        "require_validated_model_snapshot": True,
+    }
+    decision = {**pinned, "is_decision": True, "decision_layout": "llm"}
+    _apply_cache_pins(decision)
+    assert _verify_config_pins(decision, queue) and events == []
+    # An LLM run still loads exactly the snapshot it was pinned to, or not at all.
+    from core.training.provenance import ExactResumeResourcesUnavailable
+
+    with pytest.raises(ExactResumeResourcesUnavailable, match = "no longer available"):
+        _apply_cache_pins(pinned)
+
+
 @pytest.mark.skipif(sys.platform == "darwin", reason = "Apple Silicon trains with MLX")
 def test_decision_worker_uses_one_gpu_and_no_llm_kernel_installs(monkeypatch, tmp_path):
     import multiprocessing as mp

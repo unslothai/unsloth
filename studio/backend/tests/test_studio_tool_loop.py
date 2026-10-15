@@ -1811,3 +1811,21 @@ def test_preserved_thinking_before_a_tool_call_reaches_the_next_turn(executed, f
         if message.get("role") == "assistant"
     ][-1]
     assert assistant["reasoning_content"] == "look it up"
+
+
+def test_a_trailing_image_turn_takes_the_notice_as_a_text_part():
+    from core.inference.studio_tool_loop import _append_user_turn
+
+    image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+    conversation = [{"role": "user", "content": [{"type": "text", "text": "Screenshot:"}, image]}]
+    _append_user_turn(conversation, "Stop now.")
+    assert conversation == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Screenshot:"},
+                image,
+                {"type": "text", "text": "\n\nStop now."},
+            ],
+        }
+    ]

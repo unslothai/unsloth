@@ -1719,6 +1719,7 @@ class ExternalProviderClient:
                 tool_choice,
                 fast_mode = fast_mode,
                 tools = tools,
+                response_format = response_format,
             ):
                 yield line
             return
@@ -2562,6 +2563,7 @@ class ExternalProviderClient:
         *,
         fast_mode: Optional[bool] = None,
         tools: Optional[list[dict[str, Any]]] = None,
+        response_format: Optional[dict[str, Any]] = None,
     ) -> AsyncGenerator[str, None]:
         """call Anthropic Messages and translate its SSE into OpenAI stream events."""
         import json as _json
@@ -2984,6 +2986,19 @@ class ExternalProviderClient:
                 # manual-thinking path.
                 if body.get("max_tokens", 0) <= budget_tokens:
                     body["max_tokens"] = budget_tokens + 1024
+
+        # Structured output lives beside effort under output_config (GA, no beta header):
+        # platform.claude.com/docs/en/build-with-claude/structured-outputs.
+        _rf_schema = (
+            (response_format.get("json_schema") or {}).get("schema")
+            if isinstance(response_format, dict) and response_format.get("type") == "json_schema"
+            else None
+        )
+        if isinstance(_rf_schema, dict):
+            body.setdefault("output_config", {})["format"] = {
+                "type": "json_schema",
+                "schema": _rf_schema,
+            }
 
         # tool_choice="none" or pinned-function suppresses hosted tools so a stale UI toggle cannot fire server-side
         # search/code-exec.
@@ -4143,7 +4158,143 @@ class ExternalProviderClient:
         _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES = 14 * 1024 * 1024
         _remote_image_count = 0
         _remote_image_total_bytes = 0
-        for msg in messages:
+        _gemini_image_parts: dict[tuple[int, int], dict[str, Any]] = {}
+        for msg_idx in range(len(messages) - 1, -1, -1):
+            msg = messages[msg_idx]
+            content = msg.get("content")
+            if msg.get("role") in ("system", "tool") or not isinstance(content, list):
+                continue
+            for part_idx, part in enumerate(content):
+                if not isinstance(part, dict) or part.get("type") != "image_url":
+                    continue
+                url = part.get("image_url", {}).get("url", "")
+                if url.startswith("data:"):
+                    header, _, b64data = url.partition(",")
+                    media_type = (
+                        header.split(";")[0].replace("data:", "").strip().lower() or "image/jpeg"
+                    )
+                    # Reject non-image data URLs (e.g. data:text/html); they would 400 the request as
+                    # inlineData. Mirrors the remote-fetch path's Content-Type check.
+                    if not media_type.startswith("image/"):
+                        logger.info(
+                            "Gemini inlineData: refusing non-image data URL media_type=%s",
+                            media_type,
+                        )
+                    elif b64data:
+                        # data: URLs share the same caps as fetched URLs so inline payloads do not bypass
+                        # them.
+                        _data_approx_bytes = (len(b64data) * 3) // 4
+                        if _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
+                            logger.info(
+                                "Gemini inlineData: per-request count cap %d reached, dropping image",
+                                _GEMINI_REMOTE_IMAGE_MAX_COUNT,
+                            )
+                        elif (
+                            _remote_image_total_bytes + _data_approx_bytes
+                            > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                        ):
+                            logger.info(
+                                "Gemini inlineData: per-request byte cap reached, dropping image",
+                            )
+                        else:
+                            _remote_image_count += 1
+                            _remote_image_total_bytes += _data_approx_bytes
+                            _gemini_image_parts[(msg_idx, part_idx)] = {
+                                "inlineData": {
+                                    "mimeType": media_type,
+                                    "data": b64data,
+                                }
+                            }
+                elif url:
+                    # fileData.fileUri only accepts Files-API URIs and YouTube; everything else is downloaded
+                    # and inlined. Parse host explicitly so e.g. https://evil.com/youtube.com/x is not
+                    # mis-detected.
+                    try:
+                        _parsed_image_url = urlparse(url)
+                    except (ValueError, UnicodeError):
+                        _parsed_image_url = None
+                    if _parsed_image_url is None:
+                        _img_scheme = ""
+                        _img_host = ""
+                        _img_path = ""
+                    else:
+                        _img_scheme = (_parsed_image_url.scheme or "").lower()
+                        _img_host = (_parsed_image_url.hostname or "").lower()
+                        _img_path = _parsed_image_url.path or ""
+                    _is_native_uri = (
+                        _img_scheme == "https"
+                        and _img_host == "generativelanguage.googleapis.com"
+                        and _img_path.startswith("/v1beta/files/")
+                    )
+                    _is_youtube = _img_scheme == "https" and (
+                        _img_host == "youtu.be"
+                        or _img_host == "youtube.com"
+                        or _img_host.endswith(".youtube.com")
+                    )
+                    _guessed, _ = mimetypes.guess_type(_img_path)
+                    _media_type = (
+                        _guessed
+                        if isinstance(_guessed, str) and _guessed.startswith("image/")
+                        else "image/jpeg"
+                    )
+                    if _is_youtube:
+                        # YouTube URIs must use video/mp4; the default image/jpeg yields a 400.
+                        _gemini_image_parts[(msg_idx, part_idx)] = {
+                            "fileData": {
+                                "fileUri": url,
+                                "mimeType": "video/mp4",
+                            }
+                        }
+                    elif _is_native_uri:
+                        _gemini_image_parts[(msg_idx, part_idx)] = {
+                            "fileData": {
+                                "fileUri": url,
+                                "mimeType": _media_type,
+                            }
+                        }
+                    elif _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
+                        logger.info(
+                            "Gemini image fetch: per-request count cap %d reached, dropping image",
+                            _GEMINI_REMOTE_IMAGE_MAX_COUNT,
+                        )
+                    else:
+                        # Refuse pre-fetch when the per-request byte budget is spent; pass the remainder so
+                        # over-budget URLs reject on Content-Length.
+                        _remaining_bytes = (
+                            _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES - _remote_image_total_bytes
+                        )
+                        if _remaining_bytes <= 0:
+                            logger.info(
+                                "Gemini image fetch: per-request byte cap already reached, dropping image",
+                            )
+                        else:
+                            # Count attempts before awaiting so slow URLs do not each burn the timeout.
+                            _remote_image_count += 1
+                            _fetched = await _safe_fetch_image_for_gemini(
+                                url,
+                                _media_type,
+                                max_bytes = _remaining_bytes,
+                            )
+                            if _fetched is not None:
+                                _final_mime, _b64 = _fetched
+                                # base64 expands ~4/3 — recover bytes from len(_b64).
+                                _approx_bytes = (len(_b64) * 3) // 4
+                                if (
+                                    _remote_image_total_bytes + _approx_bytes
+                                    > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
+                                ):
+                                    logger.info(
+                                        "Gemini image fetch: per-request byte cap reached, dropping image",
+                                    )
+                                else:
+                                    _remote_image_total_bytes += _approx_bytes
+                                    _gemini_image_parts[(msg_idx, part_idx)] = {
+                                        "inlineData": {
+                                            "mimeType": _final_mime,
+                                            "data": _b64,
+                                        }
+                                    }
+        for msg_idx, msg in enumerate(messages):
             role = msg.get("role")
             content = msg.get("content", "")
             if role == "system":
@@ -4166,7 +4317,7 @@ class ExternalProviderClient:
                 if content:
                     parts.append({"text": content})
             elif isinstance(content, list):
-                for part in content:
+                for part_idx, part in enumerate(content):
                     if not isinstance(part, dict):
                         continue
                     ptype = part.get("type")
@@ -4175,142 +4326,9 @@ class ExternalProviderClient:
                         if text:
                             parts.append({"text": text})
                     elif ptype == "image_url":
-                        url = part.get("image_url", {}).get("url", "")
-                        if url.startswith("data:"):
-                            header, _, b64data = url.partition(",")
-                            media_type = (
-                                header.split(";")[0].replace("data:", "").strip().lower()
-                                or "image/jpeg"
-                            )
-                            # Reject non-image data URLs (e.g. data:text/html); they would 400 the request as
-                            # inlineData. Mirrors the remote-fetch path's Content-Type check.
-                            if not media_type.startswith("image/"):
-                                logger.info(
-                                    "Gemini inlineData: refusing non-image data URL media_type=%s",
-                                    media_type,
-                                )
-                            elif b64data:
-                                # data: URLs share the same caps as fetched URLs so inline payloads do not bypass
-                                # them.
-                                _data_approx_bytes = (len(b64data) * 3) // 4
-                                if _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
-                                    logger.info(
-                                        "Gemini inlineData: per-request count cap %d reached, dropping image",
-                                        _GEMINI_REMOTE_IMAGE_MAX_COUNT,
-                                    )
-                                elif (
-                                    _remote_image_total_bytes + _data_approx_bytes
-                                    > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
-                                ):
-                                    logger.info(
-                                        "Gemini inlineData: per-request byte cap reached, dropping image",
-                                    )
-                                else:
-                                    _remote_image_count += 1
-                                    _remote_image_total_bytes += _data_approx_bytes
-                                    parts.append(
-                                        {
-                                            "inlineData": {
-                                                "mimeType": media_type,
-                                                "data": b64data,
-                                            }
-                                        }
-                                    )
-                        elif url:
-                            # fileData.fileUri only accepts Files-API URIs and YouTube; everything else is downloaded
-                            # and inlined. Parse host explicitly so e.g. https://evil.com/youtube.com/x is not
-                            # mis-detected.
-                            try:
-                                _parsed_image_url = urlparse(url)
-                            except (ValueError, UnicodeError):
-                                _parsed_image_url = None
-                            if _parsed_image_url is None:
-                                _img_scheme = ""
-                                _img_host = ""
-                                _img_path = ""
-                            else:
-                                _img_scheme = (_parsed_image_url.scheme or "").lower()
-                                _img_host = (_parsed_image_url.hostname or "").lower()
-                                _img_path = _parsed_image_url.path or ""
-                            _is_native_uri = (
-                                _img_scheme == "https"
-                                and _img_host == "generativelanguage.googleapis.com"
-                                and _img_path.startswith("/v1beta/files/")
-                            )
-                            _is_youtube = _img_scheme == "https" and (
-                                _img_host == "youtu.be"
-                                or _img_host == "youtube.com"
-                                or _img_host.endswith(".youtube.com")
-                            )
-                            _guessed, _ = mimetypes.guess_type(_img_path)
-                            _media_type = (
-                                _guessed
-                                if isinstance(_guessed, str) and _guessed.startswith("image/")
-                                else "image/jpeg"
-                            )
-                            if _is_youtube:
-                                # YouTube URIs must use video/mp4; the default image/jpeg yields a 400.
-                                parts.append(
-                                    {
-                                        "fileData": {
-                                            "fileUri": url,
-                                            "mimeType": "video/mp4",
-                                        }
-                                    }
-                                )
-                            elif _is_native_uri:
-                                parts.append(
-                                    {
-                                        "fileData": {
-                                            "fileUri": url,
-                                            "mimeType": _media_type,
-                                        }
-                                    }
-                                )
-                            elif _remote_image_count >= _GEMINI_REMOTE_IMAGE_MAX_COUNT:
-                                logger.info(
-                                    "Gemini image fetch: per-request count cap %d reached, dropping image",
-                                    _GEMINI_REMOTE_IMAGE_MAX_COUNT,
-                                )
-                            else:
-                                # Refuse pre-fetch when the per-request byte budget is spent; pass the remainder so
-                                # over-budget URLs reject on Content-Length.
-                                _remaining_bytes = (
-                                    _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES - _remote_image_total_bytes
-                                )
-                                if _remaining_bytes <= 0:
-                                    logger.info(
-                                        "Gemini image fetch: per-request byte cap already reached, dropping image",
-                                    )
-                                else:
-                                    # Count attempts before awaiting so slow URLs do not each burn the timeout.
-                                    _remote_image_count += 1
-                                    _fetched = await _safe_fetch_image_for_gemini(
-                                        url,
-                                        _media_type,
-                                        max_bytes = _remaining_bytes,
-                                    )
-                                    if _fetched is not None:
-                                        _final_mime, _b64 = _fetched
-                                        # base64 expands ~4/3 — recover bytes from len(_b64).
-                                        _approx_bytes = (len(_b64) * 3) // 4
-                                        if (
-                                            _remote_image_total_bytes + _approx_bytes
-                                            > _GEMINI_REMOTE_IMAGE_MAX_TOTAL_BYTES
-                                        ):
-                                            logger.info(
-                                                "Gemini image fetch: per-request byte cap reached, dropping image",
-                                            )
-                                        else:
-                                            _remote_image_total_bytes += _approx_bytes
-                                            parts.append(
-                                                {
-                                                    "inlineData": {
-                                                        "mimeType": _final_mime,
-                                                        "data": _b64,
-                                                    }
-                                                }
-                                            )
+                        _image_part = _gemini_image_parts.get((msg_idx, part_idx))
+                        if _image_part is not None:
+                            parts.append(_image_part)
             # Gemini history must keep every native thought/answer boundary intact so a signature is never moved
             # onto adjacent unsigned text. The frontend carries those exact parts because OpenAI reasoning_content
             # is not otherwise replayed to native Gemini.
@@ -7490,6 +7508,22 @@ class ExternalProviderClient:
                     pass
                 raise asyncio.CancelledError
         return audio, media_type or f"audio/{response_format}"
+
+    async def create_images(self, prompt: str, model: str, n: int, size: str) -> list[str]:
+        response = await _client().post(
+            _append_provider_path(self.base_url, "/images/generations"),
+            headers = self._auth_headers(),
+            json = {
+                "model": model,
+                "prompt": prompt,
+                "n": n,
+                "size": size,
+                "response_format": "b64_json",
+            },
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return [item["b64_json"] for item in response.json()["data"]]
 
     async def create_transcription(
         self,

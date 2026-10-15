@@ -1609,13 +1609,15 @@ def _decision_description(checkpoint, mlx: bool) -> str:
 def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
     from core.systemone import laya_runtime
 
-    if getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+    only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
+    if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
+        only = {} if only_mlx else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
         except laya_runtime.Unavailable as exc:
-            return {"llama_cpp_only": True, "available": False, "unavailable_reason": exc.message}
-        return {"llama_cpp_only": True}
+            return {**only, "available": False, "unavailable_reason": exc.message}
+        return only
     if reason is None or getattr(checkpoint, "layout", "laya") != "clef":
         return {}
     # llama.cpp serves Clef without CUDA or ROCm, and so does the MLX engine on Apple Silicon.
@@ -2373,6 +2375,54 @@ def update_openai_auto_switch(
         media_idle_unload_active = get_media_auto_unload_idle_seconds() > 0,
         media_auto_switch_model = media_auto_switch,
     )
+
+
+class ModelAliasEntry(BaseModel):
+    name: str
+    model: str
+
+
+class ModelAliasesPayload(BaseModel):
+    aliases: list[ModelAliasEntry] = Field(default_factory = list)
+
+
+class ModelAliasesResponse(BaseModel):
+    aliases: list[ModelAliasEntry]
+
+
+@_owner_settings_router.get("/model-aliases", response_model = ModelAliasesResponse)
+def get_model_aliases_setting(
+    current_subject: str = Depends(get_current_subject),
+) -> ModelAliasesResponse:
+    from utils.model_aliases import get_model_aliases
+    return ModelAliasesResponse(aliases = get_model_aliases())
+
+
+@_owner_settings_router.put("/model-aliases", response_model = ModelAliasesResponse)
+async def update_model_aliases_setting(
+    payload: ModelAliasesPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelAliasesResponse:
+    from core.systemone import catalog as decision_catalog
+    from routes.inference import _openai_catalog_objects
+    from utils.model_aliases import set_model_aliases
+
+    # Decision ids (clef, laya-multilingual) are reserved even while that API is off.
+    objects = await _openai_catalog_objects()
+    model_ids = [o["id"] for o in objects if isinstance(o.get("id"), str)]
+    model_ids += list(decision_catalog.CHECKPOINTS)
+    try:
+        aliases = await asyncio.to_thread(
+            set_model_aliases, [entry.model_dump() for entry in payload.aliases], model_ids
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_curated_detail(exc, fallback = "Invalid model alias."),
+            event = "settings.update_model_aliases_failed",
+            log = logger,
+        ) from exc
+    return ModelAliasesResponse(aliases = aliases)
 
 
 @_account_settings_router.get(
@@ -5016,6 +5066,9 @@ class SandboxWindowsStatus(BaseModel):
     prepare_repeats_after_restart: bool = True
     # True: MXC runs in Windows' built-in container (BaseContainer); False: this Windows has none; None: unknown.
     builtin_container: Optional[bool] = None
+    # Set only when a Windows update adds the built-in container: this PC's build and the first one with it.
+    windows_build: Optional[str] = None
+    builtin_container_build: Optional[str] = None
 
 
 class SandboxSetupStatus(BaseModel):
@@ -5151,6 +5204,7 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
     if installed:
         steps = mxc_runtime.probe_host_prep_steps(env = mxc_adapter._control_environment())
         missing = None if steps is None else list(steps)
+    update = sandbox_setup_plan.windows_builtin_container_update()
     return SandboxWindowsStatus(
         runtime_installed = installed,
         runtime_unsupported = sandbox_setup_plan.windows_runtime_unsupported(),
@@ -5163,6 +5217,8 @@ def _sandbox_windows_status() -> SandboxWindowsStatus:
             mxc_read_grants.PERSISTENT_GRANTS_ENV
         ),
         host_prep_missing = missing,
+        windows_build = update[0] if update else None,
+        builtin_container_build = update[1] if update else None,
     )
 
 

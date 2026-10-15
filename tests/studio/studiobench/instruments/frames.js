@@ -1,26 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-// The frame recorder. Installed as an init script before any app code runs.
-// SALVAGED from playwright_reasoning_pane.py's RECORDER_INIT, keeping the two things that version
-// got right and fixing the one it got wrong.
-// KEPT: ONE self-rescheduling rAF loop as the frame counter, and requestAnimationFrame is NOT
-// wrapped. A wrapper that increments per callback counts the page's frame once for the loop and
-// once more for every rAF the app scheduled, so the reported frame rate RISES with how busy the
-// app is: the first version reported 888 fps on a 60Hz page, which is the metric inverted.
-// KEPT: blocked time from a 1ms setTimeout, not a MessageChannel ping-pong, which ticks about
-// 150,000 times a second and halves Firefox's frame rate before any app code runs. This ticks
-// about 150 times a second. Blocked time is the column that MOVES WHEN FPS DOES NOT: a page with
-// 65% idle still paints every frame on time, so fps stays pinned at 60 while the work per chunk
-// triples.
-// FIXED: the clamp is calibrated during an ENFORCED IDLE WINDOW the driver opens, not from the
-// first 60 ticks of whatever the page was doing. `setTimeout(fn, 1)` has a ~4ms spec floor that
-// differs by engine and build, and blocked time is a SUBTRACTION against it, so a wrong clamp
-// invents block on one engine and hides it on another. Calibrating from the first 60 ticks means
-// calibrating while the app is booting, or on a rung where the 'idle' floor is really the app's
-// steady-state load, which reports a page pinned at 100% busy as 0.2% busy.
-// And when the calibrated clamp comes out ABOVE 10ms the answer is not a number: the machine
-// could not answer an idle timer promptly, so nothing was idle and there is no floor to subtract.
-// busy_pct is then null with a reason.
+// Frame recorder, installed as an init script before any app code runs.
+// rAF is NOT wrapped (wrapping inflates fps with app rAF traffic). Blocked time is measured with a
+// 1ms setTimeout (MessageChannel ticks ~150k/s and perturbs fps), minus a clamp calibrated in a
+// driver-enforced idle window.
 
 (() => {
   if (window.__sb && window.__sb.frames) return;
@@ -30,8 +13,7 @@
 
   const MAX_CLAMP_MS = 10.0;
   const CALIBRATION_TICKS = 60;
-  // A window long enough to exceed this is minutes of 60 Hz, which no slot in the scene is. The cap
-  // stops a pathological window ballooning the payload; it is not a routine path.
+  // Safety cap on payload size; real windows never get near it.
   const GAPS_CAP = 50000;
 
   const R = {
@@ -41,9 +23,7 @@
     lagTicks: 0,
     lagSumMs: 0,
     blockedMs: 0,
-    // The same blocked time again, NEVER reset. `blockedMs` is drained by the window reader, and a
-    // settle watch has to read blocked time on its own cadence while that reader runs; two readers
-    // draining one accumulator would each see a fraction of the block.
+    // Never reset: lets a settle watch read blocked time without draining the window reader.
     blockedTotalMs: 0,
     clampMs: null,
     clampReason: "not calibrated",
@@ -55,8 +35,7 @@
     ),
     longTasks: 0,
     longTaskMs: 0,
-    // Every rAF the APP schedules, counted separately from the loop's own. Not a frame rate: it is
-    // how the tri-clock check tells 'the page is idle' from 'the loop is starved'.
+    // App rAF count, used to tell an idle page from a starved loop; not a frame rate.
     appRafs: 0,
   };
 
@@ -70,8 +49,7 @@
   };
   nativeRaf(frame);
 
-  // Count the app's own rAF traffic without pumping it. A pass-through wrapper is safe here BECAUSE
-  // it is not the frame counter.
+  // Pass-through wrapper is safe because it is not the frame counter.
   window.requestAnimationFrame = function (cb) {
     R.appRafs += 1;
     return nativeRaf(cb);
@@ -113,8 +91,6 @@
     sorted.length === 0 ? null : sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
 
   window.__sb.frames = {
-    // Opened by the driver during an ENFORCED IDLE WINDOW: nothing streaming, no action running, the
-    // page at rest. Returns what it measured so the driver can record it rather than trust it.
     beginCalibration() {
       R.calibrating = true;
       R.calibration = [];
@@ -132,9 +108,7 @@
       }
       const median = samples[Math.floor(samples.length / 2)];
       if (median > MAX_CLAMP_MS) {
-        // NOT a clamp. A 1ms timer taking longer than 10ms on an idle page means the page was not idle,
-        // so there is no floor to subtract and every blocked-time figure would be a subtraction against
-        // the app's own steady load.
+        // A 1ms timer over 10ms on an idle page means nothing was idle, so there is no floor.
         R.clampMs = null;
         R.clampReason =
           "the calibrated timer clamp came out at " +
@@ -168,8 +142,7 @@
       return performance.now();
     },
 
-    // Drain the window. `elapsedMs` is the DRIVER's measure, passed in rather than computed here, so
-    // fps is per real elapsed time even when the page could not run its own clock reads promptly.
+    // elapsedMs comes from the driver because the page may not read its own clock promptly.
     read(elapsedMs) {
       const gaps = R.frameGaps.slice().sort((a, b) => a - b);
       let over33 = 0;
@@ -181,18 +154,13 @@
         app_rafs: R.appRafs,
         fps: elapsed === null ? null : Math.round((R.frames / (elapsed / 1000)) * 10) / 10,
         frames_over_33: over33,
-        // As a SHARE of the frames observed, because the denominator is not fixed: headless Chromium has
-        // no vsync and runs the loop as fast as it can, so a raw count is not comparable across engines
-        // or loads.
+        // A share, not a count: headless Chromium has no vsync so raw counts are not comparable.
         frames_over_33_pct:
           gaps.length === 0 ? null : Math.round((over33 / gaps.length) * 1000) / 10,
         p50_frame_ms: quantile(gaps, 0.5),
         p95_frame_ms: quantile(gaps, 0.95),
-        // The RAW deltas, not only the summary: time_in_jank_pct and jank_index are defined over the
-        // whole distribution and neither can be recovered from percentiles, so without this the scoring
-        // layer would skip two of its six metrics or invent them from p95. `gaps` is sorted ASCENDING,
-        // so a head slice would drop exactly the janky frames; over the cap this emits null and says
-        // why, and the scoring layer reads 'failed' rather than a number built from the fastest frames.
+        // Raw deltas for the jank metrics. gaps is sorted ascending, so over the cap emit null
+        // rather than a head slice that drops exactly the janky frames.
         frame_gaps_ms:
           gaps.length > GAPS_CAP ? null : gaps.map((g) => Math.round(g * 10) / 10),
         frame_gaps_truncated: gaps.length > GAPS_CAP,
@@ -205,8 +173,7 @@
         clamp_reason: R.clampReason,
         long_tasks: R.longTaskSupported ? R.longTasks : null,
         long_task_ms: R.longTaskSupported ? Math.round(R.longTaskMs) : null,
-        // The point of the flag: without it an engine with no Long Tasks API reports zero jank in the
-        // same shape as an engine that had none.
+        // Distinguishes no Long Tasks API from zero jank.
         long_task_supported: R.longTaskSupported,
       };
       if (R.clampMs === null) {
@@ -226,7 +193,6 @@
       return out;
     },
 
-    // For the settle watch and anything else that needs blocked time without draining the window.
     blockedTotalMs() {
       return R.blockedTotalMs;
     },
@@ -235,8 +201,7 @@
     },
   };
 
-  // Two rAFs: the second is the frame that has PAINTED the first's work. Every action timing
-  // clocked across a paint uses this, so the paint floor is one shared constant.
+  // Two rAFs: the second is the frame that painted the first's work.
   window.__sbNextPaint = () =>
     new Promise((resolve) => nativeRaf(() => nativeRaf(() => resolve(performance.now()))));
 })();

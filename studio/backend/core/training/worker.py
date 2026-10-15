@@ -2186,6 +2186,28 @@ def _activate_transformers_version_or_warn(model_name: str, hf_token: str | None
         )
 
 
+def _carry_mlx_chat_template_to_processor(model, tokenizer) -> bool:
+    """MLXTrainer saves the loader's processor when it has one, so a text run on a multimodal base checkpoint (Qwen3.5
+    Base) saved no template and Chat failed with "chat_template is not set". Give it the template the rows used."""
+    processor = getattr(model, "_processor", None)
+    if processor is None or processor is tokenizer:
+        return False
+    trained = tokenizer
+    if type(tokenizer).__name__ == "TokenizerWrapper":
+        trained = getattr(tokenizer, "_tokenizer", tokenizer)
+    template = getattr(trained, "chat_template", None)
+    if not template or getattr(processor, "chat_template", None):
+        return False
+    own = getattr(processor, "tokenizer", None)
+    if own is not None and own is not trained and getattr(own, "chat_template", None):
+        return False
+    processor.chat_template = template
+    if own is not None and own is not trained:
+        # Also carries get_chat_template's end-token remap.
+        processor.tokenizer = trained
+    return True
+
+
 def _mlx_vlm_max_resized_size(width: int, height: int, target: int) -> tuple[int, int]:
     if width <= 0 or height <= 0 or target <= 0:
         return width, height
@@ -3279,6 +3301,14 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
+    if not is_vlm and dataset_final_format:
+        # get_chat_template returns a new tokenizer unless it is an mlx-lm wrapper, so the rows' template stayed in
+        # the formatter; mirror the CUDA trainer and re-apply it here (no-op for models with a template).
+        from utils.datasets.chat_templates import get_training_chat_template
+        tokenizer = get_training_chat_template(tokenizer, model_name, dataset_final_format)
+        if _carry_mlx_chat_template_to_processor(model, tokenizer):
+            logger.info("Saving the training chat template with the processor")
+
     if eval_enabled and eval_dataset is None:
         from core.training.eval_dataset import (
             MIN_TOTAL_ROWS_FOR_EVAL,
@@ -3452,10 +3482,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     # Auto-detect markers from the chat template first, manual table as fallback. Mirror the CUDA skips: raw/CPT text
     # has no chat turns. Check the resolved format too, since format_type="auto" can land on alpaca or raw.
+    from utils.datasets.pretokenized import has_custom_labels
+
+    if (
+        config.get("train_on_completions", False)
+        and dataset_final_format == "pretokenized"
+        and not has_custom_labels(dataset)
+    ):
+        # zoo's MLX masker re-tokenizes text, so token-id rows have nothing it can mask (CUDA masks input_ids).
+        _send(
+            "warning",
+            message = (
+                "'Train on completions' is not available for pre-tokenized datasets on Mac: "
+                "training will run on full sequences. Add a labels column to choose the trained tokens."
+            ),
+        )
     if (
         config.get("train_on_completions", False)
         and not raw_text_mode
-        and dataset_final_format != "raw_text"
+        and dataset_final_format not in ("raw_text", "pretokenized")
     ):
         _send("status", status_message = "Configuring response-only training...")
         # No catch: the helper handles detection failures and double misses, so an exception here is a real masking
@@ -4940,6 +4985,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
+                random_state = config.get("random_seed", 3407),
             )
         elif use_lora:
             _send_status(event_queue, "Configuring LoRA adapters...")
@@ -4957,6 +5003,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 use_rslora = config.get("use_rslora", False),
                 use_loftq = _lora_uses_loftq(config),
                 use_dora = config.get("use_dora", False),
+                random_state = config.get("random_seed", 3407),
             )
         else:
             _send_status(event_queue, "Preparing model for full finetuning...")
