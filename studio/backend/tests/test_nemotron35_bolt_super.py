@@ -35,20 +35,39 @@ for _p in (_backend_root, _tests_dir):
 SUPER_REPO = "unsloth/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B-GGUF"
 SUPER = "NVIDIA-Nemotron-3.5-Super-VL-120B-A12B"
 _SUPER_SPLITS = {
-    "NVFP4": 3, "Q8_0": 4, "UD-IQ1_M": 2, "UD-IQ2_M": 3, "UD-IQ2_XXS": 3, "UD-IQ3_XXS": 3,
-    "UD-Q2_K_XL": 3, "UD-Q3_K_XL": 3, "UD-Q4_K_XL": 3, "UD-Q5_K_XL": 4, "UD-Q6_K_XL": 4,
+    "NVFP4": 3,
+    "Q8_0": 4,
+    "UD-IQ1_M": 2,
+    "UD-IQ2_M": 3,
+    "UD-IQ2_XXS": 3,
+    "UD-IQ3_XXS": 3,
+    "UD-Q2_K_XL": 3,
+    "UD-Q3_K_XL": 3,
+    "UD-Q4_K_XL": 3,
+    "UD-Q5_K_XL": 4,
+    "UD-Q6_K_XL": 4,
 }
-SUPER_FILES = [".gitattributes", "README.md", "mmproj-BF16.gguf",
-               f"LiLiCorr/lilicorr-{SUPER}-NVFP4.gguf"] + [
+SUPER_FILES = [
+    ".gitattributes",
+    "README.md",
+    "mmproj-BF16.gguf",
+    f"LiLiCorr/lilicorr-{SUPER}-NVFP4.gguf",
+] + [
     f"{q}/{SUPER}-{q}-{i:05d}-of-{n:05d}.gguf"
-    for q, n in _SUPER_SPLITS.items() for i in range(1, n + 1)
+    for q, n in _SUPER_SPLITS.items()
+    for i in range(1, n + 1)
 ]
 
 BOLT_REPO = "unsloth/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-GGUF"
 BOLT = "NVIDIA-Nemotron-3.5-Bolt-74B-A9B"
 # NVIDIA's QAD IQ2_XXS, its LiLiCorr drafter (GGUF arch dflash, named for llama.cpp's dflash- sibling lookup) and mmproj.
-BOLT_FILES = [".gitattributes", "README.md", "mmproj-BF16.gguf", f"{BOLT}-IQ2_XXS.gguf",
-              f"dflash-{BOLT}-NVFP4.gguf"]
+BOLT_FILES = [
+    ".gitattributes",
+    "README.md",
+    "mmproj-BF16.gguf",
+    f"{BOLT}-IQ2_XXS.gguf",
+    f"dflash-{BOLT}-NVFP4.gguf",
+]
 
 
 def _model_info(files):
@@ -98,7 +117,8 @@ def test_super_variant_menu_lists_exactly_the_real_quants(monkeypatch):
     from utils.models import model_config
 
     monkeypatch.setattr(
-        model_config, "_hub_model_info_slow_link",
+        model_config,
+        "_hub_model_info_slow_link",
         lambda repo, token, files_metadata = True: _model_info(SUPER_FILES),
     )
     variants, has_vision = model_config.list_gguf_variants(SUPER_REPO)
@@ -110,7 +130,8 @@ def test_bolt_variant_menu_is_the_single_iq2_xxs(monkeypatch):
     from utils.models import model_config
 
     monkeypatch.setattr(
-        model_config, "_hub_model_info_slow_link",
+        model_config,
+        "_hub_model_info_slow_link",
         lambda repo, token, files_metadata = True: _model_info(BOLT_FILES),
     )
     variants, has_vision = model_config.list_gguf_variants(BOLT_REPO)
@@ -157,7 +178,6 @@ NEMOTRON35_IDS = [
 @pytest.mark.parametrize("model_id", NEMOTRON35_IDS)
 def test_nemotron35_sampling_defaults(model_id):
     from utils.inference.inference_config import load_inference_config
-
     config = load_inference_config(model_id)
     for key, want in EXPECTED_SAMPLING.items():
         assert config[key] == want, f"{model_id}: {key} was {config[key]}, expected {want}"
@@ -165,5 +185,4 @@ def test_nemotron35_sampling_defaults(model_id):
 
 def test_older_nemotrons_keep_their_sampling():
     from utils.inference.inference_config import load_inference_config
-
     assert load_inference_config("unsloth/Nemotron-3-Nano-30B-A3B-GGUF")["top_p"] == 1.0
