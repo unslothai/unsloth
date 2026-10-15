@@ -3315,14 +3315,25 @@ def _unsloth_grpo_sample_weight(
     num_generations = trainer.num_generations
     loss_mask = completion_mask if tool_mask is None else completion_mask * tool_mask
     lengths = trainer.accelerator.gather(loss_mask.sum(dim = 1).to(torch.float32))
-    rewards = (
-        rewards_per_func * trainer.reward_weights.to(rewards_per_func.device).unsqueeze(0)
-    ).nansum(dim = 1)
+    def nan_variance(x, dim):
+        # TRL's nanstd squared: Bessel corrected, nan (never "zero") with fewer than two values.
+        centred = x - torch.nanmean(x, dim = dim, keepdim = True)
+        count = (~torch.isnan(x)).sum(dim = dim, keepdim = True)
+        variance = torch.nansum(centred * centred, dim = dim, keepdim = True) / (count - 1).clamp(min = 1)
+        return torch.where(count > 1, variance, torch.full_like(variance, torch.nan))
+
+    weights = trainer.reward_weights.to(rewards_per_func.device).unsqueeze(0)
+    if getattr(trainer, "multi_objective_aggregation", None) == "normalize_then_sum":
+        # TRL normalises each reward function within its group before the weighted sum.
+        per_func = rewards_per_func.view(-1, num_generations, rewards_per_func.shape[1])
+        per_func = (per_func - torch.nanmean(per_func, dim = 1, keepdim = True)) / (
+            nan_variance(per_func, 1).sqrt() + 1e-4
+        )
+        rewards = (per_func.view_as(rewards_per_func) * weights).nansum(dim = 1)
+    else:
+        rewards = (rewards_per_func * weights).nansum(dim = 1)
     rewards[torch.isnan(rewards_per_func).all(dim = 1)] = torch.nan
-    grouped = rewards.view(-1, num_generations)
-    centred = grouped - torch.nanmean(grouped, dim = 1, keepdim = True)
-    count = (~torch.isnan(grouped)).sum(dim = 1)
-    variance = torch.nansum(centred * centred, dim = 1) / (count - 1).clamp(min = 1)
+    variance = nan_variance(rewards.view(-1, num_generations), 1).squeeze(1)
     group_keep = torch.ones_like(variance, dtype = torch.bool)
     if exclude:
         # TRL's frac_reward_zero_std test, per group.

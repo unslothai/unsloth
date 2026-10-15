@@ -209,3 +209,36 @@ def test_trl_generation_anchors_present():
     assert src.count("\n        return output") == 1
     for name in ("rewards_per_func", "process_slice", "completion_mask"):
         assert name in src
+
+
+def _kept_groups(trainer, rpf, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_GRPO_ZERO_VARIANCE_EXCLUDE", "1")
+    monkeypatch.setenv("UNSLOTH_GRPO_LOSS_AGGREGATION", "")
+    mask = torch.ones(rpf.shape[0], 3, dtype = torch.long)
+    trainer.accelerator = _Acc(mask.sum(1).float())
+    w = sample_weight(trainer, "train", rpf, mask, None, slice(None))
+    return (w.view(-1, G) > 0).any(-1).tolist()
+
+
+def test_exclusion_follows_normalize_then_sum(monkeypatch):
+    # Raw weighted sum (weights 1, 0.5) is constant, the per-function normalised sum is not: learning signal.
+    signal = torch.tensor([[0.0, 2.0], [1.0, 0.0], [0.0, 2.0], [1.0, 0.0]])
+    trainer = _trainer("dapo", None)
+    trainer.multi_objective_aggregation = "normalize_then_sum"
+    assert _kept_groups(trainer, signal, monkeypatch) == [True]
+    trainer.multi_objective_aggregation = "sum_then_normalize"
+    assert _kept_groups(trainer, signal, monkeypatch) == [False]
+    # Every function constant within the group: the normalised sum is zero, no signal either way.
+    flat = torch.tensor([[1.0, 2.0]] * G)
+    trainer.multi_objective_aggregation = "normalize_then_sum"
+    assert _kept_groups(trainer, flat, monkeypatch) == [False]
+
+
+def test_group_with_one_scored_completion_is_kept(monkeypatch):
+    rpf = torch.full((2 * G, 2), torch.nan)
+    rpf[0] = torch.tensor([1.0, 0.0])
+    rpf[G:] = torch.tensor([[0.0, 1.0], [1.0, 1.0], [2.0, 1.0], [0.0, 0.0]])
+    for aggregation in ("sum_then_normalize", "normalize_then_sum"):
+        trainer = _trainer("dapo", None)
+        trainer.multi_objective_aggregation = aggregation
+        assert _kept_groups(trainer, rpf, monkeypatch) == [True, True]
