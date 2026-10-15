@@ -164,11 +164,11 @@ export const BUDGET = {
   // measured against cd424654a, one machine and build, 95 chunks): its persisted training-store fields, their
   // migration and the en strings hydrate at startup; the section itself is not in the startup set.
   // The Run settings Load in 4-bit switch (#13841: the per-model field threaded through every chat load path and
-  // the resident-config check) adds 1,441 B raw / 513 B transfer, inline in the eager chat chunk (6,782,254 ->
-  // 6,783,695 B raw, 2,039,247 -> 2,039,760 B transfer against c69969d58, one machine and build, Node 24, chunk
+  // the resident-config check) adds 1,448 B raw / 433 B transfer, inline in the eager chat chunk (6,787,367 ->
+  // 6,788,815 B raw, 2,040,805 -> 2,041,238 B transfer against 4494fa58c, one machine and build, Node 24, chunk
   // count unchanged at 95). Raised by that growth.
-  transferBytes: 2_041_513,
-  rawBytes: 6_788_941,
+  transferBytes: 2_041_433,
+  rawBytes: 6_788_948,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
