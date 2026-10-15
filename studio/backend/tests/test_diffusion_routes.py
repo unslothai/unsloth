@@ -3199,7 +3199,9 @@ def test_a_connection_call_leaves_the_media_tracker(client, monkeypatch):
         seen.append(mk._TRACKERS[mk.DIFFUSION].outstanding())
         buf = io.BytesIO()
         Image.new("RGB", (64, 64)).save(buf, format = "PNG")
-        return httpx.Response(200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]})
+        return httpx.Response(
+            200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]}
+        )
 
     _external_image_connection(monkeypatch, handler)
     before = mk._TRACKERS[mk.DIFFUSION].outstanding()
