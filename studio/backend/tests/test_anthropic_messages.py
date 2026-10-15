@@ -6941,6 +6941,8 @@ class TestInProcessMessages:
                         if i == stop_at:  # a Stop by the Messages id
                             seen["stopped"] = inf._cancel_by_keys([seen["message_id"]])
                             seen["runs"] = inf.active_generations.snapshot()
+                            if raise_on_stop:  # as the managed vLLM / SGLang tool path does
+                                raise asyncio.CancelledError()
                         yield line + "\n\n"
                 except BaseException as exc:
                     seen["closed"].append(type(exc).__name__ + "!" * seen.get("late", 0))
@@ -6949,6 +6951,7 @@ class TestInProcessMessages:
             unstarted = lambda: seen.update(unstarted = 1) or asyncio.sleep(0)  # noqa: E731
             return inf._SameTaskStreamingResponse(body(), unstarted_cleanup = unstarted)
 
+        raise_on_stop = fields.pop("raise_on_stop", False)
         entry = {"is_mlx": True, "is_vision": fields.pop("vision", False)}
         if fields.pop("speech", False):
             entry.update(is_audio = True, audio_type = "csm")
@@ -7034,6 +7037,13 @@ class TestInProcessMessages:
         assert sw["gguf_only"] is (reason is not None)
         assert reason in sw["gguf_only_reason"] if reason else sw["gguf_only_reason"] is None
         assert (sw["image_preflight"] or {}).get("multiple") is multiple
+
+    def test_a_source_raising_on_stop_still_ends_the_stream_cleanly(self, monkeypatch):
+        out, seen = self._serve(monkeypatch, 1, 1, -1, raise_on_stop = True)
+        assert seen["stopped"] == 1 and out.endswith('{"type": "message_stop"}\n\n')
+        assert not [
+            k for k in __import__("routes.inference").inference._CANCEL_REGISTRY if "msg_" in str(k)
+        ]
 
     @pytest.mark.parametrize("stream", [0, 1])
     def test_a_sampling_value_chat_rejects_is_a_400_before_a_load(self, monkeypatch, stream):

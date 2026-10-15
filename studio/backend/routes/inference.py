@@ -42676,10 +42676,11 @@ def _anthropic_in_process_sse(
 
     async def _stream():
         cancelled = False
+        chunks = source.chunks()
         try:
             for line in emitter.start(message_id, model_name, input_tokens):
                 yield line
-            async for chunk in source.chunks():
+            while (chunk := await source.next_chunk(chunks)) is not None:
                 if chunk is _LLAMA_STREAM_KEEPALIVE:
                     yield _OPENAI_PASSTHROUGH_SSE_KEEPALIVE
                     continue
@@ -42704,6 +42705,7 @@ def _anthropic_in_process_sse(
             if source.cancelled:
                 mark_response_failed(getattr(request, "scope", None))
             try:
+                await chunks.aclose()
                 await source.close(cancelled = cancelled)
             finally:
                 tracker.__exit__(None, None, None)
@@ -42747,8 +42749,9 @@ async def _anthropic_in_process_tool_message(
         tool_names = chat_req.enabled_tools,
     )
     cancelled = False
+    chunks = source.chunks()
     try:
-        async for chunk in source.chunks():
+        while (chunk := await source.next_chunk(chunks)) is not None:
             if chunk is _LLAMA_STREAM_KEEPALIVE:
                 continue
             error_message = _monitor_openai_error_message(chunk)
@@ -42759,6 +42762,7 @@ async def _anthropic_in_process_tool_message(
         cancelled = True
         raise
     finally:
+        await chunks.aclose()
         await source.close(cancelled = cancelled)
     response = _anthropic_tool_response_from_events(
         events + tool_events.finish(),
