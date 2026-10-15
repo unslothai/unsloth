@@ -1900,3 +1900,23 @@ def test_cfg_parallel_replica_card_is_chosen_among_those_that_fit(monkeypatch):
         reason = mg._install_cfg_parallel_only(pipe, offload_policy = "none")
     assert reason is None, reason
     assert mg._CFG_ROUTERS[pipe].secondary == torch.device("cuda", 2)
+
+
+def test_refine_tries_the_next_card_when_the_fast_link_one_cannot_hold_a_share(monkeypatch):
+    plan = _plan()
+    sizes = {
+        "transformer": (9000, "dit"),
+        "text_encoder": (8000, "text_encoder"),
+        "vae": (300, "other"),
+    }
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: sizes)
+    # cuda:1 has the fast link but holds nothing; cuda:2 is slower and fits the companions
+    monkeypatch.setattr(mg, "secondary_resident_limit_mib", lambda o, mode: {1: 3000, 2: 12750}[o])
+    monkeypatch.setattr(mg, "best_secondary", lambda selection, probes = None: 1)
+    monkeypatch.setattr(mg, "rank_secondaries", lambda primary, cands, free_of, probes = None: sorted(cands))
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: {})
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
+        refined = mg.refine_plan_for_multigpu(object(), plan)
+    assert refined.offload_policy == dm.OFFLOAD_NONE
+    assert refined.secondary_ordinal == 2
+    assert refined.secondary_components == ("text_encoder", "vae")

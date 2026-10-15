@@ -611,13 +611,10 @@ def refine_plan_for_multigpu(
     sizes = _loaded_component_mib(pipe)
     if not sizes:
         return plan
-    secondary = best_secondary(selection)
-    if secondary is None:
+    first = best_secondary(selection)
+    if first is None:
         return plan
     mode = getattr(plan, "requested_mode", None)
-    sec_limit = secondary_resident_limit_mib(secondary, mode)
-    if sec_limit is None:
-        return plan
     from .diffusion_memory import _fast_device_budget_mib
 
     primary_limit = (
@@ -633,13 +630,32 @@ def refine_plan_for_multigpu(
         or 0
     )
     overhead = int(plan.estimates.get("base_overhead_mib") or 0)
-    moved = choose_component_assignment(
-        sizes,
-        headroom_mib = headroom,
-        overhead_mib = overhead,
-        primary_limit_mib = int(primary_limit),
-        secondary_limit_mib = int(sec_limit),
-    )
+    # the best card first, then the rest in link-rank order: a fast-link card too small for any share must not hide
+    # a slower one that holds it
+    rest = [o for o in selection.secondaries if o != first]
+    if len(rest) > 1:
+        probes = probe_devices((selection.primary, *selection.secondaries))
+        rest = rank_secondaries(
+            selection.primary,
+            rest,
+            lambda o: probes[o].free_mib if o in probes else None,
+            probes,
+        )
+    moved, secondary = None, None
+    for ordinal in (first, *rest):
+        sec_limit = secondary_resident_limit_mib(ordinal, mode)
+        if sec_limit is None:
+            continue
+        moved = choose_component_assignment(
+            sizes,
+            headroom_mib = headroom,
+            overhead_mib = overhead,
+            primary_limit_mib = int(primary_limit),
+            secondary_limit_mib = int(sec_limit),
+        )
+        if moved is not None:
+            secondary = ordinal
+            break
     if moved is None:
         return plan
     reason = (
