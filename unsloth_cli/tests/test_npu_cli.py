@@ -160,6 +160,20 @@ def test_run_refuses_gguf_flags_for_an_npu_model():
     assert "NPU models run on FastFlowLM" in result.output
 
 
+def test_run_accepts_verbose_for_an_npu_model(monkeypatch):
+    # --verbose adds --log-verbose for llama-server, which then read as a user flag and exited 2.
+    from unsloth_cli import app
+    from unsloth_cli.commands import studio as studio_mod
+
+    def _past_the_npu_checks(*_args, **_kwargs):
+        raise typer.Exit(7)
+
+    monkeypatch.setattr(studio_mod, "_enable_verbose_access_logs", lambda: None)
+    monkeypatch.setattr(studio_mod, "_require_bind_host", _past_the_npu_checks)
+    result = CliRunner().invoke(app, ["run", "--model", "lemonade:qwen3-0.6b-FLM", "--verbose"])
+    assert result.exit_code == 7, result.output
+
+
 def test_run_does_not_split_the_lemonade_prefix():
     import inspect
 

@@ -2662,12 +2662,14 @@ def run(
             os.environ[_sampling_env] = str(_sampling_value)
 
     # Set before any re-exec. --log-verbose keeps llama-server's own -v passthrough working.
+    added_log_verbose = False
     if verbose:
         _enable_verbose_access_logs()
         if engine == "auto" and not any(
             a in ("--verbose", "-v", "--log-verbose") for a in extra_llama_args
         ):
             extra_llama_args.append("--log-verbose")
+            added_log_verbose = True
     if disable_dns_pinning:
         os.environ["UNSLOTH_STUDIO_DISABLE_DNS_PINNING"] = "1"
     else:
@@ -2702,6 +2704,8 @@ def run(
     # An NPU model's `lemonade:` prefix is not a llama.cpp `repo:variant` split.
     npu_path = npu_model_path(model)
     if npu_path:
+        if added_log_verbose:
+            extra_llama_args.remove("--log-verbose")
         if gguf_variant or extra_llama_args or engine != "auto":
             typer.echo(
                 "Error: NPU models run on FastFlowLM; --gguf-variant, --engine and "
