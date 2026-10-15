@@ -28,6 +28,12 @@ _BARE = {"name": "web_search", "arguments": "alpha"}
 _OBJECT = {"name": "web_search", "arguments": json.dumps({"query": "alpha"})}
 
 
+@pytest.fixture(autouse = True)
+def parallel_opted_in(monkeypatch):
+    """Overlap is opt-in where preemption is not armed; these cases test an overlapped round."""
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
+
+
 def _call(index, call_id, function):
     return {"index": index, "id": call_id, "type": "function", "function": dict(function)}
 

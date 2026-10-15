@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import inspect
 
+import pytest
+
 from core.inference import openai_codex_tool_loop
 from core.inference.studio_tool_loop import ToolLoopPolicy
 import routes.inference as inference
@@ -18,6 +20,12 @@ import routes.managed_engine_chat as managed_engine_chat
 
 from .test_studio_tool_loop import _events, _run
 from .test_tool_calls_within_one_turn_overlap import _two_calls, rendezvous  # noqa: F401
+
+
+@pytest.fixture(autouse = True)
+def parallel_opted_in(monkeypatch):
+    """Overlap is opt-in where preemption is not armed; these cases test an overlapped round."""
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
 
 
 class TestTheOptOutReachesTheLoop:
@@ -31,6 +39,7 @@ class TestTheOptOutReachesTheLoop:
         assert [end.get("tool_call_id") for end in ends] == ["call_a", "call_b"]
 
     def test_unset_and_true_still_overlap(self, rendezvous):  # noqa: F811
+        # The process switch is on (fixture above), so only the request's own field decides here.
         for value in (None, True):
             ends = _events(_run(_two_calls(), parallel_tool_calls = value), "tool_end")
             assert all("TOGETHER" in (end.get("result") or "") for end in ends), value

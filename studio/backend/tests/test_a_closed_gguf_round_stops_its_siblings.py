@@ -11,6 +11,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 _TESTS_DIR = str(Path(__file__).resolve().parent)
 if _TESTS_DIR not in sys.path:
     sys.path.insert(0, _TESTS_DIR)
@@ -19,6 +21,12 @@ from test_llama_cpp_tool_loop import _done as _gguf_done  # noqa: E402
 from test_llama_cpp_tool_loop import _make_backend  # noqa: E402
 from test_llama_cpp_tool_loop import _sse as _gguf_sse  # noqa: E402
 from test_studio_tool_loop import WEB  # noqa: E402
+
+
+@pytest.fixture(autouse = True)
+def parallel_opted_in(monkeypatch):
+    """Overlap is opt-in where preemption is not armed; these cases test an overlapped round."""
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
 
 
 def _call(index, call_id, query):

@@ -24,6 +24,12 @@ from .test_tool_calls_within_one_turn_overlap import _gguf_round  # noqa: E402
 _ROOM = 3000
 
 
+@pytest.fixture(autouse = True)
+def parallel_opted_in(monkeypatch):
+    """Overlap is opt-in where preemption is not armed; these cases test an overlapped round."""
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
+
+
 @pytest.fixture
 def fixed_room(monkeypatch):
     """A known amount of result room, so the divisor the round used is readable."""

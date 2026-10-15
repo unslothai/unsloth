@@ -19,6 +19,12 @@ from core.inference.llama_cpp import LlamaCppBackend  # noqa: E402
 from .test_tool_calls_within_one_turn_overlap import _gguf_events  # noqa: E402
 
 
+@pytest.fixture(autouse = True)
+def parallel_opted_in(monkeypatch):
+    """Overlap is opt-in where preemption is not armed; these cases test an overlapped round."""
+    monkeypatch.setenv("UNSLOTH_PARALLEL_TOOL_CALLS", "1")
+
+
 @pytest.fixture
 def counted(monkeypatch):
     """A tokenizer that prices whatever it is handed, so the count is inspectable."""
