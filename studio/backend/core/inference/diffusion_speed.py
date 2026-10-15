@@ -40,7 +40,7 @@ import sys
 import threading
 from contextlib import contextmanager
 from functools import lru_cache
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 from . import diffusion_compile_config as compile_config
 from .diffusion_bg_compile import eager_forced as _bg_eager_forced
@@ -417,13 +417,11 @@ def rocm_compile_probe_passes(target: Any, *, probe: bool = True) -> bool:
         return False
 
 
-def rocm_compile_probe_new_load() -> None:
-    """Load boundary for the ROCm probe: an OOM result held during the previous load may be retried."""
-    try:
-        from .diffusion_rocm_compile import start_load
-        start_load()
-    except Exception:  # noqa: BLE001, S110 - optimisation only
-        pass
+def rocm_probe_load_scoped(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap a load so a ROCm probe OOM is remembered for that load only (no re-probe within it, a retry in the next)."""
+    from .diffusion_rocm_compile import load_scoped
+
+    return load_scoped(fn)
 
 
 def rocm_compile_switched_off(target: Any) -> bool:

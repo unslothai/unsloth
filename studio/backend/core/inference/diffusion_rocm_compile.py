@@ -12,25 +12,45 @@ it against eager; any failure stays eager.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
+import functools
 import logging
 import os
 import threading
 import time
-from typing import Any, Optional
+from typing import Any, Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
 ENV = "UNSLOTH_DIFFUSION_ROCM_COMPILE"
 
 _lock = threading.Lock()
-# Guards _epoch / _transient / _result writes only (never held across a compile), so start_load() and the
-# OOM publish are atomic with each other without waiting on a running probe.
-_state_lock = threading.Lock()
+# Process-wide answers. Never an OOM: that says the card was busy, not that the compiler is broken.
 _result: dict[Any, tuple[bool, str]] = {}
-# Indexes whose cached result is an OOM: held for the rest of the load, dropped by start_load().
-_transient: set[Any] = set()
-# Bumped per load: an OOM published by a probe that started before the boundary is not cached for the new load.
-_epoch = 0
+# The running load's own OOM answers, so one load never re-probes a busy card; another load starts empty.
+_load_oom: contextvars.ContextVar[Optional[dict[Any, tuple[bool, str]]]] = contextvars.ContextVar(
+    "rocm_probe_load_oom", default = None
+)
+
+
+@contextlib.contextmanager
+def load_scope() -> Iterator[None]:
+    """One load: an OOM probe inside it is answered from memo for the rest of the load and nowhere else."""
+    token = _load_oom.set({})
+    try:
+        yield
+    finally:
+        _load_oom.reset(token)
+
+
+def load_scoped(fn: Callable[..., Any]) -> Callable[..., Any]:
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        with load_scope():
+            return fn(*args, **kwargs)
+
+    return wrapper
 
 
 def rocm_compile_setting() -> str:
@@ -56,20 +76,8 @@ def rocm_block_compile_known(device: Any = None) -> Optional[bool]:
     if setting != "auto":
         return setting == "on"
     # Lock-free: _lock is held for the whole multi-second probe, and a status read must not wait on it.
-    index = _index(device)
-    with _state_lock:
-        hit = _result.get(index)
-        return None if hit is None or index in _transient else hit[0]
-
-
-def start_load() -> None:
-    """A load boundary: an OOM probe from the previous load may be retried now."""
-    global _epoch
-    with _state_lock:
-        _epoch += 1
-        for index in list(_transient):
-            _result.pop(index, None)
-            _transient.discard(index)
+    hit = _result.get(_index(device))
+    return None if hit is None else hit[0]
 
 
 def _index(device: Any) -> Any:
@@ -100,11 +108,12 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
     if not is_rocm_torch(torch):
         return True, "not ROCm"
     index = _index(device)
+    memo = _load_oom.get()
     with _lock:
         if index in _result:
             return _result[index]
-        with _state_lock:
-            epoch = _epoch
+        if memo is not None and index in memo:
+            return memo[index]
         ok, why = _probe(torch, index)
         (logger.info if ok else logger.warning)(
             "diffusion.speed: ROCm regional compile probe on cuda:%s: %s (%s)",
@@ -112,12 +121,10 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
             "ok" if ok else "failed, staying eager",
             why,
         )
-        # An OOM says the card was busy, not that the compiler is broken: held for this load, retried at the next.
-        with _state_lock:
-            if not ok and "OutOfMemoryError" in why:
-                if epoch != _epoch:
-                    return ok, why
-                _transient.add(index)
+        if not ok and "OutOfMemoryError" in why:
+            if memo is not None:
+                memo[index] = (ok, why)
+        else:
             _result[index] = (ok, why)
         return ok, why
 
@@ -198,7 +205,6 @@ def _probe(torch: Any, index: int) -> tuple[bool, str]:
 def _reset_for_tests() -> None:
     with _lock:
         _result.clear()
-        _transient.clear()
 
 
 def probe_result(index: int = 0) -> Optional[tuple[bool, str]]:

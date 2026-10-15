@@ -192,7 +192,7 @@ from .diffusion_speed import (
     _gguf_dequant_compilable,
     compile_eligible,
     compiled_shapes_are_static,
-    rocm_compile_probe_new_load,
+    rocm_probe_load_scoped,
     family_compiles_regionally,
     fp16_compile_explicit_only,
     fp16_unet_offloaded,
@@ -1251,9 +1251,6 @@ def _account_owned_load(method):
     def wrapped(self, *args, **kwargs):
         request = object()
         inherited = kwargs.get("_load_token")
-        if inherited is None:
-            # A direct call: begin_load (which passes its token) already marked this load boundary.
-            rocm_compile_probe_new_load()
         while True:
             if inherited is None:
                 # Wait the in-flight ejects out and take the epoch they leave; a worker inherits one.
@@ -3561,7 +3558,6 @@ class DiffusionBackend:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
             self._load_token += 1
-            rocm_compile_probe_new_load()
             token = self._load_token
             # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker
             # holds but also drops _loading, so clearing here would un-cancel that worker. Download preemption is
@@ -5944,6 +5940,7 @@ class DiffusionBackend:
         return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
     @_invalidates_gpu_memory("diffusion load")
+    @rocm_probe_load_scoped
     @_account_owned_load
     @_plans_at_requested_speed
     @scoped_local_files_only

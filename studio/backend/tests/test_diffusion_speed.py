@@ -2669,17 +2669,35 @@ def test_rocm_probe_oom_is_held_for_the_load_and_retried_at_the_next(monkeypatch
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
     monkeypatch.setattr(rc, "_index", lambda device: 0)
+    calls = []
     answers = iter([(False, "OutOfMemoryError: HIP out of memory"), (True, "ok")])
-    monkeypatch.setattr(rc, "_probe", lambda torch, index: next(answers))
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: calls.append(1) or next(answers))
     rc._reset_for_tests()
-    assert rc.rocm_block_compile_probe()[0] is False
-    # Same load: no second compile/OOM, and a non-probing read still sees "unprobed".
-    assert rc.rocm_block_compile_probe()[0] is False
-    assert rc.rocm_block_compile_known() is None
-    ds_mod.rocm_compile_probe_new_load()
-    assert rc.rocm_block_compile_probe()[0] is True
-    ds_mod.rocm_compile_probe_new_load()
-    assert rc.rocm_block_compile_known() is True
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is False
+        # Same load: no second compile/OOM, and a non-probing read still sees "unprobed".
+        assert rc.rocm_block_compile_probe()[0] is False
+        assert rc.rocm_block_compile_known() is None
+    assert len(calls) == 1
+    with rc.load_scope():
+        assert rc.rocm_block_compile_probe()[0] is True
+    assert rc.rocm_block_compile_known() is True and len(calls) == 2
+    rc._reset_for_tests()
+
+
+def test_rocm_probe_oom_outside_a_load_is_never_cached(monkeypatch):
+    from core.inference import diffusion_rocm_compile as rc
+
+    monkeypatch.delenv(rc.ENV, raising = False)
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
+    monkeypatch.setattr(rc, "_index", lambda device: 0)
+    calls = []
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: calls.append(1) or (False, "OutOfMemoryError: x"))
+    rc._reset_for_tests()
+    rc.rocm_block_compile_probe()
+    rc.rocm_block_compile_probe()
+    assert len(calls) == 2 and rc.probe_result(0) is None
     rc._reset_for_tests()
 
 
@@ -2891,28 +2909,41 @@ def test_rocm_probe_wrapped_oom_stays_transient(monkeypatch, exc):
     ok, why = rc.rocm_block_compile_probe()
     assert ok is False and "OutOfMemoryError" in why
     assert rc.rocm_block_compile_known() is None
-    ds_mod.rocm_compile_probe_new_load()
     assert rc.probe_result(0) is None
     rc._reset_for_tests()
 
 
 
-def test_rocm_probe_oom_from_before_a_load_boundary_is_not_cached(monkeypatch):
+def test_rocm_probe_oom_of_one_load_is_never_reused_by_an_overlapping_load(monkeypatch):
+    # Overlapping image / video loads: an older load's OOM, whenever it lands, belongs to that load alone.
+    import threading
+
     from core.inference import diffusion_rocm_compile as rc
 
     monkeypatch.delenv(rc.ENV, raising = False)
     torch = pytest.importorskip("torch")
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
     monkeypatch.setattr(rc, "_index", lambda device: 0)
-
-    def _probe(torch, index):
-        rc.start_load()  # another load begins while this probe is still compiling
-        return False, "OutOfMemoryError: HIP out of memory"
-
-    monkeypatch.setattr(rc, "_probe", _probe)
+    answers = iter([(False, "OutOfMemoryError: HIP out of memory"), (True, "ok")])
+    monkeypatch.setattr(rc, "_probe", lambda torch, index: next(answers))
     rc._reset_for_tests()
-    assert rc.rocm_block_compile_probe()[0] is False
-    assert rc.probe_result(0) is None
+    newer_started, older_done = threading.Event(), threading.Event()
+    seen = {}
+
+    def _newer():
+        with rc.load_scope():
+            newer_started.set()
+            older_done.wait(5)
+            seen["newer"] = rc.rocm_block_compile_probe()[0]
+
+    t = threading.Thread(target = _newer)
+    t.start()
+    newer_started.wait(5)
+    with rc.load_scope():  # the older load reaches its probe only after the newer load began
+        seen["older"] = rc.rocm_block_compile_probe()[0]
+    older_done.set()
+    t.join(5)
+    assert seen == {"older": False, "newer": True}
     rc._reset_for_tests()
 
 
@@ -2932,9 +2963,11 @@ def test_rocm_probe_index_keeps_an_integer_ordinal(monkeypatch):
 
 
 @pytest.mark.parametrize("which", ["image", "video"])
-def test_direct_load_pipeline_marks_the_rocm_probe_load_boundary(monkeypatch, which):
-    # A direct load_pipeline() call never passes begin_load, so it must reset held OOM probes itself; a
-    # begin_load-launched one (token passed) must not reset twice.
+@pytest.mark.parametrize("token", [None, 7])
+def test_every_load_pipeline_call_runs_in_its_own_rocm_probe_scope(monkeypatch, which, token):
+    # Direct calls and begin_load workers (token passed) alike: the OOM memo is the load's own.
+    from core.inference import diffusion_rocm_compile as rc
+
     if which == "image":
         from core.inference import diffusion as mod
 
@@ -2943,25 +2976,21 @@ def test_direct_load_pipeline_marks_the_rocm_probe_load_boundary(monkeypatch, wh
         from core.inference import video as mod
 
         backend = mod.VideoBackend()
-    resets = []
-    monkeypatch.setattr(mod, "rocm_compile_probe_new_load", lambda: resets.append(1))
+    scopes = []
 
     class _Stop(Exception):
         pass
 
     def _stop(*a, **k):
+        scopes.append(rc._load_oom.get())
         raise _Stop
 
     monkeypatch.setattr(backend, "validate_load_request", _stop)
     if which == "image":
         monkeypatch.setattr(backend, "_raise_if_load_cancelled", lambda token: None)
     with pytest.raises(_Stop):
-        backend.load_pipeline(repo_id = "x/y")
-    assert resets == [1]
-    with pytest.raises(_Stop):
-        backend.load_pipeline(repo_id = "x/y", _load_token = 7)
-    assert resets == [1]
-
+        backend.load_pipeline(repo_id = "x/y", _load_token = token)
+    assert scopes == [{}] and rc._load_oom.get() is None
 
 
 def test_rocm_probe_leaves_the_process_rng_untouched():
@@ -2972,33 +3001,3 @@ def test_rocm_probe_leaves_the_process_rng_untouched():
     before = torch.random.get_rng_state().clone()
     rc._probe(torch, 0)  # builds the block, then fails to reach a GPU on this host
     assert torch.equal(torch.random.get_rng_state(), before)
-
-
-def test_rocm_probe_oom_publish_is_atomic_with_a_load_boundary(monkeypatch):
-    # start_load() landing between the epoch check and the OOM publish must still win: the new load retries.
-    import threading
-
-    from core.inference import diffusion_rocm_compile as rc
-
-    monkeypatch.delenv(rc.ENV, raising = False)
-    torch = pytest.importorskip("torch")
-    monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
-    monkeypatch.setattr(rc, "_index", lambda device: 0)
-    monkeypatch.setattr(rc, "_probe", lambda torch, index: (False, "OutOfMemoryError: HIP out of memory"))
-    rc._reset_for_tests()
-    boundary = []
-
-    class _RacingSet(set):
-        def add(self, item):
-            t = threading.Thread(target = rc.start_load, daemon = True)
-            t.start()
-            t.join(0.3)  # an atomic publish keeps it waiting on the state lock until the write is done
-            boundary.append(t)
-            super().add(item)
-
-    monkeypatch.setattr(rc, "_transient", _RacingSet())
-    assert rc.rocm_block_compile_probe()[0] is False
-    boundary[0].join(5)
-    assert not boundary[0].is_alive()
-    assert rc.probe_result(0) is None
-    rc._reset_for_tests()

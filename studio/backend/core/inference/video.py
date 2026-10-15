@@ -145,7 +145,7 @@ from .diffusion_speed import (
     SPEED_OFF,
     apply_speed_optims,
     arm_graphs_after_placement,
-    rocm_compile_probe_new_load,
+    rocm_probe_load_scoped,
     resolve_speed_mode,
     restore_backend_flags,
     settle_compile_fallback,
@@ -3447,7 +3447,6 @@ class VideoBackend:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A video load is already in progress.")
             self._load_token += 1
-            rocm_compile_probe_new_load()
             token = self._load_token
             # A NEW event per load, never a clear() of the shared one: unload() sets the event the running worker holds
             # but also drops _loading, so the next begin_load would clear the object that worker watches. A fresh object
@@ -6459,6 +6458,7 @@ class VideoBackend:
     # ── the load itself ──────────────────────────────────────────────────────
 
     @_invalidates_gpu_memory("video load")
+    @rocm_probe_load_scoped
     @scoped_local_files_only
     def load_pipeline(
         self,
@@ -6487,9 +6487,6 @@ class VideoBackend:
         _video_auto_denoiser_planned: Optional[str] = None,
         _denoiser_prequant_skipped: tuple[str, ...] = (),
     ) -> dict[str, Any]:
-        if _load_token is None:
-            # A direct call: begin_load (which passes its token) already marked this load boundary.
-            rocm_compile_probe_new_load()
         fam = self.validate_load_request(
             repo_id,
             gguf_filename = gguf_filename,
