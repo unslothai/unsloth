@@ -4688,8 +4688,7 @@ RL_PRE_ITEMS["gkd_trainer"].append(
 )
 
 
-# ORPO / CPO: per-token log-probs from hidden states through a chunked head whose backward recomputes logits, so the
-# [2B, S, V] logits tensor never exists. Anything not reproduced exactly runs TRL's own concatenated_forward body.
+# ORPO / CPO: log-probs from hidden states via a chunked head; anything not reproduced exactly runs TRL's body.
 try:
     from unsloth_zoo.fused_losses.chunked_logprob import unsloth_chunked_logprobs
 except Exception:
@@ -4962,8 +4961,7 @@ for _pref_trainer in ("orpo_trainer", "cpo_trainer"):
     )
 
 
-# DPO (TRL < 0.29, concatenated_forward): per-token log-probs from hidden states through zoo's chunked kernel, so
-# the [2B, S, V] logits are never materialised. TRL >= 1.15 fuses the head itself and has no concatenated_forward.
+# DPO (TRL < 0.29, concatenated_forward): log-probs from hidden states; TRL >= 1.15 fuses the head itself.
 try:
     from unsloth_zoo.fused_losses.chunked_logprob import (
         unsloth_masked_logprobs as _unsloth_masked_logprobs,
@@ -5118,8 +5116,7 @@ def dpo_trainer_chunked_logprobs(function_name, function):
     chosen = list(_DPO_CF_CHOSEN.finditer(function))
     if len(chosen) != 1 or len(_DPO_CF_CE.findall(function)) != 1:
         return function
-    # The only other full-logits readers are padding_free / use_weighting (refused at run time) and the
-    # mean-logits metrics, which read the [B, S, 1] stand-in.
+    # Other full-logits readers: padding_free / use_weighting (refused at run time) and the stand-in mean metrics.
     expr = chosen[0].group("expr")
     if "logits" not in expr or "shape" in expr:
         return function
