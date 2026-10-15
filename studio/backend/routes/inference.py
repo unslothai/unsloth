@@ -25069,6 +25069,10 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
 # alias request started, so a later alias unload or cancel still reaches one the host would no
 # longer pick. A direct request on the engine, or releasing it, hands it back.
 _RETIRED_ALIAS_SERVED: dict[str, set[str]] = {"load": set(), "download": set()}
+# How often a direct request has noted each engine's model or download. An alias request reads it
+# before it awaits: a direct request that finished on the engine meanwhile may have put there what
+# the alias then reused, so the alias claims nothing (an idle unload still frees it).
+_DIRECT_STT_NOTES: dict[str, dict[str, int]] = {"load": {}, "download": {}}
 
 
 def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
@@ -25116,18 +25120,27 @@ def _serving_stt_model(
     return model
 
 
+def _direct_stt_note_mark(serving_engine: str, kind: str = "load") -> int:
+    """Read before an alias request awaits; pass it to ``_note_retired_alias_engine`` as ``since``."""
+    return _DIRECT_STT_NOTES[kind].get(serving_engine, 0)
+
+
 def _note_retired_alias_engine(
     requested_engine: Optional[str],
     serving_engine: str,
     kind: str = "load",
     reused: bool = False,
+    since: Optional[int] = None,
 ) -> None:
     """Record who now owns ``serving_engine``'s model (``kind`` "load") or download: a retired
     alias request claims one it started, any other request takes it back. An alias request
-    that only reused what was already there (``reused``) changes nothing."""
+    that only reused what was already there (``reused``), or that a direct request on the
+    engine finished alongside (the mark changed ``since``), changes nothing."""
     if _resolve_stt_engine(requested_engine) != "gguf":
         _RETIRED_ALIAS_SERVED[kind].discard(serving_engine)
-    elif not reused:
+        notes = _DIRECT_STT_NOTES[kind]
+        notes[serving_engine] = notes.get(serving_engine, 0) + 1
+    elif not reused and (since is None or since == _direct_stt_note_mark(serving_engine, kind)):
         _RETIRED_ALIAS_SERVED[kind].add(serving_engine)
 
 
@@ -25614,6 +25627,7 @@ async def stt_download(
     # Joining a running download returns its id; an alias request that only joined it did not start it.
     before = module.download_status()
     running_id = before.get("download_id") if before.get("downloading") else None
+    direct_mark = _direct_stt_note_mark(engine, "download")
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
         # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
@@ -25644,6 +25658,7 @@ async def stt_download(
         engine,
         "download",
         reused = running_id is not None and str(download_id) == str(running_id),
+        since = direct_mark,
     )
     return JSONResponse(content = {**module.download_status(), "download_id": download_id})
 
@@ -25720,6 +25735,7 @@ async def stt_load(
     # A load of the model already resident reuses it, and does not make it the caller's.
     resident = sidecar.loaded_model
     already_resident = resident is not None and resident == _stt_resolved_model_id(model, engine)
+    direct_mark = _direct_stt_note_mark(engine)
     cancel_event = threading.Event()
     disconnect_watcher = asyncio.create_task(
         _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
@@ -25745,7 +25761,7 @@ async def stt_load(
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
-    _note_retired_alias_engine(payload.engine, engine, reused = already_resident)
+    _note_retired_alias_engine(payload.engine, engine, reused = already_resident, since = direct_mark)
     # The load lock is released and another account may have switched engines, so claim only ours.
     loaded = sidecar.loaded_model
     if loaded is not None and loaded == _stt_resolved_model_id(model, engine):
@@ -25959,6 +25975,7 @@ async def _transcribe_audio_result(
         already_resident = resident is not None and resident == _stt_resolved_model_id(
             model, serving_engine
         )
+        direct_mark = _direct_stt_note_mark(serving_engine)
         if source_path is not None and timestamps:
             await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase, cancel_event)
             # Started with its aligner now, or transcribe_path would restart it.
@@ -25968,7 +25985,9 @@ async def _transcribe_audio_result(
                 load_stt, model, serving_engine, cancel_event, device = device, **load_options
             )
         )
-        _note_retired_alias_engine(engine, serving_engine, reused = already_resident)
+        _note_retired_alias_engine(
+            engine, serving_engine, reused = already_resident, since = direct_mark
+        )
         loaded = getattr(sidecar, "loaded_model", None)
         if loaded is not None and loaded == _stt_resolved_model_id(model, serving_engine):
             account_access.note_resident_account(f"stt:{serving_engine}", loaded)

@@ -80,6 +80,7 @@ def host(monkeypatch):
     monkeypatch.setattr(ggml_module, "start_model_download", _whisper_cpp_must_not_run)
     monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
     monkeypatch.setattr(ri, "_RETIRED_ALIAS_SERVED", {"load": set(), "download": set()})
+    monkeypatch.setattr(ri, "_DIRECT_STT_NOTES", {"load": {}, "download": {}})
     monkeypatch.setattr(ri, "_prepare_runtime_fallback_checkpoint", lambda *_a: None)
 
     def load(
@@ -195,6 +196,75 @@ def test_an_alias_that_joins_a_direct_download_does_not_claim_it(host, monkeypat
     )
     asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
     assert host.cancels == []
+
+
+def test_an_alias_overtaken_by_a_direct_download_does_not_claim_it(host, monkeypatch):
+    def validate_while_a_direct_download_starts(model, hf_token = None):
+        # The alias saw no download; a direct request starts it while the alias validates.
+        monkeypatch.setattr(
+            stt_module, "validate_remote_model", lambda m, hf_token = None: {"model": m}
+        )
+        asyncio.run(
+            ri.stt_download(
+                SttLoadRequest(model = "small", engine = "transformers"),
+                current_subject = "tester",
+                hf_token = None,
+            )
+        )
+        return {"model": model}
+
+    monkeypatch.setattr(stt_module, "download_status", lambda: {"downloading": False})
+    monkeypatch.setattr(
+        stt_module, "validate_remote_model", validate_while_a_direct_download_starts
+    )
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "gguf"), current_subject = "tester", hf_token = None
+        )
+    )
+    asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
+    assert host.cancels == []
+
+
+def _direct_qwen_load_lands_first(host, monkeypatch):
+    """The alias's load waits on the registry while a direct Qwen3-ASR load on llama.cpp finishes."""
+    load, unload = ri._stt_lifecycle()
+    overtaken = []
+
+    def load_after_a_direct_one(model, engine, *args, **kwargs):
+        if engine == "mtmd" and not overtaken:
+            overtaken.append(True)
+            monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (load, unload))
+            _load(DEFAULT_MTMD_STT_MODEL, "mtmd")
+            monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (load_after_a_direct_one, unload))
+        return load(model, engine, *args, **kwargs)
+
+    monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (load_after_a_direct_one, unload))
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    return overtaken
+
+
+def test_an_alias_load_overtaken_by_a_direct_load_does_not_claim_it(host, monkeypatch):
+    overtaken = _direct_qwen_load_lands_first(host, monkeypatch)
+    _load("small", "gguf")
+    assert overtaken
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert host.unloads == []
+
+
+def test_an_alias_transcription_overtaken_by_a_direct_load_does_not_claim_it(host, monkeypatch):
+    overtaken = _direct_qwen_load_lands_first(host, monkeypatch)
+    asyncio.run(ri._transcribe_audio_bytes(b"RIFFfake", "small", None, False, "gguf"))
+    assert overtaken
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert host.unloads == []
+
+
+def test_an_alias_load_nothing_overtook_still_frees_its_model(host):
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    _load("small", "gguf")
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert [list(engines) for engines, _ in host.unloads] == [["mtmd"]]
 
 
 def test_an_alias_unloads_the_transformers_model(host):
