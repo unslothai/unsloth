@@ -936,3 +936,9 @@ def test_lora_manifest_for_a_hub_push(tmp_path):
         "self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)\n"
     )
     assert "self._push_drafter_lora_manifest(hf_api, repo_id)" in src[push : push + 200]
+
+
+def test_mtp_retraining_defaults_to_a_gentle_learning_rate():
+    """The native head is pretrained: the default must not overwrite it (1e-4 made drafts worse than stock)."""
+    from core.training.drafter import DEFAULT_LR
+    assert DEFAULT_LR["mtp"] <= 2e-5 < DEFAULT_LR["eagle3"]

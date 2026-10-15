@@ -27,7 +27,9 @@ logger = get_logger(__name__)
 DRAFTER_MANIFEST = "drafter.json"
 EAGLE3_DIRNAME = "eagle3"
 MTP_HEAD_FILE = "mtp_head.safetensors"
-DEFAULT_LR = {"mtp": 1e-4, "eagle3": 3e-4}
+# The MTP head is pretrained: at 1e-4, 600 answers made a fine-tuned Qwen3.5-2B's head draft worse than
+# stock in llama.cpp (acceptance 0.740 -> 0.655), at 2e-5 better (0.755). EAGLE-3 starts from scratch.
+DEFAULT_LR = {"mtp": 2e-5, "eagle3": 3e-4}
 
 # Families vLLM serves with its MTP proposer (vllm/config/speculative.py, 0.31.0).
 _VLLM_MTP_FAMILIES = {
