@@ -65,7 +65,10 @@ def test_nf4_options_and_warmup_carry_fp_fusion():
         if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "warmup"
     ]
     assert warmups and all(
-        any(k.arg == "enable_fp_fusion" and getattr(k.value, "value", None) is True for k in node.keywords)
+        any(
+            k.arg == "enable_fp_fusion" and getattr(k.value, "value", None) is True
+            for k in node.keywords
+        )
         for node in warmups
     )
 
