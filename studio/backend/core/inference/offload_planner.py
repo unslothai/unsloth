@@ -1264,6 +1264,10 @@ def _plan_placement(
                     kv_layer_weights,
                     requested_ctx = n_ctx,
                 )
+                # A veto is a measurement a smaller context does not change, so it ends the walk
+                # here too, at the context asked for, as it does at the first attempt above.
+                if plan is not None and plan.veto:
+                    return replace(plan, n_ctx = n_ctx)
                 if plan is not None and not plan.declined_by_gate:
                     return plan
 
@@ -2081,10 +2085,13 @@ def _cost_gate(
             0.0,
         )
 
+    # The fitter keeps whatever the knobs gave up (the drafter, the projector), as in
+    # _knob_only_gate, so it places the model in what is left after them.
+    kept_on_card = _outside_layout_bytes(opts) - _outside_layout_bytes(opts, knobs)
     fallback = _fit_fallback_placement(
         layout,
         opts,
-        budget,
+        budget - max(0, kept_on_card),
         n_ctx,
         quantised = quantised,
         kv_bytes_floor = kv_bytes_floor,

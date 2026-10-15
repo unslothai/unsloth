@@ -5589,6 +5589,7 @@ def _per_layer_embd_read_lazily(
     extra_args: Optional[Iterable[str]] = None,
     env: Optional[Mapping[str, str]] = None,
     emitted_mode: Optional[str] = None,
+    lazy_mode_flag: str = "--lazy-mode",
 ) -> bool:
     """Whether this launch pages the per-layer embeddings instead of holding them resident.
 
@@ -5609,6 +5610,9 @@ def _per_layer_embd_read_lazily(
         emitted_mode
         if emitted_mode in ("on", "auto", "off")
         else _lazy_mode_from_args(extra_args, env)
+        if lazy_mode_flag == "--lazy-mode"
+        # An older build reads only --tensor-read-lazy / LLAMA_ARG_TENSOR_READ_LAZY.
+        else _effective_lazy_mode(extra_args, env, flag = lazy_mode_flag)
     )
     if mode == "off":
         return False
@@ -12079,7 +12083,8 @@ class LlamaCppBackend:
         capability turns the whole load off (src/llama-model.cpp:llama_model_base::load_tensors).
         """
         if is_vulkan_backend:
-            return not self._vulkan_targets_are_igpus(binary, gpu_indices)
+            # Only a probe that answered with known device types: an unread type is not "discrete".
+            return self._vulkan_offload_is_discrete(binary, gpu_indices)
         if self._integrated_cuda_unified_memory(gpu_indices):
             return False
         return not self._amd_apu_wants_unified_memory(gpu_indices)
@@ -12138,6 +12143,10 @@ class LlamaCppBackend:
             _extra_args_main_device(extra_args) is not None
             or str((env or {}).get("LLAMA_ARG_DEVICE", "")).strip()
         ):
+            return None
+        # Vulkan with no selection: the child's default list drops iGPUs whenever a discrete GPU is
+        # present, which the visible rows cannot say, so auto resolves against what it really gets.
+        if is_vulkan_backend and gpu_indices is None:
             return None
         return (
             "on"
@@ -29931,6 +29940,7 @@ class LlamaCppBackend:
                         "load_mode": load_mode,
                         # Whether this build can page a TENSOR_READ_LAZY tensor at all.
                         "supports_lazy_mode": bool(server_caps.get("supports_lazy_mode")),
+                        "lazy_mode_flag": server_caps.get("lazy_mode_flag") or "--lazy-mode",
                         "context_policy_fit_only": bool(_spill_ctx_request) and ctx_override != 0,
                         "min_ctx": int(_AUTO_OFFLOAD_CTX),
                         "workload_prompt_tokens": int(
@@ -30964,6 +30974,24 @@ class LlamaCppBackend:
                         extra_args = extra_args,
                         env = os.environ,
                     )
+                    # The plan's per-device rows and -ot blocks follow the ascending order it was
+                    # modelled in, and a parent mask that reorders the same cards is honoured below
+                    # (_inherited_child_gpu_order), which hands them to the other device; the
+                    # repointed --tensor-split then also escapes the retry's revocation. Left to
+                    # --fit on, as before the plan split across devices.
+                    if (
+                        _spill is not None
+                        and len(getattr(_spill, "device_layer_counts", ()) or ()) > 1
+                        and gpu_indices is not None
+                        and not is_vulkan_backend
+                        and not gpu_ids
+                        and self._inherited_child_gpu_order(list(gpu_indices)) is not None
+                    ):
+                        logger.info(
+                            "Tensor spill: declined, the inherited GPU mask reorders the "
+                            "devices the plan split its layers across"
+                        )
+                        _spill = None
                     # NOT `if _spill:` -- Plan is a dataclass, so every instance is truthy,
                     # including ones saying it could not place this at all.
                     # A user ratio, typed or inherited through the env twin, reaches the child
@@ -38003,6 +38031,7 @@ class LlamaCppBackend:
                     # The -lzm load_model is emitting for THIS launch, when it emits one, so the
                     # price and the child's behaviour cannot disagree.
                     emitted_mode = inputs.get("emitted_lazy_mode"),
+                    lazy_mode_flag = str(inputs.get("lazy_mode_flag") or "--lazy-mode"),
                 ),
                 # -nkvo is not a reason to decline: it moves the cache and the
                 # recurrent state OUT of VRAM, so the deficit is smaller, not

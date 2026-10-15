@@ -52,6 +52,14 @@ class _Backend:
     ):
         return self.vulkan_igpu
 
+    def _vulkan_offload_is_discrete(
+        self,
+        binary,
+        gpu_indices = None,
+    ):
+        # A probe that answered with every device type known.
+        return not self.vulkan_igpu
+
     def _integrated_cuda_unified_memory(self, gpu_indices = None):
         return self.integrated_cuda
 
