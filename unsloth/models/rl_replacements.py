@@ -493,7 +493,6 @@ def _insert_after_docstring(function, lines):
 
 
 def _fused_preference_dispatch(function_name, function, call, signature):
-    # Opt-in only, so the generated trainer is unchanged unless the flag is set.
     if function_name != "concatenated_forward" or signature not in function:
         return function
     if os.environ.get("UNSLOTH_FUSED_PREFERENCE_LOSS", "0") != "1":
