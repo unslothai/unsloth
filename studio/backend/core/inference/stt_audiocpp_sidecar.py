@@ -14,6 +14,7 @@ the timestamps and speakers a model produces.
 
 from __future__ import annotations
 
+import functools
 import json
 import subprocess
 import tempfile
@@ -106,6 +107,7 @@ _NEMOTRON_ASR_LOCALES = (
 )  # fmt: skip
 
 
+@functools.lru_cache(maxsize = 256)
 def _nemotron_language(language: str, code: str) -> Optional[str]:
     """The prompt key Nemotron takes for ``language``; any other string fails the request."""
     tag = language.strip().replace("_", "-").lower()
