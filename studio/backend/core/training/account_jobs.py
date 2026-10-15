@@ -416,6 +416,7 @@ def retire_account_jobs(account: AccountContext) -> None:
     )
     from core.rag import folder_sync, ingestion, reembed
     from core.research_runs import retire_account_research
+    from core.scheduled_tasks.scheduler import retire_account_scheduled_tasks
     from routes.inference import retire_stt_downloads
 
     for cancel in (
@@ -426,6 +427,7 @@ def retire_account_jobs(account: AccountContext) -> None:
         reembed.retire_account_reembed,
         folder_sync.retire_account_sync,
         lambda: retire_account_research(account),
+        lambda: retire_account_scheduled_tasks(account),
     ):
         try:
             run_as(account, cancel)

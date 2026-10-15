@@ -817,6 +817,8 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     llama_compat_module.is_engine_probe_path = lambda full_path: False
     prompts_module = ModuleType("routes.prompts")
     prompts_module.router = APIRouter()
+    scheduled_tasks_module = ModuleType("routes.scheduled_tasks")
+    scheduled_tasks_module.router = APIRouter()
     preview_module = ModuleType("routes.preview")
     preview_module.router = APIRouter()
     whisper_module = ModuleType("routes.whisper")
@@ -859,6 +861,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
     monkeypatch.setitem(sys.modules, "routes.engines", engines_module)
     monkeypatch.setitem(sys.modules, "routes.llama_compat", llama_compat_module)
     monkeypatch.setitem(sys.modules, "routes.prompts", prompts_module)
+    monkeypatch.setitem(sys.modules, "routes.scheduled_tasks", scheduled_tasks_module)
     monkeypatch.setitem(sys.modules, "routes.preview", preview_module)
     monkeypatch.setitem(sys.modules, "routes.whisper", whisper_module)
     monkeypatch.setitem(sys.modules, "routes.npu", npu_module)

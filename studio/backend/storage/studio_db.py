@@ -850,6 +850,54 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_data_recipe_executions_recipe"
         " ON data_recipe_executions(recipe_id, created_at)"
     )
+    # next_run_at is NULL when nothing is left to run: a paused task, or a one-time task that ran.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scheduled_tasks (
+            id TEXT NOT NULL PRIMARY KEY,
+            owner_subject TEXT NOT NULL,
+            title TEXT NOT NULL,
+            prompt TEXT NOT NULL,
+            schedule_json TEXT NOT NULL,
+            timezone TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            next_run_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run ON scheduled_tasks(next_run_at)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS scheduled_task_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            task_id TEXT NOT NULL REFERENCES scheduled_tasks(id) ON DELETE CASCADE,
+            source TEXT NOT NULL,
+            status TEXT NOT NULL,
+            scheduled_for INTEGER,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            finished_at INTEGER,
+            heartbeat_at INTEGER,
+            worker_id TEXT,
+            thread_id TEXT REFERENCES chat_threads(id) ON DELETE SET NULL,
+            model TEXT,
+            error_code TEXT,
+            error TEXT
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_task"
+        " ON scheduled_task_runs(task_id, created_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_finished"
+        " ON scheduled_task_runs(finished_at)"
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_runs (
