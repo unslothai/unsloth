@@ -4656,6 +4656,10 @@ def test_an_offloaded_render_charges_activations_vram_cannot_hold_to_gtt(monkeyp
     # A UMA card whose carve-out holds the activations keeps them out of GTT.
     _discrete_vram(monkeypatch, free = 16 << 30)
     assert "--clip-on-cpu" not in render(h3_native_compute_bytes(1344, 768, 124))
+    # Several cards and no slot: the carve-out cannot be read, so the activations count against GTT.
+    _discrete_vram(monkeypatch, free = None)
+    with pytest.raises(H3NativeMemoryRefusal, match = "activations"):
+        render(h3_native_compute_bytes(1344, 768, 124))
 
 
 def test_an_explicit_mode_on_a_uma_card_launches_with_the_pinned_reserve(monkeypatch):

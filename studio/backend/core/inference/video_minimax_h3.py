@@ -1771,12 +1771,11 @@ def h3_native_live_fit(
         gtt_free, gtt_known = amdgpu_gtt_reading(None)
     spill = 0
     if inputs.check_gtt and inputs.uma and compute_bytes:
-        # What the carve-out cannot hold of the compute buffer comes from GTT, beside the pinned weights. A segment's
-        # weights come on top (about 0.3 GiB at 864x480x124, 1.2 at 1344x768x124 on gfx1151); sd.cpp's own capacity
-        # check reports that remainder, so only the compute buffer is charged here.
-        vram_free = amdgpu_vram_free_bytes(inputs.gtt_pci_slot)
-        if vram_free is not None:
-            spill = max(int(compute_bytes) - vram_free, 0)
+        # What the carve-out cannot hold of the compute buffer comes from GTT. A segment's weights come on top, but
+        # sd.cpp's own capacity check reports that remainder, so only the compute buffer is charged here.
+        # An unreadable or ambiguous carve-out (several cards, no slot) holds none of it, like the tightest GTT.
+        vram_free = amdgpu_vram_free_bytes(inputs.gtt_pci_slot) or 0
+        spill = max(int(compute_bytes) - vram_free, 0)
     return h3_native_memory_fit(
         inputs.base_flags,
         accelerator = inputs.accelerator,
