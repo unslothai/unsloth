@@ -1,10 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
-#
-# A uv installed but off THIS process's PATH made setup.sh re-download the pinned archive every
-# update, 42 of a 53 s Windows no-op. It now searches astral's destinations first, and only a uv
-# that runs, and answers as uv at or above install.sh's floor, counts.
+# A uv off THIS process's PATH made setup.sh re-download it every update. Astral's
+# destinations are searched first; only a uv that runs and is at or above the floor counts.
 set -e
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
@@ -26,7 +24,7 @@ HELPER=$(awk '
     grab { print }
     grab && /^}/ { grab = 0 }
 ' "$SETUP_SH")
-# The floor the finder compares against lives beside the function, not inside it.
+# The floor lives beside the function, not inside it.
 HELPER="$(grep '^_SETUP_UV_MIN_VERSION=' "$SETUP_SH")
 $HELPER"
 for _fn in _setup_probe_signal_target _setup_probe_terminate _setup_probe_restore_trap _setup_probe_on_signal _setup_probe_version \
@@ -44,7 +42,7 @@ PROBE="$WORK/probe.sh"
 if _setup_find_installed_uv; then printf 'found=%s' "$_SETUP_UV_DIR"; else printf 'none'; fi
 BODY
 } > "$PROBE"
-# The miss diagnostics survive only when the finder runs in the caller's shell, not a substitution.
+# Miss diagnostics survive only when the finder runs in the caller's shell.
 DIAG="$WORK/diag.sh"
 {
     printf '%s\n' "$HELPER"
@@ -52,7 +50,6 @@ DIAG="$WORK/diag.sh"
 if _setup_find_installed_uv; then printf 'found'; else printf 'looked=%s miss=%s old=%s' "$_SETUP_UV_LOOKED" "$_SETUP_UV_PROBE_MISS" "$_SETUP_UV_TOO_OLD"; fi
 BODY
 } > "$DIAG"
-# setup.ps1's finder, whole, so the checks below do not depend on its line count.
 PS_FINDER=$(awk '
     /^function Find-InstalledUv \{/ { grab = 1 }
     grab { print }
@@ -62,8 +59,7 @@ printf '%s\n' "$PS_FINDER" | grep -q '^function Find-InstalledUv {' || {
     echo "FATAL: could not extract Find-InstalledUv from setup.ps1" >&2; exit 1; }
 
 fake_uv() {  # fake_uv <dir> [exit code] [version]
-    # It prints a version because the finder reads one: a silent stand-in would be refused for
-    # that reason and every reuse case would go green for the wrong one.
+    # It prints a version because the finder reads one; a silent stand-in would be refused.
     mkdir -p "$1"
     printf '#!/bin/sh\necho "uv %s (0123456 2026-01-01)"\nexit %s\n' "${3:-0.12.12}" "${2:-0}" > "$1/uv"
     chmod +x "$1/uv"
@@ -75,7 +71,6 @@ for shell in sh bash; do
     CASE="$WORK/$shell case"
     HOME_DIR="$CASE/home with spaces"
     mkdir -p "$HOME_DIR"
-    # A PATH with no uv on it at all, as the miss requires.
     BARE_PATH="/usr/bin:/bin"
 
     assert_eq "$shell: nothing installed anywhere is a miss" \
@@ -99,7 +94,6 @@ for shell in sh bash; do
     assert_eq "$shell: UV_INSTALL_DIR outranks every default" \
         "found=$CUSTOM" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" XDG_DATA_HOME="$XDG" UV_INSTALL_DIR="$CUSTOM" "$shell" "$PROBE")"
 
-    # Present but broken (another architecture, a half-written download): never reused.
     BROKEN="$CASE/broken"
     fake_uv "$BROKEN" 1
     assert_eq "$shell: a uv that cannot run is not reused" \
@@ -108,8 +102,7 @@ for shell in sh bash; do
     assert_eq "$shell: ...and with nothing else installed that is a miss" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$BROKEN" "$shell" "$PROBE")"
 
-    # Runs, but below install.sh's floor: its managed-Python manifest tops out at a CPython that
-    # cannot import torch, and a bare "does it run" check reused it over the pinned release.
+    # Below the floor, uv's managed-Python manifest tops out at a CPython that cannot import torch.
     OLD="$CASE/old uv"
     fake_uv "$OLD" 0 0.4.0
     assert_eq "$shell: a uv below the minimum version is not reused" \
@@ -118,19 +111,17 @@ for shell in sh bash; do
         *"old=$OLD/uv"*) ok "$shell: ...and the diagnostic names the version it refused" ;;
         *) bad "$shell: ...and the diagnostic names the version it refused ($(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$DIAG"))" ;;
     esac
-    # The floor itself is reused, and a newer one over it.
     fake_uv "$OLD" 0 0.9.3
     assert_eq "$shell: a uv exactly at the minimum version is reused" \
         "found=$OLD" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
-    # A prerelease of the floor is the floor minus something, and install.sh's _uv_version_ok
-    # refuses it, so reuse has to as well. One above the floor is a normal release to both.
+    # A prerelease of the floor is below it; install.sh's _uv_version_ok refuses it too.
     fake_uv "$OLD" 0 "0.9.3-rc.1"
     assert_eq "$shell: a prerelease of the minimum version is not reused" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
     fake_uv "$OLD" 0 "0.9.4-rc1"
     assert_eq "$shell: a prerelease above the minimum version is reused" \
         "found=$OLD" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$OLD" "$shell" "$PROBE")"
-    # Runs, answers as something else: a miss, and the case a Windows stand-in cannot express.
+    # Runs but answers as something else; a Windows stand-in cannot express this.
     NOTUV="$CASE/not uv"
     mkdir -p "$NOTUV"
     printf '#!/bin/sh\necho "curl 8.9.1 (x86_64-pc-linux-gnu)"\nexit 0\n' > "$NOTUV/uv"
@@ -138,7 +129,6 @@ for shell in sh bash; do
     assert_eq "$shell: a binary that runs but does not answer as uv is not reused" \
         "none" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$NOTUV" "$shell" "$PROBE")"
 
-    # One directory, however many variables name it: launched once, named once.
     DUP="$CASE/one dir"
     fake_uv "$DUP"
     case "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$DUP" UV_UNMANAGED_INSTALL="$DUP" XDG_BIN_HOME="$DUP" "$shell" "$DIAG")" in
@@ -151,7 +141,6 @@ for shell in sh bash; do
         *) bad "$shell: ...and named once in the miss diagnostic ($(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" UV_INSTALL_DIR="$DUP" UV_UNMANAGED_INSTALL="$DUP" XDG_BIN_HOME="$DUP" "$shell" "$DIAG"))" ;;
     esac
 
-    # A second search in one process reports its own destinations, not the first search's.
     TWICE="$WORK/$shell twice.sh"
     {
         printf '%s\n' "$HELPER"
@@ -164,9 +153,7 @@ BODY
     assert_eq "$shell: a second search does not inherit the first one's destinations" \
         "looked=$HOME_DIR/.local/bin/uv" "$(env -i PATH="$BARE_PATH" HOME="$HOME_DIR" "$shell" "$TWICE")"
 
-    # A uv that never answers: the probe is bounded, so a miss is reported, not a hang.
-    # NOT gated on `command -v timeout`: it was, and stock macOS has none, so the one platform
-    # that takes the watchdog branch skipped the whole block (27 assertions against 43 on Linux).
+    # Not gated on `command -v timeout`: stock macOS has none and would skip the watchdog branch.
     if true; then
         HANG="$CASE/hangs"
         mkdir -p "$HANG"
@@ -183,13 +170,11 @@ BODY
         else
             bad "$shell: ...and the probe returned within its bound"
         fi
-        # Stock macOS has no GNU timeout: a PATH with only the shell and sleep must still return.
         NOTO="$CASE/no timeout bin"
         mkdir -p "$NOTO"
         ln -s "$(command -v sleep)" "$NOTO/sleep"
         ln -s "$(command -v "$shell")" "$NOTO/$shell"
-        # Stock macOS ships no GNU timeout and DOES ship ps, which is how the probe learns whether
-        # its child got a process group. Leaving ps out made the fixture prove the weaker path.
+        # Stock macOS ships ps, which the probe uses to learn whether its child got a process group.
         [ -n "$(command -v ps)" ] && ln -s "$(command -v ps)" "$NOTO/ps"
         _hang_started=$(date +%s)
         assert_eq "$shell: without GNU timeout a uv that never answers is still not reused" \
@@ -199,9 +184,7 @@ BODY
         else
             bad "$shell: ...and the fallback bound held"
         fi
-        # Cancelling setup mid-probe must take the candidate with it. Only the watchdog branch
-        # needs this: `timeout` is its own process and enforces the ceiling whatever happens to
-        # the shell, while the watchdog's ceiling IS the shell being cancelled.
+        # Only the watchdog branch needs this: `timeout` enforces its ceiling even if the shell dies.
         CANCEL="$WORK/$shell cancel probe.sh"
         {
             printf '%s\n' "$HELPER"
@@ -212,33 +195,26 @@ BODY
         _cancel_sup=$!
         sleep 3
         kill -TERM "$_cancel_sup" 2>/dev/null || :
-        # The supervisor dies of the signal, so `wait` reports 143: not a test failure.
+        # The supervisor dies of the signal, so `wait` reports 143.
         wait "$_cancel_sup" 2>/dev/null || :
         sleep 2
-        # Snapshot first and match in the shell: piping into grep puts the pattern on grep's own
-        # command line, so `ps | grep` matches itself and the check can never go green.
+        # Snapshot then match in the shell: `ps | grep` matches itself.
         _cancel_snap=$(ps -A -o args= 2>/dev/null) || _cancel_snap=""
         case "$_cancel_snap" in
             *"$HANG/uv"*) bad "$shell: cancelling setup kills the probe with it" ;;
             *) ok "$shell: cancelling setup kills the probe with it" ;;
         esac
 
-        # A uv that ignores TERM: both branches must end in KILL.
         DEAF="$CASE/ignores term"
         mkdir -p "$DEAF"
-        # A loop, not one long sleep: `sleep` does not ignore TERM, so a group TERM would end the
-        # sleep, the script would fall off the end, and a stand-in meant to survive TERM would not.
+        # A loop, not one long sleep: TERM ends `sleep`, so the stand-in would not survive TERM.
         printf '#!/bin/sh\ntrap "" TERM\n_i=0\nwhile [ "$_i" -lt 60 ]; do sleep 1; _i=$((_i + 1)); done\n' > "$DEAF/uv"
         chmod +x "$DEAF/uv"
-        # The cancel path shares one routine with the ceiling, so what a cancel does to a binary
-        # that ignores TERM is decided here: TERM, a bounded grace, then KILL. Tested on the
-        # routine rather than by cancelling a setup, because the lifetime of an orphan after its
-        # shell dies is the host's business, not this code's, and the assertion would be measuring
-        # the host.
+        # Tested on the shared terminate routine (TERM, grace, KILL), not by cancelling setup: orphan
+        # lifetime after the shell dies is the host's business.
         TERMINATE="$WORK/$shell terminate.sh"
         DEAF_READY="$CASE/deaf is deaf"
-        # It announces itself only once TERM is ignored: signalling before that line runs would
-        # kill it by default action and the case would pass without the escalation existing.
+        # It announces itself only after TERM is ignored, so the escalation is really exercised.
         printf '#!/bin/sh\ntrap "" TERM\n: > "%s"\n_i=0\nwhile [ "$_i" -lt 20 ]; do sleep 1; _i=$((_i + 1)); done\n' \
             "$DEAF_READY" > "$DEAF/ready uv"
         chmod +x "$DEAF/ready uv"
@@ -262,7 +238,7 @@ wait "$_t_pid" 2>/dev/null
 printf '%s' "$?"
 BODY
         } > "$TERMINATE"
-        # 137 is 128 + SIGKILL: TERM alone leaves this stand-in running to its own end, rc 0.
+        # 137 is 128 + SIGKILL.
         assert_eq "$shell: a probe that ignores TERM is escalated to KILL" \
             "137" "$(env -i PATH="$NOTO" HOME="$HOME_DIR" "$shell" "$TERMINATE")"
         for _deaf_path in "$BARE_PATH" "$NOTO"; do
@@ -297,7 +273,6 @@ if [ -n "$_ps_probe_at" ] && [ -n "$_ps_reuse_at" ] && [ -n "$_ps_install_at" ] 
 else
     bad "setup.ps1 reuses an installed uv before it downloads one (probe=$_ps_probe_at reuse=$_ps_reuse_at install=$_ps_install_at)"
 fi
-# The same destinations, in the same order, on both sides.
 for _name in UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME; do
     if printf '%s\n' "$HELPER" | grep -q "$_name" && printf '%s\n' "$PS_FINDER" | grep -q "env:$_name"; then
         ok "both shells consult $_name"
@@ -306,8 +281,7 @@ for _name in UV_INSTALL_DIR UV_UNMANAGED_INSTALL XDG_BIN_HOME XDG_DATA_HOME; do
     fi
 done
 
-# The reused directory goes to the END of PATH in both shells: a python beside uv must not
-# step in front of the staged interpreter.
+# The reused dir goes to the END of PATH so a python beside uv cannot shadow the staged one.
 if grep -q '^    export PATH="\$PATH:\$_setup_uv_dir"$' "$SETUP_SH"; then
     ok "setup.sh appends the reused uv directory to PATH"
 else
@@ -319,7 +293,6 @@ else
     bad "setup.ps1 appends the reused uv directory to PATH"
 fi
 
-# Only a uv that answered counts on both sides: the bounded probe here, an "ok" verdict in setup.ps1.
 if printf '%s\n' "$HELPER" | grep -q '_setup_probe_version "\$_sfu_dir/uv"'; then
     ok "setup.sh probes the candidate through the bounded helper"
 else
@@ -331,10 +304,8 @@ else
     bad "setup.ps1 reuses only a uv with an ok verdict"
 fi
 
-# ...and on each side it clears that platform's installer floor, so reuse accepts exactly what
-# the installer would have accepted. The two numbers differ on purpose: install.sh refuses a uv
-# whose managed-Python manifest tops out at a CPython that cannot import torch, install.ps1 keeps
-# that patch out with $PythonSkip instead and stays at 0.8.16.
+# Each side clears its platform's installer floor; the numbers differ on purpose (install.ps1
+# excludes the bad CPython via $PythonSkip and stays at 0.8.16).
 _sh_floor=$(grep '^_SETUP_UV_MIN_VERSION="' "$SETUP_SH" | head -1 | sed 's/.*"\(.*\)"/\1/')
 _ps_floor=$(grep '^\$SetupUvMinVersion = "' "$SETUP_PS1" | head -1 | sed 's/.*"\(.*\)"/\1/')
 _install_floor=$(grep '^UV_MIN_VERSION="' "$SCRIPT_DIR/../../install.sh" | head -1 | sed 's/.*"\(.*\)"/\1/')
@@ -360,9 +331,8 @@ else
     bad "setup.ps1 keeps install.ps1's floor (setup.ps1=$_ps_floor install.ps1=$_install_ps_floor)"
 fi
 
-# Get-SetupUvExecutableVerdict returns the verdict only: a Write-Output in it rode along in
-# the return value, `-ne "ok"` on that array was true for every probe, and uv was re-downloaded
-# on every update. With no cached exit code a printed version is "ok"; a code that is there decides.
+# A Write-Output in the verdict function would ride along in its return value and force a
+# re-download every update.
 _verdict=$(awk '/^function Get-SetupUvExecutableVerdict \{/ { grab = 1 } grab { print } grab && /^\}/ { exit }' "$SETUP_PS1")
 if [ -n "$_verdict" ] && ! printf '%s\n' "$_verdict" | grep -q 'Write-Output'; then
     ok "setup.ps1 uv verdict returns only the verdict"
@@ -375,8 +345,7 @@ else
     bad "setup.ps1 uv verdict accepts a printed version"
 fi
 
-# Candidates use .NET Combine: Join-Path terminates on a missing drive under
-# ErrorActionPreference Stop, before the installation branch's try, so one bad XDG_DATA_HOME ended setup.
+# Join-Path terminates on a missing drive under ErrorActionPreference Stop, so use .NET Combine.
 _finder=$(awk '/^function Find-InstalledUv \{/ { grab = 1 } grab { print } grab && /^\}/ { exit }' "$SETUP_PS1")
 if [ -n "$_finder" ] && ! printf '%s\n' "$_finder" | grep -q 'Join-Path' && printf '%s\n' "$_finder" | grep -q 'System.IO.Path\]::Combine'; then
     ok "setup.ps1 builds uv candidates without Join-Path"

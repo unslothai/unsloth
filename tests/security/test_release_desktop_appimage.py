@@ -40,7 +40,6 @@ def test_tauri_builds_and_signs_deb_and_complete_appimage_together():
     assert appimage["bundleMediaFramework"] is True
     assert appimage["files"]["/usr/lib/libappindicator3.so.1"].endswith("/libappindicator3.so.1")
 
-    # Require plugins compatible with the bundled GStreamer core.
     dependencies = _step("Install Linux dependencies")["run"]
     for package in (
         "fonts-noto-color-emoji",
@@ -154,7 +153,6 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
     assert no_gles["install_gles"] is False
     assert "libGLESv2.so.2" in source
 
-    # Probe plugin loadability on every target host.
     assert "appimage_media_pipeline_probe.py" in source
 
     linux_source = yaml.safe_dump(workflow["jobs"]["linux"])
@@ -168,7 +166,6 @@ def test_debian_portability_lanes_install_verifier_and_host_runtime_prerequisite
     ):
         assert package in linux_source
         assert package in webdriver_source
-    # Provide the host audio libraries used by bundled media plugins.
     for package in ("libasound2", "libpulse0"):
         assert package in webdriver_source
 
@@ -226,7 +223,6 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
         assert asset in tool_script
         assert asset in finalizer_source
     fontconfig_source = FONTCONFIG.read_text(encoding = "utf-8")
-    # Fontconfig silently ignores malformed policies.
     ElementTree.fromstring(fontconfig_source)
     # AppRun replaces @APPDIR@ because Fontconfig 2.13 misresolves relative paths.
     assert "<dir>@APPDIR@/usr/share/unsloth/fonts</dir>" in fontconfig_source
@@ -237,7 +233,6 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
     assert "<selectfont>" in fontconfig_source
     assert "<rejectfont>" in fontconfig_source
     assert '<patelt name="color"><bool>true</bool></patelt>' in fontconfig_source
-    # Spare the bundled color font from the host-color rejection.
     assert "<acceptfont>" in fontconfig_source
     assert '<patelt name="family"><string>Unsloth Safe Emoji</string></patelt>' in fontconfig_source
     assert fontconfig_source.index("<acceptfont>") < fontconfig_source.index("<rejectfont>")
@@ -274,11 +269,9 @@ def test_release_preseeds_every_tauri_appimage_tool_with_a_digest():
 
     assert "sed -i '/export GDK_BACKEND=x11/d'" in tool_script
 
-    # Keep foreign GIO and GTK modules out of the bundled runtime.
     assert "-path '*/gio/modules/*' -type f -print0" in tool_script
     assert 'export GTK_PATH="\\$APPDIR/' in tool_script
 
-    # Run the finalizer regardless of linuxdeploy plugin order.
     assert tool_script.count('"$plugin_dir/finalize-complete-appimage.sh" "$APPDIR"') == 1
     assert "for plugin in linuxdeploy-plugin-gtk.sh linuxdeploy-plugin-gstreamer.sh" in tool_script
 
@@ -346,7 +339,6 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
     gio_modules.mkdir(parents = True)
     (gio_modules / "libgiognutls.so").touch()
 
-    # WebKit's media pipeline is the bundled GStreamer core plus these plugins.
     gst_plugins = runtime / "gstreamer-1.0"
     gst_plugins.mkdir()
     for name in (
@@ -387,8 +379,8 @@ def _write_foreign_arch_elf(path: Path) -> None:
     header[0:8] = b"\x7fELF\x01\x01\x01\x00"
     header[16:18] = (3).to_bytes(2, "little")  # e_type = ET_DYN
     header[18:20] = (3).to_bytes(2, "little")  # e_machine = EM_386
-    header[20:24] = (1).to_bytes(4, "little")  # e_version
-    header[40:42] = (52).to_bytes(2, "little")  # e_ehsize
+    header[20:24] = (1).to_bytes(4, "little")
+    header[40:42] = (52).to_bytes(2, "little")
     path.write_bytes(bytes(header))
 
 
@@ -514,7 +506,6 @@ def test_apprun_hands_an_inherited_library_path_to_children_only(tmp_path):
     assert not [line for line in printed if line.startswith("LD_LIBRARY_PATH=")]
     assert "UNSLOTH_HOST_LD_LIBRARY_PATH=/opt/conda/lib:/opt/rocm/lib" in printed
 
-    # AppRun materializes the mount-specific font path.
     materialized = state / "unsloth-studio/fonts-AppDir.conf"
     assert f"FONTCONFIG_FILE={materialized}" in printed
     assert f"<dir>{appdir}/usr/share/unsloth/fonts</dir>" in materialized.read_text(
@@ -698,10 +689,7 @@ def test_managed_appimage_children_preserve_host_library_paths():
 
 
 def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with():
-    # Only this files mapping puts the polkit action on disk, and dropping it fails nothing:
-    # is_supported_install() still returns true and every update silently falls back to the
-    # release page. The dpkg -L check in desktop-app-clean-machine-ci.yml is stronger but runs
-    # only on a non-fork pull request, so it cannot gate a staging replica.
+    # Only this files mapping installs the polkit action; dropping it silently breaks updates.
     config = json.loads(
         (REPO_ROOT / "studio/src-tauri/tauri.conf.json").read_text(encoding = "utf-8")
     )
@@ -715,8 +703,7 @@ def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with
     assert '<action id="ai.unsloth.studio.update">' in source
     # auth_admin on all three implicit cases is what prompts instead of elevating silently.
     assert source.count("auth_admin") == 3
-    # The annotations are what makes this narrower than a plain pkexec call: polkit pins the
-    # program and its first argument, so the action cannot run anything else.
+    # polkit pins the program and its first argument, so the action cannot run anything else.
     assert (
         '<annotate key="org.freedesktop.policykit.exec.path">/usr/bin/unsloth-studio</annotate>'
         in source
@@ -725,8 +712,7 @@ def test_the_deb_ships_the_polkit_action_in_app_debian_updates_authenticate_with
         '<annotate key="org.freedesktop.policykit.exec.argv1">--install-debian-update</annotate>'
         in source
     )
-    # Those two pins must match what tauri derives from the crate name and what main.rs
-    # dispatches on, or polkit refuses every update.
+    # These pins must match tauri's crate-derived name and main.rs, or polkit refuses updates.
     cargo = (REPO_ROOT / "studio/src-tauri/Cargo.toml").read_text(encoding = "utf-8")
     assert 'name = "unsloth-studio"' in cargo
     debian_update = (REPO_ROOT / "studio/src-tauri/src/debian_update.rs").read_text(

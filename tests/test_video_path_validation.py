@@ -1,8 +1,4 @@
-"""Tests for check_dataset_for_missing_videos (issue #5085).
-
-Fixtures AST-extract the function from vision.py so logic tests run without
-the full unsloth import chain (triton/CUDA kernels).
-"""
+"""AST-extracts the function from vision.py so tests avoid the triton/CUDA-heavy unsloth import."""
 
 import ast
 import os
@@ -13,9 +9,6 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
-
-
-# ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
 def _extract_fns_via_ast(
@@ -108,9 +101,6 @@ def make_auto_validating_collator(check_dataset_for_missing_videos):
     return _AutoValidatingCollator
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
 def _make_video_dataset(*video_paths):
     return [
         {"messages": [{"role": "user", "content": [{"type": "video", "video": p}]}]}
@@ -120,9 +110,6 @@ def _make_video_dataset(*video_paths):
 
 def _batch(*video_paths):
     return _make_video_dataset(*video_paths)
-
-
-# ── Tests: check_dataset_for_missing_videos ───────────────────────────────────
 
 
 def test_missing_local_file_raises(check_dataset_for_missing_videos):
@@ -175,9 +162,6 @@ def test_duplicate_paths_deduplicated(check_dataset_for_missing_videos):
     with pytest.raises(FileNotFoundError) as exc_info:
         check_dataset_for_missing_videos(ds)
     assert str(exc_info.value).count("/nonexistent/clip.mp4") == 1
-
-
-# ── Tests: UnslothVisionDataCollator auto-validation ─────────────────────────
 
 
 def test_collator_raises_on_first_batch_with_missing_video(make_auto_validating_collator):
@@ -405,7 +389,6 @@ def test_iterable_dataset_warns_and_skips(check_dataset_for_missing_videos):
         result = check_dataset_for_missing_videos(ds)
     assert result == []
     assert any("IterableDataset" in str(w.message) for w in caught)
-    # generator must not have been exhausted
     consumed = list(ds)
     assert len(consumed) == 2
 
@@ -474,9 +457,7 @@ def test_duplicate_missing_deduped_in_warn_mode(check_dataset_for_missing_videos
     assert missing == ["/nonexistent/dup.mp4"]
 
 
-# ── Tests: real unsloth_zoo collator integration ─────────────────────────────
-# Exercise the real trainer.py subclass against the real zoo base (the fakes
-# above don't cover super()/formatting_func); skip when unsloth can't import.
+# Real zoo base covers super()/formatting_func, which the fakes do not.
 @pytest.fixture(scope = "session")
 def real_collator_classes():
     try:
@@ -486,8 +467,7 @@ def real_collator_classes():
         )
     except Exception as exc:  # noqa: BLE001 - skip on any import failure
         pytest.skip(f"full unsloth import unavailable: {exc!r}")
-    # On Apple Silicon MLX, unsloth.trainer is a shim and this name is a placeholder whose __call__ raises, not the zoo
-    # subclass under test.
+    # On Apple Silicon MLX this name is a placeholder shim, not the zoo subclass.
     if not issubclass(UnslothVisionDataCollator, ZooBase):
         pytest.skip("MLX placeholder collator, not the torch subclass")
     return UnslothVisionDataCollator, ZooBase
@@ -510,7 +490,7 @@ def test_real_collator_blocks_super_on_missing_video(real_collator_classes, monk
     collator = _make_real_collator(real_collator_classes)
     with pytest.raises(FileNotFoundError):
         collator(_batch("/nonexistent/real.mp4"))
-    assert calls == []  # base collator was never reached
+    assert calls == []
 
 
 def test_real_collator_calls_super_with_formatting_disabled(real_collator_classes, monkeypatch):
@@ -597,8 +577,7 @@ def test_vision_collator_thread_safety(real_collator_classes, monkeypatch):
                 entered.append(True)
                 park = True
         if park:
-            # Hold the window open: unsynchronised code lets every follower read the temporary None and skip formatting
-            # entirely.
+            # Hold the window open so unsynchronised followers would read the temporary None.
             leader_parked.set()
             release_leader.wait(10)
         return examples
@@ -606,7 +585,7 @@ def test_vision_collator_thread_safety(real_collator_classes, monkeypatch):
     monkeypatch.setattr(zoo_base, "__call__", fake_base)
     collator = _make_real_collator(real_collator_classes, formatting_func = formatter)
 
-    # Fresh examples per thread, so an in-place formatter races on collator state rather than on shared user data.
+    # Fresh examples per thread, so races hit collator state, not shared user data.
     def work(thread_id):
         return collator([{"tag": (thread_id, i)} for i in range(num_examples)])
 
@@ -624,6 +603,6 @@ def test_vision_collator_thread_safety(real_collator_classes, monkeypatch):
 
     expected = num_threads * num_examples
     assert len(formatted) == expected
-    assert len(set(formatted)) == expected  # each example formatted exactly once
+    assert len(set(formatted)) == expected
     assert base_saw == [None] * num_threads
     assert collator.formatting_func is formatter

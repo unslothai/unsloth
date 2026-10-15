@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The gradient GRPO path must share the no-grad hidden-state signal.
-
-The generated trainer embeds ``unsloth_zoo.grpo_accumulated_loss`` as source.
-Zoo's raw-logits branches dispatch on width, which cannot distinguish logits
-from hidden states when ``vocab_size == hidden_size``. These tests exercise the
-source patch that replaces those comparisons before the function is embedded.
-"""
+"""Zoo dispatches on width, which is ambiguous when vocab_size equals hidden_size; patch the source."""
 
 from __future__ import annotations
 
@@ -189,13 +183,7 @@ def test_source_patch_fails_loudly_if_zoo_removes_the_width_dispatch_contract():
 
 
 def test_source_patch_rejects_a_partially_patched_zoo():
-    """One surviving match must not license the others to stay width-only.
-
-    A zoo that respells some of its dispatches still leaves at least one the
-    strict pattern recognises, which is enough to make `replacements == 0`
-    false. The respelled sites would then keep deciding on width alone, back to
-    silently wrong gradients for a square lm_head.
-    """
+    """A partly patched zoo must fail: unmatched width comparisons would still decide on width alone."""
     source = _FOUR_SITE_SOURCE.replace(
         "    if _pack_h.shape[-1] == lm_head.shape[1]:",
         "    if _pack_h.shape[-1] == lm_head.shape[-1]:",

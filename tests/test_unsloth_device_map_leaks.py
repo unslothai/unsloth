@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Every leaf loader must resolve `device_map = "unsloth"` before transformers sees it.
-
-`"unsloth"` is not a placement strategy transformers knows: `modeling_utils.py` turns any
-string outside {auto, balanced, balanced_low_0, sequential} into `torch.device(...)`, so
-an unresolved one raises:
-
-    ValueError: When passing device_map as a string, the value needs to be a device name
-    (e.g. cpu, cuda:0) or 'auto', 'balanced', 'balanced_low_0', 'sequential' but found unsloth
-
-`FastModel.from_pretrained` converts the default to "unsloth" under
-`UNSLOTH_AUTO_DEVICE_MAP=1` and then returns through `_dispatch_diffusion()` before
-`FastBaseModel` can resolve it, so the text-diffusion slow path needs its own call. And
-the planner needs the same repository ref as the real load, or it plans the default branch.
-
-Extracted with ast so nothing has to import torch's CUDA stack.
-"""
+"""Every leaf loader must resolve the unsloth device_map sentinel before transformers sees it."""
 
 import ast
 import os
@@ -74,12 +59,7 @@ def test_the_diffusion_dispatch_hands_over_the_planner_hints():
     [("llama.py", "revision"), ("vision.py", "_revision"), ("diffusion.py", "revision")],
 )
 def test_the_planner_gets_the_same_ref_the_weights_do(name, expected):
-    """A plan built from the default branch's config can name modules the pinned revision
-    does not have, and accelerate then refuses the map outright:
-
-        ValueError: The device_map provided does not give any device for the following
-        parameters: ...
-    """
+    """The planner must read the same revision as the weights, or the map names modules missing there."""
     for call in _resolve_calls(_source(name)):
         revisions = [kw for kw in call.keywords if kw.arg == "revision"]
         assert revisions, f"{name}:{call.lineno} plans without a revision"
@@ -91,15 +71,7 @@ def test_the_planner_gets_the_same_ref_the_weights_do(name, expected):
 
 
 def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers():
-    """`FastSentenceTransformer.from_pretrained` has its own public `device_map`, and its
-    `st_device` blocks pass it to `SentenceTransformer(device = ...)` -> `self.to(device)`:
-
-        RuntimeError: Expected one of cpu, cuda, ... device type at start of device string:
-        unsloth
-
-    It cannot plan either -- that same `.to()` would pull a split model back onto one card
-    -- so the sentinel has to be spent before the `st_device` blocks read it.
-    """
+    """Spend the sentinel before st_device reads it; .to() would pull a split model back onto one card."""
     tree = ast.parse(_source("sentence_transformer.py"))
     function = next(
         node
@@ -134,16 +106,7 @@ def test_sentence_transformer_never_hands_the_sentinel_to_sentence_transformers(
 
 
 def test_sentence_transformer_decline_survives_the_env_var():
-    """The decline has to outlive the re-entry into `FastModel.from_pretrained`.
-
-    That nested call runs `requested_device_map` again, so a still-marked default is
-    upgraded back to "unsloth" and planned as a split while `st_device` reads "sequential"
-    and pulls the model onto one card. The guard is stripping the marker -- and only the
-    marker, since `str()` over everything flattens an explicit dict placement into text.
-
-    The absence of the process-wide pin is asserted too: `os.environ` is shared, so pinning
-    it around the call reached unrelated loads on other threads.
-    """
+    """Declining must survive the nested FastModel call: strip only the marker, never pin os.environ."""
     source = _source("sentence_transformer.py")
     tree = ast.parse(source)
     function = next(
@@ -152,7 +115,6 @@ def test_sentence_transformer_decline_survives_the_env_var():
         if isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"
     )
 
-    # The decline itself must read the env var, not the raw argument.
     assert any(
         isinstance(node, ast.Call) and getattr(node.func, "id", None) == "requested_device_map"
         for node in ast.walk(function)
@@ -182,13 +144,7 @@ def test_sentence_transformer_decline_survives_the_env_var():
 
 
 def test_every_planned_map_membership_test_is_guarded_against_a_dict():
-    """`device_map` is a dict as often as it is a string, and dicts are unhashable.
-
-    `{"": 0, "model.vision_tower": 1} in _PLANNED_DEVICE_MAPS` raises TypeError, so an
-    explicit placement -- the one shape a user hand-wrote and most wants honoured -- would
-    fail the load outright. Both call sites take the `isinstance` first for that reason,
-    and there is no way to notice from reading either one alone.
-    """
+    """Dicts are unhashable, so each _PLANNED_DEVICE_MAPS membership test must check isinstance first."""
     for name in os.listdir(MODELS):
         if not name.endswith(".py"):
             continue
@@ -199,8 +155,7 @@ def test_every_planned_map_membership_test_is_guarded_against_a_dict():
                 and any(ast.unparse(c) == "_PLANNED_DEVICE_MAPS" for c in node.comparators)
             ):
                 continue
-            # One tree, walked twice: a second parse gives different node objects, so
-            # the identity test below would find no parent and pass on anything.
+            # One tree walked twice: a reparse gives new nodes and the identity test passes vacuously.
             parents = [
                 ast.unparse(outer)
                 for outer in ast.walk(tree)
@@ -213,13 +168,7 @@ def test_every_planned_map_membership_test_is_guarded_against_a_dict():
 
 
 def test_sentence_transformer_declines_to_a_value_st_device_normalises():
-    """Whatever planned name is asked for, this loader declines to "sequential".
-
-    `st_device` only normalises dicts, "auto" and "sequential"; anything else reaches
-    `SentenceTransformer(device = ...)` and then `.to(...)`, so declining to "balanced"
-    -- the value that name declines to everywhere else -- would raise on a string that
-    is not a torch device. Nothing is sharded here, so the sharding fallback is wrong.
-    """
+    """Declines to sequential, a value st_device normalises; nothing here is sharded."""
     tree = ast.parse(_source("sentence_transformer.py"))
     function = next(
         node
