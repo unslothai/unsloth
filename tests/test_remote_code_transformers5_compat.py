@@ -256,7 +256,6 @@ def test_remote_class_only_replaces_a_native_class_it_shadows(unsloth_loaded):
         _supports_sdpa = False
 
     assert attention_class_for_load(Native, True, Remote, True) == (Remote, False)
-    # No native class shadowed: remote flags must not route a working load onto flash attention.
     assert attention_class_for_load(None, True, Remote, True) == (None, False)
     Remote._supports_sdpa = True
     assert attention_class_for_load(None, True, Remote, True) == (None, True)

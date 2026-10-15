@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression tests for install.ps1 under a user PowerShell profile.
-
-The installer used to succeed only from a console started with -NoProfile. A profile runs before
-"irm https://unsloth.ai/install.ps1 | iex" does and shares its scope, and there is no script file
-to re-launch without it, so four couplings were cut individually: $PSDefaultParameterValues,
-Set-StrictMode, $PSNativeCommandUseErrorActionPreference, and command discovery finding a profile
-alias or function named "uv" ahead of PATH. A fifth lived outside install.ps1 -- the handoff to
-`unsloth studio setup` passed -NoProfile only when stdout was not a tty, which is never true for
-the console install this is about; setup.ps1 itself is not otherwise covered here.
-"""
+"""install.ps1 must not inherit user profile state: strict mode, defaults, native errors, aliases."""
 
 from __future__ import annotations
 
@@ -62,11 +53,7 @@ def _extract_function(name: str) -> str:
 
 
 def _code_only() -> str:
-    """install.ps1 with whole-line comments blanked, so ordering is judged on what executes.
-
-    The hardening block names the very cmdlets it protects, and those mentions would otherwise
-    read as the first use of each.
-    """
+    """Blanks comment lines so ordering checks judge only what executes, not mentions in comments."""
     return "\n".join(
         "" if line.lstrip().startswith("#") else line for line in _install_ps1().splitlines()
     )
@@ -84,9 +71,6 @@ def _ps_literal(value: object) -> str:
     """A single-quoted PowerShell literal. Doubling escapes an apostrophe, which a Windows
     account named O'Brien puts in tmp_path; unsloth_cli/commands/studio.py does the same."""
     return "'" + str(value).replace("'", "''") + "'"
-
-
-# ── source-level: the couplings stay cut ──
 
 
 def test_prologue_neutralizes_profile_state():
@@ -113,13 +97,7 @@ def test_proxy_defaults_are_carried_across_rather_than_dropped():
 
 
 def test_profile_hardening_precedes_every_use_it_protects():
-    """Ordering, not presence: a fix applied after the first unset-env test or the first
-    download protects nothing.
-
-    Only in-process first uses are anchored. The first textual Invoke-RestMethod and
-    Start-Process are inside the launcher here-string, which is text for a separate process
-    that install.ps1 starts with -NoProfile of its own.
-    """
+    """Hardening must precede the first in-process use it protects; presence alone protects nothing."""
     code = _code_only()
     strict_idx = _locate(code, "Set-StrictMode -Off", "the strict-mode pin")
     defaults_idx = _locate(code, "$PSDefaultParameterValues = $_UnslothKeptDefaults", "the filter")
@@ -143,9 +121,7 @@ def test_profile_hardening_precedes_every_use_it_protects():
 def test_script_scoped_uv_state_is_reset_per_invocation():
     """Same hazard as $script:IsIntelXpu: under irm | iex, $script: is the caller's session."""
     src = _install_ps1()
-    # Anchored on the newline plus exactly four spaces: the real assignments sit deeper in the
-    # function and would otherwise satisfy this by accident, which is how a dropped reset for
-    # $script:UvInstallDestDir once slipped past.
+    # Anchored on newline plus four spaces: deeper assignments would otherwise match by accident.
     for reset, first_read in (
         ("\n    $script:UvExe = 'uv'\n", "& $script:UvExe"),
         ("\n    $script:UvInstallDestDir = $null\n", "foreach ($d in @($script:UvInstallDestDir"),
@@ -172,8 +148,7 @@ def test_no_bare_uv_token_survives_at_a_call_site():
 
 def test_uv_is_resolved_as_an_application():
     body = _extract_function("Get-UvExecutableCandidates")
-    # The whole invocation, not the flags separately: the function's own comment mentions both,
-    # so a substring test for either passes on a body that no longer uses them.
+    # The whole invocation: the function's own comment mentions both flags.
     assert "Get-Command uv -CommandType Application -All -ErrorAction SilentlyContinue" in body, (
         "Application-only lookup is what skips an alias or function, and ordering across "
         "several matches is only documented for -All"
@@ -194,10 +169,7 @@ def test_uv_is_resolved_as_an_application():
 
 
 def test_setup_ps1_handoff_never_inherits_the_profile():
-    """install.ps1 ends by running `unsloth studio setup`, which re-enters PowerShell. That
-    launch used to add -NoProfile only when stdout was not a tty, so the console install this
-    whole file is about ran setup.ps1 with the user's profile loaded and its bare `uv` calls
-    exposed to the same alias."""
+    """The setup.ps1 handoff must always pass -NoProfile, not only when stdout is not a tty."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
     start = _locate(src, "powershell_args = [powershell]", "the setup.ps1 launch")
     branch = _locate(src[start:], "_should_hide_windows_subprocesses()", "the hidden-window branch")
@@ -205,8 +177,6 @@ def test_setup_ps1_handoff_never_inherits_the_profile():
         '"-NoProfile"' in src[start : start + branch]
     ), "-NoProfile must be added unconditionally, before the hidden-window branch"
 
-
-# ── executable: run the extracted code under a hostile profile ──
 
 _HOSTILE_PROFILE = """
 Set-StrictMode -Version Latest
@@ -222,7 +192,7 @@ def _write_exe(directory: Path, stem: str, posix_body: str, cmd_body: str) -> Pa
     directory.mkdir(parents = True, exist_ok = True)
     if os.name == "nt":
         exe = directory / f"{stem}.cmd"
-        # newline = "" so write_text does not translate \n and leave \r\r\n on disk.
+        # newline = "" so write_text does not leave \r\r\n on disk.
         exe.write_text(cmd_body, encoding = "ascii", newline = "")
     else:
         exe = directory / stem
@@ -256,9 +226,8 @@ def _hostile_env(
     home.mkdir(parents = True, exist_ok = True)
     drive, tail = os.path.splitdrive(str(home))
     env.update({"HOME": str(home), "USERPROFILE": str(home), "HOMEDRIVE": drive, "HOMEPATH": tail})
-    # HOME on its own does not move $PROFILE on Unix: PowerShell reads $XDG_CONFIG_HOME first and only falls back to
-    # $HOME/.config when it is unset, and GitHub's ubuntu image writes XDG_CONFIG_HOME into /etc/environment, so an
-    # inherited value kept naming the real account and this file's isolation leaked on a hosted runner and nowhere else.
+    # PowerShell reads $XDG_CONFIG_HOME before $HOME/.config for $PROFILE, and GitHub's ubuntu
+    # image sets it, so HOME alone does not isolate the profile.
     env["XDG_CONFIG_HOME"] = str(home / ".config")
     if path_override is not None:
         path_override.mkdir(parents = True, exist_ok = True)
@@ -277,15 +246,7 @@ _PROFILE_SCOPES = (
 
 
 def _profile_paths(env: dict[str, str]) -> dict[str, Path]:
-    """The four profile paths pwsh itself reports under `env`.
-
-    Asked rather than assumed. The path this replaces was hardcoded to the ".config under $HOME"
-    branch, which is only PowerShell's fallback when XDG_CONFIG_HOME is unset, so on a host that
-    exports it the fixture wrote a file pwsh never opened and the profile silently did not apply.
-    """
-    # This asks pwsh where its own profiles live, and every fixture below plants a file at
-    # the answer. An interpreter that dies here returns no paths at all, which would read as
-    # pwsh reporting nothing rather than as pwsh never having started.
+    """Asks pwsh for its profile paths: a hardcoded ~/.config path is wrong when XDG_CONFIG_HOME is set."""
     res = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -315,20 +276,12 @@ def _run_with_profile(
     path_override: Path | None = None,
     profile: str | None = None,
 ) -> subprocess.CompletedProcess:
-    """Run `body` with the hostile profile dot-sourced into the scope that encloses it.
-
-    That is the scope relationship a profile has to the installer: the profile runs at global
-    scope, then "irm ... | iex" defines and calls Install-UnslothStudio in that same scope.
-    Dot-sourcing reproduces it on every OS, which planting a profile file does not -- Windows
-    resolves the Documents folder through the known-folder API, so no environment variable can
-    redirect $PROFILE at a fixture. test_a_real_profile_reproduces_the_same_state anchors this
-    against a genuinely loaded profile where that is possible.
-    """
+    """Dot-sources the profile into this scope: $PROFILE cannot be redirected to a fixture on Windows."""
     profile_path = tmp_path / "hostile_profile.ps1"
     profile_path.write_text(_HOSTILE_PROFILE if profile is None else profile, encoding = "utf-8")
     script = tmp_path / "body.ps1"
     script.write_text(f". {_ps_literal(profile_path)}\n{body}\n", encoding = "utf-8")
-    # Absolute path: PATH is replaced in some cases, so pwsh could not be found by name.
+    # Absolute path: PATH is replaced in some cases, so pwsh may not be found by name.
     return run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(script)],
         capture_output = True,
@@ -369,17 +322,12 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     """
     env = _hostile_env(tmp_path)
     paths = _profile_paths(env)
-    # The two machine-wide profiles load into the real leg only and no environment variable can move them, so one
-    # touching a probed setting would read as a divergence that says nothing about the simulation. Neither ships with
-    # PowerShell, so this skip is for an administered host, and it names the file so the reason is checkable.
+    # Machine-wide profiles load only in the real leg and cannot be redirected, so skip if present.
     for scope in ("AllUsersAllHosts", "AllUsersCurrentHost"):
         if paths[scope].is_file():
             pytest.skip(f"a machine-wide profile at {paths[scope]} loads into the real leg only")
     profile = paths["CurrentUserCurrentHost"]
-    # Not an assert: on a host whose $PROFILE cannot be redirected into the fixture at all, the real leg would load
-    # whatever the actual account has (or nothing) and prove nothing either way. XDG_CONFIG_HOME in _hostile_env is what
-    # keeps this true on Linux and macOS, so the skip is unreachable there and a regression in the simulation still
-    # fails locally and in CI.
+    # Skip, not assert: XDG_CONFIG_HOME makes this unreachable on Linux and macOS.
     if tmp_path not in profile.parents:
         pytest.skip(f"pwsh resolves $PROFILE to {profile}, which this fixture cannot plant into")
     profile.parent.mkdir(parents = True, exist_ok = True)
@@ -388,8 +336,6 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     script.write_text(_STATE_PROBE, encoding = "utf-8")
 
     # -NoProfile deliberately omitted; this is the one place the profile is really loaded.
-    # The anchor compares this run against the dot-sourced simulation, so a crashed interpreter
-    # would be read as the two diverging rather than as one of them never having run.
     real = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NonInteractive", "-File", str(script)],
         capture_output = True,
@@ -401,8 +347,6 @@ def test_a_real_profile_reproduces_the_same_state(tmp_path):
     )
     assert real.returncode == 0, f"stdout={real.stdout!r} stderr={real.stderr!r}"
     simulated = _run_with_profile(tmp_path, _STATE_PROBE)
-    # All four probes coming back at their defaults means the file was planted somewhere pwsh does not read, which is a
-    # broken fixture rather than a divergence; the path says which.
     assert _probe_lines(real.stdout) == _probe_lines(simulated.stdout), (
         f"dot-sourced profile diverges from the one pwsh loaded from {profile}: "
         f"{_probe_lines(simulated.stdout)} vs {_probe_lines(real.stdout)}"
@@ -438,7 +382,6 @@ def test_bare_uv_token_is_hijacked_by_the_profile(tmp_path):
     assert (
         "MATCHED:none" in res.stdout
     ), "if the bare token resolves past the alias, this suite can no longer detect a regression"
-    # Write-Host swallowed the arguments instead of running uv, which is the whole failure mode.
     assert "RAW:[]" in res.stdout, f"expected the alias to eat the call; got {res.stdout!r}"
 
 
@@ -479,19 +422,15 @@ def test_prologue_clears_profile_state_without_disturbing_the_session(tmp_path):
     )
     res = _run_with_profile(tmp_path, body)
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
-    # The interfering default is gone; the proxy one is kept, for the installer and its callees.
     assert "INSIDE_DEFAULTS:1" in res.stdout
     assert "NESTED_DEFAULTS:1" in res.stdout
     assert "INSIDE_PROXY:http://127.0.0.1:9" in res.stdout, "a proxy default must survive"
     assert "HOSTILE" not in res.stdout, "a nested cmdlet still bound the profile's Get-Date default"
     assert "INSIDE_NATIVEEAP:False" in res.stdout
-    # Strict mode off for the idioms that predate it, in nested functions and scriptblocks too.
     assert "INSIDE_ENVTEST:ok" in res.stdout
     assert "SB:ok" in res.stdout
-    # The $script: state a second run must not inherit.
     assert "INSIDE_UVEXE:uv" in res.stdout
     assert "INSIDE_DESTDIR:[]" in res.stdout
-    # And the user's own session is left exactly as the profile configured it.
     assert "AFTER_DEFAULTS:2" in res.stdout, "the caller's default-parameter table must survive"
     assert "AFTER_NATIVEEAP:True" in res.stdout, "the caller's native error handling must survive"
     assert "AFTER_STRICT:on" in res.stdout, "the caller's strict mode must survive"
@@ -543,9 +482,8 @@ def _uv_probe_body(*extra: str) -> str:
 @requires_pwsh
 def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
     fake = _fake_uv(tmp_path / "bin")
-    # The stub stands in for Invoke-InstallCommand, which is how all 27 real call sites run:
-    # a scriptblock built in one scope and invoked with & from another. It has to be defined
-    # ahead of the call, which is what the "Install-UnslothStudio" line inside _uv_probe_body is.
+    # The stub stands in for Invoke-InstallCommand (scriptblock built in one scope, invoked
+    # from another) and must be defined ahead of the call.
     body = "\n".join(
         [
             "function Invoke-InstallCommandStub "
@@ -561,7 +499,6 @@ def test_uv_probe_finds_the_real_uv_behind_a_profile_alias(tmp_path):
     assert (
         f"PINNED:{fake}" in res.stdout
     ), f"the probe must pin {str(fake)!r} exactly; got {res.stdout!r}"
-    # The scriptblock form the installer actually uses must reach the executable, not the alias.
     assert (
         "CALLSITE:uv 0.12.1" in res.stdout
     ), "install scriptblocks must run the resolved uv; the alias would echo the arguments"
@@ -584,8 +521,7 @@ def test_uv_probe_rejects_a_too_old_uv_and_leaves_the_reset_value(tmp_path):
 @requires_pwsh
 def test_uv_probe_reports_missing_when_only_the_alias_exists(tmp_path):
     """With no uv on PATH the installer must still take its install-uv branch, not pin the alias."""
-    # The inherited PATH is replaced, not prepended to: the machine running this may well have a
-    # real uv, and it would answer the probe and hide the branch under test.
+    # PATH is replaced, not prepended to, so a real uv on this host cannot answer the probe.
     res = _run_with_profile(tmp_path, _uv_probe_body(), path_override = tmp_path / "emptybin")
     assert res.returncode == 0, f"stdout={res.stdout!r} stderr={res.stderr!r}"
     assert "OK:False" in res.stdout
@@ -669,8 +605,6 @@ def test_the_powershell_entrypoints_parse(script):
     extract single functions: an extraction still parses when the file around it does not, so
     nothing else in the suite would notice a broken brace at file scope.
     """
-    # A nonzero exit here is claimed to mean install.ps1 has a syntax error, and pwsh aborting before it ever reached
-    # the parser exits nonzero too.
     res = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -691,9 +625,6 @@ def test_the_powershell_entrypoints_parse(script):
     assert res.returncode == 0, res.stdout + res.stderr
 
 
-# ── the proxy has to survive the process boundary, not just the filter ──
-
-
 def _proxy_prelude() -> str:
     """The PowerShell the setup launch prepends to its -Command, read from the shipped source."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
@@ -704,11 +635,7 @@ def _proxy_prelude() -> str:
 
 
 def test_the_setup_launch_reapplies_the_proxy_it_told_the_child_to_forget():
-    """-NoProfile on the setup handoff drops the whole $PSDefaultParameterValues table, proxy
-    entries included, and setup.ps1 downloads on its own (the VC++ runtime, the uv installer).
-    Where a profile proxy entry is the only egress, keeping it in install.ps1 and losing it one
-    process later is the same broken install. A PowerShell variable cannot cross a process
-    boundary, so it travels as environment."""
+    """Proxy defaults travel to setup.ps1 as env vars, because -NoProfile drops the defaults table."""
     assert "_UNSLOTH_PS_PROXY_DEFAULTS" in _install_ps1(), "install.ps1 must publish the handoff"
     prelude = _proxy_prelude()
     assert "_UNSLOTH_PS_PROXY_DEFAULTS" in prelude, "the child must read it back"
@@ -743,8 +670,6 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
         encoding = "utf-8",
         newline = "",
     )
-    # The proxy keys are read straight out of this run's stdout, so an interpreter that died would look like the
-    # prologue publishing an empty handoff.
     handoff = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(driver)],
         capture_output = True,
@@ -752,8 +677,6 @@ def test_only_serializable_proxy_keys_reach_the_child(tmp_path):
         check = False,
     ).stdout
 
-    # Parsed, not substring-matched: the handoff IS JSON, so an exact value comparison is both stronger and free of the
-    # "URL may sit anywhere in the string" reading a bare `in` invites.
     carried = json.loads(handoff.strip().splitlines()[-1])
     assert carried["Invoke-WebRequest:Proxy"] == "http://proxy.corp:8080"
     assert "ProxyUseDefaultCredentials" in handoff
@@ -777,8 +700,6 @@ def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
         env = {k: v for k, v in os.environ.items() if k != "_UNSLOTH_PS_PROXY_DEFAULTS"}
         if value is not None:
             env["_UNSLOTH_PS_PROXY_DEFAULTS"] = value
-        # Each case asserts the child launched successfully and restored exactly the proxy key, so a pwsh that aborted
-        # at startup would read as the prelude taking setup.ps1 down.
         return run_pwsh(
             [pwsh, "-NoProfile", "-NonInteractive", "-Command", probe],
             capture_output = True,
@@ -793,8 +714,7 @@ def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
     )
     assert restored.returncode == 0
     assert "IWR=http://proxy.corp:8080" in restored.stdout
-    # install.ps1 never publishes a non-proxy key, but the child trusts the table wholesale, so pin that the round trip
-    # carries what it was given and the FILTER is the one place that decides.
+    # The child trusts the table wholesale, so the FILTER is the one place that decides.
     assert "OTHER=Hidden" in restored.stdout
 
     for absent in (None, "{not json", ""):
@@ -802,9 +722,6 @@ def test_the_child_restores_the_proxy_and_nothing_else(tmp_path):
         assert result.returncode == 0, f"the prelude must not fail the launch on {absent!r}"
         assert "IWR=\n" in result.stdout or result.stdout.startswith("IWR=\n")
         assert not result.stderr.strip(), f"the prelude leaked an error on {absent!r}"
-
-
-# ── the proxy handoff, hardened ───────────────────────────────────────────────
 
 
 def test_module_autoloading_is_restored_before_the_handoff_needs_it():
@@ -839,8 +756,6 @@ def test_the_filter_takes_lowercase_keys_and_uri_values(tmp_path):
         encoding = "utf-8",
         newline = "",
     )
-    # Same reading here for the casing and [uri] cases: no stdout is indistinguishable from
-    # the prologue having filtered every key out.
     handoff = run_pwsh(
         [shutil.which("pwsh") or "pwsh", "-NoProfile", "-NonInteractive", "-File", str(driver)],
         capture_output = True,
@@ -863,13 +778,10 @@ def test_the_handoff_is_published_only_around_the_setup_child():
         "$env:_UNSLOTH_PS_PROXY_DEFAULTS =" not in prologue
     ), "the prologue publishes the handoff into the session it was invoked from"
     assert "$UnslothProxyHandoffJson" in prologue, "the prologue must hold it instead"
-    # Set beside the other child-scoped variables, and restored with them.
     assert "$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS" in source
     assert "$env:_UNSLOTH_PS_PROXY_DEFAULTS = $previousProxyHandoff" in source
     gate = _locate(source, "$previousSetupRuntimeGateHandoff =", "the runtime-gate handoff")
     proxy = _locate(source, "$previousProxyHandoff =", "the proxy handoff save")
-    # Anchored on the invocation's own line: pinning it to "try {\n" pinned the block's
-    # shape instead of the ordering this test is about, and broke on the restructure.
     call = _locate(
         source,
         "        Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs",
@@ -877,8 +789,7 @@ def test_the_handoff_is_published_only_around_the_setup_child():
     )
     opened = _locate(source, "\n    try {\n        $env:SKIP_STUDIO_BASE", "the handoff try")
     assert gate < call and proxy < call, "the handoff must be in place before the child runs"
-    # ...and both saves stay above the try, or the finally reads an unassigned
-    # $hadPrevious* as "there was nothing here" and clears a value it did not set.
+    # Saves must precede the try, or the finally reads an unassigned $hadPrevious* and clears it.
     assert gate < opened and proxy < opened, "the saves must precede the try that restores them"
 
 
@@ -892,7 +803,6 @@ def test_a_standalone_update_reconstructs_the_proxy_for_itself():
     guard = _locate(src[start:], "_probe_profile_proxy_defaults(", "the probe call")
     noprofile = _locate(src[start:], '"-NoProfile"', "the -NoProfile flag")
     assert guard < noprofile, "the probe has to run while the profile is still reachable"
-    # ...and only when the installer did not already hand one over.
     assert "_UNSLOTH_PS_PROXY_DEFAULTS" in src[start : start + guard]
 
 
@@ -902,8 +812,7 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
     off, a lowercase key and a [uri] value. The probe has to survive all of it and return only
     the proxy entries."""
     src = STUDIO_COMMAND.read_text(encoding = "utf-8")
-    # From the markers, not just the script: the record is framed, and the frame is part of
-    # what has to survive a profile that prints.
+    # From the markers: the frame must survive a profile that prints.
     start = _locate(src, "_PROXY_PROBE_BEGIN = ", "the probe framing")
     namespace: dict = {}
     exec(  # noqa: S102 - our own source
@@ -920,8 +829,7 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
         encoding = "utf-8",
         newline = "",
     )
-    # Empty stdout is already handled below as "the planted profile was not loaded" and skips the test, so a crashed
-    # interpreter would silently retire this check instead of failing.
+    # Empty stdout skips below, so a crashed interpreter would silently retire this check.
     result = run_pwsh(
         [
             shutil.which("pwsh") or "pwsh",
@@ -947,10 +855,7 @@ def test_the_probe_reads_a_hostile_profile_without_carrying_anything_else(tmp_pa
 
 
 def test_a_profile_that_prints_a_banner_does_not_cost_the_proxy(monkeypatch):
-    """The profile has already run by the time the record is printed and is free to say
-    anything: a MOTD, a "loading modules" line, a corporate banner. With the record bare, that
-    output arrived first, the parse threw, and the answer was dropped -- so the locked-down host
-    that needed the proxy handed the -NoProfile child nothing."""
+    """A profile banner can precede the proxy record, so the parser must tolerate surrounding output."""
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -979,29 +884,23 @@ def test_a_profile_that_prints_nothing_useful_is_still_no_answer(monkeypatch):
 
 
 def test_the_caller_edition_is_read_from_the_order_not_the_absence(monkeypatch):
-    """A machine can carry BOTH module trees on PSModulePath -- 5.1 launched from a session
-    that already had 7's path, or a profile that appends it, the mixed case setup.ps1
-    documents. Reading "7 is present, so the caller is 7" then gave the wrong profile
-    precedence and let its proxy override the console the command was typed into. Each host
-    puts its own module directory first, so the earliest tree names the caller."""
+    """With both module trees on PSModulePath, the earliest tree names the caller, not mere presence."""
     from unsloth_cli.commands import studio as studio_cmd
 
     monkeypatch.setattr(studio_cmd.shutil, "which", lambda name: f"C:\\{name}")
     windows = "C:\\Users\\me\\Documents\\WindowsPowerShell\\Modules"
     seven = "C:\\Program Files\\PowerShell\\7\\Modules"
 
-    # Both present, 5.1 first: the caller is Windows PowerShell.
+    # 5.1 first: the caller is Windows PowerShell.
     monkeypatch.setenv("PSModulePath", f"{windows};{seven}")
     assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
-    # Both present, 7 first: the caller is pwsh.
+    # 7 first: the caller is pwsh.
     monkeypatch.setenv("PSModulePath", f"{seven};{windows}")
     assert studio_cmd._profile_probe_hosts()[0] == "pwsh.exe"
-    # Only one tree: unchanged from before.
     monkeypatch.setenv("PSModulePath", windows)
     assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
     monkeypatch.setenv("PSModulePath", seven)
     assert studio_cmd._profile_probe_hosts()[0] == "pwsh.exe"
-    # Nothing to read: the previous default order.
     monkeypatch.setenv("PSModulePath", "")
     assert studio_cmd._profile_probe_hosts() == ["pwsh.exe", "powershell.exe"]
 
@@ -1019,10 +918,7 @@ def test_the_probe_pins_its_own_output_encoding(monkeypatch):
 
 
 def test_one_host_owns_a_cmdlet_outright(monkeypatch):
-    """Filling a missing companion parameter from the other edition's profile builds a
-    configuration neither host has: the earlier host's Proxy with the later host's
-    ProxyUseDefaultCredentials, which offers the user's Windows credentials to a proxy whose
-    own profile never asked for that."""
+    """Do not mix a Proxy from one PowerShell edition with ProxyUseDefaultCredentials from the other."""
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1042,7 +938,6 @@ def test_one_host_owns_a_cmdlet_outright(monkeypatch):
 
     assert merged == {
         "Invoke-WebRequest:Proxy": "http://first.corp:8080",
-        # ...while a cmdlet the first host never configured still comes across.
         "Start-BitsTransfer:Proxy": "http://second.corp:8080",
     }
 
@@ -1069,13 +964,7 @@ def test_the_probe_signature_evaluates_on_the_oldest_supported_python():
 
 
 def test_the_probe_asks_both_powershell_editions(monkeypatch):
-    """pwsh and powershell.exe keep SEPARATE profiles.
-
-    `unsloth studio update` is typed into whichever host the user has open, and probing only
-    powershell.exe missed a proxy living in the PowerShell 7 profile -- the likelier place on
-    a machine that has pwsh at all. The -NoProfile child then had no proxy and setup.ps1's
-    downloads failed.
-    """
+    """pwsh and powershell.exe keep separate profiles; the probe must read both or it misses a PS7 proxy."""
     from unsloth_cli.commands import studio as studio_cmd
 
     asked: list[str] = []
@@ -1120,11 +1009,7 @@ def test_the_callers_edition_wins_where_the_two_profiles_disagree(monkeypatch):
 
 
 def test_two_spellings_of_one_key_are_one_key(monkeypatch):
-    """$PSDefaultParameterValues is case-insensitive; a Python dict is not.
-
-    With both spellings carried across, the prelude replayed them in order and the
-    lower-priority host's value landed last -- the exact reverse of earlier-host-wins, and on
-    a stricter host the case-colliding JSON is rejected outright."""
+    """$PSDefaultParameterValues is case-insensitive, a Python dict is not; merge spellings to one key."""
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1142,8 +1027,7 @@ def test_two_spellings_of_one_key_are_one_key(monkeypatch):
 
 
 def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
-    # Same collision inside a single host's answer: the first spelling wins and the second
-    # never reaches the child.
+    # Same collision within one host's answer: the first spelling wins.
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1165,11 +1049,8 @@ def test_one_profile_that_prints_both_spellings_is_folded_too(monkeypatch):
 
 
 def test_a_wildcard_key_claims_the_whole_cmdlet_family(monkeypatch):
-    """The command half of a $PSDefaultParameterValues key may be a wildcard, and PowerShell
-    applies such an entry to every cmdlet it matches. Comparing the strings literally let
-    Invoke-Web*:Proxy from one host merge with Invoke-WebRequest:ProxyUseDefaultCredentials from
-    the other -- one invocation configured from two profiles, offering the user's Windows
-    credentials to a proxy whose own profile never asked for that."""
+    """Compare wildcard command keys by the cmdlets they match, not as literal strings, or profiles
+    merge."""
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1186,20 +1067,15 @@ def test_a_wildcard_key_claims_the_whole_cmdlet_family(monkeypatch):
     monkeypatch.setattr(studio_cmd.subprocess, "run", lambda argv, **kw: _Result(answers[argv[0]]))
     merged = json.loads(studio_cmd._probe_profile_proxy_defaults(["pwsh.exe", "powershell.exe"]))
 
-    # The wildcard from the first host owns the whole Invoke-Web* family, so the second host's credential flag for
-    # Invoke-WebRequest is dropped.
+    # The first host's wildcard owns Invoke-Web*, so the second host's Invoke-WebRequest flag drops.
     assert merged == {
         "Invoke-Web*:Proxy": "http://seven.corp:8080",
-        # An unrelated family from the second host is still merged.
         "Invoke-RestMethod:Proxy": "http://five.corp:8080",
     }
 
 
 def test_two_wildcards_that_share_a_cmdlet_are_one_family(monkeypatch):
-    """Matching either pattern against the other as a STRING does not establish whether their
-    match sets overlap: Invoke-Web* and *-WebRequest both apply to Invoke-WebRequest and neither
-    matches the other. Overlap between two patterns is assumed, so the lower-priority profile
-    cannot slip ProxyUseDefaultCredentials in beside the other's proxy."""
+    """Matching one wildcard against the other as a string does not show overlap, so overlap is assumed."""
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1218,16 +1094,12 @@ def test_two_wildcards_that_share_a_cmdlet_are_one_family(monkeypatch):
 
     assert merged == {
         "Invoke-Web*:Proxy": "http://seven.corp:8080",
-        # An unrelated family from the second host is still merged.
         "Invoke-RestMethod:Proxy": "http://five.corp:8080",
     }
 
 
 def test_the_probe_re_pins_utf8_after_the_profiles_have_run():
-    """A profile setting [Console]::OutputEncoding is an ordinary customization and it
-    overrides the pin at the top of the probe. The parent decodes this stream as UTF-8, so a
-    profile that leaves the console on UTF-16 or a legacy code page corrupts the framed record
-    and a non-ASCII proxy URI goes with it."""
+    """A profile can reset [Console]::OutputEncoding, so the probe re-pins UTF-8 after the profiles run."""
     from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
 
     pin = "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false"
@@ -1237,29 +1109,21 @@ def test_the_probe_re_pins_utf8_after_the_profiles_have_run():
 
 
 def test_the_record_is_emitted_through_the_builtin_cmdlets():
-    """An alias or function named ConvertTo-Json or Write-Output in the profile shadows the bare
-    name, and clearing $PSDefaultParameterValues does not cover a command override. A wrapper
-    that reshapes the output produces a frame the reader cannot parse, which costs a standalone
-    update its only proxy."""
+    """Call the Microsoft.PowerShell.Utility cmdlets by full name; a profile can shadow the bare names."""
     from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
 
     assert probe.count("Microsoft.PowerShell.Utility\\Write-Output") == 2
     assert "Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress" in probe
-    # No bare invocation left to be shadowed.
     assert "; Write-Output " not in probe
     assert "| ConvertTo-Json" not in probe
 
 
 def test_a_vscode_terminal_still_reads_its_own_host_profile():
-    """TERM_PROGRAM=vscode is set by EVERY VS Code integrated terminal, not only the PowerShell
-    extension's host. Substituting Microsoft.VSCode_profile.ps1 for the current-host profile
-    therefore missed the proxy a plain pwsh terminal in VS Code actually has, while applying an
-    unrelated one. Both are read, current-host last."""
+    """TERM_PROGRAM=vscode is set in every VS Code terminal, so read the current-host profile as well."""
     from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
 
     assert "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost; " in probe
     assert "$__unslothProfiles += $PROFILE.AllUsersCurrentHost; " in probe
-    # The named host profile is an addition, never an else-branch replacement.
     assert "} else { " not in probe.split("$out = @{}")[0]
     assert probe.index("Split-Path -Parent $PROFILE.CurrentUserCurrentHost") < probe.index(
         "$__unslothProfiles += $PROFILE.CurrentUserCurrentHost; "
@@ -1277,7 +1141,6 @@ def test_the_probe_host_order_follows_the_console_the_user_typed_into(monkeypatc
     monkeypatch.setenv("PSModulePath", r"C:\Windows\System32\WindowsPowerShell\v1.0\Modules")
     assert studio_cmd._profile_probe_hosts()[0] == "powershell.exe"
 
-    # A host that is not installed is not asked.
     monkeypatch.setattr(
         studio_cmd.shutil, "which", lambda name: None if name == "pwsh.exe" else "x"
     )
@@ -1313,13 +1176,11 @@ def test_a_stale_alias_does_not_block_a_current_uv_on_path(tmp_path):
     script = (
         "$UvMinVersion = '0.9.0'\n"
         f"{gate}\n"
-        # Two candidates: a stale alias target first, a current one second.
         "function Get-UvExecutableCandidates { @('stale', 'current') }\n"
         "function Test-UvCandidateVersionShim { }\n"
         "Write-Output ([string](Test-UvVersionOk))\n"
         "Write-Output $script:UvExe\n"
     )
-    # The candidates are invoked as executables, so stand in two shims that answer --version.
     stale = tmp_path / "stale.ps1"
     stale.write_text("Write-Output 'uv 0.4.30'", encoding = "utf-8")
     current = tmp_path / "current.ps1"
@@ -1328,8 +1189,6 @@ def test_a_stale_alias_does_not_block_a_current_uv_on_path(tmp_path):
         "@('stale', 'current')",
         f"@('{stale.as_posix()}', '{current.as_posix()}')",
     )
-    # The uv gate is judged by the first and last lines of stdout, and an interpreter crash leaves none, which the
-    # assertion would report as the gate stopping at the stale alias.
     result = run_pwsh(
         [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output = True,
@@ -1376,11 +1235,8 @@ def test_the_parity_job_installs_what_this_suite_imports():
 
 
 def test_the_probe_output_is_decoded_lossily():
-    """The profile ran before the record was printed and may have said anything in any
-    encoding. `text=True` alone decodes with the locale codec and STRICT errors, so a UTF-8
-    banner on an ANSI console raised UnicodeDecodeError -- neither OSError nor
-    SubprocessError, so it escaped the handler and took the update down before the
-    -NoProfile child ever ran."""
+    """Decode probe output leniently; a UTF-8 profile banner on an ANSI console raises
+    UnicodeDecodeError."""
     import ast
 
     tree = ast.parse(STUDIO_COMMAND.read_text(encoding = "utf-8"))
@@ -1406,8 +1262,7 @@ def test_the_probe_output_is_decoded_lossily():
 
 
 def test_a_non_ascii_banner_does_not_cost_the_proxy(monkeypatch):
-    # The decode is the parent's job, so this drives the extractor with the mangled text the lossy decode produces: the
-    # record is ASCII and has to survive whatever precedes it.
+    # Drive the extractor with lossy-decoded text: the ASCII record must survive what precedes it.
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
@@ -1423,10 +1278,8 @@ def test_a_non_ascii_banner_does_not_cost_the_proxy(monkeypatch):
 
 
 def test_the_setup_child_does_not_hand_the_proxy_secret_to_its_descendants():
-    """A profile proxy is routinely an authenticated URI (http://user:secret@proxy). The prelude
-    copies it into $PSDefaultParameterValues, which is NOT inherited -- but the environment
-    variable it read from is, so every native process setup.ps1 starts, and everything they
-    start in turn, saw the plaintext credential. It is removed the moment it has been read."""
+    """The proxy env var is inherited by every descendant process, so it is removed as soon as it is
+    read."""
     from unsloth_cli.commands.studio import _PS_PROXY_DEFAULTS_PRELUDE
 
     prelude = _PS_PROXY_DEFAULTS_PRELUDE
@@ -1434,40 +1287,29 @@ def test_the_setup_child_does_not_hand_the_proxy_secret_to_its_descendants():
     removed_at = prelude.find("Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS")
     assert read_at >= 0, "the prelude must still read the handoff"
     assert removed_at > read_at, "and must clear it straight after reading it"
-    # Before anything that could start a child process -- i.e. before the defaults are applied, which is the last thing
-    # the prelude does.
+    # Before the defaults are applied, the last thing the prelude does before a child can start.
     assert removed_at < prelude.find("$PSDefaultParameterValues[$_.Name]")
 
 
 def test_the_probe_adds_the_callers_host_profile_beside_the_current_host_one(monkeypatch):
-    """pwsh.exe and powershell.exe run the CONSOLEHOST profile, so a caller in the VS Code
-    Integrated Console -- whose defaults live in Microsoft.VSCode_profile.ps1 -- got no proxy
-    and the -NoProfile child could not download.
-
-    Added beside the current-host profile, never in place of it: TERM_PROGRAM=vscode is set by
-    every VS Code integrated terminal, so substitution robbed a plain pwsh terminal there of the
-    only profile it has. Named hosts only, since a directory-wide sweep of
-    Microsoft.*_profile.ps1 ran profiles for hosts nobody was using."""
+    """Also read the caller's host profile beside the current-host one, never instead of it."""
     from unsloth_cli.commands import studio as studio_cmd
 
     probe = studio_cmd._PS_PROXY_PROBE
     assert "$env:_UNSLOTH_PS_HOST_PROFILE" in probe
     assert "Microsoft.*_profile.ps1" not in probe, "no directory-wide sourcing"
-    # The two the caller's session would have loaded, named explicitly...
     assert "$PROFILE.CurrentUserAllHosts" in probe
     assert "CurrentUserCurrentHost" in probe
     assert "Split-Path -Parent $PROFILE.CurrentUserCurrentHost" in probe
-    # ...and before the table is read, or it would snapshot the wrong defaults.
+    # Before the table is read, or it would snapshot the wrong defaults.
     assert probe.find("_UNSLOTH_PS_HOST_PROFILE") < probe.find("$out = @{}")
-    # Unconditional and last, so the profile the probe's own host would have loaded is still there and still gets the
-    # final word on a key both of them set.
+    # Unconditional and last, so the probe host's own profile gets the final word on shared keys.
     for scope in ("AllUsersCurrentHost", "CurrentUserCurrentHost"):
         named = probe.find(f"Split-Path -Parent $PROFILE.{scope}")
         plain = probe.find(f"$__unslothProfiles += $PROFILE.{scope};")
         assert named >= 0, f"the caller's own host profile is named beside {scope}"
         assert plain > named, f"{scope} is kept and runs after it"
 
-    # The caller's host is named from the environment it announces itself in.
     monkeypatch.setenv("TERM_PROGRAM", "vscode")
     assert studio_cmd._profile_probe_env()["_UNSLOTH_PS_HOST_PROFILE"] == (
         "Microsoft.VSCode_profile.ps1"
@@ -1480,10 +1322,7 @@ def test_the_probe_adds_the_callers_host_profile_beside_the_current_host_one(mon
 
 
 def test_the_probe_loads_the_all_users_profiles_in_startup_order():
-    """A machine-managed proxy lives in an all-users profile on a domain-joined box and the
-    user's own profile never mentions it, so sourcing only the current-user pair reported no
-    proxy on exactly the locked-down host that has one. Order is part of the fix: the user's
-    profile is entitled to override the machine's, which it only does if it runs last."""
+    """Load all-users profiles first so the user's profile runs last and can override the machine's."""
     from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
 
     assert "$PROFILE.AllUsersAllHosts" in probe
@@ -1494,20 +1333,15 @@ def test_the_probe_loads_the_all_users_profiles_in_startup_order():
         < probe.find("$PROFILE.CurrentUserAllHosts")
         < probe.find("$PROFILE.CurrentUserCurrentHost")
     )
-    # Still the caller's own host, never a directory sweep, for the all-users pair too.
     assert "Microsoft.*_profile.ps1" not in probe
     assert probe.count("Join-Path (Split-Path -Parent") == 2
 
 
 def test_the_probe_clears_profile_defaults_before_it_serializes():
-    """The profile's $PSDefaultParameterValues aims at every cmdlet in the probe, including the
-    two that emit the record. ConvertTo-Json:AsArray = $true is a legitimate setting and it
-    turns the payload into a JSON array, which the reader rejects for not being a dictionary --
-    dropping the caller's proxy on the host that needed it. $out already holds copies."""
+    """Clear profile defaults before serializing; a ConvertTo-Json:AsArray default breaks the reader."""
     from unsloth_cli.commands.studio import _PS_PROXY_PROBE as probe
 
     assert "$PSDefaultParameterValues = @{}" in probe
-    # After the table has been read, and before anything is written.
     assert (
         probe.find("$out = @{}")
         < probe.find("$PSDefaultParameterValues = @{}")
@@ -1516,10 +1350,7 @@ def test_the_probe_clears_profile_defaults_before_it_serializes():
 
 
 def test_a_script_block_proxy_default_is_evaluated_not_dropped():
-    """{ [uri]$env:CORP_PROXY } is PowerShell's supported form for a dynamic default and
-    Invoke-WebRequest evaluates it per call, so the caller downloads fine while the handoff
-    silently omitted it. Both serializers evaluate the block and carry the RESULT -- executable
-    code must not cross into the child."""
+    """Evaluate a scriptblock proxy default and pass the result; code must not cross into the child."""
     from unsloth_cli.commands.studio import _PS_PROXY_PROBE
 
     assert "[scriptblock]" in _PS_PROXY_PROBE
@@ -1533,23 +1364,19 @@ def test_a_script_block_proxy_default_is_evaluated_not_dropped():
 
 
 def test_an_installer_launch_with_no_proxy_still_skips_the_probe(monkeypatch):
-    """The ABSENCE of the handoff is how a standalone update is recognised. install.ps1 used to
-    remove the variable when it had no proxy, so an installer launch -- including one started
-    with -NoProfile or by the desktop app -- went off and reloaded the very profiles it had
-    deliberately discarded, reapplying a stale proxy during setup."""
+    """A missing handoff variable marks a standalone update; the installer must not clear it."""
     installer = INSTALL_PS1.read_text(encoding = "utf-8")
     handoff = installer[
         installer.index("$previousProxyHandoff = $env:_UNSLOTH_PS_PROXY_DEFAULTS") :
     ]
-    # The publish moved inside the try, so the slice runs to the child invocation. It must
-    # still stop before the finally, which legitimately does remove the variable.
+    # The slice must stop before the finally, which legitimately removes the variable.
     handoff = handoff[: handoff.index("        Invoke-ManagedUnslothCli -Python $VenvPython")]
     assert (
         "Remove-Item Env:_UNSLOTH_PS_PROXY_DEFAULTS" not in handoff
     ), "the installer must publish an explicit empty handoff, not remove the variable"
     assert "'{}'" in handoff
 
-    # And the CLI keys on presence, so "{}" means "the installer looked, there is none".
+    # The CLI keys on presence, so "{}" means the installer looked and found none.
     source = STUDIO_COMMAND.read_text(encoding = "utf-8")
     assert 'os.environ.get("_UNSLOTH_PS_PROXY_DEFAULTS") is None' in source
 
@@ -1564,8 +1391,6 @@ def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
     asked: list[float] = []
 
     def _hang(argv, **kwargs):
-        # A profile that really does hang burns the timeout it was given, which is what makes a per-host budget cost
-        # twice as much wall clock as the helper documents.
         asked.append(kwargs["timeout"])
         time.sleep(kwargs["timeout"])
         raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
@@ -1581,12 +1406,7 @@ def test_the_profile_probe_shares_one_timeout_across_hosts(monkeypatch):
 
 
 def test_the_probe_child_runs_with_no_profile(monkeypatch):
-    """Without -NoProfile the probe host loads its OWN ConsoleHost profile first: an unrelated
-    profile that prints, rewrites $PSDefaultParameterValues or calls exit got in the way, and it
-    is still not the profile a VS Code caller keeps its defaults in. With -NoProfile nothing has
-    run, and the profiles the caller's session would have loaded ($PROFILE.CurrentUserAllHosts
-    plus its host profile) are dot-sourced by name -- $PROFILE is fully populated under
-    -NoProfile because the paths are computed, not loaded."""
+    """Probe with -NoProfile so an unrelated profile cannot print or exit; dot-source the wanted ones."""
     from unsloth_cli.commands import studio as studio_cmd
 
     seen: list[list[str]] = []
@@ -1600,21 +1420,15 @@ def test_the_probe_child_runs_with_no_profile(monkeypatch):
 
     assert seen, "the probe must have been attempted"
     assert "-NoProfile" in seen[0]
-    # Ahead of -Command, like every other PowerShell child in the tree spells it.
     assert seen[0].index("-NoProfile") < seen[0].index("-Command")
 
 
 def test_the_proxy_handoff_does_not_outlive_the_installer():
-    """Under the documented `irm ... | iex` path $script: IS the caller's session scope, so a
-    serialized authenticated proxy stayed readable in that console after the installer
-    returned. Cleanup near the setup child covers one exit out of dozens -- -ShortcutsOnly, an
-    argument error, lock contention, a failed dependency install all return earlier -- so the
-    value is held in a FUNCTION-local, which dies with the frame on every path."""
+    """Keep the proxy in a function-local, not $script:, so it dies on every exit path."""
     installer = INSTALL_PS1.read_text(encoding = "utf-8")
 
     assert "$script:UnslothProxyHandoffJson" not in installer
     assert "\n    $UnslothProxyHandoffJson =\n" in installer
-    # Still dropped explicitly once the child it exists for has run.
     cleared = "$UnslothProxyHandoffJson = $null"
     assert cleared in installer
     child = installer.index("Invoke-ManagedUnslothCli -Python $VenvPython -Arguments $studioArgs")
@@ -1665,7 +1479,7 @@ def test_disjoint_wildcard_families_from_two_hosts_both_survive(monkeypatch):
         ("invoke-web*", "invoke-restmethod", False),
         ("start-bits*", "invoke-web*", False),
         ("*-webrequest", "*-restmethod", False),
-        # A character class is assumed to overlap rather than decided: the conservative answer.
+        # A character class is conservatively assumed to overlap.
         ("invoke-[wr]*", "start-bits*", True),
     ],
 )
@@ -1705,7 +1519,6 @@ def test_the_windows_powershell_probe_is_given_its_own_modules_first(monkeypatch
 
     entries = _module_path(env).split(";")
     assert entries[0] == _WINDOWS_PS_MODULES
-    # Reordered, not pruned: everything the caller had is still reachable, just second.
     assert entries[1:] == _PS7_MODULE_PATH.split(";")[:2]
     assert entries.count(_WINDOWS_PS_MODULES) == 1
 
@@ -1750,7 +1563,6 @@ def test_the_module_path_is_untouched_off_windows(monkeypatch):
 
 
 def test_each_probed_host_gets_its_own_module_path(monkeypatch):
-    # The wiring: the repair is per host, so the env has to be built from the host being run.
     from unsloth_cli.commands import studio as studio_cmd
 
     class _Result:
