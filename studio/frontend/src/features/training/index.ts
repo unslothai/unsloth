@@ -35,6 +35,8 @@ export {
   useTrainingUnloadGuard,
 } from "./hooks/use-training-unload-guard";
 export { useMaxStepsEpochsToggle } from "./hooks/use-max-steps-epochs-toggle";
+export { useDrafterCapability } from "./hooks/use-drafter-capability";
+export { drafterEligible } from "./lib/drafter-config";
 export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export {
