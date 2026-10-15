@@ -10,28 +10,22 @@ import type { DrafterCapability } from "../src/features/training/types/api.ts";
 import type { TrainingConfigState } from "../src/features/training/types/config.ts";
 
 registerBundlerResolver();
-const { buildTrainingStartPayload } = await import(
-  "../src/features/training/api/mappers.ts"
-);
-const { initialTrainingConfigState } = await import(
-  "../src/features/training/stores/training-config-policy.ts"
-);
+const { buildTrainingStartPayload } =
+  await import("../src/features/training/api/mappers.ts");
+const { initialTrainingConfigState } =
+  await import("../src/features/training/stores/training-config-policy.ts");
 const {
   TRAINING_CONFIG_PERSISTENCE_VERSION,
   migrateTrainingConfig,
   partializeTrainingConfig,
-} = await import(
-  "../src/features/training/stores/training-config-persistence.ts"
-);
-const { parseYamlConfig, serializeConfigToYaml } = await import(
-  "../src/features/training/lib/yaml-config.ts"
-);
-const { drafterStateFrom } = await import(
-  "../src/features/training/lib/drafter-config.ts"
-);
-const { phaseColors } = await import(
-  "../src/features/studio/sections/progress-section-lib.ts"
-);
+} =
+  await import("../src/features/training/stores/training-config-persistence.ts");
+const { parseYamlConfig, serializeConfigToYaml } =
+  await import("../src/features/training/lib/yaml-config.ts");
+const { drafterStateFrom } =
+  await import("../src/features/training/lib/drafter-config.ts");
+const { phaseColors } =
+  await import("../src/features/studio/sections/progress-section-lib.ts");
 
 const MODEL = "unsloth/Qwen3-1.7B";
 
@@ -76,7 +70,10 @@ test("drafter training is off by default and the payload has no drafter key", ()
 });
 
 test("a capability check still pending or for another model does not drop a ticked drafter", () => {
-  for (const patch of [{ ...ON }, { ...ON, drafterCapability: capability({ model_name: "other/model" }) }]) {
+  for (const patch of [
+    { ...ON },
+    { ...ON, drafterCapability: capability({ model_name: "other/model" }) },
+  ]) {
     const payload = buildTrainingStartPayload(config(patch), null);
     assert.equal(Object.hasOwn(payload, "drafter"), true);
   }
@@ -119,7 +116,12 @@ test("settings the request cannot carry leave the payload exactly as without the
     assert.equal(Object.hasOwn(media, "drafter"), false);
   }
   const text = buildTrainingStartPayload(
-    config({ ...ON, drafterCapability: capability(), isVisionModel: true, isDatasetImage: false }),
+    config({
+      ...ON,
+      drafterCapability: capability(),
+      isVisionModel: true,
+      isDatasetImage: false,
+    }),
     null,
   );
   assert.equal(Object.hasOwn(text, "drafter"), true);
