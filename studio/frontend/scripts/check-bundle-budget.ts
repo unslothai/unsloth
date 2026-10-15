@@ -154,8 +154,12 @@ export const BUDGET = {
   // transfer (6,778,788 -> 6,780,604 B raw, 2,038,337 -> 2,038,856 B transfer against 62e063618, one machine
   // and build, Node 24, chunk count unchanged at 95). Main already measured 3,656 B raw / 1,180 B transfer over
   // the previous limits there, so they are set to the measured build.
-  transferBytes: 2_038_856,
-  rawBytes: 6_780_604,
+  // The Run settings Load in 4-bit switch (#13841: the per-model field threaded through every chat load path and
+  // the resident-config check) adds 1,441 B raw / 497 B transfer, inline in the eager chat chunk (6,780,553 ->
+  // 6,781,994 B raw, 2,038,848 -> 2,039,345 B transfer against 90ac3b773, one machine and build, Node 24, chunk
+  // count unchanged at 95). Raised by that growth.
+  transferBytes: 2_039_353,
+  rawBytes: 6_782_045,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
