@@ -17,7 +17,9 @@ import pytest
 import torch
 
 _ROOT = Path(__file__).resolve().parents[1]
-_MODULE_PATH = Path(os.environ.get("UNSLOTH_FSDP2_QLORA_PATH", _ROOT / "unsloth" / "models" / "fsdp2_qlora.py"))
+_MODULE_PATH = Path(
+    os.environ.get("UNSLOTH_FSDP2_QLORA_PATH", _ROOT / "unsloth" / "models" / "fsdp2_qlora.py")
+)
 
 
 def _load_module():
@@ -145,6 +147,7 @@ def test_float_storage_only_when_the_wrap_does_not_upcast():
     assert m.float_storage_survives_wrap(_prepare_that_keeps_dtypes) is True
     # The installed accelerate's own function is read through any wrapper.
     from accelerate.utils.fsdp_utils import fsdp2_prepare_model
+
     assert m.float_storage_survives_wrap() is m.float_storage_survives_wrap(fsdp2_prepare_model)
 
 
@@ -198,7 +201,6 @@ def test_anchor_check_refuses_unknown_fsdp_param():
 def test_anchors_present_on_installed_torch():
     m = _load_module()
     from torch.distributed.fsdp._fully_shard._fsdp_param import FSDPParam
-
     assert m._check_fsdp_param_anchors(FSDPParam) == []
 
 
@@ -249,7 +251,9 @@ def _worker(rank, world_size, port, case, queue):
         if case.startswith("unpatched"):
             info = {"patched": False}
         else:
-            info = m.prepare_fsdp2_qlora(model, torch.bfloat16 if case == "uint8_converted" else None)
+            info = m.prepare_fsdp2_qlora(
+                model, torch.bfloat16 if case == "uint8_converted" else None
+            )
             if case == "uint8_converted":
                 assert info["converted"] == 4, info
         # The dtype each all-gather moves its inputs in, as foreach_all_gather decided it.
@@ -296,9 +300,7 @@ def _worker(rank, world_size, port, case, queue):
             layer.down.register_forward_pre_hook(hook)
         out = model(x)
         out.float().sum().backward()
-        grad_ok = all(
-            p.grad is not None for n, p in model.named_parameters() if "adapter" in n
-        )
+        grad_ok = all(p.grad is not None for n, p in model.named_parameters() if "adapter" in n)
         sharded_has_qs = all(
             getattr(p, "quant_state", None) is not None
             for n, p in model.named_parameters()
@@ -318,7 +320,6 @@ def _worker(rank, world_size, port, case, queue):
         dist.destroy_process_group()
     except BaseException as error:
         import traceback
-
         queue.put((rank, {"error": f"{type(error).__name__}: {error}\n{traceback.format_exc()}"}))
 
 
@@ -344,7 +345,9 @@ def _run(case, world_size = 2):
 
 
 _RUN_DIST = pytest.mark.skipif(
-    sys.platform == "win32" or not torch.distributed.is_available() or not torch.distributed.is_gloo_available(),
+    sys.platform == "win32"
+    or not torch.distributed.is_available()
+    or not torch.distributed.is_gloo_available(),
     reason = "needs torch.distributed with gloo",
 )
 
