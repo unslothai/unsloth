@@ -167,8 +167,12 @@ export const BUDGET = {
   // the resident-config check) adds 1,448 B raw / 433 B transfer, inline in the eager chat chunk (6,787,367 ->
   // 6,788,815 B raw, 2,040,805 -> 2,041,238 B transfer against 4494fa58c, one machine and build, Node 24, chunk
   // count unchanged at 95). Raised by that growth.
-  transferBytes: 2_041_433,
-  rawBytes: 6_788_948,
+  // The Train tab's Preview tokens button, its dialog and strings (#13850) add 2,233 B raw / 858 B transfer
+  // (6,788,764 -> 6,790,997 B raw, 2,041,243 -> 2,042,101 B transfer against 5e5511027, one machine and build,
+  // Node 24, chunk count unchanged at 95). Lazy-loading the dialog cost more (2.7 KB transfer) and a 96th
+  // startup chunk, so it is imported statically and the budget raised by that growth.
+  transferBytes: 2_042_291,
+  rawBytes: 6_791_181,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
