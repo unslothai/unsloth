@@ -32324,10 +32324,8 @@ class LlamaCppBackend:
                             "Exact concurrency: added %s, which the paged KV pool requires.",
                             " ".join(_exact_added),
                         )
-                # Since unslothai/llama.cpp#197 a server without --preempt-ram parks nothing, so
-                # Studio names the budget.
-                # It must hold every park's target AND draft state: an overflowing park is re-
-                # prefilled, not exact.
+                # Since unslothai/llama.cpp#197 nothing parks without --preempt-ram; the budget must
+                # hold target AND draft state, else the park is re-prefilled, not exact.
                 _park_supported = bool(server_caps.get("supports_preempt_ram"))
                 _park_owned = _park_supported and not _child_parking_stands_down(_park_supported)
                 _exact_kv_bytes, _exact_draft_bytes = 0, 0
