@@ -12,6 +12,7 @@ pre-execution gate already admits up to the reply floor.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -40,12 +41,23 @@ _MCP_TOOL = "mcp__2e0d1d7fd32e4799__execute_code"
 _OUTPUT = "print(1)\n" * 170  # 1530 chars, the size from the report
 
 
+def _tool(name):
+    return {**_WEB_SEARCH_TOOL, "function": {**_WEB_SEARCH_TOOL["function"], "name": name}}
+
+
+def _named_call(name):
+    return _call("run it").replace('"web_search"', json.dumps(name))
+
+
 def _run_one_call(
     monkeypatch,
     *,
     context_overflow,
     max_tokens = _CTX,
     messages = None,
+    tool_name = "web_search",
+    vision = False,
+    count = lambda *_a, **_k: _SPENT,
 ):
     received: list[object] = []
     results: list[str] = []
@@ -61,17 +73,19 @@ def _run_one_call(
 
     backend = _make_backend(
         monkeypatch,
-        [[_call("run it"), _done()], [_sse({"content": "Done."}), _done()]],
+        [[_named_call(tool_name), _done()], [_sse({"content": "Done."}), _done()]],
         [],
     )
     backend._effective_context_length = _CTX
-    monkeypatch.setattr(backend, "count_chat_tokens", lambda *_a, **_k: _SPENT)
+    backend._is_vision = vision
+    backend._mmproj_accepts_image = vision
+    monkeypatch.setattr(backend, "count_chat_tokens", count)
     monkeypatch.setattr("core.inference.tools.execute_tool", _execute)
 
     events = list(
         backend.generate_chat_completion_with_tools(
             messages = messages or [{"role": "user", "content": "Run the script"}],
-            tools = [_WEB_SEARCH_TOOL],
+            tools = [_WEB_SEARCH_TOOL, _tool(_MCP_TOOL)],
             max_tool_iterations = 4,
             max_tokens = max_tokens,
             context_overflow = context_overflow,
@@ -116,3 +130,26 @@ def test_compaction_off_keeps_the_reserve_while_media_is_unpriced(monkeypatch):
     )
 
     assert budget == 0
+
+
+def test_compaction_off_keeps_the_reserve_without_an_exact_count(monkeypatch):
+    # The fallback estimate undercounts dense text; the quarter reserve absorbs that.
+    def _fails(*_a, **_k):
+        raise RuntimeError("tokenizer unavailable")
+
+    off, _ = _run_one_call(monkeypatch, context_overflow = None, count = _fails)
+    on, _ = _run_one_call(monkeypatch, context_overflow = "truncate_oldest", count = _fails)
+
+    assert off == on
+
+
+def test_compaction_off_reserves_the_images_an_mcp_result_can_add(monkeypatch):
+    from core.inference.llama_cpp import _FALLBACK_IMAGE_TOKENS
+    from core.inference.mcp_images import MAX_MODEL_IMAGES
+
+    reserve = _reply_floor(_CTX) + MAX_MODEL_IMAGES * _FALLBACK_IMAGE_TOKENS
+    vision, _ = _run_one_call(monkeypatch, context_overflow = None, tool_name = _MCP_TOOL, vision = True)
+    text_only, _ = _run_one_call(monkeypatch, context_overflow = None, tool_name = _MCP_TOOL)
+
+    assert vision == int((_CTX - reserve) * 0.99) - _SPENT
+    assert text_only == int((_CTX - _reply_floor(_CTX)) * 0.99) - _SPENT

@@ -514,6 +514,8 @@ from core.inference.repetition_guard import is_repetition_dominated
 from core.inference.mcp_images import (
     DETACHED_IMAGE_TURN_TEXT as MCP_DETACHED_IMAGE_TURN_TEXT,
     IMAGE_TURN_TEXT as MCP_IMAGE_TURN_TEXT,
+    MAX_MODEL_IMAGES as MCP_MAX_MODEL_IMAGES,
+    MCP_TOOL_PREFIX,
     append_image_turn as append_mcp_image_turn,
     mentions_images as mcp_images_mentioned_in,
 )
@@ -2419,6 +2421,19 @@ _CONTINUE_TRUNCATED_ANSWER_STATUS = "Continuing the answer..."
 # cut, which costs a call and teaches the model nothing. Sized to leave a short line of real
 # output rather than to guarantee a useful one; the point is to catch the collapse to zero.
 _MIN_USEFUL_RESULT_TOKENS = 64
+# llama.cpp's default per-image embedding cap plus mtmd's delimiters, when the admission figure is out of reach.
+_FALLBACK_IMAGE_TOKENS = 4096 + 128
+
+
+def _mcp_image_tokens(backend) -> int:
+    """Per-image KV allowance for the loaded projector, the one admission charges."""
+    try:
+        from routes.inference import _openai_llama_admission_image_tokens  # noqa: PLC0415
+        return int(_openai_llama_admission_image_tokens(backend))
+    except Exception:  # noqa: BLE001 -- sizing must never break a tool call
+        return _FALLBACK_IMAGE_TOKENS
+
+
 # How many times one tool may return a byte-identical result before the model is told the
 # call is not going to change. Follows OpenClaw's tool-loop detection, which keys on the
 # RESULT rather than the arguments and never intervenes while results are still changing:
@@ -41691,18 +41706,36 @@ class LlamaCppBackend:
                                     # Auto-compaction off: nothing fits the next prompt to
                                     # `prompt_budget`, whose quarter-window reply reserve
                                     # emptied every result from 75% of the window on (#13784).
-                                    # Price to the reply floor the admission gate uses instead.
-                                    # Not with media in the thread: `_spent` leaves it out, and
-                                    # the quarter reserve is what covers it.
-                                    if context_overflow != "truncate_oldest" and (
-                                        messages_without_unpriced_media(conversation)
+                                    # Price to the reply floor the admission gate uses instead,
+                                    # only on an exact count of a thread with no unpriced media:
+                                    # the quarter reserve is what covers either error.
+                                    if (
+                                        context_overflow != "truncate_oldest"
+                                        and (
+                                            _exact_prompt_tokens is not None
+                                            or (_compact_after_execution and _compacted_turn_tokens)
+                                        )
+                                        and messages_without_unpriced_media(conversation)
                                         is conversation
                                     ):
-                                        _result_max_tokens = min(
+                                        _ctx = self._effective_context_length
+                                        _requested = (
                                             _iteration_max_tokens
                                             if _iteration_max_tokens and _iteration_max_tokens > 0
-                                            else self._effective_context_length,
-                                            _reply_floor(self._effective_context_length),
+                                            else _ctx
+                                        )
+                                        _reserve = min(_requested, _reply_floor(_ctx))
+                                        # Images an MCP result returns join the thread after
+                                        # this fit, unpriced.
+                                        if (
+                                            decision.tool_name.startswith(MCP_TOOL_PREFIX)
+                                            and self.is_vision
+                                        ):
+                                            _reserve += MCP_MAX_MODEL_IMAGES * _mcp_image_tokens(
+                                                self
+                                            )
+                                        _result_max_tokens = min(
+                                            _reserve, _requested, max(1, _ctx // 4)
                                         )
                                     _result_budget = tool_result_budget(
                                         self._effective_context_length,
