@@ -39,5 +39,12 @@ test("the Hub's menus take the composer + menu's shape", () => {
   assert.match(css, /\.hub-composer-menu\[data-slot\] \{\s*border-radius: 21px !important;/);
   assert.match(readSrc("features/hub/catalog/hub-option-menu.tsx"), /hub-composer-menu/);
   assert.match(popover, /hub-composer-menu/);
-  assert.match(popover, /const SEPARATOR = "mx-1 my-1 h-px bg-border\/50";/);
+  assert.match(popover, /const SEPARATOR = "mx-1 my-2 h-px bg-border\/50";/);
+});
+
+test("Reasoning draws the composer's thinking bulb", () => {
+  assert.match(popover, /<BulbIcon className="size-4 shrink-0" \/>/);
+  const shared = readSrc("features/hub/catalog/shared.tsx");
+  assert.match(shared, /capability\.key === "reasoning" \? \(\s*<BulbIcon className="size-3 shrink-0" \/>/);
+  assert.doesNotMatch(shared + popover, /BrainIcon/);
 });
