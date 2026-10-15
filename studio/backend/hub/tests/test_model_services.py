@@ -2580,7 +2580,7 @@ def _diffusion_scan(
     download_partial: bool = False,
 ):
     """One cached diffusion repo through _scan_cached_models, with the download-partial signal
-    forced off so only the pipeline-shape checks can flag the row.
+    forced to *download_partial* (off by default) so only the pipeline-shape checks can flag the row.
 
     The snapshot is materialised on disk, not just described: the pipeline-shape checks read the
     directory the row resolves to, so a revision without a real ``snapshot_path`` would report no
@@ -4439,8 +4439,22 @@ def test_hf_cache_scan_fallback_row_uses_local_model_info_alias(monkeypatch, tmp
 
 @pytest.mark.parametrize(
     "with_denoiser, download_partial, expected",
-    [(False, False, True), (True, False, False), (False, True, False), ("torn", False, False)],
-    ids = ["companion-only", "complete-pipeline", "interrupted-download", "torn-denoiser"],
+    [
+        (False, False, True),
+        (True, False, False),
+        (False, True, False),
+        ("torn", False, False),
+        ("index-only", False, False),
+        ("second-expert", False, True),
+    ],
+    ids = [
+        "companion-only",
+        "complete-pipeline",
+        "interrupted-download",
+        "torn-denoiser",
+        "index-only",
+        "second-expert-companion",
+    ],
 )
 def test_hf_cache_scan_flags_a_companion_only_pipeline(
     monkeypatch, tmp_path, with_denoiser, download_partial, expected
@@ -4470,6 +4484,15 @@ def test_hf_cache_scan_flags_a_companion_only_pipeline(
         (
             snapshot / "transformer" / "diffusion_pytorch_model-00001-of-00002.safetensors"
         ).write_bytes(b"weights")
+    elif with_denoiser == "index-only":
+        # Stopped before shard 1 landed: the index alone still says a denoiser download began.
+        (snapshot / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_text(
+            "{}", encoding = "utf-8"
+        )
+    elif with_denoiser == "second-expert":
+        # The companion prefetch skips only transformer/, so a second expert's weights still land.
+        (snapshot / "transformer_2").mkdir()
+        (snapshot / "transformer_2" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
     elif with_denoiser:
         (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"weights")
     (snapshot / "model_index.json").write_text(
@@ -4479,6 +4502,11 @@ def test_hf_cache_scan_flags_a_companion_only_pipeline(
                 "transformer": ["diffusers", "QwenImageTransformer2DModel"],
                 "vae": ["diffusers", "AutoencoderKLQwenImage"],
                 "text_encoder": ["transformers", "Qwen2_5_VLForConditionalGeneration"],
+                **(
+                    {"transformer_2": ["diffusers", "QwenImageTransformer2DModel"]}
+                    if with_denoiser == "second-expert"
+                    else {}
+                ),
             }
         ),
         encoding = "utf-8",
@@ -4504,7 +4532,7 @@ def test_hf_cache_scan_flags_a_companion_only_pipeline(
 
     assert rows
     assert all(row.companion_prefetch is expected for row in rows)
-    if expected or with_denoiser == "torn":
+    if expected or with_denoiser in ("torn", "index-only"):
         # Still partial, so no picker loads a pipeline without its denoiser.
         assert all(row.partial for row in rows)
 

@@ -1576,15 +1576,14 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
 
 
 def snapshot_denoiser_has_weights(snapshot: Optional[Path]) -> bool:
-    """Whether any weight file, whole or torn, sits under the pipeline's denoiser dirs. A companion-only prefetch never lands one; a denoiser download that stopped part way does, and stays a resumable partial. Names only, so a dangling shard symlink still counts. Best-effort: a read error reports none."""
+    """Whether a weight file or shard index, whole or torn, sits under transformer/ or unet/. A GGUF's companion prefetch lands only the config there (diffusion.py ``_base_file_downloaded``); a denoiser download that stopped part way leaves an index or a shard, and stays a partial the Hub can download again. Not the manifest's other denoiser dirs: the prefetch does fetch a ``transformer_2/``. Names only, so a dangling shard symlink still counts. Best-effort: a read error reports none."""
     if snapshot is None:
         return False
     try:
         root = Path(snapshot)
-        declared = _manifest_denoiser_components(root) or _DENOISER_DIRS
         return any(
-            entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES)
-            for name in declared
+            entry.name.lower().endswith((*_DENOISER_WEIGHT_SUFFIXES, ".index.json"))
+            for name in _DENOISER_DIRS
             if (root / name).is_dir()
             for entry in (root / name).iterdir()
         )
