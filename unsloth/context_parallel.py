@@ -161,6 +161,27 @@ def _stateful_mixers(model) -> list:
     return _iter_stateful_mixers(model) if isinstance(model, torch.nn.Module) else []
 
 
+def _positions_restart(position_ids, attention_mask) -> bool:
+    restart = position_ids[:, 1:] <= position_ids[:, :-1]
+    if isinstance(attention_mask, torch.Tensor) and attention_mask.shape == position_ids.shape:
+        # Right padding may carry any positions; only steps between real tokens count.
+        valid = attention_mask.bool()
+        restart = restart & valid[:, 1:] & valid[:, :-1]
+    return bool(restart.any())
+
+
+def _hybrid_config_blocker(model) -> Optional[str]:
+    config = getattr(model, "config", None)
+    if getattr(config, "vision_config", None) is not None:
+        # Only text buffers are sharded; image / video features would stay whole on every rank.
+        return "multimodal models"
+    text_config = getattr(config, "text_config", None) or config
+    if getattr(text_config, "output_router_logits", False):
+        # The load balancing loss is a product of per-sequence means, not a sum over shards.
+        return "the MoE router auxiliary loss (output_router_logits)"
+    return None
+
+
 def _supports_context_parallel(model, backend = "ring") -> bool:
     from .models.llama import LlamaAttention_fast_forward
 
@@ -174,6 +195,7 @@ def _supports_context_parallel(model, backend = "ring") -> bool:
         and bool(mixers)
         and all(is_ulysses_gated_delta(m) for m, _ in mixers)
         and all(type(m).__name__ in GATED_DELTA_ATTENTION_CLASSES for m in modules)
+        and _hybrid_config_blocker(model) is None
     )
 
 
@@ -273,7 +295,7 @@ class ContextParallelManager:
             and packed_seq_lengths is None
             and isinstance(position_ids, torch.Tensor)
             and position_ids.ndim == 2
-            and (position_ids[:, 1:] <= position_ids[:, :-1]).any()
+            and _positions_restart(position_ids, inputs.get("attention_mask"))
         ):
             # Restarting positions mark packed documents that attention and scans could not see.
             raise ValueError(
@@ -556,6 +578,11 @@ def patch_sft_trainer() -> None:
                 size,
             )
         _check_stateful_mixers(self.model, backend, size)
+        blocker = _hybrid_config_blocker(self.model) if _stateful_mixers(self.model) else None
+        if blocker is not None:
+            raise NotImplementedError(
+                f"Unsloth: context parallelism on Gated DeltaNet hybrids does not support {blocker}."
+            )
         if not _supports_context_parallel(self.model, backend):
             raise NotImplementedError(
                 "Unsloth: context parallelism currently supports Llama-style attention "
@@ -666,6 +693,9 @@ def patch_sft_trainer() -> None:
                 args = (args[0] // manager.size, *args[1:])
             elif kwargs.get("num_items_in_batch") is not None:
                 kwargs["num_items_in_batch"] = kwargs["num_items_in_batch"] // manager.size
+            # Without gradient checkpointing the model would build a cache for the sharded scans.
+            if hasattr(inputs, "setdefault"):
+                inputs.setdefault("use_cache", False)
         # Forward and backward both inside, so gradient checkpointing recomputes with ring attention.
         with manager.apply(inputs) if manager else contextlib.nullcontext():
             return original_training_step(self, model, inputs, *args, **kwargs)

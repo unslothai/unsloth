@@ -129,6 +129,7 @@ def test_training_step_divides_the_pre_shard_token_count_by_cp_size(monkeypatch)
             num_items_in_batch = None,
         ):
             seen.append(("train", num_items_in_batch))
+            assert inputs["use_cache"] is False
 
         def prediction_step(self, model, inputs, prediction_loss_only):
             return (None, None, None)

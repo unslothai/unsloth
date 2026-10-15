@@ -221,3 +221,28 @@ def test_ulysses_refuses_position_only_packing():
         _manager(2, 0)._prepare_inputs(inputs)
     inputs["packed_seq_lengths"] = torch.tensor([3, 3], dtype = torch.int32)
     _manager(2, 0)._prepare_inputs(inputs)
+
+
+def test_ulysses_accepts_right_padding_with_mask_derived_positions():
+    inputs = {
+        "input_ids": torch.ones(2, 6, dtype = torch.long),
+        "attention_mask": torch.tensor([[1, 1, 1, 1, 1, 1], [1, 1, 1, 0, 0, 0]]),
+        "position_ids": torch.tensor([[0, 1, 2, 3, 4, 5], [0, 1, 2, 0, 0, 0]]),
+    }
+    _manager(2, 0)._prepare_inputs(inputs)
+    # A restart between real tokens is still packing.
+    inputs["position_ids"] = torch.tensor([[0, 1, 2, 0, 1, 2], [0, 1, 2, 0, 0, 0]])
+    with pytest.raises(ValueError, match = "packed_seq_lengths"):
+        _manager(2, 0)._prepare_inputs(inputs)
+
+
+def test_hybrid_refuses_multimodal_and_router_aux_loss():
+    model = _model(KINDS[0])
+    assert cp._supports_context_parallel(model, "ulysses")
+    model.config.output_router_logits = True
+    assert "output_router_logits" in cp._hybrid_config_blocker(model)
+    assert not cp._supports_context_parallel(model, "ulysses")
+    model.config.output_router_logits = False
+    model.config.vision_config = {"model_type": "qwen3_5_vision"}
+    assert cp._hybrid_config_blocker(model) == "multimodal models"
+    assert not cp._supports_context_parallel(model, "ulysses")
