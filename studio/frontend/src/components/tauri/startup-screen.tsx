@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DiagnosticsCopyActions } from "@/components/tauri/diagnostics-copy-actions";
+import InstallLocation from "@/components/tauri/install-location";
 import { LogDetails } from "@/components/tauri/log-details";
 import {
   installProgressMessage,
@@ -79,6 +80,7 @@ function CheckingContent() {
 }
 
 function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
+  const [starting, setStarting] = useState(false);
   return (
     <div className="flex h-full flex-col items-center">
       <div className="flex flex-1 flex-col items-center justify-center">
@@ -91,9 +93,16 @@ function NotInstalledContent({ onInstall }: { onInstall: () => void }) {
         >
           To install Unsloth, click Get Started.
         </p>
-        <Button size="hero" onClick={onInstall}>
+        <Button
+          size="hero"
+          onClick={() => {
+            setStarting(true);
+            onInstall();
+          }}
+        >
           Get Started
         </Button>
+        <InstallLocation disabled={starting} />
       </div>
     </div>
   );
