@@ -584,21 +584,28 @@ export function installPageAgent(): PageAgent {
         position: "absolute", left: "-14px", top: "-14px", width: "28px", height: "28px", "box-sizing": "border-box",
         "border-radius": "50%", border: "2px solid", opacity: "0",
       });
-      // Hugeicons cursor-02 (stroke rounded), filled so it reads on any page; its tip is at (3, 3).
+      // Hugeicons cursor-02, its corners rounded further by a round-joined stroke of the fill (white
+      // outline drawn wider underneath), then scaled back to size about its tip at (3, 3). The rounded
+      // tip ends up 1.25px short of (0, 0), hence the offset.
       const arrow = styled(document.createElementNS(SVG, "svg"), {
-        position: "absolute", left: "-3px", top: "-3px", width: "24px", height: "24px", overflow: "visible",
+        position: "absolute", left: "-1.25px", top: "-1.25px", width: "24px", height: "24px", overflow: "visible",
       });
       arrow.setAttribute("viewBox", "0 0 24 24");
-      const path = document.createElementNS(SVG, "path");
-      path.setAttribute(
-        "d",
-        "M9.80282 4.62973L15.8364 6.99069C19.3164 8.35243 21.0564 9.03329 20.9987 10.1133C20.941 11.1934 19.1251 11.6886 15.4933 12.6791C14.412 12.974 13.8713 13.1215 13.4964 13.4963C13.1215 13.8712 12.9741 14.4119 12.6791 15.4933C11.6887 19.125 11.1934 20.9409 10.1134 20.9986C9.03335 21.0563 8.35249 19.3163 6.99075 15.8363L4.62979 9.80276C3.20411 6.15934 2.49127 4.33764 3.41448 3.41442C4.3377 2.49121 6.15941 3.20405 9.80282 4.62973Z",
-      );
-      path.setAttribute("fill", "#0b0b0f");
-      path.setAttribute("stroke", "#fff");
-      path.setAttribute("stroke-width", "1.5");
-      path.setAttribute("stroke-linejoin", "round");
-      arrow.append(path);
+      const shape = document.createElementNS(SVG, "g");
+      shape.setAttribute("transform", "translate(3 3) scale(.837) translate(-3 -3)");
+      for (const [color, width] of [["#fff", "6.5"], ["#0b0b0f", "3.5"]]) {
+        const path = document.createElementNS(SVG, "path");
+        path.setAttribute(
+          "d",
+          "M9.80282 4.62973L15.8364 6.99069C19.3164 8.35243 21.0564 9.03329 20.9987 10.1133C20.941 11.1934 19.1251 11.6886 15.4933 12.6791C14.412 12.974 13.8713 13.1215 13.4964 13.4963C13.1215 13.8712 12.9741 14.4119 12.6791 15.4933C11.6887 19.125 11.1934 20.9409 10.1134 20.9986C9.03335 21.0563 8.35249 19.3163 6.99075 15.8363L4.62979 9.80276C3.20411 6.15934 2.49127 4.33764 3.41448 3.41442C4.3377 2.49121 6.15941 3.20405 9.80282 4.62973Z",
+        );
+        path.setAttribute("fill", color);
+        path.setAttribute("stroke", color);
+        path.setAttribute("stroke-width", width);
+        path.setAttribute("stroke-linejoin", "round");
+        shape.append(path);
+      }
+      arrow.append(shape);
       mover.append(ring, arrow);
       root.append(mover);
       parts = { host, mover, arrow, ring, rgb: "" };
