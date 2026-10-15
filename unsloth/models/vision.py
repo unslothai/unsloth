@@ -4578,6 +4578,7 @@ class FastBaseModel:
 
         # Only a regex generated here may be widened to expert submodules below.
         _target_modules_auto_regex = False
+        _target_modules_from_explicit_list = False
         if target_modules is None or target_modules == "all-linear":
             target_modules = get_peft_regex(
                 model,
@@ -4611,16 +4612,26 @@ class FastBaseModel:
                         "finetune_(vision|language|attention|mlp) filters; adapters "
                         "attach only where both select."
                     )
-                target_modules = get_peft_regex(
-                    model,
-                    finetune_vision_layers = finetune_vision_layers,
-                    finetune_language_layers = finetune_language_layers,
-                    finetune_attention_modules = finetune_attention_modules,
-                    finetune_mlp_modules = finetune_mlp_modules,
-                    target_modules = list(target_modules),
-                    **_audio_kwargs,
-                )
+                try:
+                    target_modules = get_peft_regex(
+                        model,
+                        finetune_vision_layers = finetune_vision_layers,
+                        finetune_language_layers = finetune_language_layers,
+                        finetune_attention_modules = finetune_attention_modules,
+                        finetune_mlp_modules = finetune_mlp_modules,
+                        target_modules = list(target_modules),
+                        **_audio_kwargs,
+                    )
+                except RuntimeError:
+                    # Mixtral's [w1, w2, w3]: block_sparse_moe has no MLP tag, so Zoo matches nothing.
+                    expert_regex = None
+                    if finetune_language_layers and finetune_mlp_modules:
+                        expert_regex = native_expert_only_regex(model, target_modules)
+                    if expert_regex is None:
+                        raise
+                    target_modules = expert_regex
                 _target_modules_auto_regex = True
+                _target_modules_from_explicit_list = True
 
         if hasattr(model, "vllm_engine"):
             if (
@@ -4665,6 +4676,7 @@ class FastBaseModel:
                 target_modules,
                 _moe_module_detect,
                 auto_regex = _target_modules_auto_regex and bool(finetune_language_layers),
+                explicit_leaves = _target_modules_from_explicit_list and bool(finetune_mlp_modules),
             )
         )
         if _expert_submodule_leaves:

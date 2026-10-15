@@ -99,7 +99,7 @@ def _grouped_gemm_dX_kernel(
     n_block_range = tl.arange(0, BLOCK_SIZE_N)
     k_block_range = tl.arange(0, BLOCK_SIZE_K)
 
-    for expert_idx in range(NUM_EXPERTS, flatten = FLATTEN):
+    for expert_idx in tl.range(NUM_EXPERTS, flatten = FLATTEN):
         m_start = m_end
         m_size = tl.load(m_sizes_ptr + expert_idx).to(tl.int32)
         m_end = m_start + m_size
@@ -259,7 +259,6 @@ def _grouped_gemm_dW_kernel(
     USE_TMA_LOAD_dY: tl.constexpr = False,
     USE_TMA_LOAD_X: tl.constexpr = False,
     USE_TMA_STORE: tl.constexpr = False,
-    FLATTEN: tl.constexpr = True,
     acc_dtype: tl.constexpr = tl.float32,
 ) -> None:
     TOTAL_TOKENS = NUM_TOKENS * TOPK

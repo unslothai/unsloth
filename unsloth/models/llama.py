@@ -38,6 +38,26 @@ from ._utils import (
     set_module_gradient_checkpointing,
     switch_training_mode,
 )
+
+try:
+    from unsloth_zoo.fused_losses.cross_entropy_loss import unsloth_fsdp_unshard
+except ImportError:  # unsloth_zoo predating the helper (unsloth-zoo#1751)
+
+    @torch.compiler.disable
+    def _fsdp_unshard(module):
+        module.unshard()
+
+    def unsloth_fsdp_unshard(module):
+        if not torch.distributed.is_available() or not torch.distributed.is_initialized():
+            return
+        FSDPModule = getattr(sys.modules.get("torch.distributed.fsdp"), "FSDPModule", None)
+        if FSDPModule is None:
+            return
+        for submodule in module.modules():
+            if isinstance(submodule, FSDPModule):
+                _fsdp_unshard(submodule)
+
+
 from .loader_utils import (
     DEFAULT_DEVICE_MAP,
     OFFLOAD_EMBEDDING_AUTO,
@@ -1717,6 +1737,8 @@ def CausalLM_fast_forward(fast_forward_inference):
         hidden_states = outputs[0]
 
         bsz, q_len, hd = hidden_states.shape
+        # FSDP2 shards an untied lm_head in its own group, gathered only when lm_head is called.
+        unsloth_fsdp_unshard(self.lm_head)
         lm_head = self.lm_head.weight
         lm_head_device = lm_head.device
 

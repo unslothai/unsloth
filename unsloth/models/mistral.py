@@ -38,6 +38,7 @@ from .llama import (
     resolve_logit_transforms,
     _cache_as_legacy_tuple,
     _cached_prefill_defaults,
+    unsloth_fsdp_unshard,
 )
 from transformers.models.mistral.modeling_mistral import (
     MistralAttention,
@@ -288,6 +289,7 @@ def MistralForCausalLM_fast_forward(
     hidden_states = outputs[0]
 
     bsz, q_len, hd = hidden_states.shape
+    unsloth_fsdp_unshard(self.lm_head)
     lm_head = self.lm_head.weight
     lm_head_device = lm_head.device
 
