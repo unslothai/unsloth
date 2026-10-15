@@ -19,7 +19,7 @@ SAVE_PY = Path(__file__).resolve().parents[1] / "unsloth" / "save.py"
 @pytest.fixture(scope = "module")
 def helpers():
     tree = ast.parse(SAVE_PY.read_text(encoding = "utf-8"))
-    wanted = {"_keep_in_fp32_pattern", "_cast_state_dict_16bit"}
+    wanted = {"_cast_state_dict_16bit"}
     nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
     assert {n.name for n in nodes} == wanted
     namespace = {"re": re, "torch": torch}
@@ -73,7 +73,6 @@ def test_models_without_fp32_modules_cast_everything(helpers):
     module = torch.nn.Linear(4, 4)
     out = helpers["_cast_state_dict_16bit"](module, module.state_dict(), torch.bfloat16)
     assert all(v.dtype == torch.bfloat16 for v in out.values())
-    assert helpers["_keep_in_fp32_pattern"](module, torch.bfloat16) is None
 
 
 def test_non_strict_list_only_for_fp16(helpers):

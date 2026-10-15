@@ -1692,7 +1692,7 @@ class TestASuppliedDictIsWhatASixteenBitSaveWrites:
 
         generic = inspect.getsource(S.unsloth_generic_save)
         assert '("16bit" in save_method or is_qwen3_5_vlm) and state_dict is None' in generic
-        assert "v.to(dtype = _target_dtype) if v.is_floating_point() else v" in generic
+        assert "state_dict = _cast_state_dict_16bit(model, state_dict, _target_dtype)" in generic
         # The other writer overwrites the caller's dictionary with its own.
         assert "state_dict = OrderedDict()" in inspect.getsource(S.unsloth_save_model)
 

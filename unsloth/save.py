@@ -5580,21 +5580,16 @@ def _refuse_unsaveable_text_core(model, save_method):
             )
 
 
-def _keep_in_fp32_pattern(model, target_dtype):
-    """Names transformers keeps in fp32 when loading at `target_dtype` (MoE router biases, ...);
-    a 16-bit save must not downcast them. Collected from every submodule, as transformers does."""
+def _cast_state_dict_16bit(model, state_dict, target_dtype):
+    """Cast floating tensors to `target_dtype`, except what transformers keeps in fp32 at that dtype
+    (`_keep_in_fp32_modules_strict`, e.g. MoE router biases; `_keep_in_fp32_modules` for fp16),
+    collected from every submodule as transformers does."""
     names = set()
     for module in model.modules() if hasattr(model, "modules") else ():
         names.update(getattr(module, "_keep_in_fp32_modules_strict", None) or ())
         if target_dtype == torch.float16:
             names.update(getattr(module, "_keep_in_fp32_modules", None) or ())
-    if not names:
-        return None
-    return re.compile("|".join(re.escape(name) for name in sorted(names)))
-
-
-def _cast_state_dict_16bit(model, state_dict, target_dtype):
-    keep = _keep_in_fp32_pattern(model, target_dtype)
+    keep = re.compile("|".join(re.escape(name) for name in sorted(names))) if names else None
     return {
         k: v.to(dtype = target_dtype)
         if v.is_floating_point()

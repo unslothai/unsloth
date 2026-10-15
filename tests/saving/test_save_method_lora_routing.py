@@ -227,6 +227,7 @@ _GENERIC_SAVE_REAL_HELPERS = (
     "_is_adapter_save_method",
     "_honours_safe_serialization",
     "_refuse_unsaveable_text_core",
+    "_cast_state_dict_16bit",
 )
 _GENERIC_SAVE_STUBBED_HELPERS = frozenset(
     {
