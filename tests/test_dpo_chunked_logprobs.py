@@ -540,6 +540,15 @@ def test_stock_logps_hook_detects_overrides():
     assert not hook(UserOverride(), "concatenated_forward")
     assert hook(NoHook(), "concatenated_forward")
 
+    class MetricsOverride(Patched):
+        def get_batch_loss_metrics(self):
+            pass
+
+    both = ("get_batch_logps", "get_batch_loss_metrics")
+    assert hook(MetricsOverride(), "concatenated_forward")
+    assert not hook(MetricsOverride(), "concatenated_forward", both)
+    assert hook(Patched(), "concatenated_forward", both)
+
 
 def test_router_aux_loss_falls_back():
     ns = _helpers()

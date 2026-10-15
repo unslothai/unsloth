@@ -4696,16 +4696,25 @@ except Exception:
     unsloth_chunked_logprobs = None
 
 
-def _unsloth_stock_logps_hook(self, method):
-    """False when a subclass overrides ``get_batch_logps`` below the class defining ``method``: TRL's body would call
-    the override, the chunked path would not."""
-    owner = hook = None
+def _unsloth_stock_logps_hook(
+    self,
+    method,
+    hooks = ("get_batch_logps",),
+):
+    """False when a subclass overrides one of ``hooks`` below the class defining ``method``: TRL's body would call
+    the override (or it reads the full logits the chunked path replaces with stand-ins)."""
+    owner = None
     for klass in type(self).__mro__:
-        if owner is None and method in vars(klass):
+        if method in vars(klass):
             owner = klass
-        if hook is None and "get_batch_logps" in vars(klass):
-            hook = klass
-    return hook is None or owner is None or hook in owner.__mro__
+            break
+    if owner is None:
+        return True
+    for name in hooks:
+        hook = next((klass for klass in type(self).__mro__ if name in vars(klass)), None)
+        if hook is not None and hook not in owner.__mro__:
+            return False
+    return True
 
 
 def _unsloth_pref_chunked_head(self, model):
@@ -4716,7 +4725,9 @@ def _unsloth_pref_chunked_head(self, model):
         return None
     if getattr(self, "is_encoder_decoder", False) or getattr(self, "aux_loss_enabled", False):
         return None
-    if not _unsloth_stock_logps_hook(self, "concatenated_forward"):
+    if not _unsloth_stock_logps_hook(
+        self, "concatenated_forward", ("get_batch_logps", "get_batch_loss_metrics")
+    ):
         return None
     # TRL <= 0.25 scores labels against label_pad_token_id but nn.CrossEntropyLoss always ignores -100.
     if getattr(self, "label_pad_token_id", -100) != -100:
@@ -4976,8 +4987,15 @@ def _unsloth_dpo_chunked_head(
         reason = "encoder-decoder"
     elif getattr(self, "aux_loss_enabled", False):
         reason = "router aux loss needs the stock forward"
-    elif not _unsloth_stock_logps_hook(self, method):
-        reason = "get_batch_logps overridden"
+    elif not _unsloth_stock_logps_hook(
+        self,
+        method,
+        ("get_batch_logps",)
+        if method == "concatenated_forward"
+        else ("get_batch_logps", "get_batch_loss_metrics"),
+    ):
+        # KTO hands get_batch_loss_metrics logits stand-ins; DPO's outputs are exact.
+        reason = "get_batch_logps / get_batch_loss_metrics overridden"
     elif getattr(self, "padding_free", False):
         reason = "padding_free"
     elif getattr(self, "use_weighting", False):
