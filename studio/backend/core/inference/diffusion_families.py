@@ -18,7 +18,7 @@ import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, NamedTuple, Optional, Sequence
+from typing import Any, Mapping, NamedTuple, Optional, Sequence
 from utils.paths.path_utils import is_appledouble_metadata
 
 from .diffusion_flow_shift import flux_mu_shift
@@ -2020,8 +2020,13 @@ def local_pipeline_components_are_complete(
     *,
     excluded_components: Sequence[str] = (),
     config_only_model_components: bool = False,
+    fixed_component_folders: Optional[Mapping[str, str]] = None,
 ) -> bool:
-    """Check local component presence and known Diffusers/Transformers serialization layouts."""
+    """Check local component presence and known Diffusers/Transformers serialization layouts.
+
+    ``fixed_component_folders`` is for a loader that reads every component from a fixed folder of this root
+    (FLUX.3's assembler): each component is then checked at ``root/<folders.get(name, name)>`` and a modular spec's
+    ``pretrained_model_name_or_path`` / ``repo`` / ``subfolder`` is ignored, so the check matches what will load."""
     if filename not in {"model_index.json", "modular_model_index.json"}:
         return False
     base = Path(root).expanduser()
@@ -2051,7 +2056,9 @@ def local_pipeline_components_are_complete(
             source = spec[2] if filename == "modular_model_index.json" and len(spec) >= 3 else None
             source = source if isinstance(source, dict) else {}
             repo = source.get("pretrained_model_name_or_path") or source.get("repo")
-            if isinstance(repo, str) and repo.strip():
+            if fixed_component_folders is not None:
+                component = base / fixed_component_folders.get(name, name)
+            elif isinstance(repo, str) and repo.strip():
                 # A modular spec may load the component from another repo or folder instead.
                 repo = repo.strip()
                 subfolder = source.get("subfolder")
@@ -2681,7 +2688,20 @@ def gguf_flux2_inner_dim(path) -> Optional[int]:
 
 
 def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
-    """``inner_dim`` read from the leading bytes of a FLUX.2 GGUF, or None.
+    """``inner_dim`` from the leading bytes of a FLUX.2 GGUF, or None (see ``_gguf_header_tensors``)."""
+    tensors = _gguf_header_tensors(header)
+    return None if tensors is None else _flux2_inner_dim_from_tensors(tensors)
+
+
+def gguf_tensor_names_from_header(header: bytes) -> Optional[list[str]]:
+    """Every tensor name in the table at the start of a GGUF, or None when the prefix does not hold the whole
+    table (so a missing name is never read as absent)."""
+    tensors = _gguf_header_tensors(header)
+    return None if tensors is None else [str(t.name) for t in tensors]
+
+
+def _gguf_header_tensors(header: bytes) -> Optional[list]:
+    """The tensor table (name and dims of every tensor) read from the leading bytes of a GGUF, or None.
 
     Lets the selection-time preflight range-read a few hundred KiB over HTTP instead of pulling the
     whole multi-GB checkpoint: the tensor table it needs sits in the first ~15 KiB. Same parser as
@@ -2735,7 +2755,7 @@ def gguf_flux2_inner_dim_from_header(header: bytes) -> Optional[int]:
         # padding was never written.
         if reader.data_offset > len(header) + min(int(reader.alignment), 4096):
             return None
-        return _flux2_inner_dim_from_tensors(reader.tensors)
+        return list(reader.tensors)
     except Exception:  # noqa: BLE001 - an unreadable header is not a verdict
         return None
     finally:

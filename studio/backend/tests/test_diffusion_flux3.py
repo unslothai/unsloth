@@ -831,3 +831,92 @@ def test_the_face_carries_the_flux3_lora_loader(monkeypatch):
     del loaders.Flux3LoraLoaderMixin
     monkeypatch.setattr(f3, "_PIPELINE_CLASS", None)
     assert not hasattr(f3.flux3_pipeline_class(), "load_lora_weights")
+
+
+# ── review round 3 ───────────────────────────────────────────────────────────
+def test_local_validation_checks_the_folders_the_flux3_loader_reads(tmp_path, monkeypatch):
+    # A spec naming another source (repo / folder) is ignored by load_flux3_pipeline, which reads
+    # <root>/text_encoder, /transformer and /vae; validation must check those folders, not the named source.
+    from core.inference.diffusion import DiffusionBackend
+
+    _flux3_installed(monkeypatch)
+    base = _modular_base(tmp_path)
+    elsewhere = tmp_path / "elsewhere" / "text_encoder"
+    elsewhere.mkdir(parents = True)
+    (elsewhere / "config.json").write_text("{}")
+    (elsewhere / "model.safetensors").write_bytes(b"\0" * 16)
+    index = json.loads((base / "modular_model_index.json").read_text())
+    index["text_encoder"][2].update(pretrained_model_name_or_path = str(tmp_path / "elsewhere"))
+    (base / "modular_model_index.json").write_text(json.dumps(index))
+    for f in (base / "text_encoder").iterdir():
+        f.unlink()
+    (base / "text_encoder").rmdir()
+    with pytest.raises(FileNotFoundError, match = "no complete valid"):
+        DiffusionBackend().validate_load_request(
+            str(base), family_override = FLUX3_KLEIN_FAMILY_NAME, model_kind = "pipeline"
+        )
+    ggufs = tmp_path / "ggufs"
+    ggufs.mkdir()
+    (ggufs / "flux-3-image-klein-Q4_K_M.gguf").write_bytes(b"GGUF")
+    with pytest.raises(ValueError, match = "not a diffusers pipeline directory"):
+        DiffusionBackend().validate_load_request(
+            str(ggufs),
+            gguf_filename = "flux-3-image-klein-Q4_K_M.gguf",
+            family_override = FLUX3_KLEIN_FAMILY_NAME,
+            model_kind = "gguf",
+            base_repo = str(base),
+        )
+
+
+def test_the_variant_is_refused_before_the_resident_model_is_unloaded(tmp_path, monkeypatch):
+    # The route preflight (before it takes the GPU) reads the header, so a base checkpoint under the distilled
+    # family is refused while the current pipeline is still loaded.
+    from safetensors.torch import save_file
+    import torch
+    from core.inference.diffusion import DiffusionBackend
+
+    _flux3_installed(monkeypatch)
+    base = _modular_base(tmp_path)
+    picks = tmp_path / "picks"
+    picks.mkdir()
+    save_file({"time_in.in_layer.weight": torch.zeros(2, 2)}, str(picks / "klein-base.safetensors"))
+    save_file({"ref_time_in.in_layer.weight": torch.zeros(2, 2)}, str(picks / "klein.safetensors"))
+    be = DiffusionBackend()
+    fam = _family(FLUX3_KLEIN_FAMILY_NAME)
+    with pytest.raises(ValueError, match = "flux.3-klein-base"):
+        be.preflight_base_access(
+            str(picks),
+            fam,
+            gguf_filename = "klein-base.safetensors",
+            model_kind = "single_file",
+            base_repo = str(base),
+            allow_network = False,
+        )
+    be.preflight_base_access(
+        str(picks),
+        fam,
+        gguf_filename = "klein.safetensors",
+        model_kind = "single_file",
+        base_repo = str(base),
+        allow_network = False,
+    )
+
+
+def test_gguf_header_tensor_names(tmp_path):
+    gguf = pytest.importorskip("gguf")
+    import numpy as np
+    from core.inference.diffusion_families import gguf_tensor_names_from_header
+
+    path = tmp_path / "t.gguf"
+    writer = gguf.GGUFWriter(str(path), "flux")
+    writer.add_tensor("ref_time_in.in_layer.weight", np.zeros((4, 4), dtype = np.float32))
+    writer.add_tensor("emb_in.image.weight", np.zeros((4, 4), dtype = np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+    assert gguf_tensor_names_from_header(path.read_bytes()[:4096]) == [
+        "ref_time_in.in_layer.weight",
+        "emb_in.image.weight",
+    ]
+    assert gguf_tensor_names_from_header(b"") is None

@@ -656,6 +656,50 @@ def assert_flux2_pick_compatible(
         raise ValueError(reason)
 
 
+def _flux3_pick_tensor_names(
+    repo_id: str, filename: str, token: Optional[str], allow_network: bool
+) -> Optional[list[str]]:
+    """Tensor names of a FLUX.3 single file / GGUF pick without reading a weight: the file on disk, else a GGUF
+    header range read or the safetensors header from the Hub. None on anything unreadable."""
+    from .diffusion_families import _checkpoint_tensor_names, gguf_tensor_names_from_header
+
+    local = _local_gguf_path(repo_id, filename)
+    if local is not None:
+        return _checkpoint_tensor_names(local)
+    if not allow_network:
+        return None
+    try:
+        if filename.lower().endswith(".gguf"):
+            return gguf_tensor_names_from_header(_shared_gguf_header(repo_id, filename, token, None))
+        from huggingface_hub import HfApi
+
+        meta = HfApi().parse_safetensors_file_metadata(repo_id, filename, token = token)
+        return list(meta.tensors)
+    except Exception:  # noqa: BLE001 -- offline, gated or odd: the loader's own check still runs
+        return None
+
+
+def assert_flux3_pick_compatible(
+    fam: Any,
+    repo_id: str,
+    gguf_filename: Optional[str],
+    hf_token: Optional[str] = None,
+    allow_network: bool = True,
+) -> None:
+    """Refuse a FLUX.3 single file / GGUF of the other variant (or a BFL quantized package) before anything is
+    downloaded or unloaded: the loader's own check opens the downloaded file after the resident pipeline is gone.
+    Header only, and fails open on anything it cannot read."""
+    name = str(getattr(fam, "name", ""))
+    if not gguf_filename or not name.startswith("flux.3"):
+        return
+    from .diffusion_families import flux3_variant_mismatch_reason
+
+    names = _flux3_pick_tensor_names(repo_id, gguf_filename, normalize_token(hf_token), allow_network)
+    reason = flux3_variant_mismatch_reason(name, Path(str(gguf_filename)).name, names)
+    if reason is not None:
+        raise ValueError(reason)
+
+
 def _reset_inner_dim_cache() -> None:
     """Drop the memoised header probes. Tests only."""
     with _CACHE_LOCK:

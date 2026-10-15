@@ -40,6 +40,9 @@ FLUX3_BASE_BLOCKS = "Flux3AutoBlocks"
 # Folders a load reads. The tokenizer / processor files live in text_encoder/.
 FLUX3_COMPONENTS = ("text_encoder", "transformer", "vae")
 FLUX3_INDEX = "modular_model_index.json"
+# Where load_flux3_pipeline reads each manifest component from (the processor lives with the encoder). Fixed folders
+# of the repo, whatever source a modular spec names, so local validation checks exactly these.
+FLUX3_COMPONENT_FOLDERS = {"tokenizer": "text_encoder"}
 
 
 def is_flux3_family(fam: Any) -> bool:

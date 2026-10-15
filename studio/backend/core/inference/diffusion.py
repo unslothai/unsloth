@@ -32,7 +32,7 @@ import time
 import traceback
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from core._torchao_stub import (
     alias_torchao_fqn_to_config,
@@ -87,6 +87,7 @@ from .diffusion_families import (
 )
 from .diffusion_compat import (
     assert_flux2_pick_compatible,
+    assert_flux3_pick_compatible,
     assert_pick_is_not_speech,
     flux2_pick_mismatch,
     speech_pick_refusal,
@@ -121,6 +122,7 @@ from .diffusion_hidream import (
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_flux3 import (
     FLUX3_COMPONENTS,
+    FLUX3_COMPONENT_FOLDERS,
     FLUX3_INDEX,
     is_flux3_family,
     load_flux3_pipeline,
@@ -869,6 +871,7 @@ def _assert_local_base_is_pipeline(
     allow_modular: bool = False,
     excluded_components: Sequence[str] = (),
     config_only_model_components: bool = False,
+    fixed_component_folders: Optional[Mapping[str, str]] = None,
 ) -> None:
     """A companion ``base_repo`` fed to ``from_pretrained(base)`` (or ``config=base``) must be a
     diffusers PIPELINE directory (has ``model_index.json``). ``_is_trusted_diffusion_repo`` accepts
@@ -904,6 +907,7 @@ def _assert_local_base_is_pipeline(
             name,
             excluded_components = excluded_components,
             config_only_model_components = config_only_model_components,
+            fixed_component_folders = fixed_component_folders,
         )
         for name in indexes
     ):
@@ -3729,6 +3733,8 @@ class DiffusionBackend:
             allow_modular = is_flux3_family(fam),
             excluded_components = excluded,
             config_only_model_components = whole_file,
+            # The FLUX.3 assembler reads each component from its own folder here, never from a spec's source repo.
+            fixed_component_folders = FLUX3_COMPONENT_FOLDERS if is_flux3_family(fam) else None,
         )
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
@@ -3762,7 +3768,13 @@ class DiffusionBackend:
             if local_root.exists():
                 # FLUX.3 is a Modular Diffusers layout: its manifest is modular_model_index.json.
                 index_name = FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
-                if not local_pipeline_components_are_complete(local_root, index_name):
+                if not local_pipeline_components_are_complete(
+                    local_root,
+                    index_name,
+                    fixed_component_folders = (
+                        FLUX3_COMPONENT_FOLDERS if is_flux3_family(fam) else None
+                    ),
+                ):
                     raise FileNotFoundError(
                         f"Local pipeline directory has no complete valid {index_name}: {repo_id}"
                     )
@@ -3811,6 +3823,8 @@ class DiffusionBackend:
         # the resident pipeline was freed. Metadata only, and fails open on anything it cannot read. The UPSTREAM
         # base, not the mirror: the size tables key on vendor ids.
         assert_flux2_pick_compatible(fam, repo_id, gguf_filename, base, hf_token)
+        # FLUX.3's variant check (distilled vs base, BFL quantized packages) off the header, for the same reason.
+        assert_flux3_pick_compatible(fam, repo_id, gguf_filename, hf_token)
         # No media backend decodes a speech GGUF, and detect_family_for_pick answers from the folder name, so a csm
         # file beside a denoiser reaches this loader as one of its own. Cache-only for a load nobody asked for: this
         # probe would otherwise spend a revision HEAD, or a range request, on the one path that promised to stay off
@@ -4179,6 +4193,13 @@ class DiffusionBackend:
             # stages the base and before load_pipeline unloads the resident pipeline.
             assert_flux2_pick_compatible(
                 fam, kwargs["repo_id"], kwargs.get("gguf_filename"), base, kwargs.get("hf_token")
+            )
+            assert_flux3_pick_compatible(
+                fam,
+                kwargs["repo_id"],
+                kwargs.get("gguf_filename"),
+                kwargs.get("hf_token"),
+                allow_network = not local_files_only,
             )
             # Same verdict here, so a direct begin_load is covered too.
             assert_pick_is_not_speech(
