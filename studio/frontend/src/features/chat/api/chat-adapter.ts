@@ -1917,7 +1917,7 @@ export function messagesContainImage(messages: RunMessages): boolean {
   return false;
 }
 
-// Matched on part TYPE: an unparseable clip is still user content. Video is a file part with a video mime.
+// Matched on part TYPE: an unparsable clip is still user content. Video is a file part with a video mime.
 function isPrivateMediaPart(part: { type: string }): boolean {
   if (part.type === "audio") return true;
   return (
@@ -6982,7 +6982,7 @@ export function createOpenAIStreamAdapter(
                     releaseLiveGenerationRun(cancelId);
                   }
                   if (!generationRun) {
-                    // Null on a Stop race or an unparseable 2xx body; a bare return settles both as complete.
+                    // Null on a Stop race or an unparsable 2xx body; a bare return settles both as complete.
                     if (generationDecision === "durable") {
                       if (runSignal.aborted) {
                         throw runSignal.reason ??

@@ -1463,7 +1463,7 @@ pub(crate) fn collapse_progress_frames(text: &str) -> &str {
 }
 
 /// True for the backend's own 2xx access-log records, already in the phase and session logs.
-/// Non-2xx and unparseable records stay at INFO so failures reach tauri.log.
+/// Non-2xx and unparsable records stay at INFO so failures reach tauri.log.
 fn is_backend_access_log_line(text: &str) -> bool {
     let trimmed = text.trim_start();
     if !trimmed.starts_with('{') {

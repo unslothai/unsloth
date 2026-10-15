@@ -156,7 +156,7 @@ test("a seed reaches only the backends that read one", () => {
 test("the panel offers the seed only where the backend reads it", () => {
   const sheet = readText("../src/features/chat/chat-settings-sheet.tsx");
   assert.match(sheet, /const showSeed = modelReadsSamplingSeed\(/);
-  // type="number" reports unparseable input as "", which would silently clear the pin.
+  // type="number" reports unparsable input as "", which would silently clear the pin.
   const field = slice(sheet, "{showSeed ? (", 'aria-label="Seed"');
   const props = field
     .split("\n")
