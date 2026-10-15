@@ -511,7 +511,9 @@ def _split_sum(partial, out):
     if partial is out:
         return out
     numel = out.numel()
-    _split_sum_kernel[(triton.cdiv(numel, 1024),)](partial, out, numel, SPLIT = partial.shape[0], BLOCK = 1024)
+    _split_sum_kernel[(triton.cdiv(numel, 1024),)](
+        partial, out, numel, SPLIT = partial.shape[0], BLOCK = 1024, enable_fp_fusion = True
+    )
     return out
 
 
@@ -538,7 +540,7 @@ def _nvfp4_matmul_fwd_fused(X, packed, scale, global_scale):
             _per_split(K, split, BK),
             BLOCK_M = BM, BLOCK_N = BN, BLOCK_K = BK, GROUP_M = 8,
             SCALE_E4M3_BYTES = e4m3, INT64_OFFSETS = int64,
-            num_warps = warps, num_stages = stages,
+            num_warps = warps, num_stages = stages, enable_fp_fusion = True,
         )  # fmt: skip
         Y = _split_sum(buf, Y)
     _FUSED_CALLS["fwd"] += 1
@@ -565,7 +567,7 @@ def _nvfp4_matmul_dx_fused(grad, packed, scale, global_scale):
             _per_split(N, split, BN),
             BLOCK_M = BM, BLOCK_N = BN, BLOCK_K = BK, GROUP_M = 8,
             SCALE_E4M3_BYTES = e4m3, INT64_OFFSETS = int64,
-            num_warps = warps, num_stages = stages,
+            num_warps = warps, num_stages = stages, enable_fp_fusion = True,
         )  # fmt: skip
         dX = _split_sum(buf, dX)
     _FUSED_CALLS["bwd"] += 1
