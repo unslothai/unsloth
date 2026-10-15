@@ -1460,18 +1460,26 @@ def _all_cublas_gate(monkeypatch, tmp_path, cublas_wins):
     monkeypatch.setenv(g8.INT8_GEMM_AUTOTUNE_ENV, "1")
     default = g8._ARCH_CONFIG[(8, 0)]
     fast, slow = (1.0, 7.8) if cublas_wins else (7.8, 1.0)
-    _fake_tune_env(monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: fast, **{t: slow for t in tiles}})
+    _fake_tune_env(
+        monkeypatch, tmp_path, lambda tiles: {g8._CUBLAS: fast, **{t: slow for t in tiles}}
+    )
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(i8f, "resident_cuda_device", lambda t: torch.device("cuda", 0))
     monkeypatch.setattr(cq, "rotquant_device_config", lambda index: (128, 32, 8, 3))
     monkeypatch.setattr(g8, "_op", lambda: object())
-    monkeypatch.setattr(g8, "_eligible", lambda m: ("v2", 256, None, m.weight) if hasattr(m, "convrot_groupsize") else None)
+    monkeypatch.setattr(
+        g8,
+        "_eligible",
+        lambda m: ("v2", 256, None, m.weight) if hasattr(m, "convrot_groupsize") else None,
+    )
     return default
 
 
 @pytest.mark.parametrize("cublas_wins", [True, False])
-def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(monkeypatch, tmp_path, cublas_wins):
+def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(
+    monkeypatch, tmp_path, cublas_wins
+):
     """A100 Qwen-Image-2.1: with every bucket on cuBLAS the swapped forward is rotq_i8 + cuBLAS per Linear, which
     also locks out the QKV / SwiGLU shared-rotation fusions the kill switch runs (0.2557 vs 0.2504 s/step). The groups
     those fusions take must stay unswapped; other Linears and a fused plan keep the swap."""
