@@ -2167,3 +2167,133 @@ def test_untiled_gate_tiled_retry_starts_clean(monkeypatch):
     z = torch.zeros(1, 4, 1, 8, 8)
     out = vae.decode(z)[0]
     assert torch.equal(out, z)  # the tiled decode started from a clean causal state
+
+
+# -- PR review round 15 -----------------------------------------------------------------------------------------
+
+
+def test_regional_compiled_blocks_take_the_eager_retry():
+    """Item 4286789089: a regionally compiled VAE (compile_repeated_blocks + guard_compiled_blocks) promised the
+    scope an eager retry, but the block guard ignored the VAE-level flag, so the retry ran the same compiled blocks.
+    Every compiled guard now reads one signal (diffusion_bg_compile.force_eager)."""
+    from core.inference import diffusion_speed as S
+
+    budget = _Budget(1 << 40)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+
+    class Block(torch.nn.Module):
+        def forward(self, z):
+            calls.append("eager")
+            return z
+
+    class Vae(_VaeLike):
+        def __init__(self):
+            super().__init__(budget, [transformer, text_encoder], 1, 1)
+            self.block = Block()
+
+        def _decode(self, z, return_dict = True):
+            return (self.block(z).repeat_interleave(8, -1).repeat_interleave(8, -2),)
+
+        def decode(self, z, return_dict = True):
+            return self._decode(z, return_dict)
+
+    calls = []
+    vae = Vae().to(_CARD)
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+
+    def compiled_block(*a, **k):
+        calls.append("compiled")
+        raise _FakeOOM()  # the compiled block's kernels run out of memory at any free memory
+
+    vae.block._compiled_call_impl = compiled_block  # what Module.compile leaves
+    assert S.guard_compiled_blocks(vae) >= 1
+    vae._unsloth_compiled_decode = True  # what _compile_vae_regionally sets
+    assert O.install(vae, pipe = pipe)
+    out = vae.decode(_z())
+    assert out[0].shape[-1] == 64
+    assert calls[-1] == "eager" and "compiled" in calls
+
+
+@pytest.mark.parametrize("op", ["add_", "mul_", "setitem", "copy_", "out", "view_add_", "iadd"])
+def test_inplace_writes_before_the_paired_silu_match_stock(op):
+    """Item 4286789097: an in-place write to the fused tensor went to the recomputed stock tensor while the paired
+    SiLU still returned the stale fused activation. Any read other than the paired SiLU now turns the tensor into
+    that plain stock tensor; the SiLU then activates whatever it holds."""
+    norm, act = torch.nn.GroupNorm(4, 8), torch.nn.SiLU()
+    fast = F._fast_gn_maybe_act(norm, True, types.SimpleNamespace(kernel_calls = 0, calls = 0), [act])
+    passthrough = F._silu_passthrough(act)
+    x, b = torch.randn(1, 8, 4, 4), torch.randn(1, 8, 1, 1)
+
+    def mutate(t):
+        if op == "add_":
+            t.add_(b)
+        elif op == "mul_":
+            t.mul_(2.0)
+        elif op == "setitem":
+            t[:, 0] = 3.0
+        elif op == "copy_":
+            t.copy_(t * 0.5 + b)
+        elif op == "out":
+            torch.add(t, b, out = t)
+        elif op == "view_add_":
+            t[:, 1:3].add_(1.0)
+        elif op == "iadd":
+            t += b
+        return t
+
+    with torch.no_grad():
+        ref = act(mutate(norm(x)))
+        got = passthrough(mutate(fast(x)))
+    assert torch.equal(got, ref)
+
+
+def test_kept_oom_drops_the_tracebacks_of_its_whole_chain():
+    """Item 4286789111: only the outer exception's traceback was cleared, so a wrapped OOM's inner frame (and the
+    tensor it held) stayed alive through the retry via the kept exception. Every chained traceback goes now."""
+    import weakref
+
+    budget = _Budget(16384 + 1000)
+    transformer, text_encoder = _on_card(8192), _on_card(4096)
+    seen = {}
+
+    class Vae(_PublicVae):
+        def _decode(self, z, return_dict = True):
+            if "ref" not in seen:
+                def inner_frame():
+                    big = torch.empty(1 << 20)
+                    seen["ref"] = weakref.ref(big)
+                    raise _FakeOOM()
+
+                try:
+                    inner_frame()
+                except _FakeOOM as oom:
+                    raise RuntimeError("backend compiler failed") from oom  # a wrapped OOM (is_oom walks the chain)
+            seen["alive_at_retry"] = seen["ref"]() is not None
+            return (z.repeat_interleave(8, -1).repeat_interleave(8, -2),)
+
+    vae = Vae(budget, [transformer, text_encoder], 1, 1).to(_CARD)
+    pipe = _Pipe(transformer = transformer, text_encoder = text_encoder, vae = vae)
+    assert O.install(vae, pipe = pipe)
+    vae.decode(_z())
+    assert seen["alive_at_retry"] is False
+
+
+def test_drop_tracebacks_walks_cause_context_and_cycles():
+    def raise_chain():
+        try:
+            try:
+                raise ValueError("a")
+            except ValueError as a:
+                raise KeyError("b") from a
+        except KeyError as b:
+            raise RuntimeError("c")  # __context__ = b
+
+    try:
+        raise_chain()
+    except RuntimeError as c:
+        exc = c
+    exc.__context__.__cause__.__context__ = exc  # a cycle
+    O.drop_tracebacks(exc)
+    e, seen = exc, 0
+    for e in (exc, exc.__context__, exc.__context__.__cause__):
+        assert e.__traceback__ is None

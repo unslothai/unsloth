@@ -510,7 +510,7 @@ def _stock_in(t: Any) -> Any:
     stock GroupNorm value any reader but its paired SiLU must see; anything else as it is. Kernels read raw memory,
     so every entry unwraps first (the subclass also redirects raw-pointer reads; this keeps the kernel off that)."""
     cls = globals().get("_FusedActCls")
-    return t._unsloth_pre() if cls is not None and type(t) is cls else t
+    return t._unsloth_stock() if cls is not None and type(t) is cls else t
 
 
 def group_norm_act(
@@ -2552,9 +2552,17 @@ def _fused_act_class() -> Any:
         def __torch_function__(cls, func, types_, args = (), kwargs = None):
             kwargs = kwargs or {}
             if not _is_meta_read(func):
-                args, kwargs = tree_map(lambda t: t._unsloth_pre() if isinstance(t, _FusedAct) else t, (args, kwargs))
+                args, kwargs = tree_map(lambda t: t._unsloth_stock() if isinstance(t, _FusedAct) else t, (args, kwargs))
             with torch._C.DisableTorchFunctionSubclass():
                 return func(*args, **kwargs)
+
+        def _unsloth_stock(self) -> Any:
+            """The stock value for a reader other than the paired SiLU. Such a read invalidates the fused value: it
+            may be (or produce an alias for) an in-place write, ``out=`` target, ``setitem`` or ``copy_`` of the
+            stock tensor, so from here on the tensor is that plain stock tensor and the paired SiLU computes its
+            activation on whatever it then holds."""
+            self._unsloth_silu_for = None
+            return self._unsloth_pre()
 
         def _unsloth_pre(self) -> Any:
             pre = self.__dict__.get("_unsloth_pre_value")

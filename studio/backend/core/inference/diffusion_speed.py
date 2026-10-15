@@ -1360,6 +1360,12 @@ def is_compile_failure(exc: BaseException) -> bool:
     return bool(kinds) and isinstance(exc, tuple(kinds))
 
 
+def _drop_tracebacks(exc: BaseException) -> None:
+    from .diffusion_vae_oom import drop_tracebacks  # noqa: PLC0415
+
+    drop_tracebacks(exc)
+
+
 class _CompileGuard:
     """Per-DiT record of a compile that failed at runtime. The first failure flips every guarded block of that DiT to
     eager (one shared decision: a half-compiled stack would retry the same broken lowering per block)."""
@@ -1400,7 +1406,7 @@ class _CompileGuard:
                         raise
                     guard.fail(exc, owner)
                     # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
-                    exc.__traceback__ = None
+                    _drop_tracebacks(exc)
             return eager(*args, **kwargs)
 
         guarded._unsloth_compile_guard = guard
@@ -1655,8 +1661,8 @@ def _guard_compiled_decode(
     def guarded(*args: Any, **kwargs: Any) -> Any:
         if eager_when_tiled and getattr(vae, "use_tiling", False):
             return eager(*args, **kwargs)
-        # the OOM scope's last retry of a decode whose compiled graph ran out of memory (diffusion_vae_oom)
-        if getattr(vae, "__dict__", {}).get("_unsloth_decode_force_eager", False):
+        # the one force-eager signal (a background compile in flight, the OOM scope's eager retry)
+        if _bg_eager_forced():
             return eager(*args, **kwargs)
         if not failed:
             try:
@@ -1692,7 +1698,7 @@ def _guard_compiled_decode(
                         error,
                     )
                 # The handled exception pins inductor's frames (and the traced fake tensors) through the retry.
-                exc.__traceback__ = None
+                _drop_tracebacks(exc)
         return eager(*args, **kwargs)
 
     # diffusion_vae_oom reads these to retry a runtime OOM of the compiled decode on the eager path

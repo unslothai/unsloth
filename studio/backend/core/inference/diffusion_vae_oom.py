@@ -96,6 +96,24 @@ def _release_cache(z: Any, vae: Any = None) -> None:
     _empty_cache(getattr(z, "device", None))
 
 
+def drop_tracebacks(exc: Optional[BaseException]) -> Optional[BaseException]:
+    """Clear the traceback of ``exc`` and of every exception chained to it (``__cause__`` / ``__context__``, cycles
+    guarded): a kept exception (to re-raise if nothing recovers) must not pin the failed attempt's frames and the
+    tensors they hold through the retry. Every place the scope or the ladder keeps an exception calls this first."""
+    seen: set = set()
+    todo = [exc]
+    while todo:
+        e = todo.pop()
+        if e is None or id(e) in seen:
+            continue
+        seen.add(id(e))
+        e.__traceback__ = None
+        todo += [e.__cause__, e.__context__]
+        for sub in getattr(e, "exceptions", ()) or ():  # an ExceptionGroup's members
+            todo.append(sub)
+    return exc
+
+
 def clear_partial_decode(vae: Any, z: Any = None) -> None:
     """Before ANY retry of a decode that failed part way: drop a causal decoder's frame / feature cache (Wan,
     Qwen-Image, LTX-2 and HunyuanVideo expose ``clear_cache``), which still holds the failed attempt's state and
@@ -761,7 +779,7 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                 except Exception as exc:  # noqa: BLE001
                     if not is_oom(exc):
                         raise
-                    exc.__traceback__ = None
+                    drop_tracebacks(exc)
                     holder.setdefault("first_oom", exc)
                     stats["oom"] += 1
                 steps = steps[start + 1:]
@@ -773,7 +791,7 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                     if not is_oom(exc):
                         raise
                     gate_owned = not tiled_now and _outer_gate_owns_untiled(vae)
-                    exc.__traceback__ = None
+                    drop_tracebacks(exc)
                     holder.setdefault("first_oom", exc)
                     stats["oom"] += 1
                 if gate_owned:
@@ -789,7 +807,7 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                         except Exception as exc:  # noqa: BLE001
                             if not is_oom(exc):
                                 raise
-                            exc.__traceback__ = None
+                            drop_tracebacks(exc)
                     raise holder["first_oom"]
             # Outside the handler: the failed attempt's tensors are gone. One session per logical decode: a later
             # slice / frame of the same decode reuses what an earlier one freed.
@@ -824,7 +842,7 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
                         # the streamed decode itself broke (an offload hook the VAE does not support): the render
                         # fails on the out-of-memory it already had, not on the fallback
                         logger.warning("diffusion.vae_oom: streamed %s decode failed (%s)", type(vae).__name__, exc)
-                    exc.__traceback__ = None
+                    drop_tracebacks(exc)
                     failed = True
                 if not failed:
                     stats["recovered"] += 1
@@ -863,9 +881,8 @@ def install(vae: Any, logger: Any = None, pipe: Any = None) -> bool:
 # One placement rule: the scope is the OUTERMOST public decode layer, on the VAE itself, above every other decode
 # wrapper (dtype wrappers: the fp16 non-finite check, the ROCm bf16 cast; the untiled-when-fits gate; a compiled
 # decode guard), so an out-of-memory anywhere in the decode, a wrapper's own allocation included, reaches it. A
-# compiled guard anywhere below (in a dtype wrapper's slot, behind the untiled gate's closure) is reached through
-# FORCE_EAGER_ATTR: while it is set on the VAE every guard of that decode runs its eager path.
-FORCE_EAGER_ATTR = "_unsloth_decode_force_eager"
+# compiled guard anywhere below (in a dtype wrapper's slot, behind the untiled gate's closure, a regional block guard)
+# is reached through diffusion_bg_compile.force_eager(): inside it every compiled guard runs its eager path.
 
 
 def _compiled_below(vae: Any, top: Any) -> bool:
@@ -937,7 +954,7 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
             except Exception as exc:  # noqa: BLE001
                 if not is_oom(exc):
                     raise
-                exc.__traceback__ = None
+                drop_tracebacks(exc)
                 failures.append(exc)
                 return False, None
 
@@ -980,11 +997,11 @@ def _install_scope(vae: Any, logger: Any = None) -> bool:
                 if logger is not None:
                     logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying eager",
                                    type(vae).__name__)  # fmt: skip
-                vae.__dict__[FORCE_EAGER_ATTR] = True
-                try:
+                from . import diffusion_bg_compile  # noqa: PLC0415
+
+                # the one force-eager signal every compiled guard reads (whole decode, regional blocks, CUDA graphs)
+                with diffusion_bg_compile.force_eager():
                     return inner(*args, **kwargs)
-                finally:
-                    vae.__dict__.pop(FORCE_EAGER_ATTR, None)
             finally:
                 failures.clear()
                 _close_scope(vae, holder, z)
@@ -1023,8 +1040,8 @@ def uninstall(vae: Any) -> None:
 __all__ = [
     "DecodeSession",
     "DeferredReturn",
-    "FORCE_EAGER_ATTR",
     "clear_partial_decode",
+    "drop_tracebacks",
     "ensure_outermost",
     "free_first",
     "settle_deferred",
