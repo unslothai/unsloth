@@ -965,20 +965,16 @@ def file_size_mib(path: Any) -> Optional[int]:
 
 def safetensors_prefix_mib(path: Any, prefix: str) -> Optional[int]:
     """MiB of the ``prefix*`` tensors, from the safetensors header alone; None if unreadable or unmatched."""
-    import json
-    import struct
+    from .diffusion_component_sizes import entry_nbytes, read_safetensors_header, tensor_entries
 
+    header = read_safetensors_header(path)
+    if header is None:
+        return None
     try:
-        with open(path, "rb") as fh:
-            (header_len,) = struct.unpack("<Q", fh.read(8))
-            if not 0 < header_len <= 256 * 1024 * 1024:
-                return None
-            header = json.loads(fh.read(header_len))
         total = 0
-        for name, meta in header.items():
-            if name != "__metadata__" and name.startswith(prefix):
-                start, end = meta["data_offsets"]
-                total += int(end) - int(start)
+        for name, meta in tensor_entries(header):
+            if name.startswith(prefix):
+                total += entry_nbytes(meta)
     except Exception:  # noqa: BLE001 - not a readable safetensors header
         return None
     return -(-total // (1024 * 1024)) if total > 0 else None

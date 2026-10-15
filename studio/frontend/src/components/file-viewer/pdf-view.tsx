@@ -7,6 +7,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { Document, Page, pdfjs, usePageContext } from "react-pdf";
 import "react-pdf/dist/Page/TextLayer.css";
+import type { PageTarget } from "./kind";
 import { queueParse } from "./parse-queue";
 import { usePdfWorker } from "./use-pdf-worker";
 import { useWidth } from "./use-width";
@@ -165,12 +166,16 @@ function PdfPages({
   width,
   aspect,
   scrollElement,
+  target,
+  onApplied,
 }: {
   pdf: PdfDocument;
   pages: number;
   width: number;
   aspect: number;
   scrollElement: HTMLElement | null;
+  target?: PageTarget;
+  onApplied?: (target: PageTarget) => void;
 }) {
   // eslint-disable-next-line react-hooks/incompatible-library
   const virtualizer = useVirtualizer({
@@ -181,6 +186,11 @@ function PdfPages({
     paddingEnd: EDGE - PAGE_GAP,
     overscan: 2,
   });
+  useEffect(() => {
+    if (!target) return;
+    virtualizer.scrollToIndex(Math.max(0, Math.min(target.page, pages) - 1), { align: "start" });
+    onApplied?.(target);
+  }, [target, pages, virtualizer, onApplied]);
   return (
     <div className="relative mx-auto" style={{ width, height: virtualizer.getTotalSize() }}>
       {virtualizer.getVirtualItems().map((item) => (
@@ -231,10 +241,15 @@ export default function PdfView({
   file,
   scale,
   firstPageOnly = false,
+  pageTarget,
+  onPageTargetDone,
 }: {
   file: Blob;
   scale: number;
   firstPageOnly?: boolean;
+  pageTarget?: PageTarget;
+  /** The reader moved on from the target: its owner can drop it so a remount doesn't replay it. */
+  onPageTargetDone?: () => void;
 }) {
   const t = useT();
   const [container, setContainer] = useState<HTMLDivElement | null>(null);
@@ -247,13 +262,39 @@ export default function PdfView({
   const slot = useParseSlot(firstPageOnly, file);
   const pdfWorker = usePdfWorker(slot.ready && failed !== file);
   const options = useMemo(() => (pdfWorker ? { ...PDF_OPTIONS, worker: pdfWorker.worker } : null), [pdfWorker]);
+  // Held until the reader scrolls after it was shown, so the remounts as the width and page size
+  // settle land on it too, and input while the document loads doesn't drop it.
+  const [pending, setPending] = useState(pageTarget);
+  const applied = useRef<PageTarget | undefined>(undefined);
+  const onApplied = useCallback((target: PageTarget) => {
+    applied.current = target;
+  }, []);
+  const [asked, setAsked] = useState(pageTarget);
+  if (pageTarget !== asked) {
+    setAsked(pageTarget);
+    if (pageTarget) setPending(pageTarget);
+  }
+  const release = pending
+    ? () => {
+        if (applied.current !== pending) return;
+        setPending(undefined);
+        onPageTargetDone?.();
+      }
+    : undefined;
 
   if (failed === file) {
     return <p className="m-auto text-sm text-muted-foreground">{t("library.preview.cannotPreview")}</p>;
   }
   if (!slot.ready || !options) return <div className="size-full bg-muted/60" />;
   return (
-    <div ref={setContainer} className="size-full overflow-auto bg-muted/60">
+    <div
+      ref={setContainer}
+      className="size-full overflow-auto bg-muted/60"
+      onWheel={release}
+      onPointerDown={release}
+      onTouchStart={release}
+      onKeyDown={release}
+    >
       <Document
         file={file}
         options={options}
@@ -281,6 +322,8 @@ export default function PdfView({
             width={width}
             aspect={aspect}
             scrollElement={container}
+            target={firstPageOnly ? undefined : pending}
+            onApplied={onApplied}
           />
         )}
         {available > 0 && pdf && !firstPageOnly && pages > MAX_PDF_PAGES && (

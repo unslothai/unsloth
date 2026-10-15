@@ -6,6 +6,7 @@
 // carried their own.
 
 import { sandboxHasFiles } from "@/components/assistant-ui/sandbox-reveal";
+import { toast } from "@/lib/toast";
 
 import {
   CONVERSATION_MARKDOWN_FORMAT,
@@ -212,6 +213,24 @@ export async function regenerateChatTitle(
   } finally {
     clearTimeout(timer);
     regeneratingTitles.delete(item.id);
+  }
+}
+
+/** The Library's and the chat header's Regenerate title, with the same toasts. */
+export async function regenerateChatTitleWithToast(chat: SidebarItem): Promise<void> {
+  // A fast refresh would only flash the toast.
+  const toastId = `regenerate-title-${chat.id}`;
+  const slow = setTimeout(() => toast.loading("Regenerating title...", { id: toastId }), 400);
+  const outcome = await regenerateChatTitle(chat);
+  clearTimeout(slow);
+  // Another request for this chat is running and owns the toast.
+  if (outcome === "busy") return;
+  if (outcome === "empty") {
+    toast.error("This chat has no messages to title yet.", { id: toastId });
+  } else if (outcome === "failed") {
+    toast.error("Could not regenerate the title.", { id: toastId });
+  } else {
+    toast.dismiss(toastId);
   }
 }
 

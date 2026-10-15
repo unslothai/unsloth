@@ -3381,30 +3381,30 @@ def _delete_gguf_variant_files(root: Path, variant: str) -> tuple[int, int]:
     deleted_bytes = 0
     from hub.utils.gguf import remove_appledouble_sidecar
 
+    from hub.utils.gguf import gguf_variant_keys_by_checkpoint
+
+    weights: list[tuple[Path, str]] = []
     for path in root.rglob("*"):
         if not path.is_file() or not _is_main_gguf_filename(path.name):
             continue
-        # Counted as a model if left in, so the reported count would follow the walk order; it still goes
-        # below, as metadata of the file it belongs to. Proven metadata only.
+        # proven AppleDouble metadata is removed with its weight, not counted as a model.
         if is_appledouble_metadata(path):
             continue
-        # Keyed on the path, not the basename: a repo holding several checkpoints at
-        # one quant would otherwise delete every one of them for a single row.
-        from utils.models.model_config import _gguf_variant_key
-
         try:
             relative = path.relative_to(root).as_posix()
         except ValueError:
             relative = path.name
-        if _gguf_variant_key(relative).lower() != variant.lower():
+        weights.append((path, relative))
+    # checkpoint-qualified keys isolate sibling builds that share a quant.
+    keys = gguf_variant_keys_by_checkpoint(relative for _path, relative in weights)
+    for path, relative in weights:
+        if keys[relative].lower() != variant.lower():
             continue
         try:
             deleted_bytes += path.stat().st_size
         except OSError:
             pass
         path.unlink()
-        # Skipped by the walk above, so this is its only chance to be reclaimed. Its bytes count
-        # toward what was freed even though it is not counted as a model.
         deleted_bytes += remove_appledouble_sidecar(path)
         deleted_count += 1
     return deleted_count, deleted_bytes
@@ -3418,11 +3418,7 @@ async def delete_finetuned_model(
     gguf_variant: Optional[str] = Body(None),
     current_subject: str = Depends(get_current_subject),
 ):
-    """Delete an Unsloth-trained or exported model from disk.
-
-    Only paths under Unsloth's outputs/exports roots are accepted.
-    Exported GGUF entries can delete one quant variant at a time.
-    """
+    """delete an Unsloth output, or one quant from an exported GGUF, within approved roots."""
     if source not in {"training", "exported"}:
         raise HTTPException(
             status_code = 400,
@@ -4843,6 +4839,7 @@ async def get_gguf_variants(
                 dependencies_resolved = bool(getattr(response, "dependencies_resolved", False)),
                 loadable_variants = getattr(response, "loadable_variants", None),
                 loadable = getattr(response, "loadable", None),
+                variant_format = getattr(response, "variant_format", None),
             ),
             via_api_key = via_api_key,
         )
@@ -5740,6 +5737,27 @@ def _resolve_cached_model_path(repo_id: str, variant: Optional[str]) -> Path:
     raise HTTPException(status_code = 404, detail = "Cached model path not found")
 
 
+def _resolve_cached_path_for_row(repo_id: str, variant: Optional[str]) -> Path:
+    """``_resolve_cached_model_path`` for a picker row id. An audio.cpp umbrella folder row resolves
+    to its own variant's file, or without a variant to its folder, never the repo's snapshot root."""
+    from core.inference.audio_cpp_models import cached_folder_target, folder_snapshot_dir
+
+    folder = cached_folder_target(repo_id, variant)
+    if folder is None:
+        if not _is_valid_repo_id(repo_id):
+            raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
+        return _resolve_cached_model_path(repo_id, variant)
+    umbrella, keys = folder
+    if not keys:
+        raise HTTPException(status_code = 404, detail = "Model not found in cache")
+    if variant:
+        return _resolve_cached_model_path(umbrella, keys[0])
+    path = folder_snapshot_dir(repo_id)
+    if path is None:
+        raise HTTPException(status_code = 404, detail = "Cached model path not found")
+    return path
+
+
 class CachedModelPathResponse(BaseModel):
     path: str
     is_dir: bool
@@ -5754,9 +5772,7 @@ async def get_cached_model_path(
     """Absolute on-disk path of a cached repo or one of its GGUF variants."""
     if account_access.managed_account():
         await asyncio.to_thread(account_access.require_model_access, repo_id)
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant.strip() or None)
+    path = await asyncio.to_thread(_resolve_cached_path_for_row, repo_id, variant.strip() or None)
     return {"path": str(path), "is_dir": path.is_dir()}
 
 
@@ -5772,10 +5788,8 @@ async def reveal_cached_model(
         await asyncio.to_thread(account_access.require_model_access, repo_id)
     from utils.paths.path_utils import reveal_in_file_manager
 
-    if not _is_valid_repo_id(repo_id):
-        raise HTTPException(status_code = 400, detail = "Invalid repo_id format")
     variant = (variant or "").strip() or None
-    path = await asyncio.to_thread(_resolve_cached_model_path, repo_id, variant)
+    path = await asyncio.to_thread(_resolve_cached_path_for_row, repo_id, variant)
     try:
         await asyncio.to_thread(reveal_in_file_manager, path)
     except Exception as e:

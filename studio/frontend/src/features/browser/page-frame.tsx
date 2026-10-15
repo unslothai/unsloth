@@ -2,8 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useRef, useState } from "react";
-import { browserFrameUrl } from "./api";
+import { browserFrameUrl, type PageResponse, requestForPage } from "./api";
 import { type AnnotateEvent, type FrameMessage, parseFrameMessage } from "./frame-message";
+import { pageRequests } from "./page-requests";
 
 export type { FrameMessage };
 
@@ -21,7 +22,8 @@ export type FrameCommand =
   | { command: "annotate"; on: boolean; color?: string }
   | { command: "annotateForget"; id: number }
   | { command: "annotateNumbers"; numbers: Array<[number, number]> }
-  | { command: "agent"; id: string; op: Record<string, unknown>; code?: string };
+  | { command: "agent"; id: string; op: Record<string, unknown>; code?: string }
+  | ({ command: "response"; id: string } & (({ ok: true } & PageResponse) | { ok: false }));
 
 type AgentReply = { installed: boolean; result: Record<string, unknown> | null };
 const agentRequests = new Map<string, (reply: AgentReply | null) => void>();
@@ -106,6 +108,8 @@ export function PageFrame({
   html,
   url,
   base,
+  ownBase = false,
+  anyOrigin = false,
   refresh,
   title,
   tabId,
@@ -119,6 +123,8 @@ export function PageFrame({
   html: string;
   url: string | null;
   base: string | null;
+  ownBase?: boolean;
+  anyOrigin?: boolean;
   refresh?: { delay: number; url: string } | null;
   title: string;
   onMessage: (message: FrameMessage) => void;
@@ -126,9 +132,11 @@ export function PageFrame({
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   const onMessageRef = useRef(onMessage);
   const tabIdRef = useRef(tabId);
+  const urlRef = useRef(url);
   useEffect(() => {
     onMessageRef.current = onMessage;
     tabIdRef.current = tabId;
+    urlRef.current = url;
   });
   const [loadId] = useState(() => String(++loadCounter));
   const postedRef = useRef(false);
@@ -138,11 +146,28 @@ export function PageFrame({
     let loaded = false;
     let left = false;
     let lastUserAction = Number.NEGATIVE_INFINITY;
+    // The page's requests to its own site, answered through the shell, which relays to the page.
+    const requests = pageRequests(
+      requestForPage,
+      (id, answer) => {
+        const command: FrameCommand = answer ? { command: "response", id, ok: true, ...answer } : { command: "response", id, ok: false };
+        frameRef.current?.contentWindow?.postMessage({ type: "unsloth:browser-command", ...command }, "*", answer ? [answer.body] : []);
+      },
+      () => urlRef.current,
+    );
     const listener = (event: MessageEvent) => {
       const frame = frameRef.current;
       if (!frame || event.source !== frame.contentWindow) return;
       let message = parseFrameMessage(event.data);
       if (!message) return;
+      if (message.type === "request") {
+        requests.request(message.id, message.request);
+        return;
+      }
+      if (message.type === "requestAbort") {
+        requests.abort(message.id);
+        return;
+      }
       if (message.type === "annotate") {
         annotateListeners.get(tabIdRef.current)?.(message.event);
         return;
@@ -174,7 +199,10 @@ export function PageFrame({
       onMessageRef.current(message);
     };
     window.addEventListener("message", listener);
-    return () => window.removeEventListener("message", listener);
+    return () => {
+      window.removeEventListener("message", listener);
+      requests.stop();
+    };
   }, []);
 
   useEffect(() => {
@@ -219,6 +247,8 @@ export function PageFrame({
             html,
             url,
             base,
+            ownBase,
+            anyOrigin,
             refresh: refresh ?? null,
             zoom: zoomRef.current,
             muted: mutedRef.current,

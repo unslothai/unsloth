@@ -31,6 +31,7 @@ FUSIONS = (
     "moe_router",
     "moe_routed_experts",
     "residual_norm_handoff",
+    "packed_gated_delta",
 )
 
 
@@ -3687,7 +3688,7 @@ def test_int8_prefill_reloads_on_change_and_reports_why_it_is_off(mlx_inference_
 
 
 @pytest.mark.parametrize("requested,available", [(True, True), (True, False), (False, True)])
-def test_int8_prefill_is_the_outermost_scope_of_generation_only_when_active(
+def test_int8_prefill_is_the_outermost_scope_of_generation_pinned_off_when_inactive(
     monkeypatch, mlx_inference_patches, requested, available
 ):
     from core.inference import mlx_inference
@@ -3727,8 +3728,19 @@ def test_int8_prefill_is_the_outermost_scope_of_generation_only_when_active(
     args = ([{"role": "user", "content": [{"type": "image"}]}], [object()], 0.7, 0.9, 40, 0.01, 4)
     assert list(backend._generate_vlm(*args, 1.0, None)) == ["ok"]
 
-    expected = [("int8", True)] + [("fusion", None)] * len(FUSIONS) + [("stream", None)]
-    assert events == (expected + [("int8_exit", True)] if requested and available else expected[1:])
+    active = requested and available
+    assert events == [("int8", active)] + [("fusion", None)] * len(FUSIONS) + [
+        ("stream", None),
+        ("int8_exit", active),
+    ]
+
+    def broken(model, int8_prefill = None):
+        raise ImportError("skewed zoo")
+
+    mlx_inference_patches.nax_quantized_linear = broken
+    if not active:  # an inactive load never asked for the scope, so its failure costs no request
+        with backend._int8_prefill_scope():
+            pass
 
 
 def test_a_batch_session_holds_int8_prefill_for_its_whole_life(monkeypatch, mlx_inference_patches):
@@ -5452,6 +5464,7 @@ def _drive_vlm_generation(
     max_new_tokens = 1,
     session = None,
     video = None,
+    on_stream = None,
     **request,
 ):
     import sys
@@ -5466,6 +5479,8 @@ def _drive_vlm_generation(
     def _stream(*_a, **kwargs):
         seen.clear()
         seen.update(kwargs)
+        if on_stream is not None:
+            on_stream()
         yield SimpleNamespace(text = "ok", prompt_tokens = 3, generation_tokens = 1)
 
     mlx_vlm.stream_generate = _stream
@@ -5508,17 +5523,39 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
     utils = types.ModuleType("mlx_vlm.utils")
     utils.prepare_inputs = lambda *_a, **_k: {"input_ids": [_Ids([7, 8, 9])], "extra": 1}
     monkeypatch.setitem(sys.modules, "mlx_vlm.utils", utils)
-    prepared = []
+    prepared, verify_scope, scopes = [], [], []
+    # A Zoo without the scope leaves the reply drafted and unfused.
+    with monkeypatch.context() as patch:
+        patch.setattr(mlx_inference, "_mlx_inference_patch", lambda name: verify_scope.append(name))
+        with mlx_inference._mlx_exact_speculative_verify(utils) as active:
+            assert active is utils and verify_scope.pop() == "exact_speculative_verify"
+
+    @contextmanager
+    def exact_verify(model):
+        verify_scope.append("open")
+        try:
+            yield model
+        finally:
+            verify_scope.append("closed")
+
+    monkeypatch.setattr(mlx_inference, "_mlx_exact_speculative_verify", exact_verify)
     draft = SimpleNamespace(draft_kind = "mtp", draft_n = 6, draft_n_accepted = 4)
-    draft.prepare = lambda ids, sampling, given: prepared.append(
-        (ids, sampling.temperature, sampling.top_k)
-    ) or setattr(draft, "given", given)
+    draft.prepare = (
+        lambda ids, sampling, given: prepared.append((ids, sampling.temperature, sampling.top_k))
+        or setattr(draft, "given", given)
+        or scopes.append(list(verify_scope))
+    )
     backend = mlx_inference.MLXInferenceBackend()
     backend._speculative_draft = draft
 
     # top_k -1 is the API's "disabled", which the drafter's sampling settings spell 0.
     seen = _drive_vlm_generation(
-        backend, monkeypatch, temperature = 0.5, top_k = -1, repetition_penalty = 1.1
+        backend,
+        monkeypatch,
+        temperature = 0.5,
+        top_k = -1,
+        repetition_penalty = 1.1,
+        on_stream = lambda: scopes.append(list(verify_scope)),
     )
     assert seen["draft_model"] is draft and seen["extra"] == 1 and prepared == [([7, 8, 9], 0.5, 0)]
     # The draft is told every processor the reply runs: none reaches mlx-vlm as a shortcut.
@@ -5536,7 +5573,8 @@ def test_a_speculative_load_drafts_eligible_single_replies(monkeypatch):
         seen = _drive_vlm_generation(backend, monkeypatch, **request)
         assert "max_tokens" in seen and "draft_model" not in seen
         assert "draft_n" not in backend.last_generation_stats["timings"]
-    assert len(prepared) == 1
+    # Only the drafted reply entered the verify scope: open from preparing the draft through decoding.
+    assert len(prepared) == 1 and scopes == [["open"]] * 2 and verify_scope == ["open", "closed"]
     opened, backend._is_vlm, backend._vlm_batch_unavailable_reason = [], True, lambda r: None
     backend._vlm_resident_unavailable_reason = lambda r, gaps = iter(["no stream"]): next(gaps, None)
     assert backend.batch_unavailable_reason([{}, {}]) == "no stream"
@@ -8936,7 +8974,7 @@ def test_mlx_vlm_every_release_reads_one_models_rate_the_same_way(
 ):
     """A model's declared rate must not depend on which mlx-vlm is installed.
 
-    Studio pins ``mlx-vlm>=0.4.4,<=0.7.4``, which spans both shapes: releases with no resolver
+    Studio pins ``mlx-vlm>=0.4.4,<=0.7.8``, which spans both shapes: releases with no resolver
     and, from 0.7.0, releases that have one. Reading the rate only through the resolver left
     every install on the older shape sampling at the library default instead of the rate the
     checkpoint asked for.
@@ -9609,3 +9647,39 @@ def test_a_turboquant_load_turns_a_pin_into_a_request_budget(monkeypatch):
     assert policy(8192, 8192) == (3.5, None, False, 8192)
     assert policy(0, 262144) == (3.5, None, False, None)
     assert policy(8192, 8192, "refused") == (None, 8192, True, None)
+
+
+def test_mlx_precision_folder_loads_from_its_own_download(monkeypatch, tmp_path):
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    _install_fake_mlx(monkeypatch)
+    calls = []
+    _install_fake_fast_mlx(monkeypatch, calls)
+    fetched = []
+
+    def _snapshot_download(
+        repo_id,
+        allow_patterns = None,
+        **_,
+    ):
+        fetched.append((repo_id, allow_patterns))
+        (tmp_path / "6-bit").mkdir(exist_ok = True)
+        (tmp_path / "6-bit" / "config.json").write_text("{}")
+        return str(tmp_path)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
+    monkeypatch.setattr("utils.utils.hf_cache_snapshot_dir_for_repo", lambda repo: None)
+
+    backend = MLXInferenceBackend()
+    repo = "orcarouter/Qwen3.8-27B-Uncensored-MLX"
+    config = SimpleNamespace(identifier = repo, is_vision = False, gguf_variant = "6-bit")
+    assert backend.load_model(config)
+    assert calls[-1][0] == (str(tmp_path / "6-bit"),)
+    assert fetched == [(repo, ["6-bit/*"])]
+    assert backend.active_model_name == repo
+    assert backend.models[repo]["gguf_variant"] == "6-bit"
+
+    assert backend.load_model(SimpleNamespace(identifier = repo, is_vision = False))
+    assert calls[-1][0] == (repo,)
+    assert backend.models[repo]["gguf_variant"] is None
+    assert len(fetched) == 1

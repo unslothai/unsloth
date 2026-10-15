@@ -18,7 +18,7 @@ import {
 import { hydrateDownloadManager, resetHydrationState } from "./hydration";
 import { cancelJob, probeAndAdopt, setExpected } from "./poll-loop";
 import { runtimeRegistry } from "./runtime-registry";
-import { useStagedDownloadQueues } from "./staged-download-queue";
+import { resetStagedQueues } from "./staged-download-queue";
 import {
   cancelConflict,
   requestStart,
@@ -50,7 +50,7 @@ function resetDownloadManagerState(): void {
   resetHydrationState();
   setState(createDownloadManagerInitialState());
   // A media page stays mounted across a cross-tab session change, so its queue would outlive the jobs.
-  useStagedDownloadQueues.setState({ queues: {} });
+  resetStagedQueues();
 }
 
 export function __resetDownloadManagerForTests(): void {

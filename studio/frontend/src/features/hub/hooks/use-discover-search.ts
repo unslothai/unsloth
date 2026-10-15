@@ -16,6 +16,7 @@ import {
   type HfModelSearchChannel,
   type HfSortDirection,
   type HfSortKey,
+  type HfTaskFilter,
   useHubModelSearch,
 } from "./use-hub-model-search";
 import {
@@ -104,6 +105,7 @@ export function useDiscoverSearch({
   channel,
   ownerScope,
   filters,
+  task,
 }: {
   debouncedQuery: string;
   accessToken: string | undefined;
@@ -114,6 +116,7 @@ export function useDiscoverSearch({
   channel: HfModelSearchChannel | null;
   ownerScope: "unsloth" | "all";
   filters?: ModelSearchFilters;
+  task?: HfTaskFilter;
 }): DiscoverSearch {
   const { phase, failure } = useHubAvailability();
   const hub = useHubName();
@@ -138,6 +141,7 @@ export function useDiscoverSearch({
     keepUnsupportedTags: true,
     channel,
     filters,
+    task,
   });
   const datasetSearch = useHubDatasetSearch(debouncedQuery, {
     accessToken,
