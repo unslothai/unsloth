@@ -484,6 +484,36 @@ def test_opaque_fla_op_matches_fla_function():
         M._chunk_meta = orig
 
 
+def test_gdn_adapter_routes_only_the_self_checked_call(monkeypatch):
+    M = _load()
+    seen = []
+    monkeypatch.setattr(M, "_GDN_OP", [True])
+    monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
+    monkeypatch.setattr(
+        torch.ops,
+        "unsloth",
+        types.SimpleNamespace(qwen3_5_gdn_chunk = lambda *a: seen.append("op") or ("out",)),
+        raising = False,
+    )
+    adapter = M._gdn_chunk_adapter(lambda *a, **kw: seen.append("fla") or ("fla", None))
+    t = torch.zeros(1, 4, 2, 8)
+    gb = torch.zeros(1, 4, 2)
+    stock = dict(
+        use_qk_l2norm_in_kernel = True, initial_state = None, output_final_state = False, cu_seqlens = None
+    )
+    adapter(t, t, t, g = gb, beta = gb, **stock)
+    for extra in (
+        {"head_first": True},
+        {"use_beta_sigmoid_in_kernel": True},
+        {"scale": 0.1},
+        {"output_final_state": True},
+        {"cu_seqlens": torch.tensor([0, 4])},
+        {"use_qk_l2norm_in_kernel": False},
+    ):
+        adapter(t, t, t, g = gb, beta = gb, **dict(stock, **extra))
+    assert seen == ["op"] + ["fla"] * 6
+
+
 def test_causal_depthwise_conv_matches_conv1d():
     M = _load("_gdn_op")
     torch.manual_seed(0)

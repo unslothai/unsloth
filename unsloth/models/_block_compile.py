@@ -128,14 +128,6 @@ def _mark_seq_dynamic(seq_len, obj):
 
 # fla's opaque op state: None until a GatedDeltaNet layer ran its self-check, then True / False.
 _GDN_OP = [None]
-_GDN_STATE_KWARGS = (
-    "initial_state",
-    "cu_seqlens",
-    "cu_seq_lens_q",
-    "cu_seq_lens_k",
-    "seq_idx",
-    "scale",
-)
 
 
 def _gdn_chunk_adapter(original):
@@ -152,9 +144,13 @@ def _gdn_chunk_adapter(original):
         if (
             _GDN_OP[0]
             and torch.compiler.is_compiling()
-            and all(kwargs.get(key) is None for key in _GDN_STATE_KWARGS)
-            and not kwargs.get("output_final_state")
-            and kwargs.get("use_qk_l2norm_in_kernel")
+            and kwargs.get("use_qk_l2norm_in_kernel") is True
+            # The op is the self-checked default: no state, varlen, scale, layout or gating flags.
+            and all(
+                value is None or value is False
+                for key, value in kwargs.items()
+                if key != "use_qk_l2norm_in_kernel"
+            )
         ):
             # Inductor pins a custom op's input strides; a sliced input fails at the next length.
             q, k, v, g, beta = (t.contiguous() for t in (q, k, v, g, beta))
@@ -521,7 +517,15 @@ def _nf4_in_blocks():
 
     @functools.wraps(current)
     def forward(self, x, *args, **kwargs):
-        if _IN_BLOCK[0] and torch.compiler.is_compiling() and not args and not kwargs:
+        # A trainable bias fails _eligible only under grad: decide it here for both checkpoint halves.
+        bias = self.bias
+        if (
+            _IN_BLOCK[0]
+            and torch.compiler.is_compiling()
+            and not args
+            and not kwargs
+            and (bias is None or not bias.requires_grad)
+        ):
             weight = self.weight
             quant_state = getattr(weight, "quant_state", None)
             if O._eligible(self, x, weight, quant_state) and (
