@@ -553,3 +553,84 @@ def test_python_310_gets_a_reason_it_can_act_on(monkeypatch):
     monkeypatch.setattr(families.sys, "version_info", (3, 12, 1, "final", 0))
     message = families._too_old_message("Flux3DistilledModularPipeline", "flux.3-klein", "0.41.0")
     assert "Python 3.11" not in message and "has not been released yet" in message
+
+
+# ── hosted artifacts ─────────────────────────────────────────────────────────
+def _family(name):
+    return next(f for f in families._FAMILIES if f.name == name)
+
+
+def test_prequant_repos_point_at_the_fp8_repo_for_the_distilled_model_only():
+    distilled = _family(FLUX3_KLEIN_FAMILY_NAME)
+    for scheme in ("int8", "fp8"):
+        assert families.family_prequant_repo(distilled, scheme, DISTILLED) == "unsloth/flux-3-image-klein-FP8"
+    # nvfp4 is denied for the family, and the base model has no hosted artifact yet.
+    assert families.family_prequant_repo(distilled, "nvfp4", DISTILLED) is None
+    base = _family(FLUX3_KLEIN_BASE_FAMILY_NAME)
+    for scheme in ("int8", "fp8", "nvfp4"):
+        assert families.family_prequant_repo(base, scheme, BASE) is None
+
+
+@pytest.mark.parametrize("scheme, stem", [("int8", "INT8"), ("fp8", "FP8")])
+def test_prequant_filenames_resolve_to_the_built_safetensors(scheme, stem):
+    from core.inference.diffusion_prequant import candidate_filenames_of, resolve_prequant_source
+
+    source = resolve_prequant_source(_family(FLUX3_KLEIN_FAMILY_NAME), scheme, base_repo = DISTILLED)
+    assert source.kind == "repo" and source.location == "unsloth/flux-3-image-klein-FP8"
+    names = candidate_filenames_of(source)
+    wanted = f"flux-3-image-klein-{stem}.safetensors"
+    assert wanted in names
+    # The safetensors artifact is tried before the legacy pickle name.
+    assert names.index(wanted) < names.index(f"flux-3-image-klein-{stem}.pt")
+
+
+def test_operator_mirror_serves_the_hosted_name(tmp_path, monkeypatch):
+    from core.inference import diffusion_prequant as dp
+
+    folder = tmp_path / "unsloth" / "flux-3-image-klein-FP8"
+    folder.mkdir(parents = True)
+    (folder / "flux-3-image-klein-INT8.safetensors").write_bytes(b"x")
+    monkeypatch.setenv(dp.PREQUANT_MIRROR_ENV, str(tmp_path))
+    found = dp.prequant_mirror_path(
+        "unsloth/flux-3-image-klein-FP8", "flux-3-image-klein-INT8.safetensors", readable = lambda n: True
+    )
+    assert found == str(folder / "flux-3-image-klein-INT8.safetensors")
+
+
+def test_quantized_gguf_pick_assembles_through_the_modular_loader(monkeypatch):
+    # A GGUF pick with a transformer quant builds through _assemble_pipe; FLUX.3 has no model_index.json, so
+    # from_pretrained would fail there and the load would fall back to the GGUF.
+    from core.inference import diffusion as d
+
+    calls = {}
+
+    class _Pipe:
+        def to(self, device):
+            calls["device"] = device
+            return self
+
+    def fake_load(repo, dtype, **kw):
+        calls.update(repo = repo, **kw)
+        return _Pipe()
+
+    class _NoFromPretrained:
+        @classmethod
+        def from_pretrained(cls, *a, **k):
+            raise AssertionError("FLUX.3 must not assemble via from_pretrained")
+
+    monkeypatch.setattr(d, "load_flux3_pipeline", fake_load)
+    sentinel = object()
+    pipe = d.DiffusionBackend._assemble_pipe(
+        _NoFromPretrained,
+        DISTILLED,
+        sentinel,
+        "bf16",
+        None,
+        "cuda",
+        base_local_dir = "/staged/klein",
+        fam = _family(FLUX3_KLEIN_FAMILY_NAME),
+        fetch_base = DISTILLED,
+    )
+    assert isinstance(pipe, _Pipe)
+    assert calls["repo"] == "/staged/klein" and calls["transformer"] is sentinel
+    assert calls["device"] == "cuda"

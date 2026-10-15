@@ -468,6 +468,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             scheme_deny = frozenset({"nvfp4"}),
         ),
         pipeline_class = "Flux3DistilledModularPipeline",
+        # Pre-quantized distilled denoisers (both schemes in one repo, as FLUX.2 klein), built with the keep-list above;
+        # the loader checks the stored exclude set against it. The base's weights differ: it quantizes on the fly.
+        prequant_repos = (
+            ("int8", "unsloth/flux-3-image-klein-FP8"),
+            ("fp8", "unsloth/flux-3-image-klein-FP8"),
+        ),
         uses_negative_prompt = False,
         transformer_class = "Flux3Transformer2DModel",
         base_repo = "black-forest-labs/flux-3-image-klein",

@@ -9346,6 +9346,34 @@ class DiffusionBackend:
         check_cancelled = check_cancelled or (lambda: None)
         check_cancelled()
         base = fetch_base or prefer_ungated_mirror(base, hf_token)
+        if is_flux3_family(fam):
+            # FLUX.3 ships modular blocks only, so from_pretrained has no model_index.json to read.
+            flux3_te = None
+            if target is not None:
+                flux3_te = te_prequant_pipe_kwargs(
+                    fam,
+                    base,
+                    te_quant_mode = te_quant_mode,
+                    target = target,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    logger = logger,
+                    local_files_only = local_files_only,
+                    dense_source = base_local_dir or (base if local_files_only else None),
+                ).get("text_encoder")
+            check_cancelled()
+            pipe = load_flux3_pipeline(
+                base_local_dir or base,
+                dtype,
+                hf_token = hf_token,
+                transformer = transformer,
+                text_encoder = flux3_te,
+                check_cancelled = check_cancelled,
+                local_files_only = local_files_only,
+            )
+            check_cancelled()
+            pipe.to(device)
+            return pipe
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
             krea_te = None
