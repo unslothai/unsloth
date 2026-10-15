@@ -146,13 +146,10 @@ def ulysses_gated_delta_forward(
     weight = module.conv1d.weight.squeeze(1)
     bias = module.conv1d.bias
     key_dim = module.key_dim
+    starts = (rank * widths[0], key_dim + rank * widths[1], 2 * key_dim + rank * widths[2])
     rows = torch.cat(
-        [
-            torch.arange(rank * widths[0], (rank + 1) * widths[0]),
-            key_dim + torch.arange(rank * widths[1], (rank + 1) * widths[1]),
-            2 * key_dim + torch.arange(rank * widths[2], (rank + 1) * widths[2]),
-        ]
-    ).to(weight.device)
+        [torch.arange(s, s + w, device = weight.device) for s, w in zip(starts, widths[:3])]
+    )
     weight = weight.index_select(0, rows)
     bias = None if bias is None else bias.index_select(0, rows)
 
