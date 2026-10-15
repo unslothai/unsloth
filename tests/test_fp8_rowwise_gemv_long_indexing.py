@@ -99,10 +99,11 @@ def test_row_offset_multiply_width(F, long_indexing):
     """The weight-row multiply is i64 exactly on the LONG_INDEXING path (compile-only)."""
     ttir = _compile_ir(F, long_indexing)
     muls = [line for line in ttir.splitlines() if "arith.muli" in line]
-    wide = [line for line in muls if "i64>" in line or line.rstrip().endswith(": i64")]
+    wide = [line for line in muls if "i64>" in line or ": i64 " in line or line.rstrip().endswith(": i64")]
     assert muls, ttir
     if long_indexing:
-        assert wide, "\n".join(muls)
+        # Every multiply, including program_id * BLOCK_N (rows past 2^31 for an (N, 1) weight).
+        assert wide == muls, "\n".join(muls)
     else:
         assert not wide, "\n".join(wide)
 

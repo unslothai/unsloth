@@ -535,18 +535,17 @@ def _fp8_rowwise_gemv_kernel(
     BLOCK_K: tl.constexpr,
     LONG_INDEXING: tl.constexpr = False,
 ):
-    offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
+    pid = tl.program_id(0)
     # Widen before the multiply: row * stride_wn overflows int32 past 2^31 weight elements.
     if LONG_INDEXING:
-        w_rows = offs_n.to(tl.int64)
-    else:
-        w_rows = offs_n
+        pid = pid.to(tl.int64)
+    offs_n = pid * BLOCK_N + tl.arange(0, BLOCK_N)
     acc = tl.zeros((BLOCK_N, BLOCK_K), dtype = tl.float32)
     for k0 in range(0, K, BLOCK_K):
         offs_k = k0 + tl.arange(0, BLOCK_K)
         x = tl.load(x_ptr + offs_k, mask = offs_k < K, other = 0.0).to(tl.float32)
         w = tl.load(
-            w_ptr + w_rows[:, None] * stride_wn + offs_k[None, :],
+            w_ptr + offs_n[:, None] * stride_wn + offs_k[None, :],
             mask = (offs_n[:, None] < N) & (offs_k[None, :] < K),
             other = 0.0,
         ).to(tl.float32)
