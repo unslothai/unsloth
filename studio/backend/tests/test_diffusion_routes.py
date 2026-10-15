@@ -3122,9 +3122,7 @@ def test_stop_cancels_a_connection_run_and_progress_shows_it(client, monkeypatch
             await asyncio.wait_for(started.wait(), 5)
             progress = (await ac.get("/api/inference/images/generate-progress")).json()
             local = (await ac.post("/api/inference/images/generate/cancel")).json()
-            stop = (
-                await ac.post("/api/inference/images/generate/cancel?target=connection")
-            ).json()
+            stop = (await ac.post("/api/inference/images/generate/cancel?target=connection")).json()
             resp = await asyncio.wait_for(gen, 5)
             after = (await ac.get("/api/inference/images/generate-progress")).json()
             return progress, local, stop, resp, after
@@ -3162,7 +3160,9 @@ def test_connection_images_are_marked_in_the_gallery(client, monkeypatch):
     def handler(req):
         buf = io.BytesIO()
         Image.new("RGB", (64, 64)).save(buf, format = "PNG")
-        return httpx.Response(200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]})
+        return httpx.Response(
+            200, json = {"data": [{"b64_json": base64.b64encode(buf.getvalue()).decode()}]}
+        )
 
     _external_image_connection(monkeypatch, handler)
     resp = _post_generate(client, prompt = "a sloth", provider_id = "conn-1", model = "qwen-image")

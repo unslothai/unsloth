@@ -47495,7 +47495,6 @@ async def _external_image_generation(
                     task.cancel()
                     raise
                 from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
-
                 raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG) from None
             images = []
             for item in encoded:
