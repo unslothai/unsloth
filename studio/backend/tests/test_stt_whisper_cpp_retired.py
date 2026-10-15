@@ -307,6 +307,50 @@ def test_an_alias_unload_during_a_direct_load_leaves_it_resident(host, monkeypat
     assert host.unloads == []
 
 
+def test_a_failed_direct_download_hands_the_alias_its_download_back(host, monkeypatch):
+    from core.inference.stt_sidecar import SttModelCompatibilityError
+
+    asyncio.run(
+        ri.stt_download(
+            SttLoadRequest(model = "small", engine = "gguf"), current_subject = "tester", hf_token = None
+        )
+    )
+
+    def not_whisper(model, hf_token = None):
+        raise SttModelCompatibilityError(f"{model} is not a Whisper checkpoint")
+
+    monkeypatch.setattr(stt_module, "validate_remote_model", not_whisper)
+    with pytest.raises(HTTPException):
+        asyncio.run(
+            ri.stt_download(
+                SttLoadRequest(model = "someone/not-whisper", engine = "transformers"),
+                current_subject = "tester",
+                hf_token = None,
+            )
+        )
+    asyncio.run(ri.stt_download_cancel(SttLoadRequest(model = "small", engine = "gguf"), "tester"))
+    assert host.cancels == [("stt_sidecar", "transformers", "small")]
+
+
+def test_a_failed_direct_load_hands_the_alias_its_model_back(host, monkeypatch):
+    from core.inference.stt_sidecar import SttModelNotDownloadedError
+
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    _load("small", "gguf")
+    load, unload = ri._stt_lifecycle()
+
+    def not_downloaded(*_args, **_kwargs):
+        raise SttModelNotDownloadedError("not downloaded yet")
+
+    monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (not_downloaded, unload))
+    with pytest.raises(HTTPException):
+        _load("other/asr-model", "mtmd")
+    monkeypatch.setattr(ri, "_stt_lifecycle", lambda: (load, unload))
+    host.unloads.clear()
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert [list(engines) for engines, _ in host.unloads] == [["mtmd"]]
+
+
 def test_an_alias_unloads_the_transformers_model(host):
     _load("small", "gguf")
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))

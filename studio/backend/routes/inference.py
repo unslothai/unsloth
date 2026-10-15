@@ -25148,12 +25148,26 @@ def _direct_stt_request_starts(
     requested_engine: Optional[str],
     serving_engine: str,
     kind: str = "load",
-) -> None:
+) -> Optional[int]:
     """A direct request takes the engine back before it starts as well as after, so a legacy
-    unload or cancel arriving while it runs cannot free what it is putting there. If it then
-    fails, an earlier alias model or download is left to the idle unload or to finish."""
-    if _resolve_stt_engine(requested_engine) != "gguf":
-        _note_retired_alias_engine(requested_engine, serving_engine, kind)
+    unload or cancel arriving while it runs cannot free what it is putting there. Returns a
+    token for ``_direct_stt_request_failed`` when that took an alias request's claim."""
+    if _resolve_stt_engine(requested_engine) == "gguf":
+        return None
+    claimed = serving_engine in _RETIRED_ALIAS_SERVED[kind]
+    _note_retired_alias_engine(requested_engine, serving_engine, kind)
+    return _direct_stt_note_mark(serving_engine, kind) if claimed else None
+
+
+def _direct_stt_request_failed(
+    token: Optional[int],
+    serving_engine: str,
+    kind: str = "load",
+) -> None:
+    """A direct request that failed hands back the alias claim it took, so the alias request's
+    own unload or cancel still reaches it, unless another direct request noted the engine since."""
+    if token is not None and token == _direct_stt_note_mark(serving_engine, kind):
+        _RETIRED_ALIAS_SERVED[kind].add(serving_engine)
 
 
 def _retired_alias_engines(kind: str = "load") -> tuple[str, ...]:
@@ -25640,7 +25654,8 @@ async def stt_download(
     before = module.download_status()
     running_id = before.get("download_id") if before.get("downloading") else None
     direct_mark = _direct_stt_note_mark(engine, "download")
-    _direct_stt_request_starts(payload.engine, engine, "download")
+    direct_claim = _direct_stt_request_starts(payload.engine, engine, "download")
+    started = False
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
         # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
@@ -25662,10 +25677,14 @@ async def stt_download(
             download_id = await asyncio.to_thread(
                 _start_account_stt_download, module, engine, model, hf_token
             )
+        started = True
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
+    finally:
+        if not started:
+            _direct_stt_request_failed(direct_claim, engine, "download")
     _note_retired_alias_engine(
         payload.engine,
         engine,
@@ -25749,7 +25768,8 @@ async def stt_load(
     resident = sidecar.loaded_model
     already_resident = resident is not None and resident == _stt_resolved_model_id(model, engine)
     direct_mark = _direct_stt_note_mark(engine)
-    _direct_stt_request_starts(payload.engine, engine)
+    direct_claim = _direct_stt_request_starts(payload.engine, engine)
+    loaded_ok = False
     cancel_event = threading.Event()
     disconnect_watcher = asyncio.create_task(
         _await_stt_disconnect_then_cancel(request, sidecar, cancel_event)
@@ -25758,6 +25778,7 @@ async def stt_load(
         await asyncio.to_thread(
             functools.partial(load_stt, model, engine, cancel_event, device = payload.device)
         )
+        loaded_ok = True
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttUnavailableError as e:
@@ -25775,6 +25796,8 @@ async def stt_load(
         raise HTTPException(status_code = 500, detail = safe_error_detail(e))
     finally:
         await _stop_local_disconnect_cancel_watcher(disconnect_watcher)
+        if not loaded_ok:
+            _direct_stt_request_failed(direct_claim, engine)
     _note_retired_alias_engine(payload.engine, engine, reused = already_resident, since = direct_mark)
     # The load lock is released and another account may have switched engines, so claim only ours.
     loaded = sidecar.loaded_model
@@ -25990,16 +26013,20 @@ async def _transcribe_audio_result(
             model, serving_engine
         )
         direct_mark = _direct_stt_note_mark(serving_engine)
-        _direct_stt_request_starts(engine, serving_engine)
-        if source_path is not None and timestamps:
-            await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase, cancel_event)
-            # Started with its aligner now, or transcribe_path would restart it.
-            load_options["timestamps"] = True
-        await asyncio.to_thread(
-            functools.partial(
-                load_stt, model, serving_engine, cancel_event, device = device, **load_options
+        direct_claim = _direct_stt_request_starts(engine, serving_engine)
+        try:
+            if source_path is not None and timestamps:
+                await asyncio.to_thread(sidecar.ensure_aligner, model, on_phase, cancel_event)
+                # Started with its aligner now, or transcribe_path would restart it.
+                load_options["timestamps"] = True
+            await asyncio.to_thread(
+                functools.partial(
+                    load_stt, model, serving_engine, cancel_event, device = device, **load_options
+                )
             )
-        )
+        except BaseException:
+            _direct_stt_request_failed(direct_claim, serving_engine)
+            raise
         _note_retired_alias_engine(
             engine, serving_engine, reused = already_resident, since = direct_mark
         )
