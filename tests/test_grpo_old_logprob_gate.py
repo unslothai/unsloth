@@ -14,6 +14,8 @@ import pytest
 
 
 def _patched_generate_and_score():
+    if importlib.util.find_spec("trl") is None:
+        pytest.skip("trl is not installed")
     spec = importlib.util.find_spec("trl.trainer.grpo_trainer")
     if spec is None or spec.origin is None:
         pytest.skip("trl is not installed")
