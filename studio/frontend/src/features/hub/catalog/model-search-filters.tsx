@@ -69,7 +69,10 @@ const SECTION_LABEL =
 const SEPARATOR = "mx-1 my-2 h-px bg-border";
 // A picked capability: a flat grey a few steps down in light, a lift toward white in dark.
 const PICKED_FILL =
-  "bg-[color-mix(in_oklab,var(--foreground)_calc(7%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]";
+  "bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent),white_8%)]";
+// An unpicked capability: a faint wash in light, so a picked one stands off it; field-soft's tones in dark.
+const UNPICKED_FILL =
+  "bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),var(--popover))] hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),var(--popover))] dark:bg-[color-mix(in_srgb,var(--accent)_60%,transparent)] dark:hover:bg-(--accent)";
 // The sections' spacing without the line: only Reset all sits under one.
 const SECTION_GAP = "mx-1 my-2 h-px";
 
@@ -382,7 +385,7 @@ function OptionTile({
         "relative flex w-full cursor-pointer select-none items-center gap-2.5 rounded-full py-2 pr-8 pl-3.5 text-left text-sm transition-colors aria-disabled:cursor-default",
         checked
           ? cn(PICKED_FILL, "text-foreground")
-          : "field-soft text-muted-foreground hover:text-foreground",
+          : cn(UNPICKED_FILL, "text-muted-foreground hover:text-foreground"),
       )}
     >
       {icon}
