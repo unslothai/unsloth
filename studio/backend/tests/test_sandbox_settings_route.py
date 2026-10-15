@@ -488,3 +488,17 @@ def test_an_empty_windows_save_still_resets_every_cache(host, windows, memory):
     with _client(OWNER) as client:
         assert client.put("/sandbox", json = {}).status_code == 200
     assert calls["invalidate"] == 1 and calls["profile_reset"] == 1
+
+
+@pytest.mark.parametrize("update", [("26200.6584", "26200.9278"), None])
+def test_windows_status_names_the_update_that_adds_the_builtin_container(
+    windows, monkeypatch, update
+):
+    from core.inference import mxc_runtime, sandbox_setup_plan
+
+    monkeypatch.setattr(mxc_runtime, "installation_identity", lambda: "identity")
+    monkeypatch.setattr(mxc_runtime, "probe_host_prep_steps", lambda **_kw: [])
+    monkeypatch.setattr(sandbox_setup_plan, "windows_runtime_unsupported", lambda: None)
+    monkeypatch.setattr(sandbox_setup_plan, "windows_builtin_container_update", lambda: update)
+    block = settings._sandbox_windows_status()
+    assert (block.windows_build, block.builtin_container_build) == (update or (None, None))
