@@ -217,9 +217,9 @@ export function fitsDevice(opts: {
   return requireKnown ? false : true;
 }
 
-/** A safetensors chat load on a discrete GPU: transformers in 4-bit, with no CPU offload, since
- *  `raise_if_offloaded` (utils/hardware/hardware.py) refuses a model that spills. So it is judged
- *  on the calibrated 4-bit load estimate against VRAM alone, the same `estimateLoadingVram` /
+/** A safetensors chat load on a discrete GPU: transformers, 4-bit by default, with no CPU offload,
+ *  since `raise_if_offloaded` (utils/hardware/hardware.py) refuses a model that spills. So it is
+ *  judged on the default 4-bit load estimate against VRAM alone, the same `estimateLoadingVram` /
  *  `checkVramFit` verdict the row's badge shows. The GGUF rule scored it at the smallest GGUF
  *  quant and credited half of system RAM, so the filter kept rows badged "exceeds". */
 function fitsTransformersLoad(params: number, gpuGb: number): boolean {
