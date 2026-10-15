@@ -2646,7 +2646,15 @@ export function ImagesPage({
       }
       // A newer Unsloth or another tool can record settings this build cannot apply: name them.
       const notApplied = unknownRecipeKeys(recipe);
-      if (samplerOptions.length > 0) {
+      if (status?.loaded && samplerOptions.length === 0) {
+        // This model has no sampler choice: name a recorded one rather than drop it silently.
+        if (settings.schedule_type && settings.schedule_type !== AUTOMATIC_SCHEDULE) {
+          notApplied.unshift(`schedule ${settings.schedule_type}`);
+        }
+        if (settings.sampler && settings.sampler !== DEFAULT_SAMPLER) {
+          notApplied.unshift(`sampler ${settings.sampler}`);
+        }
+      } else if (samplerOptions.length > 0) {
         const offered = samplerOptions.find((o) => o.id === (settings.sampler ?? DEFAULT_SAMPLER));
         if (!offered) {
           notApplied.unshift(`sampler ${settings.sampler}`);

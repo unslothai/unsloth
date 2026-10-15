@@ -699,4 +699,6 @@ test("the import names a sampler or schedule the loaded model does not offer", (
   assert.match(block, /notApplied\.unshift\(`sampler \$\{settings\.sampler\}`\)/);
   assert.match(block, /offered\.schedule_types\.includes\(settings\.schedule_type\)/);
   assert.match(block, /newerRecipeSchema\(recipe\)/);
+  // A loaded model with no sampler choice still names a recorded sampler.
+  assert.match(block, /status\?\.loaded && samplerOptions\.length === 0/);
 });
