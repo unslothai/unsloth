@@ -351,9 +351,23 @@ function cursorAccent(): string {
   return accentColor;
 }
 
+/** Settings > Appearance > Reduce motion as `prefersReducedMotion` resolves it, read off the classes
+ *  it sets on <html>: importing the settings store here would cycle through features/settings. */
+function reducedMotion(): boolean {
+  if (typeof document === "undefined") return false;
+  const html = document.documentElement.classList;
+  if (html.contains("force-reduced-motion")) return true;
+  if (html.contains("force-motion")) return false;
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
 async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Promise<AgentAnswer> {
   const cursor = useBrowserAgentStore.getState().showCursor;
-  const command = { ...request, cursor, ...(cursor ? { cursorColor: cursorAccent() } : {}) };
+  const command = {
+    ...request,
+    cursor,
+    ...(cursor ? { cursorColor: cursorAccent(), cursorStill: reducedMotion() } : {}),
+  };
   const native = useNativeBrowser.getState().enabled;
   const started = Date.now();
   const fresh = () => {

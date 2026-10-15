@@ -544,6 +544,8 @@ export function installPageAgent(): PageAgent {
     const SVG = "http://www.w3.org/2000/svg";
     const IDLE_MS = 4000;
     let on = false;
+    // Reduce motion: the cursor jumps and fades instead of gliding, and presses get no ring.
+    let still = false;
     // Studio's accent as "r,g,b"; only digits parsed from rgb() ever reach a style.
     let rgb = "59,130,246";
     let parts: { host: HTMLElement; mover: HTMLElement; arrow: SVGSVGElement; ring: HTMLElement; rgb: string } | null = null;
@@ -637,6 +639,7 @@ export function installPageAgent(): PageAgent {
         }
         const color = typeof command.cursorColor === "string" ? /^rgb\((\d{1,3}), (\d{1,3}), (\d{1,3})\)$/.exec(command.cursorColor) : null;
         if (color) rgb = color.slice(1).map((part) => Math.min(255, Number(part))).join(",");
+        if (typeof command.cursorStill === "boolean") still = command.cursorStill;
       },
       /** Glides to `at` (CSS px of the viewport); `press` adds the ring. Drag steps come every frame,
        *  so they follow closely (`glideMs`); a jump to a new target eases. */
@@ -651,14 +654,14 @@ export function installPageAgent(): PageAgent {
         }
         // Appearing after a rest: at the target, not gliding in from where it faded, and without the
         // forced layout a transition reset would need.
-        const glide = shown;
+        const glide = shown && !still;
         c.mover.style.transition = glide
           ? `transform ${glideMs}ms cubic-bezier(.2,.7,.3,1), opacity 160ms ease-out`
           : "opacity 160ms ease-out";
         c.mover.style.transform = `translate3d(${Math.round(at.x)}px, ${Math.round(at.y)}px, 0)`;
         c.mover.style.opacity = masking ? "0" : "1";
         shown = true;
-        if (press && typeof c.ring.animate === "function") {
+        if (press && !still && typeof c.ring.animate === "function") {
           c.ring.animate(
             [
               { transform: "scale(.35)", opacity: 0.9 },

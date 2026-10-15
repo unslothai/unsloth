@@ -12,11 +12,14 @@ const { useBrowserAgentStore } = await import("../src/features/browser/agent/age
 const globals = globalThis as Record<string, unknown>;
 const policy = { allowedDomains: [], blockedDomains: [] };
 
+const stills: unknown[] = [];
+
 async function cursorFlags(url: string): Promise<unknown[]> {
   globals.__authFetch = async () => new Response(null, { status: 200 });
   const flags: unknown[] = [];
   globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
     flags.push(op.cursor);
+    stills.push(op.cursorStill);
     if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000, doc: "r1" } };
     return { installed: true, result: { ok: true, text: "page", links: [] } };
   };
@@ -30,6 +33,8 @@ test("the cursor is on by default and every page command carries the setting", a
   const flags = await cursorFlags("https://example.com/a");
   assert.ok(flags.length > 0);
   assert.ok(flags.every((flag) => flag === true), flags.join(", "));
+  // Reduce motion travels with the cursor; off here, where there is no document to read it from.
+  assert.ok(stills.every((still) => still === false), stills.join(", "));
 });
 
 test("turning the cursor off in Settings reaches the page on the next command", async () => {
