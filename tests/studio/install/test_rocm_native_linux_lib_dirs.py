@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Coverage for the native-Linux system-ROCm library prepend (PR #7233).
-
-#7233 fixed the segfault-on-launch class of AMD reports (#7208, #7310, #6276 and
-the native-Linux half of #7307): a prebuilt llama.cpp ships its own libggml-hip /
-HIP runtime, and on a bare-metal ROCm box that bundled runtime can disagree with
-the host amdkfd driver, so the server dies the moment a model is loaded. The fix
-prepends the *system* ROCm lib dirs ahead of the bundle on LD_LIBRARY_PATH.
-
-It landed as two hand-copied helpers, one in the installer (validation-time) and
-one in the serve-time launcher:
-
-  studio/install_llama_prebuilt.py  _bundled_hip_present / _native_linux_system_rocm_lib_dirs
-  studio/backend/core/inference/llama_cpp.py   same two, "mirrors" comment only
-
-and shipped with no tests at all: the WSL sibling helper added earlier has
-TestWslSystemRocmLibDirs / TestBinaryEnvWslOrdering / TestLlamaCppRuntimeWslOrdering,
-the native-Linux one has nothing. Every gate here is a false-positive risk that
-would silently reorder LD_LIBRARY_PATH for users the fix was never meant to touch
-(WSL, NVIDIA hosts, macOS, containers without /dev/kfd), so each gate gets a test,
-and both copies are run against the same fake host and required to agree.
-
-llama_cpp.py cannot be imported from the test suite (module-level structlog /
-backend imports), so its two helpers are lifted out with ast and exec'd standalone.
-"""
+"""System ROCm lib dirs go before the bundled HIP runtime on LD_LIBRARY_PATH, or the server segfaults."""
 
 import ast
 import importlib.util
@@ -118,14 +95,9 @@ def _call(
     present,
     platform = "linux",
 ):
-    """Run one copy of the helper against a fake host.
-
-    sys.platform is patched inside the call rather than in a fixture: pytest's own
-    tmp_path factory branches on it, so a session-wide patch breaks the fixture on
-    a Windows test host."""
+    """Patches sys.platform inside the call, not in a fixture: pytest's tmp_path branches on it."""
     with patch.object(sys, "platform", platform):
-        # isdir too: the llvm probe requires a directory, so a fake host that only answers exists() would report every
-        # nested llvm dir as missing.
+        # isdir too: the llvm probe requires a directory.
         with (
             patch("os.path.exists", _fake_exists(present)),
             patch("os.path.isdir", _fake_exists(present)),
@@ -318,15 +290,13 @@ class TestNativeLinuxRootResolution:
         (root / "lib" / "llvm").mkdir()
         (root / "lib" / "llvm" / "lib").write_text("not a directory")
         real_exists = os.path.exists
-        # Pin both device nodes: a WSL test host really has /dev/dxg, which would
-        # take the WSL early-return and make this pass for the wrong reason.
+        # A WSL test host really has /dev/dxg, which would take the WSL early return.
         pinned = {"/dev/kfd": True, "/dev/dxg": False}
 
         def _exists(p):
             return pinned.get(str(p), None) if str(p) in pinned else real_exists(p)
 
-        # A test host may itself have a real /opt/rocm (the default candidate), so assert on the bogus entry rather than
-        # on the whole list.
+        # The test host may have a real /opt/rocm, so assert on the bogus entry only.
         for where, impl in _impls().items():
             with (
                 patch.object(sys, "platform", "linux"),
@@ -377,10 +347,7 @@ class TestHelperParity:
 
 
 def _function_ast(path: Path, name: str) -> ast.FunctionDef:
-    """The function's executable body, with docstring and type annotations
-    stripped: llama_cpp.py quotes its annotations ('list[str]') for the
-    older-typing lint and documents itself as mirroring the installer. Neither is
-    drift; the code is."""
+    """Strips docstrings and annotations from the AST, so only code differences count as drift."""
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     for node in tree.body:
         if isinstance(node, ast.FunctionDef) and node.name == name:

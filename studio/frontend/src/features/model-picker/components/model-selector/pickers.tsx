@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/tooltip";
 import { isTouchClick } from "@/components/ui/touch-click";
 import { usePlatformStore } from "@/config/env";
+import { useIsAccountOwner } from "@/features/auth";
 import { ApiProviderLogo } from "@/features/chat";
 import {
   type ScanFolderInfo,
@@ -89,6 +90,7 @@ import {
 } from "@/features/hub";
 import type { HfTaskFilter } from "@/features/hub/hooks/use-hub-model-search";
 import { INVENTORY_FRESHNESS_WINDOW_MS } from "@/features/hub/inventory";
+import { pickNativeModelFolder } from "@/features/native-intents";
 import {
   type NpuModel,
   type NpuPickerSource,
@@ -3598,6 +3600,18 @@ export function HubModelPicker({
     ],
   );
 
+  const isOwner = useIsAccountOwner();
+  const browseForFolder = useCallback(async () => {
+    const picked = await pickNativeModelFolder(isOwner);
+    if (picked === undefined) {
+      setShowFolderBrowser(true);
+    } else if (picked) {
+      setFolderInput(picked);
+      setFolderError(null);
+      void handleAddFolder(picked);
+    }
+  }, [handleAddFolder, isOwner]);
+
   const handleRemoveFolder = useCallback(
     async (id: number) => {
       try {
@@ -6086,7 +6100,7 @@ export function HubModelPicker({
     "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between gap-1.5 pl-4 pr-3.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu matching the trigger; keep the option's right padding so the checkmark never overlaps the label.
   const sortMenuContentClassName =
-    "!p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
+    "picker-option-menu !p-1 !rounded-[14px] [&_[role=option]]:!pl-2 [&_[role=option]]:!py-1.5 [&_[role=option]]:!text-xs [&_[role=option]]:!rounded-[10px]";
   // Device-fit toggle inside the sort menu. The whole row is the button: a Checkbox renders as a
   // <button> and label-click forwarding is unreliable, so the Checkbox is presentational.
   const fitOnDeviceFooter = (
@@ -6138,6 +6152,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           RECOMMENDED_SORT_OPTIONS.find((o) => o.value === recommendedSort)
             ?.label ?? recommendedSort,
@@ -6153,6 +6168,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === downloadedSort)?.label ??
             downloadedSort,
@@ -6167,6 +6183,7 @@ export function HubModelPicker({
         align="end"
         className={sortTriggerClassName}
         contentClassName={sortMenuContentClassName}
+        composer={false}
         triggerContent={sortTriggerContent(
           LOCAL_SORT_OPTIONS.find((o) => o.value === customSort)?.label ??
             customSort,
@@ -7288,6 +7305,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
               />
               <HubOptionMenu
                 value={connectedSort}
@@ -7297,6 +7315,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 triggerContent={sortTriggerContent(
                   CONNECTED_SORT_OPTIONS.find(
                     (option) => option.value === connectedSort,
@@ -7314,6 +7333,7 @@ export function HubModelPicker({
                 align="end"
                 className={sortTriggerClassName}
                 contentClassName={sortMenuContentClassName}
+                composer={false}
                 // Audio has no sort for its listing, so the fit toggle lives here.
                 footer={
                   audioTaskPicker && section === "recommended"
@@ -7702,7 +7722,7 @@ export function HubModelPicker({
                     >
                       <button
                         type="button"
-                        onClick={() => setShowFolderBrowser(true)}
+                        onClick={() => void browseForFolder()}
                         title="Browse folders on the server"
                         className="flex items-center gap-1.5 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:text-foreground"
                       >
@@ -7743,7 +7763,7 @@ export function HubModelPicker({
                           type="button"
                           aria-label="Browse for a folder on the server"
                           title="Browse folders on the server"
-                          onClick={() => setShowFolderBrowser(true)}
+                          onClick={() => void browseForFolder()}
                           className="shrink-0 rounded p-0.5 text-muted-foreground/80 transition-colors hover:text-foreground"
                         >
                           <HugeiconsIcon
@@ -7882,7 +7902,7 @@ export function HubModelPicker({
                           />
                           <button
                             type="button"
-                            onClick={() => setShowFolderBrowser(true)}
+                            onClick={() => void browseForFolder()}
                             disabled={folderLoading}
                             aria-label="Browse for folder"
                             title="Browse folders on the server"

@@ -617,7 +617,7 @@ def test_responses_endpoint_wires_auto_switch_before_streaming_dispatch():
     src = inspect.getsource(inference_route.openai_responses)
     assert "_maybe_auto_switch_model" in src
     hook_at = src.index("_maybe_auto_switch_model")
-    assert src.index("if payload.stream:") < hook_at
+    assert src.index("if payload.stream or connection is not None:") < hook_at
     assert hook_at < src.index("_responses_stream")
 
 

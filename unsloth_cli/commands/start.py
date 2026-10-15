@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Literal, NamedTuple, NoReturn, Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import click
 import typer
@@ -1878,6 +1878,7 @@ def _agent_api_key(
     explicit: Optional[str],
     *,
     auto_started: bool = False,
+    minted_only: bool = False,
 ) -> str:
     cache = _key_cache_path()
     if explicit:
@@ -1887,7 +1888,7 @@ def _agent_api_key(
         # The server was auto-started for this run, so an exported UNSLOTH_API_KEY meant for some other server must not fail the launch: the loopback mint path below is guaranteed to work. An explicit key the fresh server accepts is still honored above.
 
     # Replay a key the user saved for THIS EXACT server first (scoped per base, so it only goes back there, including a remote or SSH-tunnelled Unsloth whose secret the local handshake cannot match). Skip ones the server rejects.
-    for key in _cached_keys(cache, base, "saved"):
+    for key in [] if minted_only else _cached_keys(cache, base, "saved"):
         if _key_accepted(base, key):
             _remember_key(cache, base, key, "saved")
             return key
@@ -4626,6 +4627,52 @@ def _launch(
     return code if code >= 0 else 128 - code
 
 
+_CONNECTION_MODEL_PREFIX = "external::"
+
+
+def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dict]:
+    # Studio names a Connection model external::<connection id>::<url-encoded model>; a bare name counts when one enabled Connection lists it and no loaded model has it.
+    if not model:
+        return None
+    explicit = model.startswith(_CONNECTION_MODEL_PREFIX)
+    if not explicit and any(
+        _model_id_matches(entry.get("id"), name, allow_casefold = is_loopback_url(base))
+        for entry in _loaded_models(base, key)
+        if entry.get("loaded") is not False
+        for name in (model, _split_repo_variant(model)[0])
+    ):
+        return None
+    try:
+        providers = _http_json("GET", f"{base}/api/providers/", key)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        # A 4xx is an older server or a key without Connections; anything else must not fall
+        # through to a load that could evict the resident model.
+        if explicit or not (isinstance(exc, urllib.error.HTTPError) and exc.code < 500):
+            _fail_request(exc, "Couldn't list Connections")
+        return None
+    enabled = [p for p in providers or [] if isinstance(p, dict) and p.get("is_enabled")]
+    if explicit:
+        provider_id = model[len(_CONNECTION_MODEL_PREFIX) :].partition("::")[0]
+        matches = [p for p in enabled if p.get("id") == provider_id]
+        if not matches:
+            _fail(f"No enabled Connection {provider_id!r} on {base}. Check Settings → Connections.")
+    else:
+        matches = [p for p in enabled if model in (p.get("models") or [])]
+        if not matches:
+            return None
+    usable = [p for p in matches if p.get("auth_kind") != "chatgpt_oauth"]
+    if not usable:
+        _fail(
+            f"{model} is on a ChatGPT subscription Connection, which only the Unsloth chat can use."
+        )
+    if explicit:
+        return {"id": model, "connection": usable[0].get("display_name") or usable[0]["id"]}
+    ids = [f"{_CONNECTION_MODEL_PREFIX}{p['id']}::{quote(model, safe = '')}" for p in usable]
+    if len(ids) > 1:
+        _fail(f"{model} is offered by more than one Connection. Pass one of: {', '.join(ids)}")
+    return {"id": ids[0], "connection": usable[0].get("display_name") or usable[0]["id"]}
+
+
 def _connect(
     api_key: Optional[str],
     model: Optional[str],
@@ -4635,20 +4682,60 @@ def _connect(
     launch: bool = True,
     server_options: ServerOptions = ServerOptions(),
     preload_check = None,
+    connections: bool = False,
 ) -> tuple:
     _refuse_npu_model(model)
+    requested = model
+    explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
-    if model:
+    if model and not explicit_connection:
         repo, variant = _split_repo_variant(model)
         if variant:
             model = repo
             if not load.gguf_variant:
                 load = load._replace(gguf_variant = variant)
     base, server = _require_studio(
-        model, load, serve = serve, launch = launch, server_options = server_options
+        model,
+        load,
+        serve = serve and not explicit_connection,
+        launch = launch,
+        server_options = server_options,
     )
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
+        connection = None if server is not None else _connection_entry(base, key, requested)
+        if connection is not None:
+            if not connections:
+                _fail(
+                    f"{requested} is a Connection model, and this agent can only use models "
+                    "loaded in Unsloth. Connection models work with `unsloth start claude`, "
+                    "`unsloth start codex` and `unsloth start opencode`."
+                )
+            typer.echo(f"Using {requested} from the Connection {connection['connection']}.")
+            # A Connection reports no context window; an explicit one lets agents size compaction.
+            if load.max_seq_length > 0:
+                connection["context_length"] = load.max_seq_length
+            else:
+                typer.echo(
+                    "Pass --max-seq-length with the model's context window so the agent can "
+                    "compact before the provider runs out of context.",
+                    err = True,
+                )
+            if (
+                key not in _cached_keys(_key_cache_path(), base, "minted")
+                and not api_key
+                and is_loopback_url(base)
+                and verify_studio_identity(base)
+            ):
+                key = _agent_api_key(base, None, minted_only = True)
+            if key not in _cached_keys(_key_cache_path(), base, "minted"):
+                typer.echo(
+                    "Warning: Studio only sends a Connection's saved API key for the key "
+                    "`unsloth start` issues, so drop --api-key / UNSLOTH_API_KEY unless this "
+                    "Connection needs no key.",
+                    err = True,
+                )
+            return base, key, connection
         # A server we just started has exactly the requested model loaded, so resolve to whatever it is serving instead of re-matching the raw --model string. Only an attach can still trigger an evicting load, so _resolve_model gets the pre-load check and runs it only when that load is imminent.
         entry = _resolve_model(
             base,
@@ -6640,16 +6727,22 @@ def claude(
         launch = launch,
         preload_check = functools.partial(_attach_gguf_check, _CLAUDE_GGUF_AGENT),
         server_options = server_options,
+        connections = True,
     )
     # Before the launch owns the server, so a rejection tears it down, not atexit.
     try:
-        _require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])
+        if not entry.get("connection"):
+            _require_gguf_for_agent(_CLAUDE_GGUF_AGENT, base, key, entry["id"])
     except BaseException:
         _shutdown_auto_served()
         raise
     model_id = entry["id"]
     if as_subagent:
-        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_id = (
+            model_id
+            if entry.get("connection")
+            else _subagent_model_id(base, key, entry, model, gguf_variant)
+        )
         subagent_model = {**entry, "id": subagent_id}
         window = subagent_model.get("context_length") or subagent_model.get("max_context_length")
         server_env = {
@@ -6786,17 +6879,25 @@ def codex(
         launch = launch,
         preload_check = functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
         server_options = server_options,
+        connections = True,
     )
     # This preflight runs after _connect may have auto-started a server but before _run takes over its lifecycle, so tear the server down here if it rejects the model (a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
-        _require_gguf_for_agent(_CODEX_GGUF_AGENT, base, key, entry["id"])
+        if not entry.get("connection"):
+            _require_gguf_for_agent(_CODEX_GGUF_AGENT, base, key, entry["id"])
     except BaseException:
         _shutdown_auto_served()
         raise
+    if app and entry.get("connection"):
+        _fail("The Codex app can't use a Connection model yet. Drop --app to run it in Codex.")
     if app:
         return _codex_app_session(base, api_key, entry)
     if as_subagent:
-        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_id = (
+            entry["id"]
+            if entry.get("connection")
+            else _subagent_model_id(base, key, entry, model, gguf_variant)
+        )
         subagent_model = {**entry, "id": subagent_id}
         with _session_config("codex-subagent", launch, persist = persist) as home:
             bridge_config = write_codex_subagent_bridge(
@@ -7019,7 +7120,12 @@ def opencode(
         serve = serve,
         launch = launch,
         server_options = server_options,
+        connections = True,
     )
+    if app and entry.get("connection"):
+        _fail(
+            "The OpenCode app can't use a Connection model yet. Drop --app to run it in OpenCode."
+        )
     if app:
         target = _opencode_app_target(max_tokens, server_options.request_body())
         return _add_app_provider(target, base, api_key, entry)
@@ -7029,7 +7135,11 @@ def opencode(
             err = True,
         )
     if as_subagent:
-        subagent_id = _subagent_model_id(base, key, entry, model, gguf_variant)
+        subagent_id = (
+            entry["id"]
+            if entry.get("connection")
+            else _subagent_model_id(base, key, entry, model, gguf_variant)
+        )
         subagent_model = {**entry, "id": subagent_id}
         # Stay append-safe for a bare no-launch recipe: a later `run <prompt>` would make `opencode --auto run ...` parse as the TUI, so keep yolo in the inline fallback.
         route_native_auto = (
