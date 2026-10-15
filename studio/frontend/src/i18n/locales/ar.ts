@@ -83,6 +83,9 @@ export const ar = {
     },
     agent: {
       working: "يتصفح Unsloth في علامة التبويب هذه",
+      waiting: "يحتاج Unsloth إلى ردك في المتصفح من أجل {chat}",
+      otherChat: "محادثة أخرى",
+      show: "عرض",
       stop: "إيقاف",
       allow: "السماح",
       deny: "الرفض",

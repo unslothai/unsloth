@@ -4,13 +4,17 @@
 //! Print and screenshot for the browser panel. Native views use their own engine; everything else
 //! is captured from the app's webview, cropped to the page area.
 
-use crate::browser_webview::{require_main, view, ViewBounds};
+use crate::browser_webview::{
+    end_capture, require_main, show_for_capture, view, BrowserViews, ViewBounds,
+};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::ipc::Response;
 use tauri::{Manager, Runtime, Webview};
 
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
+const SHOW_FOR_CAPTURE_PAINT: Duration = Duration::from_millis(150);
+/// Larger than any screen's worth of pixels; a bigger answer is not a screenshot.
 const MAX_PNG_BYTES: usize = 64 * 1024 * 1024;
 
 /// A rect in the calling webview's CSS pixels, plus its width in CSS pixels to scale by its zoom.
@@ -32,6 +36,8 @@ pub async fn browser_capture<R: Runtime>(
     bounds: Option<ViewBounds>,
 ) -> Result<Response, String> {
     require_main(&webview)?;
+    let app = webview.app_handle().clone();
+    let tab = tab_id.clone();
     let (target, clip) = match (tab_id, bounds) {
         (Some(tab_id), _) => (view(webview.app_handle(), &tab_id)?, None),
         (None, Some(bounds)) => {
@@ -57,10 +63,25 @@ pub async fn browser_capture<R: Runtime>(
             let _ = sender.send(result);
         }
     });
-    target
+    let views = app.state::<BrowserViews>();
+    let shown_for_shot = tab
+        .as_deref()
+        .is_some_and(|tab| show_for_capture(&views, &target, tab));
+    if shown_for_shot {
+        // A frame for the page to paint where it now sits.
+        tokio::time::sleep(SHOW_FOR_CAPTURE_PAINT).await;
+    }
+    let captured = target
         .with_webview(move |platform| platform_capture(platform, clip, done))
-        .map_err(|error| error.to_string())?;
-    let png = match tokio::time::timeout(CAPTURE_TIMEOUT, receiver).await {
+        .map_err(|error| error.to_string());
+    let png = match captured {
+        Ok(()) => tokio::time::timeout(CAPTURE_TIMEOUT, receiver).await,
+        Err(error) => Ok(Ok(Err(error))),
+    };
+    if let (true, Some(tab)) = (shown_for_shot, tab.as_deref()) {
+        end_capture(&views, &target, tab);
+    }
+    let png = match png {
         Ok(Ok(result)) => result?,
         _ => return Err("The screenshot didn't finish".into()),
     };

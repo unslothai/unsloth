@@ -72,7 +72,7 @@ const contracts: Contract[] = [
       ["cancel", /run\.cancelPromise = cancelPromise;/],
       ["cancel", /ownsModelLoadRun\(activeLoadRunRef\.current, run\)/], ["cancel", /releaseOwnedModelLoadRun\(/]] },
   { name: "the matching request ID is threaded to both /load and its cancel",
-    match: [["registration", /requestId: crypto\.randomUUID\(\),/],
+    match: [["registration", /requestId: createNavigationNonce\(\),/],
       ["runtime", /load_request_id: loadRun\.requestId,/],
       ["cancel", /cancel_load_request_id: run\.requestId,/], ["cancel", /model_path: run\.loadAttemptPath,/],
       ["runtime", /loadRun\.loadAttemptPath = loadPath;/]],

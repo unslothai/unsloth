@@ -2100,6 +2100,7 @@ fn main() {
             app_menu::set_app_menu_actions,
             browser_webview::browser_view_supported,
             browser_webview::browser_view_show,
+            browser_webview::browser_view_open_background,
             browser_webview::browser_view_navigate,
             browser_webview::browser_view_action,
             browser_webview::browser_view_zoom,

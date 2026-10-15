@@ -16,6 +16,7 @@ import {
 } from "../lib/server-tuning-fields";
 import { createElement, useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "@/lib/toast";
+import { createNavigationNonce } from "@/lib/navigation-nonce";
 import {
   isBackendDownForDesktopUpdate,
   isSilencedDesktopUpdateFailure,
@@ -1073,11 +1074,15 @@ export function useChatModelRuntime() {
   const cancelLoadingWithCheckpointPolicy = useCallback(
     (preserveCheckpoint = false): Promise<boolean> => {
       const run = activeLoadRunRef.current;
-      return run
-        ? cancelLoadRun(run, preserveCheckpoint)
-        : Promise.resolve(false);
+      if (run) return cancelLoadRun(run, preserveCheckpoint);
+      if (loadingModelRef.current) {
+        const tid = loadToastIdRef.current;
+        resetLoadingUi();
+        if (tid != null) toast.dismiss(tid);
+      }
+      return Promise.resolve(false);
     },
-    [cancelLoadRun],
+    [cancelLoadRun, resetLoadingUi],
   );
 
   const cancelLoading = useCallback(
@@ -1778,7 +1783,7 @@ export function useChatModelRuntime() {
         settledPromise: loadRunSettled,
         markSettled: markLoadRunSettled,
 
-        requestId: crypto.randomUUID(),
+        requestId: createNavigationNonce(),
         loadAttemptPath: null,
       };
       activeLoadRunRef.current = loadRun;
@@ -2240,6 +2245,7 @@ export function useChatModelRuntime() {
                   ) {
                     pendingReplacementRollback = null;
                   }
+                  toast.dismiss(toastId);
                   resetLoadingUiForRun(loadRun);
                   abortCtrl.abort();
                   throw new Error("Cancelled");
@@ -3115,7 +3121,7 @@ export function useChatModelRuntime() {
                       getDownloadProgress(progressModelId, hfToken, mlxLoadProgress),
                     ),
                   );
-            if (!loadingModelRef.current) return;
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return;
             if (
               progressModelIdsAtRequest.length !== progressModelIds.length ||
               progressModelIdsAtRequest.some(
@@ -3247,7 +3253,7 @@ export function useChatModelRuntime() {
           }
           try {
             const prog = await getLoadProgress();
-            if (!loadingModelRef.current) return;
+            if (abortCtrl.signal.aborted || !loadingModelRef.current) return;
             if (!prog || prog.phase == null) return;
             if (prog.phase === "ready") {
               if (progressInterval) clearInterval(progressInterval);
@@ -3488,7 +3494,7 @@ export function useChatModelRuntime() {
         attemptId: loadIntentId,
         intentId: loadIntentId,
         abortController: abortCtrl,
-        requestId: crypto.randomUUID(),
+        requestId: createNavigationNonce(),
         loadAttemptPath: null,
         cancelPromise: null,
         rollbackCheckpoint: previousCheckpoint,

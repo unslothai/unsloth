@@ -45,7 +45,8 @@ import { hostOf } from "./address";
 import { callNative, useNativeBrowser } from "./native-support";
 import { nativeAction, hasNativeView } from "./native-view";
 import { type PinnedPage, usePinnedPagesStore } from "./pinned-pages-store";
-import { type BrowserTab, currentEntry, useBrowserStore } from "./store";
+import { type BrowserTab, chatTabs, currentEntry, useBrowserStore } from "./store";
+import { useShallow } from "zustand/shallow";
 
 const ICON = "size-icon";
 
@@ -84,7 +85,7 @@ export function tabAddress(tab: BrowserTab | undefined): string | null {
 
 export function usePinnedTab(pinnedId: string | undefined): BrowserTab | undefined {
   return useBrowserStore((state) =>
-    pinnedId ? state.tabs.find((tab) => tab.pinnedId === pinnedId) : undefined,
+    pinnedId ? chatTabs(state).find((tab) => tab.pinnedId === pinnedId) : undefined,
   );
 }
 
@@ -187,7 +188,7 @@ export function TabMenuItems({
 }) {
   const t = useT();
   const navigate = useNavigate();
-  const tabs = useBrowserStore((state) => state.tabs);
+  const tabs = useBrowserStore(useShallow(chatTabs));
   const url = (tab && tabAddress(tab)) ?? pinned?.url ?? null;
   const pinnedId = pinned?.id ?? tab?.pinnedId ?? null;
   const index = tab ? tabs.findIndex((other) => other.id === tab.id) : -1;
