@@ -4921,6 +4921,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
+        if config.get("_ddp_child") and (
+            getattr(trainer, "_audio_type", None)
+            or getattr(trainer, "is_audio", False)
+            or getattr(trainer, "is_vlm", False)
+            or getattr(trainer, "is_audio_vlm", False)
+        ):
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": "DDP supports text models only. Choose another GPU placement for "
+                    "vision and audio models.",
+                    "ts": time.time(),
+                }
+            )
+            return
 
         # Packing opt-out reads the probed branch, not client flags; streaming and explicit ranges opt out.
         raw_text_mode = is_cpt_for_dataset or config.get("format_type") == "raw"

@@ -20,6 +20,25 @@ export function selectedTrainingPreviewDevices(
   );
 }
 
+// The server runs DDP for text models only; the other training paths are not rank-aware.
+export function ddpSupportsModel(config: {
+  modelType: string | null;
+  isEmbeddingModel: boolean;
+  isVisionModel: boolean;
+  isAudioModel: boolean;
+  isDatasetImage: boolean | null;
+  isDatasetAudio: boolean;
+}): boolean {
+  return (
+    (config.modelType === null || config.modelType === "text") &&
+    !config.isEmbeddingModel &&
+    !config.isVisionModel &&
+    !config.isAudioModel &&
+    !config.isDatasetImage &&
+    !config.isDatasetAudio
+  );
+}
+
 export function showsTrainingHardwareTab(
   mode: TrainingParallelismMode,
   devices: readonly SystemGpuDevice[],
