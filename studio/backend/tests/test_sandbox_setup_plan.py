@@ -485,3 +485,65 @@ def test_windows_commands_paste_into_windows_powershell():
         "& 'C:\\Users\\Jane Doe\\python.exe' 'C:\\Users\\Jane Doe\\studio\\install_mxc_prebuilt.py' "
         "'--install-dir' 'x'\n& 'C:\\it''s\\python.exe' '--prepare-host'"
     )
+
+
+@pytest.mark.parametrize(
+    "build,ubr,expected",
+    [
+        (26200, 6584, ("26200.6584", "26200.9278")),  # 25H2 held back by a feature-update policy
+        (26100, 9277, ("26100.9277", "26100.9278")),
+        (26200, 9278, None),
+        (26300, 9549, ("26300.9549", "26300.9550")),
+        (26120, 1, None),  # no published floor: say nothing rather than guess
+    ],
+)
+def test_windows_names_the_update_that_adds_the_builtin_container(
+    monkeypatch, build, ubr, expected
+):
+    import types
+
+    class Key:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    winreg = types.SimpleNamespace(
+        HKEY_LOCAL_MACHINE = object(),
+        OpenKey = lambda *_a: Key(),
+        QueryValueEx = lambda _key, _name: (ubr, 4),
+    )
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        sys, "getwindowsversion", lambda: types.SimpleNamespace(build = build), raising = False
+    )
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+    assert plan_mod.windows_builtin_container_update() == expected
+
+
+def test_windows_builtin_container_hint_is_silent_when_unreadable(monkeypatch):
+    import types
+
+    def refuse(*_a):
+        raise OSError("access denied")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        sys, "getwindowsversion", lambda: types.SimpleNamespace(build = 26200), raising = False
+    )
+    monkeypatch.setitem(
+        sys.modules, "winreg", types.SimpleNamespace(HKEY_LOCAL_MACHINE = 0, OpenKey = refuse)
+    )
+    assert plan_mod.windows_builtin_container_update() is None
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert plan_mod.windows_builtin_container_update() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "reads this PC's registry")
+def test_windows_builtin_container_hint_reads_this_pc():
+    update = plan_mod.windows_builtin_container_update()
+    if update is not None:
+        current, required = update
+        assert current.split(".")[0] == required.split(".")[0]
+        assert int(current.split(".")[1]) < int(required.split(".")[1])

@@ -851,6 +851,11 @@ function OsSandboxSections() {
                       ) : null}
                     </div>
                   </SettingsRow>
+                  {view.builtinUpdate ? (
+                    <p className="pb-2 text-xs text-muted-foreground leading-relaxed">
+                      {t("settings.sandbox.builtinNeedsUpdate", view.builtinUpdate)}
+                    </p>
+                  ) : null}
                   <p className="pb-2 text-xs text-muted-foreground leading-relaxed">
                     {t("settings.sandbox.disclosure")}
                   </p>
