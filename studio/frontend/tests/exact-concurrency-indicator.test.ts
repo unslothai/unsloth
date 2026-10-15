@@ -115,6 +115,15 @@ test("a rollback resends the exact setting the previous load asked for", () => {
     RUNTIME,
     /exact_concurrency: rollbackState\.loadedRequestedExactConcurrency/,
   );
+  // The rollback's own answer is published too: its `auto` can resolve differently.
+  assert.match(
+    RUNTIME,
+    /loadedRequestedExactConcurrency:\s*rollbackResponse\.requested_exact_concurrency \?\? null,/,
+  );
+  assert.match(
+    RUNTIME,
+    /loadedExactConcurrency: normalizeExactConcurrency\(\s*rollbackResponse\.exact_concurrency,?\s*\)/,
+  );
 });
 
 test("every status refresh republishes it, not just a seeded load", () => {

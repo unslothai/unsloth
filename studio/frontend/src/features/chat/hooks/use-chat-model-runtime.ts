@@ -3328,6 +3328,12 @@ export function useChatModelRuntime() {
                   loadedSpecDraftNMax:
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedSpecDraftModel: rollbackResponse.spec_draft_model ?? null,
+                  // As on a normal load: `auto` can resolve differently this time, and the refresh below can fail quietly.
+                  loadedRequestedExactConcurrency:
+                    rollbackResponse.requested_exact_concurrency ?? null,
+                  loadedExactConcurrency: normalizeExactConcurrency(
+                    rollbackResponse.exact_concurrency,
+                  ),
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   ...mlxRuntimeStateFrom(rollbackResponse),
                   // After the spread, which seeds the control from the echo; the control keeps its intent, like
