@@ -59,6 +59,8 @@ export const sv = {
       never: "Aldrig",
       scripts: "Köra skript",
       scriptsDescription: "Välj om modeller får köra skript på sidor. Varje skript visas för dig innan det körs",
+      cursor: "Visa markör",
+      cursorDescription: "Visar en pekare där modeller klickar, skriver och drar på sidan",
       askEveryTime: "Fråga varje gång",
       permissionsTitle: "Agentbehörigheter",
       permissionsDescription: "Välj standardvärden och lägg till undantag för vissa webbplatser. Lösenords- och betalningsfält fylls aldrig i, oavsett inställningarna här.",
@@ -81,6 +83,9 @@ export const sv = {
     },
     agent: {
       working: "Unsloth surfar i den här fliken",
+      waiting: "Unsloth behöver ditt svar i webbläsaren för {chat}",
+      otherChat: "en annan chatt",
+      show: "Visa",
       stop: "Stoppa",
       allow: "Tillåt",
       deny: "Neka",
@@ -2789,6 +2794,9 @@ export const sv = {
         showMemoryBar: "Stapel för VRAM-användning",
         showMemoryBarDescription:
           "Visa uppskattat VRAM för modellvikter, kontext och spekulativ avkodning.",
+        fitOnDeviceOnly: "Visa bara modeller som får plats",
+        fitOnDeviceOnlyDescription:
+          "Döljer modeller som är för stora för enhetens GPU-minne och RAM i modellväljaren och Hub. Hämtade modeller visas fortfarande.",
       },
       menu: {
         title: "Chattmeny",

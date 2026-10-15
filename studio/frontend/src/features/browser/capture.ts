@@ -86,6 +86,12 @@ export async function screenshotPage(tab: BrowserTab, element: HTMLElement): Pro
 
 const png = (bytes: ArrayBuffer) => (bytes.byteLength > 0 ? new Blob([bytes], { type: "image/png" }) : null);
 
+/** A PNG of a native page that isn't on screen (its chat isn't shown); the app shows it off the window for the shot. */
+export async function captureHiddenPage(tab: BrowserTab): Promise<Blob | null> {
+  if (!nativePageOf(tab)) return null;
+  return png(await callNative<ArrayBuffer>("browser_capture", { tabId: tab.id }));
+}
+
 async function nativeScreenshot(tab: BrowserTab, element: HTMLElement): Promise<Blob | null> {
   if (nativePageOf(tab)) {
     // A native view sits over the DOM and hides under the menu: capture it once it's back.

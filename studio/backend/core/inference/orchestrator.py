@@ -244,6 +244,25 @@ def _audio_generation_timeout(
     return base * token_scale
 
 
+def _music_generation_timeout(
+    timeout: float, audio_type: Optional[str], model_info: dict, music: Optional[dict]
+) -> float:
+    """Outlast the worker's music wait so its error, not the watchdog, reaches the caller."""
+    if music is not None:
+        try:
+            wait = float(music.get("timeout_s") or 0.0)
+        except (TypeError, ValueError):
+            wait = 0.0
+    elif audio_type == "audiocpp_music":
+        # Legacy calls carry no wait; a self-ending model (YuE2) runs past any token count.
+        from core.inference.audio_cpp_music import self_ending_timeout
+        backend = model_info.get("audio_cpp_backend")
+        wait = self_ending_timeout(model_info.get("audio_family"), backend) or 0.0
+    else:
+        return timeout
+    return max(timeout, wait + 60.0)
+
+
 _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_kv_bits",
     "mlx_kv_bits_requested",
@@ -3782,12 +3801,9 @@ class InferenceOrchestrator:
                     cmd["edit"] = dict(edit)
                 if music is not None:
                     cmd["music"] = dict(music)
-                    try:
-                        music_wait = float(music.get("timeout_s") or 0.0)
-                    except (TypeError, ValueError):
-                        music_wait = 0.0
-                    # Outlast the worker's wait so its error, not the watchdog, reaches the caller.
-                    generation_timeout = max(generation_timeout, music_wait + 60.0)
+                generation_timeout = _music_generation_timeout(
+                    generation_timeout, audio_type, model_info, music
+                )
                 if output_dir is not None:
                     cmd["output_dir"] = str(output_dir)
 

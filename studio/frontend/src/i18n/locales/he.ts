@@ -62,6 +62,8 @@ export const he = {
       never: "אף פעם",
       scripts: "הרצת סקריפטים",
       scriptsDescription: "בחרו אם מודלים יכולים להריץ סקריפטים בדפים. כל סקריפט מוצג לכם לפני שהוא רץ",
+      cursor: "הצגת סמן",
+      cursorDescription: "מציג סמן במקום שבו מודלים לוחצים, מקלידים וגוררים בדף",
       askEveryTime: "לשאול בכל פעם",
       permissionsTitle: "הרשאות הסוכן",
       permissionsDescription: "בחירת ברירות מחדל והוספת חריגים לאתרים מסוימים. שדות סיסמה ותשלום לעולם אינם ממולאים, לא משנה מה מוגדר כאן.",
@@ -84,6 +86,9 @@ export const he = {
     },
     agent: {
       working: "Unsloth גולש בכרטיסייה הזו",
+      waiting: "Unsloth צריך את התשובה שלך בדפדפן עבור {chat}",
+      otherChat: "צ׳אט אחר",
+      show: "הצג",
       stop: "עצירה",
       allow: "אישור",
       deny: "דחייה",
@@ -2705,6 +2710,9 @@ export const he = {
         showMemoryBar: "הצג סרגל שימוש ב-VRAM",
         showMemoryBarDescription:
           "הצג את ה-VRAM המוערך עבור משקולות המודל, ההקשר ופענוח ספקולטיבי.",
+        fitOnDeviceOnly: "הצג רק מודלים שמתאימים",
+        fitOnDeviceOnlyDescription:
+          "הסתר בבורר המודלים וב-Hub מודלים גדולים מדי לזיכרון ה-GPU וה-RAM של מכשיר זה. מודלים שהורדו נשארים גלויים.",
       },
       menu: {
         title: "תפריט צ'אט",

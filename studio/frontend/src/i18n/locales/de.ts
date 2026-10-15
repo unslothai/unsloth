@@ -61,6 +61,8 @@ export const de = {
       never: "Nie",
       scripts: "Skripte ausführen",
       scriptsDescription: "Lege fest, ob Modelle Skripte auf Seiten ausführen dürfen. Jedes Skript wird dir vorher angezeigt",
+      cursor: "Cursor anzeigen",
+      cursorDescription: "Zeigt einen Zeiger dort, wo Modelle auf der Seite klicken, tippen und ziehen",
       askEveryTime: "Jedes Mal fragen",
       permissionsTitle: "Agent-Berechtigungen",
       permissionsDescription: "Lege Standardwerte fest und füge Ausnahmen für bestimmte Websites hinzu. Passwort- und Zahlungsfelder werden nie ausgefüllt, egal was hier steht.",
@@ -83,6 +85,9 @@ export const de = {
     },
     agent: {
       working: "Unsloth surft in diesem Tab",
+      waiting: "Unsloth braucht im Browser deine Antwort für {chat}",
+      otherChat: "einen anderen Chat",
+      show: "Anzeigen",
       stop: "Stopp",
       allow: "Erlauben",
       deny: "Ablehnen",
@@ -2631,6 +2636,9 @@ export const de = {
         showMemoryBar: "VRAM-Auslastungsbalken anzeigen",
         showMemoryBarDescription:
           "Zeigt unter jeder Zeile eines heruntergeladenen Modells den geschätzten VRAM-Bedarf: Gewichte, KV-Cache bei der Kontextlänge, mit der das Modell geladen wird, und eine eventuelle Reserve für spekulatives Decoding.",
+        fitOnDeviceOnly: "Nur passende Modelle anzeigen",
+        fitOnDeviceOnlyDescription:
+          "Blendet in der Modellauswahl und im Hub Modelle aus, die für den GPU-Speicher und RAM dieses Geräts zu groß sind. Heruntergeladene Modelle bleiben sichtbar.",
       },
       menu: {
         title: "Chatmenü",

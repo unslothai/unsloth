@@ -61,6 +61,8 @@ export const zhCN = {
       never: "从不",
       scripts: "运行脚本",
       scriptsDescription: "选择模型是否可以在页面上运行脚本。每个脚本运行前都会先向你显示",
+      cursor: "显示光标",
+      cursorDescription: "在模型于页面上点击、输入和拖动的位置显示指针",
       askEveryTime: "每次都询问",
       permissionsTitle: "代理权限",
       permissionsDescription: "选择默认设置，并为特定网站添加例外。无论这里如何设置，都不会填写密码和支付信息字段。",
@@ -83,6 +85,9 @@ export const zhCN = {
     },
     agent: {
       working: "Unsloth 正在此标签页中浏览",
+      waiting: "Unsloth 需要你在 {chat} 的浏览器中回答",
+      otherChat: "另一个聊天",
+      show: "显示",
       stop: "停止",
       allow: "允许",
       deny: "拒绝",
@@ -2550,6 +2555,9 @@ export const zhCN = {
         showMemoryBar: "显示显存占用条",
         showMemoryBarDescription:
           "在每个已下载模型的行下方显示预计显存占用：权重、按实际加载的上下文长度计算的 KV 缓存，以及推测解码草稿所需的预留。",
+        fitOnDeviceOnly: "仅显示可运行的模型",
+        fitOnDeviceOnlyDescription:
+          "在模型选择器和 Hub 中隐藏超出本设备显存和内存容量的模型。已下载的模型仍会显示。",
       },
       menu: {
         title: "聊天菜单",
