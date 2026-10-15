@@ -3626,6 +3626,7 @@ export const fr = {
         insertExample: "Insérer un exemple de chat",
         vocab: "Vocabulaire : {count} tokens",
         retry: "Réessayer",
+        packing: "Le packing est activé : l'entraînement regroupe les lignes en séquences de la longueur de contexte, la coupure peut donc différer de cette vue par ligne.",
       },
       uploadFailed: "Échec du téléversement",
       unknownError: "Erreur inconnue",

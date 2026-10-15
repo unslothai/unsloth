@@ -3598,6 +3598,7 @@ export const it = {
         insertExample: "Inserisci esempio di chat",
         vocab: "Vocabolario: {count} token",
         retry: "Riprova",
+        packing: "Il packing è attivo: l'addestramento unisce le righe in sequenze della lunghezza di contesto, quindi il punto di taglio può differire da questa vista per riga.",
       },
       uploadFailed: "Caricamento non riuscito",
       unknownError: "Errore sconosciuto",

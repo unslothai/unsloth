@@ -3551,6 +3551,7 @@ export const ko = {
         insertExample: "채팅 예시 넣기",
         vocab: "어휘: 토큰 {count}개",
         retry: "다시 시도",
+        packing: "패킹이 켜져 있습니다. 학습은 여러 행을 컨텍스트 길이의 시퀀스로 묶으므로 잘리는 위치가 이 행별 보기와 다를 수 있습니다.",
       },
       uploadFailed: "업로드에 실패했습니다",
       unknownError: "알 수 없는 오류",

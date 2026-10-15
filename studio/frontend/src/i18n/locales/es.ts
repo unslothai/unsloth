@@ -3613,6 +3613,7 @@ export const es = {
         insertExample: "Insertar ejemplo de chat",
         vocab: "Vocabulario: {count} tokens",
         retry: "Reintentar",
+        packing: "El empaquetado está activo: la ejecución une filas en secuencias de la longitud de contexto, así que el corte puede diferir de esta vista por fila.",
       },
       uploadFailed: "La subida falló",
       unknownError: "Error desconocido",

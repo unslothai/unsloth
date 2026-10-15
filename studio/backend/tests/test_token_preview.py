@@ -244,3 +244,24 @@ def test_audio_models_train_every_token_as_training_does(captured):
         )
     )
     assert captured[-1][2]["train_on_completions"] is False
+
+
+def test_retiring_an_account_stops_its_preview_worker():
+    from core.training import account_jobs
+    from utils.account_context import AccountContext
+
+    service = token_preview._TokenPreviewService()
+    stopped = threading.Event()
+    service._proc = types.SimpleNamespace(is_alive = lambda: True, terminate = stopped.set)
+    account = AccountContext(account_id = "alice", username = "alice")
+    service._result_account = account
+    service.stop = lambda: stopped.set()
+    service._account_cancel = service.stop
+    assert service in set(account_jobs._services)
+    try:
+        account_jobs.retire_account_jobs(account)
+    except RuntimeError:
+        pass  # the stand-in process never reports itself stopped
+    finally:
+        account_jobs._retired.discard("alice")
+    assert stopped.is_set()

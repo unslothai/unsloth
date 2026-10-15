@@ -3589,6 +3589,7 @@ export const ptBR = {
         insertExample: "Inserir exemplo de chat",
         vocab: "Vocabulário: {count} tokens",
         retry: "Tentar novamente",
+        packing: "O empacotamento está ativo: o treinamento junta linhas em sequências do comprimento de contexto, então o corte pode diferir desta visão por linha.",
       },
       uploadFailed: "Falha no envio",
       unknownError: "Erro desconhecido",

@@ -3526,6 +3526,7 @@ export const ja = {
         insertExample: "チャットの例を挿入",
         vocab: "語彙：{count} トークン",
         retry: "再試行",
+        packing: "パッキングが有効です。学習では行をコンテキスト長のシーケンスにまとめるため、切り詰め位置はこの行ごとの表示と異なる場合があります。",
       },
       uploadFailed: "アップロードに失敗しました",
       unknownError: "不明なエラー",

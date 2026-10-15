@@ -3487,6 +3487,7 @@ export const zhCN = {
         insertExample: "插入对话示例",
         vocab: "词表：{count} 个 Token",
         retry: "重试",
+        packing: "已开启打包：训练会把多行拼接成上下文长度的序列，因此截断位置可能与此逐行视图不同。",
       },
       uploadFailed: "上传失败",
       unknownError: "未知错误",

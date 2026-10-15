@@ -3792,6 +3792,7 @@ export const sv = {
         insertExample: "Infoga chattexempel",
         vocab: "Vokabulär: {count} tokens",
         retry: "Försök igen",
+        packing: "Packning är på: körningen slår ihop rader till sekvenser av kontextlängden, så var en rad kortas kan skilja sig från den här vyn per rad.",
       },
       uploadFailed: "Uppladdningen misslyckades",
       unknownError: "Okänt fel",

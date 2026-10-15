@@ -461,6 +461,12 @@ function TokenPreviewContent() {
           </div>
         ) : null}
 
+        {config.packing ? (
+          <p className="pb-3 text-xs text-muted-foreground">
+            {t("studio.dataset.tokenPreview.packing")}
+          </p>
+        ) : null}
+
         <TabsContent value="dataset" className="min-h-0 flex-1 overflow-auto">
           {multimodal ? (
             <p className="py-6 text-sm text-muted-foreground">

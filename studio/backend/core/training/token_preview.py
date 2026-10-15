@@ -46,6 +46,10 @@ class _TokenPreviewService:
         self._key: Optional[tuple] = None
         self._served = False
         self._ids = itertools.count(1)
+        from core.training.account_jobs import init_job_owner
+
+        # Lets retire_account_jobs stop a retired account's warm worker before its roots move.
+        init_job_owner(self, self._alive, self.stop)
 
     def _alive(self) -> bool:
         return self._proc is not None and self._proc.is_alive()
@@ -112,7 +116,10 @@ class _TokenPreviewService:
             )
             proc.start()
         adopt_pid(proc.pid)
+        from utils.account_context import current_account
+
         self._proc, self._key, self._served = proc, key, False
+        self._result_account = current_account()
         logger.info("Token preview worker started (pid=%s)", proc.pid)
 
     def preview(self, key: tuple, config: dict, request: dict) -> dict:

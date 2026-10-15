@@ -3617,6 +3617,7 @@ export const de = {
         insertExample: "Chat-Beispiel einfügen",
         vocab: "Vokabular: {count} Tokens",
         retry: "Erneut versuchen",
+        packing: "Packing ist aktiv: Der Lauf fügt Zeilen zu Sequenzen der Kontextlänge zusammen, daher kann die Kürzung von dieser Ansicht pro Zeile abweichen.",
       },
       uploadFailed: "Upload fehlgeschlagen",
       unknownError: "Unbekannter Fehler",

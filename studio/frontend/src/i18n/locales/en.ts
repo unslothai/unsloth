@@ -3601,6 +3601,7 @@ export const en = {
         insertExample: "Insert chat example",
         vocab: "Vocabulary: {count} tokens",
         retry: "Try again",
+        packing: "Packing is on: the run joins rows into context-length sequences, so where a row is cut can differ from this per-row view.",
       },
       uploadFailed: "Upload failed",
       unknownError: "Unknown error",
