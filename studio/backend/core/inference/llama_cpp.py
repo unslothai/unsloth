@@ -31050,6 +31050,27 @@ class LlamaCppBackend:
                     # The -c just emitted, after the Auto cap and the Metal floor: the context a
                     # declined plan launches at, which the gate's fitter arm must be priced at.
                     _spill_inputs["fitter_n_ctx"] = int(max(0, effective_ctx))
+                    # Whether that declined launch stands Auto's embedded Hybrid Mamba MTP down:
+                    # _build_speculative_flags emits --spec-type none for it under a partial
+                    # --fit on (embedded_mtp_partial_offload below), so its fitter places the
+                    # target with no draft at all. Read the same way the flag builder reads it;
+                    # an accepted plan pins --fit off, which that rule does not see as partial.
+                    _spill_inputs["fitter_drops_draft"] = bool(
+                        _spill_inputs.get("mtp_will_engage")
+                        and _spec_canon == "auto"
+                        and self._nextn_predict_layers
+                        and self._ssm_inner_size is not None
+                        and self._full_attention_interval is not None
+                        and not mtp_draft_path
+                        and not _extra_args_set_spec_type(extra_args)
+                        and self._partially_offloads_layers(
+                            [*cmd, *(extra_args or [])],
+                            os.environ,
+                            fit_implies_partial = (
+                                gpu_memory_mode != "manual" and _placement_verdict_partial
+                            ),
+                        )
+                    )
 
                 fully_gpu_offloaded = False
                 self._spill_plan_flags = []
@@ -31154,35 +31175,39 @@ class LlamaCppBackend:
                         for _idx, _free in ((_spill_inputs or {}).get("gpus") or ())
                         if gpu_indices is not None and int(_idx) in {int(i) for i in gpu_indices}
                     ]
-                    if (
-                        _spill is not None
-                        and len(getattr(_spill, "device_layer_counts", ()) or ()) > 1
-                        and gpu_indices is not None
-                        and (
-                            [int(i) for i in gpu_indices] != _planned_order
-                            or (
-                                not is_vulkan_backend
-                                and not gpu_ids
-                                and self._inherited_child_gpu_order(list(gpu_indices)) is not None
-                            )
-                            # The rows are nvidia-smi's PCI indices, and an inherited mask keeps
-                            # the parent's CUDA_DEVICE_ORDER (the launch pins PCI_BUS_ID only for
-                            # a picked set or with no mask). Studio's import sets PCI_BUS_ID by
-                            # default, so this binds only on a user's own FASTEST_FIRST, where
-                            # the child's device 0 is the fastest card and not the plan's row 0.
-                            # The same rule the probe applies (_cuda_compute_caps).
-                            or (
-                                not is_vulkan_backend
-                                and not gpu_ids
-                                and not self._host_torch_is_rocm()
-                                and os.environ.get("CUDA_VISIBLE_DEVICES") is not None
-                                and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID"
+                    # The rows are nvidia-smi's PCI indices, and an inherited mask keeps the
+                    # parent's CUDA_DEVICE_ORDER (the launch pins PCI_BUS_ID only for a picked set
+                    # or with no mask). Studio's import sets PCI_BUS_ID by default, so this binds
+                    # only on a user's own FASTEST_FIRST, where the child's device 0 is the fastest
+                    # card and not the plan's row 0. The same rule the probe applies
+                    # (_cuda_compute_caps). It holds for ONE device too: the plan's VRAM and its
+                    # PCIe link rate (_nvidia_link_gib_s) were read off that row.
+                    _cuda_order_unverified = bool(
+                        not is_vulkan_backend
+                        and not gpu_ids
+                        and not self._host_torch_is_rocm()
+                        and os.environ.get("CUDA_VISIBLE_DEVICES") is not None
+                        and os.environ.get("CUDA_DEVICE_ORDER") != "PCI_BUS_ID"
+                    )
+                    if _spill is not None and (
+                        _cuda_order_unverified
+                        or (
+                            len(getattr(_spill, "device_layer_counts", ()) or ()) > 1
+                            and gpu_indices is not None
+                            and (
+                                [int(i) for i in gpu_indices] != _planned_order
+                                or (
+                                    not is_vulkan_backend
+                                    and not gpu_ids
+                                    and self._inherited_child_gpu_order(list(gpu_indices))
+                                    is not None
+                                )
                             )
                         )
                     ):
                         logger.info(
-                            "Tensor spill: declined, the launch orders the devices the plan "
-                            "split its layers across differently from the plan"
+                            "Tensor spill: declined, the launch may order the devices differently "
+                            "from the rows the plan was budgeted on"
                         )
                         _spill = None
                     # NOT `if _spill:` -- Plan is a dataclass, so every instance is truthy,
@@ -38186,6 +38211,24 @@ class LlamaCppBackend:
             _planned_main_cache_types(inputs.get("cache_type_kv"), extra_args, source_env),
             key = _kv_bytes_per_elem,
         )
+        # What the declined --fit on launch holds outside the layout, where that differs from the
+        # plan's own terms: its draft reserve is priced at the -c it launches with, not at the
+        # context the plan buys, and where it stands speculation down it carries no draft at all
+        # (no reserve, no trailing nextn blocks, no decode graph).
+        _plan_outside = max(0, extra_gpu_bytes) + max(0, mmproj_bytes) + max(0, draft_bytes)
+        _draft_at_plan_ctx = int(inputs.get("draft_bytes") or 0)
+        _draft_at_fit_ctx = int(inputs.get("mtp_reserve_bytes") or 0)
+        _fitter_drops_draft = bool(inputs.get("mtp_will_engage")) and bool(
+            inputs.get("fitter_drops_draft")
+        )
+        _fitter_outside: Optional[int] = None
+        if _fitter_drops_draft:
+            _every_draft_byte = _draft_at_plan_ctx + int(layout.excluded_block_bytes or 0)
+            if draft_droppable:
+                _every_draft_byte += int(inputs.get("mtp_draft_compute_bytes") or 0)
+            _fitter_outside = max(0, _plan_outside - _every_draft_byte)
+        elif inputs.get("mtp_will_engage") and _draft_at_fit_ctx != _draft_at_plan_ctx:
+            _fitter_outside = max(0, _plan_outside - _draft_at_plan_ctx + _draft_at_fit_ctx)
         return plan_placement(
             layout,
             vram_per_device,
@@ -38196,6 +38239,8 @@ class LlamaCppBackend:
             opts = PlanOptions(
                 fitter_n_ctx = int(inputs.get("fitter_n_ctx") or 0),
                 fitter_vram_bytes_per_device = tuple(int(v) for v in vram_per_device),
+                fitter_outside_layout_bytes = _fitter_outside,
+                fitter_drops_draft = _fitter_drops_draft,
                 overhead_bytes_per_device = max(0, overhead_per_device),
                 overhead_bytes_at = overhead_bytes_at,
                 cache_quantised = _kv_bytes_per_elem(_planned_cache_type) < 2.0,

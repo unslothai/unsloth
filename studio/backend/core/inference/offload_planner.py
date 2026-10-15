@@ -222,6 +222,13 @@ class PlanOptions:
     # common/fit.cpp), not one at the context the plan buys. 0 = the plan's own context.
     fitter_n_ctx: int = 0
     fitter_vram_bytes_per_device: tuple[int, ...] = ()
+    # What that launch holds on the card outside the layout, when it is not what the plan's own
+    # options say: the draft reserve priced at ``fitter_n_ctx``, or no draft at all where the
+    # declined launch stands speculation down. None = ``_outside_layout_bytes(opts)``.
+    fitter_outside_layout_bytes: Optional[int] = None
+    # The declined launch runs without the draft (Auto's embedded Hybrid Mamba MTP under a partial
+    # --fit on emits --spec-type none), so a plan that drops it gives up nothing the fallback keeps.
+    fitter_drops_draft: bool = False
 
 
 @dataclass(frozen = True)
@@ -640,18 +647,29 @@ def _fit_fallback_placement(
 
     ``opts.fitter_n_ctx``, when set and not ``n_ctx``, is the context the declined launch really
     runs, so the arm is re-priced there with the original projector, draft and reserve on the card.
+    ``opts.fitter_outside_layout_bytes`` replaces those outside-layout bytes with the ones that
+    launch really holds (its draft at its own context, or none).
     """
-    if 0 < opts.fitter_n_ctx != n_ctx:
-        if opts.kv_bytes_at is None or not opts.fitter_vram_bytes_per_device:
+    reprice_context = 0 < opts.fitter_n_ctx != n_ctx
+    if reprice_context or opts.fitter_outside_layout_bytes is not None:
+        if not opts.fitter_vram_bytes_per_device:
             return None
-        n_ctx = opts.fitter_n_ctx
-        budget = _usable_vram(opts.fitter_vram_bytes_per_device, opts, n_ctx)
-        kv_bytes_floor = _measured_cache_at(layout, opts, n_ctx, max(1, n_seq))
-        if opts.kv_layer_weights_at is not None:
-            kv_layer_weights = opts.kv_layer_weights_at(n_ctx, max(1, n_seq))
-        elif layout.has_swa and kv_layer_weights:
-            # The reserved vector splits the cache at the plan's context, not this one.
-            return None
+        if reprice_context:
+            if opts.kv_bytes_at is None:
+                return None
+            n_ctx = opts.fitter_n_ctx
+            kv_bytes_floor = _measured_cache_at(layout, opts, n_ctx, max(1, n_seq))
+            if opts.kv_layer_weights_at is not None:
+                kv_layer_weights = opts.kv_layer_weights_at(n_ctx, max(1, n_seq))
+            elif layout.has_swa and kv_layer_weights:
+                # The reserved vector splits the cache at the plan's context, not this one.
+                return None
+        budget = _usable_vram(
+            opts.fitter_vram_bytes_per_device,
+            opts,
+            n_ctx,
+            outside_layout_bytes = opts.fitter_outside_layout_bytes,
+        )
     blocks = list(layout.blocks)
     if not blocks:
         return None
@@ -2243,7 +2261,13 @@ def _cost_gate(
     window = n_ctx if opts.kv_unified else n_ctx // n_slots
     n_prompt = min(max(1, opts.workload_prompt_tokens), max(1, window))
     plan_ms, fit_ms = _score_arms(plan, fallback, opts, n_prompt, n_slots, fit_slots)
-    if knobs is not None and knobs.draft_dropped and opts.draft_drop_penalty_frac > 0:
+    # Only a draft the fallback keeps is a loss; one it stands down too costs neither arm.
+    if (
+        knobs is not None
+        and knobs.draft_dropped
+        and opts.draft_drop_penalty_frac > 0
+        and not opts.fitter_drops_draft
+    ):
         plan_ms *= 1.0 + opts.draft_drop_penalty_frac
     if plan_ms <= fit_ms * (1.0 - opts.min_penalty_reduction):
         return None, plan_ms, fit_ms
@@ -2311,7 +2335,13 @@ def _knob_only_gate(
     window = n_ctx if opts.kv_unified else n_ctx // n_slots
     n_prompt = min(max(1, opts.workload_prompt_tokens), max(1, window))
     plan_ms, fit_ms = _score_arms(plan, fallback, opts, n_prompt, n_slots, fit_slots)
-    if knobs is not None and knobs.draft_dropped and opts.draft_drop_penalty_frac > 0:
+    # Only a draft the fallback keeps is a loss; one it stands down too costs neither arm.
+    if (
+        knobs is not None
+        and knobs.draft_dropped
+        and opts.draft_drop_penalty_frac > 0
+        and not opts.fitter_drops_draft
+    ):
         plan_ms += opts.draft_drop_penalty_frac * fit_ms
     if plan_ms <= fit_ms * (1.0 - opts.min_penalty_reduction):
         return None, plan_ms, fit_ms
