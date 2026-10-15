@@ -256,7 +256,7 @@ _FRAME_HTML = r"""<!doctype html>
         // Other sites' scripts report errors as "Script error." with no error, so IndexedDB's is noted as thrown.
         let indexedDbThrew = false;
         const refusedByIndexedDb = (error) => {
-          if (!(error instanceof DOMException && error.name === "SecurityError")) return false;
+          if (error?.name !== "SecurityError") return false;
           refusals.add(error);
           return true;
         };

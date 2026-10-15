@@ -96,6 +96,7 @@ def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
         "if (refused) return;",
         'for (const name of ["open", "deleteDatabase", "databases"])',
         "IDBFactory.prototype[name] = function (...args) {",
+        'if (error?.name !== "SecurityError") return false;',
         "refusals.add(error);",
         'return name === "databases" ? result.catch(',
         "if (event.error ? refusals.has(event.error) : indexedDbThrew) tellRefused();",
@@ -107,6 +108,8 @@ def test_the_shell_tells_the_panel_when_the_sandbox_refuses_a_feature():
     assert boot.index("IDBFactory.prototype[name] = ") < boot.index("const shellPathname")
     # A refused service worker or cache alone is no reason to leave the panel.
     assert "securityError(" not in boot
+    # The page may replace DOMException or Promise before it touches IndexedDB.
+    assert "instanceof DOMException" not in boot and "instanceof Promise" not in boot
 
 
 def test_the_shell_counts_the_pages_requests_and_maps_srcdoc_paths():
