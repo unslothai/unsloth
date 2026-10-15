@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import unquote
 
 from utils.models.model_config import MODEL_NAME_MAPPING
+from utils.utils import _restore_saved_offline_env, force_hf_offline_active
 
 _REPO = "unslothai/notebooks"
 _NB_DIR = "nb"
@@ -163,8 +164,13 @@ def parse_readme_notebooks(text: str) -> list[str]:
 def _repo_notebook_files() -> list[str]:
     global _cached_files, _cache_until
 
+    # A force_hf_offline window (memory estimates, cache probes) is HF-only and transient: read the
+    # user's own setting from before it opened.
+    env = dict(os.environ)
+    if force_hf_offline_active():
+        _restore_saved_offline_env(env)
     offline = any(
-        os.environ.get(name, "").strip().lower() in _OFFLINE_VALUES
+        env.get(name, "").strip().lower() in _OFFLINE_VALUES
         for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
     )
     if offline:
