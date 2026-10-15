@@ -6186,3 +6186,40 @@ def test_a_gpu_draft_override_of_a_tied_embedding_charges_no_duplicate(tmp_path,
         tmp_path, monkeypatch, extra_args = override, tied_gib = 0, drafter = True
     )
     assert tied == untied
+
+
+@pytest.mark.parametrize("pinned_gib", [0, 10])
+def test_the_resident_share_removes_a_host_pinned_lazy_table_once(
+    tmp_path, _moe_cache_host, monkeypatch, pinned_gib
+):
+    """30 GiB, 15 GiB of experts, a 10 GiB lazily read per-layer table, 20,000 MiB free:
+    ~53% of the experts stay resident, inside the cache band, whether or not the table is
+    also priced as host-pinned. The fit basis already leaves the pinned share out."""
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_torch_unified_memory_classification_known",
+        lambda self, ids = None: True,
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_vram_discount",
+        staticmethod(lambda *_a, draft_model = False, **_kw: 0 if draft_model else pinned_gib * _GIB),
+    )
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_host_pinned_weight_items",
+        staticmethod(
+            lambda _path: (("per_layer_token_embd.weight", pinned_gib * _GIB),)
+            if pinned_gib
+            else ()
+        ),
+    )
+    _backend, cmd = _cache_launch(
+        tmp_path,
+        size_gib = 30,
+        memory = [(0, 20_000, 32_000)],
+        expert_gib = 15,
+        lazy = {"per_layer_token_embd.weight": 10 * _GIB},
+        arch = "qwen4exp",
+    )
+    assert _has_moe_cache(cmd), cmd

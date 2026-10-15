@@ -29935,6 +29935,13 @@ class LlamaCppBackend:
                                 is_vulkan_backend = is_vulkan_backend,
                             ),
                         )
+                        # model_size_fit already left out the host-pinned share of the table.
+                        _lazy_host -= min(
+                            self._lazy_read_in_host_floor(
+                                model_path, _lazy_host, _child_extras, _child_env
+                            ),
+                            _host_pinned,
+                        )
                         _need = (
                             model_size_fit
                             - _lazy_host
