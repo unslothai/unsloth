@@ -649,6 +649,11 @@ class TrainingStartRequest(BaseModel):
     _resolve_the_resume_handle = field_validator("resume_from_checkpoint")(
         _resolve_inventory_handle
     )
+    parallelism_mode: Literal["auto", "single", "model_parallel", "ddp"] = Field(
+        "auto",
+        description = "GPU placement: automatic, one GPU, a model sharded across gpu_ids, "
+        "or DDP (one replica per gpu_id; NVIDIA CUDA on Linux)",
+    )
 
     gpu_ids: Optional[List[int]] = Field(
         None,
@@ -709,6 +714,28 @@ class TrainingStartRequest(BaseModel):
                 "offload_layers needs gradient checkpointing: set gradient_checkpointing to "
                 "'unsloth' or 'true', or offload_layers to 0."
             )
+        return self
+
+    @model_validator(mode = "after")
+    def _validate_parallelism_selection(self) -> "TrainingStartRequest":
+        ids = self.gpu_ids or []
+        # DDP must be explicit: existing callers pick GPUs without a mode.
+        if "parallelism_mode" not in self.model_fields_set and ids:
+            self.parallelism_mode = "single" if len(ids) == 1 else "model_parallel"
+        if self.parallelism_mode == "auto" and ids:
+            raise ValueError("parallelism_mode='auto' cannot include gpu_ids.")
+        if self.parallelism_mode == "single" and len(ids) != 1:
+            raise ValueError("parallelism_mode='single' requires exactly one gpu_id.")
+        if self.parallelism_mode == "model_parallel" and len(ids) < 2:
+            raise ValueError("parallelism_mode='model_parallel' requires at least two gpu_ids.")
+        if self.parallelism_mode == "ddp" and len(ids) < 2:
+            raise ValueError("parallelism_mode='ddp' requires at least two gpu_ids.")
+        # DDP covers the text path only; the others are not rank-aware.
+        if self.parallelism_mode == "ddp" and any(
+            getattr(self, flag, False)
+            for flag in ("is_embedding", "is_decision", "is_dataset_image", "is_dataset_audio")
+        ):
+            raise ValueError("parallelism_mode='ddp' supports text models only.")
         return self
 
     @model_validator(mode = "after")

@@ -12,6 +12,7 @@ import {
 } from "./manual-dataset-options";
 import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
+import { ddpSupportsModel } from "./training-gpu-selection";
 import {
   isTrainingLoraVariantSupportedOnDevice,
   isTrainingMethodSupportedOnDevice,
@@ -19,8 +20,7 @@ import {
 } from "./training-methods";
 
 export type StartValidationResult =
-  | { ok: true; errorKey: null }
-  | { ok: false; errorKey: TranslationKey };
+  { ok: true; errorKey: null } | { ok: false; errorKey: TranslationKey };
 
 function isTrainingConfigSupportedOnDevice(
   config: TrainingConfigState,
@@ -172,6 +172,7 @@ export function validateTrainingConfig(
   config: TrainingConfigState,
   deviceType?: string,
   isOwner = true,
+  availableGpuIds?: number[] | null,
 ): StartValidationResult {
   if (!config.selectedModel) {
     return {
@@ -212,6 +213,52 @@ export function validateTrainingConfig(
     ) {
       return { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
     }
+  }
+
+  if (
+    config.parallelismMode === "single" &&
+    (config.selectedGpuIds?.length ?? 0) !== 1
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.singleGpuRequired",
+    };
+  }
+  if (config.parallelismMode === "ddp" && !ddpSupportsModel(config)) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.ddpModelUnsupported",
+    };
+  }
+  if (
+    config.parallelismMode === "ddp" &&
+    (config.selectedGpuIds?.length ?? 0) < 2
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.multipleGpusRequired",
+    };
+  }
+  if (
+    config.parallelismMode === "model_parallel" &&
+    (config.selectedGpuIds?.length ?? 0) < 2
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.multipleGpusRequired",
+    };
+  }
+
+  if (
+    config.parallelismMode !== "auto" &&
+    availableGpuIds !== undefined &&
+    (availableGpuIds === null ||
+      (config.selectedGpuIds ?? []).some((id) => !availableGpuIds.includes(id)))
+  ) {
+    return {
+      ok: false,
+      errorKey: "studio.training.validation.gpuSelectionUnavailable",
+    };
   }
 
   if (!isTrainingConfigSupportedOnDevice(config, deviceType)) {

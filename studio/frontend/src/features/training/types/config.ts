@@ -17,6 +17,11 @@ import type {
 } from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
+export type TrainingParallelismMode =
+  | "auto"
+  | "single"
+  | "model_parallel"
+  | "ddp";
 
 export interface ModelCacheReferenceOptions {
   knownCached?: boolean;
@@ -87,6 +92,8 @@ export interface TrainingConfigState {
   projectName: string;
   trainingMethod: TrainingMethod;
   trainingMethodProvenance: TrainingMethodProvenance;
+  parallelismMode: TrainingParallelismMode;
+  selectedGpuIds: number[] | null;
   datasetSource: DatasetSource;
   browseDatasetSelection: BrowseDatasetSelection;
   datasetFormat: DatasetFormat;
@@ -221,6 +228,10 @@ export interface TrainingConfigActions {
   setModelSubfolder: (subfolder: string | null) => void;
   setTrainAsDecision: (value: boolean) => void;
   setProjectName: (value: string) => void;
+  setGpuSelection: (
+    mode: TrainingParallelismMode,
+    gpuIds: number[] | null,
+  ) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;

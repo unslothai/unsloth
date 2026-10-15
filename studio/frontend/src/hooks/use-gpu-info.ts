@@ -384,6 +384,10 @@ export function useGpuDevices(forDiffusion = false): SystemGpuDevice[] {
   return devices;
 }
 
+export function useTrainingGpuDevices(): SystemGpuDevice[] {
+  return useGpuDevices(true);
+}
+
 /**
  * Cards an image or video load may be pinned to, or empty when there is nothing to choose
  * between. Neither engine shards a diffusion checkpoint, so this drives a single-choice control
@@ -415,6 +419,24 @@ export function gpuDeviceCacheReady(): boolean {
 /** Warm the shared system cache before validating persisted GPU IDs. */
 export async function ensureGpuDeviceCache(): Promise<void> {
   await fetchSystemInfo();
+}
+
+function physicalTrainingGpuIndices(
+  system: SystemInfoResponse | null,
+): number[] | null {
+  return system === null
+    ? null
+    : toGpuDevices(system, true)
+        .filter((device) => device.indexKind === "physical")
+        .map((device) => device.index);
+}
+
+export function cachedTrainingGpuIndices(): number[] | null {
+  return physicalTrainingGpuIndices(getCachedSystemInfo());
+}
+
+export async function refreshTrainingGpuIndices(): Promise<number[] | null> {
+  return physicalTrainingGpuIndices(await fetchSystemInfo({ force: true }));
 }
 
 /** Cached pinnable IDs, null before fetch, or [] when pinning is unavailable. */

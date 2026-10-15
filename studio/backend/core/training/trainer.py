@@ -50,6 +50,14 @@ from core.import_guards import ensure_real_packages as _ensure_real_packages
 
 _ensure_real_packages("unsloth_zoo", "unsloth")
 from unsloth import FastLanguageModel, FastVisionModel, is_bfloat16_supported
+from core.training.ddp import model_load_dtype_for_training, training_precision_flags_for_dtype
+
+
+def _training_precision_flags() -> dict[str, bool]:
+    return training_precision_flags_for_dtype(
+        os.environ.get("UNSLOTH_DDP_COMMON_DTYPE"), is_bfloat16_supported()
+    )
+
 
 import json
 import threading
@@ -510,6 +518,15 @@ def _has_quantized_weights(model) -> bool:
     return _has_quantized_linears(model, routed_ok = True)
 
 
+def _ddp_peft_kwargs() -> dict:
+    """Per-rank embedding offload files: DDP ranks would otherwise save and mmap the same ones."""
+    if world_size_from_env() <= 1:
+        return {}
+    return {
+        "temporary_location": f"_unsloth_temporary_saved_buffers_rank{os.environ.get('RANK', '0')}"
+    }
+
+
 def _loftq_peft_kwargs(use_loftq) -> dict:
     # PEFT ignores loftq_config unless init_lora_weights is "loftq", so the toggle alone trained plain LoRA.
     if not use_loftq:
@@ -551,6 +568,7 @@ class UnslothTrainer:
         self.is_training = False
         self.should_stop = False
         self.save_on_stop = True
+        self._ddp_agreed_stop = None
         self._early_stopping = None
         self.load_in_4bit = True
 
@@ -1043,8 +1061,20 @@ class UnslothTrainer:
                     epoch = state.epoch * trainer_ref._kept_row_fraction, step = state.global_step
                 )
 
+            def on_train_end(self, args, state, control, **kwargs):
+                # One more agreement (a stop can land during the final evaluation) so every rank finalizes alike.
+                if world_size_from_env() > 1:
+                    trainer_ref._agree_on_ddp_stop(args.device)
+                    agreed = getattr(trainer_ref, "_ddp_agreed_stop", None)
+                    if agreed is not None:
+                        trainer_ref.should_stop, trainer_ref.save_on_stop = agreed
+
             def on_step_end(self, args, state, control, **kwargs):
-                if trainer_ref.should_stop:
+                if (
+                    trainer_ref._agree_on_ddp_stop(args.device)
+                    if world_size_from_env() > 1
+                    else trainer_ref.should_stop
+                ):
                     logger.info(f"Stop detected at step {state.global_step}\n")
                     control.should_training_stop = True
                     return control
@@ -1072,7 +1102,8 @@ class UnslothTrainer:
         """Calculate total training steps from dataset size and training params."""
         if max_steps and max_steps > 0:
             return max_steps
-        len_dataloader = math.ceil(num_samples / batch_size)
+        samples_per_rank = math.ceil(num_samples / world_size_from_env())
+        len_dataloader = math.ceil(samples_per_rank / batch_size)
         steps_per_epoch = max(
             len_dataloader // grad_accum + int(len_dataloader % grad_accum > 0), 1
         )
@@ -1102,8 +1133,7 @@ class UnslothTrainer:
             "gradient_accumulation_steps": gradient_accumulation_steps,
             "warmup_steps": warmup_steps_val if warmup_steps_val is not None else 5,
             "learning_rate": learning_rate,
-            "fp16": not is_bfloat16_supported(),
-            "bf16": is_bfloat16_supported(),
+            **_training_precision_flags(),
             "logging_steps": 1,
             "optim": optim_value,
             "weight_decay": weight_decay,
@@ -1138,11 +1168,23 @@ class UnslothTrainer:
         label = "",
     ):
         """Save model after training and update progress. Used by all training branches."""
-        if self.should_stop and self.save_on_stop:
+        # Aux files: global process zero only (LOCAL_RANK is 0 in every isolated rank).
+        is_writing_rank = (
+            self.trainer.is_world_process_zero()
+            if hasattr(self.trainer, "is_world_process_zero")
+            else getattr(getattr(self.trainer, "args", None), "process_index", 0) == 0
+        )
+        # Under DDP the last collective agreement decides, never a stop polled in after it.
+        should_stop, save_on_stop = getattr(self, "_ddp_agreed_stop", None) or (
+            self.should_stop,
+            self.save_on_stop,
+        )
+        if should_stop and save_on_stop:
             self.trainer._save_checkpoint(self.trainer.model, trial = None)
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if is_writing_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training stopped" if label else "Training stopped"
             logger.info(f"\n{msg}. Model saved to {output_dir}\n")
             self._update_progress(
@@ -1151,14 +1193,15 @@ class UnslothTrainer:
                     f"Training stopped. {self._early_stopping_summary()}Model saved to {output_dir}"
                 ),
             )
-        elif self.should_stop:
+        elif should_stop:
             msg = f"{label} training cancelled" if label else "Training cancelled"
             logger.info(f"\n{msg}.\n")
             self._update_progress(is_training = False, status_message = "Training cancelled.")
         else:
             self.trainer.save_model()
-            self.tokenizer.save_pretrained(output_dir)
-            self._patch_adapter_config(output_dir)
+            if is_writing_rank:
+                self.tokenizer.save_pretrained(output_dir)
+                self._patch_adapter_config(output_dir)
             msg = f"{label} training completed" if label else "Training completed"
             logger.info(f"\n{msg}! Model saved to {output_dir}\n")
             self._update_progress(
@@ -1436,7 +1479,10 @@ class UnslothTrainer:
             _is_rocm = (
                 bool(getattr(torch.version, "hip", None)) or "rocm" in torch.__version__.lower()
             )
-            _auto_dtype = torch.float16 if (_is_rocm and not is_bfloat16_supported()) else None
+            _load_dtype = model_load_dtype_for_training(
+                os.environ.get("UNSLOTH_DDP_COMMON_DTYPE"), _is_rocm, is_bfloat16_supported()
+            )
+            _auto_dtype = {"fp16": torch.float16, "bf16": torch.bfloat16}.get(_load_dtype)
 
             # The four branches below pass load_in_4bit=False to from_pretrained whatever was
             # requested (Spark-TTS goes further and needs float32), so the base really is 16-bit.
@@ -2089,6 +2135,7 @@ class UnslothTrainer:
                     **_loftq_peft_kwargs(use_loftq),
                     modules_to_save = modules_to_save,
                     **self._offload_peft_kwargs(),
+                    **_ddp_peft_kwargs(),
                 )
 
             if self.should_stop:
@@ -4125,6 +4172,7 @@ class UnslothTrainer:
         )
 
         self.should_stop = False
+        self._ddp_agreed_stop = None
         self.is_training = True
         try:
             self.training_thread.start()
@@ -4428,7 +4476,10 @@ class UnslothTrainer:
             if training_args.get("enable_wandb", False) and training_args.get("wandb_token"):
                 os.environ["WANDB_API_KEY"] = training_args["wandb_token"]
                 import wandb
-                wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
+
+                # One run per job: DDP ranks other than 0 must not open their own (LOCAL_RANK is 0 on every rank).
+                if os.environ.get("RANK", "0") == "0":
+                    wandb.init(project = training_args.get("wandb_project", "unsloth-training"))
 
             output_dir = str(resolve_output_dir(training_args.get("output_dir")))
             ensure_dir(Path(output_dir))
@@ -4728,8 +4779,7 @@ class UnslothTrainer:
                 "gradient_accumulation_steps": training_args.get("gradient_accumulation_steps", 4),
                 "num_train_epochs": training_args.get("num_epochs", 3),
                 "learning_rate": lr_value,
-                "fp16": not is_bfloat16_supported(),
-                "bf16": is_bfloat16_supported(),
+                **_training_precision_flags(),
                 "logging_steps": 1,
                 "weight_decay": training_args.get("weight_decay", 0.001),
                 "seed": training_args.get("random_seed", 3407),
@@ -5268,6 +5318,21 @@ class UnslothTrainer:
 
         except Exception as e:
             logger.warning(f"Failed to patch adapter_config.json: {e}")
+
+    def _agree_on_ddp_stop(self, device) -> bool:
+        """Agree on stop once per step: a rank running one extra step hangs in all-reduce. Control
+        flow must use the returned decision, since the poller can flip should_stop after the snapshot."""
+        import torch.distributed as dist
+
+        if not (dist.is_available() and dist.is_initialized()):
+            return self.should_stop
+        flags = torch.tensor(
+            [float(self.should_stop), float(self.should_stop and not self.save_on_stop)],
+            device = device,
+        )
+        dist.all_reduce(flags, op = dist.ReduceOp.MAX)
+        self._ddp_agreed_stop = (bool(flags[0].item()), not flags[1].item())
+        return self._ddp_agreed_stop[0]
 
     def stop_training(self, save: bool = True):
         logger.info(f"\nStopping training (save={save})...")

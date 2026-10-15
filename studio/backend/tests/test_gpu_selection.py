@@ -1837,6 +1837,93 @@ class TestRouteErrors(unittest.TestCase):
         self.assertEqual(seen["backend_optimizer"], XPU_SAFE_OPTIMIZER)
         self.assertEqual(seen["vram_optimizer"], XPU_SAFE_OPTIMIZER)
 
+    def test_ddp_start_frees_resident_models_instead_of_pooling_vram(self):
+        training_route = _load_route_module(
+            "training_route_module_for_ddp_coexistence_test",
+            "routes/training.py",
+        )
+        request = TrainingStartRequest(
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+            format_type = "alpaca",
+            optim = DEFAULT_BITSANDBYTES_OPTIMIZER,
+            parallelism_mode = "ddp",
+            gpu_ids = [0, 1],
+        )
+        seen = {}
+
+        class DummyBackend:
+            current_job_id = None
+
+            def is_training_active(self):
+                return False
+
+            def start_training(self, **kwargs):
+                seen["backend_optimizer"] = kwargs["optim"]
+                kwargs["before_spawn"]()
+                return True
+
+        def _capture_training_vram_optimizer(**kwargs):
+            seen["vram_optimizer"] = kwargs["optimizer"]
+            return True, {"usable_gb": 24.0, "required_gb": 12.0}
+
+        def _run_can_keep(can_keep):
+            seen["keep"] = can_keep()
+            return []
+
+        with (
+            patch.object(training_route, "get_training_backend", return_value = DummyBackend()),
+            patch.object(training_route, "_diffusion_training_active", return_value = False),
+            patch.object(training_route, "_diffusion_gpu_admission", return_value = nullcontext()),
+            patch.object(
+                training_route,
+                "_reject_untrainable_model_request",
+                return_value = SimpleNamespace(
+                    model_name = "unsloth/test",
+                    model_local_path = None,
+                    cached_model_pin = None,
+                ),
+            ),
+            patch.object(training_route, "load_model_defaults", return_value = {"training": {}}),
+            patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+            patch.object(_hw_module, "DEVICE", DeviceType.XPU),
+            patch("utils.hardware.ensure_hardware_detected", return_value = DeviceType.XPU),
+            patch(
+                "routes.training_vram.can_keep_chat_during_training",
+                side_effect = _capture_training_vram_optimizer,
+            ),
+            patch(
+                "routes.training_vram.coordinate_models_for_training",
+                side_effect = _run_can_keep,
+            ),
+            patch(
+                "core.export.get_export_backend",
+                return_value = SimpleNamespace(
+                    current_checkpoint = None,
+                    is_export_active = lambda: False,
+                ),
+            ),
+            patch(
+                "core.inference.diffusion_engine_router.get_active_diffusion_engine",
+                return_value = SimpleNamespace(is_loaded = False, unload = lambda: None),
+            ),
+            patch("core.inference.gpu_arbiter.release", lambda *_args, **_kwargs: None),
+            patch(
+                "core.inference.video.get_video_backend",
+                return_value = SimpleNamespace(
+                    status = lambda: {"loaded": False},
+                    unload = lambda: None,
+                ),
+            ),
+        ):
+            response = asyncio.run(
+                training_route.start_training(request, current_subject = "test-user")
+            )
+
+        self.assertEqual(response.status, "queued")
+        self.assertEqual(seen["keep"][0], False)
+        self.assertNotIn("vram_optimizer", seen)
+
     def test_training_route_returns_400_for_uuid_parent_visibility_gpu_ids(self):
         training_route = _load_route_module(
             "training_route_module_for_uuid_parent_visibility_test",

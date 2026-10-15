@@ -6,6 +6,7 @@ import { isAccountOwner } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 import { getHfToken, useHfTokenStore } from "@/features/hub";
 import { confirmRemoteCodeIfNeeded } from "@/features/security";
+import { refreshTrainingGpuIndices } from "@/hooks/use-gpu-info";
 import { translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
@@ -33,6 +34,7 @@ import {
 import { checkDecisionDatasetColumns } from "./decision-dataset";
 import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
+import { validateRefreshedTrainingGpuSelection } from "./training-gpu-selection";
 import { isRawTextDatasetFormat } from "./training-methods";
 import { normalizeTrainingStartError } from "./training-start-errors";
 import { createTrainingStartInputIdentity } from "./training-start-inputs";
@@ -271,6 +273,26 @@ export async function startFreshTrainingRun(): Promise<boolean> {
   }
 
   try {
+    if (attempt.config.parallelismMode !== "auto") {
+      const gpuCheck = await validateRefreshedTrainingGpuSelection({
+        refresh: refreshTrainingGpuIndices,
+        abortIfInputsChanged: () => attempt.abortIfInputsChanged(),
+        getConfig: () => attempt.config,
+        validate: (config, availableGpuIds) =>
+          validateTrainingConfig(
+            config,
+            usePlatformStore.getState().deviceType,
+            isAccountOwner(),
+            availableGpuIds,
+          ),
+      });
+      if (gpuCheck.kind === "inputs-changed") {
+        return false;
+      }
+      if (gpuCheck.kind === "invalid") {
+        return attempt.cancel(translate(gpuCheck.errorKey));
+      }
+    }
     const tokenResult = await prepareAttemptHfToken(attempt);
     if (!tokenResult.ready) {
       return false;
@@ -337,8 +359,7 @@ export async function startFreshTrainingRun(): Promise<boolean> {
 }
 
 type AttemptHfTokenResult =
-  | { ready: false }
-  | { ready: true; token: string | null };
+  { ready: false } | { ready: true; token: string | null };
 
 async function prepareAttemptHfToken(
   attempt: FreshTrainingStartAttempt,
@@ -540,16 +561,33 @@ async function submitFreshTrainingRun(
   attempt: FreshTrainingStartAttempt,
   hfToken: string | null,
 ): Promise<boolean> {
-  const validation = validateTrainingConfig(
-    attempt.config,
-    usePlatformStore.getState().deviceType,
-    isAccountOwner(),
-  );
-  if (!validation.ok) {
-    return attempt.cancel(translate(validation.errorKey));
+  const gpuCheck = await validateRefreshedTrainingGpuSelection({
+    refresh:
+      attempt.config.parallelismMode === "auto"
+        ? null
+        : refreshTrainingGpuIndices,
+    abortIfInputsChanged: () => attempt.abortIfInputsChanged(),
+    getConfig: () => attempt.config,
+    validate: (config, availableGpuIds) =>
+      validateTrainingConfig(
+        config,
+        usePlatformStore.getState().deviceType,
+        isAccountOwner(),
+        availableGpuIds,
+      ),
+  });
+  if (gpuCheck.kind === "inputs-changed") {
+    return false;
+  }
+  if (gpuCheck.kind === "invalid") {
+    return attempt.cancel(translate(gpuCheck.errorKey));
   }
 
-  const payload = buildTrainingStartPayload(attempt.config, hfToken, getCachedSystemInfo());
+  const payload = buildTrainingStartPayload(
+    gpuCheck.config,
+    hfToken,
+    getCachedSystemInfo(),
+  );
   if (!attempt.enterTransport()) {
     return false;
   }
