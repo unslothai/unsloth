@@ -849,3 +849,98 @@ def test_kernel_calls_skip_the_temporal_stride_fallback(monkeypatch):
         y = fast(x)
     assert state.calls == 1 and state.kernel_calls == 0
     assert torch.allclose(y, torch.nn.functional.silu(norm(x)), atol = 1e-5)
+
+
+# -- PR review round 7 regressions ------------------------------------------------------------------------------
+
+
+class _CausalNew(AutoencoderKLCleanNew):
+    """A causal decoder whose output depends on a persistent cache filled by earlier decodes."""
+
+    def __init__(self, c = 8):
+        super().__init__(c)
+        self.cache = None
+
+    def clear_cache(self):
+        self.cache = None
+
+    def _decode(self, z, return_dict = True):
+        out = self.decoder(z)
+        if self.cache is not None:
+            out = out + self.cache.mean()  # stale frames leak into the output
+        self.cache = z.detach()
+        return (out,)
+
+
+def test_structural_probe_does_not_leak_cache_into_the_real_decode(monkeypatch):
+    """Round 7 item 1: the calibration's probe decodes must not leave cache entries the real decode reads."""
+    monkeypatch.setattr(F, "runtime_ok", lambda: True)
+    ref_vae = _CausalNew()
+    torch.manual_seed(0)
+    z = torch.randn(1, 8, 6, 6) + 2.0
+    with torch.no_grad():
+        ref = ref_vae._decode(z)[0]
+    vae = _CausalNew()
+    vae.load_state_dict(ref_vae.state_dict())
+    F.install_structural(vae)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda self: True))
+    with torch.no_grad():
+        out = vae._decode(z)[0]
+    assert torch.allclose(out, ref, atol = 1e-6), (out - ref).abs().max()
+
+
+def test_is_oom_walks_the_cause_chain():
+    """Round 7 item 3: a compiler error wrapping an OutOfMemoryError is an OOM."""
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    try:
+        try:
+            raise OutOfMemoryError("CUDA out of memory")
+        except OutOfMemoryError as inner:
+            raise RuntimeError("backend compiler failed") from inner
+    except RuntimeError as exc:
+        wrapped = exc
+    assert O.is_oom(wrapped)
+    assert not O.is_oom(RuntimeError("backend compiler failed"))
+
+
+def test_compiled_decode_oom_retries_on_the_eager_path():
+    """Round 7 item 2: a runtime OOM out of the speed layer's compiled decode (traced, so the _decode retry was a
+    pass-through) is retried eagerly through the halved-tile ladder."""
+    vae = _WanLike(fits = 128)
+    vae.use_tiling = True
+    eager_calls = []
+
+    def eager(z, return_dict = True):
+        eager_calls.append(1)
+        return vae._decode(z, return_dict)
+
+    def compiled(z, return_dict = True):
+        try:
+            raise _FakeOOM()
+        except _FakeOOM as oom:
+            raise RuntimeError("compiled graph failed") from oom
+
+    compiled._unsloth_compiled_decode = True
+    compiled._unsloth_eager_decode = eager
+    vae.decode = compiled
+    assert O.install(vae)
+    out = vae.decode(torch.zeros(1, 4, 1, 64, 64))
+    assert out[0].shape[-2:] == (512, 512) and eager_calls == [1]
+    stats = vae._unsloth_vae_oom_stats
+    assert stats["compiled_oom"] == 1 and stats["recovered"] == 1 and stats["halvings"] == 1
+
+
+def test_compiled_guard_absent_without_compile():
+    vae = _WanLike(fits = 128)
+    assert O.install(vae)
+    assert "decode" not in vae.__dict__
+
+
+def test_speed_layer_compiled_guard_exposes_eager():
+    from core.inference import diffusion_speed as S
+
+    eager = lambda *a, **k: "eager"  # noqa: E731
+    guarded = S._guard_compiled_decode(types.SimpleNamespace(), lambda *a, **k: "compiled", eager, None)
+    assert guarded._unsloth_compiled_decode is True and guarded._unsloth_eager_decode is eager

@@ -2334,6 +2334,16 @@ def _restore_contiguous_layout(vae: Any) -> int:
     return n
 
 
+def _clear_decoder_cache(vae: Any) -> None:
+    """Reset a causal decoder's frame / feature cache (Wan, Qwen-Image, LTX-2, HunyuanVideo expose clear_cache)."""
+    clear = getattr(vae, "clear_cache", None)
+    if callable(clear):
+        try:
+            clear()
+        except Exception:  # noqa: BLE001 - a VAE without a usable cache has nothing to reset
+            pass
+
+
 def install_structural(vae: Any, logger: Any = None) -> int:
     """Arm the dataflow-matched fused GroupNorm(+SiLU) path on ``vae``'s decoder; it is calibrated (paired, checked
     against stock) on the first CUDA decode and removed if the check fails. Returns the plain GroupNorm count."""
@@ -2351,11 +2361,18 @@ def install_structural(vae: Any, logger: Any = None) -> int:
     inner = vae._decode
     torch = _torch()
 
+    def _fresh(fn: Any) -> Any:
+        def call(*a: Any, **k: Any) -> Any:
+            _clear_decoder_cache(vae)
+            return fn(*a, **k)
+
+        return call
+
     def calibrate(z: Any, args: tuple, kwargs: dict) -> None:
         tiny = _probe_latent(z)
         with torch.no_grad():
             calls, consumed, ref = _trace_group_norm_silu(
-                norms, silus, lambda: _decoded_tensor(inner(tiny, *args, **kwargs))
+                norms, silus, lambda: _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
             )
             paired = [None if c == 0 else (c == k) for c, k in zip(calls, consumed)]
             n = _structural_patch(norms, paired, silus, state, logger)
@@ -2364,7 +2381,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                 _structural_unpatch(norms, silus, vae)
                 return
             kernels_before = state.kernel_calls
-            out = _decoded_tensor(inner(tiny, *args, **kwargs))
+            out = _decoded_tensor(_fresh(inner)(tiny, *args, **kwargs))
             err = (out.float() - ref.float()).abs()
             state.max_abs, state.mean_abs = float(err.max()), float(err.mean())
             # Every matched norm on its stock fallback: nothing fused, so keep the stock path (and layout).
@@ -2398,6 +2415,7 @@ def install_structural(vae: Any, logger: Any = None) -> int:
                 _structural_unpatch(norms, silus, vae)
                 if logger is not None:
                     logger.warning("diffusion.vae_fused: structural probe failed: %s", exc)
+            _clear_decoder_cache(vae)  # the real decode must not see the probe's causal cache
         return inner(z, *args, **kwargs)
 
     _decode._unsloth_vae_fused = True

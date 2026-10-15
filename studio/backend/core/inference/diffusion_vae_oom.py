@@ -34,13 +34,28 @@ def oom_retry_disabled() -> bool:
     return os.environ.get(OOM_RETRY_ENV, "").strip().lower() in ("0", "false", "no", "off")
 
 
-def is_oom(exc: BaseException) -> bool:
+def _is_oom_one(exc: BaseException) -> bool:
     if any(cls.__name__ in ("OutOfMemoryError", "OutOfMemoryError_") for cls in type(exc).__mro__):
         return True
     text = str(exc).lower()
     return isinstance(exc, RuntimeError) and (
         "out of memory" in text or "tried to allocate" in text
     )
+
+
+def is_oom(exc: BaseException) -> bool:
+    """An allocator failure, also when wrapped: torch.compile re-raises an OOM inside a compiler error whose own
+    message is generic, so ``__cause__`` / ``__context__`` are walked (bounded)."""
+    seen: set = set()
+    cur: Optional[BaseException] = exc
+    for _ in range(8):
+        if cur is None or id(cur) in seen:
+            return False
+        seen.add(id(cur))
+        if _is_oom_one(cur):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
 
 
 def _int_attr(vae: Any, name: str) -> Optional[int]:
@@ -473,11 +488,65 @@ def install(vae: Any, logger: Any = None) -> bool:
     vae._unsloth_vae_oom_inner = inner
     vae._unsloth_vae_oom_stats = stats
     vae._decode = _decode
+    _guard_compiled_decode(vae, logger)
     if logger is not None:
         logger.info(
             "diffusion.vae_oom: %s decode retries tiled, then with halved tiles, on out-of-memory",
             type(vae).__name__,
         )
+    return True
+
+
+def _compiled_decode_owner(vae: Any) -> Any:
+    """The object whose ``decode`` slot holds the speed layer's compiled decode guard (the VAE, or the slot an eager
+    outer wrapper calls through), or None when the decode is not compiled whole."""
+    outer = vae.__dict__.get("decode")
+    for owner in (vae, getattr(outer, "_unsloth_decode_slot", None)):
+        fn = getattr(owner, "__dict__", {}).get("decode") if owner is not None else None
+        if getattr(fn, "_unsloth_compiled_decode", False) and callable(getattr(fn, "_unsloth_eager_decode", None)):
+            return owner
+    return None
+
+
+def _guard_compiled_decode(vae: Any, logger: Any = None) -> bool:
+    """A compiled ``decode`` traces the ``_decode`` retry as a pass-through, so a runtime OOM escapes it. Wrap the
+    compiled callable: on an OOM (wrapped compiler errors included) decode that call on the eager path, where the
+    ``_decode`` retry runs. Installed after the speed layer compiled, so it sits directly over the compiled callable."""
+    owner = _compiled_decode_owner(vae)
+    if owner is None:
+        return False
+    compiled = owner.__dict__["decode"]
+    if getattr(compiled, "_unsloth_vae_oom_guard", False):
+        return True
+    eager = compiled._unsloth_eager_decode
+
+    @functools.wraps(compiled)
+    def decode(*args: Any, **kwargs: Any) -> Any:
+        if oom_retry_disabled():
+            return compiled(*args, **kwargs)
+        try:
+            return compiled(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            if not is_oom(exc) or (
+                not getattr(vae, "use_tiling", False) and _outer_gate_owns_untiled(vae)
+            ):
+                raise
+            exc.__traceback__ = None
+        # outside the handler: the compiled attempt's tensors are gone
+        z = args[0] if args else kwargs.get("z")
+        _release_cache(z, vae)
+        if logger is not None:
+            logger.warning("diffusion.vae_oom: compiled %s decode ran out of memory; retrying eager",
+                           type(vae).__name__)  # fmt: skip
+        stats = vae.__dict__.get("_unsloth_vae_oom_stats")
+        if isinstance(stats, dict):
+            stats["compiled_oom"] = stats.get("compiled_oom", 0) + 1
+        return eager(*args, **kwargs)
+
+    decode._unsloth_vae_oom_guard = True
+    decode._unsloth_compiled_decode = True
+    decode._unsloth_eager_decode = eager
+    owner.decode = decode
     return True
 
 

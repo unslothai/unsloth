@@ -1689,6 +1689,9 @@ def _guard_compiled_decode(
                 exc.__traceback__ = None
         return eager(*args, **kwargs)
 
+    # diffusion_vae_oom reads these to retry a runtime OOM of the compiled decode on the eager path
+    guarded._unsloth_compiled_decode = True
+    guarded._unsloth_eager_decode = eager
     return guarded
 
 
