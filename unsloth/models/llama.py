@@ -2115,14 +2115,9 @@ def _round_rope_size(seq_len):
 
 
 class _PerDeviceRopeCache:
-    """cos/sin built only on devices that read them, with only the rows callers asked for.
-
-    Building every visible GPU in __init__ and on each growth made every torchrun rank allocate the
-    cache (and a context) on all its peers, and the model forward's extend to max_position_embeddings
-    built up to 1M rows per device. current_rope_size and the cache dtype still change exactly as
-    before; a device is built on first use, and each row only depends on its position, so a shorter
-    cache matches the full one row for row.
-    """
+    """cos/sin built lazily per device with only the rows asked for; eager builds on every GPU made
+    each torchrun rank allocate on its peers. current_rope_size and dtype change as before, and a row
+    depends only on its position, so a shorter cache matches the full one row for row."""
 
     def _init_rope_cache_state(self, dtype):
         self._rope_cache_dtype = dtype
