@@ -471,6 +471,21 @@ def _append_to_system(messages: list[dict], block: str) -> list[dict]:
     return [{"role": "system", "content": block}, *out]
 
 
+def _live_turn_groups(messages: list[dict]) -> list[list[dict]]:
+    """The tool exchanges of the turn in progress, oldest first: the groups after the newest user
+    message, minus the last group, which `truncate_oldest_messages` always keeps."""
+    groups = group_turns(messages)
+    newest = next(
+        (
+            index
+            for index in range(len(groups) - 1, -1, -1)
+            if any(message.get("role") == "user" for message in groups[index])
+        ),
+        None,
+    )
+    return [] if newest is None else groups[newest + 1 : -1]
+
+
 def fit_checkpoint_context(
     messages: list[dict],
     *,
@@ -584,21 +599,31 @@ def fit_checkpoint_context(
     measured = projected
 
     # Phase two: the epoch is full, so start a new one. keep_ratio 0.0 takes every evictable group in one pass; the
-    # primitive itself protects system, developer, final and newest user groups.
+    # primitive itself protects system, developer, final and newest user groups. The turn in progress is held as well:
+    # in a tool loop the exchanges after the newest user message are the work the model is doing right now, and the
+    # primitive keeps only the last of them, so a reset mid-turn evicted the file the model had just read and it read
+    # it again or asked for it. Those exchanges are released oldest first, and only while the reset still does not fit;
+    # releasing all of them is the previous behaviour, which the X fallback below then handles as before.
     if (current_tokens > prompt_target or force_reset) and _resolved(can_reset):
-        candidate, reset_dropped = truncate_oldest_messages(
-            messages,
-            0.0,
-            protected_message_ids = protected_message_ids,
-            estimate_message = estimate_message,
-        )
-        if reset_dropped:
+        live = _live_turn_groups(messages)
+        for released in range(len(live) + 1):
+            held = {id(message) for group in live[released:] for message in group}
+            candidate, reset_dropped = truncate_oldest_messages(
+                messages,
+                0.0,
+                protected_message_ids = (protected_message_ids or set()) | held,
+                estimate_message = estimate_message,
+            )
+            if not reset_dropped:
+                continue
             fitted = candidate
             dropped = reset_dropped
             is_new_epoch = True
             projected, block = _project(fitted)
             current_tokens = count_tokens(projected)
             measured = projected
+            if current_tokens <= prompt_target:
+                break
 
     if dropped == 0 and current_tokens <= prompt_target:
         return messages, None

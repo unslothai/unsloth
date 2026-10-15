@@ -196,6 +196,64 @@ def test_an_irreducible_request_returns_the_original_messages():
     assert truncation["irreducible_tokens"] > truncation["prompt_target"]
 
 
+def _mid_turn(*results):
+    """A thread that overflows inside a tool loop: older history, the newest user message,
+    then one terminal exchange per result."""
+    messages = _thread() + [{"role": "user", "content": "Read main.py and apply your changes."}]
+    for index, result in enumerate(results):
+        messages += [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": f"call-{index}",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": f"call-{index}", "content": result},
+        ]
+    return messages
+
+
+@pytest.mark.parametrize(
+    ("results", "kept"),
+    [
+        # Everything the turn has done fits beside the reset, so all of it stays.
+        (["MAIN-PY " * 100, "ls output"], [0, 1]),
+        # Only the oldest exchange has to go for the rest to fit.
+        (["A" * 2400, "B" * 1600, "ls output"], [1, 2]),
+        # Nothing fits but the newest: the reset this replaced, which the primitive already guarantees.
+        (["A" * 2400, "B" * 2400, "C" * 1600], [2]),
+    ],
+)
+def test_a_reset_inside_a_tool_loop_keeps_the_turn_in_progress(results, kept):
+    """A reset mid-turn evicted every tool exchange of the turn in progress except the last.
+
+    Measured on a coding turn: the model ran `cat main.py`, the next call overflowed, and the
+    reset kept only that call, so the file it had just read was gone and it read it again or
+    asked the user for it. Older history is still reset as before; the exchanges after the
+    newest user message are released oldest first, and only while the reset does not fit.
+    """
+    messages = _mid_turn(*results)
+
+    fitted, truncation = _fit(messages)
+
+    assert truncation["fits"] is True
+    assert truncation["checkpoint_started"] is True
+    assert count(fitted) <= 1000
+    # Every older turn is gone, so this is still a reset and not a rolling trim.
+    assert [m["content"] for m in fitted if m["role"] == "user"] == [
+        "Read main.py and apply your changes."
+    ]
+    assert [m["content"] for m in fitted if m["role"] == "tool"] == [results[i] for i in kept]
+    # Each kept result still follows its own call, which strict templates require.
+    calls = [m["tool_calls"][0]["id"] for m in fitted if m.get("tool_calls")]
+    assert calls == [f"call-{i}" for i in kept]
+
+
 def test_the_carried_forward_block_is_capped_and_excludes_the_giant_instruction():
     """A single enormous instruction is the thing that could starve the window, so it is
     excluded whole. Half an instruction is worse than none: it reads as complete."""
