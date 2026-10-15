@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The FP8 rowwise GEMV must address weights holding more than 2^31 elements.
-
-`_fp8_rowwise_gemv_kernel` formed `offs_n[:, None] * stride_wn` in int32 (stride_wn = K always
-fits, so Triton specialises it to i32), so the rows past element 2^31 of an (N, K) weight read
-wrapped addresses. The launcher now passes `LONG_INDEXING = long_indexing(weight)`, which widens
-the row index before the multiply; ordinary shapes keep the int32 kernel unchanged.
-"""
+"""The FP8 rowwise GEMV must address weights holding more than 2^31 elements."""
 
 import os
 import sys
@@ -59,8 +53,8 @@ def _launch_kwargs(F, monkeypatch, N, K):
 @pytest.mark.parametrize(
     "N, K, expected",
     [
-        (4096, 4096, False),  # ordinary projection
-        (152064, 8192, False),  # large vocab head, 1.2e9 elements
+        (4096, 4096, False),
+        (152064, 8192, False),
         (2**31 // 4096, 4096, False),  # exactly 2^31 elements: last offset is 2^31 - 1
         (2**31 // 4096 + 1, 4096, True),  # one row past: last row starts at 2^31
         (2**31 // 7168 + 64, 7168, True),  # K not a power of two
@@ -82,12 +76,12 @@ def _compile_ir(F, long_indexing, arch = 90):
     cx = dict(BLOCK_N = 8, BLOCK_K = 512, LONG_INDEXING = long_indexing)
     try:
         src = ASTSource(fn, sig, constexprs = cx)
-    except TypeError:  # pragma: no cover - Triton 3.2 spells it `constants`, without constexpr slots
+    except TypeError:  # pragma: no cover - Triton 3.2 uses `constants`
         sig = {k: v for k, v in sig.items() if v != "constexpr"}
         src = ASTSource(fn, sig, constants = cx)
     try:
         return triton_compile(src, arch)
-    except Exception as exc:  # pragma: no cover - no offline CUDA backend
+    except Exception as exc:  # pragma: no cover
         if "driver" in str(exc).lower():
             pytest.skip(f"no Triton CUDA driver to compile against: {exc}")
         raise
@@ -165,7 +159,7 @@ def test_weight_past_2_31_elements(F):
         pytest.skip("needs 4 GB free GPU memory")
     X = torch.randn(1, K, device = "cuda", dtype = torch.bfloat16)
     W = torch.empty(N, K, device = "cuda", dtype = torch.float8_e4m3fn)
-    tail = slice(N - 512, N)  # rows straddling element 2^31
+    tail = slice(N - 512, N)
     W[tail] = (torch.randn(512, K, device = "cuda") * 0.05).to(torch.float8_e4m3fn)
     S = torch.rand(N, 1, device = "cuda") * 0.01 + 0.001
     assert F.can_use_fp8_rowwise_gemv(X, W, S)

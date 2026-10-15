@@ -484,8 +484,7 @@ def _rocm_fp8e4nv_kernel_supported(device):
 
 @functools.lru_cache(maxsize = None)
 def _fp8_gemv_miscompiles(device):
-    # Triton 3.3 (torch 2.7) builds a wrong rowwise GEMV on Blackwell: most rows are garbage at
-    # BLOCK_N 4 / 8 (N > 4096) on a B200, while Triton 3.4 is exact. Those cards take the dequant path.
+    # Triton 3.3 miscompiles this GEMV on Blackwell (garbage rows at BLOCK_N 4/8); 3.4 is exact.
     if torch.version.hip is not None:
         return False
     try:
@@ -537,7 +536,7 @@ def _fp8_rowwise_gemv_kernel(
     LONG_INDEXING: tl.constexpr = False,
 ):
     offs_n = tl.program_id(0) * BLOCK_N + tl.arange(0, BLOCK_N)
-    # Widen before the multiply: row * stride_wn passes 2^31 once the weight holds 2^31 elements.
+    # Widen before the multiply: row * stride_wn overflows int32 past 2^31 weight elements.
     if LONG_INDEXING:
         w_rows = offs_n.to(tl.int64)
     else:
