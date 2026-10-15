@@ -491,10 +491,18 @@ def test_auto_flash_engages_only_with_the_mask_guard(monkeypatch):
     monkeypatch.setattr(
         att,
         "_time_rocm_flash_block",
-        lambda *a, **k: {"native_ms": 80.0, "flash_ms": 60.0, "rel_l1": 1e-3, "finite": True, "tokens": 4096},
+        lambda *a, **k: {
+            "native_ms": 80.0,
+            "flash_ms": 60.0,
+            "rel_l1": 1e-3,
+            "finite": True,
+            "tokens": 4096,
+        },
     )
     installed = []
-    monkeypatch.setattr(att, "_install_rocm_flash_dispatch_guard", lambda: installed.append(1) or True)
+    monkeypatch.setattr(
+        att, "_install_rocm_flash_dispatch_guard", lambda: installed.append(1) or True
+    )
     pipe, set_to = _pipe_with_attention()
     assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
     assert installed and set_to == ["flash"]
@@ -511,13 +519,25 @@ def test_rocm_flash_guard_routes_masked_calls_to_native(monkeypatch):
     backends = ad._AttentionBackendRegistry._backends
     calls = []
 
-    def fake_flash(query, key, value, attn_mask = None, **kw):
+    def fake_flash(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        **kw,
+    ):
         if attn_mask is not None:
             raise ValueError("`attn_mask` is not supported for flash-attn 2.")
         calls.append("flash")
         return query
 
-    def fake_native(query, key, value, attn_mask = None, **kw):
+    def fake_native(
+        query,
+        key,
+        value,
+        attn_mask = None,
+        **kw,
+    ):
         calls.append("native")
         return query
 
@@ -545,7 +565,9 @@ def _two_geometry_pipe():
             )
             for _ in range(n)
         ]
-        return types.SimpleNamespace(set_attention_backend = set_to.append, modules = lambda: iter(mods))
+        return types.SimpleNamespace(
+            set_attention_backend = set_to.append, modules = lambda: iter(mods)
+        )
 
     first, second = dit(3072, 24, 128, 5), dit(1536, 12, 128, 1)
     monkey_dits = [first, second]
@@ -563,7 +585,13 @@ def test_every_attention_geometry_is_timed(monkeypatch, minority_wins, engaged):
     def fake_time(device, dtype, hidden, heads, head_dim):
         timed.append((hidden, heads, head_dim))
         flash = 60.0 if (hidden == 3072 or minority_wins) else 85.0
-        return {"native_ms": 80.0, "flash_ms": flash, "rel_l1": 1e-3, "finite": True, "tokens": 4096}
+        return {
+            "native_ms": 80.0,
+            "flash_ms": flash,
+            "rel_l1": 1e-3,
+            "finite": True,
+            "tokens": 4096,
+        }
 
     monkeypatch.setattr(att, "_time_rocm_flash_block", fake_time)
     assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == engaged
@@ -577,5 +605,7 @@ def test_every_attention_geometry_is_timed(monkeypatch, minority_wins, engaged):
         n = len(timed)
         pipe2, set_to2, dits2 = _two_geometry_pipe()
         monkeypatch.setattr(att, "_attention_dits", lambda p: dits2)
-        assert att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+        assert (
+            att.apply_attention_backend(pipe2, att.ROCM_FLASH_CANDIDATE, target = _target()) is None
+        )
         assert len(timed) == n

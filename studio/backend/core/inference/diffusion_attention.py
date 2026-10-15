@@ -671,7 +671,12 @@ def _rocm_flash_block_admitted(
     return _install_rocm_flash_dispatch_guard()
 
 
-def _rocm_flash_geometry_admitted(device: str, dtype: Any, geometry: tuple, logger: Any = None) -> bool:
+def _rocm_flash_geometry_admitted(
+    device: str,
+    dtype: Any,
+    geometry: tuple,
+    logger: Any = None,
+) -> bool:
     key = (device, str(dtype), *geometry)
     cached = ROCM_FLASH_ADMISSIONS.get(key)
     if cached is not None:
@@ -1150,7 +1155,9 @@ def _install_rocm_flash_dispatch_guard() -> bool:
     return _install_dispatch_guard(
         "flash",
         _rocm_flash_reroute_reason,
-        lambda reason: _note_reroute("ROCm flash attention", reason, _ROCM_FLASH_ROUTED, _ROCM_FLASH_ROUTED_LOGGED),
+        lambda reason: _note_reroute(
+            "ROCm flash attention", reason, _ROCM_FLASH_ROUTED, _ROCM_FLASH_ROUTED_LOGGED
+        ),
     )
 
 
