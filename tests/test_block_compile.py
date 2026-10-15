@@ -372,3 +372,41 @@ def test_causal_depthwise_conv_matches_conv1d():
     x, w = torch.randn(2, 6, 37), torch.randn(6, 4)
     want = torch.nn.functional.conv1d(x, w[:, None], groups = 6, padding = 3)[..., :37]
     torch.testing.assert_close(M._causal_depthwise_conv(x, w), want, rtol = 1e-5, atol = 1e-5)
+
+
+def test_disable_unless_decode_keeps_original_traceable_on_old_torch(monkeypatch):
+    # torch < 2.8: compiler.disable(fn, recursive = False) marks fn itself and returns it.
+    import unsloth.import_fixes as F
+    import unsloth_zoo.temporary_patches.utils as zoo_utils
+
+    marked = []
+
+    def old_disable(
+        fn = None,
+        recursive = True,
+        **kwargs,
+    ):
+        fn._old_disable_marked = True
+        marked.append(fn)
+        return fn
+
+    monkeypatch.setattr(torch.compiler, "disable", old_disable)
+    monkeypatch.setattr(
+        zoo_utils,
+        "torch_compiler_disable_unless_decode",
+        zoo_utils.torch_compiler_disable_unless_decode,
+    )
+    F.fix_torch_compiler_disable_unless_decode()
+    fixed = zoo_utils.torch_compiler_disable_unless_decode
+    assert fixed._unsloth_disable_copy
+
+    def attention(x):
+        return x + 1
+
+    wrapped = fixed(attention)
+    assert wrapped._unsloth_undisabled is attention
+    assert not getattr(attention, "_old_disable_marked", False)
+    disabled_copy = marked[-1]
+    assert disabled_copy is not attention and disabled_copy.__code__ is not attention.__code__
+    assert disabled_copy(1) == attention(1) == 2
+    assert torch.compiler.disable is old_disable
