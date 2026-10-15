@@ -61,8 +61,6 @@ def test_ssm_models_detected(name):
 @pytest.mark.parametrize(
     "name",
     [
-        "Qwen/Qwen3-Next-80B-A3B",
-        "unsloth/Qwen3.5-2B",
         "LiquidAI/LFM2-1.2B",
         "state-spaces/mamba-2.8b-hf",
         "ai21labs/Jamba-v0.1",
@@ -156,7 +154,7 @@ def test_causal_only_model_skips_mamba(monkeypatch):
         "_install_kernel",
         lambda *, import_name, **_: order.append(import_name) or True,
     )
-    ssm_runtime.ensure_ssm_runtime("Qwen/Qwen3-Next-80B-A3B")
+    ssm_runtime.ensure_ssm_runtime("LiquidAI/LFM2-1.2B")
     assert order == ["causal_conv1d"]
 
 
@@ -169,10 +167,10 @@ def test_failure_raises_runtime_error(monkeypatch):
 
 
 def test_causal_only_install_failure_is_not_fatal(monkeypatch):
-    # Qwen3-Next/LFM2 want causal-conv1d but fall back to torch; a failed install must
+    # LFM2 wants causal-conv1d but falls back to torch; a failed install must
     # not block the load (best-effort, mirrors training).
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
-    ssm_runtime.ensure_ssm_runtime("Qwen/Qwen3-Next-80B-A3B")  # no raise
+    ssm_runtime.ensure_ssm_runtime("LiquidAI/LFM2-1.2B")  # no raise
 
 
 def test_ssm_causal_failure_nonfatal_when_mamba_ok(monkeypatch):
@@ -464,7 +462,7 @@ def test_causal_conv1d_attempted_on_windows(monkeypatch):
         "_install_kernel",
         lambda *, import_name, **_: installed.append(import_name) or True,
     )
-    ssm_runtime.ensure_ssm_runtime("Qwen/Qwen3-Next-80B-A3B")
+    ssm_runtime.ensure_ssm_runtime("LiquidAI/LFM2-1.2B")
     assert installed == ["causal_conv1d"]
 
 
@@ -803,7 +801,6 @@ def test_constants_shared_with_training_worker():
     from utils import kernel_install
 
     assert tw._SSM_MODEL_SUBSTRINGS is ssm_runtime.SSM_MODEL_SUBSTRINGS
-    assert tw._CAUSAL_CONV1D_MODEL_SUBSTRINGS is ssm_runtime.CAUSAL_CONV1D_MODEL_SUBSTRINGS
     assert tw.CAUSAL_CONV1D is ssm_runtime.CAUSAL_CONV1D is kernel_install.CAUSAL_CONV1D
     assert tw.MAMBA_SSM is ssm_runtime.MAMBA_SSM is kernel_install.MAMBA_SSM
     assert tw._hipcc_gcc_install_dir is ssm_runtime._hipcc_gcc_install_dir
@@ -815,6 +812,7 @@ def test_constants_shared_with_training_worker():
         "tiiuae/Falcon-H1-0.5B",
         "ibm-granite/granite-4.0-h-micro",
         "Qwen/Qwen3-Next-80B",
+        "unsloth/Qwen3.5-2B",
         "LiquidAI/LFM2-1.2B",
         "state-spaces/mamba-2.8b-hf",
         "ai21labs/Jamba-v0.1",
@@ -838,11 +836,11 @@ def _write_config(directory: Path, config: dict) -> Path:
 
 
 def test_renamed_local_checkpoint_resolves_causal_conv1d_from_its_config(tmp_path):
-    """A local Qwen3-Next checkpoint whose folder has no allowlisted substring must
+    """A local LFM2 checkpoint whose folder has no allowlisted substring must
     still be detected, so the availability hook is installed for it."""
     checkpoint = _write_config(
         tmp_path / "my-model",
-        {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]},
+        {"model_type": "lfm2", "architectures": ["Lfm2ForCausalLM"]},
     )
     target = str(checkpoint)
 
@@ -877,3 +875,108 @@ def test_nested_text_config_resolves_causal_conv1d(tmp_path):
     target = str(checkpoint)
     assert ssm_runtime.model_wants_causal_conv1d(target) is False
     assert ssm_runtime.resolved_model_wants_causal_conv1d(target, target, None) is True
+
+
+# ── Qwen3.5 / 3.6 / Qwen3-Next run on unsloth-zoo's Triton conv, never causal-conv1d ──
+
+
+_ZOO_GDN_NAMES = [
+    "Qwen/Qwen3-Next-80B-A3B",
+    "Qwen/Qwen3-Next-80B-A3B-Instruct",
+    "unsloth/Qwen3.5-2B",
+    "unsloth/Qwen3.5-35B-A3B-GGUF",
+    "unsloth/Qwen3.6-27B",
+    "my-org/qwen3_5-finetune",
+]
+
+
+@pytest.mark.parametrize("name", _ZOO_GDN_NAMES)
+def test_zoo_gdn_models_request_no_kernels(monkeypatch, name):
+    monkeypatch.delenv(ssm_runtime.ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, raising = False)
+    assert ssm_runtime.model_wants_causal_conv1d(name) is False
+    assert ssm_runtime.model_is_ssm(name) is False
+    installed = []
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_install_kernel",
+        lambda *, import_name, **_: installed.append(import_name) or True,
+    )
+    ssm_runtime.ensure_ssm_runtime(name)
+    assert installed == []
+
+
+@pytest.mark.parametrize("name", _ZOO_GDN_NAMES)
+def test_zoo_kill_switch_brings_the_causal_conv1d_request_back(monkeypatch, name):
+    monkeypatch.setenv(ssm_runtime.ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, "1")
+    assert ssm_runtime.model_wants_causal_conv1d(name) is True
+    assert ssm_runtime.model_is_ssm(name) is False
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"model_type": "qwen3_next", "architectures": ["Qwen3NextForCausalLM"]},
+        {
+            "model_type": "qwen3_5",
+            "architectures": ["Qwen3_5ForConditionalGeneration"],
+            "text_config": {"model_type": "qwen3_5_text"},
+            "vision_config": {"model_type": "qwen3_5_vision"},
+        },
+        {
+            "model_type": "qwen3_5_moe",
+            "architectures": ["Qwen3_5MoeForConditionalGeneration"],
+            "text_config": {"model_type": "qwen3_5_moe_text"},
+            "vision_config": {"model_type": "qwen3_5_moe_vision"},
+        },
+    ],
+    ids = ["qwen3_next", "qwen3_5", "qwen3_5_moe"],
+)
+def test_zoo_gdn_configs_resolve_to_no_causal_conv1d(monkeypatch, tmp_path, config):
+    target = str(_write_config(tmp_path / "renamed", config))
+    monkeypatch.delenv(ssm_runtime.ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, raising = False)
+    assert ssm_runtime.model_config_wants_causal_conv1d(config) is False
+    assert ssm_runtime.resolved_model_wants_causal_conv1d("acme/x", target, None) is False
+    monkeypatch.setenv(ssm_runtime.ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, "1")
+    assert ssm_runtime.model_config_wants_causal_conv1d(config) is True
+
+
+def test_a_config_mixing_a_zoo_gdn_type_with_another_hybrid_still_requests_it():
+    config = {"model_type": "qwen3_5", "text_config": {"model_type": "lfm2"}}
+    assert ssm_runtime.model_config_wants_causal_conv1d(config) is True
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["tiiuae/Falcon-H1-0.5B", "nvidia/Nemotron-H-8B", "ibm-granite/granite-4.0-h-micro"],
+)
+def test_mamba2_hybrids_still_install_both_on_demand(monkeypatch, name):
+    order = []
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_install_kernel",
+        lambda *, import_name, **_: order.append(import_name) or True,
+    )
+    ssm_runtime.ensure_ssm_runtime(name)
+    assert order == ["causal_conv1d", "mamba_ssm"]
+
+
+def test_zoo_gdn_model_types_match_unsloth_zoo():
+    """Studio's list must equal the models unsloth-zoo's Triton conv patches."""
+    import ast
+    import importlib.util
+
+    spec = importlib.util.find_spec("unsloth_zoo")
+    if spec is None or spec.origin is None:
+        pytest.skip("unsloth_zoo not installed")
+    source_path = Path(spec.origin).parent / "temporary_patches" / "gdn_causal_conv1d.py"
+    if not source_path.is_file():
+        pytest.skip("this unsloth_zoo has no Triton causal conv")
+    tree = ast.parse(source_path.read_text(encoding = "utf-8"))
+    values = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id == "_GDN_MODELING" for t in node.targets)
+    ]
+    assert len(values) == 1
+    assert set(ast.literal_eval(values[0])) == ssm_runtime.ZOO_GDN_MODEL_TYPES

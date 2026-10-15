@@ -603,19 +603,20 @@ def test_causal_conv1d_fast_path_preserves_wheel_first_install_args(monkeypatch)
 
 
 @not_on_windows
-def test_causal_conv1d_fast_path_includes_qwen3_6_variants(monkeypatch):
+def test_causal_conv1d_fast_path_skips_qwen3_6_variants_on_zoo_triton_conv(monkeypatch):
+    # unsloth-zoo runs Qwen3.5 / 3.6 / Qwen3-Next on its own Triton causal conv.
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
+    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
 
-    worker._ensure_causal_conv1d_fast_path(
-        event_queue = [],
-        model_name = "unsloth/Qwen3.6-4B",
-    )
-    worker._ensure_causal_conv1d_fast_path(
-        event_queue = [],
-        model_name = "unsloth/Qwen3_6-4B",
-    )
+    for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
+        worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
+    assert install_mock.call_count == 0
 
+    # zoo's kill switch puts them back on the prebuilt causal-conv1d.
+    monkeypatch.setenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", "1")
+    for model_name in ("unsloth/Qwen3.6-4B", "unsloth/Qwen3_6-4B"):
+        worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = model_name)
     assert install_mock.call_count == 2
 
 
@@ -1498,7 +1499,7 @@ def test_windows_causal_conv1d_fast_path_installs(monkeypatch):
     _as_windows(monkeypatch)
     install_mock = mock.Mock(return_value = True)
     monkeypatch.setattr(worker, "_install_package_wheel_first", install_mock)
-    worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = "unsloth/Qwen3.6-4B")
+    worker._ensure_causal_conv1d_fast_path(event_queue = [], model_name = "LiquidAI/LFM2-1.2B")
     install_mock.assert_called_once()
 
 

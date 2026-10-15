@@ -77,8 +77,8 @@ from utils.kernel_install import (
     uninstall_command,
 )
 from utils.ssm_runtime import (
-    CAUSAL_CONV1D_MODEL_SUBSTRINGS as _CAUSAL_CONV1D_MODEL_SUBSTRINGS,
     SSM_MODEL_SUBSTRINGS as _SSM_MODEL_SUBSTRINGS,
+    model_wants_causal_conv1d as _ssm_model_wants_causal_conv1d,
 )
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -1327,8 +1327,7 @@ def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> 
 
 
 def _model_wants_causal_conv1d(model_name: str) -> bool:
-    name = model_name.lower()
-    return any(key in name for key in _CAUSAL_CONV1D_MODEL_SUBSTRINGS)
+    return _ssm_model_wants_causal_conv1d(model_name)
 
 
 _hipcc_gcc_install_dir = hipcc_gcc_install_dir
@@ -3995,7 +3994,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     # 2) mamba-ssm + flash-attn keep their substring / size gates.
     # 3) FLA gated-delta kernels: vendored by unsloth_zoo, nothing to install.
     # Laya decision models are ModernBERT encoders: none of these apply.
-    # Clef decision models are Qwen3.5 backbones and need the same gated-delta / conv kernels.
+    # Clef decision models are Qwen3.5 backbones: zoo's gated-delta and Triton conv kernels cover them.
     if (
         not config.get("is_decision")
         or config.get("decision_layout") in ("clef", "llm")

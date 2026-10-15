@@ -52,12 +52,6 @@ SSM_MODEL_SUBSTRINGS = (
     "granitemoehybrid",
 )
 CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
-    "qwen3.5",
-    "qwen3_5",
-    "qwen3.6",
-    "qwen3_6",
-    "qwen3-next",
-    "qwen3_next",
     "nemotron_h",
     "nemotron-h",
     "nemotron-3-nano",
@@ -71,7 +65,39 @@ CAUSAL_CONV1D_MODEL_SUBSTRINGS = (
     "zamba",
     "bamba",
 )
+# GatedDeltaNet models unsloth-zoo runs without causal_conv1d: its Triton causal conv
+# (temporary_patches/gdn_causal_conv1d.py, `_GDN_MODELING`) plus the vendored FLA kernels. Qwen3.6
+# reuses the qwen3_5 model types. A usable causal_conv1d still wins inside zoo; this only stops
+# Studio from downloading it. Zoo's own kill switch brings the request back.
+ZOO_GDN_MODEL_TYPES = frozenset({"qwen3_5", "qwen3_5_moe", "qwen3_next"})
+ZOO_GDN_MODEL_SUBSTRINGS = (
+    "qwen3.5",
+    "qwen3_5",
+    "qwen3.6",
+    "qwen3_6",
+    "qwen3-next",
+    "qwen3_next",
+)
+ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH = "UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D"
 _TRANSFORMERS_CAUSAL_CONV1D_MODEL_TYPE_CACHE: dict[str, bool | None] = {}
+
+
+def zoo_triton_causal_conv1d_enabled() -> bool:
+    return os.environ.get(ZOO_TRITON_CAUSAL_CONV1D_KILL_SWITCH, "0") != "1"
+
+
+def _causal_conv1d_model_substrings() -> tuple[str, ...]:
+    if zoo_triton_causal_conv1d_enabled():
+        return CAUSAL_CONV1D_MODEL_SUBSTRINGS
+    return CAUSAL_CONV1D_MODEL_SUBSTRINGS + ZOO_GDN_MODEL_SUBSTRINGS
+
+
+def _is_zoo_gdn_model_type(model_type: str) -> bool:
+    """The model type or one of its `_text` / `_vision` sub-configs belongs to a zoo-covered model."""
+    candidate = model_type.strip().lower().replace("-", "_")
+    for suffix in ("_text", "_vision"):
+        candidate = candidate.removesuffix(suffix)
+    return candidate in ZOO_GDN_MODEL_TYPES
 
 
 def model_is_ssm(model_name: str) -> bool:
@@ -81,9 +107,9 @@ def model_is_ssm(model_name: str) -> bool:
 
 
 def model_wants_causal_conv1d(model_name: str) -> bool:
-    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like Qwen3-Next / LFM2 whose modeling files lazy-import it)."""
+    """Whether *model_name* needs ``causal_conv1d`` (the SSM set plus linear-attention hybrids like LFM2 whose modeling files lazy-import it; Qwen3.5 / 3.6 / Qwen3-Next only with zoo's Triton conv switched off)."""
     name = (model_name or "").lower()
-    return any(sub in name for sub in CAUSAL_CONV1D_MODEL_SUBSTRINGS)
+    return any(sub in name for sub in _causal_conv1d_model_substrings())
 
 
 def _normalized_model_identifier(value: str) -> str:
@@ -144,6 +170,12 @@ def model_config_wants_causal_conv1d(model_config: dict) -> bool | None:
         elif isinstance(value, (list, tuple)):
             pending.extend(value)
 
+    if (
+        model_types
+        and zoo_triton_causal_conv1d_enabled()
+        and all(_is_zoo_gdn_model_type(model_type) for model_type in model_types)
+    ):
+        return False
     source_requirements = {
         _transformers_model_type_uses_causal_conv1d(model_type) for model_type in model_types
     }
@@ -151,7 +183,7 @@ def model_config_wants_causal_conv1d(model_config: dict) -> bool | None:
         return True
     config_identifiers = model_types | architectures
     normalized_needles = {
-        _normalized_model_identifier(value) for value in CAUSAL_CONV1D_MODEL_SUBSTRINGS
+        _normalized_model_identifier(value) for value in _causal_conv1d_model_substrings()
     }
     if any(
         needle in _normalized_model_identifier(identifier)
@@ -394,7 +426,7 @@ def ensure_ssm_runtime(
     status_cb: StatusCb = None,
     run: Callable[..., Any] = subprocess.run,
 ) -> None:
-    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Only a true SSM hybrid's ``mamba_ssm`` is fatal (raises ``RuntimeError`` instead of a cryptic mid-load failure); ``causal_conv1d`` is best-effort, with Qwen3-Next/LFM2 falling back to torch."""
+    """Install the SSM kernels *model_name* needs before load, wheel-first; a no-op for non-SSM models and idempotent. Only a true SSM hybrid's ``mamba_ssm`` is fatal (raises ``RuntimeError`` instead of a cryptic mid-load failure); ``causal_conv1d`` is best-effort, with LFM2 falling back to torch and Qwen3.5 / 3.6 / Qwen3-Next on zoo's Triton conv (never requested)."""
     wants_causal_conv1d = model_wants_causal_conv1d(model_name)
     is_ssm = model_is_ssm(model_name)
     if not (wants_causal_conv1d or is_ssm):
