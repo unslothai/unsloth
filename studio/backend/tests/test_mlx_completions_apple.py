@@ -22,7 +22,7 @@ _TINY = "mlx-community/SmolLM-135M-Instruct-4bit"
 _PROMPT = "The capital of France is"
 
 
-@pytest.fixture(scope = "module")
+@pytest.fixture
 def backend():
     pytest.importorskip("mlx_lm")
     pytest.importorskip("unsloth_zoo.mlx.loader")
