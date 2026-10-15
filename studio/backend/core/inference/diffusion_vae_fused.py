@@ -504,6 +504,9 @@ def _torch():
     return torch
 
 
+_GN_KERNEL_RUNS = [0]
+
+
 def group_norm_act(
     x: Any,
     norm: Any,
@@ -514,7 +517,6 @@ def group_norm_act(
     torch = _torch()
     if not _gn_fusable(x, norm):
         return group_norm_reference(x, norm, act, in_bias)
-    k = _kernels()
     ndim = x.dim()
     x5, _ = _as5d(x)
     b, c, t, h, w = x5.shape
@@ -527,6 +529,7 @@ def group_norm_act(
             b, c, t, h, w = x5.shape
         else:
             return group_norm_reference(x, norm, act, in_bias)
+    k = _kernels()
     g = int(norm.num_groups)
     cpg = c // g
     hw = h * w
@@ -556,6 +559,8 @@ def group_norm_act(
         CPG = cpg, ACT = bool(act), HAS_IN_BIAS = in_bias is not None, BLOCK_P = block_p2, BLOCK_C = block_c,
         num_warps = 4,
     )  # fmt: skip
+    if not torch.compiler.is_compiling():
+        _GN_KERNEL_RUNS[0] += 1  # read by the structural calibration: only a completed Triton launch counts
     out = out.permute(0, 4, 1, 2, 3)  # B, C, T', H', W'
     shape = x.shape
     if ndim == 5:
@@ -2260,9 +2265,10 @@ def _trace_group_norm_silu(norms: list, silus: list, run: Any) -> tuple:
 
 def _fast_gn_maybe_act(norm: Any, act: bool, state: Any) -> Any:
     def fast(x: Any) -> Any:
-        if _gn_fusable(x, norm):
-            state.kernel_calls += 1  # the Triton kernel runs; otherwise group_norm_act takes the stock reference
+        before = _GN_KERNEL_RUNS[0]
         y = group_norm_act(x, norm, act = act)
+        if _GN_KERNEL_RUNS[0] > before:
+            state.kernel_calls += 1  # the Triton path completed; any stock fallback inside group_norm_act does not count
         state.calls += 1
         if act:
             y._unsloth_silu_applied = True

@@ -834,3 +834,18 @@ def test_structural_rejected_when_every_norm_falls_back(monkeypatch):
     state = vae._unsloth_vae_structural
     assert state.status == "rejected" and state.kernel_calls == 0
     assert not any("forward" in m.__dict__ for m in vae.decoder.modules())
+
+
+def test_kernel_calls_skip_the_temporal_stride_fallback(monkeypatch):
+    """A 5-D norm that passes _gn_fusable but whose T axis cannot be flattened takes the stock reference inside
+    group_norm_act; calibration must not count it as a kernel run."""
+    monkeypatch.setattr(F, "_gn_fusable", lambda x, norm: True)
+    norm = torch.nn.GroupNorm(4, 8)
+    state = types.SimpleNamespace(kernel_calls = 0, calls = 0)
+    fast = F._fast_gn_maybe_act(norm, True, state)
+    x = torch.randn(1, 8, 3, 4, 5).transpose(2, 3).contiguous().transpose(2, 3)  # T stride != H * H stride
+    assert x.stride(2) != x.shape[3] * x.stride(3)
+    with torch.no_grad():
+        y = fast(x)
+    assert state.calls == 1 and state.kernel_calls == 0
+    assert torch.allclose(y, torch.nn.functional.silu(norm(x)), atol = 1e-5)
