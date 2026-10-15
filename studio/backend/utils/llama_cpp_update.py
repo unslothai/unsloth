@@ -330,7 +330,7 @@ def _whisper_chain_status(
 
 
 def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
-    """Fold the whisper sub-status into the llama payload: the llama update item is the single UI surface, so update_available becomes the union (llama behind OR whisper behind) while llama_update_available keeps the llama-only flag. All pre-existing top-level fields are preserved."""
+    """Fold the whisper sub-status into the llama payload: the llama update item is the single UI surface. whisper.cpp does not join the update_available union (it rides along, _settle_whisper_rider) while llama_update_available keeps the llama-only flag. All pre-existing top-level fields are preserved."""
     status["llama_update_available"] = bool(status.get("update_available"))
     plan = _whisper_chain_status(
         force_refresh = force_refresh,
@@ -348,16 +348,21 @@ def _merge_whisper_status(status: dict, *, force_refresh: bool = False) -> dict:
         "update_size_bytes": sub.get("update_size_bytes"),
         "skip_reason": plan.get("skip_reason"),
     }
-    whisper_update_available = bool(plan.get("update_available"))
-    if whisper_update_available:
-        status["update_available"] = True
-    status["update_component"] = (
-        "llama"
-        if status["llama_update_available"]
-        else "whisper"
-        if whisper_update_available
-        else None
-    )
+    # whisper.cpp never raises the update item by itself: it rides along with the next llama.cpp or
+    # audio.cpp update (_settle_whisper_rider), so its separate releases stop re-showing the card.
+    status["update_component"] = "llama" if status["llama_update_available"] else None
+    return status
+
+
+def _settle_whisper_rider(status: dict) -> dict:
+    """List a pending whisper.cpp release only beside a llama.cpp update, backend migration or audio.cpp update it can ride with."""
+    whisper = status.get("whisper")
+    if not whisper or not whisper.get("update_available"):
+        return status
+    if status.get("update_available") or status.get("backend_migration_available"):
+        return status
+    whisper["update_available"] = False
+    whisper["skip_reason"] = "waits_for_llama"
     return status
 
 
@@ -372,7 +377,7 @@ def _audio_chain_status(*, force_refresh: bool = False) -> Optional[dict]:
 
 
 def _merge_audio_status(status: dict, *, force_refresh: bool = False) -> dict:
-    """Fold the audio.cpp sub-status in after whisper's: it joins the update_available union and names the component only when neither llama.cpp nor whisper.cpp is pending."""
+    """Fold the audio.cpp sub-status in after whisper's: it joins the update_available union and names the component only when llama.cpp is not pending."""
     plan = _audio_chain_status(force_refresh = force_refresh)
     if plan is None:
         status["audio"] = None
@@ -397,7 +402,8 @@ def get_update_status(*, force_refresh: bool = False) -> dict:
     """Report whether an update is available plus the job state. This is the single main update item: llama.cpp drives it and the whisper and audio.cpp phases are folded in (_merge_whisper_status, _merge_audio_status). force_refresh bypasses the 24h release cache for an explicit "check now"."""
     status = _llama_only_status(force_refresh = force_refresh)
     status = _merge_whisper_status(status, force_refresh = force_refresh)
-    return _merge_audio_status(status, force_refresh = force_refresh)
+    status = _merge_audio_status(status, force_refresh = force_refresh)
+    return _settle_whisper_rider(status)
 
 
 def get_update_changelog(
@@ -1346,6 +1352,15 @@ def _start_llama_job(backend_request: Optional[str] = None) -> dict:
         # audio.cpp ships its own ggml, so a backend switch never touches it.
         audio_plan = (_audio_chain_status() or {}) if backend_request is None or migration else {}
         audio_spec = audio_plan.get("phase")
+        if (
+            backend_request is None
+            and llama_spec is None
+            and audio_spec is None
+            and whisper_spec is not None
+            and not whisper_spec.get("repair")
+        ):
+            # whisper.cpp rides along with a llama.cpp or audio.cpp update and never runs a job by itself.
+            whisper_spec = None
         if llama_spec is None and whisper_spec is None and audio_spec is None:
             # Nothing to run: answer with the llama refusal so the existing reasons (local_link / up_to_date / already_selected / ...) keep their meaning.
             refusal = llama_plan["refusal"]

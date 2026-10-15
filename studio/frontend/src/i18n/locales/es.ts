@@ -1801,9 +1801,6 @@ export const es = {
         showLoadedModels: "Indicador de modelos cargados",
         showLoadedModelsDescription:
           "Muestra una pequeña tarjeta en la esquina inferior derecha con todos los modelos actualmente en memoria (chat, voz, imagen, vídeo), con un botón para expulsar cada uno.",
-        showWhisperUpdates: "Notificaciones de actualización de whisper.cpp",
-        showWhisperUpdatesDescription:
-          "Avisa cuando haya una compilación más reciente de whisper.cpp para los modelos de voz a texto. Desactívalo si nunca transcribes audio.",
         showAudioCppUpdates: "Notificaciones de actualización de audio.cpp",
         showAudioCppUpdatesDescription:
           "Avisa cuando el entorno de ejecución de audio.cpp necesite una actualización para las páginas de Audio. Desactívalo si nunca usas Audio.",

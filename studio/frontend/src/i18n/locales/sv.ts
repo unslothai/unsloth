@@ -1957,9 +1957,6 @@ export const sv = {
         showLoadedModels: "Indikator för inlästa modeller",
         showLoadedModelsDescription:
           "Visa ett litet kort i nedre högra hörnet med alla modeller som för närvarande finns i minnet (chatt, tal, bild, video), med en knapp för att mata ut var och en.",
-        showWhisperUpdates: "Aviseringar om whisper.cpp-uppdateringar",
-        showWhisperUpdatesDescription:
-          "Avisera när en nyare whisper.cpp-version finns för tal-till-text-modeller. Stäng av om du aldrig transkriberar ljud.",
         showAudioCppUpdates: "Aviseringar om audio.cpp-uppdateringar",
         showAudioCppUpdatesDescription:
           "Avisera när audio.cpp-körmiljön behöver uppdateras för ljudsidorna. Stäng av om du aldrig använder ljud.",

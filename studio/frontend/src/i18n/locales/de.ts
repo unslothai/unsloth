@@ -1805,9 +1805,6 @@ export const de = {
         showLoadedModels: "Anzeige geladener Modelle",
         showLoadedModelsDescription:
           "Zeigt unten rechts eine kleine Karte mit allen derzeit im Speicher befindlichen Modellen (Chat, Sprache, Bild, Video) und einer Schaltfläche, um jedes einzeln zu entladen.",
-        showWhisperUpdates: "whisper.cpp-Update-Benachrichtigungen",
-        showWhisperUpdatesDescription:
-          "Benachrichtigt, wenn ein neuerer whisper.cpp-Build für Speech-to-Text-Modelle verfügbar ist. Deaktivieren Sie dies, wenn Sie nie Audio transkribieren.",
         showAudioCppUpdates: "audio.cpp-Update-Benachrichtigungen",
         showAudioCppUpdatesDescription:
           "Benachrichtigt, wenn die audio.cpp-Laufzeit ein Update für die Audio-Seiten braucht. Deaktivieren Sie dies, wenn Sie Audio nie verwenden.",

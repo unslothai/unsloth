@@ -1854,9 +1854,6 @@ export const en = {
         showLoadedModels: "Loaded models indicator",
         showLoadedModelsDescription:
           "Show a small card in the bottom-right corner listing every model currently in memory (chat, speech, image, video), with a button to eject each one.",
-        showWhisperUpdates: "whisper.cpp update notifications",
-        showWhisperUpdatesDescription:
-          "Notify when a newer whisper.cpp build is available for speech-to-text models. Turn off if you never transcribe audio.",
         showAudioCppUpdates: "audio.cpp update notifications",
         showAudioCppUpdatesDescription:
           "Notify when the audio.cpp runtime needs an update to run the Audio pages. Turn off if you never use Audio.",
