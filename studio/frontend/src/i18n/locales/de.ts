@@ -1367,6 +1367,7 @@ export const de = {
       installRuntimeFailed: "Die Installation der Laufzeit ist fehlgeschlagen.",
       installRuntimeError: "Die Installation der Laufzeit konnte nicht gestartet werden.",
       unsupportedArch: "Die Windows-Sandbox (MXC) läuft nur unter x64-Windows und ist auf diesem PC daher nicht verfügbar.",
+      builtinNeedsUpdate: "Der integrierte Windows-Container benötigt Build {required} oder neuer, auf diesem PC läuft {current}. Installiere das neueste Windows-Update, um ihn ohne Administratorschritt zu nutzen, oder aktiviere unten die Ausweich-Sandbox.",
       unsupportedBuild: "Die Windows-Sandbox (MXC) braucht Windows 11 24H2 (Build 26100) oder neuer und ist auf diesem PC daher nicht verfügbar.",
       permissionsIntro: "Lege fest, wann Tools zuerst fragen und ob Python und Terminal zusätzlich in der OS-Sandbox laufen.",
       permissionLabel: "Tool-Berechtigungen",
@@ -1870,7 +1871,23 @@ export const de = {
           "Hugging-Face-Modell oder lokaler Pfad zum Indexieren und Durchsuchen Ihrer Dokumente. Standard ist {defaultModel}.",
         searchPlaceholder: "Beliebiges Modell auf HF suchen",
         reindexWarning:
-          "Betrifft nur neu indexierte Dokumente. Laden Sie bestehende nach einer Modelländerung erneut hoch.",
+          "Betrifft nur neu indexierte Dokumente. Betten Sie bestehende nach einer Modelländerung neu ein.",
+        reembed: {
+          label: "Dokumente neu einbetten",
+          staleOne:
+            "1 Dokument wurde mit einem anderen Embedding-Modell indexiert, daher überspringt die semantische Suche es.",
+          staleMany:
+            "{count} Dokumente wurden mit einem anderen Embedding-Modell indexiert, daher überspringt die semantische Suche sie.",
+          staleArchived:
+            "Früherer Chatverlauf wurde mit einem anderen Embedding-Modell indexiert, daher überspringt die semantische Suche ihn.",
+          running: "Neu einbetten: {done} von {total}",
+          action: "Neu einbetten",
+          stop: "Stoppen",
+          startFailed: "Neu-Einbettung konnte nicht gestartet werden",
+          stopped: "Neu-Einbettung angehalten",
+          finished: "Dokumente neu eingebettet",
+          finishedWithFailures: "{count} konnten nicht neu eingebettet werden",
+        },
         emptyError:
           "Geben Sie eine Hugging-Face-Modell-ID oder einen lokalen Pfad ein.",
         loadError:
@@ -3152,6 +3169,7 @@ export const de = {
       desktopAppVersion: "Version der Desktop-App",
       desktopAppVersionUnavailable: "Nicht verfügbar",
       llamaCppVersion: "llama.cpp-Version",
+      audioCppVersion: "audio.cpp-Version",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

@@ -106,8 +106,22 @@ export const BUDGET = {
   // `$1$?`-style shell text literal add 6,984 B raw / 2,836 B transfer to the eager chat chunk
   // (6,753,387 -> 6,760,371 B raw, 2,029,398 -> 2,032,234 B transfer against eba7641835, one machine
   // and build, chunk count unchanged at 95), raised by that.
-  transferBytes: 2_032_302,
-  rawBytes: 6_760_750,
+  // Re-embedding documents after an embedding model switch (the save toast's action and the Settings row)
+  // adds 3,018 B raw / 905 B transfer (6,760,371 -> 6,763,389 B raw, 2,032,234 -> 2,033,139 B transfer
+  // against 525f3ceae, one machine and build, Node 24, chunk count unchanged at 95). Lazy-loading its store
+  // from both save sites cost 0.3 KB transfer more in chunk overhead, so the budget is raised by that growth.
+  // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
+  // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
+  // against 97ed9415f7, before #13649, one machine and build), raised by that.
+  // Offering the newest audio.cpp release in updates (#13589) adds 385 B raw / 80 B transfer to the eager set
+  // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
+  // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
+  // main's margin stays where it was.
+  // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
+  // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
+  transferBytes: 2_033_777,
+  rawBytes: 6_765_664,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
