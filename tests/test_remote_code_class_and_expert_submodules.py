@@ -752,6 +752,9 @@ def _native_mixtral_4x_model():
             self.config = SimpleNamespace(num_local_experts = 4, model_type = "mixtral")
             self.model = _Body()
 
+        def get_decoder(self):
+            return self.model
+
     return _Mixtral()
 
 
@@ -776,3 +779,15 @@ def test_explicit_leaf_list_keeps_mixtral_names_and_the_gate_up_shorthand():
     assert found == ["gate_proj", "up_proj"]
     matched = {n for n in names if re.fullmatch(widened, n) and ".experts." in n}
     assert matched == {n for n in names if ".experts." in n and n.endswith((".gate_proj", ".up_proj"))}
+
+
+def test_expert_only_mixtral_list_falls_back_to_the_decoders_experts():
+    """[w1, w2, w3] alone: Zoo's regex matches nothing (no MLP tag), plain PEFT reaches every expert."""
+    U = _utils()
+    model = _native_mixtral_4x_model()
+    names = [n for n, m in model.named_modules() if isinstance(m, torch.nn.Linear)]
+    with pytest.raises(RuntimeError):
+        _explicit_list_regex(model, ["w1", "w2", "w3"])
+    regex = U.native_expert_only_regex(model, ["w1", "w2", "w3"])
+    assert {n for n in names if re.fullmatch(regex, n)} == {n for n in names if n.endswith((".w1", ".w2", ".w3"))}
+    assert U.native_expert_only_regex(model, ["q_proj"]) is None

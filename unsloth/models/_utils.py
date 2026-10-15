@@ -119,6 +119,7 @@ __all__ = [
     "get_moe_expert_submodule_leaves",
     "moe_expert_submodule_regex",
     "widen_target_regex_to_expert_submodules",
+    "native_expert_only_regex",
     "warn_if_zoo_cannot_merge_moe_experts",
     "_select_moe_detection_targets",
     "EMBEDDING_MODULES",
@@ -9235,6 +9236,39 @@ def _native_expert_parents(model, target_modules, requested):
         ):
             leaves.add(leaf)
     return parents, leaves
+
+
+def native_expert_only_regex(model, target_modules):
+    """Regex for the explicit leaves found in the language decoder's native ``experts.<i>`` blocks, or None."""
+    try:
+        decoder = model.get_decoder()
+    except Exception:
+        return None
+    prefix = next((name for name, module in model.named_modules() if module is decoder), None)
+    if prefix is None:
+        return None
+    requested = {t for t in target_modules if isinstance(t, str) and "." not in t}
+    parents, leaves = set(), set()
+    for name, module in model.named_modules():
+        matched = _EXPERT_SUBMODULE_PATTERN.search(name)
+        if matched is None or matched.group(1) not in requested:
+            continue
+        if not name[matched.start() :].lstrip(".").startswith("experts."):
+            continue
+        if prefix and not name.startswith(prefix + "."):
+            continue
+        if not (
+            isinstance(module, torch.nn.Linear)
+            or isinstance(getattr(module, "base_layer", None), torch.nn.Linear)
+        ):
+            continue
+        parents.add(
+            r"\.".join(r"\d+" if part.isdigit() else re.escape(part) for part in name[: matched.start()].split("."))
+        )
+        leaves.add(matched.group(1))
+    if not leaves:
+        return None
+    return moe_expert_submodule_regex(sorted(leaves), parents)
 
 
 def widen_target_regex_to_expert_submodules(
