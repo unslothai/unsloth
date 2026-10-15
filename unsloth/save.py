@@ -5802,11 +5802,12 @@ def _fsdp2_peft_saved_frozen(model, arguments):
     if arguments.get("save_embedding_layers", "auto") is not False:
         for getter in ("get_input_embeddings", "get_output_embeddings"):
             try:
-                weight = getattr(getattr(model, getter)(), "weight", None)
+                module = getattr(model, getter)()
             except Exception:
-                weight = None
-            if weight is not None:
-                embeddings.add(id(weight))
+                module = None
+            # PEFT copies every entry under the embedding module (a decoder bias too), not just weight.
+            if module is not None:
+                embeddings.update(id(p) for p in module.parameters())
 
     def include(name, param):
         parts = name.split(".")

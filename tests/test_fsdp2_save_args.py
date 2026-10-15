@@ -83,6 +83,11 @@ def test_peft_saves_gather_the_frozen_tensors_peft_writes():
     assert any(".other." in n for n in names), names
     assert any("embed_tokens" in n for n in names) and any("lm_head" in n for n in names), names
     assert not any("q_proj.base_layer" in n for n in names), names
+    # A biased output head: PEFT saves its bias with the weight.
+    head = model.get_output_embeddings()
+    head.bias = torch.nn.Parameter(torch.zeros(head.out_features), requires_grad = False)
+    include = unsloth_save._fsdp2_peft_saved_frozen(model, {})
+    assert any(n.endswith("lm_head.bias") for n, p in model.named_parameters() if include(n, p))
     include = unsloth_save._fsdp2_peft_saved_frozen(model, {"save_embedding_layers": False})
     names = {n for n, p in model.named_parameters() if include(n, p)}
     assert not any("embed_tokens" in n for n in names), names

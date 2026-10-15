@@ -100,9 +100,18 @@ def _wait_for_writer(dist, writer):
 def _gather_full(param, DTensor):
     """All ranks: the full tensor of a sharded parameter. Packed 4-bit bytes travel as uint8, so no
     float copy kernel can rewrite NaN bit patterns inside them."""
-    if getattr(param, "quant_state", None) is None or param.dtype == torch.uint8:
-        return param.full_tensor()
     local = param.to_local()
+    mesh_type = param.device_mesh.device_type
+    if local.device.type == "cpu" and mesh_type != "cpu":
+        # CPUOffloadPolicy keeps shards on the host; NCCL can only gather device tensors.
+        device = torch.device(mesh_type, getattr(torch, mesh_type).current_device())
+        local = local.to(device)
+        if getattr(param, "quant_state", None) is None or param.dtype == torch.uint8:
+            return DTensor.from_local(
+                local, param.device_mesh, param.placements, shape = param.shape, stride = param.stride()
+            ).full_tensor()
+    elif getattr(param, "quant_state", None) is None or param.dtype == torch.uint8:
+        return param.full_tensor()
     as_bytes = local.view(torch.uint8)
     shape = list(param.shape)
     shape[-1] = shape[-1] * param.element_size()
