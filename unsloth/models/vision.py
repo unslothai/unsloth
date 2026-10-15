@@ -100,6 +100,9 @@ from ..kernels import (
     post_patch_loss_function,
 )
 from ..kernels.bnb_override import install_bnb_nf4_override as _install_bnb_nf4_override
+from ..kernels.large_head_attention import (
+    patch_large_head_attention as _patch_large_head_attention,
+)
 from ..kernels.rope_embedding import register_split_model
 from ._utils import (
     __version__,
@@ -4423,6 +4426,8 @@ class FastBaseModel:
                     f"({type(_exc).__name__}: {_exc})."
                 )
         _install_bnb_nf4_override()
+        # head_dim 512 layers (Gemma-4 globals) otherwise fall to SDPA's efficient / math kernels.
+        _patch_large_head_attention(model)
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod
