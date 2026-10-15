@@ -813,3 +813,16 @@ test("the import warns when the loaded model runs at another precision than the 
   assert.match(page, /\(\["transformer_quant", "text_encoder_quant"\] as const\)\.filter/);
   assert.match(page, /\(recipe\[key\] \?\? null\) !== \(status\[key\] \?\? null\)/);
 });
+
+test("imported LoRAs stay within the request's count, id and weight bounds", () => {
+  const defaults = { width: 1024, height: 1024, steps: 8, guidance: 3.5 };
+  const many = Array.from({ length: 12 }, (_, i) => `lora${i}:1`);
+  assert.equal(recipeSettings({ prompt: "p", loras: many }, defaults).loras.length, 8);
+  assert.deepEqual(
+    recipeSettings(
+      { prompt: "p", loras: ["a:5", "b:-1", "org/c:d:0.5", `${"x".repeat(513)}:1`, ":1", "noweight", "e:NaN"] },
+      defaults,
+    ).loras,
+    ["a:2", "b:0", "org/c:d:0.5"],
+  );
+});

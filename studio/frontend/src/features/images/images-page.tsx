@@ -2640,7 +2640,8 @@ export function ImagesPage({
       const quant = typeof recipe.gguf_filename === "string" ? recipe.gguf_filename : null;
       if (settings.model && settings.model !== loaded) {
         toast(`Made with ${settings.model}${quant ? ` (${quant})` : ""}`, {
-          description: "Load that model to reproduce this image.",
+          // Loading a model applies its own default steps and guidance.
+          description: "Load that model, then load settings from this image again to reproduce it.",
         });
       } else if (quant && status?.gguf_filename && quant !== status.gguf_filename) {
         toast(`Made with ${quant}`, {

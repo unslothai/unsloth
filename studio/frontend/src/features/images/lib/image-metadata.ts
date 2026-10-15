@@ -713,6 +713,15 @@ const seedOf = (v: unknown): number | null => {
   const n = int(v);
   return n !== undefined && n >= 0 ? n : null;
 };
+// `id:weight` within the request's LoraSpec bounds (id 1-512 chars, weight 0-2), else dropped.
+const loraOf = (v: unknown): string[] => {
+  if (typeof v !== "string") return [];
+  const at = v.lastIndexOf(":");
+  const id = v.slice(0, at);
+  const weight = Number(v.slice(at + 1));
+  if (at <= 0 || id.length > 512 || !Number.isFinite(weight)) return [];
+  return [`${id}:${Math.min(2, Math.max(0, weight))}`];
+};
 const str = (v: unknown): string | undefined =>
   typeof v === "string" ? v : undefined;
 
@@ -735,9 +744,7 @@ export function recipeSettings(
     batch_size: clamp(int(r.batch_size), 1, 32) ?? 1,
     model: str(r.model) ?? null,
     workflow: str(r.workflow),
-    loras: Array.isArray(r.loras)
-      ? r.loras.filter((x): x is string => typeof x === "string")
-      : [],
+    loras: Array.isArray(r.loras) ? r.loras.flatMap(loraOf).slice(0, 8) : [],
     // The request takes strength in (0, 1]: 0 leaves no denoising steps, so it is not restored.
     strength: positive(clamp(num(r.strength), 0, 1)),
     upscale: clamp(num(r.upscale), 1, 4),
