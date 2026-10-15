@@ -181,12 +181,22 @@ def _non_text_leaves(model):
     return {id(m) for m in model.modules() if id(m) not in keep}
 
 
+def _post_pooling_leaves(model):
+    """ids of a SentenceTransformer's modules after the transformer (Pooling, Dense, Normalize):
+    they run once per sequence, not per token, so they are left out (negligible per sequence)."""
+    if not isinstance(model, torch.nn.Sequential) or len(model) < 2:
+        return set()
+    if getattr(model[0], "auto_model", None) is None:
+        return set()
+    return {id(m) for module in list(model)[1:] for m in module.modules()}
+
+
 def _linear_flops(model, gradient_checkpointing = False):
     head = _output_head(model)
     head_leaves = set()
     if head is not None:
         head_leaves = {id(m) for m in head.modules() if _is_linear_leaf(m)}
-    skipped = _inactive_leaves(model) | _non_text_leaves(model)
+    skipped = _inactive_leaves(model) | _non_text_leaves(model) | _post_pooling_leaves(model)
     experts = _expert_fractions(model)
     forward = input_grad = weight_grad = recompute = head_total = 0
     for module in model.modules():

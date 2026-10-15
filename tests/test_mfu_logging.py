@@ -541,3 +541,11 @@ def test_model_off_the_gpu_takes_no_gpu_peak(monkeypatch):
     callback.on_train_begin(None, _State(), None, model = _model())
     assert callback.peak_tflops == 100
     callback.on_train_end(None, None, None)
+
+
+def test_sentence_transformer_dense_after_pooling_is_not_per_token():
+    inner = _model()
+    plain = mfu.count_linear_flops_per_token(inner)[0]
+    wrapper = torch.nn.Sequential(torch.nn.Module(), torch.nn.Module(), torch.nn.Linear(16, 16))
+    wrapper[0].auto_model = inner
+    assert mfu.count_linear_flops_per_token(wrapper)[0] == plain
