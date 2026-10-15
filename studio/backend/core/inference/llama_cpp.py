@@ -28342,8 +28342,8 @@ class LlamaCppBackend:
                         _both_fit_somewhere = False
                         _probe_ctx = 0
                         _probe_need = _probe_have = 0.0
-                        # (GPU count, target-only ctx, budget with drafter) per drafter-ranked subset.
-                        _target_placements: list[tuple[int, int, float]] = []
+                        # (GPU count, target-only ctx, budget with drafter, subset) per drafter-ranked subset.
+                        _target_placements: list[tuple[int, int, float, list]] = []
                         _drafter_order = _probe_orders[-1]
                         for _probe_ranked in _probe_orders:
                             if _both_fit_somewhere:
@@ -28431,7 +28431,7 @@ class LlamaCppBackend:
                                         _budget_w,
                                     )
                                 if _probe_ranked is _drafter_order:
-                                    _target_placements.append((_n, _ctx_wo, _budget_w))
+                                    _target_placements.append((_n, _ctx_wo, _budget_w, _subset))
                                 if _foot_w <= _budget_w:
                                     _both_fit_somewhere = True
                                     break
@@ -28502,10 +28502,10 @@ class LlamaCppBackend:
                             and _extra_args_n_parallel(extra_args, env = {}) is None
                         ):
 
-                            def _mtp_foot_mib(n: int, ctx: int, s: int) -> float:
+                            def _mtp_foot_mib(n: int, ctx: int, s: int, subset) -> float:
                                 ub = _ubatch_for_slots(s)
                                 return (
-                                    _probe_base(True, n, slots = s)
+                                    _probe_base(True, n, subset, slots = s)
                                     + self._estimate_kv_cache_bytes(
                                         ctx,
                                         cache_type_kv,
@@ -28519,14 +28519,16 @@ class LlamaCppBackend:
                                     + _mtp_bytes(ctx, s, ub)
                                 ) / (1024 * 1024)
 
-                            def _ctx_with_drafter(n: int, ctx: int, budget: float, s: int) -> int:
+                            def _ctx_with_drafter(
+                                n: int, ctx: int, budget: float, s: int, subset
+                            ) -> int:
                                 if explicit_ctx:
-                                    return ctx if _mtp_foot_mib(n, ctx, s) <= budget else 0
+                                    return ctx if _mtp_foot_mib(n, ctx, s, subset) <= budget else 0
                                 ub = _ubatch_for_slots(s)
                                 fitted = self._fit_context_to_vram(
                                     ctx,
                                     budget,
-                                    _probe_base(True, n, slots = s),
+                                    _probe_base(True, n, subset, slots = s),
                                     cache_type_kv,
                                     swa_full = swa_full,
                                     n_parallel = s,
@@ -28547,7 +28549,7 @@ class LlamaCppBackend:
                                 )
                                 return (
                                     fitted
-                                    if fitted > 0 and _mtp_foot_mib(n, fitted, s) <= budget
+                                    if fitted > 0 and _mtp_foot_mib(n, fitted, s, subset) <= budget
                                     else 0
                                 )
 
@@ -28556,8 +28558,8 @@ class LlamaCppBackend:
                                 _keep = 1 - (
                                     _MTP_SLOT_CTX_TRIM if _s == 1 and not explicit_ctx else 0
                                 )
-                                for _n, _ctx_c, _budget_c in _target_placements:
-                                    _c = _ctx_with_drafter(_n, _ctx_c, _budget_c, _s)
+                                for _n, _ctx_c, _budget_c, _subset_c in _target_placements:
+                                    _c = _ctx_with_drafter(_n, _ctx_c, _budget_c, _s, _subset_c)
                                     if _c <= 0:
                                         continue
                                     if _c >= _ctx_c * _keep:

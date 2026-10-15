@@ -5960,3 +5960,52 @@ def test_a_drafter_pinned_to_the_discrete_target_keeps_the_discount(tmp_path):
     )
     unpinned, _ = _draft_reserve_launch(tmp_path, extra_args = None)
     assert pinned == unpinned == full - 3 * 1024**3
+
+
+def _slot_walk_with_host_pinned(tmp_path, *, unclassified_second_card):
+    """(spec type, slots, slot-walk fit bases) for a 16 GB target with 4 GB host-pinned
+    embeddings on a 24 GB card, optionally beside a tiny card torch cannot classify."""
+    gib = 1024**3
+    backend, gguf = _per_slot_mtp_backend(tmp_path, gb_per_slot = 3.0)
+    memory = [(0, 24_576, 24_576)] + ([(1, 256, 256)] if unclassified_second_card else [])
+    backend._get_gpu_memory = lambda _binary = None, **_kw: list(memory)
+    backend._get_gpu_free_memory = lambda _binary = None, **_kw: [
+        (index, free) for index, free, _total in memory
+    ]
+    backend._torch_unified_memory_classification_known = lambda ids = None: (
+        1 not in list(ids) if ids is not None else not unclassified_second_card
+    )
+    backend._host_pinned_vram_discount = lambda _path, *_a, draft_model = False, **_kw: (
+        0 if draft_model else 4 * gib
+    )
+    fit = backend._fit_context_to_vram
+    walk_bases = set()
+
+    def spy(
+        requested,
+        budget,
+        model_size,
+        *args,
+        n_parallel = 1,
+        pooled = False,
+        **kwargs,
+    ):
+        if pooled and kwargs.get("mtp_overhead_fn") is not None and n_parallel < 4:
+            walk_bases.add(model_size)
+        return fit(
+            requested, budget, model_size, *args, n_parallel = n_parallel, pooled = pooled, **kwargs
+        )
+
+    backend._fit_context_to_vram = spy
+    result = _launch_default_slots(backend, gguf)
+    return _launched(result, "--spec-type"), _launched(result, "--parallel"), walk_bases
+
+
+def test_the_slot_walk_keeps_the_candidate_cards_host_pinned_discount(tmp_path):
+    # A card that cannot be proved discrete withholds the up-front discount; the walk
+    # must still price the discrete subset it probes with that subset's discount.
+    alone = _slot_walk_with_host_pinned(tmp_path, unclassified_second_card = False)
+    beside = _slot_walk_with_host_pinned(tmp_path, unclassified_second_card = True)
+    assert alone[:2] == ("draft-mtp", "3")
+    assert beside[:2] == alone[:2]
+    assert min(beside[2]) == min(alone[2])
