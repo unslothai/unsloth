@@ -1932,3 +1932,87 @@ def test_a_failed_cluster_replacement_unloads_the_two_spark_primary_it_orphaned(
     run(ss.before_load(_request(), 4))
     run(ss.load_failed())  # the route rejected the replacement after the split was torn down
     assert unloaded == [1], "its remote layers are gone, so it cannot answer"
+
+
+def test_a_restart_mark_survives_a_refused_load(monkeypatch):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(), 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    restarted = [True]
+
+    async def ensure(self):
+        if restarted.pop() if restarted else False:
+            self._started.add("10.0.0.3:50052")
+        return {}
+
+    monkeypatch.setattr(cs.ClusterServing, "_ensure_workers", ensure)
+    _cluster_env(monkeypatch, model_bytes = 2000 * GIB)
+    with pytest.raises(ss.SparkLoadDoesNotFit):
+        run(ss.before_load(_request(), 4))  # restarts 10.0.0.3, then refuses
+    credited = []
+    real_plan = cs.plan_cluster
+
+    def spy(model_bytes, kv_bytes, extra, devices, **kw):
+        credited.extend((d.endpoint, d.free_bytes) for d in devices)
+        return real_plan(model_bytes, kv_bytes, extra, devices, **kw)
+
+    monkeypatch.setattr(cs, "plan_cluster", spy)
+    _cluster_env(monkeypatch)
+    run(ss.before_load(_request(), 4))
+    free = dict(credited)
+    listed = {d.endpoint: d.free_bytes for d in cs.parse_device_list(LISTING, list(free))}
+    assert free["10.0.0.3:50052"] == listed["10.0.0.3:50052"]
+
+
+def test_a_separate_drafters_kv_is_charged_to_the_coordinator(monkeypatch, tmp_path):
+    _cluster_env(monkeypatch, model_bytes = 80 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x")
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: 1 * GIB if str(path) == str(drafter) else 80 * GIB
+    )
+    monkeypatch.setattr(
+        ss,
+        "estimate_kv_bytes",
+        lambda path, ctx, k, v: 20 * GIB if str(path) == str(drafter) else 0,
+    )
+    run(ss.before_load(_request(llama_extra_args = ["-md", str(drafter)], max_seq_length = 8192), 4))
+    assert ss.status()["topology"] == "layer_split"  # 80 + 1 + 20 GiB no longer fits here
+
+
+def test_an_unverified_hub_projector_is_not_counted_as_freed(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    monkeypatch.setattr(ss, "cached_repo_file", lambda path, variant: None)
+    monkeypatch.setattr(ss, "remote_gguf_size_bytes", lambda *a, **k: 90 * GIB)
+    monkeypatch.setattr(cs, "_remote_projector_bytes", lambda path, token: 10 * GIB)
+    request = _request(model_path = "org/vision-GGUF", max_seq_length = 0, disable_vision = True)
+    out = run(ss.before_load(request, 4))
+    backend = SimpleNamespace(
+        _process = SimpleNamespace(args = ["/b/llama-server"] + out.llama_extra_args),
+        is_loaded = True,
+    )
+    run(ss.after_load(backend, 4))
+    assert sum(cs.state()._resident.values()) == pytest.approx(90 * GIB)
+
+
+@pytest.mark.parametrize("device, local", [("CUDA1", True), ("RPC0", True), ("cpu", False)])
+def test_a_caller_pinned_drafter_is_caller_placement(monkeypatch, tmp_path, device, local):
+    _cluster_env(monkeypatch)
+    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
+    drafter = tmp_path / "draft.gguf"
+    drafter.write_bytes(b"x")
+    monkeypatch.setattr(
+        ss, "gguf_size_bytes", lambda path: 1 * GIB if str(path) == str(drafter) else 250 * GIB
+    )
+    run(
+        ss.before_load(
+            _request(llama_extra_args = ["-md", str(drafter), "--device-draft", device]), 4
+        )
+    )
+    assert ("pins the drafter" in ss.status()["reason"]) is local

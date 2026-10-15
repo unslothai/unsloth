@@ -255,6 +255,8 @@ class ClusterPlan:
     need_bytes: Optional[float] = None
     usable_bytes: Optional[float] = None
     extra_bytes: float = 0.0
+    # Charged but possibly never loaded (a Hub projector the vision switch may drop): not freed.
+    uncertain_extra_bytes: float = 0.0
     # Where the projector / drafter was charged; kept even when it gets no layers.
     sidecar_device: Optional[Device] = None
     # Never counted as freed by a replacement: the KV estimate is not the cache's real layout.
@@ -266,7 +268,9 @@ class ClusterPlan:
         out = {d.key: w * held for d, w in zip(self.devices, self.weights)}
         local = self.sidecar_device or next((d for d in self.devices if not d.remote), None)
         if local is not None:
-            out[local.key] = out.get(local.key, 0.0) + self.extra_bytes
+            out[local.key] = out.get(local.key, 0.0) + max(
+                0.0, self.extra_bytes - self.uncertain_extra_bytes
+            )
         return out
 
     def snapshot(self) -> Dict[str, Any]:
@@ -623,6 +627,7 @@ class ClusterServing:
         self._native_ctx: bool = False
         self._projector_url: bool = False
         self._remote_drafter: bool = False
+        self._uncertain_extra: float = 0.0
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
 
@@ -728,7 +733,7 @@ class ClusterServing:
         self._pre_load = (self.topology, self.reason, self.plan, list(self.block))
         # Every return below that does not plan leaves no plan behind for after_load to record.
         self.plan, self.block = None, []
-        self._down, self._started = set(), set()
+        self._down = set()  # _started stays until a load commits: a refusal keeps those workers
         if not self.refresh_nodes():
             self.topology, self.reason = "single", f"cluster config: {self.config_error}"
             return request
@@ -777,6 +782,19 @@ class ClusterServing:
         if mode in ("dspark", "dflash"):
             # Their sidecar GGUF is found or fetched after planning, so it is not in the budget.
             self.topology, self.reason = "single", f"the {mode} drafter is resolved after planning"
+            return request
+        from core.inference.llama_cpp import _extra_args_draft_device
+
+        draft_device = (_extra_args_draft_device(flags) or "").strip().lower()
+        if (
+            _names_drafter(flags)
+            and draft_device
+            and set(draft_device.split(",")) - {"cpu", "none"}
+        ):
+            self.topology, self.reason = (
+                "single",
+                "the caller pins the drafter; placement is theirs",
+            )
             return request
         if self._has_projector and (
             any(str(a).split("=", 1)[0] in _MMPROJ_DEVICE_FLAGS for a in flags)
@@ -882,6 +900,7 @@ class ClusterServing:
             margin_bytes = margin,
         )
         plan.kv_bytes = float(kv_bytes or 0)
+        plan.uncertain_extra_bytes = self._uncertain_extra
         self.plan = plan
         if plan.topology == "refuse":
             self.topology, self.reason, self.plan, self.block = self._pre_load
@@ -945,6 +964,7 @@ class ClusterServing:
         return ss.SparkServing._request_with(request, updates)
 
     async def _size(self, request, n_parallel, extras, ss) -> Tuple[Optional[float], float, float]:
+        self._uncertain_extra = 0.0
         model_path = str(getattr(request, "model_path", "") or "")
         variant = getattr(request, "gguf_variant", None)
         local_file = ss.cached_repo_file(model_path, variant)
@@ -1022,6 +1042,8 @@ class ClusterServing:
                     _remote_projector_bytes, model_path, getattr(request, "hf_token", None)
                 )
                 sidecars += 0 if host_projector else remote
+                if disable_vision and not host_projector:
+                    self._uncertain_extra = float(remote)
                 self._has_projector = self._has_projector or remote > 0
         # Files named through the environment (LLAMA_ARG_MMPROJ, a drafter) load all the same.
         named_files = ss.launch_files_from(extras)
@@ -1103,6 +1125,14 @@ class ClusterServing:
 
         if not _kv_offload_from_args(extras):
             kv = 0.0  # --no-kv-offload keeps the cache in host RAM
+        elif ctx and not _extra_args_draft_offloaded_to_cpu(extras, os.environ):
+            # A separate drafter opens its own context, KV included, beside it on the coordinator.
+            for path in ss.sidecar_files(_flag_args(extras, _DRAFTER_FLAGS)) + env_drafters:
+                if os.path.isfile(path):
+                    draft_kv = await asyncio.to_thread(
+                        ss.estimate_kv_bytes, path, ctx, cache_type, cache_type_v
+                    )
+                    sidecars += float(draft_kv or 0)
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:
@@ -1115,6 +1145,7 @@ class ClusterServing:
         self._pre_load = None
         self._cancel_event = None
         self._backend = llama_backend
+        self._started = set()
         plan = self.plan
         local_count = sum(1 for d in plan.devices if not d.remote) if plan is not None else 0
         # A local fit on several GPUs sends no device list, so which of them hold it is unknown.
@@ -1191,6 +1222,7 @@ class ClusterServing:
             except Exception:
                 logger.warning("cluster serving: stopping %s failed", endpoint, exc_info = True)
         self.workers.clear()
+        self._started = set()
         self.retire_on_commit = False
         self.topology, self.block = "single", []
         self._backend, self._resident = None, {}
