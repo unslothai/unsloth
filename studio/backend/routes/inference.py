@@ -80,7 +80,12 @@ from urllib.parse import quote as _urlquote, unquote as _urlunquote
 from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.models.checkpoints import is_full_finetune_output
 
-from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
+from utils.api_errors import (
+    ANTHROPIC_TYPE_BY_STATUS,
+    anthropic_error_body,
+    error_body_for_path,
+    openai_error_body,
+)
 from utils.audio_tokens import GGUF_TTS_AUDIO_TYPES as _GGUF_TTS_AUDIO_TYPES
 from utils.first_token_timeout import (
     finish_first_token_wait,
@@ -42149,10 +42154,51 @@ def _anthropic_connection_error_event(error: Any) -> str:
         code = int(error.get("code"))
     except (AttributeError, TypeError, ValueError):
         code = 500
-    status = code if code == 429 or 500 <= code < 600 else 400
+    # Keep the provider's class (an expired saved key is a 401, not a bad request).
+    status = code if code in ANTHROPIC_TYPE_BY_STATUS or 500 <= code < 600 else 400
     return build_anthropic_sse_event(
         "error", anthropic_error_body(message or "The connection failed.", status = status)
     )
+
+
+# The emitter closes a tool_use block as soon as another call's fragment arrives, so interleaved
+# parallel calls would close with partial arguments: hold calls whole until the reply finishes.
+def _hold_tool_calls(chunk: dict, held: dict) -> dict:
+    choices = chunk.get("choices") or []
+    if not any((choice.get("delta") or {}).get("tool_calls") for choice in choices):
+        return chunk
+    chunk = {**chunk, "choices": []}
+    for choice in choices:
+        delta = dict(choice.get("delta") or {})
+        for part in delta.pop("tool_calls", None) or []:
+            if not isinstance(part, dict):
+                continue
+            call = held.setdefault(
+                part.get("index", len(held)),
+                {"id": None, "name": "", "arguments": "", "extra_content": None},
+            )
+            call["id"] = call["id"] or part.get("id")
+            function = part.get("function") or {}
+            call["name"] += function.get("name") or ""
+            call["arguments"] += function.get("arguments") or ""
+            call["extra_content"] = part.get("extra_content") or call["extra_content"]
+        chunk["choices"].append({**choice, "delta": delta})
+    return chunk
+
+
+def _released_tool_calls(held: dict):
+    for index in sorted(held):
+        call = held[index]
+        part = {
+            "index": index,
+            "id": call["id"],
+            "type": "function",
+            "function": {"name": call["name"], "arguments": call["arguments"]},
+        }
+        if call["extra_content"]:
+            part["extra_content"] = call["extra_content"]
+        yield {"choices": [{"index": 0, "delta": {"tool_calls": [part]}}]}
+    held.clear()
 
 
 async def _anthropic_events_from_openai_sse(
@@ -42194,6 +42240,19 @@ async def _anthropic_events_from_openai_sse(
         data["index"] = index - shift
         return build_anthropic_sse_event(data["type"], data)
 
+    def feed(chunk: dict):
+        extras = [
+            call.get("extra_content")
+            for choice in chunk.get("choices") or []
+            for call in (choice.get("delta") or {}).get("tool_calls") or []
+            if isinstance(call, dict) and call.get("id")
+        ]
+        for event in emitter.feed_chunk(chunk):
+            event = relay(event, extras)
+            if event is not None:
+                yield event
+
+    held: dict[int, dict] = {}
     for event in emitter.start(message_id, model):
         yield event
     items = _sse_data_lines(lines)
@@ -42209,18 +42268,18 @@ async def _anthropic_events_from_openai_sse(
                 yield _anthropic_connection_error_event(parsed["error"])
                 return
             recorder.chunk(parsed, calls = False)
-            extras = [
-                call.get("extra_content")
-                for choice in parsed.get("choices") or []
-                for call in (choice.get("delta") or {}).get("tool_calls") or []
-                if isinstance(call, dict) and call.get("id")
-            ]
-            for event in emitter.feed_chunk(parsed):
-                event = relay(event, extras)
-                if event is not None:
-                    yield event
+            parsed = _hold_tool_calls(parsed, held)
+            if any(choice.get("finish_reason") for choice in parsed.get("choices") or []):
+                for chunk in _released_tool_calls(held):
+                    for event in feed(chunk):
+                        yield event
+            for event in feed(parsed):
+                yield event
     finally:
         await items.aclose()
+    for chunk in _released_tool_calls(held):
+        for event in feed(chunk):
+            yield event
     for event in emitter.finish():
         event = relay(event, [])
         if event is not None:
@@ -42234,12 +42293,15 @@ def _anthropic_message_from_events(events: list[str]) -> dict:
     for event in events:
         data = json.loads(event.partition("\ndata: ")[2])
         if data["type"] == "error":
-            raise HTTPException(
-                status_code = {"invalid_request_error": 400, "rate_limit_error": 429}.get(
-                    data["error"]["type"], 502
+            status_code = next(
+                (
+                    code
+                    for code, err_type in ANTHROPIC_TYPE_BY_STATUS.items()
+                    if err_type == data["error"]["type"] and err_type != "api_error"
                 ),
-                detail = data["error"]["message"],
+                502,
             )
+            raise HTTPException(status_code = status_code, detail = data["error"]["message"])
         if data["type"] == "message_start":
             message = data["message"]
         elif data["type"] == "content_block_start":

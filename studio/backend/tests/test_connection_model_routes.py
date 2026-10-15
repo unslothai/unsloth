@@ -696,3 +696,79 @@ def test_messages_forward_the_agents_sampling_controls(v1):
         1.1,
         0.5,
     )
+
+
+@pytest.mark.parametrize(
+    "code, err_type", [("401", "authentication_error"), ("404", "not_found_error")]
+)
+def test_messages_keep_the_connections_error_class(v1, monkeypatch, code, err_type):
+    import routes.inference as inf
+
+    class Failing(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            async def gen():
+                yield f'data: {{"error": {{"message": "nope", "code": "{code}"}}}}'
+                yield "data: [DONE]"
+
+            return gen()
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", Failing)
+    events = _sse(v1.post("/v1/messages", json = _messages_body(stream = True)).text)
+    assert events[-1]["error"]["type"] == err_type
+
+    resp = v1.post("/v1/messages", json = _messages_body())
+    assert resp.status_code == int(code)
+    assert resp.json()["error"]["type"] == err_type
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_messages_complete_interleaved_parallel_tool_calls(v1, monkeypatch, stream):
+    import routes.inference as inf
+
+    class Interleaved(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            async def gen():
+                fragments = [
+                    {
+                        "index": 0,
+                        "id": "call_a",
+                        "function": {"name": "Read", "arguments": '{"file_'},
+                    },
+                    {
+                        "index": 1,
+                        "id": "call_b",
+                        "function": {"name": "Read", "arguments": '{"file_'},
+                    },
+                    {"index": 0, "function": {"arguments": 'path": "a.txt"}'}},
+                    {"index": 1, "function": {"arguments": 'path": "b.txt"}'}},
+                ]
+                for part in fragments:
+                    yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {'tool_calls': [part]}}]})}"
+                yield 'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}'
+                yield "data: [DONE]"
+
+            return gen()
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", Interleaved)
+    resp = v1.post("/v1/messages", json = _messages_body(stream = stream))
+
+    assert resp.status_code == 200, resp.text
+    if stream:
+        events = _sse(resp.text)
+        args: dict[int, str] = {}
+        for event in events:
+            if (
+                event["type"] == "content_block_delta"
+                and event["delta"]["type"] == "input_json_delta"
+            ):
+                # A delta after its block stopped would reach the client as a finished call with {}.
+                assert event["index"] not in {
+                    e["index"]
+                    for e in events[: events.index(event)]
+                    if e["type"] == "content_block_stop"
+                }
+                args[event["index"]] = args.get(event["index"], "") + event["delta"]["partial_json"]
+        inputs = [json.loads(text) for _, text in sorted(args.items())]
+    else:
+        inputs = [b["input"] for b in resp.json()["content"] if b["type"] == "tool_use"]
+    assert inputs == [{"file_path": "a.txt"}, {"file_path": "b.txt"}]
