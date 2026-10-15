@@ -28,6 +28,8 @@ the [final norm, lm_head] tail gathered from forward to backward, groups tied em
    decoder block's forward, after FSDP gathered that block, so they stay on when each block is its
    own unit and no submodule of a fused layer is a unit of its own. Otherwise they are declined.
 5. `no_sync` on accelerate < 1.11 ignores FSDP2; it is mapped to `set_requires_gradient_sync`.
+6. Unsloth's bfloat16 full finetuning trains without autocast and keeps norms in float32; FSDP2
+   needs one trainable dtype per unit, so float32 masters are kept and gathered in bfloat16.
 
 `UNSLOTH_FSDP2_ACCELERATE_DEFAULTS=1` skips 1 and 2.
 """
@@ -122,6 +124,38 @@ def fill_fsdp2_mixed_precision(accelerator):
         changes["output_dtype"] = None
     plugin.mixed_precision_policy = dataclasses.replace(policy, **changes)
     return plugin.mixed_precision_policy
+
+
+def unify_trainable_dtypes(accelerator, model):
+    """FSDP2 needs one dtype among the trainable parameters of each unit. Unsloth's bfloat16 full
+    finetuning trains without autocast (mixed_precision "no") and keeps the norms in float32, so
+    accelerate upcasts nothing and the first forward fails ("FSDP expects uniform original
+    parameter dtype"). Store float32 master weights and gather them in bfloat16 for compute, the
+    recipe accelerate itself applies under mixed_precision = "bf16". Returns True when applied."""
+    if str(getattr(accelerator, "mixed_precision", "no")) != "no":
+        return False
+    trainable = [p for p in model.parameters() if p.requires_grad and p.is_floating_point()]
+    dtypes = {p.dtype for p in trainable}
+    if len(dtypes) <= 1 or torch.bfloat16 not in dtypes:
+        return False
+    try:
+        from torch.distributed.fsdp import MixedPrecisionPolicy
+    except ImportError:
+        return False
+    plugin = getattr(getattr(accelerator, "state", None), "fsdp_plugin", None)
+    if plugin is None or getattr(plugin, "mixed_precision_policy", None) is not None:
+        return False
+    for p in trainable:
+        if p.dtype != torch.float32:
+            p.data = p.data.to(torch.float32)
+    plugin.mixed_precision_policy = MixedPrecisionPolicy(
+        param_dtype = torch.bfloat16, reduce_dtype = torch.float32
+    )
+    _print_rank0(
+        "Unsloth: FSDP2 needs one dtype per unit, and the trainable weights mix bfloat16 and "
+        "float32. Keeping float32 master weights and gathering them in bfloat16 for compute."
+    )
+    return True
 
 
 def _parents(model):
@@ -276,6 +310,7 @@ def install_fsdp2_prepare_hook():
     @functools.wraps(original)
     def fsdp2_prepare_model(accelerator, model, *args, **kwargs):
         fill_fsdp2_mixed_precision(accelerator)
+        unify_trainable_dtypes(accelerator, model)
         model = original(accelerator, model, *args, **kwargs)
         after_fsdp2_wrap(accelerator, model)
         return model

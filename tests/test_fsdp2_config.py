@@ -129,3 +129,26 @@ def test_the_trainer_init_wrapper_routes_fsdp_through_the_setup():
 
     source = inspect.getsource(_utils.patch_gradient_accumulation_fix)
     assert "fsdp2_trainer_setup" in source and "_decline_fused_lora_for_fsdp" in source
+
+
+def test_bf16_full_finetuning_gets_one_trainable_dtype_per_unit():
+    """Unsloth's bfloat16 full finetuning: no autocast, bf16 linears, fp32 norms (FSDP2 refuses mixed units)."""
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16), torch.nn.LayerNorm(4))
+    frozen = torch.nn.Linear(4, 4).to(torch.bfloat16).requires_grad_(False)
+    model.append(frozen)
+    acc = _accelerator(None, "no")
+    assert fsdp2.unify_trainable_dtypes(acc, model) is True
+    assert {p.dtype for p in model.parameters() if p.requires_grad} == {torch.float32}
+    assert frozen.weight.dtype == torch.bfloat16
+    policy = acc.state.fsdp_plugin.mixed_precision_policy
+    assert policy.param_dtype == torch.bfloat16 and policy.reduce_dtype == torch.float32
+
+
+def test_uniform_or_autocast_runs_are_not_upcast():
+    model = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16))
+    assert fsdp2.unify_trainable_dtypes(_accelerator(None, "no"), model) is False
+    assert model[0].weight.dtype == torch.bfloat16
+    mixed = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16), torch.nn.LayerNorm(4))
+    # Under autocast accelerate (>= 1.13) upcasts the trainable weights itself.
+    assert fsdp2.unify_trainable_dtypes(_accelerator(None, "bf16"), mixed) is False
+    assert mixed[0].weight.dtype == torch.bfloat16
