@@ -83,8 +83,7 @@ def _common_cuda_dtype(gpu_ids: list[int]) -> str:
         # A missing probe result must not let one rank independently choose BF16.
         if not gpu_ids or any(gpu_id not in capabilities for gpu_id in gpu_ids):
             return "fp16"
-        # Masks use CUDA numbering, which matches nvidia-smi only under PCI_BUS_ID (hardware.py's
-        # default); otherwise judge every card on the host.
+        # CUDA ids match nvidia-smi only under CUDA_DEVICE_ORDER=PCI_BUS_ID; otherwise judge every card.
         if os.environ.get("CUDA_DEVICE_ORDER", "PCI_BUS_ID") != "PCI_BUS_ID":
             gpu_ids = list(capabilities)
         return "bf16" if all(capabilities[gpu_id] >= (8, 0) for gpu_id in gpu_ids) else "fp16"

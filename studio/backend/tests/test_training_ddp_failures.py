@@ -139,8 +139,7 @@ def test_ddp_ranks_offload_embeddings_to_their_own_files(monkeypatch, world_size
 
 
 def test_studio_leaves_unused_parameter_discovery_to_unsloth():
-    # Unsloth's trainer picks find_unused_parameters from the model (plain LoRA vs conditional
-    # branches); a Studio override would bypass those checks.
+    # Unsloth's trainer picks find_unused_parameters per model; a Studio override would bypass it.
     source = (Path(__file__).parents[1] / "core" / "training" / "trainer.py").read_text(
         encoding = "utf-8"
     )
