@@ -2304,6 +2304,9 @@ async def start_training(
                 )
 
                 def _can_keep_resident_models():
+                    # Every DDP rank holds a full replica; the pooled sharding budget below does not apply.
+                    if training_kwargs.get("parallelism_mode") == "ddp":
+                        return False, {"mode": "ddp", "reason": "ddp_replica_per_gpu"}
                     return can_keep_chat_during_training(
                         model_name = training_kwargs["model_name"],
                         hf_token = hf_token,
