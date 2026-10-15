@@ -60,7 +60,7 @@ def _spy_mlp(self, X):
 
 def _spy_causal_forward(self, input_ids, labels):
     """Unsloth's CausalLM forward reads lm_head.weight for the fused CE instead of calling it."""
-    hidden = self.model(input_ids = input_ids).last_hidden_state
+    hidden = self.model(input_ids = input_ids, use_cache = False).last_hidden_state
     logits = hidden @ self.lm_head.weight.t()
     return torch.nn.functional.cross_entropy(
         logits[:, :-1].reshape(-1, logits.shape[-1]).float(), labels[:, 1:].reshape(-1)
@@ -118,8 +118,16 @@ def _worker(rank, port, case, out_dir):
         MASTER_ADDR = "127.0.0.1",
         MASTER_PORT = str(port),
     )
-    for key in ("UNSLOTH_FSDP2", "FSDP_VERSION", "ACCELERATE_USE_FSDP", "UNSLOTH_FORCE_FUSED_LORA"):
+    for key in (
+        "UNSLOTH_FSDP2",
+        "FSDP_VERSION",
+        "ACCELERATE_USE_FSDP",
+        "UNSLOTH_FORCE_FUSED_LORA",
+        "UNSLOTH_FSDP2_FUSED_LORA",
+    ):
         os.environ.pop(key, None)
+    if case == "opt_out":
+        os.environ["UNSLOTH_FSDP2_FUSED_LORA"] = "0"
     import json
 
     dist.init_process_group("gloo", rank = rank, world_size = 2)
@@ -139,6 +147,7 @@ def _worker(rank, port, case, out_dir):
             auto_wrap_policy = "TRANSFORMER_BASED_WRAP",
             transformer_cls_names_to_wrap = wrap_names,
             reshard_after_forward = True,
+            activation_checkpointing = case == "checkpointed",
         )
         result = {}
         result["agree_mixed"] = fsdp2._all_ranks_agree(rank == 0, torch.device("cpu"))
@@ -146,9 +155,13 @@ def _worker(rank, port, case, out_dir):
         model, log = _build(seed = 0)
         reference, _ = _build(seed = 0)
         assert fsdp2.install_fsdp2_prepare_hook()
-        model = accelerator_module.fsdp2_prepare_model(
-            _fake_accelerator(rank, mesh, plugin), model
-        )
+        accelerator = _fake_accelerator(rank, mesh, plugin)
+        if case == "checkpointed":
+            # What Accelerator._prepare_fsdp2 does before sharding when the plugin asks for it.
+            from accelerate.utils.fsdp_utils import fsdp2_apply_ac
+
+            model = fsdp2_apply_ac(accelerator, model)
+        model = accelerator_module.fsdp2_prepare_model(accelerator, model)
         result["fused_kept"] = int(getattr(model, "_unsloth_fsdp2_fused_lora", -1))
         result["blocks"] = int(getattr(model, "_unsloth_fsdp2_blocks", -1))
         result["direct_read_units"] = int(getattr(model, "_unsloth_fsdp2_direct_read_units", -1))
@@ -182,7 +195,7 @@ def _worker(rank, port, case, out_dir):
                 continue
             g = p.grad.full_tensor() if isinstance(p.grad, DTensor) else p.grad
             # FSDP averages over the 2 ranks; each rank's loss is the mean over its half.
-            r = ref_params[name].grad
+            r = ref_params[name.replace("._checkpoint_wrapped_module", "")].grad
             worst = max(worst, (g - r).abs().max().item() / (r.abs().max().item() + 1e-12))
         result["grad_rel_err"] = worst
         if rank == 0:
@@ -231,5 +244,25 @@ def test_a_finer_wrap_declines_the_fused_layers(tmp_path):
     assert r["fused_kept"] == 0
     assert r["spy_left"] == 0, "the fused forwards must be removed on every rank"
     assert r["spy_calls"] == 0
+    assert r["loss_diff"] < 1e-5
+    assert r["grad_rel_err"] < 1e-4
+
+
+def test_the_fused_lora_opt_out_is_honoured_after_wrapping(tmp_path):
+    """A raw Accelerator loop patches the model before any FSDP plugin exists."""
+    r = _run("opt_out", tmp_path)
+    assert r["fused_kept"] == 0
+    assert r["spy_left"] == 0
+    assert r["spy_calls"] == 0
+    assert r["loss_diff"] < 1e-5
+
+
+def test_activation_checkpointed_blocks_keep_the_last_block_gathered(tmp_path):
+    r = _run("checkpointed", tmp_path)
+    assert r["blocks"] == N_LAYERS
+    assert r["fused_kept"] == N_LAYERS
+    assert r["last_block_gathered"] is True
+    assert r["first_block_gathered"] is False
+    assert r["spy_saw_shard"] == 0
     assert r["loss_diff"] < 1e-5
     assert r["grad_rel_err"] < 1e-4

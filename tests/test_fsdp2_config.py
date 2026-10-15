@@ -167,10 +167,28 @@ def test_uniform_or_autocast_runs_are_not_upcast():
     model = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16))
     assert fsdp2.unify_trainable_dtypes(_accelerator(None, "no"), model) is False
     assert model[0].weight.dtype == torch.bfloat16
-    mixed = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16), torch.nn.LayerNorm(4))
-    # Under autocast accelerate (>= 1.13) upcasts the trainable weights itself.
-    assert fsdp2.unify_trainable_dtypes(_accelerator(None, "bf16"), mixed) is False
-    assert mixed[0].weight.dtype == torch.bfloat16
+    uniform = torch.nn.Sequential(torch.nn.Linear(4, 4).to(torch.bfloat16))
+    acc = _accelerator(None, "bf16")
+    policy = acc.state.fsdp_plugin.mixed_precision_policy
+    # Under autocast a uniform unit is left to accelerate's own upcast.
+    assert fsdp2.unify_trainable_dtypes(acc, uniform) is False
+    assert uniform[0].weight.dtype == torch.bfloat16
+    assert acc.state.fsdp_plugin.mixed_precision_policy is policy
+
+
+def test_mixed_precision_masters_are_unified_when_accelerate_does_not():
+    """accelerate 1.13's upcast is `param = param.to(torch.float32)`, which leaves the model alone."""
+    mixed = torch.nn.Sequential(
+        torch.nn.Linear(4, 4).to(torch.bfloat16),
+        torch.nn.LayerNorm(4),
+        torch.nn.Linear(4, 4).to(torch.bfloat16).requires_grad_(False),
+    )
+    acc = _accelerator(None, "bf16")
+    policy = acc.state.fsdp_plugin.mixed_precision_policy
+    assert fsdp2.unify_trainable_dtypes(acc, mixed) is True
+    assert {p.dtype for p in mixed.parameters() if p.requires_grad} == {torch.float32}
+    assert mixed[2].weight.dtype == torch.bfloat16
+    assert acc.state.fsdp_plugin.mixed_precision_policy is policy
 
 
 def test_install_fsdp2_hooks_patches_accelerate_without_a_trainer():
