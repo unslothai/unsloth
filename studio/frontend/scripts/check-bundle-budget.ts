@@ -102,8 +102,30 @@ export const BUDGET = {
   // gave back 0.4 KB raw). Raised by that growth so main's margin stays where it was.
   // Then the Audio API card in Settings (#12821) 2,019 B raw / 557 B transfer and #13630 132 B raw
   // (6,750,599 -> 6,752,750 B raw, 2,028,544 -> 2,029,099 B transfer to dd56fb3572, same machine and build).
-  transferBytes: 2_029_466,
-  rawBytes: 6_753_766,
+  // Numbers wrapped tightly in dollars render as math (#13649): the shell-context checks that keep
+  // `$1$?`-style shell text literal add 6,984 B raw / 2,836 B transfer to the eager chat chunk
+  // (6,753,387 -> 6,760,371 B raw, 2,029,398 -> 2,032,234 B transfer against eba7641835, one machine
+  // and build, chunk count unchanged at 95), raised by that.
+  // Re-embedding documents after an embedding model switch (the save toast's action and the Settings row)
+  // adds 3,018 B raw / 905 B transfer (6,760,371 -> 6,763,389 B raw, 2,032,234 -> 2,033,139 B transfer
+  // against 525f3ceae, one machine and build, Node 24, chunk count unchanged at 95). Lazy-loading its store
+  // from both save sites cost 0.3 KB transfer more in chunk overhead, so the budget is raised by that growth.
+  // Keeping the tool pills in step with the loaded model's tool support (#13621) adds 1.2 KB raw / 0.4 KB
+  // transfer to the eager chat chunk (6,753,387 -> 6,754,540 B raw, 2,029,398 -> 2,029,795 B transfer
+  // against 97ed9415f7, before #13649, one machine and build), raised by that.
+  // Offering the newest audio.cpp release in updates (#13589) adds 385 B raw / 80 B transfer to the eager set
+  // (6,764,579 -> 6,764,964 B raw, 2,033,464 -> 2,033,544 B transfer from 91f8457ab3 to 7b6b2a8e48, one machine
+  // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
+  // main's margin stays where it was.
+  // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
+  // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
+  // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
+  // Each chat keeping its own browser tabs (#13800: the store's per-chat state, background pages in the
+  // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
+  // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
+  // chunk count unchanged at 95), raised by that.
+  transferBytes: 2_035_705,
+  rawBytes: 6_770_942,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

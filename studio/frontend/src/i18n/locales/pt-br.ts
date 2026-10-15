@@ -83,6 +83,9 @@ export const ptBR = {
     },
     agent: {
       working: "O Unsloth está navegando nesta aba",
+      waiting: "O Unsloth precisa da sua resposta no navegador para {chat}",
+      otherChat: "outro chat",
+      show: "Mostrar",
       stop: "Parar",
       allow: "Permitir",
       deny: "Negar",
@@ -1365,6 +1368,7 @@ export const ptBR = {
       installRuntimeFailed: "A instalação do runtime falhou.",
       installRuntimeError: "Não foi possível iniciar a instalação do runtime.",
       unsupportedArch: "O sandbox do Windows (MXC) só funciona no Windows x64, então não está disponível neste PC.",
+      builtinNeedsUpdate: "O contêiner integrado do Windows precisa da build {required} ou mais recente, e este PC usa {current}. Instale a atualização mais recente do Windows para usá-lo sem uma etapa de administrador, ou ative o sandbox alternativo abaixo.",
       unsupportedBuild: "O sandbox do Windows (MXC) precisa do Windows 11 24H2 (build 26100) ou mais recente, então não está disponível neste PC.",
       permissionsIntro: "Escolha quando as ferramentas perguntam antes e se Python e Terminal também rodam dentro do sandbox do sistema.",
       permissionLabel: "Permissões de ferramentas",
@@ -1859,7 +1863,23 @@ export const ptBR = {
           "Modelo do Hugging Face ou caminho local usado para indexar e buscar seus documentos. O padrão é {defaultModel}.",
         searchPlaceholder: "Buscar qualquer modelo no HF",
         reindexWarning:
-          "Afeta apenas documentos recém-indexados. Reenvie os documentos existentes após alterar o modelo.",
+          "Afeta apenas documentos recém-indexados. Reincorpore os documentos existentes após alterar o modelo.",
+        reembed: {
+          label: "Reincorporar documentos",
+          staleOne:
+            "1 documento foi indexado com outro modelo de embedding, então a busca semântica o ignora.",
+          staleMany:
+            "{count} documentos foram indexados com outro modelo de embedding, então a busca semântica os ignora.",
+          staleArchived:
+            "O histórico de chat anterior foi indexado com outro modelo de embedding, então a busca semântica o ignora.",
+          running: "Reincorporando: {done} de {total}",
+          action: "Reincorporar",
+          stop: "Parar",
+          startFailed: "Não foi possível iniciar a reincorporação",
+          stopped: "Reincorporação interrompida",
+          finished: "Documentos reincorporados",
+          finishedWithFailures: "{count} não puderam ser reincorporados",
+        },
         emptyError: "Insira um id de modelo do Hugging Face ou um caminho local.",
         loadError: "Falha ao carregar a configuração do modelo de embedding.",
         saveError: "Falha ao salvar o modelo de embedding.",
@@ -3125,6 +3145,7 @@ export const ptBR = {
       desktopAppVersion: "Versão do aplicativo de desktop",
       desktopAppVersionUnavailable: "Indisponível",
       llamaCppVersion: "Versão do llama.cpp",
+      audioCppVersion: "Versão do audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

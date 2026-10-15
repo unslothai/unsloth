@@ -83,6 +83,9 @@ export const es = {
     },
     agent: {
       working: "Unsloth está navegando en esta pestaña",
+      waiting: "Unsloth necesita tu respuesta en el navegador para {chat}",
+      otherChat: "otro chat",
+      show: "Mostrar",
       stop: "Detener",
       allow: "Permitir",
       deny: "Denegar",
@@ -1366,6 +1369,7 @@ export const es = {
       installRuntimeFailed: "No se pudo instalar el runtime.",
       installRuntimeError: "No se pudo iniciar la instalación del runtime.",
       unsupportedArch: "El sandbox de Windows (MXC) solo funciona en Windows x64, así que no está disponible en este PC.",
+      builtinNeedsUpdate: "El contenedor integrado de Windows necesita la compilación {required} o posterior, y este PC usa {current}. Instala la última actualización de Windows para usarlo sin un paso de administrador, o activa el sandbox alternativo de abajo.",
       unsupportedBuild: "El sandbox de Windows (MXC) necesita Windows 11 24H2 (compilación 26100) o posterior, así que no está disponible en este PC.",
       permissionsIntro: "Elige cuándo preguntan primero las herramientas y si Python y Terminal también se ejecutan en el sandbox del sistema.",
       permissionLabel: "Permisos de herramientas",
@@ -1865,7 +1869,23 @@ export const es = {
           "Modelo de Hugging Face o ruta local usada para indexar y buscar tus documentos. El valor predeterminado es {defaultModel}.",
         searchPlaceholder: "Buscar cualquier modelo en HF",
         reindexWarning:
-          "Solo afecta a los documentos recién indexados. Vuelve a subir los existentes tras cambiar el modelo.",
+          "Solo afecta a los documentos recién indexados. Vuelve a incrustar los existentes tras cambiar el modelo.",
+        reembed: {
+          label: "Volver a incrustar documentos",
+          staleOne:
+            "1 documento se indexó con otro modelo de embeddings, así que la búsqueda semántica lo omite.",
+          staleMany:
+            "{count} documentos se indexaron con otro modelo de embeddings, así que la búsqueda semántica los omite.",
+          staleArchived:
+            "El historial de chat anterior se indexó con otro modelo de embeddings, así que la búsqueda semántica lo omite.",
+          running: "Volviendo a incrustar: {done} de {total}",
+          action: "Volver a incrustar",
+          stop: "Detener",
+          startFailed: "No se pudo iniciar la nueva incrustación",
+          stopped: "Nueva incrustación detenida",
+          finished: "Documentos incrustados de nuevo",
+          finishedWithFailures: "No se pudieron volver a incrustar {count}",
+        },
         emptyError:
           "Introduce un id de modelo de Hugging Face o una ruta local.",
         loadError:
@@ -3146,6 +3166,7 @@ export const es = {
       desktopAppVersion: "Versión de la app de escritorio",
       desktopAppVersionUnavailable: "No disponible",
       llamaCppVersion: "Versión de llama.cpp",
+      audioCppVersion: "Versión de audio.cpp",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",

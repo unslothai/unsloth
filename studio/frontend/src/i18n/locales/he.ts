@@ -84,6 +84,9 @@ export const he = {
     },
     agent: {
       working: "Unsloth גולש בכרטיסייה הזו",
+      waiting: "Unsloth צריך את התשובה שלך בדפדפן עבור {chat}",
+      otherChat: "צ׳אט אחר",
+      show: "הצג",
       stop: "עצירה",
       allow: "אישור",
       deny: "דחייה",
@@ -1462,6 +1465,8 @@ export const he = {
       installRuntimeError: "לא ניתן להתחיל את התקנת סביבת זמן הריצה.",
       unsupportedArch:
         "ארגז החול של Windows (MXC) פועל רק ב-Windows x64, ולכן אינו זמין במחשב זה.",
+      builtinNeedsUpdate:
+        "המכל המובנה של Windows דורש גרסת build {required} ומעלה, והמחשב הזה מריץ {current}. התקינו את עדכון Windows האחרון כדי להשתמש בו בלי שלב מנהל, או הפעילו את ארגז החול החלופי שלמטה.",
       unsupportedBuild:
         "ארגז החול של Windows (MXC) דורש Windows 11 24H2 (build 26100) ומעלה, ולכן אינו זמין במחשב זה.",
       permissionsIntro:
@@ -1958,7 +1963,21 @@ export const he = {
           "מודל Hugging Face או נתיב מקומי המשמש לאינדוקס וחיפוש במסמכים שלך. ברירת המחדל היא {defaultModel}.",
         searchPlaceholder: "חפש כל מודל ב-HF",
         reindexWarning:
-          "משפיע רק על מסמכים שיאונדקסו מעתה ואילך. העלה מחדש מסמכים קיימים לאחר שינוי המודל.",
+          "משפיע רק על מסמכים שיאונדקסו מעתה ואילך. לאחר שינוי המודל, הטמע מחדש מסמכים קיימים.",
+        reembed: {
+          label: "הטמעה מחדש של מסמכים",
+          staleOne: "מסמך אחד אונדקס במודל הטמעה אחר, ולכן החיפוש הסמנטי מדלג עליו.",
+          staleMany: "{count} מסמכים אונדקסו במודל הטמעה אחר, ולכן החיפוש הסמנטי מדלג עליהם.",
+          staleArchived:
+            "היסטוריית צ'אט קודמת אונדקסה במודל הטמעה אחר, ולכן החיפוש הסמנטי מדלג עליה.",
+          running: "מטמיע מחדש: {done} מתוך {total}",
+          action: "הטמעה מחדש",
+          stop: "עצור",
+          startFailed: "לא ניתן להתחיל הטמעה מחדש",
+          stopped: "ההטמעה מחדש נעצרה",
+          finished: "המסמכים הוטמעו מחדש",
+          finishedWithFailures: "לא ניתן היה להטמיע מחדש {count}",
+        },
         emptyError: "הזן מזהה מודל ב-Hugging Face או נתיב מקומי.",
         loadError: "טעינת הגדרת מודל השיבוץ נכשלה.",
         saveError: "שמירת מודל השיבוץ נכשלה.",
@@ -3227,6 +3246,7 @@ export const he = {
       desktopAppVersion: "גרסת אפליקציית Desktop",
       desktopAppVersionUnavailable: "לא זמין",
       llamaCppVersion: "גרסת llama.cpp",
+      audioCppVersion: "גרסת audio.cpp",
       hardware: "חומרה",
       gpu: "GPU",
       cuda: "CUDA",

@@ -83,6 +83,9 @@ export const fr = {
     },
     agent: {
       working: "Unsloth navigue dans cet onglet",
+      waiting: "Unsloth attend votre réponse dans le navigateur pour {chat}",
+      otherChat: "une autre discussion",
+      show: "Afficher",
       stop: "Arrêter",
       allow: "Autoriser",
       deny: "Refuser",
@@ -1367,6 +1370,7 @@ export const fr = {
       installRuntimeFailed: "L'installation du runtime a échoué.",
       installRuntimeError: "Impossible de lancer l'installation du runtime.",
       unsupportedArch: "Le bac à sable Windows (MXC) ne fonctionne que sous Windows x64, il n'est donc pas disponible sur ce PC.",
+      builtinNeedsUpdate: "Le conteneur intégré de Windows nécessite la build {required} ou plus récente, et ce PC exécute {current}. Installez la dernière mise à jour de Windows pour l'utiliser sans étape administrateur, ou activez le sandbox de secours ci-dessous.",
       unsupportedBuild: "Le bac à sable Windows (MXC) nécessite Windows 11 24H2 (build 26100) ou plus récent, il n'est donc pas disponible sur ce PC.",
       permissionsIntro: "Choisissez quand les outils demandent d'abord, et si Python et le Terminal s'exécutent aussi dans le bac à sable du système.",
       permissionLabel: "Autorisations des outils",
@@ -1869,7 +1873,23 @@ export const fr = {
           "Modèle Hugging Face ou chemin local utilisé pour indexer et rechercher vos documents. La valeur par défaut est {defaultModel}.",
         searchPlaceholder: "Rechercher n'importe quel modèle sur HF",
         reindexWarning:
-          "N'affecte que les documents nouvellement indexés. Téléversez à nouveau les documents existants après avoir changé de modèle.",
+          "N'affecte que les documents nouvellement indexés. Ré-encodez les documents existants après avoir changé de modèle.",
+        reembed: {
+          label: "Ré-encoder les documents",
+          staleOne:
+            "1 document a été indexé avec un autre modèle d'embedding, la recherche sémantique l'ignore donc.",
+          staleMany:
+            "{count} documents ont été indexés avec un autre modèle d'embedding, la recherche sémantique les ignore donc.",
+          staleArchived:
+            "L'historique de chat antérieur a été indexé avec un autre modèle d'embedding, la recherche sémantique l'ignore donc.",
+          running: "Ré-encodage : {done} sur {total}",
+          action: "Ré-encoder",
+          stop: "Arrêter",
+          startFailed: "Impossible de lancer le ré-encodage",
+          stopped: "Ré-encodage interrompu",
+          finished: "Documents ré-encodés",
+          finishedWithFailures: "{count} n'ont pas pu être ré-encodés",
+        },
         emptyError:
           "Saisissez un identifiant de modèle Hugging Face ou un chemin local.",
         loadError: "Échec du chargement du paramètre du modèle d'embedding.",
@@ -3154,6 +3174,7 @@ export const fr = {
       desktopAppVersion: "Version de l’application de bureau",
       desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
+      audioCppVersion: "Version d'audio.cpp",
       hardware: "Matériel",
       gpu: "GPU",
       cuda: "CUDA",

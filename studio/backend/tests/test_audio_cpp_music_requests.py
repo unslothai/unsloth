@@ -375,7 +375,16 @@ def test_yue2_instrumental_sends_the_instrumental_tag_not_its_style():
     assert request["text"] == "[Instrumental]"
     assert request["options"]["lyrics"] == "[Instrumental]"
     assert request["options"]["style"] == "ambient piano"
-    assert request["options"]["semantic_max_tokens"] == 750
+    assert "semantic_max_tokens" not in request["options"]
+
+
+def test_yue2_songs_are_not_cut_at_the_asked_length():
+    # Any budget from the slider is a hard stop the lyrics outrun (#13337).
+    for seconds in (5, 30, 240):
+        b = _backend(_model("yue2"))
+        _run(b, text = "rock", lyrics = "[Verse] words", duration_s = seconds)
+        options = _request(b)["options"]
+        assert "semantic_max_tokens" not in options and "semantic_min_tokens" not in options
 
 
 def test_minimax_gguf_keeps_its_body_through_the_studio():
@@ -494,10 +503,12 @@ def test_a_fixed_seed_family_gets_a_recorded_random_seed(tmp_path):
 
 def test_the_wait_grows_with_the_audio_asked_for_and_is_capped():
     t = lambda s, n = 1, backend = "cuda": cm.timeout_seconds("yue2", s, n, backend)
-    assert t(10) < t(60) < t(60, 3) < t(60, 3, backend = "cpu")
-    assert t(0) == 300.0 and t(240, 4, backend = "cpu") == 4 * 3600.0
-    assert cm.timeout_seconds("stable_audio", 10, 1, "cuda") == 310.0
-    assert t(60) == 300.0 + 6.0 * 1.5 * 60
+    assert t(60) < t(60, 3) < t(60, 3, backend = "cpu")
+    assert t(240, 4, backend = "cpu") == 4 * 3600.0
+    sa = lambda s: cm.timeout_seconds("stable_audio", s, 1, "cuda")
+    assert sa(0) == 300.0 and sa(10) == 310.0 and sa(10) < sa(60)
+    # YuE2 may run to its 360 s cap whatever length was asked.
+    assert t(0) == t(60) == 300.0 + 6.0 * 360
     b = _backend(_model("yue2"))
     _run(b, text = "rock", lyrics = "x", duration_s = 60)
     assert b._server.calls[0][2]["timeout"] == t(60)
