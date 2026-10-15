@@ -6290,6 +6290,13 @@ def _extra_args_mtp_draft_path(
     return _extra_args_mtp_draft_source(extra_args, env)[0]
 
 
+def _drafter_host_bytes_for(
+    cmd: Iterable[str], env: Optional[Mapping[str, str]], drafter_bytes: Optional[int]
+) -> Optional[int]:
+    """A separate drafter's host reserve, or 0 when ``cmd`` (with ``env``) loads none."""
+    return drafter_bytes if _extra_args_mtp_draft_path(list(cmd), env = env) else 0
+
+
 _HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"})
 _LOCAL_DRAFT_FLAGS = frozenset({"--model-draft", "--spec-draft-model", "-md"})
 
@@ -16849,13 +16856,16 @@ class LlamaCppBackend:
         Here rather than at either call site, since both reach this same state.
         """
         self._last_carveout_advice = None
+        cpu_cmd = list(cpu_cmd)
         repriced = self._launch_host_shortfall_message(
             cpu_cmd,
             (),
             env,
             child_has_no_gpu = True,
             avail_mib = avail_mib,
-            additional_host_only_bytes = additional_host_only_bytes,
+            additional_host_only_bytes = _drafter_host_bytes_for(
+                cpu_cmd, env, additional_host_only_bytes
+            ),
         )
         note = pageable_note or ""
         current = self._last_load_warning
@@ -25234,6 +25244,10 @@ class LlamaCppBackend:
         )
         if replay is None:
             return None
+        # The drafter's host reserve follows the argv: a drafterless replay loads none.
+        additional_host_only_bytes = _drafter_host_bytes_for(
+            replay, env, additional_host_only_bytes
+        )
         # The replay runs on no GPU, so the VRAM half of the fit that chose "none" is
         # void and mmap is what keeps the host-RAM load survivable: hand the CPU attempt
         # llama.cpp's auto back. Only Unsloth's own tokens; a user's is theirs.

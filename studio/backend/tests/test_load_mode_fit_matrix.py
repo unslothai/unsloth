@@ -2430,3 +2430,61 @@ def test_an_integrated_cuda_soc_is_never_counted_twice(platform, monkeypatch):
     assert _mode(platform, "nvidia_discrete", 40 * GIB, 32 * 1024, monkeypatch) == FIT_MODE
     LlamaCppBackend._INTEGRATED_CUDA_IDS[LlamaCppBackend._integrated_cuda_mask_key()] = {0}
     assert _mode(platform, "nvidia_discrete", 40 * GIB, 32 * 1024, monkeypatch) is None
+
+
+def _cpu_fallback_with_unsized_drafter_reserve(replay):
+    from core.inference import llama_cpp as lc
+    from unittest import mock
+
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._memory_dio_flags = []
+    backend._fit_load_mode_flags = []
+    backend._launch_host_shortfall_message = lambda *_a, **_kw: None
+    with (
+        mock.patch.object(lc.LlamaCppBackend, "_is_vulkan_backend", return_value = True),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_replay", return_value = list(replay)),
+        mock.patch.object(lc.LlamaCppBackend, "_cpu_isolated_binary", return_value = "cpu-server"),
+        mock.patch.object(
+            lc.LlamaCppBackend,
+            "_llama_server_env_for_binary",
+            return_value = {lc._loader_path_var(): "/staged"},
+        ),
+    ):
+        out, _reason, _note = backend._prepare_cpu_fallback_launch(
+            "llama-server", replay, {}, {}, additional_host_only_bytes = None
+        )
+    return out
+
+
+def test_a_drafterless_cpu_replay_is_not_priced_with_the_removed_drafter():
+    """An unsized drafter reserve forces a pageable replay only when the replay loads it."""
+    plain = ["llama-server", "-m", "model.gguf", "--load-mode", "none"]
+    assert _cpu_fallback_with_unsized_drafter_reserve(plain)[-2:] == ["--load-mode", "none"]
+    drafted = [*plain[:3], "--model-draft", "draft.gguf", *plain[3:]]
+    assert _cpu_fallback_with_unsized_drafter_reserve(drafted)[-2:] != ["--load-mode", "none"]
+
+
+def test_the_cpu_replay_advisory_prices_only_a_drafter_the_child_loads():
+    backend = LlamaCppBackend.__new__(LlamaCppBackend)
+    backend._last_load_warning = None
+    seen = []
+
+    def shortfall(
+        *_a,
+        additional_host_only_bytes = 0,
+        **_kw,
+    ):
+        seen.append(additional_host_only_bytes)
+        return None
+
+    backend._launch_host_shortfall_message = shortfall
+    backend._record_load_warning = lambda _msg: None
+    for cmd in (["cpu-server", "-m", "m.gguf"], ["cpu-server", "-m", "m.gguf", "-md", "d.gguf"]):
+        backend._reprice_after_cpu_only_fallback(
+            host_msg = None,
+            cpu_cmd = cmd,
+            env = {},
+            avail_mib = 16_384,
+            additional_host_only_bytes = 30 * 1024**3,
+        )
+    assert seen == [0, 30 * 1024**3]
