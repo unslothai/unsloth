@@ -119,6 +119,7 @@ def test_epilogue_matches_rowwise_math(monkeypatch, bias):
     monkeypatch.setattr(f8t, "addmm_float8_unwrapped_inference", rowwise)
     monkeypatch.setattr(torch, "_scaled_mm", _emulated_scaled_mm)
     monkeypatch.setattr(torch, "ones", lambda *a, device = None, dtype = None: torch.tensor(1.0, dtype = dtype))
+    monkeypatch.setenv(us.MIN_ROWS_ENV, "1024")
     assert us.install() is True
     fn = f8t.addmm_float8_unwrapped_inference
     a, sa, b, sb = _operands(2048)
@@ -131,12 +132,14 @@ def test_epilogue_matches_rowwise_math(monkeypatch, bias):
     assert err <= 2 ** -7 * want.float().abs().max()
     assert torch.isfinite(got).all()
 
-    # Below the row floor, fp32 output and an output scale all keep the row-wise kernel.
+    # Fast accumulate (Studio's default; no end-to-end gain measured), below the row floor, fp32 output and an
+    # output scale all keep torchao's row-wise kernel.
     small = _operands(256)
+    fn(_Dev(a), sa, b, sb, torch.bfloat16, use_fast_accum = True)
     fn(_Dev(small[0]), small[1], small[2], small[3], torch.bfloat16)
     fn(_Dev(a), sa, b, sb, torch.float32)
     fn(_Dev(a), sa, b, sb, torch.bfloat16, output_scale = torch.tensor(1.0))
-    assert us.stats()["unit_scale"] == 1 and len(rowwise_calls) == 4
+    assert us.stats()["unit_scale"] == 1 and len(rowwise_calls) == 5
 
 
 def test_min_rows_env(monkeypatch):

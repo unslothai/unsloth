@@ -1,27 +1,30 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ada (sm_89) fp8 GEMM: unit-scale ``torch._scaled_mm`` plus a row x column scale epilogue.
+"""Ada (sm_89) fp8 GEMM with PRECISE accumulate: unit-scale ``torch._scaled_mm`` plus a row x column scale epilogue.
 
 torchao's per-row ``Float8Tensor`` linear calls ``torch._scaled_mm`` with an [M, 1] activation scale and a [1, N] weight
-scale. On sm_89, PyTorch routes that row-wise form to a CUTLASS 2.x stream-K kernel, while the per-tensor form goes to
-cuBLASLt. Measured on an L4 with torch 2.14.1 at the FLUX.2-klein / Z-Image / Qwen-Image-2.1 1024 px linear shapes:
+scale. On sm_89, PyTorch routes that row-wise form to a CUTLASS 2.x stream-K kernel, the per-tensor form to cuBLASLt.
+Measured on an L4 with torch 2.14.1 at the FLUX.2-klein / Z-Image / Qwen-Image-2.1 1024 px linear shapes:
 
-* precise accumulate (``use_fast_accum=False``): row-wise 29-32 TFLOP/s, per-tensor 102-134 TFLOP/s (3.5-4.5x);
-* fast accumulate (Studio's default): row-wise 85-108, per-tensor 91-127; the full compiled linear (activation quant,
-  GEMM, gated residual) is 5-19% faster with the unit-scale form.
+* precise accumulate (``use_fast_accum=False``): row-wise 29-32 TFLOP/s, per-tensor 102-134 TFLOP/s (3.5-4.5x).
+  End to end (compiled, 1024 px): klein-4B 1.074 -> 0.515 s/step, Z-Image-Turbo 1.721 -> 0.853 s/step.
+* fast accumulate (Studio's default): row-wise 85-108, per-tensor 91-127 TFLOP/s, and end to end no measurable
+  difference (klein 0.501 vs 0.499 s/step, Z-Image 0.799 vs 0.795, inside the A/A spread). Fast-accumulate calls are
+  therefore left on torchao's kernel and stay bit-identical.
 
-So on sm_89 the GEMM runs with unit scales into bf16 and the SAME per-row / per-column scales (and bias) are applied
-in fp32 afterwards; under ``torch.compile`` Inductor fuses that multiply into the consumer's pointwise kernel. The math
-is the row-wise kernel's (acc * s_a * s_b + bias, rounded to bf16 once); the only difference is the bf16 rounding of
-the unscaled accumulator before the scale multiply (one extra bf16 rounding, relative error <= 2^-9).
+So on sm_89 a precise-accumulate GEMM runs with unit scales into bf16 and the SAME per-row / per-column scales (and
+bias) are applied in fp32 afterwards; under ``torch.compile`` Inductor fuses that multiply into the consumer. The math
+is the row-wise kernel's (fp32 acc * s_a * s_b + bias, rounded to bf16); the only difference is one bf16 rounding of
+the unscaled accumulator before the scale multiply (relative error <= 2^-9).
 
-Engages only where it was measured to help: a CUDA device of compute capability 8.9, bf16 output, row-wise scales,
-no output scale, and at least ``_MIN_ROWS`` activation rows (short text-encoder / text-stream GEMMs keep the row-wise
-kernel, which won there). Every other call, and every other GPU, takes torchao's own function unchanged.
+Engages only on a CUDA device of compute capability 8.9, ``use_fast_accum=False``, bf16 output, row-wise scales, no
+output scale, and at least ``_MIN_ROWS`` activation rows. Every other call, and every other GPU, takes torchao's own
+function unchanged.
 
-``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE``: ``0`` = never (kill switch), ``1`` = on every CUDA arch (testing only),
-unset / anything else = auto (sm_89 only). ``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS`` overrides the row floor.
+``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE``: ``0`` = never (kill switch), ``1`` = every CUDA arch and both accumulate modes
+(testing only), unset / anything else = auto (sm_89, precise accumulate). ``UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS``
+overrides the row floor.
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from typing import Any, Optional
 
 UNIT_SCALE_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE"
 MIN_ROWS_ENV = "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS"
-_DEFAULT_MIN_ROWS = 1024
+_DEFAULT_MIN_ROWS = 1
 _ADA_CAPS = ((8, 9),)
 
 # Calls taken by the unit-scale form (eager: per call; compiled: replayed with the graph) / by the fallback.
@@ -125,6 +128,7 @@ def install(logger: Any = None) -> bool:
             and a_scale.shape[0] == a_data.shape[0]
             and b_scale.shape[1] == b_data.shape[1]
             and a_data.shape[0] >= min_rows
+            and (force or not use_fast_accum)
         ):
             _COUNTS["unit_scale"] += 1
             one = torch.ones((), device = a_data.device, dtype = torch.float32)
@@ -160,7 +164,7 @@ def install(logger: Any = None) -> bool:
         try:
             logger.info(
                 "fp8: unit-scale GEMM + row/column scale epilogue on %s (rows >= %d, %s=0 disables)",
-                "every CUDA device" if force else "sm_89",
+                "every CUDA device" if force else "sm_89 precise accumulate",
                 min_rows,
                 UNIT_SCALE_ENV,
             )
