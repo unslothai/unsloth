@@ -25023,6 +25023,11 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
     )
 
 
+# Engines a retired whisper.cpp alias request downloaded, loaded or transcribed on in this
+# process, so a later alias unload or cancel still reaches one the host would no longer pick.
+_RETIRED_ALIAS_SERVED: set[str] = set()
+
+
 def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
     """Resolve the engine that will actually serve a model.
 
@@ -25068,18 +25073,22 @@ def _serving_stt_model(
     return model
 
 
+def _note_retired_alias_engine(requested_engine: Optional[str], serving_engine: str) -> None:
+    """Remember the engine a retired alias request is about to run on."""
+    if _resolve_stt_engine(requested_engine) == "gguf":
+        _RETIRED_ALIAS_SERVED.add(serving_engine)
+
+
 def _retired_alias_engines() -> tuple[str, ...]:
     """Every engine a retired whisper.cpp alias request may have landed on.
 
-    With PyTorch it always lands on Transformers. Without it, it lands on
-    llama.cpp or audio.cpp by what could serve it at the time, which can change
-    mid-session, so a later unload or cancel has to reach each of them.
+    The one it resolves to now, plus each one an alias request actually ran on
+    in this process: what can serve it (PyTorch, llama.cpp, audio.cpp) can
+    change mid-session, while a model loaded directly on another engine is not
+    the alias's to free.
     """
-    from core.inference import stt_sidecar
-
-    if stt_sidecar.is_available():
-        return ("transformers",)
-    return ("transformers", "mtmd", "audiocpp")
+    engines = {_resolve_serving_stt_engine("gguf"), *_RETIRED_ALIAS_SERVED}
+    return tuple(name for name in ("transformers", "mtmd", "audiocpp") if name in engines)
 
 
 def _prepare_runtime_fallback_checkpoint(
@@ -25552,6 +25561,7 @@ async def stt_download(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    _note_retired_alias_engine(payload.engine, engine)
     model = _serving_stt_model(payload.engine, engine, payload.model)
     module = _stt_download_module(engine)
     try:
@@ -25637,6 +25647,7 @@ async def stt_load(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
+    _note_retired_alias_engine(payload.engine, engine)
     model = _serving_stt_model(payload.engine, engine, payload.model)
     await asyncio.to_thread(
         _prepare_runtime_fallback_checkpoint,
@@ -25839,6 +25850,7 @@ async def _transcribe_audio_result(
             raise HTTPException(status_code = 413, detail = "Audio is too large.")
 
     serving_engine = _resolve_serving_stt_engine(engine)
+    _note_retired_alias_engine(engine, serving_engine)
     model = _serving_stt_model(engine, serving_engine, model)
     if source_path is not None and serving_engine != "audiocpp":
         # Prepared WAVs are capped at 30 min; the encoded-upload cap would refuse past ~13 min.
@@ -26097,6 +26109,7 @@ async def transcribe_audio_source(
 
     engine = body.engine or await asyncio.to_thread(_stt_engine_for_model, body.model)
     serving_engine = _resolve_serving_stt_engine(engine)
+    _note_retired_alias_engine(engine, serving_engine)
     caps = await asyncio.to_thread(
         stt_capabilities.capabilities_for,
         _serving_stt_model(engine, serving_engine, body.model),

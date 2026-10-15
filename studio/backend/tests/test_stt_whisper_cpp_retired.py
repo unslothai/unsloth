@@ -79,6 +79,7 @@ def host(monkeypatch):
     monkeypatch.setattr(GgmlSttSidecar, "transcribe", _whisper_cpp_must_not_run)
     monkeypatch.setattr(ggml_module, "start_model_download", _whisper_cpp_must_not_run)
     monkeypatch.setattr(ri.account_access, "managed_account", lambda: False)
+    monkeypatch.setattr(ri, "_RETIRED_ALIAS_SERVED", set())
     monkeypatch.setattr(ri, "_prepare_runtime_fallback_checkpoint", lambda *_a: None)
 
     def load(
@@ -158,15 +159,6 @@ def test_an_alias_cancels_the_transformers_download(host):
     assert host.cancels == [("stt_sidecar", "transformers", "small")]
 
 
-# Without PyTorch, each engine a "gguf" pick can be served by, scoped to the model it was
-# mapped to there.
-ALIAS_UNLOADS_WITHOUT_PYTORCH = [
-    (["transformers"], "small"),
-    (["mtmd"], DEFAULT_MTMD_STT_MODEL),
-    (["audiocpp"], DEFAULT_AUDIO_CPP_STT_MODEL),
-]
-
-
 def test_an_alias_unloads_the_transformers_model(host):
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
     # A default ASR loaded directly on audio.cpp or llama.cpp is not the alias's to free.
@@ -181,6 +173,15 @@ def test_an_alias_unload_still_frees_audio_cpp_after_llama_cpp_comes_back(host):
     host.pin(torch = False, audiocpp = True, mtmd = True)
     asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
     assert (["audiocpp"], DEFAULT_AUDIO_CPP_STT_MODEL) in host.unloads
+
+
+def test_an_alias_unload_still_frees_llama_cpp_after_pytorch_is_installed(host):
+    host.pin(torch = False, audiocpp = True, mtmd = True)
+    _load("small", "gguf")
+    # PyTorch installed while the server runs: a fresh resolve would now pick Transformers.
+    host.pin(torch = True, audiocpp = True, mtmd = True)
+    asyncio.run(ri.stt_unload(engine = "gguf", model = "small", current_subject = "tester"))
+    assert host.unloads == [(["transformers"], "small"), (["mtmd"], DEFAULT_MTMD_STT_MODEL)]
 
 
 def test_an_alias_cancel_still_stops_an_audio_cpp_download_after_llama_cpp_comes_back(host):
@@ -267,7 +268,8 @@ def test_without_pytorch_an_alias_runs_llama_cpp_qwen3_asr(host, monkeypatch):
     assert host.loads == [(DEFAULT_MTMD_STT_MODEL, "mtmd"), (DEFAULT_MTMD_STT_MODEL, "mtmd")]
     assert host.transcribed == [(DEFAULT_MTMD_STT_MODEL, "mtmd")]
     assert host.downloads == [("stt_mtmd_sidecar", "mtmd", DEFAULT_MTMD_STT_MODEL)]
-    assert host.unloads == ALIAS_UNLOADS_WITHOUT_PYTORCH
+    # Only the engine the alias ran on is freed, scoped to the model it was mapped to.
+    assert host.unloads == [(["mtmd"], DEFAULT_MTMD_STT_MODEL)]
     assert seen == [(DEFAULT_MTMD_STT_MODEL, "mtmd")]
     # Managed accounts are checked against the repo the default ASR lives in.
     assert ri._stt_repo_reference("small", "gguf") == "unslothai/Qwen3-ASR-0.6B-GGUF"
