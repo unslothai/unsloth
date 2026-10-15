@@ -90,7 +90,7 @@ CHECKS = [
 
 
 def _linux_stubs(tmp_path):
-    stub = r'''
+    stub = r"""
 import json
 import os
 from pathlib import Path
@@ -123,7 +123,7 @@ with open("order.log", "a") as out:
     out.write(name + "\n")
 print(name)
 sys.exit(7 if name == os.environ.get("FAIL_CHECK") else 0)
-'''
+"""
     python = tmp_path / "python3"
     python.write_text(f"#!{sys.executable}\n" + stub, encoding = "utf-8")
     python.chmod(0o755)
@@ -133,8 +133,11 @@ sys.exit(7 if name == os.environ.get("FAIL_CHECK") else 0)
         encoding = "utf-8",
     )
     timeout.chmod(0o755)
-    return {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
-            "RUNNER_TEMP": str(tmp_path)}
+    return {
+        **os.environ,
+        "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+        "RUNNER_TEMP": str(tmp_path),
+    }
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "Linux workflow uses POSIX tools")
@@ -148,7 +151,11 @@ def test_linux_groups_overlap_and_collect_every_result(tmp_path, failing):
         (tmp_path / "order.log").unlink(missing_ok = True)
         result = subprocess.run(
             [BASH, "-e", "-o", "pipefail", "-c", _linux_script()],
-            cwd = tmp_path, env = env, text = True, capture_output = True, timeout = 15,
+            cwd = tmp_path,
+            env = env,
+            text = True,
+            capture_output = True,
+            timeout = 15,
         )
         assert result.returncode == bool(failing), result.stdout + result.stderr
         records = {name: json.loads((tmp_path / f"{name}.json").read_text()) for name in CHECKS}
@@ -162,7 +169,9 @@ def test_linux_groups_overlap_and_collect_every_result(tmp_path, failing):
             assert f"{label}: exit {7 if name == failing else 0}" in result.stdout
         blocked = records["settings_tabs_blocked"]["env"]
         assert (blocked["PW_CHUNK_FAIL"], blocked["PW_PORT"], blocked["PW_OUT"]) == (
-            "data", "5400", "logs/settings_tabs_blocked_report.json",
+            "data",
+            "5400",
+            "logs/settings_tabs_blocked_report.json",
         )
         assert "PW_CHUNK_FAIL" not in records["settings_tabs"]["env"]
         assert records["strip_ansi_smoke"]["env"]["PW_BROWSER"] == "chromium"
@@ -179,8 +188,12 @@ def test_linux_cancel_stops_both_active_harnesses(tmp_path):
     env = {**_linux_stubs(tmp_path), "CANCEL_TEST": "1"}
     process = subprocess.Popen(
         [BASH, "-e", "-o", "pipefail", "-c", _linux_script()],
-        cwd = tmp_path, env = env, stdout = subprocess.PIPE, stderr = subprocess.PIPE,
-        text = True, start_new_session = True,
+        cwd = tmp_path,
+        env = env,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.PIPE,
+        text = True,
+        start_new_session = True,
     )
     records = []
     try:
