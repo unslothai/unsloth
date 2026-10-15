@@ -94,6 +94,8 @@ export interface DiffusionGenerateProgress {
   phase?: "encode" | "denoise" | "decode" | null;
   preview?: string | null;
   preview_seq?: number;
+  // "connection" while the run is on a saved image connection: the Stop target for a resumed run.
+  target?: "connection" | null;
 }
 
 export interface DiffusionLoadProgress {
@@ -373,11 +375,10 @@ export async function generateDiffusionImage(
   }
   if (!response.ok && RESPONSE_LOST_STATUSES.has(response.status)) {
     const detail = await readFastApiError(response);
-    // A proxy answers with HTML or nothing; an app error is JSON and means the run never started.
-    if (
-      response.status === 503 &&
-      (response.headers.get("content-type") || "").toLowerCase().includes("application/json")
-    ) {
+    // A proxy answers with HTML (or nothing); the app answers with JSON. Only the former means the request may still
+    // be running: settling an application error would poll for a generation that never started and hide the reason
+    // the backend gave.
+    if ((response.headers.get("content-type") || "").toLowerCase().includes("application/json")) {
       throw new Error(detail);
     }
     throw new GenerateResponseLostError(detail);

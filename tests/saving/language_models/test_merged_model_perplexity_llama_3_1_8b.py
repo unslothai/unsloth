@@ -1,4 +1,4 @@
-# tests/saving scripts run their whole body at import, so plain pytest collection would download checkpoints and train.
+# tests/saving scripts run their whole body at import, so skip collection unless opted in.
 import sys as _sys
 from pathlib import Path as _Path
 
@@ -86,7 +86,6 @@ def load_and_compute_8bit_ppl(
 
     ppl_value = ppl_model(merged_model, merged_tokenizer, dataset_ppl)
 
-    # Convert to a Python float (tensor / numpy / other)
     if torch.is_tensor(ppl_value):
         ppl_value = ppl_value.cpu().item()
     elif hasattr(ppl_value, "item"):

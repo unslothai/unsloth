@@ -642,10 +642,20 @@ fn spawn_script(
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env(&mut cmd);
 
-    // install.sh / install.ps1 reject these under --tauri, so scrub inherited values. Done by hand:
-    // this spawn bypasses apply_managed_cli_context.
+    // install.sh / install.ps1 reject inherited custom roots under --tauri, so
+    // scrub them and pass only the desktop's chosen root, with its flag.
+    // Applied by hand here, the one managed spawn outside
+    // apply_managed_cli_context: the Python setup.sh starts reads whatever is
+    // exported, even though setup.sh assigns UNSLOTH_HOME itself.
     for name in crate::process::MANAGED_CHILD_SCRUBBED_ENV {
         cmd.env_remove(name);
+    }
+    if let Some(root) = crate::studio_home::chosen_root() {
+        // Re-checked here, not only when chosen: files may have landed in the folder since.
+        crate::studio_home::validate_root(&root)?;
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+        cmd.env(crate::studio_home::DESKTOP_CHOSEN_HOME_ENV, "1");
+        cmd.env("UNSLOTH_ISOLATE_UV_CACHE", "1");
     }
     cmd.env(
         "UNSLOTH_DESKTOP_BACKEND_VERSION",
@@ -1122,7 +1132,19 @@ pub fn record_install_intentional_stop(state: &InstallState, diagnostics: &Diagn
     }
 }
 
-/// Quitting while an installer runs would leave a broken venv.
+/// Runs `operation` under the install lock with no installer running (spawn_script reads the root under it).
+pub fn while_install_idle<T>(
+    state: &InstallState,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    let install = state.lock().map_err(|e| e.to_string())?;
+    if install.child.is_some() {
+        return Err("Installation is already running.".to_string());
+    }
+    operation()
+}
+
+/// True while an installer runs; quitting now would leave a broken venv.
 pub fn is_install_running(state: &InstallState) -> bool {
     state
         .lock()

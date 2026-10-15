@@ -327,6 +327,7 @@ export { ModelLoadDescription } from "./components/model-load-status";
 export { chatModelLoaded } from "./lib/chat-model-loaded";
 export type { ChatModelLoadedInput } from "./lib/chat-model-loaded";
 export {
+  buildExternalModelId,
   customProviderDisplayName,
   isCustomProviderType,
   isDecisionConnection,

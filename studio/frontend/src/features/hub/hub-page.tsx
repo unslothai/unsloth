@@ -67,13 +67,14 @@ import {
   InventoryTypeFilterControl,
 } from "./catalog/models-table";
 import {
+  HUB_UPLOADERS,
+  type HubUploader,
   hasModelSearchFilters,
   type ModelSearchFilters,
 } from "./lib/model-search-filters";
 import { ModelsToolbar } from "./catalog/models-toolbar";
 import { NpuCatalogList } from "./catalog/npu-catalog-list";
 import { OnDeviceFoldersDialog } from "./catalog/on-device-folders-dialog";
-import { OwnerScopeToggle } from "./catalog/owner-scope-toggle";
 import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
@@ -108,6 +109,7 @@ import { residentModelIdMatches } from "./lib/model-identity";
 import {
   createHubModelConfigHandoff,
   type HubModelRunSelection,
+  hubAudioRunRefused,
   hubAudioTask,
 } from "./lib/model-run-selection";
 import {
@@ -121,13 +123,18 @@ import {
   registerRefresh,
   supersedingRefresh,
 } from "./lib/superseded-refresh";
+import {
+  type DatasetModality,
+  matchesDatasetFilters,
+} from "./lib/dataset-filters";
+import type { HubCapabilityFilter } from "./lib/model-capabilities";
 import { studioPageForTask } from "./lib/unsloth-support";
 import {
   buildDiscoverRows,
   detectResultFormat,
   discoveryInventorySignature,
   isUnslothFinetunable,
-  matchesCapability,
+  matchesHubCapability,
   matchesFormat,
   matchesRecommended,
 } from "./lib/view-models";
@@ -139,7 +146,6 @@ import {
 } from "./stores/hub-feed-store";
 import type {
   CachedInventoryRow,
-  CapabilityFilter,
   DiscoverRow,
   LocalInventoryRow,
   ModelFormatFilter,
@@ -149,11 +155,11 @@ import type {
 } from "./types";
 
 const NO_SEARCH_FILTERS: ModelSearchFilters = {};
+const UNSLOTH_UPLOADER: readonly HubUploader[] = ["unsloth"];
 
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
-const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
 const RUN_CONFIG_REFRESH_TIMEOUT_MS = 5_000;
 
 // Under Recommended, iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
@@ -207,31 +213,6 @@ class RunConfigOpenCoordinator {
 
   finish(controller: AbortController): void {
     if (this.active === controller) this.active = null;
-  }
-}
-
-export type OwnerScope = "unsloth" | "all";
-
-function readOwnerScopePreference(): OwnerScope {
-  if (typeof window === "undefined") {
-    return "all";
-  }
-  try {
-    const value = window.localStorage.getItem(OWNER_SCOPE_STORAGE_KEY);
-    return value === "unsloth" ? "unsloth" : "all";
-  } catch {
-    return "all";
-  }
-}
-
-function writeOwnerScopePreference(scope: OwnerScope): void {
-  if (typeof window === "undefined") {
-    return;
-  }
-  try {
-    window.localStorage.setItem(OWNER_SCOPE_STORAGE_KEY, scope);
-  } catch {
-    return;
   }
 }
 
@@ -569,21 +550,55 @@ export function ModelsPage() {
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.sort ?? "trendingScore",
   );
   const [direction, setDirection] = useState<HfSortDirection>("desc");
-  const [ownerScope, setOwnerScopeState] = useState<OwnerScope>(
-    readOwnerScopePreference,
+  // Null until the user picks: then Unsloth's uploads, or every uploader once a search is typed.
+  const [uploaderPick, setUploaderPick] = useState<HubUploader[] | null>(null);
+  // Until the popover's first change from the defaults, a capability pick keeps just that one.
+  const [firstPickArmed, setFirstPickArmed] = useState(true);
+  const [datasetModalities, setDatasetModalities] = useState<
+    DatasetModality[]
+  >([]);
+  const handlePopoverModalitiesChange = useCallback(
+    (next: DatasetModality[]) => {
+      setFirstPickArmed(false);
+      setDatasetModalities(next);
+    },
+    [],
   );
-  const setOwnerScope = useCallback((scope: OwnerScope) => {
-    setOwnerScopeState(scope);
-    writeOwnerScopePreference(scope);
+  const handlePopoverCapabilitiesChange = useCallback(
+    (next: HubCapabilityFilter[]) => {
+      setFirstPickArmed(false);
+      setCapabilityFilters(next);
+    },
+    [],
+  );
+  const handlePopoverSearchFiltersChange = useCallback(
+    (next: ModelSearchFilters) => {
+      setFirstPickArmed(false);
+      setSearchFilters(next);
+    },
+    [],
+  );
+  const handlePopoverUploadersChange = useCallback((next: HubUploader[]) => {
+    setFirstPickArmed(false);
+    setUploaderPick(next);
   }, []);
   const urlResourceType: ResourceTypeFilter =
     hubSearch.kind === "datasets" ? "datasets" : "models";
   const [resourceType, setResourceType] =
     useState<ResourceTypeFilter>(urlResourceType);
+  // Resync on URL kind change (back/forward); it is only seeded on mount.
+  const syncedUrlKind = useRef(urlResourceType);
   useEffect(() => {
+    if (syncedUrlKind.current === urlResourceType) {
+      return;
+    }
+    syncedUrlKind.current = urlResourceType;
     setResourceType((current) =>
       current === urlResourceType ? current : urlResourceType,
     );
+    // Back/forward skips handleResourceTypeChange, so the other kind's hidden bounds go here too.
+    setSearchFilters({});
+    setDatasetModalities([]);
   }, [urlResourceType]);
   const [discoverFormat, setDiscoverFormat] = useState<ModelFormatFilter>(
     () => findChannel(DEFAULT_DISCOVER_CHANNEL)?.format ?? "recommended",
@@ -634,12 +649,10 @@ export function ModelsPage() {
   const [storedSearchFilters, setSearchFilters] = useState<ModelSearchFilters>(
     {},
   );
-  // The publisher and config.json lookups are Hugging Face endpoints.
-  const searchFilters =
-    hubSource === "modelscope" ? NO_SEARCH_FILTERS : storedSearchFilters;
-  const hasSearchFilters = hasModelSearchFilters(searchFilters);
-  const [capabilityFilter, setCapabilityFilter] =
-    useState<CapabilityFilter>("all");
+  // Several capabilities show models with any of them; none shows every model.
+  const [capabilityFilters, setCapabilityFilters] = useState<
+    HubCapabilityFilter[]
+  >([]);
   // Pipeline tasks from an audio page's Search Hub link; they apply while the Audio filter is on.
   const [linkedAudioTask, setLinkedAudioTask] = useState<
     PipelineType[] | null
@@ -685,6 +698,9 @@ export function ModelsPage() {
       setSortBrowseActive(false);
       // The filters control is Discover-only, so a hidden filter must not reapply on return.
       setSearchFilters({});
+      setDatasetModalities([]);
+      setUploaderPick(null);
+      setFirstPickArmed(true);
       setModelsTab(next);
     },
     [setModelsTab],
@@ -695,8 +711,11 @@ export function ModelsPage() {
       if (next === resourceType) return;
       setResourceType(next);
       setDownloadedFormat("all");
-      setCapabilityFilter("all");
+      setCapabilityFilters([]);
+      setDatasetModalities([]);
       setSearchFilters({});
+      setUploaderPick(null);
+      setFirstPickArmed(true);
       setSortBrowseActive(false);
       if (next === "models") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
@@ -727,8 +746,11 @@ export function ModelsPage() {
         setSortBy(preset.sort);
         setDirection("desc");
       }
-      setCapabilityFilter("all");
+      setCapabilityFilters([]);
+      setDatasetModalities([]);
       setSearchFilters({});
+      setUploaderPick(null);
+      setFirstPickArmed(true);
       setSortBrowseActive(false);
       // An active query outranks the section in `mode`, hiding the curated list.
       setQuery("");
@@ -744,8 +766,11 @@ export function ModelsPage() {
     setDiscoverFormat(preset?.format ?? "recommended");
     setSortBy(preset?.sort ?? "trendingScore");
     setDirection("desc");
-    setCapabilityFilter("all");
+    setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
+    setUploaderPick(null);
+    setFirstPickArmed(true);
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
@@ -757,8 +782,11 @@ export function ModelsPage() {
     setModelsTab("discover");
     setResourceType("models");
     setQuery("");
-    setCapabilityFilter("all");
+    setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
+    setUploaderPick(null);
+    setFirstPickArmed(true);
     setDownloadedFormat("all");
     setDiscoverFormat(preset?.format ?? "recommended");
     setSortBy(preset?.sort ?? "trendingScore");
@@ -786,14 +814,16 @@ export function ModelsPage() {
     setResourceType("models");
     setQuery("");
     setDiscoverFormat("all");
-    setCapabilityFilter(urlCapability);
+    setCapabilityFilters([urlCapability]);
     setLinkedAudioTask(
       urlCapability === "audio" && urlTaskKey
         ? (urlTaskKey.split("|") as PipelineType[])
         : null,
     );
     setSortBrowseActive(true);
-    setOwnerScope("unsloth");
+    // The media pages run curated Unsloth uploads, so start there.
+    setUploaderPick([...UNSLOTH_UPLOADER]);
+    setFirstPickArmed(false);
     void navigate({
       to: "/hub",
       search: (prev) => ({
@@ -807,9 +837,9 @@ export function ModelsPage() {
       }),
       replace: true,
     });
-  }, [urlCapability, urlTaskKey, navigate, setOwnerScope]);
+  }, [urlCapability, urlTaskKey, navigate]);
   // Picking another filter drops the link's tasks, so returning to Audio shows every audio model.
-  if (capabilityFilter !== "audio" && linkedAudioTask !== null) {
+  if (!capabilityFilters.includes("audio") && linkedAudioTask !== null) {
     setLinkedAudioTask(null);
   }
 
@@ -831,6 +861,21 @@ export function ModelsPage() {
 
   const debouncedQuery = useDebouncedValue(query);
   const deferredDebouncedQuery = useDeferredValue(debouncedQuery);
+  const uploaders =
+    uploaderPick ?? (debouncedQuery.trim() ? HUB_UPLOADERS : UNSLOTH_UPLOADER);
+  const ownerScope =
+    uploaders.length === 1 && uploaders[0] === "unsloth" ? "unsloth" : "all";
+  // The publisher and config.json lookups are Hugging Face endpoints.
+  const searchFilters = useMemo(
+    () =>
+      hubSource === "modelscope"
+        ? NO_SEARCH_FILTERS
+        : ownerScope === "all" && uploaders.length < HUB_UPLOADERS.length
+          ? { ...storedSearchFilters, uploaders: [...uploaders] }
+          : storedSearchFilters,
+    [hubSource, ownerScope, uploaders, storedSearchFilters],
+  );
+  const hasSearchFilters = hasModelSearchFilters(searchFilters);
   const hfToken = useHfTokenStore((s) => s.token);
   const debouncedHfToken = useDebouncedValue(hfToken, 500);
   const apiHfToken = hfApiToken(debouncedHfToken);
@@ -840,7 +885,7 @@ export function ModelsPage() {
     [hubHfEndpoint, apiHfToken],
   );
   const deferredFormatFilter = useDeferredValue(formatFilter);
-  const deferredCapabilityFilter = useDeferredValue(capabilityFilter);
+  const deferredCapabilityFilters = useDeferredValue(capabilityFilters);
 
   const hasQuery = deferredDebouncedQuery.trim() !== "";
   const mode: DiscoverMode = isModelDiscover
@@ -848,7 +893,7 @@ export function ModelsPage() {
       ? "search"
       : urlSection != null
         ? "channel-list"
-        : sortBrowseActive || hasSearchFilters
+        : sortBrowseActive || hasSearchFilters || uploaderPick !== null
           ? "search"
           : "feed"
     : "search";
@@ -922,7 +967,10 @@ export function ModelsPage() {
     ownerScope,
     filters: searchFilters,
     task:
-      capabilityFilter === "audio" ? (linkedAudioTask ?? undefined) : undefined,
+      // Asked of the Hub only when Audio is the one filter: with others it would drop their models.
+      capabilityFilters.length === 1 && capabilityFilters[0] === "audio"
+        ? (linkedAudioTask ?? undefined)
+        : undefined,
   });
 
   const cachedListEntry = useHubFeedStore((state) =>
@@ -989,44 +1037,59 @@ export function ModelsPage() {
     [visibleResults, modelDiscoveryInventorySignature],
   );
 
+  const deferredDatasetModalities = useDeferredValue(datasetModalities);
+  const { minRows, maxRows } = storedSearchFilters;
   const datasetDiscoverRows = useMemo<DiscoverRow[]>(() => {
     if (!isDatasetMode) return [];
-    return datasetResults.map((ds) => {
-      const owner = ds.id.includes("/") ? ds.id.split("/")[0] : "Hub";
-      const repo = ds.id.includes("/")
-        ? ds.id.split("/").slice(1).join("/")
-        : ds.id;
-      const summaryParts: string[] = [];
-      if (ds.taskCategories.length > 0)
-        summaryParts.push(ds.taskCategories.slice(0, 2).join(", "));
-      if (ds.totalExamples)
-        summaryParts.push(`${ds.totalExamples.toLocaleString()} rows`);
-      else if (ds.sizeCategory) summaryParts.push(ds.sizeCategory);
-      const lower = ds.id.toLowerCase();
-      return {
-        id: ds.id,
-        owner,
-        repo,
-        result: {
+    return datasetResults
+      .filter((ds) =>
+        matchesDatasetFilters(ds, deferredDatasetModalities, minRows, maxRows),
+      )
+      .map((ds) => {
+        const owner = ds.id.includes("/") ? ds.id.split("/")[0] : "Hub";
+        const repo = ds.id.includes("/")
+          ? ds.id.split("/").slice(1).join("/")
+          : ds.id;
+        const summaryParts: string[] = [];
+        if (ds.taskCategories.length > 0)
+          summaryParts.push(ds.taskCategories.slice(0, 2).join(", "));
+        if (ds.totalExamples)
+          summaryParts.push(`${ds.totalExamples.toLocaleString()} rows`);
+        else if (ds.sizeCategory) summaryParts.push(ds.sizeCategory);
+        const lower = ds.id.toLowerCase();
+        return {
           id: ds.id,
-          downloads: ds.downloads,
-          likes: ds.likes,
-          private: ds.private,
-          gated: ds.gated,
-          updatedAt: ds.updatedAt,
-          createdAt: ds.createdAt,
-          downloadsAllTime: ds.downloadsAllTime,
-          isGguf: false,
-          tags: ds.plainTags,
-        },
-        isAvailableOnDevice: availableSet.has(lower),
-        isPartialOnDevice: partialSet.has(lower),
-        isDownloadingOnDevice: partialSet.has(lower) && downloadingSet.has(lower),
-        summary: summaryParts.join(" · ") || ds.prettyName || "Dataset",
-        capabilities: [],
-      };
-    });
-  }, [isDatasetMode, datasetResults, availableSet, partialSet, downloadingSet]);
+          owner,
+          repo,
+          result: {
+            id: ds.id,
+            downloads: ds.downloads,
+            likes: ds.likes,
+            private: ds.private,
+            gated: ds.gated,
+            updatedAt: ds.updatedAt,
+            createdAt: ds.createdAt,
+            downloadsAllTime: ds.downloadsAllTime,
+            isGguf: false,
+            tags: ds.plainTags,
+          },
+          isAvailableOnDevice: availableSet.has(lower),
+          isPartialOnDevice: partialSet.has(lower),
+          isDownloadingOnDevice: partialSet.has(lower) && downloadingSet.has(lower),
+          summary: summaryParts.join(" · ") || ds.prettyName || "Dataset",
+          capabilities: [],
+        };
+      });
+  }, [
+    isDatasetMode,
+    datasetResults,
+    deferredDatasetModalities,
+    minRows,
+    maxRows,
+    availableSet,
+    partialSet,
+    downloadingSet,
+  ]);
 
   const discoverRows = isDatasetMode ? datasetDiscoverRows : modelDiscoverRows;
 
@@ -1053,9 +1116,13 @@ export function ModelsPage() {
               detectResultFormat(row.result),
               effectiveDiscoverFormat,
             )) &&
-        matchesCapability(row.capabilities, deferredCapabilityFilter) &&
-        (deferredCapabilityFilter !== "audio" ||
-          matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)) &&
+        (deferredCapabilityFilters.length === 0 ||
+          deferredCapabilityFilters.some(
+            (key) =>
+              matchesHubCapability(row, key) &&
+              (key !== "audio" ||
+                matchesHubAudioTask(row.result.pipelineTag, linkedAudioTask)),
+          )) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
         // Models on disk stay visible regardless of fit, matching the chat selector.
         (!fitOnDeviceOnly ||
@@ -1071,7 +1138,7 @@ export function ModelsPage() {
     effectiveDiscoverFormat,
     checkpointQuantFormats,
     diffusionQuantFormats,
-    deferredCapabilityFilter,
+    deferredCapabilityFilters,
     linkedAudioTask,
     activeChannel,
     fitOnDeviceOnly,
@@ -1232,8 +1299,12 @@ export function ModelsPage() {
         deferredDebouncedQuery,
         resourceType,
         deferredFormatFilter,
-        deferredCapabilityFilter,
+        deferredCapabilityFilters,
+        deferredDatasetModalities,
         searchFilters,
+        // ModelScope drops searchFilters, but the dataset rows are filtered here either way.
+        minRows,
+        maxRows,
         inventoryTypeFilter,
         effectiveSort,
         effectiveDirection,
@@ -1244,8 +1315,11 @@ export function ModelsPage() {
       deferredDebouncedQuery,
       resourceType,
       deferredFormatFilter,
-      deferredCapabilityFilter,
+      deferredCapabilityFilters,
+      deferredDatasetModalities,
       searchFilters,
+      minRows,
+      maxRows,
       inventoryTypeFilter,
       effectiveSort,
       effectiveDirection,
@@ -1267,9 +1341,19 @@ export function ModelsPage() {
       setDownloadedFormat("all");
       setInventoryTypeFilter("all");
     }
-    setCapabilityFilter("all");
+    setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
+    setUploaderPick(null);
+    setFirstPickArmed(true);
   }, [isDiscoverTab, urlSection, navigate]);
+  const handleResetPopoverFilters = useCallback(() => {
+    setCapabilityFilters([]);
+    setDatasetModalities([]);
+    setSearchFilters({});
+    setUploaderPick(null);
+    setFirstPickArmed(true);
+  }, []);
   const handleDiscoverFetchIntent = useCallback(() => {
     setDiscoverFetchIntent((value) => value + 1);
   }, []);
@@ -1353,8 +1437,11 @@ export function ModelsPage() {
       setDiscoverFormat(preset?.format ?? "recommended");
       setSortBy(preset?.sort ?? "trendingScore");
       setDirection("desc");
-      setCapabilityFilter("all");
+      setCapabilityFilters([]);
+      setDatasetModalities([]);
       setSearchFilters({});
+      setUploaderPick(null);
+      setFirstPickArmed(true);
       setSortBrowseActive(false);
       setQuery("");
       void navigate({
@@ -1372,14 +1459,20 @@ export function ModelsPage() {
     (next: string) => {
       if (next.trim() === "") {
         const preset = findChannel(DEFAULT_DISCOVER_CHANNEL);
-        setCapabilityFilter("all");
+        setCapabilityFilters([]);
+        setDatasetModalities([]);
         setSearchFilters({});
+        setUploaderPick(null);
+        setFirstPickArmed(true);
         setSortBrowseActive(false);
         if (preset) {
           setDiscoverFormat(preset.format);
           setSortBy(preset.sort);
           setDirection("desc");
         }
+      } else if (query.trim() === "") {
+        // A new search starts on every uploader (Unsloth's still listed first), whatever was picked.
+        setUploaderPick(null);
       }
       if (urlModel || urlSection) {
         void navigate({
@@ -1394,7 +1487,7 @@ export function ModelsPage() {
       }
       setQuery(next);
     },
-    [urlSection, urlModel, navigate],
+    [query, urlSection, urlModel, navigate],
   );
 
   useEffect(() => {
@@ -1480,8 +1573,11 @@ export function ModelsPage() {
     setDiscoverFormat(preset.format);
     setSortBy(preset.sort);
     setDirection("desc");
-    setCapabilityFilter("all");
+    setCapabilityFilters([]);
+    setDatasetModalities([]);
     setSearchFilters({});
+    setUploaderPick(null);
+    setFirstPickArmed(true);
   }, [isModelDiscover, sectionChannelId, urlCapability]);
   const handleManageLocalFolders = useCallback(
     () => setFoldersDialogOpen(true),
@@ -1540,11 +1636,13 @@ export function ModelsPage() {
       setModelsTab("discover");
       setResourceType("models");
       setDiscoverFormat("all");
-      setCapabilityFilter("all");
+      setCapabilityFilters([]);
+      setDatasetModalities([]);
       setSearchFilters({});
       setSortBrowseActive(false);
       // Base models come from other publishers, so search the whole Hub.
-      setOwnerScope("all");
+      setUploaderPick(null);
+      setFirstPickArmed(true);
       setQuery(trimmed);
       void navigate({
         to: "/hub",
@@ -1557,7 +1655,7 @@ export function ModelsPage() {
         }),
       });
     },
-    [navigate, setModelsTab, setOwnerScope],
+    [navigate, setModelsTab],
   );
   const openRunSettingsInChat = useCallback(
     (request: ModelConfigHandoffRequest) => {
@@ -1625,6 +1723,18 @@ export function ModelsPage() {
                 })
               : diffusionRouteSearch(selectedModel.hubRepoId, selection),
         });
+        return;
+      }
+      if (
+        hubAudioRunRefused(
+          selectedModel,
+          taskForMediaPick(selectedModel.pipelineTag, selectedModel.task),
+        )
+      ) {
+        toast.error(
+          `${selectedModel.hubRepoId} is not an audio model Unsloth can run yet. The Audio page lists the families it supports.`,
+          { duration: 7000 },
+        );
         return;
       }
       const controller = runConfigOpenCoordinator.begin();
@@ -1735,8 +1845,17 @@ export function ModelsPage() {
         hasActiveFilters:
           !isFeedMode &&
           ((isModelDiscover && hasSearchFilters) ||
+            // A search lists every uploader, so picking Unsloth narrows it.
+            (isModelDiscover &&
+              uploaderPick !== null &&
+              ownerScope === "unsloth" &&
+              debouncedQuery.trim() !== "") ||
             deferredFormatFilter !== "all" ||
-            deferredCapabilityFilter !== "all" ||
+            deferredCapabilityFilters.length > 0 ||
+            (isDatasetMode &&
+              (deferredDatasetModalities.length > 0 ||
+                minRows !== undefined ||
+                maxRows !== undefined)) ||
             (tab === "downloaded" && typeFilterActive)),
         typeFilterActive,
         // A single format filter makes every row's format dot the same; Recommended mixes GGUF and checkpoints.
@@ -1768,8 +1887,14 @@ export function ModelsPage() {
       discoverFetchIntent,
       discoverManualFetchAvailable,
       deferredFormatFilter,
-      deferredCapabilityFilter,
+      deferredCapabilityFilters,
+      deferredDatasetModalities,
+      minRows,
+      maxRows,
       hasSearchFilters,
+      uploaderPick,
+      ownerScope,
+      debouncedQuery,
       inventoryTypeFilter,
     ],
   );
@@ -1846,9 +1971,7 @@ export function ModelsPage() {
         </div>
       );
     }
-    const ownerToggle = isDatasetMode ? undefined : (
-      <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
-    );
+    // Compact pill so it stays beside the view-mode tabs even in the narrow split pane.
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
@@ -1860,7 +1983,6 @@ export function ModelsPage() {
             view={allModelsView}
             onViewChange={setAllModelsView}
             onBack={handleBackToFeed}
-            actions={ownerToggle}
           />
         ) : (
           <HubListHeader
@@ -1868,7 +1990,6 @@ export function ModelsPage() {
             view={allModelsView}
             onViewChange={setAllModelsView}
             onBack={isSortBrowseMode ? handleBackToFeed : undefined}
-            actions={ownerToggle}
           />
         )}
       </div>
@@ -1884,8 +2005,6 @@ export function ModelsPage() {
     listCount,
     allModelsView,
     setAllModelsView,
-    ownerScope,
-    setOwnerScope,
     isDatasetMode,
     feedTrendingRows,
     hubFeed.trending.isLoading,
@@ -1965,10 +2084,17 @@ export function ModelsPage() {
           onResourceTypeChange={handleResourceTypeChange}
           formatFilter={formatFilter}
           onFormatFilterChange={setFormatFilter}
-          searchFilters={searchFilters}
-          onSearchFiltersChange={setSearchFilters}
-          capabilityFilter={capabilityFilter}
-          onCapabilityFilterChange={setCapabilityFilter}
+          searchFilters={storedSearchFilters}
+          onSearchFiltersChange={handlePopoverSearchFiltersChange}
+          uploaders={uploaders}
+          uploadersChanged={uploaderPick !== null}
+          onUploadersChange={handlePopoverUploadersChange}
+          onResetFilters={handleResetPopoverFilters}
+          capabilityFilters={capabilityFilters}
+          onCapabilityFiltersChange={handlePopoverCapabilitiesChange}
+          isolateFirstCapability={firstPickArmed}
+          datasetModalities={datasetModalities}
+          onDatasetModalitiesChange={handlePopoverModalitiesChange}
           fitOnDeviceOnly={fitOnDeviceOnly}
           onFitOnDeviceOnlyChange={setFitOnDeviceOnly}
           onManageLocalFolders={handleManageLocalFolders}

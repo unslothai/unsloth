@@ -96,6 +96,7 @@ import {
 } from "@/hooks/use-host-class";
 import { nvfp4SelectionFallback, withNvfp4Option } from "@/lib/nvfp4-options";
 import type {
+  ExternalModelOption,
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
@@ -145,8 +146,15 @@ import {
   recipeWorkflowLabel,
   type WorkflowId,
 } from "./workflows";
-import { ParamSlider } from "@/features/chat";
+import {
+  ParamSlider,
+  buildExternalModelId,
+  isDecisionConnection,
+  parseExternalModelId,
+  useExternalProvidersStore,
+} from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
+import { cancelConnectionImageGeneration } from "./connection-cancel";
 import {
   type ImageGenerationPresetParams,
   MediaGenerationPresetControl,
@@ -679,6 +687,7 @@ function loadToastArgs(
 }
 
 const NO_SAMPLERS: DiffusionSamplerOption[] = [];
+const IMAGE_CONNECTION_TYPES = new Set(["custom", "vllm", "llama_cpp", "lemonade", "ollama"]);
 
 const IDLE_PROGRESS: DiffusionLoadProgress = {
   phase: null,
@@ -1136,6 +1145,7 @@ function RecipePopover({
   useEffect(() => {
     if (!active) setOpen(false);
   }, [active]);
+  const viaConnection = image.model_kind === "connection";
   return (
     <Popover open={active && open} onOpenChange={(o) => setOpen(active && o)}>
       <PopoverTrigger asChild>
@@ -1224,15 +1234,15 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
-          <RecipeRow label="Steps" value={String(image.steps)} />
-          <RecipeRow label="Guidance" value={String(image.guidance)} />
+          {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
+          {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
             <RecipeRow
               label="Sampler"
               value={samplerRecipeLabel(image.sampler, image.schedule_type) ?? ""}
             />
           ) : null}
-          <RecipeRow label="Seed" value={String(image.seed)} mono />
+          {!viaConnection && <RecipeRow label="Seed" value={String(image.seed)} mono />}
         </div>
         <div className="shrink-0 border-t border-border/60 px-3 py-2.5">
           <Button size="sm" className="w-full gap-1.5" onClick={() => onRestore(image)}>
@@ -1383,6 +1393,34 @@ export function ImagesPage({
   const nvfp4Diffusion = useNvfp4Diffusion();
   const nvfp4DiffusionKnown = useNvfp4DiffusionKnown();
   const imageModels = useImageModels(hostClass, denseQuantSchemes);
+  const connections = useExternalProvidersStore((s) => s.providers);
+  const connectionsEnabled = useExternalProvidersStore((s) => s.connectionsEnabled);
+  const externalModels = useMemo<ExternalModelOption[]>(
+    () =>
+      connectionsEnabled
+        ? connections
+            .filter((c) => IMAGE_CONNECTION_TYPES.has(c.providerType) && !isDecisionConnection(c))
+            .flatMap((c) =>
+              c.models.map((model) => ({
+                id: buildExternalModelId(c.id, model),
+                name: model,
+                providerId: c.id,
+                providerName: c.name,
+                providerType: c.providerType,
+              })),
+            )
+        : [],
+    [connections, connectionsEnabled],
+  );
+  const [externalModelId, setExternalModelId] = useState<string | null>(null);
+  const runTarget = useRef<"connection" | undefined>(undefined);
+  const external = useMemo(
+    () =>
+      externalModels.some((m) => m.id === externalModelId)
+        ? parseExternalModelId(externalModelId)
+        : null,
+    [externalModels, externalModelId],
+  );
   const { rootStyle: railRootStyle } = useMediaRailWidth("images");
   const [quant, setQuant] = useState<string | null>(galleryCache.quant);
   const [prompts, setPrompts] = useState<Record<WorkflowId, string>>(() =>
@@ -1564,7 +1602,8 @@ export function ImagesPage({
   const genVisibilityListener = useRef<(() => void) | null>(null);
   const [status, setStatus] = useState<DiffusionStatus | null>(null);
   const { familyOverride, setFamilyOverride, familySelect, opaqueKind, selectorModelId } = useFamilyOverride(status, status?.supported_families);
-  const conditioning = status?.loaded ? (status.conditioning ?? null) : null;
+  // A connection is not bound by the resident model's size grid or presets.
+  const conditioning = !external && status?.loaded ? (status.conditioning ?? null) : null;
   const sizeLimits = useMemo(() => sizeLimitsFrom(conditioning), [conditioning]);
   const unifiedEdit = Boolean(conditioning?.unified_edit);
   const referenceResolutions = conditioning?.reference_resolutions ?? [];
@@ -1746,8 +1785,9 @@ export function ImagesPage({
     galleryCache.quant = quant;
   }, [images, hasMore, selectedId, quant]);
 
-  // Tracked in a ref so it skips first load and unload (a restore can precede the load).
-  const loraCapable = Boolean(status?.loaded && status?.supports_lora);
+  // Refresh the LoRA picker when the loaded family changes, since a LoRA is family-specific.
+  // Not on first load or unload (a restore can precede the load), so track it in a ref.
+  const loraCapable = Boolean(!external && status?.loaded && status?.supports_lora);
   const prevLoraFamilyRef = useRef<string | null | undefined>(undefined);
   const bakedLorasOnLoad = useRef(false);
   useEffect(() => {
@@ -1806,9 +1846,11 @@ export function ImagesPage({
     });
   }, [loraCapable, residentBuildKey, status?.resolved, loras]);
 
-  const controlnetCapable = Boolean(status?.loaded && status?.supports_controlnet);
-  const negativeCapable = status?.supports_negative_prompt !== false;
-  const samplerOptions = (status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
+  // Refresh the ControlNet options when the loaded family changes, and clear a stale selection.
+  const controlnetSupported = Boolean(status?.loaded && status?.supports_controlnet);
+  const controlnetCapable = !external && controlnetSupported;
+  const negativeCapable = !external && status?.supports_negative_prompt !== false;
+  const samplerOptions = (!external && status?.loaded ? status.samplers : null) ?? NO_SAMPLERS;
   // The checkpoint, not residentDefaults: community SDXL files all share the SDXL base repo.
   const samplerModelKey = status?.loaded ? `${status.repo_id ?? ""}|${status.gguf_filename ?? ""}` : "";
   const samplerChoice = normalizeSamplerChoice(
@@ -1829,7 +1871,7 @@ export function ImagesPage({
     [samplerChoice, samplerModelKey, samplerOptions],
   );
   useEffect(() => {
-    if (!controlnetCapable) {
+    if (!controlnetSupported) {
       setAvailableControlNets([]);
       setControlnetId("");
       setControlImage(null);
@@ -1848,7 +1890,7 @@ export function ImagesPage({
     return () => {
       cancelled = true;
     };
-  }, [controlnetCapable, status?.family]);
+  }, [controlnetSupported, status?.family]);
 
   const controlTypeOptions = useMemo(() => {
     const cn = availableControlNets.find((c) => c.id === controlnetId);
@@ -2283,11 +2325,15 @@ export function ImagesPage({
   );
 
   const restoreSettings = useCallback((image: GalleryImage) => {
+    const viaConnection = image.model_kind === "connection";
+    // Negative prompt only applies when guidance>0; do not restore a hidden value.
     const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
     setNegativePrompt(restoredNegative);
     if (restoredNegative) setNegativeOpen(true);
-    setSteps(image.steps);
-    setGuidance(image.guidance);
+    if (!viaConnection) {
+      setSteps(image.steps);
+      setGuidance(image.guidance);
+    }
     const restoredChoice = {
       sampler: image.sampler ?? DEFAULT_SAMPLER,
       scheduleType: image.schedule_type ?? AUTOMATIC_SCHEDULE,
@@ -2296,7 +2342,7 @@ export function ImagesPage({
     else setRestoredSampler(restoredChoice);
     // Restore from the BASE batch seed, not this image's derived seed, or a replay with batch_size
     // advances it again.
-    setSeed(String(image.batch_seed ?? image.seed));
+    if (!viaConnection) setSeed(String(image.batch_seed ?? image.seed));
     const restored = restorableSize(image.width, image.height, image.workflow, sizeLimits);
     setWidth(restored.width);
     setHeight(restored.height);
@@ -2565,6 +2611,7 @@ export function ImagesPage({
       pollInFlight = true;
       try {
         const p = await getGenerateProgress();
+        if (p.active) runTarget.current = p.target ?? undefined;
         if (!p.active) {
           if (genPollTimer.current) clearInterval(genPollTimer.current);
           genPollTimer.current = null;
@@ -2615,6 +2662,7 @@ export function ImagesPage({
       try {
         const g = await getGenerateProgress();
         if (g.active) {
+          runTarget.current = g.target ?? undefined;
           setBusy("generating");
           setGenStep(g);
           resumeGeneratePoll();
@@ -2775,6 +2823,8 @@ export function ImagesPage({
       pinned?: LoadAdvanced,
       pickToastId?: string,
     ): Promise<boolean> => {
+      setExternalModelId(null);
+      // Cancel any prior poll loop so two cannot run at once.
       if (pollTimer.current) clearTimeout(pollTimer.current);
       // Read BEFORE the start request: a Cancel's unload can reach the backend first and stop nothing.
       const startSeq = cancelSeq.current;
@@ -3246,7 +3296,10 @@ export function ImagesPage({
     // A Download only arrival owns nothing and must leave a staging load its claim.
     const downloadOnlyPick = modelSelectionAction === "download";
     const token = downloadOnlyPick ? undefined : pickGuard.claim();
-    if (!downloadOnlyPick) setFamilyOverride("auto");
+    if (!downloadOnlyPick) {
+      setFamilyOverride("auto");
+      setExternalModelId(null);
+    }
     void navigateSelf({ to: "/images", search: {}, replace: true });
     if (routedLabel) {
       void Promise.resolve().then(() =>
@@ -3343,6 +3396,19 @@ export function ImagesPage({
       const downloadOnlyPick = modelSelectionAction === "download";
       // The backend 409s a second load; download-only picks submit none, so allow them.
       if (busy !== null && !downloadOnlyPick) return;
+      if (meta.source === "external") {
+        if (busy !== null) return;
+        if (quantRevert.current && quantRevert.current === stagedQuantRevert.current) {
+          revertPick(quantRevert.current);
+          quantRevert.current = null;
+        }
+        pickGuard.cancel();
+        pickToast.dismissAll();
+        beginPick();
+        setExternalModelId(id);
+        return;
+      }
+      if (!downloadOnlyPick) setExternalModelId(null);
       if (!downloadOnlyPick) beginPick();
       // Before any branch, since staging never sets `busy`.
       const token = downloadOnlyPick ? undefined : pickGuard.claim();
@@ -3495,6 +3561,7 @@ export function ImagesPage({
       loadGgufRepoPick,
       loadOrStage,
       pickGuard,
+      pickToast,
       quant,
       revertPick,
     ],
@@ -3515,6 +3582,7 @@ export function ImagesPage({
       }
       pickGuard.cancel();
       pickToast.dismissAll();
+      setExternalModelId(null);
       pendingDeploy.current = { loraId: stem, family: args.family };
       if (args.trigger.trim()) setPrompt(args.trigger.trim());
       setPageMode("create");
@@ -3951,7 +4019,7 @@ export function ImagesPage({
       return;
     }
     let baseSeed: number;
-    if (seed.trim()) {
+    if (seed.trim() && !external) {
       const n = Number(seed);
       if (!Number.isInteger(n) || n < 0 || n > Number.MAX_SAFE_INTEGER) {
         toast.error("Seed must be a non-negative integer");
@@ -3990,6 +4058,9 @@ export function ImagesPage({
     cancelAbort.current?.abort();
     cancelAbort.current = null;
     runToken.current += 1;
+    runTarget.current = external ? "connection" : undefined;
+    // Poll the backend's per-step progress across the whole run. A named poll body also serves the
+    // visibilitychange listener, so a throttled tab catches up when visible.
     let pollInFlight = false;
     const pollGenerateOnce = async () => {
       if (pollInFlight) return;
@@ -4070,6 +4141,7 @@ export function ImagesPage({
                     strength: controlStrength,
                   }
                 : undefined,
+            ...(external && { provider_id: external.providerId, model: external.modelId }),
           });
         } catch (err) {
           // The tunnel caps the response near 100s; retrying would duplicate the work.
@@ -4124,7 +4196,7 @@ export function ImagesPage({
       setGenStep(null);
       setStopping(false);
     }
-  }, [allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
+  }, [external, allowOversized, livePreview, prompt, negativePrompt, negativeCapable, restoredSampler, samplerModelKey, samplerOptions, samplerChoice, width, height, steps, guidance, seed, batchSize, count, workflow, initImage, maskImage, strength, extendPct, extendSides, upscaleFactor, upscaleStrength, referenceImages, loras, loraCapable, controlnetCapable, controlnetId, controlImage, controlType, controlStrength, ensureSrc, loadGallery, refreshStatus, unifiedEdit, localizedMode, localizedLayer, maxExtras, referenceResolution, conditioning, editSize, editSizing, sizeLimits]);
 
   // Latch FIRST, so a multi-run request stops even if the POST races the finishing run.
   const handleCancelGenerate = useCallback(async () => {
@@ -4137,7 +4209,9 @@ export function ImagesPage({
     const abort = new AbortController();
     cancelAbort.current = abort;
     try {
-      const { cancelled } = await cancelDiffusionGeneration(abort.signal);
+      const { cancelled } = runTarget.current
+        ? await cancelConnectionImageGeneration(abort.signal)
+        : await cancelDiffusionGeneration(abort.signal);
       cancelAcked.current = Boolean(cancelled);
       if (!cancelled) setStopping(false);
     } catch {
@@ -4154,6 +4228,10 @@ export function ImagesPage({
 
   const handleGenerateWithRecall = useCallback(async () => {
     if (busy !== null || !imagePresets.hydrated) return;
+    if (external) {
+      await handleGenerate();
+      return;
+    }
     if (status?.loaded) {
       const kind = status.model_kind;
       if (
@@ -4209,6 +4287,7 @@ export function ImagesPage({
   }, [
     busy,
     currentLoadAdvanced,
+    external,
     handleGenerate,
     handleLoad,
     imagePresets.hydrated,
@@ -4256,6 +4335,10 @@ export function ImagesPage({
   }, [active, busy, handleGenerate, status, workflow]);
 
   useEffect(() => {
+    if (external) {
+      setSupported(["create"]);
+      return;
+    }
     if (!status?.loaded) {
       setSupported(null);
       return;
@@ -4266,7 +4349,7 @@ export function ImagesPage({
         wf.includes(t.requires === null ? "txt2img" : t.requires),
       ).map((t) => t.id),
     );
-  }, [status?.loaded, status?.workflows, setSupported]);
+  }, [external, status?.loaded, status?.workflows, setSupported]);
 
   useEffect(() => {
     if (supported === null || pageMode !== "create") return;
@@ -4502,7 +4585,8 @@ export function ImagesPage({
               <ModelSelector
                 triggerDataTour="images-model"
                 models={imageModels}
-                value={selectorModelId}
+                externalModels={externalModels}
+                value={(external && externalModelId) || selectorModelId}
                 loadedModelIdOverride={selectorModelId}
                 activeGgufVariant={quant}
                 onValueChange={handleModelSelect}
@@ -4514,7 +4598,7 @@ export function ImagesPage({
                 task={IMAGE_GEN_TASKS}
                 catalog={IMAGE_CATALOG}
                 opaqueKind={opaqueKind}
-                hubCapability="diffusion"
+                hubCapability="image-gen"
                 placeholder="Select image model"
                 open={active && selectorOpen}
                 onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -5205,26 +5289,31 @@ export function ImagesPage({
             )}
             {!unifiedEditActive && sizeControls}
 
-            <div className="pt-2">
-              <SliderField
-                label="Steps"
-                hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
-                value={steps}
-                min={1}
-                max={50}
-                step={1}
-                onChange={setSteps}
-              />
-            </div>
-            <SliderField
-              label="Guidance"
-              hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
-              value={guidance}
-              min={0}
-              max={15}
-              step={0.5}
-              onChange={setGuidance}
-            />
+            {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
+            {!external && (
+              <>
+                <div className="pt-2">
+                  <SliderField
+                    label="Steps"
+                    hint="Number of denoising steps. Start with the selected model's default; more steps take longer and may not improve quality."
+                    value={steps}
+                    min={1}
+                    max={50}
+                    step={1}
+                    onChange={setSteps}
+                  />
+                </div>
+                <SliderField
+                  label="Guidance"
+                  hint="Controls how strongly the model follows the prompt. Start with the selected model's default; distilled models may require low or zero guidance."
+                  value={guidance}
+                  min={0}
+                  max={15}
+                  step={0.5}
+                  onChange={setGuidance}
+                />
+              </>
+            )}
             <SliderField
               label="Batch size"
               hint="How many images to make at once. Faster than running them one by one, but uses more VRAM. They share a seed but each one is different."
@@ -5287,21 +5376,25 @@ export function ImagesPage({
                 </div>
               </Field>
             )}
-            <Field
-              label="Seed"
-              hint="Leave empty for a fresh random seed each run."
-              className="pt-2"
-            >
-              <Input
-                placeholder="Random if empty"
-                value={seed}
-                onChange={(e) => setSeed(e.target.value)}
-              />
-            </Field>
+            {!external && (
+              <>
+                <Field
+                  label="Seed"
+                  hint="Leave empty for a fresh random seed each run."
+                  className="pt-2"
+                >
+                  <Input
+                    placeholder="Random if empty"
+                    value={seed}
+                    onChange={(e) => setSeed(e.target.value)}
+                  />
+                </Field>
 
-            <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
-              {advancedControls}
-            </AdvancedDisclosure>
+                <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                  {advancedControls}
+                </AdvancedDisclosure>
+              </>
+            )}
 
           </div>
           {/* Leave the footer unpainted to avoid dark-mode banding. */}
@@ -5320,11 +5413,11 @@ export function ImagesPage({
                 <Button
                   className="relative z-10 h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
                   onClick={handleGenerateWithRecall}
-                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel)}
+                  disabled={busy !== null || !imagePresets.hydrated || (!status?.loaded && !rememberedModel && !external)}
                 >
                   Generate
                 </Button>
-                {status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
+                {!external && status?.loaded && (canReapply || status?.model_kind === "pipeline") && (
                   <Tooltip>
                     <TooltipTrigger asChild={true}>
                       <Button
@@ -5514,7 +5607,7 @@ export function ImagesPage({
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
                 <HugeiconsIcon icon={Image03Icon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
-                  {status?.loaded
+                  {status?.loaded || external
                     ? "Enter a prompt and hit Generate."
                     : "Select a diffusion model to load"}
                 </p>

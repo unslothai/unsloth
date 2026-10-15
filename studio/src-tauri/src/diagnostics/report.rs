@@ -357,9 +357,14 @@ fn append_log_sections(
     warnings: &mut Vec<String>,
 ) {
     out.push_str("\n== Log tails ==\n");
-    for name in ["tauri.log", "tauri.log.1"] {
-        let path = studio_dir().join(name);
-        append_tail_section(out, &path, name, "local-app-log", warnings);
+    for (index, root) in super::log_roots().into_iter().enumerate() {
+        for name in ["tauri.log", "tauri.log.1"] {
+            let path = root.join(name);
+            if index > 0 && !path.is_file() {
+                continue;
+            }
+            append_tail_section(out, &path, name, "local-app-log", warnings);
+        }
     }
 
     let server_log_dir = logs_dir().join("server");

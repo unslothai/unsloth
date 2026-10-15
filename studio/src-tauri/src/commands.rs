@@ -236,10 +236,12 @@ pub async fn check_install_status() -> bool {
     #[cfg(target_os = "linux")]
     crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
-    // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
-    // probe subprocesses must follow the same isolation as process.rs.
+    // Inherited roots are dropped; the desktop's own root is passed instead, as in process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
     cmd.env_remove("STUDIO_HOME");
+    if let Some(root) = crate::studio_home::chosen_root() {
+        cmd.env(crate::studio_home::STUDIO_HOME_ENV, root);
+    }
 
     let mut child = match process::with_studio_runtime_launch_guard(|| {
         cmd.spawn().map_err(|error| error.to_string())

@@ -10,9 +10,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { hubModelRunsOnAudioPage, isHubModelRunEligible } = await import(
-  "../src/features/hub/lib/model-run-selection.ts"
-);
+const { hubAudioRunRefused, hubModelRunsOnAudioPage, isHubModelRunEligible } =
+  await import("../src/features/hub/lib/model-run-selection.ts");
 const { taskForMediaPick } = await import(
   "../src/features/model-picker/components/model-selector/audio-picker-policy.ts"
 );
@@ -180,6 +179,145 @@ test("an audio model the Audio page runs opens there, the rest keep their chat R
     opensAudio({
       ...mediaModel("text-to-speech", "local", "models_dir"),
       hubRepoId: "unsloth/orpheus-3b-0.1-ft",
+    }),
+    false,
+  );
+});
+
+// #13775: NVIDIA's own Magpie GGUF (arch magpietts) and the VoxCPM2 safetensors are tagged
+// text-to-speech but only their audio.cpp builds run; Run opened them in chat, which failed.
+test("Run refuses an audio model neither Audio nor chat can run", () => {
+  const audio = (overrides: Partial<SelectedModelView>): SelectedModelView => ({
+    ...mediaModel(undefined, "cache"),
+    runtimeCanChat: true,
+    ...overrides,
+  });
+  const refused = (model: SelectedModelView) =>
+    hubAudioRunRefused(model, taskForMediaPick(model.pipelineTag, model.task));
+  const magpie = audio({
+    id: "nvidia/magpie_tts_multilingual_357m",
+    hubRepoId: "nvidia/magpie_tts_multilingual_357m",
+    isGguf: true,
+    modelFormat: "gguf",
+    pipelineTag: "text-to-speech",
+    task: "text-generation",
+    libraryName: "nemo",
+    tags: ["nemo", "gguf", "text-to-speech"],
+  });
+  assert.equal(refused(magpie), true);
+  assert.equal(
+    refused(
+      audio({
+        hubRepoId: "openbmb/VoxCPM2",
+        pipelineTag: "text-to-speech",
+        libraryName: "voxcpm",
+      }),
+    ),
+    true,
+  );
+  assert.equal(
+    refused(
+      audio({
+        hubRepoId: "facebook/musicgen-small",
+        pipelineTag: "text-to-audio",
+      }),
+    ),
+    true,
+  );
+  // What Audio runs opens there, and the refusal never fires for it.
+  assert.equal(
+    refused(
+      audio({
+        id: "audio-cpp/MiniMax-Music3-GGUF",
+        hubRepoId: "audio-cpp/MiniMax-Music3-GGUF",
+        isGguf: true,
+        modelFormat: "gguf",
+        pipelineTag: "text-to-audio",
+        task: "text-to-audio",
+        libraryName: "audio.cpp",
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    refused(
+      audio({
+        hubRepoId: "unsloth/orpheus-3b-0.1-ft",
+        pipelineTag: "text-to-speech",
+      }),
+    ),
+    false,
+  );
+  // An Orpheus fine-tune GGUF named for no family loads in llama.cpp, and chat speaks it.
+  assert.equal(
+    refused(
+      audio({
+        id: "freddyaboulton/3b-fr-ft-research_release-Q4_K_M-GGUF",
+        hubRepoId: "freddyaboulton/3b-fr-ft-research_release-Q4_K_M-GGUF",
+        isGguf: true,
+        modelFormat: "gguf",
+        pipelineTag: "text-to-speech",
+        task: "text-generation",
+        libraryName: "transformers",
+        baseModel: "canopylabs/3b-fr-ft-research_release",
+        tags: ["transformers", "gguf", "text-to-speech"],
+      }),
+    ),
+    false,
+  );
+  assert.equal(refused({ ...magpie, libraryName: undefined }), false);
+  // The codec vocabulary is a speech exemption: a music GGUF Audio cannot run is refused.
+  assert.equal(
+    refused(
+      audio({
+        id: "calcuis/ace-gguf",
+        hubRepoId: "calcuis/ace-gguf",
+        isGguf: true,
+        modelFormat: "gguf",
+        pipelineTag: "text-to-audio",
+        task: "text-generation",
+        tags: ["gguf", "text-to-audio"],
+      }),
+    ),
+    true,
+  );
+  // llama.cpp has no CSM decoder, whatever library the card names.
+  assert.equal(
+    refused(
+      audio({
+        id: "ggml-org/sesame-csm-1b-GGUF",
+        hubRepoId: "ggml-org/sesame-csm-1b-GGUF",
+        isGguf: true,
+        modelFormat: "gguf",
+        pipelineTag: "text-to-speech",
+        task: "text-generation",
+        tags: ["gguf", "text-to-speech"],
+      }),
+    ),
+    true,
+  );
+  // Chat models, transcription and filesystem rows keep their chat Run.
+  assert.equal(
+    refused(
+      audio({ hubRepoId: "unsloth/Qwen3-8B", pipelineTag: "text-generation" }),
+    ),
+    false,
+  );
+  assert.equal(
+    refused(
+      audio({
+        hubRepoId: "nvidia/parakeet-tdt-0.6b-v3",
+        pipelineTag: "automatic-speech-recognition",
+        libraryName: "nemo",
+      }),
+    ),
+    false,
+  );
+  assert.equal(refused({ ...magpie, pipelineTag: undefined }), false);
+  assert.equal(
+    refused({
+      ...mediaModel("text-to-speech", "local", "models_dir"),
+      hubRepoId: "openbmb/VoxCPM2",
     }),
     false,
   );
