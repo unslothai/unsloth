@@ -228,3 +228,25 @@ def test_unit_scale_switches_key_the_compile_cache(monkeypatch):
     assert cc.graph_switches() == {us.UNIT_SCALE_ENV: "off", us.MIN_ROWS_ENV: "1024"}
     monkeypatch.setenv(us.MIN_ROWS_ENV, "256")
     assert us.MIN_ROWS_ENV not in cc.graph_switches()
+    # Keyed on the value _min_rows() uses: 0 runs as 1, so it must not collide with the 256 default.
+    for raw, keyed in (("0", "1"), ("1", "1"), ("junk", None)):
+        monkeypatch.setenv(us.MIN_ROWS_ENV, raw)
+        assert cc.graph_switches().get(us.MIN_ROWS_ENV) == keyed
+        assert us._min_rows() == (int(keyed) if keyed else us._DEFAULT_MIN_ROWS)
+
+
+def test_comfy_prequant_load_installs_the_dispatch():
+    # The ComfyUI branch of load_prequantized_transformer bypasses _load_prequant_checkpoint.
+    import ast
+    import inspect
+
+    from core.inference import diffusion_prequant as dp
+
+    tree = ast.parse(inspect.getsource(dp.load_prequantized_transformer))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and "comfy_scan is not None" in ast.unparse(node.test):
+            calls = [ast.unparse(n.func) for n in ast.walk(node) if isinstance(n, ast.Call)]
+            assert "load_comfy_prequant" in calls and "_install_fp8_unit_scale" in calls
+            assert calls.index("load_comfy_prequant") < calls.index("_install_fp8_unit_scale")
+            return
+    raise AssertionError("ComfyUI branch not found")

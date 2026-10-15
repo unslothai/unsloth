@@ -2336,6 +2336,8 @@ def load_prequantized_transformer(
                 config_subfolder = config_subfolder,
                 logger = logger,
             )
+            # ComfyUI files never pass through _load_prequant_checkpoint, which installs this for Studio's own.
+            _install_fp8_unit_scale()
             from .diffusion_convrot import declares_rotation, is_rotated_linear, warm_rotation_cache
 
             comfy_rotated = any(is_rotated_linear(m) for m in transformer.modules())
