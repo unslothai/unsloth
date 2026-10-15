@@ -359,7 +359,12 @@ def windows_builtin_container_update() -> tuple[str, str] | None:
         return None
     try:
         import winreg
-        build = sys.getwindowsversion().build
+
+        version = sys.getwindowsversion()
+        # The table is Windows 11 only: Server 2025 shares build 26100 but has no BaseContainer.
+        if version.product_type != 1:  # VER_NT_WORKSTATION
+            return None
+        build = version.build
         with winreg.OpenKey(
             winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"
         ) as key:

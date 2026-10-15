@@ -516,7 +516,10 @@ def test_windows_names_the_update_that_adds_the_builtin_container(
     )
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
-        sys, "getwindowsversion", lambda: types.SimpleNamespace(build = build), raising = False
+        sys,
+        "getwindowsversion",
+        lambda: types.SimpleNamespace(build = build, product_type = 1),
+        raising = False,
     )
     monkeypatch.setitem(sys.modules, "winreg", winreg)
     assert plan_mod.windows_builtin_container_update() == expected
@@ -530,7 +533,10 @@ def test_windows_builtin_container_hint_is_silent_when_unreadable(monkeypatch):
 
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
-        sys, "getwindowsversion", lambda: types.SimpleNamespace(build = 26200), raising = False
+        sys,
+        "getwindowsversion",
+        lambda: types.SimpleNamespace(build = 26200, product_type = 1),
+        raising = False,
     )
     monkeypatch.setitem(
         sys.modules, "winreg", types.SimpleNamespace(HKEY_LOCAL_MACHINE = 0, OpenKey = refuse)
@@ -547,3 +553,22 @@ def test_windows_builtin_container_hint_reads_this_pc():
         current, required = update
         assert current.split(".")[0] == required.split(".")[0]
         assert int(current.split(".")[1]) < int(required.split(".")[1])
+
+
+def test_windows_server_gets_no_builtin_container_hint(monkeypatch):
+    import types
+
+    def refuse(*_a):
+        raise AssertionError("the registry is not read on Server")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        sys,
+        "getwindowsversion",
+        lambda: types.SimpleNamespace(build = 26100, product_type = 3),
+        raising = False,
+    )
+    monkeypatch.setitem(
+        sys.modules, "winreg", types.SimpleNamespace(HKEY_LOCAL_MACHINE = 0, OpenKey = refuse)
+    )
+    assert plan_mod.windows_builtin_container_update() is None
