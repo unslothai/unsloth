@@ -258,6 +258,19 @@ class ContextParallelManager:
                 raise ValueError(
                     f"Unsloth: packed_seq_lengths sum to {used} but the packed row has {seq_len} tokens."
                 )
+        position_ids = inputs.get("position_ids")
+        if (
+            ulysses
+            and packed_seq_lengths is None
+            and isinstance(position_ids, torch.Tensor)
+            and position_ids.ndim == 2
+            and (position_ids[:, 1:] <= position_ids[:, :-1]).any()
+        ):
+            # Restarting positions mark packed documents that attention and scans could not see.
+            raise ValueError(
+                "Unsloth: Ulysses context parallelism needs packed_seq_lengths for packed batches; "
+                "position_ids that restart are not enough."
+            )
         # .get: a collator may carry the key with None, which would leave positions shard-local.
         if inputs.get("position_ids") is None and packed_seq_lengths is not None:
             inputs["position_ids"] = _document_positions(

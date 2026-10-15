@@ -167,3 +167,29 @@ def test_eager_attention_is_refused():
     attn = model.model.layers[1].self_attn
     with pytest.raises(NotImplementedError, match = "attn_implementation"):
         uh.install_hf_attention_wrapper(attn, "eager", cp.get_cp_manager)
+
+
+def test_hybrid_packing_metadata_is_off_under_context_parallelism():
+    from unsloth.utils import packing
+
+    kwargs = {
+        "input_ids": torch.ones(1, 8, dtype = torch.long),
+        "position_ids": torch.tensor([[0, 1, 2, 0, 1, 2, 3, 4]]),
+        "packed_seq_lengths": torch.tensor([3, 5], dtype = torch.int32),
+    }
+    assert packing._hybrid_varlen_metadata(kwargs) is not None
+    manager = _manager(2, 0)
+    with manager.apply({"input_ids": torch.ones(1, 8, dtype = torch.long)}):
+        # The shard sees 4 tokens: local boundaries would split documents at the wrong places.
+        assert packing._hybrid_varlen_metadata(kwargs) is None
+
+
+def test_ulysses_refuses_position_only_packing():
+    inputs = {
+        "input_ids": torch.ones(1, 6, dtype = torch.long),
+        "position_ids": torch.tensor([[0, 1, 2, 0, 1, 2]]),
+    }
+    with pytest.raises(ValueError, match = "packed_seq_lengths"):
+        _manager(2, 0)._prepare_inputs(inputs)
+    inputs["packed_seq_lengths"] = torch.tensor([3, 3], dtype = torch.int32)
+    _manager(2, 0)._prepare_inputs(inputs)
