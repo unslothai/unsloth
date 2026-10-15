@@ -6,6 +6,7 @@ import { create } from "zustand";
 import { unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
 import { PageCache, cacheLimits, reportedDeviceMemory } from "./page-cache";
+import { setShownBrowserChat } from "./panel-availability";
 import { defaultZoom } from "./prefs-store";
 import { REACT_PREVIEW_KEY_PREFIX, REACT_PREVIEW_TYPE } from "./react-preview-type";
 
@@ -800,6 +801,8 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     splitWithChatOn: (chatSide) => set({ fullView: false, chatSide }),
   };
 });
+
+useBrowserStore.subscribe((state) => setShownBrowserChat(state.chat));
 
 const adoptListeners = new Set<(from: string, to: string) => void>();
 

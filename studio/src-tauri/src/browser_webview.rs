@@ -1497,7 +1497,12 @@ pub async fn browser_view_open_background<R: Runtime>(
         ..bounds
     };
     let page = create_view(&webview, &tab_id, url, &off_window)?;
-    page.hide().map_err(|error| error.to_string())
+    if let Err(error) = page.hide() {
+        // The frontend never records a view that failed to open, so it would never close this one.
+        let _ = close_view(&page);
+        return Err(error.to_string());
+    }
+    Ok(())
 }
 
 /// A hidden page paints nothing to capture (WebView2 doesn't render it; WebKit's snapshot waits

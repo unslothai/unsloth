@@ -335,5 +335,10 @@ test("a background page's popup opens in its own chat, and a page that fails to 
   assert.equal(opens, 1);
   assert.match(useBrowserStore.getState().tabs.find((tab) => tab.id === failing)?.nativeError ?? "", /refused/);
   (globalThis as { nativeViewCall?: unknown }).nativeViewCall = call;
+  // The agent's next action opens it after all: the old failure no longer marks the page broken.
+  keepInBackground(failing);
+  await settle();
+  assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === failing)?.nativeError, null);
+  releaseBackground(failing);
   releaseBackground(tabId);
 });

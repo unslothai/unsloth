@@ -97,18 +97,33 @@ export const useBrowserAgentStore = create<BrowserAgentState>()(
   ),
 );
 
+// A new chat's key -> its saved one, so a run that captured the old key still reaches its chat.
+const adopted = new Map<string, string>();
+
+export function liveChat(chat: string): string {
+  let key = chat;
+  for (let hops = 0; hops < 8 && adopted.has(key); hops++) key = adopted.get(key) ?? key;
+  return key;
+}
+
 export function agentChat(chat: string): AgentChat {
-  return useBrowserAgentStore.getState().chats[chat] ?? IDLE_AGENT;
+  return useBrowserAgentStore.getState().chats[liveChat(chat)] ?? IDLE_AGENT;
 }
 
 export function patchAgentChat(chat: string, patch: Partial<AgentChat>): void {
+  const key = liveChat(chat);
   useBrowserAgentStore.setState((state) => ({
-    chats: { ...state.chats, [chat]: { ...(state.chats[chat] ?? IDLE_AGENT), ...patch } },
+    chats: { ...state.chats, [key]: { ...(state.chats[key] ?? IDLE_AGENT), ...patch } },
   }));
 }
 
-/** A new chat saved under its id keeps its run, tab and pending question. */
+/** A new chat saved under its id keeps its run, tab, pending question and the action in flight. */
 export function adoptAgentChat(from: string, to: string): void {
+  if (from === to) return;
+  adopted.set(from, to);
+  const action = activeActions.get(from);
+  activeActions.delete(from);
+  if (action && !activeActions.has(to)) activeActions.set(to, action);
   useBrowserAgentStore.setState((state) => {
     const moved = state.chats[from];
     if (!moved) return state;
@@ -182,8 +197,8 @@ export function agentDownloadRule(tabId: string, site: string, fileUrl: string):
 const activeActions = new Map<string, AbortController>();
 
 export function setActiveAction(chat: string, controller: AbortController | null): void {
-  if (controller) activeActions.set(chat, controller);
-  else activeActions.delete(chat);
+  if (controller) activeActions.set(liveChat(chat), controller);
+  else activeActions.delete(liveChat(chat));
 }
 
 // A download the agent started can be reported after its run ends (a slow response, a native
@@ -211,5 +226,5 @@ export function stopBrowserAgent(chat: string): void {
   const { runKey, question } = agentChat(chat);
   patchAgentChat(chat, { stoppedRun: runKey, working: false });
   if (question) answers.get(question.id)?.(false);
-  activeActions.get(chat)?.abort();
+  activeActions.get(liveChat(chat))?.abort();
 }

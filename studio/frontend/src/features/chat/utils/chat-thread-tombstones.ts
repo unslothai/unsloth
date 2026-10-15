@@ -99,7 +99,8 @@ export function onChatThreadsDeleted(listener: (threadIds: string[], pairIds: st
   return () => deletedListeners.delete(listener);
 }
 
-export function markChatThreadsDeleted(threadIds: Iterable<string>, pairIds: string[] = []): void {
+/** `quiet` hides the rows without telling listeners: a delete that can still fail and roll back. */
+export function markChatThreadsDeleted(threadIds: Iterable<string>, { quiet = false } = {}): void {
   const now = nowMs();
   const ids = [...threadIds];
   for (const id of ids) {
@@ -107,7 +108,11 @@ export function markChatThreadsDeleted(threadIds: Iterable<string>, pairIds: str
   }
   gc();
   persist();
-  for (const listener of deletedListeners) listener(ids, pairIds);
+  if (!quiet) notifyChatThreadsDeleted(ids, []);
+}
+
+export function notifyChatThreadsDeleted(threadIds: string[], pairIds: string[]): void {
+  for (const listener of deletedListeners) listener(threadIds, pairIds);
 }
 
 export function isChatThreadDeleted(threadId: string): boolean {

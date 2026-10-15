@@ -16,7 +16,7 @@ import { callNative, useNativeBrowser } from "../native-support";
 import { requestFrameAgent } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
-import { adoptAgentChat, agentChat, askUser, onBrowserAgentRunEnd, patchAgentChat, setActiveAction, useBrowserAgentStore } from "./agent-store";
+import { adoptAgentChat, agentChat, askUser, liveChat, onBrowserAgentRunEnd, patchAgentChat, setActiveAction, useBrowserAgentStore } from "./agent-store";
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
@@ -160,9 +160,9 @@ function sessionFor(chat: string): Session {
 
 /** The chat a run's actions belong to, as the browser store names chats. */
 function chatOf(context: ActionContext): string {
-  if (context.chat) return context.chat;
+  if (context.chat) return liveChat(context.chat);
   const scope = context.scope;
-  return scope && scope !== "__default" ? chatKeyOfThread(scope) : useBrowserStore.getState().chat;
+  return liveChat(scope && scope !== "__default" ? chatKeyOfThread(scope) : useBrowserStore.getState().chat);
 }
 
 onChatAdopted((from, to) => {

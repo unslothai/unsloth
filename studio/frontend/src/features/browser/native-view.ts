@@ -799,6 +799,9 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
       recency = [...recency.filter((id) => id !== tabId), tabId];
     }
     views.set(tabId, key);
+    if (useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.nativeError) {
+      useBrowserStore.getState().updateTab(tabId, { nativeError: null });
+    }
   } catch (cause) {
     useBrowserStore.getState().updateTab(tabId, { loading: false, nativeError: error(cause) });
     // Not retried here: the agent's next action asks again.

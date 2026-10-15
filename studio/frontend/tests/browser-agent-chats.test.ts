@@ -134,7 +134,7 @@ test("a new chat's run keeps its page when the chat is saved between actions", a
   assert.ok(tabId);
   store.adoptChat("single:draft", chatKeyOfThread("saved"));
   assert.equal(agentChat(chatKeyOfThread("saved")).tabId, tabId);
-  assert.equal(agentChat("single:draft").tabId, null);
+  assert.equal("single:draft" in useBrowserAgentStore.getState().chats, false);
   // The next action names the saved chat and reads the same page, not a second one.
   await runBrowserAction(
     { id: "d2", sessionId: "s", op: "snapshot", direction: "down", policy },
@@ -143,3 +143,35 @@ test("a new chat's run keeps its page when the chat is saved between actions", a
   assert.equal(resultOf("d2")?.ok, true, resultOf("d2")?.error);
   assert.equal(useBrowserStore.getState().tabs.filter((tab) => tab.chat === chatKeyOfThread("saved")).length, 1);
 });
+
+test("a new chat's run stays in it after a switch, and Stop in the saved chat ends the action in flight", async () => {
+  globals.__native = true;
+  const store = useBrowserStore.getState();
+  store.closePanel();
+  store.showChat("single:draft2");
+  store.showChat(chatKeyOfThread("elsewhere2"));
+  // The run started in the new chat, which the user has since left: its page opens there, not here.
+  await runBrowserAction(
+    { id: "b1", sessionId: "s", op: "navigate", url: "https://bound.example/", direction: "down", policy },
+    { runKey: "run-bound", scope: "__default", chat: "single:draft2", userText: "open https://bound.example/" },
+  );
+  assert.equal(resultOf("b1")?.ok, true, resultOf("b1")?.error);
+  const tabId = agentChat("single:draft2").tabId;
+  assert.equal(useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.chat, "single:draft2");
+  assert.equal(chatTabs(useBrowserStore.getState()).length, 0);
+
+  // Saved while an action waits on the user: Stop there ends it, and its question goes with it.
+  useBrowserAgentStore.setState({ scriptAccess: "ask" });
+  const pending = runBrowserAction(
+    { id: "b2", sessionId: "s", op: "evaluate", script: "return 1;", direction: "down", policy },
+    { runKey: "run-bound", scope: "__default", chat: "single:draft2", userText: "" },
+  );
+  for (let i = 0; !agentChat("single:draft2").question && i < 200; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  store.adoptChat("single:draft2", chatKeyOfThread("bound"));
+  assert.ok(agentChat(chatKeyOfThread("bound")).question);
+  stopBrowserAgent(chatKeyOfThread("bound"));
+  await pending;
+  assert.equal(resultOf("b2")?.error, STOPPED);
+  assert.equal(agentChat(chatKeyOfThread("bound")).question, null);
+});
+

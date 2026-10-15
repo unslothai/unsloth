@@ -118,11 +118,11 @@ export const BUDGET = {
   // and build, Node 24, chunk count unchanged at 95), which put main 43 B raw over. Raised by that growth so
   // main's margin stays where it was.
   // Each chat keeping its own browser tabs (#13800: the store's per-chat state, background pages in the
-  // native view, and the off-screen question strings) adds 4,770 B raw / 1,654 B transfer (6,765,003 ->
-  // 6,769,773 B raw, 2,033,563 -> 2,035,217 B transfer against a8585676d4, one machine and build, Node 24,
+  // native view, and the off-screen question strings) adds 5,278 B raw / 1,928 B transfer (6,765,003 ->
+  // 6,770,281 B raw, 2,033,563 -> 2,035,491 B transfer against a8585676d4, one machine and build, Node 24,
   // chunk count unchanged at 95), raised by that.
-  transferBytes: 2_035_338,
-  rawBytes: 6_770_076,
+  transferBytes: 2_035_612,
+  rawBytes: 6_770_584,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
