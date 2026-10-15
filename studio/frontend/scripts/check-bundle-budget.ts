@@ -140,11 +140,18 @@ export const BUDGET = {
   // module the eager browser store imports for tab close and duplicate (6,771,852 -> 6,773,496 B raw, 2,035,948 ->
   // 2,036,414 B transfer against 82f16ca55, one machine and build, Node 24, chunk count unchanged at 95). Raised by
   // that growth.
+  // Hub Run refusing audio models neither Audio nor chat can run (#13812) adds 77 B raw / 65 B transfer
+  // (6,773,445 -> 6,773,522 B raw, 2,036,392 -> 2,036,457 B transfer against 59ab069b5, one machine and build,
+  // Node 24, chunk count unchanged at 95). Raised by that growth.
+  // The Windows Desktop install location row on the first-run screen (#13446) adds 1,324 B raw / 342 B
+  // transfer (6,773,496 -> 6,774,820 B raw, 2,036,386 -> 2,036,728 B transfer against 59ab069b5, one machine
+  // and build, Node 24, chunk count unchanged at 95). Lazy-loading it cost more transfer and a 96th startup
+  // chunk (Rollup split react-dom out), so it is imported statically and the budget raised by that growth.
   // The Notebooks page (#6650: its sidebar row, route and English strings; the page itself is lazy) adds
   // 3,355 B raw / 1,025 B transfer against 345217f185 (one machine and build, Node 24, chunk count 95 -> 96),
   // raised by that.
-  transferBytes: 2_037_439,
-  rawBytes: 6_776_851,
+  transferBytes: 2_037_846,
+  rawBytes: 6_778_252,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
