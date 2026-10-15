@@ -11,15 +11,21 @@ import {
 
 const META = "/hub/profile/logo/meta.svg";
 
-test("the Unsloth re-upload of Muse Glimmer shows the Meta mark", () => {
-  // Owner is unsloth, so the org rule never fires and the repo name has to carry it.
+test("Unsloth re-uploads of Muse models show the Meta mark", () => {
+  // The row the Model hub actually lists. Owner is unsloth, so the org rule
+  // never fires and the repo name has to carry it.
   assert.equal(
     resolveOwnerProviderLogo("unsloth", "Muse-Glimmer-30B-GGUF")?.logoPath,
     META,
   );
+  assert.equal(
+    resolveOwnerProviderLogo("unsloth", "Muse-Spark-Open-816B-A42B-GGUF")
+      ?.logoPath,
+    META,
+  );
 });
 
-test("every Muse Glimmer variant rides the same stem", () => {
+test("every Muse family and variant rides the same stem", () => {
   for (const repo of [
     "Muse-Glimmer-30B",
     "Muse-Glimmer-30B-GGUF",
@@ -27,6 +33,8 @@ test("every Muse Glimmer variant rides the same stem", () => {
     "Muse-Glimmer-30B-Instruct",
     // No trailing dash in the stem, so a future minor version is picked up.
     "Muse-Glimmer2-30B-GGUF",
+    "Muse-Spark-Open-816B-A42B",
+    "Muse-Spark-Open-816B-A42B-GGUF",
   ]) {
     assert.equal(matchProviderLogo(repo)?.id, "meta-llama", repo);
   }
@@ -35,7 +43,7 @@ test("every Muse Glimmer variant rides the same stem", () => {
 test("the stem is case-sensitive and anchored at the start", () => {
   assert.equal(matchProviderLogo("muse-glimmer-30b-gguf"), null);
   assert.equal(matchProviderLogo("Retro-Muse-Glimmer-30B"), null);
-  assert.equal(matchProviderLogo("Muse-30B"), null);
+  assert.equal(matchProviderLogo("Musette-30B"), null);
 });
 
 test("the org rule still covers Meta's own upload", () => {
