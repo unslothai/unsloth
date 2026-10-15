@@ -61,6 +61,8 @@ export const zhCN = {
       never: "从不",
       scripts: "运行脚本",
       scriptsDescription: "选择模型是否可以在页面上运行脚本。每个脚本运行前都会先向你显示",
+      cursor: "显示光标",
+      cursorDescription: "在模型于页面上点击、输入和拖动的位置显示指针",
       askEveryTime: "每次都询问",
       permissionsTitle: "代理权限",
       permissionsDescription: "选择默认设置，并为特定网站添加例外。无论这里如何设置，都不会填写密码和支付信息字段。",
@@ -83,6 +85,9 @@ export const zhCN = {
     },
     agent: {
       working: "Unsloth 正在此标签页中浏览",
+      waiting: "Unsloth 需要你在 {chat} 的浏览器中回答",
+      otherChat: "另一个聊天",
+      show: "显示",
       stop: "停止",
       allow: "允许",
       deny: "拒绝",
@@ -256,7 +261,7 @@ export const zhCN = {
     annotationScreenshotsAlways: "始终附带",
     annotationScreenshotsNever: "从不附带",
     clearDataSetting: "清除浏览数据",
-    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面不会保留任何 Cookie 或网站数据。",
+    clearDataSettingDescription: "清除浏览历史记录、下载历史记录和缓存的页面。页面仅在重新加载 Studio 之前保留 Cookie 和网站数据。",
     manage: "管理",
     fullView: {
       enter: "全屏视图",
@@ -432,7 +437,7 @@ export const zhCN = {
     },
     clearData: {
       title: "清除浏览数据？",
-      description: "这将清除你的浏览历史记录、下载历史记录和缓存的页面。已下载的文件会保留在你的电脑上。",
+      description: "这会清除浏览历史、下载历史、缓存的页面以及网站 Cookie 和数据，并让你退出各网站。已下载的文件会保留在你的电脑上。",
       cancel: "取消",
       confirm: "清除数据",
       done: "已清除浏览数据",
@@ -448,6 +453,7 @@ export const zhCN = {
       resubmit: "此页面来自表单提交。重新加载会再次提交表单，可能会重复执行该操作。",
       upload: "此视图不支持上传文件。请在系统浏览器中打开该页面后再提交。",
       scriptNavigation: "此页面尝试通过脚本跳转到其他地址，此视图无法跟随。请在系统浏览器中打开。",
+      needsBrowser: "此页面尝试使用此视图阻止的浏览器功能，部分内容可能无法正常工作。请在系统浏览器中打开。",
     },
     native: {
       externalPrompt: "{host} 想要打开 {url}",
@@ -2547,6 +2553,9 @@ export const zhCN = {
         showMemoryBar: "显示显存占用条",
         showMemoryBarDescription:
           "在每个已下载模型的行下方显示预计显存占用：权重、按实际加载的上下文长度计算的 KV 缓存，以及推测解码草稿所需的预留。",
+        fitOnDeviceOnly: "仅显示可运行的模型",
+        fitOnDeviceOnlyDescription:
+          "在模型选择器和 Hub 中隐藏超出本设备显存和内存容量的模型。已下载的模型仍会显示。",
       },
       menu: {
         title: "聊天菜单",

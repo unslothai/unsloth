@@ -166,6 +166,10 @@ def _convert(
     return body["request"]
 
 
+# Recommended RVC defaults Unsloth Studio fills when the user leaves them unset.
+_RVC_DEFAULTS = {"retrieval_blend": "0", "rms_mix_rate": "0.25", "unvoiced_protection": "0.33"}
+
+
 def test_rvc_converts_to_a_builtin_voice_by_options_voice_id(started):
     backend = _backend(_model("rvc", _RVC_OPTIONS), started)
     request = _convert(
@@ -178,15 +182,21 @@ def test_rvc_converts_to_a_builtin_voice_by_options_voice_id(started):
     # Strict: no seed, no voice_ref, no language; the typed fields win over driven options.
     assert request == {
         "audio": SOURCE,
-        "options": {"retrieval_blend": "0.6", "voice_id": "manthos", "semitone_shift": "3"},
+        "options": {
+            "retrieval_blend": "0.6",
+            "voice_id": "manthos",
+            "semitone_shift": "3",
+            "rms_mix_rate": "0.25",
+            "unvoiced_protection": "0.33",
+        },
     }
     assert _convert(backend, inputs = {"source": SOURCE}) == {
         "audio": SOURCE,
-        "options": {"voice_id": "default"},
+        "options": {"voice_id": "default", **_RVC_DEFAULTS},
     }
     # Auto is not offered on RVC, so it never becomes auto_f0_adjust.
     request = _convert(backend, inputs = {"source": SOURCE}, pitch = -5, pitch_auto = True)
-    assert request["options"] == {"voice_id": "default", "semitone_shift": "-5"}
+    assert request["options"] == {"voice_id": "default", "semitone_shift": "-5", **_RVC_DEFAULTS}
     assert started == []
 
 
@@ -207,6 +217,14 @@ def test_a_reference_family_sends_audio_voice_ref_and_seed(family):
     assert request == {"audio": SOURCE, "voice_ref": TARGET, "seed": "7"}
 
 
+# Recommended Seed-VC defaults Unsloth Studio fills when the user leaves them unset.
+_SEED_VC_DEFAULTS = {
+    "length_adjust": "1",
+    "similarity_guidance_scale": "0.7",
+    "voice_anonymization": "false",
+}
+
+
 def test_seed_vc_speech_sends_no_pitch_and_its_route_by_model_entry(started):
     model = _model("seed_vc", _SEED_VC_OPTIONS)
     backend = _backend(model, started)
@@ -225,7 +243,11 @@ def test_seed_vc_speech_sends_no_pitch_and_its_route_by_model_entry(started):
     assert request == {
         "audio": SOURCE,
         "voice_ref": TARGET,
-        "options": {"length_adjust": "1.25", "similarity_guidance_scale": "1.2"},
+        "options": {
+            "length_adjust": "1.25",
+            "similarity_guidance_scale": "1.2",
+            "voice_anonymization": "false",
+        },
         "seed": "7",
     }
     # The default engine (v2_vc) runs on the loaded session: no restart, no route sent.
@@ -249,16 +271,20 @@ def test_seed_vc_singing_reloads_under_svc_and_sends_its_pitch(started):
     backend = _backend(model, started)
     # The runtime applies the manual shift on top of the matched pitch, as seed-vc does.
     request = _convert(backend, mode = "singing", pitch = 12, pitch_auto = True)
-    assert request["options"] == {"auto_f0_adjust": "true", "semitone_shift": "12"}
+    assert request["options"] == {
+        "auto_f0_adjust": "true",
+        "semitone_shift": "12",
+        **_SEED_VC_DEFAULTS,
+    }
     request = _convert(backend, mode = "singing", pitch_auto = True)
-    assert request["options"] == {"auto_f0_adjust": "true"}
+    assert request["options"] == {"auto_f0_adjust": "true", **_SEED_VC_DEFAULTS}
     (server,) = started
     assert server.model.server_task == "svc"
     assert backend.models[model.id]["audio_server_task"] == "svc"
     assert backend.models[model.id]["audio_convert_route"] == "v1_svc"
     # A speech route sent in singing is dropped: v1_svc is the only singing route.
     request = _convert(backend, mode = "singing", pitch = -3, options = {"route": "v1_xlsr_hift_vc"})
-    assert request["options"] == {"semitone_shift": "-3"}
+    assert request["options"] == {"semitone_shift": "-3", **_SEED_VC_DEFAULTS}
     assert len(started) == 1
     _convert(backend)
     assert [s.model.server_task for s in started] == ["svc", "vc"]

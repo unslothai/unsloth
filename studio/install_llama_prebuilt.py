@@ -424,6 +424,8 @@ class HostInfo:
     has_amd_gpu_without_rocm: bool = False
     rocm_gfx_target: str | None = None
     rocm_gfx_targets: list[str] = field(default_factory = list)
+    # rocm_gfx_target is a forwarded arch the probe never reported, not the probe's pick.
+    rocm_gfx_forwarded: bool = False
     # (major, minor) from platform.mac_ver(); None off macOS or if unparseable.
     # Skips a macos prebuilt whose minimum-OS exceeds this host.
     macos_version: tuple[int, int] | None = None
@@ -3345,6 +3347,7 @@ def _apply_host_overrides(
             # that card regardless of HIP_VISIBLE_DEVICES. An empty probe still yields
             # [gfx], so the driver-only host the forward exists for keeps auto-Vulkan.
             rocm_gfx_targets = list(dict.fromkeys([*_physical, gfx])),
+            rocm_gfx_forwarded = gfx not in _physical,
         )
     # The arch a previous install recorded, replayed by the updater. A remembered
     # probe result, not an operator override, so it only fills a gap: a host whose
@@ -4218,13 +4221,9 @@ def resolve_release_asset_choice(
     )
     if host.is_windows and host.is_x86_64 and (host.has_usable_nvidia or masked_host is not None):
         selection_host = masked_host or host
-        if (
-            driver_below_cuda_prebuilt_floor(selection_host)
-            and selection_host.driver_cuda_version[0] >= _MIN_CUDA_MAJOR
-        ):
-            # #12842: the Windows source fallback needs a toolkit this driver runs, which
-            # winget rarely offers, so setup would fail. Vulkan still runs on the NVIDIA
-            # GPU (the reporter's Vulkan build worked); CPU only after it. Not under a CUDA
+        if driver_below_cuda_prebuilt_floor(selection_host):
+            # #12842, #13662: the source fallback needs a toolkit this driver runs, which winget
+            # rarely offers. Vulkan still runs on the NVIDIA GPU; CPU after it. Not under a CUDA
             # mask: Vulkan ignores it, so it could take a card the caller hid.
             vulkan_choice = (
                 published_asset_choice_for_kind(release, "windows-vulkan", host = host)
@@ -10170,7 +10169,8 @@ def _host_has_windows_hip_prebuilt_gfx(host: HostInfo, published_repo: str | Non
 
 
 def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | None = None) -> bool:
-    """True when NO AMD GPU on the host reaches the Windows HIP prebuilt floor."""
+    """True when no AMD GPU on the host reaches the Windows HIP prebuilt floor, or the
+    unmasked probe's own pick has no Windows HIP bundle."""
     active = _active_rocm_gfx_target(host)
     if not active:
         # ROCm confirmed but gfx unknown (--has-rocm only): keep the HIP / fork / source path.
@@ -10188,8 +10188,8 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     # GGML_VK_VISIBLE_DEVICES and Vulkan ordinals), so masking down to a below-floor card
     # must not route the install to Vulkan: the installed backend would happily enumerate
     # the HIP-capable card the user deliberately hid, possibly one reserved for another
-    # workload. Auto-fall back only when no AMD device on the box can be exposed to HIP; an
-    # explicit vulkan opt-in is unaffected.
+    # workload. Under a mask, auto-fall back only when no AMD device on the box can be exposed
+    # to HIP; an explicit vulkan opt-in is unaffected.
     #
     # Under a mask the probe cannot supply that inventory at all (hipinfo sees only visible
     # devices), so "no AMD GPU here reaches the floor" is unprovable and guessing wrong is
@@ -10200,6 +10200,19 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     if _hip_visible_device_mask_set():
         return False
     targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
+    # Mixed host whose active card has no HIP bundle (gfx1010 at device 0 beside a gfx1034):
+    # no HIP prebuilt can serve the card HIP runs on, while Vulkan runs on both. Only when the
+    # active arch is the unmasked probe's own pick: a forwarded arch the probe never reported,
+    # or UNSLOTH_ROCM_GFX_ARCH, keeps the all-cards rule. Any NVIDIA trace also keeps it:
+    # following ROCm torch clears has_physical_nvidia, but Vulkan would still see that card.
+    if (
+        not os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
+        and not host.rocm_gfx_forwarded
+        and not (host.nvidia_smi or host.physical_compute_caps or host.compute_caps)
+        and active == _pick_rocm_gfx_target(" ".join(targets))
+        and not _gfx_is_windows_hip_supported(active, published_repo)
+    ):
+        return True
     return not any(_gfx_is_windows_hip_supported(target, published_repo) for target in targets)
 
 
@@ -10756,7 +10769,8 @@ def _route_to_vulkan_prebuilt(
         else:
             log(
                 "Active AMD GPU arch is not supported by the Windows HIP prebuilt "
-                f"({active}); installing the Vulkan llama.cpp prebuilt instead"
+                f"({active}); installing the Vulkan llama.cpp prebuilt, which runs on "
+                "every AMD GPU here"
             )
         host = _vulkan_only_host(host)
         persist_backend = "auto"

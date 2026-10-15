@@ -17428,6 +17428,47 @@ def _ollama_ref_for_link(model_path: str) -> Optional[str]:
         return None
 
 
+def _names_the_resident_gguf(llama_backend, model_path: str) -> bool:
+    """Whether a client's ``model_path`` names the GGUF ``llama_backend`` runs.
+
+    A scan-folder load runs as its directory while /v1/models, status and the monitor publish its
+    repo id (the monitor as ``repo:QUANT``), and chat is served under that id, so /unload must
+    accept it too or it answers success and leaves the model loaded (#13766).
+    """
+    identifier = llama_backend.model_identifier
+    if (
+        identifier == model_path
+        or is_registered_native_path_label(identifier, model_path)
+        or _names_the_resident_model(identifier, model_path)
+    ):
+        return True
+    # A load in flight can still carry the previous model's advertised id.
+    if not getattr(llama_backend, "is_loaded", False):
+        return False
+    from core.inference.openai_auto_download import split_model_ref
+
+    published = [
+        getattr(llama_backend, "_openai_advertised_id", None),
+        _llama_public_model_id(llama_backend),
+    ]
+    if _matches_any(model_path, published):
+        return True
+    base, variant = split_model_ref(model_path)
+    resident_variant = getattr(llama_backend, "hf_variant", None) or ""
+    return (
+        bool(variant)
+        and variant.lower() == resident_variant.lower()
+        and _matches_any(base, published)
+    )
+
+
+def _names_the_resident_standard_model(backend, active: str, model_path: str) -> bool:
+    """``_names_the_resident_model`` plus the repo id auto-switch advertises for ``active``."""
+    return _names_the_resident_model(active, model_path) or _matches_any(
+        model_path, [getattr(backend, "_openai_advertised_id", None)]
+    )
+
+
 def _names_the_loading_model(loading: str, model_path: str) -> bool:
     """Whether a client's ``model_path`` names the load already in flight.
 
@@ -17448,7 +17489,7 @@ def _resident_standard_model_name(backend, model_path: str) -> str:
     name it was registered with rather than the id the client shows.
     """
     active = getattr(backend, "active_model_name", None)
-    if isinstance(active, str) and _names_the_resident_model(active, model_path):
+    if isinstance(active, str) and _names_the_resident_standard_model(backend, active, model_path):
         return active
     loaded = getattr(backend, "models", None)
     if isinstance(loaded, dict):
@@ -17476,7 +17517,11 @@ def _unload_evicts_standard_backend(backend, model_path: str) -> bool:
         return True
     if isinstance(active, str) and active and active.lower() == (model_path or "").lower():
         return True
-    if isinstance(active, str) and _names_the_resident_model(active, model_path):
+    if (
+        isinstance(active, str)
+        and active
+        and _names_the_resident_standard_model(backend, active, model_path)
+    ):
         return True
     if not isinstance(loaded, dict):
         return False
@@ -17511,9 +17556,7 @@ def _unload_may_evict(model_path: str) -> bool:
         return True
     llama_backend = get_llama_cpp_backend()
     if llama_backend.is_active and (
-        llama_backend.model_identifier == model_path
-        or is_registered_native_path_label(llama_backend.model_identifier, model_path)
-        or _names_the_resident_model(llama_backend.model_identifier, model_path)
+        _names_the_resident_gguf(llama_backend, model_path)
         # Up but not serving is mid-load, evicted whatever model was named.
         or not llama_backend.is_loaded
     ):
@@ -21759,11 +21802,7 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # Check if the GGUF backend has this model loaded or is loading it.
             llama_backend = get_llama_cpp_backend()
             if llama_backend.is_active and (
-                llama_backend.model_identifier == request.model_path
-                or is_registered_native_path_label(
-                    llama_backend.model_identifier, request.model_path
-                )
-                or _names_the_resident_model(llama_backend.model_identifier, request.model_path)
+                _names_the_resident_gguf(llama_backend, request.model_path)
                 or not llama_backend.is_loaded
             ):
                 # Read the identity before teardown clears it, so the row reads repo:QUANT.
@@ -21800,7 +21839,8 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             # a slow SSE stream paused between tokens still holds, so a sync call would block
             # the loop that drives the stream's next token and the lock release.
             backend = await asyncio.to_thread(get_inference_backend)
-            if _unload_evicts_standard_backend(backend, request.model_path):
+            evicts = _unload_evicts_standard_backend(backend, request.model_path)
+            if evicts:
                 # Point of no return for the standard path, same rule as above.
                 _raise_or_cancel_active_generations(
                     force = request.force_cancel_active, action = "Unloading the model"
@@ -21818,12 +21858,14 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
             note_model_unloaded()
             account_access.clear_resident("chat")
             await asyncio.to_thread(release_chat_gpu_claim)
-            api_monitor.record_lifecycle(
-                event = "unload",
-                model = _lifecycle_model_label(request.model_path),
-                reason = "manual",
-            )
-            logger.info(f"Unloaded model: {request.model_path}")
+            # The no-op stays a 200 for stale tabs, but logging it read as an unload of whatever is resident.
+            if evicts:
+                api_monitor.record_lifecycle(
+                    event = "unload",
+                    model = _lifecycle_model_label(request.model_path),
+                    reason = "manual",
+                )
+                logger.info(f"Unloaded model: {request.model_path}")
             return UnloadResponse(status = "unloaded", model = request.model_path)
 
     except HTTPException:
@@ -47571,11 +47613,209 @@ def _generate_failure_detail(message: str) -> str:
     return _GENERATE_FAILURE_FALLBACK
 
 
+# Keyed by account id, not account_scope(): the scope moves when the first managed account appears.
+_external_image_runs: dict[str, set] = {}
+_stopped_external_image_runs: set = set()
+
+
+def _external_image_run_active() -> bool:
+    return bool(_external_image_runs.get(current_account_id()))
+
+
+def _stop_external_image_runs() -> bool:
+    runs = [
+        task for task in _external_image_runs.get(current_account_id()) or () if not task.done()
+    ]
+    for task in runs:
+        _stopped_external_image_runs.add(task)
+        task.cancel()
+    return bool(runs)
+
+
+async def _external_image_generation(
+    body: DiffusionGenerateRequest, request: Request
+) -> DiffusionGenerateResponse:
+    from PIL import Image
+
+    from core.inference import image_gallery
+    from core.inference.llama_keepwarm import (
+        untrack_current_media_request,
+        untrack_current_request,
+    )
+
+    untrack_current_request(request.scope)
+    untrack_current_media_request(request.scope)
+    provider_id = body.provider_id.strip()
+    external_model = (body.model or "").strip()
+    if not external_model:
+        raise HTTPException(
+            status_code = 400,
+            detail = "model is required when using an external image connection.",
+        )
+    if (
+        body.init_image
+        or body.reference_images
+        or body.loras
+        or body.controlnet
+        or body.prompts
+        or body.seeds
+        or body.negative_prompt
+        or body.mask_image
+        or body.strength is not None
+        or body.upscale is not None
+        or body.workflow
+        or body.localized_edit
+        or body.sampler
+        or body.schedule_type
+    ):
+        raise HTTPException(
+            status_code = 400,
+            detail = "An external image connection only supports text to image.",
+        )
+
+    config = await asyncio.to_thread(providers_db.get_provider, provider_id)
+    if config is None:
+        raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
+    _refuse_decision_connection(config["provider_type"], config.get("api_type"))
+    if not config["is_enabled"]:
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Provider '{config['display_name']}' is disabled.",
+        )
+    base_url = config["base_url"] or get_base_url(config["provider_type"])
+    if not base_url:
+        raise HTTPException(status_code = 400, detail = "The connection has no base URL.")
+    try:
+        base_url = validate_provider_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from None
+
+    async with provider_config_guard(provider_id):
+        current = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        routing_fields = ("provider_type", "base_url", "is_enabled")
+        if current is None or any(
+            current.get(field) != config.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+        api_key = await asyncio.to_thread(
+            resolve_provider_api_key_or_400,
+            provider_id,
+            None,
+            allow_saved_key = not _request_has_api_key(request),
+        )
+        latest = await asyncio.to_thread(providers_db.get_provider, provider_id)
+        if latest is None or any(
+            latest.get(field) != current.get(field) for field in routing_fields
+        ):
+            raise HTTPException(
+                status_code = 409,
+                detail = "Provider changed while the request was starting; retry.",
+            )
+
+    client = ExternalProviderClient(
+        provider_type = config["provider_type"],
+        base_url = base_url,
+        api_key = api_key,
+        timeout = 600.0,
+    )
+    owner = current_account_id()
+    task = asyncio.create_task(
+        client.create_images(
+            prompt = body.prompt,
+            model = external_model,
+            n = body.batch_size,
+            size = f"{body.width}x{body.height}",
+        )
+    )
+    _external_image_runs.setdefault(owner, set()).add(task)
+    try:
+        try:
+            try:
+                encoded = await task
+            except asyncio.CancelledError:
+                if task not in _stopped_external_image_runs:
+                    task.cancel()
+                    raise
+                from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+                raise HTTPException(status_code = 409, detail = DIFFUSION_CANCELLED_MSG) from None
+            images = []
+            for item in encoded:
+                image = Image.open(io.BytesIO(base64.b64decode(item)))
+                image.load()
+                images.append(image)
+        except HTTPException:
+            raise
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(
+                status_code = 502,
+                detail = (
+                    f"Image endpoint returned HTTP {exc.response.status_code}: {exc.response.text[:300]}"
+                ),
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise log_and_http_error(
+                exc,
+                502,
+                "Could not reach the image endpoint.",
+                event = "external_images.transport_error",
+                log = logger,
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code = 502, detail = "The image endpoint did not return a usable image."
+            ) from exc
+
+        created_at = time.time()
+
+        def _persist() -> list[dict]:
+            return [
+                image_gallery.save(
+                    image,
+                    {
+                        "prompt": body.prompt,
+                        "width": image.width,
+                        "height": image.height,
+                        "steps": body.steps,
+                        "guidance": body.guidance,
+                        "seed": body.seed or 0,
+                        "batch_index": index,
+                        "batch_size": body.batch_size,
+                        "model": external_model,
+                        "model_kind": "connection",
+                        "created_at": created_at,
+                    },
+                )
+                for index, image in enumerate(images)
+            ]
+
+        try:
+            records = await asyncio.to_thread(_persist)
+        except Exception as exc:
+            logger.error("diffusion.persist_failed: %s", exc)
+            raise HTTPException(status_code = 500, detail = "Failed to save the generated image.")
+        return DiffusionGenerateResponse(images = [GalleryImage(**r) for r in records])
+    finally:
+        runs = _external_image_runs.get(owner)
+        if runs is not None:
+            runs.discard(task)
+            if not runs:
+                _external_image_runs.pop(owner, None)
+        _stopped_external_image_runs.discard(task)
+
+
 @studio_router.post("/images/generate", response_model = DiffusionGenerateResponse)
 @account_access.gpu_busy_route
 async def generate_diffusion_image(
-    request: DiffusionGenerateRequest, current_subject: str = Depends(get_current_subject)
+    request: DiffusionGenerateRequest,
+    http_request: Request,
+    current_subject: str = Depends(get_current_subject),
 ):
+    if request.provider_id:
+        return await _external_image_generation(request, http_request)
+
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_families import (
@@ -48545,11 +48785,18 @@ async def diffusion_load_progress(
 
 @studio_router.get("/images/generate-progress", response_model = DiffusionGenerateProgressResponse)
 async def diffusion_generate_progress(current_subject: str = Depends(get_current_subject)):
-    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+    external = _external_image_run_active()
+
+    def _hidden():
+        if external:
+            return DiffusionGenerateProgressResponse(active = True, target = "connection")
         return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+
+    if account_access.managed_account() and account_access.generation_is_foreign("diffusion"):
+        return _hidden()
     mine = account_access.generation_is_mine("diffusion")
     if not mine and account_access.resident_hidden("diffusion"):
-        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+        return _hidden()
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
     if (
@@ -48559,10 +48806,12 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
             "diffusion", get_active_diffusion_engine().status().get("repo_id")
         )
     ):
-        return account_access.hidden_generate_progress_response(DiffusionGenerateProgressResponse)
+        return _hidden()
 
     progress = get_active_diffusion_engine().generate_progress()
     log_media_generation_progress("image", progress)
+    if external and not progress["active"]:
+        progress = {**progress, "active": True, "target": "connection"}
     # A finished generation still persisting its gallery record counts as active, so a reload probe keeps polling.
     if _diffusion_persist_active > 0 and not progress["active"]:
         progress = {**progress, "active": True}
@@ -48570,7 +48819,9 @@ async def diffusion_generate_progress(current_subject: str = Depends(get_current
 
 
 @studio_router.post("/images/generate/cancel")
-async def cancel_diffusion_generation(current_subject: str = Depends(get_current_subject)):
+async def cancel_diffusion_generation(
+    target: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
     """Stop the in-flight image generation, mirroring POST /video/generate/cancel.
 
     Resolved through the engine router, so it stops a diffusers denoise (at its next step
@@ -48578,7 +48829,10 @@ async def cancel_diffusion_generation(current_subject: str = Depends(get_current
     generation's OWN request is what reports the outcome: it unwinds with the cancelled
     sentinel, which this module already maps to a 409. ``cancelled`` is False when nothing was
     running, so the page can settle its button back to Generate rather than wait for a
-    generation that already finished."""
+    generation that already finished. ``target=connection`` stops this account's runs on a
+    saved image connection instead."""
+    if target == "connection":
+        return {"cancelled": _stop_external_image_runs()}
     if account_access.generation_is_foreign("diffusion"):
         return {"cancelled": False}
     mine = account_access.generation_is_mine("diffusion")
