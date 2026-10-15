@@ -116,67 +116,35 @@ def test_shared_stop_queue_waits_on_an_unset_event_after_delivery(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "world_size, checkpointing, family, audio, expected",
-    [
-        (2, True, "llama", False, False),
-        (2, True, "qwen2", False, False),
-        (2, True, "qwen3", False, False),
-        (1, True, "llama", False, None),
-        (2, False, "llama", False, None),
-        (2, True, "qwen3_moe", False, None),
-        (2, True, "llama", True, None),
-        ("auto", True, "llama", False, None),
-        ("", True, "llama", False, None),
-        ("eight", True, "llama", False, None),
-        ("auto", True, "llama", False, False),
-    ],
+    "world_size, rank, expected",
+    [("1", "0", {}), ("2", "1", {"temporary_location": "_unsloth_temporary_saved_buffers_rank1"})],
 )
-def test_dense_ddp_checkpointing_disables_unused_parameter_discovery(
-    monkeypatch, world_size, checkpointing, family, audio, expected
-):
+def test_ddp_ranks_offload_embeddings_to_their_own_files(monkeypatch, world_size, rank, expected):
     source = Path(__file__).parents[1] / "core" / "training" / "trainer.py"
-    tree = ast.parse(source.read_text())
-    blocks = [
+    tree = ast.parse(source.read_text(encoding = "utf-8"))
+    fn = next(
         node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.If)
-        and any(
-            isinstance(child, ast.Assign)
-            and any(
-                isinstance(target, ast.Subscript)
-                and isinstance(target.value, ast.Name)
-                and target.value.id == "config_args"
-                and isinstance(target.slice, ast.Constant)
-                and target.slice.value == "ddp_find_unused_parameters"
-                for target in child.targets
-            )
-            for child in node.body
-        )
-    ]
-    assert len(blocks) == 1
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_ddp_peft_kwargs"
+    )
+    namespace = {"world_size_from_env": world_size_from_env, "os": os}
+    exec(compile(ast.Module(body = [fn], type_ignores = []), str(source), "exec"), namespace)
     from core.training.dataset_bounds import WORLD_SIZE_ENV_FILES, WORLD_SIZE_ENV_VARS
 
     for name in WORLD_SIZE_ENV_VARS + WORLD_SIZE_ENV_FILES:
         monkeypatch.delenv(name, raising = False)
-    monkeypatch.setenv("WORLD_SIZE", str(world_size))
-    if world_size == "auto" and expected is False:
-        monkeypatch.setenv("LOCAL_WORLD_SIZE", "2")
-    config = {"gradient_checkpointing": checkpointing}
-    backend = SimpleNamespace(
-        is_audio = audio,
-        is_vlm = False,
-        is_audio_vlm = False,
-        model = SimpleNamespace(
-            config = SimpleNamespace(
-                model_type = family, num_experts = 8 if family.endswith("_moe") else None
-            )
-        ),
+    monkeypatch.setenv("WORLD_SIZE", world_size)
+    monkeypatch.setenv("RANK", rank)
+    assert namespace["_ddp_peft_kwargs"]() == expected
+
+
+def test_studio_leaves_unused_parameter_discovery_to_unsloth():
+    # Unsloth's trainer picks find_unused_parameters from the model (plain LoRA vs conditional
+    # branches); a Studio override would bypass those checks.
+    source = (Path(__file__).parents[1] / "core" / "training" / "trainer.py").read_text(
+        encoding = "utf-8"
     )
-    exec(
-        compile(ast.Module(body = blocks, type_ignores = []), str(source), "exec"),
-        {"world_size_from_env": world_size_from_env, "self": backend, "config_args": config},
-    )
-    assert config.get("ddp_find_unused_parameters") is expected
+    assert "ddp_find_unused_parameters" not in source
 
 
 def test_embedding_worker_imports_only_used_unsloth_symbols():

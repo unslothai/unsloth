@@ -513,6 +513,15 @@ def _has_quantized_weights(model) -> bool:
     return _has_quantized_linears(model, routed_ok = True)
 
 
+def _ddp_peft_kwargs() -> dict:
+    """Per-rank embedding offload files: DDP ranks would otherwise save and mmap the same ones."""
+    if world_size_from_env() <= 1:
+        return {}
+    return {
+        "temporary_location": f"_unsloth_temporary_saved_buffers_rank{os.environ.get('RANK', '0')}"
+    }
+
+
 def _loftq_peft_kwargs(use_loftq) -> dict:
     # PEFT ignores loftq_config unless init_lora_weights is "loftq", so the toggle alone trained plain LoRA.
     if not use_loftq:
@@ -2121,6 +2130,7 @@ class UnslothTrainer:
                     **_loftq_peft_kwargs(use_loftq),
                     modules_to_save = modules_to_save,
                     **self._offload_peft_kwargs(),
+                    **_ddp_peft_kwargs(),
                 )
 
             if self.should_stop:
@@ -4932,28 +4942,6 @@ class UnslothTrainer:
             )
             if online_decision.enabled:
                 eval_dataset = self._online_eval_dataset
-
-            # Unused-param discovery double-marks reentrant-checkpointed LoRA weights; MoE needs it.
-            if (
-                world_size_from_env() > 1
-                and config_args.get("gradient_checkpointing")
-                and not self.is_audio
-                and not self.is_vlm
-                and not self.is_audio_vlm
-                and not any(
-                    isinstance(
-                        experts := getattr(
-                            getattr(self.model.config, "text_config", None) or self.model.config,
-                            key,
-                            None,
-                        ),
-                        int,
-                    )
-                    and experts > 1
-                    for key in ("num_experts", "num_local_experts", "n_routed_experts")
-                )
-            ):
-                config_args["ddp_find_unused_parameters"] = False
 
             logger.info(f"The configuration is: {config_args}")
 
