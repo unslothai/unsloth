@@ -3001,3 +3001,25 @@ def test_rocm_probe_leaves_the_process_rng_untouched():
     before = torch.random.get_rng_state().clone()
     rc._probe(torch, 0)  # builds the block, then fails to reach a GPU on this host
     assert torch.equal(torch.random.get_rng_state(), before)
+
+
+def test_deferred_profile_engagement_runs_in_its_own_rocm_probe_scope(monkeypatch):
+    # It engages at the 3rd generation, after load_pipeline's scope closed: one OOM must hold for the engagement.
+    from core.inference import diffusion as dmod
+    from core.inference import diffusion_rocm_compile as rc
+
+    backend = dmod.DiffusionBackend()
+    scopes = []
+
+    class _Stop(Exception):
+        pass
+
+    def _stop(state):
+        scopes.append(rc._load_oom.get())
+        raise _Stop
+
+    monkeypatch.setattr(backend, "_state_device_target", _stop)
+    state = types.SimpleNamespace(speed_deferred = True)
+    with pytest.raises(_Stop):
+        backend._engage_deferred_profile(state)
+    assert scopes == [{}] and rc._load_oom.get() is None

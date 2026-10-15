@@ -10285,6 +10285,8 @@ class DiffusionBackend:
                     tc.update(tc_before)
             raise
 
+    # Outside load_pipeline (3rd generation): its own probe scope, so one OOM is not re-probed by plan and apply.
+    @rocm_probe_load_scoped
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Engage the deferred `default` speed profile at the start of the 3rd generation this
         session. The load left the pipe fully eager (bit-identical reference); by the 3rd image
