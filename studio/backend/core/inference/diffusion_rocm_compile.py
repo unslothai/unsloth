@@ -144,7 +144,11 @@ def rocm_block_compile_probe(device: Any = None) -> tuple[bool, str]:
         return ok, why
 
 
-def _probe(torch: Any, index: int, device: Any = None) -> tuple[bool, str]:
+def _probe(
+    torch: Any,
+    index: int,
+    device: Any = None,
+) -> tuple[bool, str]:
     start = time.perf_counter()
     try:
         import torch.nn.functional as F

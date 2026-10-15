@@ -2087,13 +2087,7 @@ def _pipeline_quant_uncompilable_reason(
 
 
 def _compile_cache_wanted(
-    pipe: Any,
-    target: Any,
-    fam: Any,
-    *,
-    is_gguf: bool,
-    speed_mode: str,
-    offload_active: bool,
+    pipe: Any, target: Any, fam: Any, *, is_gguf: bool, speed_mode: str, offload_active: bool
 ) -> bool:
     """``compile_eligible`` for the compile-cache gate; on a dense ROCm load the allocating probe runs only once the
     plan finds something in the model to compile."""
@@ -2103,7 +2097,6 @@ def _compile_cache_wanted(
         return False
     try:
         from .diffusion_autoopt import plan as plan_mod
-
         step = plan_mod.build_plan(
             pipe,
             target,
