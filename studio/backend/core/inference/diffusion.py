@@ -11397,8 +11397,8 @@ class DiffusionBackend:
                             * getattr(fam, "condition_pixel_weight", 1.0)
                         )
                         if ref_resolution is not None
+                        # FLUX.3 resizes every condition image to 1 MP itself (diffusion_flux3.resize_reference).
                         else (
-                            # FLUX.3 resizes every condition image to 1 MP itself (diffusion_flux3.resize_reference).
                             int(
                                 (1 + len(ref_extra))
                                 * FLUX3_REFERENCE_AREA

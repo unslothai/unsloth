@@ -270,7 +270,13 @@ _QWENIMAGE_INT8_EXCLUDES = (
 # to int8 at 1.10x bf16 when compiled fp8 measures 1.21x.
 _QWENIMAGE_SCHEME_DENY = frozenset({"mxfp8", "nvfp4"})
 # FLUX.3 Klein transformer-quant keep-list, every scheme (FamilyProfile.quant_exclude_tokens).
-_FLUX3_QUANT_KEEP = ("modulation", "timestep_embed", "norm_out", "txt_mode_blocks", "context_embedder")
+_FLUX3_QUANT_KEEP = (
+    "modulation",
+    "timestep_embed",
+    "norm_out",
+    "txt_mode_blocks",
+    "context_embedder",
+)
 # Schemes denied for TRAINING on top of the inference deny. Training holds a stricter bar because the evidence above is
 # rendering evidence: it says a frozen fp8 forward reconstructs the bf16 image, not that a LoRA converges when its
 # frozen linears are fp8. Nobody has run that, so qwen fp8 stays out of the Train UI until someone does. Delete the
@@ -1127,8 +1133,7 @@ def detect_family(repo_id: str, override: Optional[str] = None) -> Optional[Diff
         ):
             return None
         if any(
-            _token_in_needle(kw, basename)
-            for kw in _NON_IMAGE_SIBLING_KEYWORDS.get(match.name, ())
+            _token_in_needle(kw, basename) for kw in _NON_IMAGE_SIBLING_KEYWORDS.get(match.name, ())
         ):
             return None
         return match
@@ -2794,7 +2799,6 @@ def _checkpoint_tensor_names(path) -> Optional[list[str]]:
         name = str(path)
         if name.lower().endswith(".gguf"):
             from gguf import GGUFReader
-
             return [t.name for t in GGUFReader(name, "r").tensors]
         from safetensors import safe_open
 
@@ -2804,7 +2808,9 @@ def _checkpoint_tensor_names(path) -> Optional[list[str]]:
         return None
 
 
-def flux3_variant_mismatch_reason(family_name: str, filename: str, names: Optional[list[str]]) -> Optional[str]:
+def flux3_variant_mismatch_reason(
+    family_name: str, filename: str, names: Optional[list[str]]
+) -> Optional[str]:
     """Why a FLUX.3 single file / GGUF cannot run under ``family_name``, or None. The distilled checkpoint is a flow
     map (it carries the target-time embedder ``ref_time_in``) and runs the 16-step distilled graph; the base has none
     and runs CFG. Same shapes otherwise, so a mix-up would load and render garbage instead of failing."""
@@ -2812,7 +2818,9 @@ def flux3_variant_mismatch_reason(family_name: str, filename: str, names: Option
         return None
     stripped = [n.split("model.diffusion_model.", 1)[-1] for n in names]
     bfl_native = any(n.startswith(("emb_in.", "txt_in.")) for n in stripped)
-    if bfl_native and any(n.endswith((".weight_scale", ".weight_scale_2", ".input_scale")) for n in stripped):
+    if bfl_native and any(
+        n.endswith((".weight_scale", ".weight_scale_2", ".input_scale")) for n in stripped
+    ):
         # BFL's variants/fp8r and variants/nvfp4: row-major scales in BFL's own layout. The NVFP4 one has the same
         # tensor sizes as a ComfyUI NVFP4 file whose scales are 128x4 tiles, so the ComfyUI loader would decode it
         # silently wrong; refuse instead.

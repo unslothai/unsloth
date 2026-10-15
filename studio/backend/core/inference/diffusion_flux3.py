@@ -170,7 +170,6 @@ def flux3_pipeline_class() -> type:
     global _PIPELINE_CLASS
     if _PIPELINE_CLASS is None:
         from diffusers import DiffusionPipeline
-
         _PIPELINE_CLASS = type(
             "Flux3KleinPipeline", (_Flux3KleinPipelineMixin, DiffusionPipeline), {}
         )
@@ -326,12 +325,7 @@ class _Flux3KleinPipelineMixin:
         return Flux3PipelineOutput(images = images)
 
     def _step_hooks(
-        self,
-        mp,
-        callback: Optional[Callable],
-        *,
-        num_inference_steps: int,
-        first_call: bool,
+        self, mp, callback: Optional[Callable], *, num_inference_steps: int, first_call: bool
     ):
         """Fire ``callback_on_step_end`` after every scheduler step, and open ``self.progress_bar`` at
         the first denoiser forward, which is where every classic pipeline opens its loop (the
@@ -361,7 +355,11 @@ class _Flux3KleinPipelineMixin:
 
             handle = None
             transformer = getattr(mp, "transformer", None)
-            if first_call and transformer is not None and hasattr(transformer, "register_forward_pre_hook"):
+            if (
+                first_call
+                and transformer is not None
+                and hasattr(transformer, "register_forward_pre_hook")
+            ):
                 fired = {"done": False}
 
                 def _pre_hook(_module, _args):
@@ -404,11 +402,15 @@ def _pin_compute_dtype(transformer: Any, dtype: Any) -> None:
     try:
         import torch
 
-        if getattr(transformer, "dtype", None) in (None, dtype) or not isinstance(transformer, torch.nn.Module):
+        if getattr(transformer, "dtype", None) in (None, dtype) or not isinstance(
+            transformer, torch.nn.Module
+        ):
             return
         if getattr(transformer, "dtype").is_floating_point:
             return
-        transformer.register_buffer("_unsloth_compute_dtype", torch.empty(0, dtype = dtype), persistent = False)
+        transformer.register_buffer(
+            "_unsloth_compute_dtype", torch.empty(0, dtype = dtype), persistent = False
+        )
     except Exception as exc:  # noqa: BLE001 -- the denoise raises its own clear error if this did not take
         logger.warning("diffusion.flux3: could not pin the GGUF compute dtype (%s)", exc)
 

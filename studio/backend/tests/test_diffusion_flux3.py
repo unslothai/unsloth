@@ -98,11 +98,21 @@ def test_family_records():
 
 
 def test_modular_index_class_names_identify_the_family(tmp_path):
-    assert detect_family_by_pipeline_class("Flux3DistilledModularPipeline").name == FLUX3_KLEIN_FAMILY_NAME
-    assert detect_family_by_pipeline_class("Flux3ModularPipeline").name == FLUX3_KLEIN_BASE_FAMILY_NAME
+    assert (
+        detect_family_by_pipeline_class("Flux3DistilledModularPipeline").name
+        == FLUX3_KLEIN_FAMILY_NAME
+    )
+    assert (
+        detect_family_by_pipeline_class("Flux3ModularPipeline").name == FLUX3_KLEIN_BASE_FAMILY_NAME
+    )
     # An HF-cache snapshot leaf is a commit hash: the modular index is the only evidence.
     (tmp_path / "modular_model_index.json").write_text(
-        json.dumps({"_class_name": "Flux3DistilledModularPipeline", "_blocks_class_name": FLUX3_DISTILLED_BLOCKS})
+        json.dumps(
+            {
+                "_class_name": "Flux3DistilledModularPipeline",
+                "_blocks_class_name": FLUX3_DISTILLED_BLOCKS,
+            }
+        )
     )
     assert detect_family_by_pipeline_index(str(tmp_path)).name == FLUX3_KLEIN_FAMILY_NAME
 
@@ -197,10 +207,18 @@ def test_modular_repo_download_plan_reads_only_the_component_folders(monkeypatch
     )
     assert selection == (frozenset(FLUX3_COMPONENTS), frozenset())
     picked = {
-        f for f in _REPO_FILES if _pipeline_file_downloaded(f) and _pipeline_selected_file(f, selection)
+        f
+        for f in _REPO_FILES
+        if _pipeline_file_downloaded(f) and _pipeline_selected_file(f, selection)
     }
     assert "modular_model_index.json" in picked
-    assert not picked & {"model.safetensors", "ae.safetensors", "config.json", "manifest.json", "README.md"}
+    assert not picked & {
+        "model.safetensors",
+        "ae.safetensors",
+        "config.json",
+        "manifest.json",
+        "README.md",
+    }
     assert not any(f.startswith("variants/") for f in picked)
     assert {f.split("/", 1)[0] for f in picked if "/" in f} == set(FLUX3_COMPONENTS)
 
@@ -209,19 +227,25 @@ def test_a_conventional_repo_without_any_index_still_refuses():
     info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "transformer/config.json")], sha = "x")
     failures = []
     assert (
-        _pipeline_components_from_index("a/b", info, None, explicit_components = None, failures_out = failures)
+        _pipeline_components_from_index(
+            "a/b", info, None, explicit_components = None, failures_out = failures
+        )
         is None
     )
     assert failures
     # Without an assembler naming its folders, a modular index alone is not enough either.
-    info = SimpleNamespace(siblings = [SimpleNamespace(rfilename = "modular_model_index.json")], sha = "x")
+    info = SimpleNamespace(
+        siblings = [SimpleNamespace(rfilename = "modular_model_index.json")], sha = "x"
+    )
     assert _pipeline_components_from_index("a/b", info, None, explicit_components = None) is None
 
 
 # ── the classic pipeline face ────────────────────────────────────────────────
 def test_blocks_class_from_index_or_flow_map():
     assert flux3_blocks_class({"_blocks_class_name": FLUX3_BASE_BLOCKS}) == FLUX3_BASE_BLOCKS
-    assert flux3_blocks_class({"_blocks_class_name": FLUX3_DISTILLED_BLOCKS}) == FLUX3_DISTILLED_BLOCKS
+    assert (
+        flux3_blocks_class({"_blocks_class_name": FLUX3_DISTILLED_BLOCKS}) == FLUX3_DISTILLED_BLOCKS
+    )
     flow_map = SimpleNamespace(config = SimpleNamespace(flow_map = True))
     cfg = SimpleNamespace(config = SimpleNamespace(flow_map = False))
     assert flux3_blocks_class({}, flow_map) == FLUX3_DISTILLED_BLOCKS
@@ -229,7 +253,13 @@ def test_blocks_class_from_index_or_flow_map():
 
 
 class _FakeScheduler:
-    def step(self, noise_pred, t, latents, return_dict = False):
+    def step(
+        self,
+        noise_pred,
+        t,
+        latents,
+        return_dict = False,
+    ):
         return (latents + 1,)
 
 
@@ -241,7 +271,11 @@ class _FakeModular:
         self.transformer = None
         self.calls = []
 
-    def __call__(self, output = None, **kwargs):
+    def __call__(
+        self,
+        output = None,
+        **kwargs,
+    ):
         self.calls.append(kwargs)
         latents = 0
         for i in range(kwargs["num_inference_steps"]):
@@ -279,10 +313,14 @@ def test_one_prompt_many_images_is_one_call():
 
 def test_prompt_and_generator_lists_split_into_single_prompt_calls():
     face = _Face(distilled = False)
-    out = face(prompt = ["a", "b"], generator = ["g1", "g2"], num_inference_steps = 1, negative_prompt = "n")
+    out = face(
+        prompt = ["a", "b"], generator = ["g1", "g2"], num_inference_steps = 1, negative_prompt = "n"
+    )
     assert out.images == ["img:a", "img:b"]
     assert [c["generator"] for c in face.mp.calls] == ["g1", "g2"]
-    assert all(c["num_images_per_prompt"] == 1 and c["negative_prompt"] == "n" for c in face.mp.calls)
+    assert all(
+        c["num_images_per_prompt"] == 1 and c["negative_prompt"] == "n" for c in face.mp.calls
+    )
     out = face(prompt = "same", generator = ["g1", "g2", "g3"], num_inference_steps = 1)
     assert out.images == ["img:same"] * 3
     with pytest.raises(ValueError):
@@ -327,9 +365,18 @@ def test_the_memory_plan_prices_component_folders_only(tmp_path):
 
     for rel in ("transformer", "variants/fp8r", "variants/nvfp4"):
         (tmp_path / rel).mkdir(parents = True)
-    save_file({"w": torch.zeros(100, dtype = torch.float32)}, str(tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"))
-    save_file({"w": torch.zeros(100, dtype = torch.bfloat16)}, str(tmp_path / "variants" / "fp8r" / "model.safetensors"))
-    save_file({"w": torch.zeros(100, dtype = torch.bfloat16)}, str(tmp_path / "variants" / "nvfp4" / "model.safetensors"))
+    save_file(
+        {"w": torch.zeros(100, dtype = torch.float32)},
+        str(tmp_path / "transformer" / "diffusion_pytorch_model.safetensors"),
+    )
+    save_file(
+        {"w": torch.zeros(100, dtype = torch.bfloat16)},
+        str(tmp_path / "variants" / "fp8r" / "model.safetensors"),
+    )
+    save_file(
+        {"w": torch.zeros(100, dtype = torch.bfloat16)},
+        str(tmp_path / "variants" / "nvfp4" / "model.safetensors"),
+    )
     save_file({"w": torch.zeros(100, dtype = torch.bfloat16)}, str(tmp_path / "model.safetensors"))
     sizes = DiffusionBackend._local_dir_weight_sizes(
         tmp_path, exclude_transformer = False, load_dtype = torch.bfloat16
@@ -355,7 +402,9 @@ def test_reference_noise_is_the_bfl_layout():
 
     noise = reference_noise(7, 64, 96)
     assert noise.shape == (1, 128, 4, 6) and noise.dtype == torch.bfloat16
-    tokens = torch.randn((4 * 6, 128), generator = torch.Generator().manual_seed(7)).to(torch.bfloat16)
+    tokens = torch.randn((4 * 6, 128), generator = torch.Generator().manual_seed(7)).to(
+        torch.bfloat16
+    )
     # Token (row r, col c) is channel vector noise[0, :, r, c].
     assert torch.equal(noise[0, :, 1, 2], tokens[1 * 6 + 2])
 
@@ -366,15 +415,28 @@ def test_a_seeded_sized_call_gets_reference_noise_and_resized_references():
 
     face = _Face()
     gen = torch.Generator().manual_seed(5)
-    face(prompt = "a", height = 64, width = 32, generator = gen, num_inference_steps = 1,
-         image = [Image.new("RGB", (2048, 2048)), Image.new("RGB", (256, 128))])
+    face(
+        prompt = "a",
+        height = 64,
+        width = 32,
+        generator = gen,
+        num_inference_steps = 1,
+        image = [Image.new("RGB", (2048, 2048)), Image.new("RGB", (256, 128))],
+    )
     call = face.mp.calls[-1]
     assert call["latents"].shape == (1, 128, 4, 2)
     assert [im.size for im in call["image"]] == [(1024, 1024), (1448, 724)]
     # No size (the blocks pick it) or several images per generator: diffusers draws the noise.
     face(prompt = "a", generator = gen, num_inference_steps = 1)
     assert "latents" not in face.mp.calls[-1]
-    face(prompt = "a", height = 64, width = 32, generator = gen, num_images_per_prompt = 2, num_inference_steps = 1)
+    face(
+        prompt = "a",
+        height = 64,
+        width = 32,
+        generator = gen,
+        num_images_per_prompt = 2,
+        num_inference_steps = 1,
+    )
     assert "latents" not in face.mp.calls[-1]
 
 
@@ -386,14 +448,12 @@ _KEEP = ("modulation", "timestep_embed", "norm_out", "txt_mode_blocks", "context
 @pytest.mark.parametrize("family", [FLUX3_KLEIN_FAMILY_NAME, FLUX3_KLEIN_BASE_FAMILY_NAME])
 def test_keep_list_applies_to_every_scheme(scheme, family):
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
-
     tokens = exclude_tokens_for_scheme(scheme, family)
     assert set(_KEEP) <= set(tokens)
 
 
 def test_other_families_scheme_exclusions_unchanged():
     from core.inference.diffusion_transformer_quant import exclude_tokens_for_scheme
-
     for family in ("flux.1", "flux.2-klein", "qwen-image", "z-image", None):
         for scheme in ("fp8", "mxfp8", "nvfp4"):
             assert exclude_tokens_for_scheme(scheme, family) == ()
@@ -437,16 +497,28 @@ def test_measured_memory_rows():
 def test_variant_mismatch_and_bfl_quant_packages_are_refused():
     from core.inference.diffusion_families import flux3_variant_mismatch_reason as why
 
-    distilled = ["emb_in.image.weight", "ref_time_in.in_layer.weight", "single_blocks.0.q_proj.weight"]
+    distilled = [
+        "emb_in.image.weight",
+        "ref_time_in.in_layer.weight",
+        "single_blocks.0.q_proj.weight",
+    ]
     base = ["emb_in.image.weight", "time_in.in_layer.weight", "single_blocks.0.q_proj.weight"]
     assert why("flux.3-klein", "d.gguf", distilled) is None
     assert why("flux.3-klein-base", "b.gguf", base) is None
     assert "flux.3-klein-base" in why("flux.3-klein", "b.gguf", base)
     assert "flux.3-klein" in why("flux.3-klein-base", "d.gguf", distilled)
     # diffusers key names and a ComfyUI prefix are read the same way.
-    assert why("flux.3-klein", "x.safetensors", ["target_timestep_embedder.linear_1.weight"]) is None
-    assert why("flux.3-klein", "x.safetensors", ["model.diffusion_model.ref_time_in.in_layer.weight"]) is None
-    bfl_nvfp4 = distilled + ["single_blocks.0.q_proj.weight_scale", "single_blocks.0.q_proj.weight_scale_2"]
+    assert (
+        why("flux.3-klein", "x.safetensors", ["target_timestep_embedder.linear_1.weight"]) is None
+    )
+    assert (
+        why("flux.3-klein", "x.safetensors", ["model.diffusion_model.ref_time_in.in_layer.weight"])
+        is None
+    )
+    bfl_nvfp4 = distilled + [
+        "single_blocks.0.q_proj.weight_scale",
+        "single_blocks.0.q_proj.weight_scale_2",
+    ]
     assert "variants/fp8r or variants/nvfp4" in why("flux.3-klein", "model.safetensors", bfl_nvfp4)
     # Unreadable file or another family: fail open.
     assert why("flux.3-klein", "x.gguf", None) is None
@@ -463,7 +535,9 @@ def test_gguf_denoiser_reports_its_compute_dtype():
             self.w = torch.nn.Parameter(torch.zeros(4, dtype = torch.uint8), requires_grad = False)
 
         @property
-        def dtype(self):  # diffusers' get_parameter_dtype: first float param, else first float buffer, else last
+        def dtype(
+            self,
+        ):  # diffusers' get_parameter_dtype: first float param, else first float buffer, else last
             for p in self.parameters():
                 if p.is_floating_point():
                     return p.dtype
@@ -506,7 +580,10 @@ def _mx_linear(torch):
 
 def test_contiguous_guard_feeds_mx_linears_a_contiguous_activation():
     torch = pytest.importorskip("torch")
-    from core.inference.diffusion_transformer_quant import apply_zero_row_guard, guard_contiguous_activations
+    from core.inference.diffusion_transformer_quant import (
+        apply_zero_row_guard,
+        guard_contiguous_activations,
+    )
 
     lin = _mx_linear(torch)
     broadcast = torch.randn(1, 1, 8).expand(2, 4, 8)
@@ -541,7 +618,10 @@ def _family(name):
 def test_prequant_repos_point_at_the_fp8_repo_for_the_distilled_model_only():
     distilled = _family(FLUX3_KLEIN_FAMILY_NAME)
     for scheme in ("int8", "fp8"):
-        assert families.family_prequant_repo(distilled, scheme, DISTILLED) == "unsloth/flux-3-image-klein-FP8"
+        assert (
+            families.family_prequant_repo(distilled, scheme, DISTILLED)
+            == "unsloth/flux-3-image-klein-FP8"
+        )
     # nvfp4 is denied for the family, and the base model has no hosted artifact yet.
     assert families.family_prequant_repo(distilled, "nvfp4", DISTILLED) is None
     base = _family(FLUX3_KLEIN_BASE_FAMILY_NAME)
@@ -570,7 +650,9 @@ def test_operator_mirror_serves_the_hosted_name(tmp_path, monkeypatch):
     (folder / "flux-3-image-klein-INT8.safetensors").write_bytes(b"x")
     monkeypatch.setenv(dp.PREQUANT_MIRROR_ENV, str(tmp_path))
     found = dp.prequant_mirror_path(
-        "unsloth/flux-3-image-klein-FP8", "flux-3-image-klein-INT8.safetensors", readable = lambda n: True
+        "unsloth/flux-3-image-klein-FP8",
+        "flux-3-image-klein-INT8.safetensors",
+        readable = lambda n: True,
     )
     assert found == str(folder / "flux-3-image-klein-INT8.safetensors")
 

@@ -320,7 +320,9 @@ def guard_contiguous_activations(module: Any, *, logger: Any = None) -> int:
     hooked = 0
     for _name, sub in named():
         weight = getattr(sub, "weight", None)
-        if type(weight).__name__ not in _CONTIGUOUS_INPUT_WEIGHTS or getattr(sub, "_unsloth_contig_hook", False):
+        if type(weight).__name__ not in _CONTIGUOUS_INPUT_WEIGHTS or getattr(
+            sub, "_unsloth_contig_hook", False
+        ):
             continue
         try:
             sub.register_forward_pre_hook(_contiguous_input_pre_hook)
@@ -329,7 +331,9 @@ def guard_contiguous_activations(module: Any, *, logger: Any = None) -> int:
         except Exception:  # noqa: BLE001 - a module refusing hooks keeps its old behaviour
             continue
     if hooked and logger is not None:
-        logger.info("diffusion.transformer_quant: contiguous-input guard on %d MX/NVFP4 linears", hooked)
+        logger.info(
+            "diffusion.transformer_quant: contiguous-input guard on %d MX/NVFP4 linears", hooked
+        )
     return hooked
 
 
@@ -372,9 +376,7 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
     every_scheme = _FAMILY_QUANT_EXCLUDE_NAME_TOKENS.get(key, ())
     if scheme == TQ_INT8:
         return (
-            _INT8_EXCLUDE_NAME_TOKENS
-            + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(key, ())
-            + every_scheme
+            _INT8_EXCLUDE_NAME_TOKENS + _INT8_FAMILY_EXCLUDE_NAME_TOKENS.get(key, ()) + every_scheme
         )
     return every_scheme
 

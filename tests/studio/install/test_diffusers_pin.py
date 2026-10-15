@@ -143,7 +143,9 @@ def test_the_main_build_pins_a_commit_and_runs_after_the_release():
 def test_the_shipped_main_build_is_active_with_a_digest():
     """FLUX.3 Klein is in no release (huggingface/diffusers#15046), so the pinned build ships active."""
     lines = _requirements(MAIN_FILE)
-    assert len(lines) == 1 and re.fullmatch(r"diffusers @ git\+https://\S+@[0-9a-f]{40}", lines[0]), lines
+    assert len(lines) == 1 and re.fullmatch(
+        r"diffusers @ git\+https://\S+@[0-9a-f]{40}", lines[0]
+    ), lines
     text = MAIN_FILE.read_text(encoding = "utf-8")
     assert len(re.findall(r"^# archive-sha256: [0-9a-f]{64}$", text, re.M)) == 1
     module = _probe_module("install_python_stack_probe_shipped", shipped = True)
@@ -154,14 +156,20 @@ def test_the_release_mode_copy_is_commented_out_but_keeps_its_commit():
     """Release mode (the state after a pin retires) is one comment away, and the probes read it as off."""
     off = _ACTIVE_REQ_ROOT[1] / "diffusers-main.txt"
     assert _requirements(off) == []
-    assert re.search(r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", off.read_text(encoding = "utf-8"), re.M)
+    assert re.search(
+        r"^# diffusers @ git\+https://\S+@[0-9a-f]{40}$", off.read_text(encoding = "utf-8"), re.M
+    )
     module = _probe_module("install_python_stack_probe_inactive", active = False)
     assert module._diffusers_main_active() is False
     assert module._diffusers_main_resident() is False
     assert module._diffusers_main_supersedes_release() is False
 
 
-def _probe_module(name: str, active: bool = True, shipped: bool = False):
+def _probe_module(
+    name: str,
+    active: bool = True,
+    shipped: bool = False,
+):
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(name, STACK)
@@ -614,7 +622,9 @@ def test_python_below_311_does_not_clone_a_build_it_can_never_install(monkeypatc
     module = _probe_module("install_python_stack_probe8")
     monkeypatch.delenv("UNSLOTH_DIFFUSERS_MAIN", raising = False)
     monkeypatch.setattr(
-        module, "pip_install_try", lambda *a, **k: pytest.fail(f"cloned main on python {old_python}")
+        module,
+        "pip_install_try",
+        lambda *a, **k: pytest.fail(f"cloned main on python {old_python}"),
     )
     monkeypatch.setattr(module, "_has_working_git", lambda: True)
     monkeypatch.setattr(module, "_note", lambda *a, **k: None)
