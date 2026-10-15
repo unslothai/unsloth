@@ -150,7 +150,10 @@ def params4bit_to_uint8_storage(model):
         for name, param in list(module._parameters.items()):
             if param is None or not is_params4bit(param) or not param.is_floating_point():
                 continue
-            if not getattr(param, "bnb_quantized", False) or getattr(param, "quant_state", None) is None:
+            if (
+                not getattr(param, "bnb_quantized", False)
+                or getattr(param, "quant_state", None) is None
+            ):
                 # Still dense values bitsandbytes quantizes on the next device move, not packed bytes.
                 continue
             if not param.is_contiguous() or param.device.type == "meta":
@@ -224,11 +227,14 @@ def nonfloat_frozen_unmanaged():
         if original is None:
             continue
 
-        def _get_managed_states(*args, _original = original, **kwargs):
+        def _get_managed_states(
+            *args,
+            _original = original,
+            **kwargs,
+        ):
             params, buffers = _original(*args, **kwargs)
             params = [
-                p for p in params
-                if p.requires_grad or p.is_floating_point() or p.is_complex()
+                p for p in params if p.requires_grad or p.is_floating_point() or p.is_complex()
             ]
             return params, buffers
 
@@ -288,7 +294,11 @@ def _check_collectives_anchors(collectives):
     """foreach_all_gather picks the collective dtype in `_get_all_gather_input_metadatas` (uint8 when
     the inputs' dtypes differ) from what `_get_param_all_gather_inputs` returned, in torch 2.6 .. 2.14."""
     missing = []
-    for name in ("foreach_all_gather", "_get_param_all_gather_inputs", "_get_all_gather_input_metadatas"):
+    for name in (
+        "foreach_all_gather",
+        "_get_param_all_gather_inputs",
+        "_get_all_gather_input_metadatas",
+    ):
         if not callable(getattr(collectives, name, None)):
             missing.append(f"_fsdp_collectives.{name}")
     if missing:
@@ -359,7 +369,10 @@ def patch_fsdp2_params4bit():
         meta = getattr(self, "_unsloth_quant_meta", None)
         if meta is not None:
             unsharded = getattr(self, "_unsharded_param", None)
-            if unsharded is not None and getattr(unsharded, "quant_state", None) is not meta["quant_state"]:
+            if (
+                unsharded is not None
+                and getattr(unsharded, "quant_state", None) is not meta["quant_state"]
+            ):
                 _attach_quant_meta(unsharded, meta)
         return out
 
@@ -426,7 +439,11 @@ def nonfloat_param_guard(model = None):
     Parameter = torch.nn.Parameter
     original_new = Parameter.__dict__.get("__new__")
 
-    def __new__(cls, data = None, requires_grad = True):
+    def __new__(
+        cls,
+        data = None,
+        requires_grad = True,
+    ):
         if data is not None and not (data.is_floating_point() or data.is_complex()):
             requires_grad = False
         return original_new(cls, data, requires_grad)
@@ -441,7 +458,11 @@ def nonfloat_param_guard(model = None):
             Parameter.__new__ = original_new
 
 
-def prepare_fsdp2_qlora(model, dtype = None, float_storage = None):
+def prepare_fsdp2_qlora(
+    model,
+    dtype = None,
+    float_storage = None,
+):
     """Make a bitsandbytes 4-bit model shardable by FSDP2: float packed storage (unless
     `float_storage` is False, default `float_storage_survives_wrap()`), QuantState kept through
     sharding, no mixed precision cast of packed bytes. A no-op on a model without Params4bit.
@@ -491,7 +512,9 @@ def fsdp2_qlora_wrap(model, prepare_fn = None):
                 f"({info['reason'] or 'the wrap would convert them'}). Load them with the default uint8 "
                 "bnb_4bit_quant_storage, or train with DDP."
             )
-    info["storage"] = sorted({str(p.dtype).replace("torch.", "") for p in model.parameters() if is_params4bit(p)})
+    info["storage"] = sorted(
+        {str(p.dtype).replace("torch.", "") for p in model.parameters() if is_params4bit(p)}
+    )
     nonfloat = any(not (p.is_floating_point() or p.is_complex()) for p in model.parameters())
     with contextlib.ExitStack() as stack:
         if nonfloat:

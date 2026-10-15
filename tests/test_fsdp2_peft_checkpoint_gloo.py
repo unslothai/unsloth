@@ -47,14 +47,19 @@ def _build():
         tie_word_embeddings = False,
     )
     torch.manual_seed(0)
-    lora = LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "down_proj"], init_lora_weights = False)
+    lora = LoraConfig(
+        r = 4, lora_alpha = 8, target_modules = ["q_proj", "down_proj"], init_lora_weights = False
+    )
     return get_peft_model(LlamaForCausalLM(cfg), lora)
 
 
 def _worker(rank, port, out_dir, backport):
     os.environ.update(
-        RANK = str(rank), LOCAL_RANK = str(rank), WORLD_SIZE = "2",
-        MASTER_ADDR = "127.0.0.1", MASTER_PORT = str(port),
+        RANK = str(rank),
+        LOCAL_RANK = str(rank),
+        WORLD_SIZE = "2",
+        MASTER_ADDR = "127.0.0.1",
+        MASTER_PORT = str(port),
     )
     dist.init_process_group("gloo", rank = rank, world_size = 2)
     try:
@@ -111,7 +116,11 @@ def _worker(rank, port, out_dir, backport):
                 got = saved.get(name.replace(".default", ""))
                 if isinstance(got, DTensor):
                     got = got.to_local()
-                if got is not None and tuple(got.shape) == tuple(ref.shape) and torch.equal(got.cpu(), ref):
+                if (
+                    got is not None
+                    and tuple(got.shape) == tuple(ref.shape)
+                    and torch.equal(got.cpu(), ref)
+                ):
                     whole += 1
             result["lora_tensors"] = len(reference)
             result["saved_whole_and_equal"] = whole
@@ -148,5 +157,7 @@ def _run(tmp_path, backport):
 def test_full_state_dict_adapter_checkpoints_hold_every_rank_shard(tmp_path):
     r = _run(tmp_path, backport = True)
     assert r["lora_tensors"] == 8
-    assert r["saved_whole_and_equal"] == r["lora_tensors"], "the checkpoint holds only rank 0's shards"
+    assert (
+        r["saved_whole_and_equal"] == r["lora_tensors"]
+    ), "the checkpoint holds only rank 0's shards"
     assert r["restored"] == r["lora_tensors"]
