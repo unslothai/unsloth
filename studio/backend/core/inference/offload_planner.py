@@ -1206,6 +1206,30 @@ def _plan_placement(
             return plan
         declined = declined or plan
 
+    # The MoE long-prompt veto (_cost_gate) is read at the context the search reaches, so a load
+    # that cannot be placed at the context asked for would walk under the threshold and launch a
+    # cut context with every expert on the host: the shape the veto exists to refuse. Asked at or
+    # above it, the answer is --fit on at the context asked for, as at the first attempt. A load
+    # that placed at that context returned above; a shorter request is not affected.
+    requested_slot_ctx = n_ctx if opts.kv_unified else n_ctx // max(1, opts.n_parallel)
+    if (
+        may_shrink
+        and opts.require_cost_win
+        and layout.is_moe
+        and opts.moe_long_prompt_ctx > 0
+        and requested_slot_ctx >= opts.moe_long_prompt_ctx
+    ):
+        return Plan(
+            n_ctx = n_ctx,
+            declined_by_gate = True,
+            veto = True,
+            reason = (
+                f"MoE at {requested_slot_ctx} tokens per slot does not place at the context "
+                "asked for, and -ot measured 0.94 to 0.97x of llama.cpp's own layerwise fit at "
+                "a 32K prompt; a smaller context is not searched, it is left to --fit on"
+            ),
+        )
+
     if may_shrink and len(vram_bytes_per_device) > 1 and layout.has_swa:
         may_shrink = False
         if declined is None:

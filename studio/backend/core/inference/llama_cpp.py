@@ -18128,8 +18128,7 @@ class LlamaCppBackend:
         # whenever the launch runs FA off: a build without --flash-attn, a typed -fa off, or the
         # hard-crash recovery. bpe_v is floored at f16 for a quantised cache, and with V constant
         # that asymmetry moves the ratio too, so carry both rather than cancelling one.
-        bpe_k = _kv_bytes_per_elem(cache_type_kv)
-        bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
+        bpe_k, bpe_v = self._kv_elem_bytes_launched(cache_type_kv, flash_attn)
         padded_v_width = None if flash_attn else self._max_kv_value_width(val_len, val_len_swa)
         weights: list[int] = []
         for layer_idx in range(n_layers):
@@ -18541,11 +18540,8 @@ class LlamaCppBackend:
         n_layers_kv = max(1, n_layers - shared)
         n_kv = self._n_kv_heads or self._n_heads or 1  # type: ignore[assignment]
 
-        # Bytes per element depends on KV cache quantization
-        bpe_k = _kv_bytes_per_elem(cache_type_kv)
-        # The automatic FA-off retry rewrites an invalid quantized V cache to
-        # f16. Pricing that viable retry here avoids under-reserving it.
-        bpe_v = bpe_k if flash_attn else max(bpe_k, _kv_bytes_per_elem("f16"))
+        # Bytes per element depends on KV cache quantization, as the launch emits it.
+        bpe_k, bpe_v = self._kv_elem_bytes_launched(cache_type_kv, flash_attn)
 
         slots, streams, cells_per_stream = _kv_cache_cell_layout(n_ctx, n_parallel, kv_unified)
         total_cells = cells_per_stream * streams
@@ -24573,6 +24569,26 @@ class LlamaCppBackend:
         if kv_lora_rank is not None:
             return True
         return (architecture or "").strip().lower() == "deepseek4"
+
+    def _kv_elem_bytes_launched(
+        self, cache_type_kv: Optional[str], flash_attn: bool
+    ) -> tuple[float, float]:
+        """``(bpe_k, bpe_v)`` of the cache the launch really allocates.
+
+        Without flash attention a quantized V is invalid (llama-context.cpp: "quantized V cache
+        requires flash_attn"), so the FA-off rewrite (_reset_quantized_v_cache) sends V to f16;
+        on a model that requires K == V (_target_kv_symmetry, llama-context.cpp rejects
+        "different K and V cache types") it sends K there too. A wider type is kept as typed.
+        """
+        bpe_k = _kv_bytes_per_elem(cache_type_kv)
+        if flash_attn:
+            return bpe_k, bpe_k
+        f16 = _kv_bytes_per_elem("f16")
+        if self._requires_symmetric_kv(
+            getattr(self, "_kv_lora_rank", None), getattr(self, "_architecture", None)
+        ):
+            bpe_k = max(bpe_k, f16)
+        return bpe_k, max(bpe_k, f16)
 
     def _target_kv_symmetry(self) -> bool:
         """Whether the TARGET model requires K == V."""
