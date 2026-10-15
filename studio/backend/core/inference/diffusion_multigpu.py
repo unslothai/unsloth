@@ -2734,7 +2734,9 @@ class CfgBatchRouter:
             return None
         if any(stand_ins):
             # the model writes into that dict: one doubled call is not two calls (the caller's dict is untouched)
-            self.disable("the batched call wrote into an argument dict; one branch per call from here")
+            self.disable(
+                "the batched call wrote into an argument dict; one branch per call from here"
+            )
             return None
         try:
             mine, other = _split_output(out, batch)
