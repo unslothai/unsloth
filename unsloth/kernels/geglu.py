@@ -61,6 +61,7 @@ def geglu_exact_forward_kernel(gate, up):
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
             LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            enable_fp_fusion = True,
         )
     return out
 
@@ -123,6 +124,7 @@ def geglu_exact_backward_kernel(DW, e, g):
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
             LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            enable_fp_fusion = True,
         )
     return DW, e, g
 
@@ -166,6 +168,7 @@ def geglu_approx_forward_kernel(gate, up):
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
             LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            enable_fp_fusion = True,
         )
     return out
 
@@ -235,5 +238,6 @@ def geglu_approx_backward_kernel(DW, e, g):
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
             LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            enable_fp_fusion = True,
         )
     return DW, e, g

@@ -8583,6 +8583,9 @@ _PEFT_MOE_CONVERSION_PATTERNS = {
     "qwen3_omni_moe": "qwen2_moe",
     "qwen3_omni_moe_thinker": "qwen2_moe",
     "solar_open": "qwen2_moe",
+    # Keyed by class name, not model type: transformers (main, October 2026) aliases the
+    # unlimited_ocr text model's class to qwen2_moe, and the lookup keeps its case.
+    "UnlimitedOcrTextModel": "qwen2_moe",
 }
 
 # MoE-named types whose family is not fused: peft does no rewrite, so do not raise.
@@ -8674,7 +8677,8 @@ class _UnavailableConversionPatternMap(dict):
 
     def _is_moe(self, key):
         name = str(key).lower()
-        if name in _PEFT_MOE_CONVERSION_PATTERNS:
+        # Both spellings: model types are lowercase, the class-name aliases are not.
+        if key in _PEFT_MOE_CONVERSION_PATTERNS or name in _PEFT_MOE_CONVERSION_PATTERNS:
             return True
         if name in _PEFT_MOE_NAMED_NOT_FUSED or name in _PEFT_MOE_NAMED_NOT_CONVERTED:
             return False

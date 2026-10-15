@@ -1750,6 +1750,19 @@ export const fr = {
         apiOnlyDescription:
           "Le déchargement en cas d'inactivité laisse en mémoire un modèle que vous avez chargé depuis Unsloth et ne libère que ceux chargés par une requête API.",
       },
+      modelAliases: {
+        sectionTitle: "Alias de modèles (OpenAI API)",
+        description:
+          "Des noms stables pour les clients de l’API, comme fast-chat ou code. Une requête qui nomme un alias est servie par le modèle vers lequel il pointe, donc les apps connectées continuent de fonctionner quand vous changez de modèle. Activez Changer de modèle par requête pour qu’un alias puisse charger son modèle.",
+        namePlaceholder: "fast-chat",
+        nameAriaLabel: "Nom de l’alias",
+        modelAriaLabel: "Modèle vers lequel pointe l’alias",
+        modelPlaceholder: "unsloth/Qwen3-4B-GGUF:Q4_K_M",
+        removeAriaLabel: "Supprimer l’alias",
+        add: "Ajouter un alias",
+        loadError: "Impossible de charger les alias de modèles.",
+        saveError: "Impossible d’enregistrer les alias de modèles.",
+      },
       previewSharing: {
         sectionTitle: "Partage de l'aperçu",
         enableLabel: "Liens d'aperçu publics",

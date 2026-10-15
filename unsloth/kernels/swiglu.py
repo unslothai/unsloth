@@ -54,6 +54,7 @@ def swiglu_fg_kernel(e, g):
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
             LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            enable_fp_fusion = True,
         )
     return h
 
@@ -122,5 +123,6 @@ def swiglu_DWf_DW_dfg_kernel(DW, e, g):
             n_elements,
             BLOCK_SIZE = BLOCK_SIZE,
             LONG_INDEXING = 0 if n_elements <= INT32_SAFETY_BUFFER else 1,
+            enable_fp_fusion = True,
         )
     return DW, e, g

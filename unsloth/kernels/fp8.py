@@ -165,7 +165,7 @@ def weight_dequant_block(
         triton.cdiv(N, meta["BLOCK_SIZE"]),
     )
     with _fp8_triton_device_context(x):
-        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size)
+        weight_dequant_kernel[grid](x, s, y, M, N, BLOCK_SIZE = block_size, enable_fp_fusion = True)
     return y
 
 
@@ -253,7 +253,9 @@ def act_quant(x: torch.Tensor, block_size: int = 128) -> tuple[torch.Tensor, tor
         return (triton.cdiv(x.numel(), meta["BLOCK_SIZE"]),)
 
     with _fp8_triton_device_context(x):
-        act_quant_kernel[grid](x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x))
+        act_quant_kernel[grid](
+            x, y, s, BLOCK_SIZE = block_size, LONG_INDEXING = long_indexing(x), enable_fp_fusion = True
+        )
     return y, s
 
 
@@ -415,6 +417,7 @@ def w8a8_block_fp8_matmul_triton(
             LONG_INDEXING = long_indexing(A, B, C),
             # Default 4 warps starve 128x128 tiles (8 is 1.3-2.1x faster from M >= 128); smaller decode tiles gain nothing.
             num_warps = 8 if BLOCK_SIZE_M == 128 else 4,
+            enable_fp_fusion = True,
         )
     return C
 
@@ -550,7 +553,17 @@ def fp8_rowwise_gemv(X, weight, weight_scale):
     block_n = 1 if N <= 4096 else (4 if N <= 32768 else 8)
     with _fp8_triton_device_context(X, static_device_count = True):
         _fp8_rowwise_gemv_kernel[(triton.cdiv(N, block_n),)](
-            X, weight, scale, out, N, K, weight.stride(0), BLOCK_N = block_n, BLOCK_K = 512, num_warps = 2
+            X,
+            weight,
+            scale,
+            out,
+            N,
+            K,
+            weight.stride(0),
+            BLOCK_N = block_n,
+            BLOCK_K = 512,
+            num_warps = 2,
+            enable_fp_fusion = True,
         )
     return out
 

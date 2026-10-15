@@ -7198,8 +7198,20 @@ def fast_inference_setup(model_name, model_config):
                 f"Unsloth: Switching from Unsloth dynamic quant to normal quant since\n"
                 f"we do not yet support fast inference for {model_name}"
             )
-            model_name = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
+            model_name = _vllm_plain_bnb_or_16bit(model_name)
     return fast_inference, model_name
+
+
+def _vllm_plain_bnb_or_16bit(model_name):
+    """`-unsloth-bnb-4bit` -> `-bnb-4bit` when that repo is published, else the 16-bit original (quantized on load)."""
+    from .mapper import FLOAT_TO_INT_MAPPER, INT_TO_FLOAT_MAPPER
+
+    plain = model_name[: -len("unsloth-bnb-4bit")] + "bnb-4bit"
+    lower = model_name.lower()
+    key = lower if lower in INT_TO_FLOAT_MAPPER else FLOAT_TO_INT_MAPPER.get(lower)
+    if key is None or (FLOAT_TO_INT_MAPPER.get(plain.lower()) or "").lower() == key.lower():
+        return plain
+    return INT_TO_FLOAT_MAPPER.get(key) or plain
 
 
 def save_lora_adapter(model, save_directory, *args, **kwargs):

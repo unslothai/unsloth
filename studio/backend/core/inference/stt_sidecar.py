@@ -266,6 +266,41 @@ def normalize_whisper_language(language: Optional[str]) -> Optional[str]:
     return _WHISPER_LANGUAGE_ALIASES.get(primary, primary)
 
 
+# Whisper code -> Qwen3-ASR prompt name (config.support_languages; audio.cpp qwen3_asr/assets.cpp).
+QWEN3_ASR_LANGUAGE_NAMES = {
+    "ar": "Arabic",
+    "cs": "Czech",
+    "da": "Danish",
+    "de": "German",
+    "el": "Greek",
+    "en": "English",
+    "es": "Spanish",
+    "fa": "Persian",
+    "fi": "Finnish",
+    "fr": "French",
+    "hi": "Hindi",
+    "hu": "Hungarian",
+    "id": "Indonesian",
+    "it": "Italian",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "mk": "Macedonian",
+    "ms": "Malay",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "ro": "Romanian",
+    "ru": "Russian",
+    "sv": "Swedish",
+    "th": "Thai",
+    "tl": "Filipino",
+    "tr": "Turkish",
+    "vi": "Vietnamese",
+    "yue": "Cantonese",
+    "zh": "Chinese",
+}
+
+
 def _stt_quiet_window_end(decoded_audio, start: int, window: int) -> Optional[int]:
     """Return a nearby quiet window boundary, or None when speech fills it."""
     import numpy as np

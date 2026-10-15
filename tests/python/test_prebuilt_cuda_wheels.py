@@ -762,6 +762,96 @@ class TestWarmWiring:
         assert uploaded[len(pattern) - 1 :] == "${{ matrix.shard }}"
 
 
+class TestFatbinCompression:
+    """nvcc compresses only PTX by default; uncompressed cubins made flash-attn 1.49 GB."""
+
+    def test_every_cell_compresses_every_fatbin_image(self):
+        flags = prebuilt_wheels.NVCC_APPEND_FLAGS.split()
+        assert "-compress-all" in flags
+        assert flags[flags.index("-compress-all") - 1] == "-Xfatbin"
+        assert "--compress-mode=size" in flags
+        everywhere = ",".join(prebuilt_wheels.PLATFORMS)
+        cells = prebuilt_wheels.build_matrix(torches = "2.13.0,2.14.0", platforms = everywhere)
+        cells += prebuilt_wheels.build_matrix(
+            torches = "2.10.0,2.11.0,2.12.0", pythons = "3.12", platforms = "win_amd64"
+        )
+        assert {cell["platform"] for cell in cells} == set(prebuilt_wheels.PLATFORMS)
+        for cell in cells:
+            assert cell["nvcc_append_flags"] == prebuilt_wheels.NVCC_APPEND_FLAGS
+            assert cell["ccache_tag"] == prebuilt_wheels.CCACHE_TAG
+            assert (
+                cell["max_extension_mb"]
+                == prebuilt_wheels.SPECS[cell["package"]]["max_extension_mb"]
+            )
+            # Never through the word-split build_env.
+            assert "compress" not in cell["build_env"]
+
+    def test_warm_and_build_append_the_flags_before_compiling(self, workflow):
+        for job, step_name in (
+            ("warm", "Compile slice ${{ matrix.shard }} of ${{ matrix.shards }}"),
+            ("build", "Build the wheel"),
+        ):
+            assert workflow["jobs"][job]["env"]["FATBIN_FLAGS"] == "${{ matrix.nvcc_append_flags }}"
+            script = next(s for s in workflow["jobs"][job]["steps"] if s.get("name") == step_name)[
+                "run"
+            ]
+            # Appended, so the Windows _USE_MATH_DEFINES already in NVCC_APPEND_FLAGS survives.
+            assert (
+                'export NVCC_APPEND_FLAGS="${NVCC_APPEND_FLAGS:+$NVCC_APPEND_FLAGS }$FATBIN_FLAGS"'
+                in script
+            )
+            # An empty value would compile, and in warm save, uncompressed objects under the tag.
+            assert 'if [ -z "$FATBIN_FLAGS" ]' in script
+            assert script.index("NVCC_APPEND_FLAGS=") < script.index("prebuilt_wheels") or (
+                script.index("NVCC_APPEND_FLAGS=") < script.index("bdist_wheel")
+            )
+
+    def test_no_ccache_from_before_the_flags_is_restored(self, workflow):
+        """ccache does not hash NVCC_APPEND_FLAGS, so the cache key has to carry them."""
+        keyed = [
+            step
+            for job in workflow["jobs"].values()
+            for step in job.get("steps", [])
+            if "actions/cache" in step.get("uses", "")
+        ]
+        assert len(keyed) == 2
+        for step in keyed:
+            keys = [step["with"]["key"], *step["with"].get("restore-keys", "").splitlines()]
+            for key in filter(None, (k.strip() for k in keys)):
+                assert key.startswith(
+                    "prebuilt-ccache-${{ matrix.platform }}-${{ matrix.ccache_tag }}-"
+                ), key
+
+    def test_the_size_gate_runs_before_the_wheel_leaves_the_build(self, workflow):
+        names = [s.get("name") for s in workflow["jobs"]["build"]["steps"]]
+        gate = names.index("Check the extension size")
+        assert names.index("Name the wheel the way upstream names it") < gate
+        assert gate < names.index("Smoke test the wheel in a fresh venv")
+        run = workflow["jobs"]["build"]["steps"][gate]["run"]
+        assert run.startswith("python ../unsloth/.github/scripts/prebuilt_wheels.py size-gate ")
+        assert '--package "$PACKAGE"' in run
+
+    @pytest.mark.parametrize("megabytes, status", [(0.001, 0), (0.0001, 1)])
+    def test_size_gate(self, tmp_path, monkeypatch, megabytes, status):
+        import zipfile
+
+        wheel = tmp_path / "flash_attn-2.8.4-cp313-cp313-linux_x86_64.whl"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("flash_attn_2_cuda.cpython-313-x86_64-linux-gnu.so", b"x" * 500)
+            archive.writestr("flash_attn/__init__.py", b"")
+        monkeypatch.setitem(prebuilt_wheels.SPECS["flash-attn"], "max_extension_mb", megabytes)
+        assert prebuilt_wheels.main(["size-gate", "--package", "flash-attn", str(wheel)]) == status
+
+    def test_size_gate_refuses_a_wheel_without_an_extension(self, tmp_path):
+        import zipfile
+
+        wheel = tmp_path / "x.whl"
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("x/__init__.py", b"")
+        with pytest.raises(SystemExit):
+            prebuilt_wheels.main(["size-gate", "--package", "flash-attn", str(wheel)])
+
+
 def test_release_lookups_do_not_pass_arg_to_gh_jq():
     """gh's --jq has no --arg flag: `--jq --arg tag X` fails the publish job before any release call."""
     workflow = (REPO / ".github" / "workflows" / "prebuilt-cuda-wheels.yml").read_text(
