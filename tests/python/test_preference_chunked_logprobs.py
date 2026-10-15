@@ -20,7 +20,10 @@ import unsloth.models.rl_replacements as rl
 trl = pytest.importorskip("trl")
 
 if rl.unsloth_chunked_logprobs is None:
-    pytest.skip("installed unsloth_zoo predates unsloth_chunked_logprobs", allow_module_level = True)
+    # Skip because the kernel ships in unsloth_zoo (unslothai/unsloth-zoo#1803).
+    pytest.skip(
+        reason = "installed unsloth_zoo predates unsloth_chunked_logprobs", allow_module_level = True
+    )
 
 
 def _trl_class(kind):
@@ -47,7 +50,8 @@ def _trl_class(kind):
         module = importlib.import_module(name)
         cls = getattr(module, "ORPOTrainer" if kind == "orpo" else "CPOTrainer")
         return cls, ast.get_source_segment(text, node, padded = True)
-    pytest.skip(f"no {kind} trainer in the installed TRL")
+    # Skip because this TRL ships no such trainer (CPO / ORPO left trl.trainer in 0.29).
+    pytest.skip(reason = f"no {kind} trainer in the installed TRL")
 
 
 def _compile(source, rows_per_chunk = None):
@@ -150,7 +154,8 @@ def _qwen_lora():
             "trl-internal-testing/tiny-Qwen3ForCausalLM", torch_dtype = torch.float32
         )
     except Exception as error:
-        pytest.skip(f"tiny Qwen3 checkpoint unavailable: {error}")
+        # Skip because the offline checkpoint is missing, not a code failure.
+        pytest.skip(reason = f"tiny Qwen3 checkpoint unavailable: {error}")
     torch.manual_seed(0)
     model = peft.get_peft_model(
         model, peft.LoraConfig(r = 4, lora_alpha = 8, target_modules = ["q_proj", "v_proj", "down_proj"])

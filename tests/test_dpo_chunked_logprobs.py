@@ -70,7 +70,7 @@ def _zoo_kernel():
         if path.exists():
             break
     else:
-        pytest.skip("unsloth_zoo has no fused_losses/chunked_logprob.py")
+        pytest.skip(reason = "unsloth_zoo has no fused_losses/chunked_logprob.py")
     os.environ["UNSLOTH_COMPILE_DISABLE"] = "1"
     stub = types.ModuleType("unsloth_zoo.temporary_patches.common")
     stub.torch_compile_options = {}
@@ -154,7 +154,7 @@ def env():
     import trl.trainer.dpo_trainer as dpo_mod
 
     if not hasattr(_stock(dpo_mod, "DPOTrainer"), "concatenated_forward"):
-        pytest.skip("TRL >= 0.29 has no concatenated_forward")
+        pytest.skip(reason = "TRL >= 0.29 has no concatenated_forward")
     ns = _helpers()
     source = inspect.getsource(_stock(dpo_mod, "DPOTrainer").concatenated_forward)
     # Class-indented, as unsloth/models/rl.py hands it to RL_FUNCTIONS.
@@ -265,12 +265,12 @@ def test_matches_trl(env, case):
     dpo_mod, forward = env
     kwargs = dict(CASES[case])
     if "ld_alpha" in kwargs and "ld_alpha" not in dpo_mod.DPOConfig.__dataclass_fields__:
-        pytest.skip("no ld_alpha in this TRL")
+        pytest.skip(reason = "this TRL has no ld_alpha field")
     if (
         isinstance(kwargs.get("loss_type"), list)
         and "loss_weights" not in dpo_mod.DPOConfig.__dataclass_fields__
     ):
-        pytest.skip("no multi-loss in this TRL")
+        pytest.skip(reason = "this TRL has no multi-loss DPO")
     _, base_loss, base_metrics, base_grads = _run(dpo_mod, forward, kwargs, chunked = False)
     trainer, loss, metrics, grads = _run(dpo_mod, forward, kwargs, chunked = True)
     assert trainer._unsloth_dpo_chunked_calls >= 1
@@ -339,7 +339,7 @@ TRL_TAGS = [
 def test_rewrite_applies_across_trl(tag):
     repo = os.environ.get("TRL_HISTORY")
     if not repo or not Path(repo, ".git").exists():
-        pytest.skip("set TRL_HISTORY to a huggingface/trl clone")
+        pytest.skip(reason = "set TRL_HISTORY to a huggingface/trl clone")
     text = subprocess.run(
         ["git", "-C", repo, "show", f"{tag}:trl/trainer/dpo_trainer.py"],
         capture_output = True,
@@ -367,7 +367,7 @@ def test_rewrite_applies_across_trl(tag):
 def _trl_source(tag, paths, cls_name, fn_name):
     repo = os.environ.get("TRL_HISTORY")
     if not repo or not Path(repo, ".git").exists():
-        pytest.skip("set TRL_HISTORY to a huggingface/trl clone")
+        pytest.skip(reason = "set TRL_HISTORY to a huggingface/trl clone")
     for path in paths:
         r = subprocess.run(
             ["git", "-C", repo, "show", f"{tag}:{path}"], capture_output = True, text = True
@@ -428,12 +428,13 @@ def _kto_run(
     ns = _helpers()
     stock_forward = getattr(_stock(kto_mod, "KTOTrainer"), "forward", None)
     if stock_forward is None:
-        pytest.skip("installed KTOTrainer has no forward (TRL >= 1.10)")
+        pytest.skip(reason = "installed KTOTrainer has no forward (TRL >= 1.10)")
     source = inspect.getsource(stock_forward)
     patched = ns["kto_trainer_chunked_logprobs"]("forward", source)
     if patched == source:
+        # Skip because TRL >= 1.10 restructured KTO; the release-tag test covers the rewrite.
         pytest.skip(
-            "installed KTOTrainer.forward has no rewritable get_batch_logps call (TRL >= 1.10)"
+            reason = "installed KTOTrainer.forward has no rewritable get_batch_logps call (TRL >= 1.10)"
         )
     g = dict(vars(_stock_module(kto_mod)))
     g.update({k: v for k, v in ns.items() if not k.startswith("__")})
