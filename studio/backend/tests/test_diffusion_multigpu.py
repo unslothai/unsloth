@@ -1796,3 +1796,93 @@ def test_cfg_batch_measured_no_gain_stops_after_the_first_batched_step():
     torch.testing.assert_close(out, reference, rtol = 1e-5, atol = 1e-6)
     assert router.stats["batched_steps"] == 1
     assert "measured no gain" in router.describe()["disabled_reason"]
+
+
+def test_cfg_batch_falls_back_when_the_batched_call_rejects_its_inputs():
+    torch.manual_seed(0)
+    dit = _BatchDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    inner = router.orig_forward
+
+    def fixed_batch(*a, **k):
+        if k["hidden_states"].shape[0] != 2:
+            raise ValueError("this model only runs batch 2")
+        return inner(*a, **k)
+
+    router.orig_forward = fixed_batch
+    dit.forward = router
+    out = _batch_loop(dit, latents.clone(), 4, cond, uncond)
+    torch.testing.assert_close(out, reference, rtol = 0, atol = 0)
+    assert "ValueError" in router.describe()["disabled_reason"]
+
+
+def test_cfg_batch_refuses_an_opaque_mutable_argument():
+    torch.manual_seed(0)
+
+    @dataclasses.dataclass
+    class Holder:
+        state: torch.Tensor
+
+    class HolderDit(_BatchDit):
+        def forward(self, hidden_states, timestep, encoder_hidden_states, holder = None, return_dict = False):
+            self.calls += 1
+            holder.state.add_(1.0)  # per-call mutation of shared state
+            return (self.proj(hidden_states) * timestep + encoder_hidden_states.tanh() + holder.state,)
+
+    def loop(dit, latents, steps, cond, uncond):
+        holder = Holder(torch.zeros(1))
+        for i in range(steps):
+            t = torch.tensor(1.0 - i / steps)
+            c = dit(hidden_states = latents, timestep = t, encoder_hidden_states = cond, holder = holder)[0]
+            u = dit(hidden_states = latents, timestep = t, encoder_hidden_states = uncond, holder = holder)[0]
+            latents = latents - 0.1 * (u + 4.0 * (c - u))
+        return latents
+
+    dit = HolderDit()
+    latents = torch.randn(2, 4)
+    cond, uncond = _embeds()
+    reference = loop(dit, latents.clone(), 4, cond, uncond)
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    out = loop(dit, latents.clone(), 4, cond, uncond)
+    assert torch.equal(out, reference)
+    assert router.stats["batched_steps"] == 0
+    assert "opaque" in router.describe()["last_unbatched_reason"]
+
+
+def test_cfg_batch_stops_timing_a_single_branch_loop(monkeypatch):
+    dit = _BatchDit()
+    router = mg.CfgBatchRouter(dit)
+    dit.forward = router
+    timed = []
+    monkeypatch.setattr(router, "_can_time", lambda latent: True)
+    monkeypatch.setattr(router, "_timed_plain", lambda a, k: timed.append(1) or router._plain(a, k))
+    latents = torch.randn(2, 4)
+    cond, _ = _embeds()
+    for _ in range(5):
+        latents = latents - dit(hidden_states = latents, timestep = torch.tensor(0.5), encoder_hidden_states = cond)[0]
+    assert len(timed) == 1  # the first step only: no second branch ever came
+
+
+def test_cfg_parallel_replica_card_is_chosen_among_those_that_fit(monkeypatch):
+    class Pipe:
+        transformer = _Dit()
+
+    pipe = Pipe()
+    # the tiny DiT's replica needs only the 1024 MiB margin
+    probes = {
+        0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
+        1: _probe(1, 500, {0: 20.0}),  # fastest link, cannot hold the replica
+        2: _probe(2, 9000, {0: 2.0}),
+    }
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **k: None)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
+        reason = mg._install_cfg_parallel_only(pipe, offload_policy = "none")
+    assert reason is None, reason
+    assert mg._CFG_ROUTERS[pipe].secondary == torch.device("cuda", 2)

@@ -2183,13 +2183,17 @@ def _install_cfg_parallel_only(
             need_mib = sum(
                 t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
             ) // (1 << 20)
-            best = rank_secondaries(
-                primary.index, candidates, lambda o: probes[o].free_mib, probes
-            )[0]
-            free = probes[best].free_mib
-            if free is not None and need_mib + 1024 > free:
-                reason = f"replica needs {need_mib} MiB, {free} MiB free on cuda:{best}"
+            # only cards that can hold the replica (unknown free memory kept), then the fast-link tier
+            fits = [
+                o
+                for o in candidates
+                if probes[o].free_mib is None or need_mib + 1024 <= probes[o].free_mib
+            ]
+            if not fits:
+                most = max(candidates, key = lambda o: probes[o].free_mib or -1)
+                reason = f"replica needs {need_mib} MiB, {probes[most].free_mib} MiB free on cuda:{most}"
             else:
+                best = rank_secondaries(primary.index, fits, lambda o: probes[o].free_mib, probes)[0]
                 router = CfgParallelRouter(
                     denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
                 )
@@ -2291,6 +2295,15 @@ def price_cfg_batch(
     }
 
 
+# Non-tensor leaves both branches may share in one batched call: immutable plain values, dtypes / devices and the
+# empty containers _leaves returns as leaves.
+def _batch_shareable(value: Any) -> bool:
+    torch = _torch()
+    if isinstance(value, (*_PLAIN_TYPES, torch.dtype, torch.device)):
+        return True
+    return isinstance(value, (tuple, list, dict, frozenset)) and not value
+
+
 class _NotBatchable(Exception):
     pass
 
@@ -2315,6 +2328,10 @@ def _batch_leaves(first: list, second: list, batch: int) -> dict:
                 values[path_a] = a
             else:
                 raise _NotBatchable(f"{path_a}: differs per branch without a batch dim")
+        elif not (_batch_shareable(a) and _batch_shareable(b)):
+            # a cache / holder object: one batched call would share (and mutate) it for both branches, and the
+            # odd branch's check would compare the same object with itself
+            raise _NotBatchable(f"{path_a}: opaque {type(a).__name__} argument")
         elif _same_value(a, b):
             values[path_a] = a
         else:
@@ -2398,6 +2415,7 @@ class CfgBatchRouter:
         self.last_skip: Optional[str] = None
         self.pricing: Optional[dict[str, Any]] = None
         self.plain_times: list[float] = []
+        self.timing_off = False
         self.verify_batched = _BATCH_VERIFY_CALLS
         self.batched_times: list[float] = []
         self.disabled_pending: Optional[str] = None
@@ -2432,6 +2450,9 @@ class CfgBatchRouter:
         if latent is not None and self.prev_latent is not None and latent is self.prev_latent:
             self.branch += 1
         else:
+            if self.branch == 0 and self.prev_latent is not None and self.pricing is None:
+                # the previous step had one call: a single-branch loop has nothing to price, so stop syncing
+                self.timing_off = True
             self.branch = 0
             self.prev_latent = latent
             if self.kept is not None:  # the previous step never asked for its odd branch
@@ -2440,7 +2461,9 @@ class CfgBatchRouter:
             self.b0_leaves = dict(_leaves((args, kwargs)))
         if self.disabled_reason is not None or latent is None:
             return self._plain(args, kwargs)
-        timing = self.pricing is None and self._can_time(latent)
+        if self.branch == 1:
+            self.timing_off = False  # guidance runs two branches after all: time the next step
+        timing = self.pricing is None and not self.timing_off and self._can_time(latent)
         if self.branch == 0:
             if self.template is not None:
                 out = self._batched(args, kwargs, latent)
@@ -2603,6 +2626,9 @@ class CfgBatchRouter:
             with contextlib.suppress(Exception):
                 torch.cuda.empty_cache()
             self.disable("out of memory on the batched call; one branch per call from here")
+            return None
+        except Exception as exc:  # noqa: BLE001 - the doubled batch was refused: the branch reruns plain
+            self.disable(f"the batched call failed ({type(exc).__name__}: {exc}); one branch per call from here")
             return None
         try:
             mine, other = _split_output(out, batch)
