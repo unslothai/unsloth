@@ -27,7 +27,9 @@ export async function loadVoice(id: string): Promise<void> {
       is_lora: false,
       voice: true,
     },
-    { runtime: "tts" },
+    // Not "tts": chat reads a tts load as the Audio page taking its slot and drops its own
+    // model. This one is kept beside it, so it is a chat-side load like any other kept model.
+    { runtime: "chat" },
   );
 }
 
