@@ -5580,6 +5580,21 @@ def _refuse_unsaveable_text_core(model, save_method):
             )
 
 
+def raise_if_merging_unsaved_reap(model):
+    """A merge rebuilds the base weights from the checkpoint on disk, which still holds every expert
+    when `reap_prune` pruned the model only in memory, so the result would mix pruned LoRA with the
+    unpruned base."""
+    if getattr(model, "_unsloth_reap_report", None) and not getattr(
+        model, "_unsloth_reap_saved", None
+    ):
+        raise RuntimeError(
+            "Unsloth: this model was REAP pruned in memory, but a merged save rebuilds the base "
+            f"weights from `{model.config._name_or_path}`, which still has every expert. Nothing "
+            'was written. Call `reap_prune(..., save_directory = "pruned_model")` (or save the '
+            "pruned model and load it again) before `get_peft_model`, then train and save."
+        )
+
+
 @_normalize_tied_weights_keys_for_save
 @torch.inference_mode
 def unsloth_generic_save(
@@ -5733,6 +5748,7 @@ def unsloth_generic_save(
         )
     else:
         raise_if_merging_mistral_format_view(model, save_method)
+        raise_if_merging_unsaved_reap(model)
         _prewarm_base_model_hub_cache(model, save_method = save_method, token = token)
         from unsloth_zoo.saving_utils import merge_and_overwrite_lora
 
