@@ -97,6 +97,26 @@ def _ff_group(module: Any) -> Optional[list]:
         return None
 
 
+def claimed(root: Any) -> set:
+    """ids of the rotated Linears a stock-path fusion has actually taken: the fused QKV (+ the marked to_out) here,
+    and a SwiGLU region ``diffusion_int8_fused`` installed. A group whose installer declined is absent."""
+    from .diffusion_int8_fused import _MARK as _FUSED_MARK
+
+    out: set = set()
+    for module in root.modules():
+        attn = _attn_group(module)
+        if attn is not None:
+            if _qkv_intact(module) is not None:
+                out.update(id(m) for m in attn[:3])
+            if len(attn) == 4 and _OUT_MARK in attn[3].__dict__:
+                out.add(id(attn[3]))
+            continue
+        ff = _ff_group(module)
+        if ff is not None and _FUSED_MARK in module.__dict__:
+            out.update(id(m) for m in ff)
+    return out
+
+
 def stock_claims(root: Any) -> list:
     """The rotated Linear groups this module (QKV / to_out) and ``diffusion_int8_fused`` (SwiGLU) take when
     ``arch_ok(device, group)`` holds; ``diffusion_int8_gemm`` leaves exactly these unswapped where its gate is all

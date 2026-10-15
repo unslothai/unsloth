@@ -1476,10 +1476,30 @@ def _all_cublas_gate(monkeypatch, tmp_path, cublas_wins):
     return default
 
 
+def _fake_stock_fusions(monkeypatch, model, qkv = True, swiglu = True):
+    """What the stock-path installers leave when they engage: int8_fused's SwiGLU mark (it runs before the swap) and
+    the QKV fusion's record + to_out mark (``install_modules``, called from the swap). Either may decline."""
+    from core.inference import diffusion_int8_fused as i8f
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    calls = []
+
+    def install_modules(root, logger = None):
+        calls.append(root)
+        if qkv:
+            a = root.attn
+            a.__dict__[qf._QKV_ATTR] = (object(), a.to_q, a.to_k, a.to_v)
+            a.to_out[0].__dict__[qf._OUT_MARK] = True
+        return {}
+
+    monkeypatch.setattr(qf, "install_modules", install_modules)
+    if swiglu:
+        model.mlp.__dict__[i8f._MARK] = object()
+    return calls
+
+
 @pytest.mark.parametrize("cublas_wins", [True, False])
-def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(
-    monkeypatch, tmp_path, cublas_wins
-):
+def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(monkeypatch, tmp_path, cublas_wins):
     """A100 Qwen-Image-2.1: with every bucket on cuBLAS the swapped forward is rotq_i8 + cuBLAS per Linear, which
     also locks out the QKV / SwiGLU shared-rotation fusions the kill switch runs (0.2557 vs 0.2504 s/step). The groups
     those fusions take must stay unswapped; other Linears and a fused plan keep the swap."""
@@ -1492,13 +1512,34 @@ def test_all_cublas_gate_yields_qwen_image_21_groups_to_their_stock_fusion(
     assert len(attn_group) == 4 and len(ff_group) == 3
     # the order the loader runs: int8_fused asks first (SwiGLU), then the int8 GEMM swap, then the QKV fusion
     assert qf.rotated_ff(model.mlp) is cublas_wins
+    calls = _fake_stock_fusions(monkeypatch, model, swiglu = cublas_wins)
     count = g8._swap(model)
     swapped = {id(m) for m in model.modules() if g8.is_installed(m)}
     assert id(model.mod) in swapped
     for lin in attn_group + ff_group:
         assert (id(lin) in swapped) is not cublas_wins
     assert count == (1 if cublas_wins else 8)
+    assert len(calls) == (1 if cublas_wins else 0)
     assert qf.arch_ok(torch.device("cuda", 0), attn_group) is cublas_wins
+    g8.uninstall(model)
+
+
+@pytest.mark.parametrize("qkv, swiglu", [(False, False), (False, True), (True, False)])
+def test_all_cublas_gate_keeps_the_swap_where_the_stock_fusion_declined(monkeypatch, tmp_path, qkv, swiglu):
+    """A declined installer (newer diffusers QKV helper fingerprint, int8_fused probe refusal) leaves its group
+    stock; that group must keep the int8 swap rather than drop to the per-Linear stock forward."""
+    from core.inference import diffusion_qwenimage21_fused as qf
+
+    _all_cublas_gate(monkeypatch, tmp_path, True)
+    model = _q21_model()
+    _fake_stock_fusions(monkeypatch, model, qkv = qkv, swiglu = swiglu)
+    g8._swap(model)
+    swapped = {id(m) for m in model.modules() if g8.is_installed(m)}
+    for lin in qf._attn_group(model.attn):
+        assert (id(lin) in swapped) is not qkv
+    for lin in qf._ff_group(model.mlp):
+        assert (id(lin) in swapped) is not swiglu
+    assert id(model.mod) in swapped
     g8.uninstall(model)
 
 

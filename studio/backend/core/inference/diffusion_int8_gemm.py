@@ -1151,17 +1151,22 @@ def gate_routes_to_cublas(index: Any, shapes: Any) -> bool:
 
 
 def _yielded(transformer: Any, index: Any) -> set:
-    """ids of the rotated Linears a model's own stock-path fusion takes because the gate left them all on cuBLAS."""
+    """ids of the rotated Linears a model's own stock-path fusion took because the gate left them all on cuBLAS. The
+    QKV fusion installs here (idempotent; its patch stage re-runs it) and only what a fusion actually claimed is
+    yielded: a declined install (helper fingerprint, kernel probe) keeps the swap."""
     try:
-        from .diffusion_qwenimage21_fused import stock_claims
+        from .diffusion_qwenimage21_fused import claimed, install_modules, stock_claims
         groups = stock_claims(transformer)
-    except Exception:  # noqa: BLE001
+        want: set = set()
+        for group in groups:
+            if gate_routes_to_cublas(index, {(int(m.out_features), int(m.in_features)) for m in group}):
+                want.update(id(m) for m in group)
+        if not want:
+            return set()
+        install_modules(transformer)
+        return want & claimed(transformer)
+    except Exception:  # noqa: BLE001 - unknown: keep the swap
         return set()
-    out: set = set()
-    for group in groups:
-        if gate_routes_to_cublas(index, {(int(m.out_features), int(m.in_features)) for m in group}):
-            out.update(id(m) for m in group)
-    return out
 
 
 def _time_ms(
