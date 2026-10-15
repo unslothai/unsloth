@@ -115,7 +115,7 @@ function isEmptyTest(node: ts.Node, jobKeys: string): boolean {
 type Truth = true | false | null;
 
 function underAnEmptyList(node: ts.Node, jobKeys: string): Truth {
-  // Queued plans and starts still in their preflight show before their first job exists, so the panel hides only when all of them are empty.
+  // Queued plans and preflight starts show before any job exists.
   const declarations = panelComponent().body?.statements.flatMap(statement =>
     ts.isVariableStatement(statement) ? [...statement.declarationList.declarations] : []
   ) ?? [];
