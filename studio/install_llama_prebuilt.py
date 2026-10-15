@@ -10189,8 +10189,8 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     # GGML_VK_VISIBLE_DEVICES and Vulkan ordinals), so masking down to a below-floor card
     # must not route the install to Vulkan: the installed backend would happily enumerate
     # the HIP-capable card the user deliberately hid, possibly one reserved for another
-    # workload. Auto-fall back only when no AMD device on the box can be exposed to HIP; an
-    # explicit vulkan opt-in is unaffected.
+    # workload. Under a mask, auto-fall back only when no AMD device on the box can be exposed
+    # to HIP; an explicit vulkan opt-in is unaffected.
     #
     # Under a mask the probe cannot supply that inventory at all (hipinfo sees only visible
     # devices), so "no AMD GPU here reaches the floor" is unprovable and guessing wrong is
@@ -10201,10 +10201,10 @@ def _should_auto_vulkan_for_amd_windows(host: HostInfo, published_repo: str | No
     if _hip_visible_device_mask_set():
         return False
     targets = list(dict.fromkeys([*_host_rocm_gfx_targets(host), active]))
-    # Mixed host whose active card has no HIP bundle (RX 5700 XT gfx1010 at device 0 beside an
-    # RX 6500 XT gfx1034): no HIP prebuilt can serve the card HIP runs on, while Vulkan runs on
-    # both. Only when the active arch is the unmasked probe's own pick: a forwarded arch the
-    # probe did not choose, or UNSLOTH_ROCM_GFX_ARCH, keeps the all-cards rule.
+    # Mixed host whose active card has no HIP bundle (gfx1010 at device 0 beside a gfx1034):
+    # no HIP prebuilt can serve the card HIP runs on, while Vulkan runs on both. Only when the
+    # active arch is the unmasked probe's own pick: a forwarded arch the probe did not choose,
+    # or UNSLOTH_ROCM_GFX_ARCH, keeps the all-cards rule.
     if (
         not os.environ.get("UNSLOTH_ROCM_GFX_ARCH")
         and active == _pick_rocm_gfx_target(" ".join(targets))
