@@ -334,6 +334,24 @@ def mark_current_response_failed() -> None:
     mark_response_failed(_current_response_scope.get())
 
 
+_MEDIA_TRACKED_SCOPE_KEY = "_unsloth_keepwarm_media_owner"
+_MEDIA_UNTRACKED_SCOPE_KEY = "_unsloth_keepwarm_media_untracked"
+
+
+def untrack_current_media_request(scope) -> None:
+    """Drop this request from its media tracker once the route knows it won't use the local
+    engine, so a call to a saved connection can't hold off a media swap or idle unload."""
+    if not isinstance(scope, dict) or scope.get(_MEDIA_UNTRACKED_SCOPE_KEY):
+        return
+    owner = scope.get(_MEDIA_TRACKED_SCOPE_KEY)
+    if owner is None:
+        return
+    from core.inference import media_keepwarm
+
+    scope[_MEDIA_UNTRACKED_SCOPE_KEY] = True
+    media_keepwarm.end_request(owner, counted = False)
+
+
 def untrack_current_request(scope) -> None:
     """Drop this request from the in-flight count once the route knows it won't use the
     local GGUF, so external-provider traffic can't trip the swap busy guard. Idempotent;
@@ -605,6 +623,8 @@ class LlamaKeepWarmMiddleware:
                 if chat_tracked:
                     _note_untracked_end(is_preview)
                 raise
+            if isinstance(scope, dict):
+                scope[_MEDIA_TRACKED_SCOPE_KEY] = media_owner
         ended = {"done": False}
         status = {"code": None}
         # Set only on the terminal body frame, so a cancelled stream never claims the slot.
@@ -615,7 +635,9 @@ class LlamaKeepWarmMiddleware:
                 return
             ended["done"] = True
             code = status["code"]
-            if media_owner is not None:
+            if media_owner is not None and not (
+                isinstance(scope, dict) and scope.get(_MEDIA_UNTRACKED_SCOPE_KEY)
+            ):
                 media_keepwarm.end_request(media_owner, counted = code not in (401, 403))
             if not chat_tracked:
                 return

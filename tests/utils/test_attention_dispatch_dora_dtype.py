@@ -12,7 +12,6 @@ def _run(monkeypatch, qkv_dtype, backend):
 
     def _check(Q):
         captured["dtype"] = Q.dtype
-        # Mirror the real kernel constraint so an unfixed dispatch fails loudly.
         if Q.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError("FlashAttention only support fp16 and bf16 data type")
 
@@ -60,7 +59,6 @@ def _run(monkeypatch, qkv_dtype, backend):
 
 
 def test_dense_flash_downcasts_fp32_qkv(monkeypatch):
-    # fp32 DoRA output must be downcast to a flash-compatible dtype.
     assert _run(monkeypatch, torch.float32, ad.FLASH_DENSE) in (torch.bfloat16, torch.float16)
 
 
@@ -69,14 +67,11 @@ def test_varlen_flash_downcasts_fp32_qkv(monkeypatch):
 
 
 def test_bf16_qkv_left_untouched(monkeypatch):
-    # Standard LoRA path (already bf16) must not be altered.
     assert _run(monkeypatch, torch.bfloat16, ad.FLASH_DENSE) == torch.bfloat16
 
 
 def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
-    # Same #1013 fp32 downcast, but for the xformers backend. On sm_100+ (B200, sm_120) xformers' fp32-capable cutlass
-    # op is capability-rejected and only its flash-2 op runs (fp16/bf16 only), so fp32 must be downcast there too or the
-    # op raises.
+    # On sm_100+ only xformers' fp16/bf16 flash-2 op runs, so fp32 must be downcast.
     captured = {}
 
     def fake_xformers_attention(
@@ -87,7 +82,6 @@ def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
         **kwargs,
     ):
         captured["dtype"] = Q.dtype
-        # Mirror the flash-2 op's real dtype constraint so an unfixed dispatch fails loudly.
         if fp32_unsupported and Q.dtype not in (torch.float16, torch.bfloat16):
             raise RuntimeError("no operator found for memory_efficient_attention with fp32")
         return torch.zeros_like(Q)
@@ -120,10 +114,8 @@ def _run_xformers(monkeypatch, qkv_dtype, fp32_unsupported):
 
 
 def test_xformers_downcasts_fp32_qkv_on_sm100_plus(monkeypatch):
-    # sm_100+ (fp32 op gone): fp32 DoRA output must be downcast, else the flash-2 op raises.
     assert _run_xformers(monkeypatch, torch.float32, True) in (torch.bfloat16, torch.float16)
 
 
 def test_xformers_leaves_fp32_qkv_below_sm100(monkeypatch):
-    # Below sm_100 the cutlass op handles fp32 natively, so it must be passed through as-is.
     assert _run_xformers(monkeypatch, torch.float32, False) == torch.float32

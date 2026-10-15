@@ -6851,6 +6851,22 @@ class ExternalProviderClient:
                 raise asyncio.CancelledError
         return audio, media_type or f"audio/{response_format}"
 
+    async def create_images(self, prompt: str, model: str, n: int, size: str) -> list[str]:
+        response = await _client().post(
+            _append_provider_path(self.base_url, "/images/generations"),
+            headers = self._auth_headers(),
+            json = {
+                "model": model,
+                "prompt": prompt,
+                "n": n,
+                "size": size,
+                "response_format": "b64_json",
+            },
+            timeout = self._timeout,
+        )
+        response.raise_for_status()
+        return [item["b64_json"] for item in response.json()["data"]]
+
     async def create_transcription(
         self,
         audio: bytes,

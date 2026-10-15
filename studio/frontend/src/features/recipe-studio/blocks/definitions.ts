@@ -166,7 +166,7 @@ const BLOCK_DEFINITIONS: BlockDefinition[] = [
     kind: "seed",
     type: "seed_local",
     title: "CSV or JSON file",
-    description: "Upload CSV, JSON, or JSONL and use its rows as source data.",
+    description: "Upload CSV, JSON, JSONL, or Parquet and use its rows as source data.",
     icon: DocumentCodeIcon,
     dialogKey: "seed",
     createConfig: (id, existing) => makeSeedConfig(id, existing, "local"),

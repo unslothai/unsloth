@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Packed vs padded parity for SentenceTransformer encoder unpadding on tiny BERT / RoBERTa.
-
-"simulated" replaces flash_attn_varlen_func with per-segment SDPA (integration + gradients,
-not FlashAttention numerics); "xformers" runs the real BlockDiagonalMask kernel.
-"""
+"""Packed vs padded SentenceTransformer unpadding parity; simulated mode is SDPA, not FlashAttention."""
 
 import copy
 import importlib.util
