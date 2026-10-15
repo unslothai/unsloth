@@ -40,8 +40,6 @@ def bearer_from_x_api_key(headers) -> list | None:
 
 
 class XApiKeyMiddleware:
-    """Pure ASGI; registered outermost so it runs before every middleware that reads ``Authorization``."""
-
     def __init__(self, app):
         self.app = app
 
