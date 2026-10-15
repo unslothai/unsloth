@@ -16,7 +16,9 @@ saves memory.
 transformers validates `optim` against OptimizerNames, so the config stores
 `adamw_torch` and marks itself with `_unsloth_flash_adamw` plus a token in `optim_args`
 (a dataclass field, so `dataclasses.replace` keeps it); the patched
-`Trainer.get_optimizer_cls_and_kwargs` reads either mark.
+`Trainer.get_optimizer_cls_and_kwargs` reads either mark. Because the placeholder is a real
+optim name, `dataclasses.replace(args, optim = "adamw_torch")` still selects FlashAdamW;
+switch back with `optim_args = None` (or `unmark_flash_adamw(args)`).
 """
 
 __all__ = [
@@ -36,6 +38,10 @@ FLASH_ADAMW_NAME = "adamw_flash"
 _FLASH_ADAMW_PLACEHOLDER = "adamw_torch"
 _FLASH_ADAMW_MARKER = "unsloth_adamw_flash"
 _FLASH_ADAMW_CLASS = None
+_FLASH_ADAMW_MIN_VERSION = "0.1.4"
+_TRUE_VALUES = ("1", "true", "yes")
+_FALSE_VALUES = ("0", "false", "no")
+_announced = False
 
 
 def is_flash_adamw(optim):
@@ -55,7 +61,12 @@ def _parse_optim_args(optim_args):
         if key == "master_weight_bits":
             parsed[key] = None if value.lower() in ("none", "0", "") else int(value)
         elif key in ("quantize", "compress_state_dict", "check_numerics", "decouple_lr"):
-            parsed[key] = value.lower() in ("1", "true", "yes")
+            if value.lower() not in _TRUE_VALUES + _FALSE_VALUES:
+                raise ValueError(
+                    f"Unsloth: optim = 'adamw_flash' optim_args {key}={value!r} is not a boolean. "
+                    "Use true / false, 1 / 0 or yes / no."
+                )
+            parsed[key] = value.lower() in _TRUE_VALUES
         else:
             raise ValueError(
                 f"Unsloth: optim = 'adamw_flash' does not understand optim_args key {key!r}. "
@@ -69,12 +80,26 @@ def _get_flash_adamw_class():
     if _FLASH_ADAMW_CLASS is not None:
         return _FLASH_ADAMW_CLASS
     try:
+        import flashoptim
         from flashoptim import FlashAdamW
     except ImportError as error:
         raise ImportError(
             "Unsloth: optim = 'adamw_flash' needs the flashoptim package. "
-            "Install it via `pip install flashoptim`."
+            f"Install it via `pip install 'flashoptim>={_FLASH_ADAMW_MIN_VERSION}'`."
         ) from error
+    from packaging.version import Version
+
+    version = getattr(flashoptim, "__version__", None)
+    if version is None:
+        import importlib.metadata
+
+        version = importlib.metadata.version("flashoptim")
+    # 0.1.4 made compress_state_dict default to True, which the resume guard below relies on.
+    if Version(version) < Version(_FLASH_ADAMW_MIN_VERSION):
+        raise ImportError(
+            f"Unsloth: optim = 'adamw_flash' needs flashoptim>={_FLASH_ADAMW_MIN_VERSION}, found {version}. "
+            f"Upgrade via `pip install -U 'flashoptim>={_FLASH_ADAMW_MIN_VERSION}'`."
+        )
 
     class UnslothFlashAdamW(FlashAdamW):
         def __init__(self, params, *args, master_weight_bits = 32, **kwargs):
@@ -184,8 +209,27 @@ def _fsdp_version(args):
     return None
 
 
+def _deepspeed_offloads_optimizer(args):
+    if _is_truthy(os.environ.get("ACCELERATE_USE_DEEPSPEED", "")) and os.environ.get(
+        "ACCELERATE_DEEPSPEED_OFFLOAD_OPTIMIZER_DEVICE", ""
+    ).strip().lower() in ("cpu", "nvme"):
+        return True
+    config = getattr(getattr(args, "hf_deepspeed_config", None), "config", None)
+    if config is None:
+        config = getattr(args, "deepspeed", None)
+        if isinstance(config, str) and config:
+            import json
+
+            with open(config, "r", encoding = "utf-8") as f:
+                config = json.load(f)
+    if not isinstance(config, dict):
+        return False
+    offload = (config.get("zero_optimization", None) or {}).get("offload_optimizer", None) or {}
+    return str(offload.get("device", "none")).lower() in ("cpu", "nvme")
+
+
 def get_flash_adamw_cls_and_kwargs(args):
-    optimizer_cls = _get_flash_adamw_class()
+    global _announced
     # flashoptim supports only Linux with NVIDIA CUDA; ROCm also reports torch.cuda.is_available().
     if (
         not torch.cuda.is_available()
@@ -196,6 +240,11 @@ def get_flash_adamw_cls_and_kwargs(args):
             "Unsloth: optim = 'adamw_flash' runs flashoptim's Triton kernels, which support only "
             "Linux with NVIDIA CUDA GPUs. Use optim = 'adamw_8bit' or 'adamw_torch' instead."
         )
+    if _deepspeed_offloads_optimizer(args):
+        raise ValueError(
+            "Unsloth: optim = 'adamw_flash' cannot be used with DeepSpeed ZeRO offload_optimizer, "
+            "since flashoptim has no CPU implementation. Turn off offload_optimizer or use another optim."
+        )
     if _fsdp_version(args) == 1:
         raise ValueError(
             "Unsloth: optim = 'adamw_flash' does not support FSDP1 (flashoptim supports DDP and FSDP2). "
@@ -205,6 +254,13 @@ def get_flash_adamw_cls_and_kwargs(args):
         raise ValueError(
             "Unsloth: optim = 'adamw_flash' cannot step FSDP2 CPU offloaded parameters, since "
             "flashoptim's Triton kernels need CUDA tensors. Turn off cpu_offload or use another optim."
+        )
+    optimizer_cls = _get_flash_adamw_class()
+    if not _announced:
+        _announced = True
+        print(
+            "Unsloth: using FlashAdamW (optim = 'adamw_flash'). To train this config with plain "
+            "AdamW, set optim = 'adamw_torch' and optim_args = None."
         )
     optimizer_kwargs = {
         "lr": args.learning_rate,

@@ -29,6 +29,7 @@ def stub_flashoptim(monkeypatch):
 
     module = types.ModuleType("flashoptim")
     module.FlashAdamW = FlashAdamW
+    module.__version__ = "0.1.4"
     monkeypatch.setitem(sys.modules, "flashoptim", module)
     monkeypatch.setattr(flash_adamw, "_FLASH_ADAMW_CLASS", None)
     yield FlashAdamW, calls
@@ -81,8 +82,9 @@ def test_adamw_flash_missing_dependency(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "flashoptim", None)
     monkeypatch.setattr(flash_adamw, "_FLASH_ADAMW_CLASS", None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     args = _sft_config(optim = "adamw_flash")
-    with pytest.raises(ImportError, match = "pip install flashoptim"):
+    with pytest.raises(ImportError, match = "pip install 'flashoptim"):
         Trainer.get_optimizer_cls_and_kwargs(args)
 
 
@@ -293,3 +295,68 @@ def test_adamw_flash_accepted_by_hf_argument_parser(make_args):
         HfArgumentParser(cls).parse_args_into_dataclasses(
             ["--output_dir", OUT, "--report_to", "none", "--optim", "not_an_optim"]
         )
+
+
+@pytest.mark.parametrize("make_args", [_sft_config, _unsloth_args])
+def test_adamw_flash_switch_back_to_adamw(stub_flashoptim, make_args, monkeypatch):
+    import dataclasses
+    from transformers import Trainer
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    args = make_args(optim = "adamw_flash")
+    replaced = dataclasses.replace(args, optim = "adamw_torch", optim_args = None)
+    optimizer_cls, _ = Trainer.get_optimizer_cls_and_kwargs(replaced)
+    assert optimizer_cls is torch.optim.AdamW
+
+
+def test_adamw_flash_platform_checked_before_import(monkeypatch):
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setitem(sys.modules, "flashoptim", None)
+    monkeypatch.setattr(flash_adamw, "_FLASH_ADAMW_CLASS", None)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(NotImplementedError, match = "NVIDIA CUDA"):
+        flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args())
+
+
+@pytest.mark.parametrize(
+    "deepspeed, env",
+    [
+        ({"zero_optimization": {"stage": 2, "offload_optimizer": {"device": "cpu"}}}, {}),
+        ({"zero_optimization": {"stage": 3, "offload_optimizer": {"device": "nvme"}}}, {}),
+        (None, {"ACCELERATE_USE_DEEPSPEED": "true", "ACCELERATE_DEEPSPEED_OFFLOAD_OPTIMIZER_DEVICE": "cpu"}),
+    ],
+)
+def test_adamw_flash_rejects_deepspeed_optimizer_offload(stub_flashoptim, monkeypatch, deepspeed, env):
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for key in ("ACCELERATE_USE_DEEPSPEED", "ACCELERATE_DEEPSPEED_OFFLOAD_OPTIMIZER_DEVICE"):
+        monkeypatch.delenv(key, raising = False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    with pytest.raises(ValueError, match = "offload_optimizer"):
+        flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args(deepspeed = deepspeed))
+    no_offload = {"zero_optimization": {"stage": 2, "offload_optimizer": {"device": "none"}}}
+    monkeypatch.delenv("ACCELERATE_USE_DEEPSPEED", raising = False)
+    flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args(deepspeed = no_offload))
+
+
+@pytest.mark.parametrize("optim_args", ["quantize=ture", "compress_state_dict=tru", "check_numerics=2"])
+def test_adamw_flash_rejects_invalid_booleans(optim_args):
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    with pytest.raises(ValueError, match = "not a boolean"):
+        flash_adamw._parse_optim_args(optim_args)
+    assert flash_adamw._parse_optim_args("quantize=False,decouple_lr=no") == {
+        "quantize": False, "decouple_lr": False,
+    }
+
+
+def test_adamw_flash_requires_compatible_flashoptim(stub_flashoptim, monkeypatch):
+    import unsloth.optimizers.flash_adamw as flash_adamw
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(sys.modules["flashoptim"], "__version__", "0.1.1")
+    with pytest.raises(ImportError, match = "flashoptim>=0.1.4, found 0.1.1"):
+        flash_adamw.get_flash_adamw_cls_and_kwargs(_flash_kwargs_args())
