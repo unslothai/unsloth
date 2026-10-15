@@ -4544,6 +4544,7 @@ def test_completions_rejects_ignored_params_without_switch(monkeypatch, extra, p
         {"echo": False, "suffix": "", "best_of": 1},
         {"echo": None, "suffix": None, "best_of": None},
         {"best_of": 2, "n": 2},
+        {"best_of": 2, "n_cmpl": 2},
     ],
 )
 def test_completions_default_ignored_params_still_proxy(monkeypatch, extra):

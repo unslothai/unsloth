@@ -3248,7 +3248,9 @@ def _raw_prompt_constraint(grammar, tokenizer):
     if grammar is None:
         return None
     from core.inference.grammar_constraint import GrammarConstraint
-    return GrammarConstraint(grammar, tokenizer)
+
+    # Raw replies decode with skip_special_tokens, so a special id spelling a literal would vanish.
+    return GrammarConstraint(grammar, tokenizer, strips_special_tokens = True)
 
 
 def _with_prompt_history(processor, prompt, window):

@@ -37194,7 +37194,7 @@ def _raise_ignored_completions_params(body: dict, echo: bool = True) -> None:
         _raise_unsupported_openai_parameter("echo", "echo is not supported for completions.")
     if body.get("suffix"):
         _raise_unsupported_openai_parameter("suffix", "suffix is not supported for completions.")
-    if body.get("best_of") not in (None, 1, body.get("n")):
+    if body.get("best_of") not in (None, 1, _llama_value(body, "n_cmpl")):
         _raise_unsupported_openai_parameter("best_of", "best_of is not supported for completions.")
 
 

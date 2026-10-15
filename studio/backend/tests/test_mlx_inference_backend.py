@@ -2466,6 +2466,8 @@ def test_mlx_completion_prompt_skips_the_template_and_reuses_the_prompt_cache(mo
     assert out[-1] == "78" and backend.last_generation_stats["timings"]["cache_n"] == 5
     assert seen["penalty_prompt"] == [1, 2, 3, 7, 8, 9] and seen["penalty_window"] == 4
     assert seen["grammar_constraint"].built == ("G", backend._tokenizer)
+    # The reply decodes with skip_special_tokens, so the grammar must not spell text with them.
+    assert seen["grammar_constraint"].options == {"strips_special_tokens": True}
     # Unconstrained too: llama-server returns the pieces without whitespace cleanup.
     cleanups, decode = [], type(backend._tokenizer).decode
     monkeypatch.setattr(
@@ -2478,10 +2480,14 @@ def test_mlx_completion_prompt_skips_the_template_and_reuses_the_prompt_cache(mo
     assert cleanups and set(cleanups) == {False}
 
 
-def _RawConstraint(grammar, tokenizer):
+def _RawConstraint(grammar, tokenizer, **kw):
     noop = lambda *_a: None
     return SimpleNamespace(
-        built = (grammar, tokenizer), allows_reasoning = False, decoded_dropping = noop, stops_on = noop
+        built = (grammar, tokenizer),
+        options = kw,
+        allows_reasoning = False,
+        decoded_dropping = noop,
+        stops_on = noop,
     )
 
 
