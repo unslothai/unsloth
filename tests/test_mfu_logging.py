@@ -484,3 +484,31 @@ def test_pause_after_a_step_excludes_only_time_after_the_gpu_finished(monkeypatc
     callback.on_log(None, _State(), None, logs = logs)
     # 12 s of wall time minus the 7 s from GPU completion (4 s) to resume (11 s).
     assert logs["train_tflops_per_gpu"] == pytest.approx(5 / 5)
+
+
+def test_positional_feature_dict_is_counted():
+    # SentenceTransformer losses call model(features) with one feature dict.
+    callback = mfu.UnslothMFUCallback(peak_tflops = 1)
+    model = _model().train()
+    callback.on_train_begin(None, _State(), None, model = model)
+    features = {
+        "input_ids": torch.zeros(2, 4, dtype = torch.long),
+        "attention_mask": torch.tensor([[1, 1, 1, 0], [1, 1, 0, 0]]),
+    }
+    callback._count_batch(model, (features,), {})
+    assert int(callback._tokens) == 5
+    callback.on_train_end(None, None, None)
+
+
+def test_mla_attention_uses_separate_qk_and_value_dims():
+    from types import SimpleNamespace
+    config = SimpleNamespace(
+        num_hidden_layers = 2,
+        num_attention_heads = 4,
+        hidden_size = 64,
+        head_dim = 64,
+        qk_nope_head_dim = 128,
+        qk_rope_head_dim = 64,
+        v_head_dim = 128,
+    )
+    assert mfu.count_attention_flops_per_pair(config) == 3 * 2 * 2 * 4 * (192 + 128)

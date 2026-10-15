@@ -40,6 +40,8 @@ __all__ = [
 import os
 import time
 
+from collections.abc import Mapping
+
 import torch
 from transformers import TrainerCallback
 
@@ -241,7 +243,17 @@ def count_attention_flops_per_pair(config, gradient_checkpointing = False):
             1 for t in layer_types if isinstance(t, str) and "attention" in t and "linear" not in t
         )
     head_dim = getattr(config, "head_dim", None) or (config.hidden_size // heads)
-    forward = 4 * layers * heads * head_dim
+    # MLA (DeepSeek V2 / V3) scores with nope + rope dims and mixes values with v_head_dim.
+    qk_dim, v_dim = head_dim, head_dim
+    nope, rope = (
+        getattr(config, "qk_nope_head_dim", None),
+        getattr(config, "qk_rope_head_dim", None),
+    )
+    if isinstance(nope, int) and isinstance(rope, int):
+        qk_dim = nope + rope
+    if isinstance(getattr(config, "v_head_dim", None), int):
+        v_dim = config.v_head_dim
+    forward = 2 * layers * heads * (qk_dim + v_dim)
     return forward * (4 if gradient_checkpointing else 3)
 
 
@@ -358,6 +370,10 @@ class UnslothMFUCallback(TrainerCallback):
         # Generation, reference and evaluation forwards run without grad and are not training FLOPs.
         if not module.training or not torch.is_grad_enabled():
             return
+        if args and isinstance(args[0], Mapping):
+            # SentenceTransformer losses call model(features) with one feature dict.
+            kwargs = {**args[0], **kwargs}
+            args = args[1:]
         lengths = _sequence_lengths(kwargs, args)
         if lengths is None:
             return
