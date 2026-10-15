@@ -412,6 +412,31 @@ def rank_secondaries(
     return sorted(cands, key = key, reverse = True)
 
 
+def select_replica_card(
+    primary: int,
+    candidates: Sequence[int],
+    need_mib: int,
+    room_on: Callable[[int], int],
+    probes: Optional[dict[int, DeviceProbe]] = None,
+) -> tuple[Optional[int], list[int], dict[int, DeviceProbe]]:
+    """The one choice of the card a CFG-parallel replica lives on (install, first build, every reselection and
+    rebuild): a fresh probe, the cards whose CURRENT usable memory holds the replica plus the room the phases on that
+    card need (``room_on(card)``: the current per-shape requirement), then the link ranking over those. Returns
+    (best card or None, the cards that fit, the probes)."""
+    if probes is None:
+        probes = probe_devices((primary, *candidates))
+    fits = [
+        int(o)
+        for o in candidates
+        if probes.get(o) is not None
+        and (probes[o].free_mib is None or need_mib + room_on(o) <= probes[o].free_mib)
+    ]
+    if not fits:
+        return None, [], probes
+    ranked = rank_secondaries(primary, fits, lambda o: probes[o].free_mib, probes)
+    return ranked[0], fits, probes
+
+
 def best_secondary(
     selection: MultiGpuSelection, probes: Optional[dict[int, DeviceProbe]] = None
 ) -> Optional[int]:
@@ -2531,27 +2556,20 @@ class CfgParallelRouter:
         free, _total = usable_free_mib(self.secondary.index)
         return free
 
-    def _room_mib(self, batch: Optional[int]) -> int:
+    def _room_mib(self, batch: Optional[int], ordinal: Optional[int] = None) -> int:
         """Activation room the replica card needs beside the (retained) replica: the max over the phases that card
         runs. The odd branch's denoise always; the VAE decode when it hosts the VAE (the routers' inputs are released at
         decode entry); the text encode when it hosts an encoder (the replica stays across requests, so it sits beside
         the next request's encode). Phases are sequential, so the max, not the sum. The request's own figures when the
         generate path supplied them; else the load-time figures, denoise and decode scaled by canvas and batch."""
+        card = self.secondary.index if ordinal is None else ordinal
         needs = self.request_needs
         if needs is not None and needs.denoise_mib:
-            return needs.room_on(self.secondary.index)
+            return needs.room_on(card)
         room = scaled_headroom_mib(self.headroom_mib, self.headroom_reference_px, self.request_px, batch)
-        if (
-            self.encode_headroom_mib
-            and self.secondary.index is not None
-            and self.secondary.index in self.te_ordinals
-        ):
+        if self.encode_headroom_mib and card is not None and card in self.te_ordinals:
             room = max(room, int(self.encode_headroom_mib))
-        if (
-            self.decode_headroom_mib
-            and self.vae_ordinal is not None
-            and self.secondary.index == self.vae_ordinal
-        ):
+        if self.decode_headroom_mib and self.vae_ordinal is not None and card == self.vae_ordinal:
             room = max(
                 room,
                 scaled_headroom_mib(
@@ -2687,31 +2705,40 @@ class CfgParallelRouter:
                 state["shape_disabled"] = None
         if str(self.shape_disabled or "").startswith(per_request):
             self.shape_disabled = None
-        if self.replica is None:
-            self._reselect_secondary()
-        # an unmeasured link is retried on every request
-        self.shapes.forget(self, lambda st: bool((st.get("pricing") or {}).get("link_unmeasured")))
         try:
             self.request_px = int(width) * int(height) if width and height else None
         except (TypeError, ValueError):
             self.request_px = None
+        if self.replica is None:
+            self._reselect_secondary()
+        # an unmeasured link is retried on every request
+        self.shapes.forget(self, lambda st: bool((st.get("pricing") or {}).get("link_unmeasured")))
 
-    def _reselect_secondary(self) -> None:
-        """No replica yet: re-rank the install-time cards on a fresh probe (failed link measurements are retried), so
-        a card whose link measures now wins over one still unmeasured."""
+    def _replica_mib(self) -> int:
+        module = self.module_ref()
+        if module is None:
+            return 0
+        return sum(t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())) // (
+            1 << 20
+        )
+
+    def _reselect_secondary(self, batch: Optional[int] = None) -> None:
+        """No replica yet (first build, after an eviction, a stale-weights drop or an invalidation): choose the card
+        again through select_replica_card, on a fresh probe (failed link measurements retried) and the CURRENT usable
+        memory against the current per-shape requirement, so a card that has since filled up is skipped. No card fits:
+        the current one stays (the build then declines the shape for capacity)."""
         if len(self.candidates) < 2 or self.primary.type != "cuda":
             return
         try:
-            probes = probe_devices((self.primary.index, *self.candidates))
-
-            def free_of(o: int) -> Optional[int]:
-                p = probes.get(o)
-                return p.free_mib if p is not None else None
-
-            best = rank_secondaries(self.primary.index, self.candidates, free_of, probes)[0]
+            best, _fits, _probes = select_replica_card(
+                self.primary.index,
+                self.candidates,
+                self._replica_mib(),
+                lambda o: max(1024, self._room_mib(batch, ordinal = o)),
+            )
         except Exception:  # noqa: BLE001 - keep the current card
             return
-        if best != self.secondary.index:
+        if best is not None and best != self.secondary.index:
             if self.logger is not None:
                 self.logger.info(
                     "diffusion.multigpu: CFG-parallel replica card cuda:%s -> cuda:%s (link measured)",
@@ -2934,16 +2961,16 @@ class CfgParallelRouter:
                 self.stats["replica_blocked"] += 1
                 return
             self.blocked_by = None
-            need_mib = sum(
-                t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
-            ) // (1 << 20)
-            free = self._secondary_free_mib()
+            need_mib = self._replica_mib()
             batch = (
                 int(self.prev_latent.shape[0])
                 if getattr(self.prev_latent, "dim", None) is not None
                 and self.prev_latent.dim() >= 1
                 else None
             )
+            # the card is chosen again at every build, against this shape's requirement and current memory
+            self._reselect_secondary(batch)
+            free = self._secondary_free_mib()
             room = max(1024, self._room_mib(batch))
             if free is not None and need_mib + room > free:
                 raise ReplicaCapacity(
@@ -3143,20 +3170,15 @@ def _install_cfg_parallel_only(
                 # encode where it hosts the VAE / an encoder (the replica is kept across requests)
                 return load_needs.room_on(o)
 
-            fits = [
-                o
-                for o in candidates
-                if probes[o].free_mib is None or need_mib + room_on(o) <= probes[o].free_mib
-            ]
-            if not fits:
+            best, fits, probes = select_replica_card(
+                primary.index, candidates, need_mib, room_on, probes
+            )
+            if best is None:
                 most = max(candidates, key = lambda o: probes[o].free_mib or -1)
                 reason = (
                     f"replica needs {need_mib} MiB, {probes[most].free_mib} MiB free on cuda:{most}"
                 )
             else:
-                best = rank_secondaries(primary.index, fits, lambda o: probes[o].free_mib, probes)[
-                    0
-                ]
                 router = CfgParallelRouter(
                     denoiser,
                     primary = primary,

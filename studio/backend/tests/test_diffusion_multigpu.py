@@ -4272,3 +4272,64 @@ def test_free_memory_is_read_through_one_helper():
 
     visit(tree, None)
     assert bad == []
+
+
+def _two_card_router(monkeypatch, probes):
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
+    dit = _BatchDit()
+    router = mg.CfgParallelRouter(
+        dit, primary = "cuda:0", secondary = "cuda:1", candidates = [1, 2], headroom_mib = 1000
+    )
+    dit.forward = router
+    return dit, router
+
+
+def test_reselection_skips_a_card_that_has_since_filled_up(monkeypatch):
+    probes = {
+        0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
+        1: _probe(1, 100, {0: 20.0}),  # fastest link, filled up by another workload since install
+        2: _probe(2, 9000, {0: 2.0}),
+    }
+    dit, router = _two_card_router(monkeypatch, probes)
+    router.begin_request(512, 512)
+    assert router.secondary == torch.device("cuda", 2)
+    # nothing fits anywhere: the current card stays (the build then declines the shape for capacity)
+    probes[2] = _probe(2, 100, {0: 2.0})
+    router.begin_request(512, 512)
+    assert router.secondary == torch.device("cuda", 2)
+
+
+def test_every_replica_card_choice_goes_through_select_replica_card(monkeypatch):
+    calls = []
+    real = mg.select_replica_card
+
+    def spy(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+
+    monkeypatch.setattr(mg, "select_replica_card", spy)
+    probes = {
+        0: _probe(0, 20000, {1: 20.0, 2: 2.0}),
+        1: _probe(1, 9000, {0: 20.0}),
+        2: _probe(2, 9000, {0: 2.0}),
+    }
+    # install
+    class Pipe:
+        transformer = _Dit()
+
+    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, measure = True: probes)
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **k: None)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.delenv(mg.LINK_ENV, raising = False)
+    with mg.selection_scope(mg.MultiGpuSelection(primary = 0, secondaries = (1, 2))):
+        assert mg._install_cfg_parallel_only(Pipe(), offload_policy = "none") is None
+    assert len(calls) == 1
+    # request entry without a replica (first build, after an eviction or an invalidation)
+    dit, router = _two_card_router(monkeypatch, probes)
+    router.begin_request(512, 512)
+    assert len(calls) == 2
+    # the build itself
+    monkeypatch.setattr(router, "_secondary_free_mib", lambda: 10)
+    router._build_replica()
+    assert len(calls) == 3 and router.replica is None and "lacks room" in router.describe()["disabled_reason"]
