@@ -3775,10 +3775,15 @@ class CfgBatchRouter:
             if state_snapshot is not None:
                 changed, unseen = self._undo_attempt(state_snapshot, report_unseen = True)
                 if unseen is not None:
-                    # a write the observation did not see: plain path for this call, this shape off
-                    self._disable_shape(
-                        f"the batched call wrote {unseen}, a buffer not seen written by a plain call; one branch "
-                        "per call for this shape"
+                    # A write the observation did not see, to a buffer with no snapshot: it cannot be undone, and no
+                    # rerun is exactly the one-card path (rerunning both branches plain applies it once more; keeping
+                    # the doubled outputs applies it once instead of twice). The allowlisted stateless classes write
+                    # no buffers in forward, so this is only reachable through a foreign patch or force mode: fail
+                    # safe, CFG-batch off for the whole load from this call on, loudly.
+                    self.disable(
+                        f"the batched call wrote {unseen}, a buffer no plain call was seen writing and too large to "
+                        "snapshot; this call's state may differ from one card by that write; one branch per call "
+                        "for this load"
                     )
                     return None
                 if changed is not None:

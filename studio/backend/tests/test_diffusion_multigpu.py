@@ -3862,13 +3862,14 @@ def test_cfg_batch_refuses_a_large_buffer_the_forward_writes(monkeypatch):
     assert "table" in router.describe()["disabled_reason"] and router.describe()["disabled_for_shape_only"]
 
 
-def test_cfg_batch_unseen_write_during_a_batched_call_disables_the_shape(monkeypatch):
+def test_cfg_batch_unseen_write_during_a_batched_call_disables_the_load(monkeypatch):
     plain, dit, router, reference, out = _quant_run(monkeypatch, late_write = True)
-    reason = router.describe()["disabled_reason"]
-    assert reason is not None and "not seen written" in reason and router.describe()["disabled_for_shape_only"]
+    # fail safe: an unrestorable late write turns CFG-batch off for the whole load, not one shape
+    assert router.disabled_reason is not None and "no plain call was seen writing" in router.disabled_reason
+    assert not router.describe()["disabled_for_shape_only"]
     assert "table" in router.state_watch.written
     batched = router.stats["batched_steps"]
-    _guided(dit, 2, steps = 2)  # same shape: no further doubled call
+    _guided(dit, 3, steps = 3)  # another shape: still no doubled call
     assert router.stats["batched_steps"] == batched
 
 
