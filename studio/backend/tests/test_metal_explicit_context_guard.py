@@ -1318,7 +1318,18 @@ class TestInputEmbeddingsLeftInTheFileMapping:
         # Same measured residency, same ceiling: the extra charge is already in the rows.
         assert tied == untied > _FIT_MIN_CTX
 
-    @pytest.mark.parametrize("extra_args, shared", [(None, True), (["--no-mmap"], False)])
+    @pytest.mark.parametrize(
+        "extra_args, shared",
+        [
+            (None, True),
+            # mmap+mlock still builds the Metal buffers from the locked mapping.
+            (["--mlock"], True),
+            (["--load-mode", "mmap+mlock"], True),
+            (["--no-mmap"], False),
+            # "mlock" alone is a locked full host copy, not a mapping.
+            (["--load-mode", "mlock"], False),
+        ],
+    )
     def test_a_mapped_tied_output_shares_the_files_pages_without_a_measurement(
         self, tmp_path, monkeypatch, extra_args, shared
     ):

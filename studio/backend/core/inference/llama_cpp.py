@@ -14506,8 +14506,10 @@ class LlamaCppBackend:
         supports_load_mode: bool,
         settings: tuple[bool, bool],
         env: Optional[Mapping[str, str]] = None,
+        allow_mlock: bool = False,
     ) -> bool:
-        """Whether a Metal launch maps the GGUF (no mlock, no-mmap or DirectIO)."""
+        """Whether a Metal launch maps the GGUF (no no-mmap or DirectIO; no lock unless
+        ``allow_mlock``: mmap+mlock still builds the buffers from the mapping)."""
         env_view = dict(os.environ if env is None else env)
         scrub_memory_env(env_view, settings)
         managed, extras = apply_model_memory_policy(
@@ -14528,7 +14530,7 @@ class LlamaCppBackend:
         mlock, reserves_ram, direct_io = resolve_effective_load_state(
             [*managed, *selected, *extras], env_view
         )
-        return not (mlock or reserves_ram or direct_io)
+        return not (reserves_ram or direct_io or (mlock and not allow_mlock))
 
     def _metal_demand_paged_embedding_bytes(
         self,
@@ -29441,6 +29443,7 @@ class LlamaCppBackend:
                                 requested_load_mode = load_mode,
                                 supports_load_mode = bool(server_caps.get("supports_load_mode")),
                                 settings = _mem_settings,
+                                allow_mlock = True,
                             )
                             else 0
                         )
