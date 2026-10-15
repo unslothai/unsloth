@@ -78,6 +78,8 @@ from core.inference.tool_loop_controller import (
 from core.inference.chat_template_helpers import (
     append_assistant_turn,
     trailing_assistant_resume_kind,
+    forced_tool_name,
+    forced_turn_tools,
 )
 from core.inference.passthrough_healing import nudge_enabled
 from state.tool_approvals import (
@@ -559,6 +561,8 @@ def run_safetensors_tool_loop(
     images_sink: Optional[list] = None,
     caller_image_indexes: "tuple[int, ...]" = (),
     context_fitter: Optional[Callable[[list, list, list], dict]] = None,
+    tool_choice = None,
+    disable_parallel_tool_use: bool = False,
 ) -> Generator[dict, None, None]:
     """Yields status, content, tool_start and tool_end event dicts; content is cumulative text per turn."""
     if mcp_image is not None:
@@ -636,6 +640,8 @@ def run_safetensors_tool_loop(
             yield _ev
         conversation.extend(_auto["messages"])
     rag_autoinjected = bool(_auto)
+    # As on llama-server: a forced tool is the only one offered until a call runs or is denied.
+    forced_resolved = rag_autoinjected and forced_tool_name(tool_choice) == "search_knowledge_base"
 
     unrestricted_tools = not tools
     # Gate telling a genuine NAME[ARGS] rehearsal from inactive-name prose; built from the
@@ -715,6 +721,8 @@ def run_safetensors_tool_loop(
             if not active_tools and not unrestricted_tools:
                 final_attempt_done = True
                 active_tools = []
+            elif not forced_resolved:
+                active_tools = forced_turn_tools(tool_choice, active_tools)
 
         tool_protocol_active = not final_attempt_done and (unrestricted_tools or bool(active_tools))
         tool_xml_signals = TOOL_XML_SIGNALS if tool_protocol_active else ()
@@ -1286,6 +1294,9 @@ def run_safetensors_tool_loop(
                     _MAX_TOOL_CALLS_PER_TURN,
                 )
             tool_calls = deduped
+            # Truncated before the assistant turn is built, so extra calls never run.
+            if disable_parallel_tool_use and len(tool_calls) > 1:
+                tool_calls, over_cap = tool_calls[:1], []
 
         assistant_msg: dict = {"role": "assistant", "content": content_text}
         assistant_appended = False
@@ -1554,6 +1565,8 @@ def run_safetensors_tool_loop(
             # Loading MCP tools is not a tool round, or a budget of one could never call what it found.
             if decision.tool_name != "mcp_tool_search":
                 _turn_executed_real_tool = True
+            # Any executed call, discovery included, releases a forced choice (as on llama-server).
+            forced_resolved = True
             yield completion.tool_end_event()
             conversation.append(completion.tool_message())
             _completion_images = completion.mcp_images() if images_sink is not None else []
@@ -1603,6 +1616,7 @@ def run_safetensors_tool_loop(
                 caller_images = trim_image_turns(conversation, images_sink, keep = caller_images)
 
         yield {"type": "status", "text": ""}
+        forced_resolved = forced_resolved or tool_denied
 
         if tool_controller.force_final_answer:
             final_attempt_done = True
