@@ -2790,7 +2790,9 @@ class CfgBatchRouter:
             return None
         if not _inputs_untouched(fresh_inputs, fresh_versions):
             # the model writes its inputs in place: one doubled call is not two calls (the caller's are untouched)
-            self.disable("the batched call wrote into an input tensor in place; one branch per call from here")
+            self.disable(
+                "the batched call wrote into an input tensor in place; one branch per call from here"
+            )
             return None
         if any(stand_ins):
             # the model writes into that dict: one doubled call is not two calls (the caller's dict is untouched)
