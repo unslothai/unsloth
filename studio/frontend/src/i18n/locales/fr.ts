@@ -261,7 +261,7 @@ export const fr = {
     annotationScreenshotsAlways: "Toujours inclure",
     annotationScreenshotsNever: "Ne jamais inclure",
     clearDataSetting: "Effacer les données de navigation",
-    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent aucun cookie ni aucune donnée de site.",
+    clearDataSettingDescription: "Efface l’historique de navigation, l’historique des téléchargements et les pages en cache. Les pages ne conservent les cookies et les données de site que jusqu’au rechargement de Studio.",
     manage: "Gérer",
     fullView: {
       enter: "Plein écran",
@@ -437,7 +437,7 @@ export const fr = {
     },
     clearData: {
       title: "Effacer les données de navigation ?",
-      description: "Cette action efface votre historique de navigation, l’historique des téléchargements et les pages en cache. Les fichiers téléchargés restent sur votre ordinateur.",
+      description: "Cela efface l'historique de navigation, l'historique des téléchargements, les pages en cache ainsi que les cookies et données de sites, ce qui vous déconnecte des sites. Les fichiers téléchargés restent sur votre ordinateur.",
       cancel: "Annuler",
       confirm: "Effacer les données",
       done: "Données de navigation effacées",
