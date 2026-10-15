@@ -4632,7 +4632,9 @@ def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dic
     try:
         providers = _http_json("GET", f"{base}/api/providers/", key)
     except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-        if explicit:
+        # A 4xx is an older server or a key without Connections; anything else must not fall
+        # through to a load that could evict the resident model.
+        if explicit or not (isinstance(exc, urllib.error.HTTPError) and exc.code < 500):
             _fail_request(exc, "Couldn't list Connections")
         return None
     enabled = [p for p in providers or [] if isinstance(p, dict) and p.get("is_enabled")]

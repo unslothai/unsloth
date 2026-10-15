@@ -391,7 +391,7 @@ def test_another_user_key_reaches_the_connection_without_its_saved_key(v1):
     assert FakeExternalClient.calls[0]["ctor"]["api_key"] == ""
 
 
-@pytest.mark.parametrize("path", ["/v1/responses", "/v1/messages"])
+@pytest.mark.parametrize("path", ["/v1/responses", "/v1/messages", "/v1/chat/completions"])
 def test_a_connection_stream_ends_at_done_even_if_the_provider_keeps_it_open(v1, monkeypatch, path):
     import routes.inference as inf
 
@@ -406,6 +406,13 @@ def test_a_connection_stream_ends_at_done_even_if_the_provider_keeps_it_open(v1,
             return gen()
 
     monkeypatch.setattr(inf, "ExternalProviderClient", KeepsOpen)
+    if path == "/v1/chat/completions":
+        # stream omitted: the collected answer must not wait for the provider to hang up.
+        resp = v1.post(
+            path, json = {"model": CONNECTION_MODEL, "messages": [{"role": "user", "content": "hi"}]}
+        )
+        assert resp.json()["choices"][0]["message"]["content"] == "hi"
+        return
     body = (
         {"model": CONNECTION_MODEL, "stream": True, "input": "hi"}
         if path == "/v1/responses"
@@ -517,7 +524,7 @@ def test_responses_replays_a_tool_calls_thought_signature(gemini):
 def test_a_signature_is_only_replayed_for_its_own_account(v1):
     import routes.inference as inf
 
-    inf._remember_connection_tool_extra("someone-else", "call_1", SIGNED["extra_content"])
+    inf._remember_connection_extra("someone-else", "call", "call_1", SIGNED["extra_content"])
     messages = [{"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function"}]}]
 
     inf._restore_connection_tool_extras("owner", messages)
@@ -559,3 +566,133 @@ def test_messages_forwards_an_output_format_to_the_connection(v1):
         "type": "json_schema",
         "json_schema": {"name": "response", "schema": schema},
     }
+
+
+def _two_tool_calls(**kwargs):
+    async def gen():
+        for index, path in enumerate(("a.txt", "b.txt")):
+            call = {
+                "index": index,
+                "id": f"call_{index}",
+                "function": {"name": "Read", "arguments": json.dumps({"file_path": path})},
+            }
+            yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {'tool_calls': [call]}}]})}"
+        yield 'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}'
+        yield "data: [DONE]"
+
+    return gen()
+
+
+@pytest.mark.parametrize("stream", [True, False])
+def test_messages_honour_disable_parallel_tool_use(v1, monkeypatch, stream):
+    import routes.inference as inf
+
+    class TwoCalls(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            return _two_tool_calls(**kwargs)
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", TwoCalls)
+    body = _messages_body(
+        stream = stream, tool_choice = {"type": "auto", "disable_parallel_tool_use": True}
+    )
+    resp = v1.post("/v1/messages", json = body)
+
+    assert resp.status_code == 200, resp.text
+    if stream:
+        events = _sse(resp.text)
+        starts = [e for e in events if e["type"] == "content_block_start"]
+        assert [e["content_block"]["type"] for e in starts] == ["tool_use"]
+        indices = {e["index"] for e in events if "index" in e}
+        assert indices == {0}
+    else:
+        blocks = resp.json()["content"]
+        assert [b["type"] for b in blocks] == ["tool_use"]
+        assert blocks[0]["input"] == {"file_path": "a.txt"}
+
+
+def test_messages_keep_parallel_tool_calls_by_default(v1, monkeypatch):
+    import routes.inference as inf
+
+    class TwoCalls(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            return _two_tool_calls(**kwargs)
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", TwoCalls)
+    blocks = v1.post("/v1/messages", json = _messages_body()).json()["content"]
+
+    assert [b["input"] for b in blocks] == [{"file_path": "a.txt"}, {"file_path": "b.txt"}]
+
+
+def test_messages_replay_an_anthropic_connections_signed_thinking(v1, monkeypatch):
+    # Anthropic refuses a tool continuation whose assistant turn lost its signed thinking block.
+    import routes.inference as inf
+
+    native = [
+        {"type": "thinking", "thinking": "plan", "signature": "sig-xyz"},
+        {"type": "tool_use", "id": "toolu_abc", "name": "Read", "input": {"file_path": "a.txt"}},
+    ]
+
+    class Signed(FakeExternalClient):
+        def stream_chat_completion(self, **kwargs):
+            FakeExternalClient.calls[-1]["stream"] = kwargs
+
+            async def gen():
+                call = {
+                    "index": 0,
+                    "id": "toolu_abc",
+                    "function": {"name": "Read", "arguments": '{"file_path": "a.txt"}'},
+                }
+                yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': {'tool_calls': [call]}}]})}"
+                extra = {"extra_content": {"anthropic": {"content": native}}}
+                yield f"data: {json.dumps({'choices': [{'index': 0, 'delta': extra}]})}"
+                yield 'data: {"choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]}'
+                yield "data: [DONE]"
+
+            return gen()
+
+    monkeypatch.setattr(inf, "ExternalProviderClient", Signed)
+    monkeypatch.setattr(
+        inf.providers_db,
+        "get_provider",
+        lambda pid: {
+            "id": pid,
+            "provider_type": "anthropic",
+            "base_url": "https://api.anthropic.com/v1",
+            "api_type": "chat_completions",
+            "display_name": "Claude",
+            "is_enabled": True,
+            "reasoning_config": None,
+        },
+    )
+    first = v1.post("/v1/messages", json = _messages_body()).json()
+    tool_use = next(b for b in first["content"] if b["type"] == "tool_use")
+    assert tool_use["id"] == "toolu_abc"
+
+    history = [
+        {"role": "user", "content": "read a.txt"},
+        {"role": "assistant", "content": [tool_use]},
+        {
+            "role": "user",
+            "content": [{"type": "tool_result", "tool_use_id": "toolu_abc", "content": "hi"}],
+        },
+    ]
+    v1.post("/v1/messages", json = _messages_body(messages = history))
+
+    assistant = next(
+        m for m in FakeExternalClient.calls[-1]["stream"]["messages"] if m["role"] == "assistant"
+    )
+    assert assistant["extra_content"] == {"anthropic": {"content": native}}
+
+
+def test_messages_forward_the_agents_sampling_controls(v1):
+    v1.post(
+        "/v1/messages",
+        json = _messages_body(min_p = 0.05, repetition_penalty = 1.1, presence_penalty = 0.5),
+    )
+
+    sent = FakeExternalClient.calls[-1]["stream"]
+    assert (sent["min_p"], sent["repetition_penalty"], sent["presence_penalty"]) == (
+        0.05,
+        1.1,
+        0.5,
+    )

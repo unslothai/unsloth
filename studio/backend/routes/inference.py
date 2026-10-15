@@ -30608,49 +30608,95 @@ def _connection_model_ref(model: Any) -> Optional[tuple[str, str]]:
     return provider_id, _urlunquote(encoded)
 
 
-# Gemini 3 answers 400 to a replayed functionCall without the thoughtSignature it was issued with
-# (ai.google.dev thought signatures), and agent clients drop a tool call's extra_content. Keep it
-# here by the tool id the client echoes back.
+# Provider replay metadata agent clients drop: Gemini 3 answers 400 to a functionCall without its
+# thoughtSignature (tool call extra_content), and Anthropic to a tool continuation without its signed
+# thinking (message extra_content). Keep both by the tool ids the client echoes back.
 _CONNECTION_TOOL_EXTRAS: collections.OrderedDict = collections.OrderedDict()
 _CONNECTION_TOOL_EXTRAS_MAX = 4096
 _CONNECTION_TOOL_EXTRAS_LOCK = threading.Lock()
 
 
-def _remember_connection_tool_extra(subject: Optional[str], tool_id: Any, extra: Any) -> None:
+def _remember_connection_extra(subject: Optional[str], kind: str, tool_id: Any, extra: Any) -> None:
     if not isinstance(tool_id, str) or not tool_id or not isinstance(extra, dict) or not extra:
         return
+    key = (subject or "", kind, tool_id)
     with _CONNECTION_TOOL_EXTRAS_LOCK:
-        _CONNECTION_TOOL_EXTRAS[(subject or "", tool_id)] = extra
-        _CONNECTION_TOOL_EXTRAS.move_to_end((subject or "", tool_id))
+        _CONNECTION_TOOL_EXTRAS[key] = extra
+        _CONNECTION_TOOL_EXTRAS.move_to_end(key)
         while len(_CONNECTION_TOOL_EXTRAS) > _CONNECTION_TOOL_EXTRAS_MAX:
             _CONNECTION_TOOL_EXTRAS.popitem(last = False)
 
 
+def _connection_extra(subject: Optional[str], kind: str, tool_id: Any) -> Optional[dict]:
+    with _CONNECTION_TOOL_EXTRAS_LOCK:
+        return _CONNECTION_TOOL_EXTRAS.get((subject or "", kind, tool_id))
+
+
+class _ConnectionExtrasRecorder:
+    """One reply's tool ids (as the client sees them) and its message-level extra_content."""
+
+    def __init__(self, subject: Optional[str]) -> None:
+        self.subject = subject
+        self.tool_ids: list[str] = []
+        self.message_extra: Optional[dict] = None
+
+    def call(self, tool_id: Any, extra: Any) -> None:
+        if isinstance(tool_id, str) and tool_id:
+            self.tool_ids.append(tool_id)
+            _remember_connection_extra(self.subject, "call", tool_id, extra)
+            self._file_message_extra()
+
+    def message(self, extra: Any) -> None:
+        if isinstance(extra, dict) and extra:
+            self.message_extra = extra
+            self._file_message_extra()
+
+    def chunk(
+        self,
+        chunk: Any,
+        *,
+        calls: bool = True,
+    ) -> None:
+        for choice in (chunk.get("choices") if isinstance(chunk, dict) else None) or []:
+            delta = choice.get("delta") if isinstance(choice, dict) else None
+            if not isinstance(delta, dict):
+                continue
+            self.message(delta.get("extra_content"))
+            for call in (delta.get("tool_calls") if calls else None) or []:
+                if isinstance(call, dict):
+                    self.call(call.get("id"), call.get("extra_content"))
+
+    def _file_message_extra(self) -> None:
+        if self.message_extra:
+            for tool_id in self.tool_ids:
+                _remember_connection_extra(self.subject, "message", tool_id, self.message_extra)
+
+
 def _restore_connection_tool_extras(subject: Optional[str], messages: Any) -> None:
     for message in messages or []:
-        tool_calls = (
-            message.get("tool_calls")
-            if isinstance(message, dict)
-            else getattr(message, "tool_calls", None)
-        )
+        is_dict = isinstance(message, dict)
+        tool_calls = message.get("tool_calls") if is_dict else getattr(message, "tool_calls", None)
+        message_extra = None
         for call in tool_calls or []:
-            if not isinstance(call, dict) or call.get("extra_content"):
+            if not isinstance(call, dict):
                 continue
-            with _CONNECTION_TOOL_EXTRAS_LOCK:
-                extra = _CONNECTION_TOOL_EXTRAS.get((subject or "", call.get("id")))
-            if extra:
-                call["extra_content"] = extra
-
-
-def _remember_connection_tool_extras_in_chunk(subject: Optional[str], chunk: Any) -> None:
-    for choice in (chunk.get("choices") if isinstance(chunk, dict) else None) or []:
-        delta = choice.get("delta") if isinstance(choice, dict) else None
-        for call in (delta.get("tool_calls") if isinstance(delta, dict) else None) or []:
-            if isinstance(call, dict):
-                _remember_connection_tool_extra(subject, call.get("id"), call.get("extra_content"))
+            message_extra = message_extra or _connection_extra(subject, "message", call.get("id"))
+            if not call.get("extra_content"):
+                extra = _connection_extra(subject, "call", call.get("id"))
+                if extra:
+                    call["extra_content"] = extra
+        has_extra = (
+            message.get("extra_content") if is_dict else getattr(message, "extra_content", None)
+        )
+        if message_extra and not has_extra:
+            if is_dict:
+                message["extra_content"] = message_extra
+            else:
+                message.extra_content = message_extra
 
 
 async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
+    recorder = _ConnectionExtrasRecorder(subject)
     pending = ""
     try:
         async for chunk in chunks:
@@ -30658,9 +30704,11 @@ async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
             pending += chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
             *complete, pending = pending.split("\n")
             for line in complete:
-                if line.startswith("data:") and "extra_content" in line:
+                if line.startswith("data:") and (
+                    '"tool_calls"' in line or '"extra_content"' in line
+                ):
                     try:
-                        _remember_connection_tool_extras_in_chunk(subject, json.loads(line[5:]))
+                        recorder.chunk(json.loads(line[5:]))
                     except ValueError:
                         pass
     finally:
@@ -30668,12 +30716,22 @@ async def _relay_recording_tool_extras(chunks, subject: Optional[str]):
 
 
 async def _chat_completion_from_connection_stream(response: StreamingResponse, model: str):
+    lines = _sse_data_lines(response.body_iterator)
+    try:
+        return await _collect_chat_completion(lines, model)
+    finally:
+        await lines.aclose()
+
+
+async def _collect_chat_completion(lines, model: str):
     completion_id, created, finish, usage = None, int(time.time()), None, None
     content, reasoning = "", ""
     calls: dict[int, dict] = {}
-    async for line in _sse_data_lines(response.body_iterator):
+    async for line in lines:
         data = line[len("data:") :].strip() if line.startswith("data:") else ""
-        if not data or data == "[DONE]":
+        if data == "[DONE]":
+            break
+        if not data:
             continue
         chunk = json.loads(data)
         error = chunk.get("error")
@@ -42102,8 +42160,40 @@ async def _anthropic_events_from_openai_sse(
     message_id: str,
     model: str,
     subject: Optional[str] = None,
+    *,
+    single_tool_use: bool = False,
 ):
     emitter = AnthropicPassthroughEmitter()
+    recorder = _ConnectionExtrasRecorder(subject)
+    dropped: set[int] = set()
+    tool_blocks = 0
+
+    def relay(event: str, extras: list) -> Optional[str]:
+        nonlocal tool_blocks
+        if not (extras or single_tool_use) or not event.startswith("event: content_block"):
+            return event
+        data = json.loads(event.partition("\ndata: ")[2])
+        index = data.get("index")
+        if (
+            data["type"] == "content_block_start"
+            and data["content_block"].get("type") == "tool_use"
+        ):
+            extra = extras.pop(0) if extras else None
+            # disable_parallel_tool_use: at most one tool_use, the way the local route caps it.
+            if single_tool_use and tool_blocks:
+                dropped.add(index)
+                return None
+            tool_blocks += 1
+            # The emitter renames tool ids (toolu_*): file the call's extras under the id it publishes.
+            recorder.call(data["content_block"].get("id"), extra)
+        if index in dropped:
+            return None
+        shift = sum(1 for gone in dropped if gone < index)
+        if not shift:
+            return event
+        data["index"] = index - shift
+        return build_anthropic_sse_event(data["type"], data)
+
     for event in emitter.start(message_id, model):
         yield event
     items = _sse_data_lines(lines)
@@ -42118,7 +42208,7 @@ async def _anthropic_events_from_openai_sse(
             if parsed.get("error"):
                 yield _anthropic_connection_error_event(parsed["error"])
                 return
-            # The emitter renames tool ids (toolu_*): file each call's extras under the id it publishes.
+            recorder.chunk(parsed, calls = False)
             extras = [
                 call.get("extra_content")
                 for choice in parsed.get("choices") or []
@@ -42126,15 +42216,15 @@ async def _anthropic_events_from_openai_sse(
                 if isinstance(call, dict) and call.get("id")
             ]
             for event in emitter.feed_chunk(parsed):
-                if extras and event.startswith("event: content_block_start"):
-                    block = json.loads(event.partition("\ndata: ")[2]).get("content_block") or {}
-                    if block.get("type") == "tool_use":
-                        _remember_connection_tool_extra(subject, block.get("id"), extras.pop(0))
-                yield event
+                event = relay(event, extras)
+                if event is not None:
+                    yield event
     finally:
         await items.aclose()
     for event in emitter.finish():
-        yield event
+        event = relay(event, [])
+        if event is not None:
+            yield event
 
 
 def _anthropic_message_from_events(events: list[str]) -> dict:
@@ -42214,6 +42304,10 @@ async def _anthropic_messages_via_connection(
         "temperature": payload.temperature,
         "top_p": payload.top_p,
         "top_k": payload.top_k,
+        "min_p": payload.min_p,
+        "repetition_penalty": payload.repetition_penalty,
+        "presence_penalty": payload.presence_penalty,
+        "seed": payload.seed,
         "session_id": payload.session_id,
         "cancel_id": payload.cancel_id,
         "response_format": _anthropic_response_format(payload, require_llama_compatibility = False),
@@ -42232,7 +42326,12 @@ async def _anthropic_messages_via_connection(
     if not isinstance(response, StreamingResponse):
         return response
     events = _anthropic_events_from_openai_sse(
-        response.body_iterator, f"msg_{uuid.uuid4().hex[:24]}", payload.model, current_subject
+        response.body_iterator,
+        f"msg_{uuid.uuid4().hex[:24]}",
+        payload.model,
+        current_subject,
+        single_tool_use = isinstance(payload.tool_choice, dict)
+        and bool(payload.tool_choice.get("disable_parallel_tool_use")),
     )
     if payload.stream:
         return _sse_streaming_response(events)

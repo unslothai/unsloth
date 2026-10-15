@@ -1605,6 +1605,8 @@ def fake_studio(tmp_path, monkeypatch):
         if url.endswith("/api/settings/embedding-model"):
             return {"embedding_model": "unsloth/bge-small-en-v1.5"}
         if url.endswith("/api/providers/"):
+            if state.get("providers_status"):
+                raise urllib.error.HTTPError(url, state["providers_status"], "error", None, None)
             return state.get("providers", [])
         if url.endswith("/api/inference/load"):
             already_loaded = state["models"][0]["id"] == payload["model_path"]
@@ -6891,6 +6893,26 @@ def test_an_explicit_connection_model_never_starts_a_server(fake_studio, monkeyp
     assert result.exit_code == 1
     assert "No running Unsloth server found" in result.output
     assert started == []
+
+
+@pytest.mark.parametrize("status", [500, 503])
+def test_a_failed_connection_listing_does_not_load_the_name(fake_studio, status):
+    fake_studio.state["providers_status"] = status
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--model", "gemini-2.5-flash"]
+    )
+    assert result.exit_code == 1
+    assert "Couldn't list Connections" in result.output
+    assert _loads(fake_studio) == []
+
+
+def test_a_server_without_connections_still_loads_the_name(fake_studio):
+    fake_studio.state["providers_status"] = 404
+    result = CliRunner().invoke(
+        start.start_app, ["opencode", "--no-launch", "--model", "unsloth/other-GGUF"]
+    )
+    assert result.exit_code == 0, result.output
+    assert len(_loads(fake_studio)) == 1
 
 
 def test_an_explicit_connection_model_names_a_missing_connection(fake_studio):
