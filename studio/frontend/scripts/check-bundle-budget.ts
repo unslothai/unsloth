@@ -120,8 +120,11 @@ export const BUDGET = {
   // Naming the Windows update that adds MXC's built-in container (#13798) adds 358 B raw / 93 B transfer, its
   // string in the eager English locale (6,765,003 -> 6,765,361 B raw against 3c0061e16, one machine and build,
   // Node 24, chunk count unchanged at 95), which put main 55 B raw over. Raised by that growth.
-  transferBytes: 2_033_777,
-  rawBytes: 6_765_664,
+  // Word list numbering through the default style and basedOn (#13755) adds 228 B raw / 71 B transfer to the
+  // eager attachment reader (6,765,380 -> 6,765,608 B raw, 2,033,616 -> 2,033,687 B transfer against eff9bb4a8,
+  // one machine and build, Node 24, chunk count unchanged at 95). Raised by that growth.
+  transferBytes: 2_033_848,
+  rawBytes: 6_765_892,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
