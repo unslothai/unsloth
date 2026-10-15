@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CPU-only unit tests for Intel XPU training on the two flow-matching trainers (#9524).
-
-These pin DECISIONS (device, dtype, which cache is cleared, what is recorded), never Intel kernels:
-CI has no Intel GPU. Keep the fake ``torch.xpu`` a bare namespace -- a MagicMock manufactures
-attributes, so every "this torch lacks that API" case would pass vacuously.
-"""
+"""Fake torch.xpu must be a bare namespace; MagicMock invents attributes and hides missing APIs."""
 
 from __future__ import annotations
 
@@ -57,10 +52,10 @@ def test_an_xpu_box_resolves_to_xpu_not_cpu(host):
 @pytest.mark.parametrize(
     "xpu",
     [
-        None,  # a torch build with no xpu module at all
-        _fake_xpu(),  # present, but predates is_available()
-        _fake_xpu(is_available = True),  # present, non-callable
-        _fake_xpu(is_available = lambda: False),  # present, no device
+        None,
+        _fake_xpu(),
+        _fake_xpu(is_available = True),
+        _fake_xpu(is_available = lambda: False),
     ],
     ids = ["absent", "no-probe", "non-callable", "unavailable"],
 )
@@ -90,8 +85,8 @@ def test_an_emulation_only_xpu_is_refused(host):
             is_bf16_supported = lambda including_emulation = True: bool(including_emulation),
         ),
     )
-    assert torch.xpu.is_bf16_supported() is True  # what the bare call claims
-    assert native_bf16_supported_xpu() is False  # what the hardware can actually do
+    assert torch.xpu.is_bf16_supported() is True
+    assert native_bf16_supported_xpu() is False
 
 
 def test_a_native_bf16_xpu_is_accepted(host):
@@ -210,18 +205,13 @@ class _Cut(Exception):
 
 
 def _decide(monkeypatch, module, entry, cfg):
-    """The (device, weight_dtype) the REAL entry point bound, read from its live frame.
-
-    Cut at _assert_trusted_base_model, the statement right after weight_dtype: observes the decision
-    itself rather than a copy of the rule, and nothing downstream (download, cache, training) runs.
-    """
+    """Reads (device, weight_dtype) from the live frame, cut before any download or training runs."""
 
     def _cut(*_a, **_k):
         raise _Cut()
 
     monkeypatch.setattr(module, "_assert_trusted_base_model", _cut)
-    # manual_seed fans out into torch.xpu.manual_seed_all, which the bare fake lacks; it runs
-    # before the decision and cannot influence it.
+    # manual_seed fans out to torch.xpu.manual_seed_all, which the fake lacks
     monkeypatch.setattr(torch, "manual_seed", lambda *_a, **_k: None)
 
     try:
@@ -324,8 +314,8 @@ def test_an_unprobeable_xpu_is_left_to_the_child_not_refused_up_front(host):
 
     host(cuda = False, xpu = _fake_xpu(is_available = lambda: True, is_bf16_supported = _unprobeable))
     assert xpu_native_bf16_probe() is None
-    assert bf16_unsupported_reason("krea-2") is None  # route proceeds
-    assert native_bf16_supported_xpu() is False  # child still refuses, on the device itself
+    assert bf16_unsupported_reason("krea-2") is None
+    assert native_bf16_supported_xpu() is False
 
 
 def test_an_xpu_run_captures_and_restores_its_own_noise_generator(host, monkeypatch):
@@ -351,10 +341,7 @@ def test_an_xpu_run_captures_and_restores_its_own_noise_generator(host, monkeypa
 
 
 def test_a_checkpoint_cannot_silently_resume_across_accelerator_backends(host, tmp_path):
-    """Recording bf16 for XPU too (above) removed the accidental barrier that used to stop a
-    CUDA checkpoint resuming on XPU: the precisions now match, the identity carries no backend, and
-    the restore finds no torch_xpu_* key, so the device generator stays freshly seeded while the
-    resume reports success. Refused at the preflight, before teardown."""
+    """Refuse a CUDA checkpoint on XPU at preflight: resume would silently reseed the generator."""
     from pathlib import Path
 
     from core.training.diffusion_checkpoint import (
@@ -373,17 +360,15 @@ def test_a_checkpoint_cannot_silently_resume_across_accelerator_backends(host, t
     ]
     assert written_here["accelerator"] in ("cuda", "xpu", "cpu")
 
-    # Same host: accepted.
     _assert_required_state(Path("ckpt"), {**complete, "rng": written_here})
 
-    # Written on the other backend: refused, and the message says which.
     other = "xpu" if written_here["accelerator"] != "xpu" else "cuda"
     with pytest.raises(ResumeError, match = "this accelerator"):
         _assert_required_state(
             Path("ckpt"), {**complete, "rng": {**written_here, "accelerator": other}}
         )
 
-    # A bundle predating the field must still resume: unknown is not a mismatch.
+    # a bundle predating the field must still resume: unknown is not a mismatch
     legacy = {k: v for k, v in written_here.items() if k != "accelerator"}
     _assert_required_state(Path("ckpt"), {**complete, "rng": legacy})
 

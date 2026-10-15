@@ -1,54 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-End-to-end tests for Unsloth Studio's HTTP API surface.
-
-Covers the OpenAI- and Anthropic-compatible endpoints exposed by the
-server that ``unsloth studio run`` boots, plus API key authentication and
-the CLI's ``--help`` output:
-
-    1. curl -- basic chat completions (non-streaming)
-    2. curl -- streaming chat completions
-    3. Python OpenAI SDK -- streaming completions
-    4. curl -- Unsloth server-side tools (enable_tools=true)
-    5. curl -- Standard OpenAI function calling (non-streaming)
-    6. curl -- Standard OpenAI function calling (streaming)
-    7. curl -- Standard OpenAI function calling (multi-turn tool loop)
-    8. OpenAI Python SDK -- Standard function calling
-    9. Anthropic Messages API -- basic non-streaming
-    10. Anthropic Messages API -- streaming SSE
-    11. Anthropic Python SDK -- non-streaming
-    12. Anthropic Messages API -- streaming with tools
-    13. Anthropic Messages API -- tool_choice={"type":"any"} honored
-
-Training, export, fine-tuning, and chat-UI concerns are out of scope —
-see the unit suites elsewhere under ``studio/backend/tests/`` for those.
-
-Usage:
-
-    # Script mode — launches its own server via ``unsloth studio run``.
-    python tests/test_studio_api.py
-    python tests/test_studio_api.py --model unsloth/... --gguf-variant ...
-
-    # Pytest mode, external server — start an Unsloth server yourself,
-    # then point pytest at it. Fastest iteration loop.
-    unsloth studio run --model unsloth/Qwen3-1.7B-GGUF --gguf-variant UD-Q4_K_XL &
-    export UNSLOTH_E2E_BASE_URL=http://127.0.0.1:8080
-    export UNSLOTH_E2E_API_KEY=sk-unsloth-...   # from the server banner
-    pytest tests/test_studio_api.py -v
-
-    # Pytest mode, fixture-managed server — pytest launches and tears down
-    # the server itself. One-shot verification, CI-friendly.
-    pytest tests/test_studio_api.py -v \\
-        --unsloth-model unsloth/Qwen3-1.7B-GGUF \\
-        --unsloth-gguf-variant UD-Q4_K_XL
-
-The ``base_url`` / ``api_key`` parameters on the test functions resolve via
-the ``studio_server`` session fixture in ``conftest.py``.
-
-Requires a GPU and ~2 GB of disk for the GGUF download.
-"""
+"""OpenAI and Anthropic endpoint tests on a live server: need a GPU and a ~2 GB GGUF download."""
 
 from __future__ import annotations
 
@@ -65,17 +18,12 @@ import urllib.request
 from pathlib import Path
 
 
-# Configuration
-
 DEFAULT_MODEL = "unsloth/Qwen3-1.7B-GGUF"
 DEFAULT_VARIANT = "UD-Q4_K_XL"
 PORT = 18222  # high port unlikely to collide
 HOST = "127.0.0.1"
-STARTUP_TIMEOUT = 120  # seconds
+STARTUP_TIMEOUT = 120
 LOG_FILE = Path(__file__).resolve().parent.parent.parent.parent / "temp" / "test_studio_api.log"
-
-
-# Helpers
 
 
 def _http(
@@ -123,9 +71,6 @@ def _stream_http(
             return status, chunks
     except urllib.error.HTTPError as exc:
         return exc.code, []
-
-
-# Test functions
 
 
 def test_help_output():
@@ -235,13 +180,7 @@ def test_openai_sdk(base_url: str, api_key: str):
 
 
 def test_curl_with_tools(base_url: str, api_key: str):
-    """Example 4: chat completion with tool calling enabled.
-
-    When ``enable_tools`` is set the server always returns SSE streaming
-    regardless of the ``stream`` flag, so we parse SSE chunks. The model may
-    not produce visible content (tool orchestration can intercept the
-    response), so we only assert the endpoint succeeds.
-    """
+    """enable_tools always returns SSE; the model may show no content, so only success is asserted."""
     status, chunks = _stream_http(
         f"{base_url}/v1/chat/completions",
         body = {
@@ -265,23 +204,14 @@ def test_curl_with_tools(base_url: str, api_key: str):
     assert status == 200, f"Expected 200, got {status}"
     assert len(chunks) > 0, "No SSE chunks received for tools request"
 
-    # Only `choices`: this sends the documented snippet shape, which does not take
-    # X-Unsloth-Events, so a bare `type` frame can no longer arrive and accepting one would
-    # read as coverage this no longer has. Frame-level proof that the tool ran lives in the
-    # CI smokes, which opt in so their tool_start/tool_end assertions keep a witness.
+    # The snippet shape has no X-Unsloth-Events, so only `choices` chunks can arrive.
     has_valid_chunk = any("choices" in c for c in chunks)
     assert has_valid_chunk, "No valid chunks in tools response"
     full = _collect_streamed_content(chunks)
     print(f"  PASS  curl with tools: {len(chunks)} chunks, {len(full)} chars content")
 
 
-# Standard OpenAI function-calling pass-through tests.
-#
-# Regression coverage for unslothai/unsloth#4999: /v1/chat/completions used
-# to strip standard OpenAI `tools`/`tool_choice`, so clients never got
-# structured tool_calls back. These exercise the pass-through that forwards
-# those fields to llama-server verbatim. Require a tool-capable GGUF
-# (supports_tools=True); the default unsloth/Qwen3-1.7B-GGUF qualifies.
+# OpenAI tools/tool_choice pass-through to llama-server; needs a tool-capable GGUF.
 
 _WEATHER_TOOL = {
     "type": "function",
@@ -303,12 +233,7 @@ _WEATHER_TOOL = {
 
 
 def _collect_streamed_tool_calls(chunks: list[dict]) -> list[dict]:
-    """Reassemble OpenAI streaming delta.tool_calls into full tool calls.
-
-    OpenAI streams partial tool calls across chunks — the first chunk for a
-    given index carries ``id`` + ``function.name``, and later chunks append
-    fragments to ``function.arguments``.
-    """
+    """OpenAI sends each tool call's id and name once, then its arguments as fragments across chunks."""
     by_index: dict[int, dict] = {}
     for c in chunks:
         choices = c.get("choices") or []
@@ -348,14 +273,8 @@ def _final_finish_reason(chunks: list[dict]) -> str | None:
 
 
 def test_openai_tools_nonstream(base_url: str, api_key: str):
-    """Standard OpenAI function calling, non-streaming, tool_choice='required'.
-
-    Regression: before the fix, Unsloth stripped `tools` and the model
-    returned plain text with finish_reason='stop'. After the fix,
-    llama-server's response is forwarded verbatim so the client sees
-    finish_reason='tool_calls' with a structured tool_calls array and
-    non-zero usage.prompt_tokens.
-    """
+    """llama-server's tool_calls response must be forwarded verbatim, not stripped of tools to plain
+    text."""
     status, text = _http(
         "POST",
         f"{base_url}/v1/chat/completions",
@@ -383,10 +302,8 @@ def test_openai_tools_nonstream(base_url: str, api_key: str):
     assert (
         first["function"]["name"] == "get_weather"
     ), f"Wrong tool name: {first['function']['name']!r}"
-    # arguments must be valid JSON
     parsed = json.loads(first["function"]["arguments"])
     assert "city" in parsed, f"Tool call missing required 'city' arg: {parsed}"
-    # Usage must be non-zero (was 0 before the fix)
     usage = data.get("usage") or {}
     assert usage.get("prompt_tokens", 0) > 0, f"Expected non-zero prompt_tokens; got {usage}"
     assert data.get("id"), "Missing response id"
@@ -428,14 +345,7 @@ def test_openai_tools_stream(base_url: str, api_key: str):
 
 
 def test_openai_tools_multiturn(base_url: str, api_key: str):
-    """Multi-turn client-side tool loop: validates that role='tool' result
-    messages and assistant messages carrying tool_calls are accepted.
-
-    Regression: before the fix, ChatMessage.role was restricted to
-    {system,user,assistant} and rejected role='tool' at Pydantic
-    validation. This test sends a full round trip so the model receives the
-    simulated tool result and responds with final text.
-    """
+    """The message model must accept role='tool' and assistant tool_calls, beyond system/user/assistant."""
     status, text = _http(
         "POST",
         f"{base_url}/v1/chat/completions",
@@ -471,7 +381,6 @@ def test_openai_tools_multiturn(base_url: str, api_key: str):
     assert status == 200, f"Expected 200, got {status}: {text[:500]}"
     data = json.loads(text)
     msg = data["choices"][0]["message"]
-    # The model should respond with text now it has the tool result
     content = msg.get("content") or ""
     assert len(content) > 0 or msg.get(
         "tool_calls"
@@ -536,9 +445,6 @@ def test_no_key_rejected(base_url: str):
     print(f"  PASS  no API key rejected ({status})")
 
 
-# Anthropic SSE helper
-
-
 def _stream_anthropic_http(
     url: str,
     *,
@@ -546,10 +452,6 @@ def _stream_anthropic_http(
     headers: dict,
     timeout: int = 60,
 ) -> tuple[int, list[tuple[str, dict]]]:
-    """POST a streaming request and collect Anthropic SSE events.
-
-    Returns (status, [(event_type, data_dict), ...]).
-    """
     data = json.dumps(body).encode()
     req = urllib.request.Request(url, data = data, headers = headers, method = "POST")
     req.add_header("Content-Type", "application/json")
@@ -582,9 +484,6 @@ def _collect_anthropic_text(events: list[tuple[str, dict]]) -> str:
             if delta.get("type") == "text_delta":
                 parts.append(delta.get("text", ""))
     return "".join(parts)
-
-
-# Anthropic /v1/messages test functions
 
 
 def test_anthropic_basic(base_url: str, api_key: str):
@@ -702,21 +601,13 @@ def test_anthropic_with_tools(base_url: str, api_key: str):
 
 
 def test_anthropic_tool_choice_any(base_url: str, api_key: str):
-    """Anthropic Messages API: ``tool_choice: {"type": "any"}`` must be
-    honored (forwarded as OpenAI ``tool_choice: "required"`` to
-    llama-server). Regression for the secondary fix bundled with #4999 —
-    previously this field was accepted on the request model but dropped with
-    a warning log, so the model could answer from memory instead of using
-    the tool.
-    """
+    """tool_choice {type: any} must be forwarded as tool_choice required, not dropped with a warning."""
     status, events = _stream_anthropic_http(
         f"{base_url}/v1/messages",
         body = {
             "model": "default",
             "max_tokens": 256,
             "messages": [
-                # A question the model could answer from memory if
-                # tool_choice were not enforced.
                 {
                     "role": "user",
                     "content": "What is the weather in London right now?",
@@ -744,7 +635,6 @@ def test_anthropic_tool_choice_any(base_url: str, api_key: str):
     assert status == 200, f"Expected 200, got {status}"
     assert len(events) > 0, "No SSE events received"
 
-    # With tool_choice=any, stop_reason must be tool_use, not end_turn
     stop_reason = None
     for etype, data in events:
         if etype == "message_delta":
@@ -754,7 +644,6 @@ def test_anthropic_tool_choice_any(base_url: str, api_key: str):
         f"{stop_reason!r} — tool_choice may not be forwarded to llama-server."
     )
 
-    # And at least one tool_use content block must be emitted
     tool_use_starts = [
         e
         for e in events
@@ -767,14 +656,7 @@ def test_anthropic_tool_choice_any(base_url: str, api_key: str):
     )
 
 
-# Server lifecycle
-
-
 def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, str]:
-    """Launch ``unsloth studio run`` and parse the API key from its banner.
-
-    Returns (process, api_key).
-    """
     cmd = [
         "unsloth",
         "studio",
@@ -793,9 +675,7 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
 
     LOG_FILE.parent.mkdir(parents = True, exist_ok = True)
     log_fh = open(LOG_FILE, "w", encoding = "utf-8")
-    # The child writes to this descriptor itself, so the parent's encoding does
-    # not transcode anything: tell the child to emit utf-8 or the reads below
-    # decode its locale bytes as utf-8 and raise on the first non-ASCII glyph.
+    # The child writes this fd itself, so force utf-8 output in the child.
     child_env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
     proc = subprocess.Popen(
         cmd,
@@ -805,7 +685,6 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
         env = child_env,
     )
 
-    # Wait for the banner containing the API key
     api_key = None
     deadline = time.monotonic() + STARTUP_TIMEOUT
     while time.monotonic() < deadline:
@@ -825,7 +704,6 @@ def _start_server(model: str, variant: str | None) -> tuple[subprocess.Popen, st
         _kill_server(proc)
         raise RuntimeError(f"Timed out waiting for API key in server output:\n{log_text[-2000:]}")
 
-    # Wait a moment for the model to be fully loaded
     time.sleep(2)
     return proc, api_key
 
@@ -844,9 +722,6 @@ def _kill_server(proc: subprocess.Popen):
         except (ProcessLookupError, PermissionError):
             pass
         proc.wait(timeout = 5)
-
-
-# Main
 
 
 def main():
@@ -879,11 +754,9 @@ def main():
             failed += 1
             print(f"  ERROR {fn.__name__}: {type(exc).__name__}: {exc}")
 
-    # 1. --help (no server needed)
     print("\n[1/16] Testing --help output")
     run_test(test_help_output)
 
-    # 2-16. Start server and run API tests
     print(f"\nStarting server: {args.model} (variant={args.gguf_variant}) on port {PORT}...")
     proc = None
     try:
@@ -938,14 +811,13 @@ def main():
 
     except RuntimeError as exc:
         print(f"\nFATAL: Server failed to start: {exc}")
-        failed += 16  # remaining tests count as failed
+        failed += 16
     finally:
         if proc:
             print("\nStopping server...")
             _kill_server(proc)
             print("Server stopped.")
 
-    # Summary
     total = passed + failed
     print(f"\n{'=' * 40}")
     print(f"Results: {passed}/{total} passed, {failed} failed")

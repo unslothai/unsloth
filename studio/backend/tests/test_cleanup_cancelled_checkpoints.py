@@ -16,11 +16,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 @pytest.fixture
 def outputs_setup(tmp_path, monkeypatch):
-    """Point outputs_root() at a temp dir so cleanup may run on it.
-
-    training binds ``outputs_root`` at import time, so patch the symbol on
-    the importer module, not on storage_roots.
-    """
+    """training binds outputs_root at import time, so patch it on the importer module, not storage_roots."""
     from core.training import training as training_mod
 
     monkeypatch.setattr(training_mod, "outputs_root", lambda: tmp_path)
@@ -59,7 +55,7 @@ def test_in_flight_tmp_checkpoints_removed(outputs_setup):
     out.mkdir()
     _mk_dir(out, "tmp-checkpoint-100")
     _mk_dir(out, "tmp-checkpoint-200")
-    _mk_dir(out, "checkpoint-50")  # completed, kept
+    _mk_dir(out, "checkpoint-50")
 
     _cleanup_cancelled_checkpoints(out)
 
@@ -75,7 +71,7 @@ def test_non_checkpoint_dirs_left_alone(outputs_setup):
     out.mkdir()
     _mk_dir(out, "logs")
     _mk_dir(out, "tensorboard")
-    _mk_dir(out, "checkpoint-final")  # non-int suffix, kept
+    _mk_dir(out, "checkpoint-final")
     _mk_dir(out, "checkpoint-best")
     _mk_dir(out, "tmp-checkpoint-99")
 
@@ -130,7 +126,6 @@ def test_symlinked_output_dir_skipped(outputs_setup):
 def test_missing_output_dir_is_noop(outputs_setup):
     from core.training.training import _cleanup_cancelled_checkpoints
     _cleanup_cancelled_checkpoints(outputs_setup / "does-not-exist")
-    # Should not raise; nothing to assert beyond non-failure.
 
 
 def test_symlinked_child_skipped(outputs_setup):

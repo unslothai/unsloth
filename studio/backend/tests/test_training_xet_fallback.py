@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Parent-side training Xet->HTTP fallback: a model-load stall respawns the
-worker once with Xet disabled, preserving the DB run row. Driven via
-_handle_event with a fake spawn context; no GPU, no network, no real subprocess.
-"""
+"""A model-load stall respawns the worker once with Xet disabled, keeping the DB run row."""
 
 from __future__ import annotations
 
@@ -33,8 +30,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the heavy module-level imports of core/training/training.py so it imports under
-# CPU-only/no-network, then restore them (see the restore loop below).
 _SAVED: dict = {}
 
 
@@ -63,8 +58,7 @@ _stub("utils.paths", _pth)
 import core.training.training as training_mod
 from core.training.training import TrainingBackend
 
-# Restore every stubbed module so this file never pollutes the shared session: a leaked bare
-# ``structlog`` (no ``get_logger``) would break every later module that logs at import.
+# Restore stubs: a leaked bare ``structlog`` breaks later modules that log at import.
 for _name in (
     "loggers",
     "structlog",
@@ -163,7 +157,7 @@ def test_respawn_uses_disable_xet_and_preserves_run_row(monkeypatch):
 
     fake_ctx = _FakeCtx()
     monkeypatch.setattr(training_mod, "_CTX", fake_ctx)
-    monkeypatch.setattr(b, "_pump_loop", lambda: None)  # neutralize the new pump
+    monkeypatch.setattr(b, "_pump_loop", lambda: None)
     created = {"n": 0}
     finalized = {"n": 0}
     monkeypatch.setattr(
@@ -321,7 +315,7 @@ def test_reset_waits_for_cancelled_respawn_finalization(monkeypatch):
 
 def test_second_stall_surfaces_error_without_respawn():
     b, proc = _backend_mid_load()
-    b._xet_fallback_used = True  # HTTP fallback already spent
+    b._xet_fallback_used = True
     b._handle_event({"type": "stall", "message": "stalled again over http"})
     assert b._needs_xet_respawn is False
     assert b._progress.error and "stalled" in b._progress.error.lower()

@@ -146,7 +146,7 @@ def _is_guard(node: ast.AST) -> bool:
     return name.endswith("torch.cuda.device") or name.endswith("_device_guard")
 
 
-# FlashInfer PRIVATE entry points: imported by name, so a prefix check cannot see them.
+# FlashInfer private entry points are imported by name, so a prefix check cannot see them.
 _PRIVATE_LAUNCHES = frozenset(
     {
         "choose_one",
@@ -160,7 +160,7 @@ _PRIVATE_LAUNCHES = frozenset(
 
 
 def _is_launch(node: ast.Call) -> str:
-    # A Triton launch is a Call on a SUBSCRIPT (``kernel[grid](...)``), on the CURRENT device.
+    # A Triton launch is a Call on a Subscript (kernel[grid](...)).
     if isinstance(node.func, ast.Subscript):
         name = _dotted(node.func.value)
         return name if name.endswith("_kernel") else ""
@@ -474,7 +474,7 @@ def test_an_unprewarmed_gemm_shape_autotunes_on_its_first_eager_call_only(monkey
             xq = torch.zeros(m, 16, dtype = torch.uint8)
             ops._mm_impl(xq, wq, None, wq, None, 64, "cutlass")
 
-        nl._TUNED_SHAPES.add((1, 32, 64))  # what the loader's M = 1 prewarm leaves behind
+        nl._TUNED_SHAPES.add((1, 32, 64))
         _mm(1)
         _mm(4352)
         _mm(4352)

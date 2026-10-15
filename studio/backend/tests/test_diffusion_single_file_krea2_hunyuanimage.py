@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Krea 2 and HunyuanImage 2.1 original-layout single files (the ComfyUI ``diffusion_models`` files).
-
-diffusers ships both transformers without a single-file converter, so every ComfyUI file of either
-family failed before this with "has no single-file converter" (the ComfyUI int8 / fp8 loader) or
-"FromOriginalModelMixin is currently only compatible with ..." (plain files).
-
-The stubs below are written from the real files' headers by an inverse map kept here, independent of
-the converter's own tables: a tiny diffusers model's weights go out in the original layout and must
-come back bit-identical, under exactly the model's keys and shapes. The ComfyUI int8 loader is then
-run on a real-format int8 file of the same tiny model, which proves the converter only moves whole
-rows (that loader refuses anything else) and that the codes and scales survive exactly.
-"""
+"""diffusers has no single-file converter for Krea 2 or HunyuanImage 2.1 ComfyUI files."""
 
 from __future__ import annotations
 
@@ -470,10 +459,7 @@ def test_comfy_int8_krea2_file_loads_with_codes_exact(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("prefix", ["", "model.model.", "diffusion_model."])
 def test_plain_krea2_file_loads_like_the_base_repo(tmp_path, monkeypatch, prefix):
-    """A plain bf16 ComfyUI file through Studio's loader (used while diffusers gives Krea 2 no
-    from_single_file): same tensors as the diffusers weights, the _keep_in_fp32_modules norms in float32
-    as from_pretrained leaves them, strict on keys. Every container prefix, including the two diffusers
-    0.41's own Krea 2 converter does not strip."""
+    """Plain bf16 ComfyUI file loads strictly, with _keep_in_fp32_modules norms kept in float32."""
     cls = _class("Krea2Transformer2DModel")
     model = _tiny("Krea2Transformer2DModel", KREA2_CFG)
     path = tmp_path / "krea2_tiny_bf16.safetensors"

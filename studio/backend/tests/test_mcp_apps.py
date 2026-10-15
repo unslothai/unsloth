@@ -272,7 +272,6 @@ def test_csp_defaults_to_deny_and_declared_domains_widen_only_their_directive():
     assert parse("blob:, DATA:") == ["blob:", "data:"]
     assert parse("blob:", local_schemes = False) == []
     assert len(parse(",".join(f"h{i}.example.com" for i in range(200)))) == 24
-    # Not hosts: a second directive or header, blanket openings, keywords, other schemes.
     bad = ["evil.com;script-src *", "evil.com\r\nX-Injected: 1", "*", "'unsafe-inline'", "https:"]
     bad += ["javascript:alert(1)", "filesystem:", "data:text/html,<script>1</script>", "a b", ""]
     assert [parse(v) for v in bad] == [[]] * len(bad)
@@ -393,7 +392,7 @@ def test_a_disabled_server_serves_no_widget_and_takes_no_calls(routes, monkeypat
 @pytest.mark.parametrize(
     "fields, status",
     [
-        ({"tool_name": "danger", "permission_mode": "off", "approved": True}, 403),  # model-only
+        ({"tool_name": "danger", "permission_mode": "off", "approved": True}, 403),
         ({"tool_name": "not_discovered"}, 404),
         ({"tool_name": ""}, 400),
         (

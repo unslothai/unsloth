@@ -1,21 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resuming a pinned snapshot must use the same load roots as everything else.
-
-``ca7c72e75`` taught the cached-snapshot probes about ``security_load_subdirs`` so a repo
-like ``unsloth/Spark-TTS-0.5B`` -- whose snapshot root holds only ``README.md`` and
-``config.yaml``, with everything trainable under ``LLM/`` -- is not reported as absent.
-The resume branch of ``_reject_untrainable_model_request`` kept its own hardcoded
-``("config.json", "adapter_config.json")`` tuple, so the one path that *already has* a
-server-verified pin was the one that could not see it: ``latest_snapshot_from_cache_path``
-returned None, ``path`` stayed None, and the very next block turned that into
-409 ``hf_model_not_cached_offline`` for a cache sitting right there on disk. Online it is
-no better -- it falls through to a remote metadata round trip that offline users cannot
-make and that the pin exists precisely to avoid.
-
-Resuming is when the pin matters most, so it has to agree with the resolver.
-"""
+"""Resume's pinned snapshot probe must use security_load_subdirs, not a hardcoded config.json tuple."""
 
 import json
 
@@ -90,7 +76,6 @@ def _request(model_name, snapshot_path):
 
 def test_a_pinned_subdir_snapshot_is_accepted_on_resume(cache_root, bicodec_subdirs, offline):
     snapshot = _snapshot(cache_root, _BICODEC)
-    # The real Spark-TTS layout: nothing loadable at the snapshot root.
     (snapshot / "config.yaml").write_text("sample_rate: 16000\n")
     _write_model(snapshot / "LLM")
 

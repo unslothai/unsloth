@@ -119,13 +119,11 @@ SPEECH, TASKS = "/v1/audio/speech", "/v1/tasks/run"
     ("qwen3", {"reference_text": T, "language": "en"}, {**BASE, "reference_text": T, "language": "English"}),
     ("chatterbox", {"reference_text": T, "audio_options": {"exaggeration": 0.7, "guidance_scale": 9, "temperature": 0.1}},
      {**BASE, "options": {"exaggeration": "0.7", "guidance_scale": "5"}}),
-    # Emotion audio switches to the tasks endpoint with top-level audio.
     ("index", {"audio_inputs": {"reference": REF, "emotion": EMOTION}, "audio_options": {"emotion_alpha": 0.7}},
      {"path": TASKS, "model": "studio-test", "text": TEXT, "voice_ref": REF, "audio": EMOTION,
       "options": {"emotion_alpha": "0.7"}, "seed": "7"}),
     ("qwen3", {"language": "Japanese"}, {"language": "Japanese"}),
     ("qwen3", {"language": "pt-BR"}, {"language": "Portuguese"}),
-    # Auto and unknown codes are left out rather than refused at runtime.
     ("qwen3", {"language": "auto"}, {"language": ABSENT}),
     ("qwen3", {"language": "xx"}, {"language": ABSENT}),
     ("qwen3", {"reference_text": T, "audio_options": {"x_vector_only_mode": True, "bogus_key": "1"}},
@@ -156,7 +154,7 @@ def test_clone_request_body(key, kwargs, expect):
     expect = dict(expect)
     assert path == expect.pop("path", SPEECH)
     assert {k: body.get(k, ABSENT) for k in expect} == expect
-    if "model" in expect:  # full-body rows
+    if "model" in expect:
         assert body.keys() == expect.keys()
 
 
@@ -280,7 +278,6 @@ def test_miotts_downloads_mio_codec_and_starts_with_its_path(monkeypatch, tmp_pa
     ((served, path),) = started
     assert path.endswith("miotts.gguf")
     assert served.model_options["session_options"] == {"miotts.codec_model_path": codec_path}
-    # Equal to the requested model, so the next request does not restart the server.
     assert served == model
     entry = _server_entry(monkeypatch, tmp_path, replace(model, model_options = served.model_options))
     assert entry["session_options"] == {"miotts.codec_model_path": codec_path}

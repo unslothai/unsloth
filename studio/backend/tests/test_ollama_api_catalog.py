@@ -148,14 +148,12 @@ def test_a_repulled_tag_is_not_reported_loaded_while_it_cannot_be_answered(store
     assert inf._loaded_satisfies("ollama/llama3:latest") is True
     assert inf._loaded_satisfies("ollama/llama3:latest:Q8_0") is False
     assert [m["id"] for m in inf._openai_model_objects()] == ["ollama/llama3:latest"]
-    # The load identity is recorded before the server answers and outlives a failed load.
     backend.is_loaded = False
     assert inf._resolves_to_resident(ref, llama_only = True) is False
     backend.is_loaded = True
     _retag(store, "latest", "c" * 64)
     assert inf._loaded_satisfies("ollama/llama3:latest") is False
     assert inf._openai_model_objects() == []
-    # A manifest mid-pull reads as nothing: withhold the row, do not fail the listing.
     (store / "manifests/registry.ollama.ai/library/llama3/latest").write_text("truncated")
     assert inf._loaded_satisfies("ollama/llama3:latest") is False
     assert inf._openai_model_objects() == []
@@ -173,13 +171,11 @@ def test_a_link_is_loaded_as_the_tag_that_materialized_it(store, monkeypatch, se
     for named in (link, link.with_name("llama3-latest-Q4_K_M.gguf")):
         assert _rewritten(str(named)) == ref
     assert _rewritten(str(store / "blobs")) == str(store / "blobs")
-    # An authorized request keeps its own path: the tag may name blobs it never judged.
     monkeypatch.setattr(account_access, "managed_account", lambda: True)
     assert _rewritten(str(link)) == str(link)
     monkeypatch.setattr(account_access, "managed_account", lambda: False)
     leased = LoadRequest(model_path = str(link), native_path_lease = "lease")
     assert inf._as_ollama_manifest_request(leased).model_path == str(link)
-    # A tag that no longer reads leaves a link that still resolves alone.
     manifest = store / "manifests/registry.ollama.ai/library/llama3/latest"
     manifest.write_text("truncated")
     assert _rewritten(str(link)) == str(link)
@@ -218,27 +214,23 @@ def test_an_alias_answers_for_the_resident_blobs_until_its_own_tag_moves(
     """Adoption records a name, and a re-pull replaces the weights under a name it keeps."""
     link = Path(ollama.materialize_ollama_model_ref(aliased["ollama/llama3:latest"]))
     alias_link = Path(ollama.materialize_ollama_model_ref(aliased["ollama/llama3:8b"]))
-    # The advertised id a request adopting the resident model under another name leaves behind.
     serving(_resident(aliased["ollama/llama3:latest"], advertised = "ollama/llama3:8b"))
 
     def _satisfied() -> bool:
         resolver.invalidate_index()
         resolver.resolve_local_gguf("ollama/llama3:8b")
         with monkeypatch.context() as warm_only:
-            # Scanning here would run ahead of the bounded cold-index wait its callers apply.
             warm_only.setattr(resolver, "_index", _refusing_to_scan)
             return inf._loaded_satisfies("ollama/llama3:8b")
 
     assert _satisfied() is True
     assert [m["id"] for m in inf._openai_model_objects()] == ["ollama/llama3:8b"]
-    # Whichever spelling the inventory gave a recipe: this link, an older link name, the alias.
     for stored in (link, link.with_name("llama3-latest-Q4_K_M.gguf"), alias_link):
         assert _validate(str(stored)).resident is True
     _retag(store, "latest", "d" * 64)
     assert _satisfied() is True
     assert [m["id"] for m in inf._openai_model_objects()] == ["ollama/llama3:8b"]
 
-    # Re-pulled: the spelling is the same and the weights under it are not.
     _retag(store, "8b", "c" * 64)
     assert _satisfied() is False
     assert inf._openai_model_objects() == []
@@ -287,7 +279,6 @@ def test_validate_answers_for_the_artifact_it_resolved(store, monkeypatch, tmp_p
         )
 
     monkeypatch.setattr(gguf_utils, "resolve_local_gguf_path", lambda _id, name: quant(name))
-    # By repo id, then out of the directory the quants share. Q8_0 is loaded both times.
     for identifier, by_file in (("org/model-GGUF", False), (str(tmp_path), True)):
         serving(loaded(identifier, quant("Q8_0"), variant = "Q8_0"))
         for name, expected in (("Q8_0", True), ("Q4_K_M", False)):

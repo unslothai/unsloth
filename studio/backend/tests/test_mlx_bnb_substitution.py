@@ -224,7 +224,6 @@ def test_a_diffusion_bnb_repo_in_the_ranking_keeps_its_name(monkeypatch):
 
     assert orch.default_models == [
         "unsloth/curated",
-        # diffusion: read as named by diffusers/MPS
         "unsloth/Qwen-Image-2512-unsloth-bnb-4bit",
         "unsloth/Z-Image-Turbo-unsloth-bnb-4bit",
         # text: mlx-lm cannot read it, so name the repo it really loads

@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The backend's own HF_TOKEN is the operator's credential, not a shared service credential.
-
-The Unsloth UI sends the user's saved token in ``X-Unsloth-HF-Token`` on every hub download, so
-only a caller that has none reaches the ambient fallback. A UI session is the installation's
-owner and keeps it (Settings hands that session the saved token anyway). An sk-unsloth API key
-is the lesser credential -- Settings refuses it the saved token -- so it must not reach private
-repos by naming one in a download request instead.
-"""
+"""Ambient HF_TOKEN belongs to the operator, so an sk-unsloth key may not borrow it for private repos."""
 
 import asyncio
 import io
@@ -441,8 +434,7 @@ class _HttpxLike(Exception):
     """Stands in for httpx.ConnectError, which is not an OSError either."""
 
 
-# Everything hub's resolver can raise that is NOT an unreadable-file OSError/UnicodeError. The OIDC
-# rungs reach all of these whenever HF_OIDC_RESOURCE is set in the backend's environment.
+# Resolver failures other than unreadable-file errors; reachable when HF_OIDC_RESOURCE is set.
 _RESOLVER_FAILURES = [
     _OIDCLike("no OIDC id token is available"),
     _HttpxLike("all connection attempts failed"),

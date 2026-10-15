@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the llama-server child environment, per platform.
-
-_llama_server_env_for_binary used to branch win32 vs "everything else", and
-that else branch is Linux: WSL/ROCm probing, pip nvidia wheel globs, CUDA
-toolkit paths, and LD_LIBRARY_PATH. dyld ignores LD_LIBRARY_PATH, so on macOS
-llama-server was launched with no library search path at all, while the
-installer's own staged-binary validation sets DYLD_LIBRARY_PATH and therefore
-passed on a path the real launch never took (issue #8566).
-
-These tests pin the Darwin branch and, just as importantly, pin the Linux and
-Windows branches so the fix cannot change them.
-"""
+"""dyld ignores LD_LIBRARY_PATH, so macOS children need DYLD_LIBRARY_PATH; others unchanged."""
 
 from __future__ import annotations
 
@@ -27,7 +16,6 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Match sibling tests' stubbing so the module imports without fastapi.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -86,20 +74,15 @@ class TestDarwin:
         assert entries == [str(binary.parent), "/opt/inherited"]
 
     def test_an_inherited_ld_library_path_is_left_alone(self, monkeypatch, binary):
-        # Repurposing it would be pointless (dyld ignores it) and would leak a
-        # llama.cpp dir into anything the user set it for.
+        # dyld ignores LD_LIBRARY_PATH, so it must not be repurposed on macOS.
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setenv("LD_LIBRARY_PATH", "/opt/sentinel")
         _no_linux_discovery(monkeypatch)
         assert _env_for(binary)["LD_LIBRARY_PATH"] == "/opt/sentinel"
 
     def test_a_wrapper_entrypoint_resolves_to_the_real_bin_dir(self, monkeypatch, tmp_path):
-        # The managed install can put a shell entrypoint in front of the real
-        # binary; the dylibs sit next to the target, not next to the wrapper.
-        # The env dict alone is not enough on a Mac: SIP purges DYLD_* while
-        # starting the protected /bin/sh a wrapper runs under, so load_model
-        # launches the resolved target instead (see
-        # TestDarwinSpawnsTheResolvedBinary).
+        # Dylibs sit next to the wrapper's target; SIP purges DYLD_* under /bin/sh,
+        # so the env dict alone is not enough on macOS.
         real_dir = tmp_path / "llama.cpp" / "build" / "bin"
         real_dir.mkdir(parents = True)
         (real_dir / "llama-server-real").write_text("")
@@ -128,9 +111,7 @@ class TestLinuxUnchanged:
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
         monkeypatch.setattr(llama_module, "_native_linux_system_rocm_lib_dirs", lambda _d: [])
         env = _env_for(binary)
-        # startswith, not split(":")[0]: the Linux branch joins with a literal
-        # ":" and this test simulates Linux on whatever host runs it, so on a
-        # Windows runner the first entry is "C:\..." and splitting yields "C".
+        # startswith, not split(':'): on a Windows host the first entry is 'C:\...'.
         assert env["LD_LIBRARY_PATH"].startswith(str(binary.parent))
         assert "DYLD_LIBRARY_PATH" not in env
 
@@ -151,7 +132,6 @@ class TestLinuxUnchanged:
         assert env.get("HSA_ENABLE_DXG_DETECTION") == "1"
 
     def test_use_system_rocm_false_skips_native_linux_prepend(self, monkeypatch, binary):
-        # The retry keeps the CUDA and bundle dirs, drops the system ROCm one.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -167,9 +147,7 @@ class TestLinuxUnchanged:
         assert bundle_only["LD_LIBRARY_PATH"].startswith(str(binary.parent))
 
     def test_a_proved_bundle_only_host_stops_prepending_for_every_child(self, monkeypatch, binary):
-        # The retry fixes one launch. Without the latch the STT sidecar, which
-        # builds its env through this same helper, would keep crashing into the
-        # prepend that was already proved wrong on this host.
+        # Latch so the STT sidecar (same helper) stops reusing the disproved prepend.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -184,7 +162,6 @@ class TestLinuxUnchanged:
 
         after = LlamaCppBackend._llama_server_env_for_binary(str(binary))
         assert "/opt/rocm/lib" not in after["LD_LIBRARY_PATH"].split(":")
-        # The sidecar reaches the same helper, so it inherits the correction.
         from core.inference.stt_mtmd_sidecar import _llama_server_child_env
 
         sidecar = _llama_server_child_env(str(binary))
@@ -193,8 +170,7 @@ class TestLinuxUnchanged:
     def test_a_replaced_runtime_retests_the_system_rocm_prepend(
         self, monkeypatch, binary, tmp_path
     ):
-        # The in-app updater swaps a new install into the same path. A proof
-        # from the old binary must not force the new runtime to stay bundle-only.
+        # The updater swaps a new install into the same path; old proof must not stick.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -214,7 +190,6 @@ class TestLinuxUnchanged:
         assert env["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
 
     def test_a_different_build_dir_still_gets_the_prepend(self, monkeypatch, binary, tmp_path):
-        # The proof is about one install tree, not about the host in general.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: [])
@@ -230,8 +205,7 @@ class TestLinuxUnchanged:
         assert env["LD_LIBRARY_PATH"].split(":")[0] == "/opt/rocm/lib"
 
     def test_use_system_rocm_false_keeps_the_wsl_prepend(self, monkeypatch, binary):
-        # librocdxg is a different mix (WSL). The native-Linux flag must not
-        # drop it.
+        # librocdxg is WSL; the native-Linux flag must not drop it.
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.delenv("LD_LIBRARY_PATH", raising = False)
         monkeypatch.setattr(llama_module, "_wsl_system_rocm_lib_dirs", lambda: ["/wsl/rocm"])
@@ -303,7 +277,7 @@ class TestExecPathForLaunch:
         monkeypatch.setattr(sys, "platform", "darwin")
         monkeypatch.setattr(path_settings, "custom_llama_cpp_path_source", lambda: "studio")
         wrapper, target = self._wrapper(tmp_path)
-        # Simulate the LF-only installer template even on a Windows test host.
+        # LF-only template even on a Windows host.
         wrapper.write_bytes(b'#!/bin/sh\nexec "$(dirname "$0")/llama-server-real" "$@"\n')
 
         assert LlamaCppBackend._is_unsloth_managed_binary(str(wrapper)) is False
@@ -327,10 +301,7 @@ class TestExecPathForLaunch:
 
 
 class TestBinaryRevisionPathSpace:
-    """_binary_revision keys on the path string, so both sides of the
-    changed-since-launch comparison must resolve the entrypoint the same way.
-    Otherwise every Apply on a macOS managed install looks like an update and
-    reloads the model."""
+    """_binary_revision keys on the path string, so both sides must resolve the entrypoint the same way."""
 
     def _managed_wrapper(self, monkeypatch, tmp_path):
         root = tmp_path / "llama.cpp"
@@ -364,7 +335,7 @@ class TestBinaryRevisionPathSpace:
         backend._launch_binary_revision = LlamaCppBackend._binary_revision(
             LlamaCppBackend._exec_path_for_launch(str(wrapper))
         )
-        assert backend._launch_binary_revision  # the stamp is readable
+        assert backend._launch_binary_revision
         assert backend._binary_changed_since_launch() is False
 
     def test_a_real_update_is_still_detected(self, monkeypatch, tmp_path):
@@ -420,12 +391,7 @@ class TestLocalLinkInstalls:
 
 
 class TestTheLoaderPathPrependIsAFixedPoint:
-    """Repeat application must not grow the search path.
-
-    Building the child environment twice happens on any retry (CPU fallback,
-    the mmproj text-only replay), and a value that grew each time would end up
-    with the runtime dir listed once per attempt.
-    """
+    """Building the child env again on retry must not prepend the runtime dir a second time."""
 
     def test_the_binary_dir_comes_first(self):
         assert llama_module._prepend_loader_dir("", "/x/bin") == "/x/bin"
@@ -461,12 +427,7 @@ class TestTheLoaderPathPrependIsAFixedPoint:
 
 
 class TestAnExplicitPinOutranksInferredOwnership:
-    """A wrapper the user named in LLAMA_SERVER_PATH is theirs.
-
-    Ownership is inferred from an install marker somewhere above the file, so a
-    wrapper pinned INSIDE a managed tree read as ours and was resolved past,
-    dropping whatever it exported before its exec line.
-    """
+    """A wrapper pinned in LLAMA_SERVER_PATH is the user's, even inside a managed install tree."""
 
     @staticmethod
     def _managed_tree_with_a_pinned_wrapper(tmp_path):
@@ -504,13 +465,7 @@ class TestAnExplicitPinOutranksInferredOwnership:
 
 
 class TestTheCpuFallbackGateIsUnchangedForLinkedTrees:
-    """--with-llama-cpp-dir is not something `unsloth studio update` can fix.
-
-    Teaching _is_unsloth_managed_binary that also changed the gate on the
-    Vulkan CPU fallback, which needs only to read and copy the tree, so those
-    installs lost the fallback on Linux and Windows. The two questions are
-    asked separately now.
-    """
+    """Linked trees keep the CPU fallback gate unchanged: managed-binary ownership is asked separately."""
 
     @staticmethod
     def _linked_tree(tmp_path, monkeypatch):
@@ -535,13 +490,7 @@ class TestTheCpuFallbackGateIsUnchangedForLinkedTrees:
 
 
 class TestAWrapperChainIsFollowedToTheEnd:
-    """One hop was not enough.
-
-    A wrapper whose target is another wrapper resolved to the intermediate
-    script, so on macOS the launch still went through a shell (losing DYLD_* to
-    SIP) and _llama_lib_dir returned the wrapper's directory rather than the one
-    holding the dylibs.
-    """
+    """Wrapper chains resolve to the end, since SIP drops DYLD_* through any intermediate shell script."""
 
     @staticmethod
     def _chain(tmp_path, depth):
@@ -576,13 +525,7 @@ class TestAWrapperChainIsFollowedToTheEnd:
 
 
 class TestOnlyTheInstallersOwnEntrypointIsSkipped:
-    """UNSLOTH_LLAMA_CPP_PATH makes a user's checkout read as managed.
-
-    _llama_install_root treats the directory named by that variable as the
-    active install with no marker file needed, so provenance alone said "ours"
-    for a wrapper at the root of somebody's own tree, and its exports were lost.
-    The installer writes a fixed three-line wrapper; anything else is theirs.
-    """
+    """Only the installer's fixed three-line wrapper is skipped as ours; any other wrapper is preserved."""
 
     @staticmethod
     def _tree(tmp_path, wrapper_body):
@@ -602,7 +545,6 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
         monkeypatch.delenv("LLAMA_SERVER_PATH", raising = False)
         monkeypatch.setenv("UNSLOTH_LLAMA_CPP_PATH", str(root))
         monkeypatch.setattr(sys, "platform", "darwin")
-        # It really does read as managed; the exemption is the wrapper shape.
         assert LlamaCppBackend._is_unsloth_managed_binary(str(entry)) is True
         assert LlamaCppBackend._exec_path_for_launch(str(entry)) == str(entry)
 
@@ -615,8 +557,6 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
         assert got == str((root / "build" / "bin" / "llama-server").resolve())
 
     def test_the_library_dir_still_comes_from_the_target(self, monkeypatch, tmp_path):
-        # _llama_lib_dir must keep resolving ANY wrapper: the dylibs sit beside
-        # the target whoever wrote the script.
         root, entry = self._tree(tmp_path, self._USERS)
         assert llama_module._llama_lib_dir(str(entry)) == (root / "build" / "bin").resolve()
 
@@ -634,15 +574,7 @@ class TestOnlyTheInstallersOwnEntrypointIsSkipped:
 
 
 class TestPinningTheInstallersOwnEntrypoint:
-    """Pointing LLAMA_SERVER_PATH at our own wrapper is a supported setup.
-
-    An earlier fix made an exact pin short-circuit resolution outright, to
-    protect a custom wrapper's setup. That was too broad: pinning the
-    installer's own entrypoint then launched through /bin/sh, SIP dropped
-    DYLD_*, and #8566 came back for that configuration. The wrapper's shape
-    decides now, so a template wrapper resolves however it was reached and a
-    custom one is preserved however it was reached.
-    """
+    """A wrapper's shape, not how it was reached, decides: templates resolve, custom wrappers are kept."""
 
     @staticmethod
     def _managed_tree(tmp_path, body):
@@ -680,14 +612,7 @@ class TestPinningTheInstallersOwnEntrypoint:
 
 
 class TestLaunchStopsAtSomebodyElsesWrapper:
-    """The outer entrypoint being ours says nothing about what it points at.
-
-    An installer-shaped entrypoint whose target is a hand-written wrapper had
-    that wrapper stepped over on macOS, so its exports never ran, even though
-    launching the entrypoint directly would have executed them. Resolving for
-    the LIBRARY DIRECTORY still follows the whole chain: that is where the
-    dylibs are, whoever wrote the links.
-    """
+    """Launch stops at a foreign wrapper; the library-dir lookup still follows the whole chain."""
 
     @staticmethod
     def _tree(tmp_path, inner_body):

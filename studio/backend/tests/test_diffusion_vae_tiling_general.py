@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The wide, edge-aligned tiled VAE decode for every image VAE whose stock tiles fall under the floor.
-
-diffusion_vae_tiling reads each VAE's own tile geometry (diffusers' tile and overlap, in latents) and its compression
-ratio, and per decode keeps the stock tiles when they meet the floor (every tile >= 32 latents, every overlap >= 16)
-and takes the wide tiles when they do not. These pin the rule for 8x, 16x and 32x VAEs."""
+"""Stock tiles below the floor (tiles >= 32 latents, overlaps >= 16) go wide and edge-aligned."""
 
 from __future__ import annotations
 
@@ -98,7 +94,6 @@ def _hunyuan_image():
     ).eval()
 
 
-# (builder, ratio, stock (tile, overlap), floor (tile, overlap)) with each VAE's real tile settings
 GEOMETRY = [
     (_qwen_image, 8, (32, 8), (32, 16)),
     (_qwen_image_21, 16, (16, 4), (32, 16)),
@@ -115,7 +110,6 @@ def test_geometry_is_read_off_each_vae(build, ratio, stock, floor):
     assert vt.stock_tiles(vae) == stock
     assert vt.floor_tiles(vae) == floor
     assert vt.install(vae)
-    # the memory estimates see the wide floor tile; it never shrinks below the stock tile
     assert vae._unsloth_decode_tile_side == floor[0] * ratio
     assert dm.vae_tile_side(vae) == floor[0] * ratio
     vt.uninstall(vae)
@@ -125,27 +119,24 @@ def test_geometry_is_read_off_each_vae(build, ratio, stock, floor):
 @pytest.mark.parametrize(
     "stock, length, ok",
     [
-        # Qwen-Image (8x), Qwen-Image-2.1 (16x), HunyuanImage-2.1 (32x): blends under 16 latents, every size
         ((32, 8), 40, False),
         ((32, 8), 128, False),
         ((16, 4), 64, False),
         ((12, 3), 64, False),
-        # AutoencoderKL / FLUX.2 (8x, 1024 px tiles, 768 px stride): fine unless the last tile is a sliver
         ((128, 32), 128, True),
-        ((128, 32), 166, True),  # 1328 px
-        ((128, 32), 192, True),  # 1536 px
+        ((128, 32), 166, True),
+        ((128, 32), 192, True),
         ((128, 32), 200, False),  # 1600 px: an 8-latent last tile
-        ((128, 32), 220, False),  # 1760 px: 28 latents
-        ((128, 32), 224, True),  # 1792 px: 32 latents
-        ((128, 32), 256, True),  # 2048 px
+        ((128, 32), 220, False),
+        ((128, 32), 224, True),
+        ((128, 32), 256, True),
         ((128, 32), 296, False),  # 2368 px: 8 latents
-        ((128, 32), 336, True),  # 2688 px
+        ((128, 32), 336, True),
     ],
 )
 def test_stock_layout_floor(stock, length, ok):
     assert vt.stock_layout_ok(stock, length, length) is ok
     assert vt.stock_layout_ok(stock, min(length, stock[0]), length) is ok
-    # one tiled axis is enough to fail
     if not ok:
         assert vt.stock_layout_ok(stock, stock[0], length) is False
 
@@ -288,7 +279,7 @@ def test_keep_stock_list_skips_the_install(monkeypatch):
     assert vt.install(vae) is False
     assert "tiled_decode" not in vae.__dict__
     for reason in vt.KEEP_STOCK.values():
-        assert reason  # every kept class states its measured reason
+        assert reason
 
 
 def test_unreadable_geometry_keeps_the_stock_decode():
@@ -368,10 +359,7 @@ def test_budget_uses_the_fused_figure_only_where_the_fused_kernels_are_installed
 
 
 def test_only_large_stock_tile_vaes_size_past_the_floor_from_device_free_memory(monkeypatch):
-    """AutoencoderKL / FLUX.2 take the wide tiles only to drop a sliver: their tiles grow past the floor only into the
-    device's free memory, not the allocator's cached blocks (an untiled FLUX.1 decode out of the denoiser's cache
-    stalled on cache flushes at 8 GB: 0.21 s median against stock's 0.08). The Wan family and HunyuanImage count the
-    cache, as #12696 does for Qwen-Image-2.1 (it measured faster there)."""
+    """AutoencoderKL and FLUX.2 grow tiles into device free memory, not the allocator's cache."""
     monkeypatch.delenv(vt.MAX_TILE_ENV)
     seen = {}
 
@@ -419,10 +407,7 @@ def _stock_decoded(length, tile, overlap):
 @pytest.mark.parametrize("length", list(range(129, 420)))
 @pytest.mark.parametrize("max_area", [None, 23_200, 10**6])
 def test_large_floor_tiles_never_decode_more_than_stock(length, max_area):
-    """FLUX.1 / SDXL / FLUX.2 sliver sizes. Before, the floor kept 128-latent tiles and spread them (two 128s with a
-    56-latent overlap on a 200-latent side: 7% more decode than stock, 9% slower). Now, per side, no more decoded
-    latents than the stock loop (up to rounding where only the smallest covering side exists), fewer decoder calls,
-    no sliver, every overlap >= 32, and the widest tile that allows (two 120s on a 200-latent side)."""
+    """Large-floor tiles must never decode more latents than the stock loop, and leave no sliver."""
     if vt.stock_layout_ok((128, 32), length, length):
         return  # no sliver: these sizes decode through the stock tiles
     th, tw = vt.choose_tiles(length, length, max_area, 128, 32, 128)
@@ -650,7 +635,6 @@ def test_load_installs_for_every_image_family():
     ]
     assert calls
     for node in ast.walk(ast.parse(src)):
-        # not nested under an `if` on the family / VAE class
         if isinstance(node, ast.If) and any(c in ast.walk(node) for c in calls):
             assert (
                 "fam" not in ast.unparse(node.test) and "vae" not in ast.unparse(node.test).lower()

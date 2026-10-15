@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""``_session_in_flight``'s state machine when the guarded body raises.
-
-The guard used to ``return`` from its ``finally``, discarding whatever the tool
-raised. Dropping that return is only safe if the cleanup still runs as before:
-the refcount, the queued deletes, and the condition other calls wait on. Every
-case asserts the full invariant set afterwards, so a leak fails here instead of
-hanging some later test. Barriers and bounded joins, no sleep-based timing.
-"""
+"""Cleanup must still run when the guarded body raises, now that the finally no longer returns."""
 
 from __future__ import annotations
 
@@ -30,11 +23,7 @@ DEADLINE = 30.0
 
 
 def _cleanup_explodes(session_id, delete_files):
-    """A cleanup that fails.
-
-    A plain function, not a generator ``.throw()`` one-liner: that would reset
-    ``__context__`` and hide the thing one of these tests checks.
-    """
+    """A plain function, since a generator throw() would reset __context__ and hide the tested error."""
     raise OSError("disk gone")
 
 
@@ -74,9 +63,6 @@ def queue_removal(session_id, *, files = True):
     tools._pending_removals.setdefault(key, {})[session_id] = files
 
 
-# ── The exception path, with and without a queued delete ──────────
-
-
 def test_an_exception_leaves_no_lifecycle_state(removals):
     sentinel = ValueError("boom")
     with pytest.raises(ValueError) as caught:
@@ -114,9 +100,6 @@ def test_a_recreated_chat_keeps_its_folder_even_when_the_body_raises(monkeypatch
     assert_idle("after a skipped delete")
 
 
-# ── Nesting and case folding ──────────────────────────────────────
-
-
 def test_a_nested_guard_deletes_only_at_the_outer_exit(removals):
     queue_removal("nested")
     key = tools._session_key("nested")
@@ -151,14 +134,8 @@ def test_case_variant_ids_share_one_lifecycle_key(removals):
     assert_idle("after a case-variant failure")
 
 
-# ── Cleanup that itself fails ─────────────────────────────────────
-
-
 def test_a_failing_cleanup_still_releases_the_session(monkeypatch):
-    """A cleanup error must never strand the chat.
-
-    A key left in ``_removing_sessions`` blocks every later call for it forever.
-    """
+    """A cleanup error must still release the session key, or every later call for that chat blocks."""
     monkeypatch.setattr(tools, "_remove_session_sandbox_locked", _cleanup_explodes)
     monkeypatch.setattr(tools, "_thread_exists", lambda *a, **k: False)
     queue_removal("cleanup-fails")
@@ -169,12 +146,7 @@ def test_a_failing_cleanup_still_releases_the_session(monkeypatch):
 
 
 def test_a_failing_cleanup_masks_the_tool_error_but_keeps_it_as_context(monkeypatch):
-    """Pins the policy rather than asserting a preference.
-
-    Standard semantics: a ``finally`` exception replaces the one in flight and
-    keeps it as ``__context__``. Predates this change (it already happened
-    whenever a delete was queued), so it is pinned, not altered.
-    """
+    """A finally exception masks the in-flight one and keeps it as __context__; the policy is pinned."""
     monkeypatch.setattr(tools, "_remove_session_sandbox_locked", _cleanup_explodes)
     monkeypatch.setattr(tools, "_thread_exists", lambda *a, **k: False)
     queue_removal("masked")
@@ -219,7 +191,6 @@ def test_a_failing_cleanup_wakes_a_waiter_for_the_same_chat(monkeypatch):
 
     second = threading.Thread(target = _second, name = "pr9640-waiter")
     second.start()
-    # The waiter must be blocked while the removal is in progress.
     assert not waiter_in.wait(0.5), "a call started inside a folder being deleted"
 
     release.set()
@@ -231,12 +202,7 @@ def test_a_failing_cleanup_wakes_a_waiter_for_the_same_chat(monkeypatch):
 
 
 def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
-    """Pre-existing behaviour, pinned so a fix is a deliberate choice.
-
-    ``_pending_removals.pop`` takes the whole batch before iterating, so one
-    raising entry leaves the rest neither attempted nor queued. Not introduced
-    here, but the exception path makes it easy to hit.
-    """
+    """One raising delete leaves the rest of the popped batch neither attempted nor queued (pinned)."""
     attempted: list[str] = []
 
     def _remove(session_id, delete_files):
@@ -247,7 +213,6 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
     monkeypatch.setattr(tools, "_remove_session_sandbox_locked", _remove)
     monkeypatch.setattr(tools, "_thread_exists", lambda *a, **k: False)
     key = tools._session_key("a")
-    # Same lifecycle key, three exact ids queued behind it.
     tools._pending_removals[key] = {"a": True, "b": True, "c": True}
     with pytest.raises(OSError):
         with tools._session_in_flight("a"):
@@ -259,9 +224,6 @@ def test_one_failing_delete_does_not_silently_drop_the_others(monkeypatch):
         "c",
     ], "the batch now completes past a failure -- update this test and say so"
     assert_idle("after a partially failed batch")
-
-
-# ── Concurrency ───────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("seed", list(range(100)))

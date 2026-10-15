@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for utils.ssm_runtime: the inference-side auto-install of SSM/Mamba kernels.
-
-Covers detection, wheel-first install, idempotency, the failure path, the inference
-worker wiring, and that the training worker shares the same tables and pinned kernels.
-"""
+"""Tests for utils.ssm_runtime SSM/Mamba kernel auto-install; the training worker shares its pins."""
 
 import json
 import sys
@@ -38,9 +34,6 @@ class _Result:
         self.stdout = stdout
 
 
-# ── detection ────────────────────────────────────────────────────────────────
-
-
 @pytest.mark.parametrize(
     "name",
     [
@@ -54,7 +47,6 @@ class _Result:
 )
 def test_ssm_models_detected(name):
     assert ssm_runtime.model_is_ssm(name) is True
-    # every SSM model also needs causal-conv1d
     assert ssm_runtime.model_wants_causal_conv1d(name) is True
 
 
@@ -72,7 +64,6 @@ def test_ssm_models_detected(name):
     ],
 )
 def test_causal_conv1d_only_models(name):
-    # linear-attention hybrids need causal-conv1d but not mamba-ssm
     assert ssm_runtime.model_wants_causal_conv1d(name) is True
     assert ssm_runtime.model_is_ssm(name) is False
 
@@ -92,11 +83,7 @@ def test_non_ssm_models_not_detected(name):
     assert ssm_runtime.model_wants_causal_conv1d(name) is False
 
 
-# ── ssm_probe_identifier: match a real model id, never an arbitrary name ───────
-
-
 def test_probe_lora_uses_base_not_adapter_name():
-    # A plain-Llama LoRA whose adapter id contains an SSM substring is not SSM.
     probe = ssm_runtime.ssm_probe_identifier("user/falcon-h1-lora", "meta-llama/Llama-3-8B")
     assert probe == "meta-llama/Llama-3-8B"
     assert ssm_runtime.model_is_ssm(probe) is False
@@ -112,7 +99,6 @@ def test_probe_plain_hf_id_unchanged():
 
 
 def test_probe_local_path_uses_basename(tmp_path):
-    # Parent folders are arbitrary: a Llama checkpoint under a falcon-h1 dir is not SSM.
     d = tmp_path / "falcon-h1-experiment" / "llama-checkpoint"
     d.mkdir(parents = True)
     probe = ssm_runtime.ssm_probe_identifier(str(d))
@@ -126,14 +112,11 @@ def test_probe_local_ssm_checkpoint_basename_detected(tmp_path):
     assert ssm_runtime.model_is_ssm(ssm_runtime.ssm_probe_identifier(str(d))) is True
 
 
-# ── ensure_ssm_runtime behaviour ─────────────────────────────────────────────
-
-
 def test_noop_for_non_ssm_model(monkeypatch):
     calls = []
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: calls.append(k) or True)
     ssm_runtime.ensure_ssm_runtime("unsloth/Llama-3.2-1B-Instruct", run = lambda *a, **k: _Result())
-    assert calls == []  # nothing installed for a plain transformer
+    assert calls == []
 
 
 def test_ssm_model_installs_causal_then_mamba(monkeypatch):
@@ -161,26 +144,23 @@ def test_causal_only_model_skips_mamba(monkeypatch):
 
 
 def test_failure_raises_runtime_error(monkeypatch):
-    # A true SSM model whose mamba-ssm cannot install is fatal (cryptic mid-load import
-    # otherwise). "Nemotron-3-Nano-30B-A3B" matches the SSM substrings.
+    # A true SSM model whose mamba-ssm cannot install is fatal.
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
     with pytest.raises(RuntimeError):
         ssm_runtime.ensure_ssm_runtime("unsloth/Nemotron-3-Nano-30B-A3B")
 
 
 def test_causal_only_install_failure_is_not_fatal(monkeypatch):
-    # Qwen3-Next/LFM2 want causal-conv1d but fall back to torch; a failed install must
-    # not block the load (best-effort, mirrors training).
+    # Qwen3-Next/LFM2 fall back to torch, so a failed causal-conv1d install must not block the load.
     monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
-    ssm_runtime.ensure_ssm_runtime("Qwen/Qwen3-Next-80B-A3B")  # no raise
+    ssm_runtime.ensure_ssm_runtime("Qwen/Qwen3-Next-80B-A3B")
 
 
 def test_ssm_causal_failure_nonfatal_when_mamba_ok(monkeypatch):
-    # causal-conv1d is best-effort even for a true SSM model; only mamba-ssm is fatal.
     monkeypatch.setattr(
         ssm_runtime, "_install_kernel", lambda *, import_name, **_: import_name == "mamba_ssm"
     )
-    ssm_runtime.ensure_ssm_runtime("unsloth/NVIDIA-Nemotron-3-Nano-4B")  # no raise
+    ssm_runtime.ensure_ssm_runtime("unsloth/NVIDIA-Nemotron-3-Nano-4B")
 
 
 def test_install_kernel_idempotent_when_present(monkeypatch):
@@ -199,7 +179,7 @@ def test_install_kernel_idempotent_when_present(monkeypatch):
         run = lambda *a, **k: _Result(),
     )
     assert ok is True
-    assert called == []  # short-circuits before touching the network
+    assert called == []
 
 
 @pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
@@ -236,7 +216,6 @@ def test_install_kernel_skips_all_install_work_offline(monkeypatch, offline_vari
 
 
 def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
-    # not importable before install, importable after the wheel lands
     states = iter([False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
@@ -270,7 +249,7 @@ def test_install_kernel_uses_prebuilt_wheel(monkeypatch):
     assert ok is True
     assert installed["url"].endswith(".whl")
     assert seen["filename_prefix"] == "mamba_ssm"
-    assert ran == []  # wheel succeeded; no PyPI source build
+    assert ran == []
 
 
 def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
@@ -294,12 +273,10 @@ def test_install_kernel_heartbeats_during_prebuilt_wheel(monkeypatch):
     released = threading.Event()
 
     def slow_install_wheel(url, **k):
-        # Hold long enough for at least one heartbeat tick.
         assert released.wait(1.0)
         return [("uv", _Result(returncode = 1, stdout = "nope"))]
 
     monkeypatch.setattr(ssm_runtime, "install_wheel", slow_install_wheel)
-    # Force the source-build fallback to no-op after the wheel attempt.
     monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)
 
     def run_fail(cmd, **k):
@@ -391,7 +368,6 @@ def test_install_kernel_heartbeats_through_the_import_check(monkeypatch):
 
 
 def test_heartbeat_does_not_emit_after_the_block(monkeypatch):
-    # No in-flight tick may emit after the block exits.
     import time
 
     monkeypatch.setattr(ssm_runtime, "_HEARTBEAT_SECONDS", 0.05)
@@ -404,8 +380,7 @@ def test_heartbeat_does_not_emit_after_the_block(monkeypatch):
 
 
 def test_install_kernel_falls_back_to_source(monkeypatch):
-    # no wheel -> source build -> importable after install
-    states = iter([False, True])  # before install, after install
+    states = iter([False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
         ssm_runtime, "probe_torch_wheel_env", lambda timeout = 30, include_windows = False: {}
@@ -426,14 +401,11 @@ def test_install_kernel_falls_back_to_source(monkeypatch):
     assert any("causal-conv1d==1.6.1" in c for c in pip_cmds[0])
 
 
-# ── import-cache invalidation (so a just-installed kernel is importable) ───────
-
-
 def test_is_importable_invalidates_caches(monkeypatch):
     calls = []
     monkeypatch.setattr(ssm_runtime.importlib, "invalidate_caches", lambda: calls.append(1))
     assert ssm_runtime._is_importable("sys") is True
-    assert calls  # caches invalidated before attempting the import
+    assert calls
 
 
 @pytest.mark.parametrize(
@@ -445,9 +417,7 @@ def test_is_importable_invalidates_caches(monkeypatch):
     ],
 )
 def test_is_importable_treats_broken_kernel_as_not_importable(monkeypatch, exc):
-    # ABI-incompatible kernels raise OSError/RuntimeError, not ImportError; all must read as
-    # not-importable. _is_importable calls bare __import__(), so patching ssm_runtime.__import__
-    # (resolved via module globals) leaves real `import` statements untouched.
+    # ABI-incompatible kernels raise OSError/RuntimeError; _is_importable uses bare __import__.
     def _raise(name):
         raise exc
 
@@ -572,8 +542,6 @@ def test_windows_rejected_wheel_is_removed_not_source_built(monkeypatch):
 
 
 def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
-    # top: not importable; after wheel: still not importable (ABI mismatch) -> source build;
-    # after source build: importable.
     states = iter([False, False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
@@ -600,7 +568,6 @@ def test_wheel_installed_but_not_importable_falls_back_to_source(monkeypatch):
 
 
 def test_hip_source_build_requires_hipcc(monkeypatch):
-    # ROCm env (hip_version set) with no wheel and no hipcc must fail clearly, not build.
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: False)
     monkeypatch.setattr(
         ssm_runtime,
@@ -608,7 +575,7 @@ def test_hip_source_build_requires_hipcc(monkeypatch):
         lambda timeout = 30, include_windows = False: {"hip_version": "6.2"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
-    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)  # no uv, no hipcc
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: None)
     ran = []
     ok = ssm_runtime._install_kernel(
         import_name = "causal_conv1d",
@@ -621,12 +588,11 @@ def test_hip_source_build_requires_hipcc(monkeypatch):
         run = lambda cmd, **k: ran.append(cmd) or _Result(returncode = 0),
     )
     assert ok is False
-    assert ran == []  # bailed before invoking pip
+    assert ran == []
 
 
 def test_source_build_reinstalls_to_replace_broken_wheel(monkeypatch):
-    # Reached only when not importable (possibly a broken wheel at the pinned version);
-    # the source build must reinstall so it replaces it instead of no-opping.
+    # The source build must reinstall over a possibly broken pinned wheel.
     states = iter([False, True])
     monkeypatch.setattr(ssm_runtime, "_is_importable", lambda name: next(states))
     monkeypatch.setattr(
@@ -657,7 +623,7 @@ def test_hip_uv_source_build_uses_no_cache(monkeypatch):
         lambda timeout = 30, include_windows = False: {"hip_version": "6.2"},
     )
     monkeypatch.setattr(ssm_runtime, "direct_wheel_url", lambda **k: None)
-    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: "/usr/bin/" + name)  # uv + hipcc
+    monkeypatch.setattr(ssm_runtime.shutil, "which", lambda name: "/usr/bin/" + name)
     monkeypatch.setattr(ssm_runtime, "_hipcc_gcc_install_dir", lambda: None)
     cmds = []
     ssm_runtime._install_kernel(
@@ -674,9 +640,6 @@ def test_hip_uv_source_build_uses_no_cache(monkeypatch):
     assert "--no-cache" in cmds[0] and "--reinstall" in cmds[0]
 
 
-# ── inference worker wiring ───────────────────────────────────────────────────
-
-
 def test_inference_worker_calls_ensure_ssm_runtime():
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "from utils.ssm_runtime import ensure_ssm_runtime" in src
@@ -685,38 +648,29 @@ def test_inference_worker_calls_ensure_ssm_runtime():
 
 def test_inference_worker_skips_ssm_on_mlx_and_checks_lora_base():
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
-    # MLX (Apple Silicon) must not try to build CUDA/ROCm SSM kernels.
     assert 'getattr(backend, "device", None) != "mlx"' in src
-    # A LoRA load must also check its base model, not just the adapter id.
     assert "mc.base_model" in src
 
 
 def test_inference_worker_resolves_remote_lora_base_pre_import():
-    # A remote LoRA's base (from the Hub adapter_config.json) must be resolved before the
-    # transformers import so its SSM kernels are pre-installed, not too late in _handle_load.
+    # A remote LoRA's base must be resolved before importing transformers, so SSM kernels pre-install.
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "_remote_lora_base" in src
 
 
 def test_inference_worker_tiers_on_base_and_gates_lora_base_only():
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
-    # Tier activation runs on the resolved base, not the raw adapter id (remote-LoRA fix).
     assert "_activate_transformers_version(_base" in src
-    # The gate only adds a genuine LoRA base, never a full fine-tune's recorded (unloaded) base.
     assert "_gate_targets" in src and "_lora_base" in src
 
 
 def test_inference_worker_probes_base_for_ssm_kernels():
-    # Both the pre-import path and _handle_load must derive SSM targets from a real model id
-    # via ssm_probe_identifier, not the raw adapter id / local checkpoint path.
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert src.count("ssm_probe_identifier(") >= 2
 
 
 def test_pre_import_gate_is_transformers_free():
-    # The pre-import gate must not import transformers: security_load_subdirs pulls
-    # model_config -> transformers, which would snapshot SSM backend availability before the
-    # kernels install. With load_subdirs=() the malware + consent scans stay transformers-free.
+    # security_load_subdirs pulls in transformers, which would snapshot SSM availability before install.
     import sys as _sys
     from unittest.mock import patch
     import utils.security.file_security as fs
@@ -729,10 +683,7 @@ def test_pre_import_gate_is_transformers_free():
             or name == "utils.models.model_config"
         )
 
-    # Snapshot then remove the modules so we can assert the gate does not re-import them.
-    # Restore the originals afterwards (finally): popping utils.models.model_config without
-    # restoring it makes a later importer get a fresh instance, so tests that patched the
-    # first instance (e.g. test_vision_cache) miss and hit the real network path.
+    # Restore originals: a fresh model_config instance would bypass patches other tests made.
     _saved = {m: _sys.modules[m] for m in list(_sys.modules) if _is_gated_module(m)}
     for m in _saved:
         _sys.modules.pop(m, None)
@@ -751,16 +702,12 @@ def test_pre_import_gate_is_transformers_free():
         assert "transformers" not in _sys.modules
         assert "utils.models.model_config" not in _sys.modules
     finally:
-        # Drop anything the gate imported, then rebind the original module objects so later
-        # tests see the same instances they captured at import time.
         for m in [m for m in list(_sys.modules) if _is_gated_module(m) and m not in _saved]:
             _sys.modules.pop(m, None)
         _sys.modules.update(_saved)
 
 
 def test_pre_import_gate_skips_subdir_computation():
-    # The worker's pre-import preflight must call the gate with compute_subdirs=False so it
-    # never imports model_config/transformers before the SSM kernels are installed.
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
     assert "compute_subdirs = False" in src
 
@@ -780,8 +727,7 @@ def _call_linenos(tree, func_name, call_name):
 
 
 def test_security_gates_run_before_ssm_install():
-    # The SSM install is name-based and can source-build native packages, so a malware /
-    # blocked-code model must be refused first -- in both the pre-import path and _handle_load.
+    # The SSM install can source-build, so malware / blocked-code models are refused first.
     import ast
     tree = ast.parse((_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8"))
     for fn in ("run_inference_process", "_handle_load"):
@@ -808,7 +754,6 @@ def test_constants_shared_with_training_worker():
     assert tw.MAMBA_SSM is ssm_runtime.MAMBA_SSM is kernel_install.MAMBA_SSM
     assert tw._hipcc_gcc_install_dir is ssm_runtime._hipcc_gcc_install_dir
 
-    # detection must agree with the training worker across SSM + non-SSM names
     for name in (
         "unsloth/NVIDIA-Nemotron-3-Nano-4B",
         "nvidia/Nemotron-H-8B",
@@ -828,9 +773,6 @@ def test_constants_shared_with_training_worker():
         ), name
 
 
-# ── renamed / local checkpoints resolve from the config, not the name ─────────
-
-
 def _write_config(directory: Path, config: dict) -> Path:
     directory.mkdir(parents = True, exist_ok = True)
     (directory / "config.json").write_text(json.dumps(config), encoding = "utf-8")
@@ -846,11 +788,8 @@ def test_renamed_local_checkpoint_resolves_causal_conv1d_from_its_config(tmp_pat
     )
     target = str(checkpoint)
 
-    # The name-only predicate cannot see it ...
     assert ssm_runtime.model_wants_causal_conv1d(target) is False
-    # ... but the resolved predicate reads config.json off the local directory.
     assert ssm_runtime.resolved_model_wants_causal_conv1d(target, target, None) is True
-    # Same for a renamed Hub id pointing at a local snapshot.
     assert (
         ssm_runtime.resolved_model_wants_causal_conv1d("acme/internal-llm-v3", target, None) is True
     )

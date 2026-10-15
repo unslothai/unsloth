@@ -57,7 +57,6 @@ def test_compiled_rope_bit_identical_to_complex_product():
     torch._dynamo.reset()
     out = torch.compile(lambda a, f: qmod.ROPE_PER_DEVICE["cuda"](a, f))(x, freqs)
     assert torch.equal(out, ref)
-    # Eager calls keep the stock complex path.
     assert torch.equal(patched(x, freqs), ref)
     qr.uninstall()
     assert qmod.ROPE_PER_DEVICE["cuda"] is stock

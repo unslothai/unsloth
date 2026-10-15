@@ -17,10 +17,10 @@ EDITED = "prov-edited"
 SAVED_API_KEY = "prov-saved-api-key"
 MIGRATED_API_KEY = "prov-migrated-api-key"
 
-# Managed accounts may only hold a public HTTP MCP address, so the probe goes to a dead public port.
+# Managed accounts may only hold a public HTTP MCP address.
 MCP_URL = "http://8.8.8.8:9/mcp"
 
-# Filled by the migrate seeder: the key must be encrypted with this process's RSA public key.
+# Filled by the seeder: must be encrypted with this process's RSA key.
 MIGRATION_BODY: dict = {"encrypted_api_key": ""}
 
 
@@ -236,7 +236,6 @@ def seed_retirable_account(account) -> dict[str, str]:
             storage.delete_account(row["account_id"], lambda _context: None)
     issued = storage.issue_account_setup_code(username = RETIRABLE_USERNAME)
     account_id = issued["account"]["account_id"]
-    # First database use creates the private root, so the retire has a directory to move.
     run_as(AccountContext(account_id, RETIRABLE_USERNAME, "user"), studio_db.list_prompt_entries)
     return {"account_id": account_id}
 

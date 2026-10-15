@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""One cgroup-aware "usable host RAM" reader for every place Studio sizes host memory.
-
-Fake cgroup trees (v2, v1, nested, unlimited, malformed) drive ``utils.host_memory`` and the three
-consumers that must agree on it: the diffusion pin budget, the MiniMax-H3 host-RAM guard and the
-``/api/system`` memory figures the model picker's RAM tiers compare against.
-"""
+"""Fake cgroup trees drive the single usable-host-RAM reader that all memory sizing consumers share."""
 
 import os
 import sys

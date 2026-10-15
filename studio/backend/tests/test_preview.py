@@ -107,7 +107,6 @@ def test_preview_ref_preserves_one_level_nesting(tmp_path: Path, monkeypatch):
     nested.mkdir(parents = True)
     (nested / "adapter_config.json").write_text("{}")
 
-    # /p route supports run/checkpoint, so a single level of nesting survives.
     assert preview_ref(str(nested)) == "experiments/run1"
 
 
@@ -115,19 +114,16 @@ def test_preview_ref_none_for_unpreviewable_or_too_deep(tmp_path: Path, monkeypa
     outputs = tmp_path / "outputs"
     _point_outputs_root_at(monkeypatch, outputs)
 
-    # Missing / no model artifact -> not previewable.
     assert preview_ref(None) is None
     empty = outputs / "empty"
     empty.mkdir(parents = True)
     assert preview_ref(str(empty)) is None
 
-    # Too deep for the two-segment /p route -> no dead link.
     deep = outputs / "a" / "b" / "run"
     deep.mkdir(parents = True)
     (deep / "adapter_config.json").write_text("{}")
     assert preview_ref(str(deep)) is None
 
-    # Outside outputs_root -> None.
     outside = tmp_path / "elsewhere"
     outside.mkdir()
     (outside / "adapter_config.json").write_text("{}")

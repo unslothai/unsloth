@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resolving a saved provider must not read providers from the event loop thread.
-
-Every chat routed to a saved external provider looks the row up, so on a stalled store
-that read parks the loop and the server stops answering anything, /api/liveness included.
-
-Asserts which thread the read ran on rather than timing it.
-"""
+"""Saved-provider lookups run off the event loop thread, so a stalled store cannot park the server."""
 
 from __future__ import annotations
 
@@ -53,7 +47,6 @@ def test_the_saved_provider_row_is_read_off_the_event_loop_thread(monkeypatch):
 
     monkeypatch.setattr(inference_routes.providers_db, "get_provider", _get_provider)
 
-    # run_until_complete drives the loop on this thread.
     loop_thread = threading.get_ident()
     with pytest.raises(HTTPException) as excinfo:
         asyncio.new_event_loop().run_until_complete(
@@ -139,12 +132,7 @@ def _container_body():
 
 
 def test_the_container_resolver_reads_on_the_event_loop_thread(monkeypatch):
-    """The container routes resolve the row and the credential as one snapshot.
-
-    _resolve_openai_cloud_client reads the provider row for the base URL and then reads the
-    saved key. Run in a worker, an edit landing between the two pairs the old base URL with
-    the new key, so the routes call it on the loop where nothing interleaves.
-    """
+    """Resolve URL and key on the loop, so an edit cannot pair the old base URL with the new key."""
     threads: list[int] = []
 
     def _get_provider(_provider_id):

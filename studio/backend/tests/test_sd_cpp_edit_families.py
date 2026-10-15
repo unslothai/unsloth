@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Native (sd.cpp) routes for the edit-only families: Qwen-Image-Edit (the original, 2509 and
-2511 checkpoints) and FLUX.1-Kontext. The asset mapping, the guidance each one is sent, the
-readiness gate and advertised workflows, and the source image on both transports: a
-``--ref-image`` on the one-shot sd-cli argv and a ``ref_images`` entry in the sd-server body."""
+"""Native edit families (Qwen-Image-Edit, FLUX.1-Kontext): asset map, guidance and --ref-image wiring."""
 
 from __future__ import annotations
 
@@ -85,9 +82,6 @@ def _server_state(fam, files):
     return _state(fam, files, mode = "server", server = server), server
 
 
-# -- asset mapping ------------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize("repo, filename", QWEN_PICKS)
 def test_every_qwen_edit_checkpoint_maps_to_vae_encoder_and_projector(repo, filename):
     fam = detect_family_for_pick(repo, filename)
@@ -124,7 +118,6 @@ def test_the_new_companions_stay_fetch_only_and_bases_stay_loadable():
     companions = sd_cpp_companion_only_repo_ids()
     assert "unsloth/qwen-image-comfyui" in companions
     assert "unsloth/qwen2.5-vl-7b-instruct-gguf" in companions
-    # The FLUX.1 VAE lives in a real base; mapping Kontext onto it must not hide that base.
     assert "black-forest-labs/flux.1-schnell" not in companions
 
 
@@ -135,9 +128,6 @@ def test_inpaint_and_other_layered_variants_are_still_refused():
     assert detect_family("someone/FLUX.1-dev-inpaint-GGUF") is None
 
 
-# -- guidance -----------------------------------------------------------------------------------
-
-
 def test_kontext_runs_one_pass_with_embedded_guidance():
     assert bk._map_guidance(KONTEXT, 2.5) == (1.0, 2.5)
     assert bk._map_guidance(KONTEXT, None) == (1.0, None)
@@ -146,9 +136,6 @@ def test_kontext_runs_one_pass_with_embedded_guidance():
 @pytest.mark.parametrize("guidance, cfg", [(4.0, 4.0), (2.5, 2.5), (1.0, 1.0), (0.0, 1.0)])
 def test_qwen_edit_uses_real_cfg_like_the_diffusers_true_cfg_scale(guidance, cfg):
     assert bk._map_guidance(QWEN_EDIT, guidance) == (cfg, None)
-
-
-# -- readiness and advertised workflows --------------------------------------------------------
 
 
 def test_edit_only_families_advertise_edit_and_never_txt2img():
@@ -171,9 +158,6 @@ def test_qwen_edit_without_its_projector_is_not_edit_ready():
     assert b.status()["workflows"] == []
     with pytest.raises(ValueError, match = "Image editing is not available"):
         b.generate(prompt = "p", steps = 2, init_image = _png())
-
-
-# -- one-shot sd-cli ----------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("workflow", [None, "edit"])
@@ -240,9 +224,6 @@ def test_oneshot_qwen_edit_sends_projector_cfg_and_flow_shift(monkeypatch):
     assert (params.width, params.height) == (768, 768)
 
 
-# -- sd-server request body ---------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "fam, files, guidance, expect_guidance, expect_sampling",
     [
@@ -274,9 +255,6 @@ def test_server_body_carries_the_source_as_the_one_ref_image(
     ref = Image.open(io.BytesIO(base64.b64decode(b64)))
     assert ref.size == (768, 496) and ref.mode == "RGB"
     assert "init_image" not in body and "mask_image" not in body and "strength" not in body
-
-
-# -- refusals, matching the diffusers engine ----------------------------------------------------
 
 
 @pytest.mark.parametrize("fam, files", [(QWEN_EDIT, QWEN_FILES), (KONTEXT, KONTEXT_FILES)])
@@ -355,8 +333,7 @@ def test_source_size_snaps_like_the_diffusers_engine_and_fits_an_oversized_sourc
     "size,expected", [((64, 64), (256, 256)), ((200, 100), (512, 256)), ((100, 300), (256, 768))]
 )
 def test_a_source_below_the_minimum_side_is_scaled_up_not_refused(size, expected):
-    # The diffusers engine edits a small source at its own size; the native size check would refuse it, and an
-    # edit-only call has no width / height to change, so the source is scaled up to the minimum side.
+    # An edit-only call has no width/height, so a small source is scaled up to the minimum side.
     w, h, blobs = bk._native_condition_images(
         QWEN_EDIT,
         _png(size),
@@ -393,7 +370,6 @@ def test_an_uncached_projector_fails_an_offline_edit_only_load(monkeypatch, tmp_
         SdCppDiffusionBackend(engine = None)._fetch_assets(
             assets, None, local_files_only = True, vision_optional = False
         )
-    # The unified family's text-to-image load keeps skipping it.
     assert SdCppDiffusionBackend(engine = None)._fetch_assets(
         assets, None, local_files_only = True
     ) == {"qwen2vl": str(cached)}

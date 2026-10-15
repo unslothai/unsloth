@@ -28,7 +28,7 @@ def _installed(monkeypatch, *, xformers, torch, requires):
     "xformers, torch, requires, expected",
     [
         ("0.0.35", "2.6.0+cu124", ["torch>=2.10"], ("0.0.35", ">=2.10", "2.6.0+cu124")),
-        # 0.0.35 is built against 2.10 on the stable ABI, so a later torch keeps it.
+        # 0.0.35 is built on torch 2.10's stable ABI, so a later torch keeps it.
         ("0.0.35", "2.11.0+cu130", ["torch>=2.10"], None),
         ("0.0.29.post3", "2.6.0+cu124", ["torch==2.6.0", "numpy"], None),
         (
@@ -37,7 +37,6 @@ def _installed(monkeypatch, *, xformers, torch, requires):
             ["torch==2.6.0"],
             ("0.0.29.post3", "==2.6.0", "2.7.1+cu126"),
         ),
-        # AMD's Windows torch is a prerelease; it still satisfies a floor below it.
         ("0.0.32.post2", "2.8.0a0+gitfc14c65", ["torch>=2.7"], None),
         ("0.0.35", "2.6.0+cu124", ["torch>=2.10; extra == 'dev'"], None),
     ],

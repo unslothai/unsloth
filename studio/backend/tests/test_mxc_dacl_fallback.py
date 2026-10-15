@@ -30,7 +30,6 @@ def _studio_home(monkeypatch, tmp_path):
     home = tmp_path / "studio-home"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
     monkeypatch.delenv(OPT_IN, raising = False)
-    # Unit tests never touch real ACLs; test_mxc_read_grants.py covers the grant itself.
     monkeypatch.setattr(mxc_read_grants, "ensure", lambda _roots: ())
     monkeypatch.setattr(mxc_read_grants, "revoke_recorded", lambda: ())
     mxc_probe.invalidate_cache()
@@ -188,7 +187,6 @@ def test_capability_names_the_dacl_tier_only_when_opted_in(monkeypatch, tmp_path
     assert "mxc_tier3_dacl_host_permission_changes" in opted.limitations
     assert "does not enable" not in opted.remediation
     assert "reboot" in opted.remediation
-    # A qualification under one fallback setting never vouches for launches under the other.
     assert opted.environment_fingerprint != default.environment_fingerprint
 
 
@@ -254,7 +252,6 @@ def test_clean_or_non_dacl_exits_need_no_replay(monkeypatch, reason, dacl):
         (0, "DACL recovery: 1 file(s), 2 ACE(s) restored, 0 pruned (missing), 1 error(s)\n", False),
         (0, "DACL recovery failed: state file I/O error\n", False),
         (1, "", False),
-        # Measured on windows-latest with three concurrent DACL launches.
         (
             0,
             "DACL recovery: 2 file(s), 6 ACE(s) restored, 0 pruned (missing), 2 error(s)\n"
@@ -293,7 +290,7 @@ def test_journal_replay_reads_wxc_recovery_report(monkeypatch, returncode, stder
 
 
 def test_trusted_terminal_path_dirs_are_granted_read_only(monkeypatch, tmp_path):
-    # Git for Windows' usr\bin is on the terminal PATH; without a grant, ls/cat/grep fail inside MXC.
+    # Git for Windows usr\bin is on PATH; without a grant ls/cat/grep fail inside MXC.
     from core.inference import tools
 
     trusted = tmp_path / "Program Files" / "Git" / "usr" / "bin"
@@ -329,7 +326,6 @@ def test_trusted_terminal_path_dirs_are_granted_read_only(monkeypatch, tmp_path)
 )
 @pytest.mark.parametrize("has_cat", [True, False])
 def test_bash_probe_needs_a_working_cat_to_qualify(tmp_path, has_cat):
-    # A missing cat left the capture empty, which read as a denied read.
     import subprocess
 
     argv = mxc_probe._terminal_probe(
@@ -341,7 +337,7 @@ def test_bash_probe_needs_a_working_cat_to_qualify(tmp_path, has_cat):
 
 
 def test_the_journal_path_is_absolute_under_a_relative_home(monkeypatch, tmp_path):
-    # wxc-exec runs with the runtime dir as its cwd, so a relative path would name another journal.
+    # wxc-exec runs with the runtime dir as cwd, so a relative path names another journal.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", "relative-home")
     path = mxc_runtime.dacl_state_path()
@@ -379,7 +375,6 @@ def test_probe_journal_is_forced_and_empty_when_not_replaying(monkeypatch, tmp_p
 
 
 def test_a_policy_refusal_at_dispatch_never_replays_on_the_host(monkeypatch, tmp_path):
-    # A workdir that gained a reparse point after planning refuses, as it would at planning time.
     plan = os_sandbox.ToolLaunchPlan(
         argv = (str(tmp_path / "python.exe"), "-c", "print(1)"),
         workdir = str(tmp_path),
@@ -487,7 +482,6 @@ def test_a_model_folder_inside_a_later_one_is_not_granted_twice(monkeypatch, tmp
 def test_unconfirmed_restore_fails_only_a_run_that_was_not_forced(
     monkeypatch, timed_out, cancelled, raises
 ):
-    # After Studio's own kill the workload is gone and the next start replays the journal.
     result = {"timedOut": timed_out, "cancelled": cancelled, "cleanup": "uncertain", "exitCode": 1}
     monkeypatch.setattr(sandbox_windows_mxc.mxc_adapter, "completion_result", lambda _proc: result)
     record = os_sandbox.ToolExecutionRecord(

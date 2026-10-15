@@ -3,7 +3,7 @@
 
 from .factory_base import Factory, seeder
 
-# ASCII on purpose: it has to survive JSON escaping, a PNG text chunk and a JPEG comment.
+# ASCII: must survive JSON escaping, a PNG text chunk and a JPEG comment.
 SENTINEL = "media-sentinel-prompt"
 
 VIDEO_ID = "media-video-clip"
@@ -26,7 +26,6 @@ def _image_meta() -> dict:
         "guidance": 1.0,
         "seed": 7,
         "model": "media/none",
-        # GalleryImage dates an image with an epoch float, where audio and video use ISO strings.
         "created_at": 1767225600.0,
     }
 
@@ -45,10 +44,7 @@ def seed_image(account) -> dict[str, str]:
     return {"image_id": record["id"]}
 
 
-# The chat project a gallery item is copied into. Seeded in the item's account AND in the calling
-# account, so the caller always has a project by that id and the only thing that can refuse it is
-# the item lookup. With the project only beside the item, a route that found another account's item
-# would still 404 on the missing project, and the matrix could not tell that from isolation.
+# Seeded in both accounts so only the item lookup can refuse, not a missing project.
 MEDIA_PROJECT_ID = "media-project"
 
 
@@ -147,7 +143,6 @@ def seed_converted_audio(account) -> dict[str, str]:
         "duration_s": 0.008,
         "created_at": "2026-01-01T00:00:00+00:00",
     }
-    # A conversion of an upload keeps the recording it converted beside the clip.
     with tempfile.TemporaryDirectory() as scratch:
         source = Path(scratch) / "source.wav"
         source.write_bytes(_wav_bytes())
@@ -337,7 +332,7 @@ def seed_model(account) -> dict[str, str]:
     header = b"GGUF" + struct.pack("<I", 3) + struct.pack("<QQ", 0, 0)
     (folder / f"{MODEL_ID}.gguf").write_bytes(header + b"\x00" * 256)
     run_as(account, studio_db.add_scan_folder_with_status, str(folder))
-    # Drop the catalog's own 30s memo, so the request rescans instead of reusing a stale root.
+    # Drop the catalog's 30s memo so the request rescans.
     inference._CATALOG_CACHE.update(at = 0.0, models = [])
     inference._managed_catalogs.clear()
     inference._SERVABLE_SCAN_CACHE["entry"] = None
@@ -367,7 +362,6 @@ FACTORIES = {
         "media-image", {"archived": True}, fragment = SENTINEL
     ),
     "routes.inference:DELETE:/images/gallery/{image_id}": Factory("media-image"),
-    # An empty move (to the front) still has to find the item in the caller's own gallery.
     "routes.inference:POST:/images/gallery/{image_id}/move": Factory(
         "media-image", {"after_id": None}, fragment = SENTINEL
     ),
@@ -392,7 +386,6 @@ FACTORIES = {
     "routes.inference:POST:/audio/inputs/{input_id}/transcribe": Factory(
         "media-audio-input",
         {"model": "media/none"},
-        # Past the source lookup the model check refuses: no speech-to-text model exists here.
         right = (404,),
         fragment = "Model not found",
         self_expected = (409,),

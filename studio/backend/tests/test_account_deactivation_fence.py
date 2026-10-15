@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A generation that registers after its account was disabled starts cancelled.
-
-Deactivation cancels the generations registered at that instant. A request already past
-authentication and waiting on a gate registers afterwards, so the fence set alongside the sweep
-has to reach it too, and reactivation lifts it."""
+"""Generations registered after deactivation start cancelled; reactivation lifts that fence."""
 
 import threading
 

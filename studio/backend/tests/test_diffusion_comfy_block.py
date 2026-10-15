@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for ComfyUI ``nvfp4`` / ``mxfp8`` single files (``diffusion_comfy_block.py`` + the loader).
-
-Synthetic files are written in ComfyUI's on-disk layout by an encoder here that shares no code with the
-module under test: nvfp4 codes packed EVEN column in the HIGH nibble, block scales placed by the cuBLAS
-128x4 tile formula (offset computed per element, not by a reshape). The reference dequant reads every
-value back through that same formula, so a layout mistake in either direction fails bit-exactly.
-"""
+"""ComfyUI nvfp4 and mxfp8 single-file tests; the encoder shares no code with the module under test."""
 
 from __future__ import annotations
 

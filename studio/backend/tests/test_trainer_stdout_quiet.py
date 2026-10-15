@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HF's own stdout progress reporting must not be teed into the server log.
-
-The training subprocess has no terminal: its stdout goes into the server log. HF
-writes a tqdm bar there (ProgressCallback) or, with disable_tqdm, a raw dict per
-step (PrinterCallback). Over one 58 minute session that was 1095 bar lines and 266
-raw step dicts, and because tqdm and the structlog JSON writer share the stream with
-no line discipline, 152 records ended up unparseable.
-
-Everything those lines carry is already published twice: the throttled
-`training_progress` event from #7087 and the per-step SSE stream the UI charts.
-`unsloth studio --verbose` restores both.
-"""
+"""HF progress stdout must stay out of the server log, where it corrupts structlog JSON lines."""
 
 from __future__ import annotations
 
@@ -34,18 +23,7 @@ _STUBBED: list[str] = []
 
 
 def _stub_if_missing(name, attrs):
-    """Register a stub module for a dep the backend pytest job does not install.
-
-    Same helper, and the same reason, as in test_training_preflight.py and
-    test_training_progress_callback.py: core.training.trainer imports unsloth (and through it
-    unsloth_zoo) and trl at module scope, while the pytest matrix in studio-backend-ci.yml
-    installs studio.txt plus torch and transformers and stops there. The heavier
-    repo-cpu-tests job beside it is the one that installs unsloth_zoo, and it runs the
-    REPO-ROOT tests/, not this tree -- so nothing here can rely on those packages being
-    present. Unstubbed, this module fails COLLECTION, which fails the whole job rather than
-    one test. Real installs are left alone, so a developer box still exercises the genuine
-    import. __spec__ = None keeps the trainer's own _ensure_real_packages namespace-shadow
-    guard a no-op on the stub."""
+    """Stubs a dep the backend pytest job lacks, so collection succeeds; real installs are left alone."""
     if name in sys.modules:
         return
     try:
@@ -70,12 +48,8 @@ _stub_if_missing("trl", ("SFTTrainer", "SFTConfig"))
 
 from core.training import trainer as tmod  # noqa: E402
 
-# Drop the stubs now that tmod is bound, because they outlive this module otherwise and the rest
-# of the suite then runs against them. utils.hardware.hardware._shared_policy branches on
-# `"unsloth" in sys.modules` and then reaches for unsloth.dataset_num_proc, which a spec-less
-# non-package stub cannot provide, so it returns None and every shared-policy case in
-# test_dataset_map_num_proc.py skips instead of running. A real install stubs nothing, so this is
-# a no-op there.
+# Drop the stubs once tmod is bound: _shared_policy branches on `"unsloth" in sys.modules`
+# and a stub would make test_dataset_map_num_proc.py skip.
 for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 

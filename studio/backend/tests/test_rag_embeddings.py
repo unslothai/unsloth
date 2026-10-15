@@ -45,10 +45,7 @@ def _shared_setup_2(
     )
     embeddings._model = None
     embeddings._name = None
-    # _get publishes what it loaded into these globals and nothing here puts them back, so
-    # the fake model outlived the test: a later test in the same xdist worker that asks
-    # backend_is_loaded() reads them and is told something is resident. Snapshot them AFTER
-    # the reset above, so teardown restores None rather than whatever arrived leaked.
+    # _get publishes into globals nothing restores; snapshot after the reset so teardown restores None.
     monkeypatch.setattr(embeddings, "_model", None)
     monkeypatch.setattr(embeddings, "_name", None)
 
@@ -71,26 +68,16 @@ def _shared_setup_4(monkeypatch):
     )
 
 
-# A child that dies of SIGSEGV is still handed to the host's core_pattern handler
-# (apport on Ubuntu), which reads the whole core before the child is reaped. Marking
-# the child non-dumpable first keeps the SIGSEGV this test needs and writes no core.
-# RLIMIT_CORE = 0 does NOT work here, because a piped core_pattern ignores it.
-# prctl is Linux-only, so the call is guarded and does nothing elsewhere.
+# Mark the child non-dumpable: piped core_pattern (apport) ignores RLIMIT_CORE. Linux-only.
 _CRASHING_UNLESS_CPU_SCRIPT = (
     "import ctypes, os, sys\n"
     "if sys.argv[1] != 'cpu':\n"
-    # First, and above the Windows branch below: every crash this child can take has to
-    # be preceded by the clear, and the abort() arm was not. A no-op off Linux, which is
-    # why it can sit ahead of the platform test rather than inside each arm.
+    # First: every crash arm, abort() included, must follow the PR_SET_DUMPABLE clear.
     "    try:\n"
     "        ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE = 0\n"
     "    except Exception:\n"
     "        pass\n"
-    # ctypes installs a structured exception handler on Windows, so the null read below
-    # comes back as an ordinary OSError and the child exits like any reporting child,
-    # which the probe reads as a working device. abort() is the real shape there: it is
-    # what a ROCm library calls when it dies, and it leaves the CRT exit status 3 the
-    # probe already recognises.
+    # On Windows ctypes turns the null read into OSError; abort() (CRT exit 3) is the real shape.
     "    if sys.platform == 'win32':\n"
     "        os.abort()\n"
     "    ctypes.string_at(0)\n"
@@ -99,7 +86,6 @@ _CRASHING_UNLESS_CPU_SCRIPT = (
 
 @pytest.fixture(autouse = True)
 def _pin_st_backend(monkeypatch):
-    # Tests patch ST internals (_get), so force the ST backend.
     monkeypatch.setattr(config, "EMBED_BACKEND", "sentence-transformers")
     embeddings._reset_backend()
     yield
@@ -119,7 +105,7 @@ class _ConcurrencyProbe:
             self.inside += 1
             if self.inside > 1:
                 self.saw_overlap = True
-        time.sleep(0.005)  # widen the race window
+        time.sleep(0.005)
         with self._g:
             self.inside -= 1
 
@@ -221,7 +207,6 @@ def test_auto_asks_the_hardware_once_for_the_backend_it_built(monkeypatch):
         embeddings.embedding_identity("org/embedder")
     assert asked == ["probe"]
 
-    # An unload is a fresh start, so the next backend asks again.
     embeddings.release_backend()
     embeddings.encode(["after unload"], model_name = "org/embedder")
     assert asked == ["probe", "probe"]
@@ -249,14 +234,11 @@ def test_a_replaced_backend_asks_the_hardware_again(monkeypatch):
     first = embeddings._get_backend("org/embedder")
     assert asked == ["probe"]
 
-    # A GGUF repo name resolves without the hardware, so the rebuild caches nothing of its own.
     monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: True)
     second = embeddings._get_backend("org/embedder")
     assert second is not first
     assert asked == ["probe"]
 
-    # Back to a plain model: the published backend is no longer the one the answer was kept
-    # for, so auto must go and ask rather than answer from the replaced backend's probe.
     monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: False)
     assert embeddings._resolve_auto_for_model("org/embedder") == "sentence-transformers"
     assert asked == ["probe", "probe"]
@@ -310,23 +292,17 @@ def test_picker_plans_embeddinggemma_on_llama_server(monkeypatch):
 
 
 def test_a_resolution_that_never_asked_the_hardware_keeps_nothing(monkeypatch):
-    """``_get_backend`` clears the per-thread answer before resolving, and that clear is
-    load-bearing: the identity and active-backend probes also resolve ``auto`` outside the
-    lock, so without it a build that short-circuited the hardware would publish the answer
-    an earlier, unrelated call had left behind."""
+    """_get_backend clears the per-thread answer first; otherwise a stale earlier answer gets published."""
     asked = _resolve_auto_for(monkeypatch)
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
 
-    # An out-of-lock caller resolves auto first, with no backend published yet.
     embeddings.active_backend_is_llama("org/embedder")
     assert asked == ["probe"]
 
-    # Now build for a model that never reaches the hardware question.
     monkeypatch.setattr(embeddings, "_model_names_gguf_repo", lambda _model: True)
     built = embeddings._get_backend("org/embedder")
     assert isinstance(built, _SentinelLlamaBackend)
 
-    # Nothing was kept, because this build asked the hardware nothing.
     assert embeddings._resident_hardware is None
 
 
@@ -335,7 +311,7 @@ def test_encode_is_serialized(monkeypatch):
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _FakeModel(probe))
     errors = _hammer(lambda: embeddings.encode(["alpha beta", "gamma"]))
     assert errors == []
-    assert probe.saw_overlap is False  # compute lock serialized encode()
+    assert probe.saw_overlap is False
 
 
 def test_token_counter_is_serialized(monkeypatch):
@@ -344,7 +320,7 @@ def test_token_counter_is_serialized(monkeypatch):
     count = embeddings.token_counter()
     errors = _hammer(lambda: count("one two three four"))
     assert errors == []
-    assert probe.saw_overlap is False  # counting shares the tokenizer lock
+    assert probe.saw_overlap is False
 
 
 def test_encode_enables_parallelism_only_during_call(monkeypatch):
@@ -360,8 +336,8 @@ def test_encode_enables_parallelism_only_during_call(monkeypatch):
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _M())
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     embeddings.encode(["alpha", "beta"])
-    assert seen["during"] == "true"  # rayon batch tokenization enabled in-call
-    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
+    assert seen["during"] == "true"
+    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"
 
 
 def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
@@ -379,8 +355,8 @@ def test_token_counter_enables_parallelism_only_during_call(monkeypatch):
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     count = embeddings.token_counter()
     count("alpha beta gamma")
-    assert seen["during"] == "true"  # rayon enabled in-call, like _st_encode
-    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"  # restored after
+    assert seen["during"] == "true"
+    assert os.environ.get("TOKENIZERS_PARALLELISM") == "false"
 
 
 def test_token_counter_reacquires_backend_retired_between_chunk_calls(monkeypatch):
@@ -484,31 +460,21 @@ def test_sentence_transformer_load_uses_live_cache(monkeypatch, tmp_path):
 
     assert observed["name"] == "Org/Embedder"
     assert observed["cache_folder"] == str(tmp_path / "selected-hub")
-    # fp32, because the load lands on CPU. The dtype follows the device we actually
-    # load on rather than how we got there, so the default CPU placement and a
-    # degraded-onto-CPU load agree.
+    # fp32: dtype follows the device actually loaded on.
     assert list(observed["model_kwargs"].values()) == ["float32"]
 
 
 def test_device_defaults_to_cpu_on_an_accelerator_host(monkeypatch):
-    """A GPU must not be used just because it is there.
-
-    This embedder loads in the backend process, where the first CUDA allocation pins a
-    primary context nothing can hand back, so an idle Unsloth that indexed one document
-    would carry it for the rest of the session.
-    """
+    """Default embedding to CPU: a CUDA allocation in the backend pins a primary context nothing
+    releases."""
     monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", "auto")
     _shared_setup_3(monkeypatch)
     assert embeddings._device() == "cpu"
 
 
 def test_device_opts_in_to_the_accelerator(monkeypatch):
-    """Every spelling of "use the accelerator" opts in, including the device's own name.
-
-    An Intel user reaches for ``xpu`` and a ROCm user for ``rocm`` before either reaches
-    for the generic ``gpu``; matching only ``gpu`` handed both of them CPU from a setting
-    that named their hardware.
-    """
+    """Every spelling that opts into the accelerator must match, including device names like xpu and
+    rocm."""
     _shared_setup_3(monkeypatch)
     for requested in ("gpu", "GPU", " cuda ", "rocm", "hip", "xpu", "mps", "metal"):
         monkeypatch.setattr(embeddings.config, "EMBED_DEVICE", requested)
@@ -537,21 +503,12 @@ def test_unrecognized_device_setting_falls_back_without_raising(monkeypatch):
 
 
 def test_cpu_never_loads_float16(monkeypatch, tmp_path):
-    """fp16 on CPU is not merely slow on older torch, it raises.
-
-    torch 2.2 has no CPU Half kernel for LayerNorm, which every BERT runs, so an
-    fp16 CPU load dies with ``"LayerNormKernelImpl" not implemented for 'Half'``.
-    _SentenceTransformersBackend.encode() answers that by swapping the process to
-    llama-server, so the failure would surface as a silent change of embedding space
-    against an index nobody reindexed rather than as an error.
-    """
+    """CPU must never load float16; torch 2.2 has no CPU Half LayerNorm kernel for BERT models."""
     observed = _shared_setup_1(monkeypatch)
     monkeypatch.setattr(
         "utils.hf_cache_settings.active_hf_hub_cache",
         lambda: str(tmp_path / "hub"),
     )
-    # Every way of arriving on CPU: the default, an explicit request, a host with no
-    # accelerator, and a degrade from a probe that condemned the accelerator.
     for embed_device, hardware, load_device in (
         ("auto", embeddings.DeviceType.CUDA, None),
         ("cpu", embeddings.DeviceType.CUDA, None),
@@ -637,7 +594,6 @@ def _patch_llama_backend(monkeypatch, *, binary):
 
 
 def test_st_failure_falls_back_to_llama_server(monkeypatch):
-    # ST can't load but llama-server is available -> use it.
     _force_st_load_failure(monkeypatch)
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     embeddings._reset_backend()
@@ -646,7 +602,6 @@ def test_st_failure_falls_back_to_llama_server(monkeypatch):
 
 
 def test_st_failure_without_llama_binary_reraises(monkeypatch):
-    # No llama-server binary -> surface the failure, don't degrade to nothing.
     _force_st_load_failure(monkeypatch)
     _patch_llama_backend(monkeypatch, binary = None)
     embeddings._reset_backend()
@@ -655,7 +610,6 @@ def test_st_failure_without_llama_binary_reraises(monkeypatch):
 
 
 def test_st_success_keeps_sentence_transformers(monkeypatch):
-    # Clean ST probe -> ST backend stays selected, no fallback.
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: object())
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     embeddings._reset_backend()
@@ -674,8 +628,7 @@ def test_loaded_state_belongs_to_the_resident_sentence_transformer(monkeypatch):
 
 
 def test_loaded_state_belongs_to_the_resident_gguf_repo(monkeypatch):
-    # A live process, since residency now means the subprocess is actually there;
-    # see test_a_dead_llama_process_is_not_reported_as_loaded.
+    # A live process: residency means the subprocess is really there.
     backend = SimpleNamespace(_model_repo = "org/resident-GGUF", _process_alive = lambda: True)
     monkeypatch.setattr(embeddings, "_backend", backend)
     monkeypatch.setattr(embeddings, "_is_llama_backend", lambda value: value is backend)
@@ -940,7 +893,6 @@ class _BoomOnEncodeModel:
 
 
 def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
-    # encode() blows up mid-run -> switch to llama-server and stay switched.
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
     _patch_llama_backend(monkeypatch, binary = "/fake/llama-server")
     calls = {}
@@ -961,34 +913,25 @@ def test_st_encode_runtime_failure_switches_to_llama(monkeypatch):
     embeddings._reset_backend()
 
     out = embeddings.encode(["alpha", "beta"])
-    assert calls.get("used") is True  # retried on the llama fallback
+    assert calls.get("used") is True
     assert out.shape == (2, 4)
-    # The failed ST weights are no longer reachable, including after the
-    # published backend became llama rather than an ST wrapper.
     assert embeddings._model is None
     assert embeddings._name is None
     assert embeddings.config.effective_embedding_model() in embeddings._forced_backends
-    # Switch is process-wide: later calls keep using llama, not ST.
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
-    # It outranks what the saved model would otherwise resolve to, so a model that
-    # asks for ST cannot walk the process back into the encoder that just failed.
+    # It outranks the saved model's resolution so ST cannot be re-chosen after failing.
     monkeypatch.setattr(embeddings, "_resolve_auto_for_model", lambda: "sentence-transformers")
     assert isinstance(embeddings._get_backend(), _SentinelLlamaBackend)
-    # An explicit unload is a fresh start, so the pin does not outlive it.
     embeddings._reset_backend()
     assert embeddings._forced_backends == {}
 
 
 def test_st_encode_failure_without_llama_binary_reraises(monkeypatch):
-    # No llama-server binary -> surface the encode error.
     monkeypatch.setattr(embeddings, "_get", lambda model_name = None: _BoomOnEncodeModel())
     _patch_llama_backend(monkeypatch, binary = None)
     embeddings._reset_backend()
     with pytest.raises(RuntimeError, match = "CUDA error during encode"):
         embeddings.encode(["alpha", "beta"])
-
-
-# Device selection after a fatal torch driver failure.
 
 
 def _patch_probe(monkeypatch, usable):
@@ -1087,7 +1030,6 @@ def test_encode_reacquires_a_backend_retired_between_batches(monkeypatch):
     monkeypatch.setattr(embeddings, "_get_backend", lambda *_a, **_k: next(backends))
 
     assert embeddings.encode(["chunk"]) is served
-    # The identity must name the backend that actually produced the vectors.
     assert embeddings._served_by.backend is replacement
 
 
@@ -1156,14 +1098,11 @@ def test_a_local_gguf_selects_llama_even_on_a_gpu_box(monkeypatch, tmp_path):
     gguf.write_bytes(b"GGUF")
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
     monkeypatch.setattr(embeddings, "_forced_backends", {})
-    # The hardware default that used to win.
     monkeypatch.setattr(embeddings, "_resolve_auto", lambda: "sentence-transformers")
 
     assert embeddings._resolve_auto_for_model(str(gguf)) == "llama-server"
     assert embeddings.resolved_backend_for_model(str(gguf)) == "llama-server"
-    # A folder holding one counts the same way.
     assert embeddings._resolve_auto_for_model(str(tmp_path)) == "llama-server"
-    # An ordinary repo id is untouched, and costs no filesystem walk.
     assert embeddings._resolve_auto_for_model("unsloth/bge-small-en-v1.5") == (
         "sentence-transformers"
     )
@@ -1222,8 +1161,6 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
     evaluate_file_security recovers repo and commit from a snapshot path."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
-    # A real ST checkpoint: the pin is ST-specific now, so a GGUF-only snapshot
-    # is deliberately not adopted as the load target.
     (snapshot / "model.safetensors").write_bytes(b"ST")
     scanned = []
     monkeypatch.setattr(
@@ -1261,24 +1198,16 @@ def test_the_security_gate_scans_the_snapshot_that_is_actually_loaded(monkeypatc
         embeddings._model = None
         embeddings._name = None
 
-    # The snapshot was loaded, and it is the same string the gate was handed.
     assert model.loaded == str(snapshot)
     assert scanned == [str(snapshot)]
 
 
 def test_the_shared_load_setup_does_not_strand_module_weights(tmp_path):
-    """The three loads driven through _shared_setup_2 outlived the test that asked for
-    them, so the next test in the same xdist worker to call backend_is_loaded() was
-    answered from this file's fake model and told something was resident.
-
-    Driven through a nested monkeypatch context so the restore this asserts is
-    observable from inside the test rather than only at its teardown.
-    """
+    """The shared load setup must not strand module weights for later tests in the same xdist worker."""
     with pytest.MonkeyPatch.context() as mp:
         _shared_setup_1(mp)
         mp.setattr(embeddings, "_device", lambda: "cpu")
         _shared_setup_2(mp, tmp_path)
-        # Non-vacuity: there is no strand to clean up unless the setup really loaded.
         assert embeddings._model is not None, "the setup loaded nothing, so this proves nothing"
         assert embeddings._name == "Org/Embedder"
 
@@ -1288,26 +1217,16 @@ def test_the_shared_load_setup_does_not_strand_module_weights(tmp_path):
 
 @pytest.mark.parametrize("resident", [False, True])
 def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch, resident):
-    """Both locks are held across a whole model load, so a probe taking either
-    made GET, PUT, reset and unload wait it out.
-
-    Run for a resident model as well as an empty one: what is being claimed is that the
-    probe ANSWERS under the load locks, and an answer of False is only evidence of that
-    if False is also the right answer.
-    """
+    """The residency probe must answer under the load locks, not wait on a model load."""
     import threading
 
     embeddings._reset_backend()
-    # _reset_backend drops the published backend, not the module-level weights, and
-    # backend_is_loaded deliberately falls through to those when no backend is published.
-    # So the answer below depends on globals this test never set: state them rather than
-    # inherit whatever ran earlier in this xdist worker.
+    # backend_is_loaded falls through to module-level weights; set them rather than inherit xdist state.
     monkeypatch.setattr(embeddings, "_model", object() if resident else None)
     monkeypatch.setattr(embeddings, "_name", "org/embedder" if resident else None)
     answered = threading.Event()
     result = {}
 
-    # Both locks held, exactly as they are mid-construction.
     with embeddings._backend_lock, embeddings._lock:
 
         def _probe():
@@ -1316,7 +1235,6 @@ def test_the_residency_probe_does_not_wait_on_a_model_load(monkeypatch, resident
             answered.set()
 
         threading.Thread(target = _probe, daemon = True).start()
-        # Answered while the construction locks are still held by this thread.
         assert answered.wait(timeout = 5), "the status probe blocked on the load locks"
 
     assert result == {"any": resident, "named": resident}
@@ -1342,15 +1260,11 @@ def test_a_dead_llama_process_is_not_reported_as_loaded(monkeypatch):
 
     alive["value"] = False
     assert embeddings.backend_is_loaded("org/resident") is False
-    # And the unqualified question, which is what gates the Unload control.
     assert embeddings.backend_is_loaded() is False
 
 
 def test_two_models_can_each_hold_their_own_llama_fallback_pin(monkeypatch):
-    """One (key, model) pair meant a second failing model erased the first one's
-    pin, so a job still running under A forgot it had swapped to llama-server and
-    retried ST. If the original failure was transient that ingestion splits its
-    own results across two vector spaces."""
+    """Each (key, model) keeps its own llama fallback pin; one model's failure must not erase another's."""
     monkeypatch.setattr(embeddings.config, "EMBED_BACKEND", "auto")
     monkeypatch.setattr(embeddings, "_forced_backends", {})
     monkeypatch.setattr(
@@ -1364,7 +1278,6 @@ def test_two_models_can_each_hold_their_own_llama_fallback_pin(monkeypatch):
     assert embeddings.resolved_backend_for_model("org/b") == "llama-server"
     assert embeddings.sentence_transformers_fallback_allowed("org/a") is False
     assert embeddings.sentence_transformers_fallback_allowed("org/b") is False
-    # A model that never failed is untouched by either pin.
     assert embeddings.resolved_backend_for_model("org/c") == "sentence-transformers"
     assert embeddings.sentence_transformers_fallback_allowed("org/c") is True
 
@@ -1394,11 +1307,7 @@ def test_the_forced_backend_probe_does_not_wait_on_a_model_load(monkeypatch):
 
 
 def test_a_model_reloaded_behind_an_unload_is_still_reported_and_freed(monkeypatch):
-    """An ST wrapper descheduled between _get_backend() returning it and its encode
-    starting is retired by an unload landing in the gap, and then reloads the
-    module-level model with no backend to publish. Answering "nothing is loaded"
-    stranded those weights for the life of the process: the next unload saw no
-    backend and freed nothing."""
+    """A model reloaded behind an unload must still be reported and freed, not treated as nothing loaded."""
     monkeypatch.setattr(embeddings, "_backend", None, raising = False)
     monkeypatch.setattr(embeddings, "_backend_key", None, raising = False)
     monkeypatch.setattr(embeddings, "_model", object(), raising = False)
@@ -1411,5 +1320,4 @@ def test_a_model_reloaded_behind_an_unload_is_still_reported_and_freed(monkeypat
     assert embeddings.release_backend() is True
     assert embeddings._model is None
     assert embeddings.backend_is_loaded() is False
-    # And with nothing resident it stays a no-op.
     assert embeddings.release_backend() is False

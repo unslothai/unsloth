@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""An image load caught by retirement must not run for the deleted account.
-
-Retirement tombstones the account and scans for its media work. A /images/load still inside a
-pre-admission await owns nothing the scan can see, so it used to start its load afterwards; and
-a load admitted just before the tombstone kept running. Now admission and the scan share one
-lock: the late request is refused, the early load is torn down."""
+"""Admission and the retirement scan share one lock, so a late /images/load is refused, not started."""
 
 from __future__ import annotations
 

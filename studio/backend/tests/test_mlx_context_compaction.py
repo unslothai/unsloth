@@ -81,7 +81,6 @@ def test_an_overflowing_prompt_drops_its_oldest_turns_and_reports_the_boundary(
     assert truncation["type"] == "context_truncated"
     assert truncation["fits"] is fits is (truncation["prompt_tokens_after"] <= 1000)
     assert truncation["boundary_messages"] == truncation["dropped_messages"] > 0
-    # What a rescue evicts is archived, not recalled into a prompt that is already over.
     assert archive_calls[-1]["recall_done"] is not fits
     assert result["system_prompt"] == ""
     assert result["messages"][0] == {"role": "system", "content": "you are helpful"}
@@ -126,7 +125,6 @@ def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered
         )
         return result["events"][-1], result["messages"][0]["content"], archive_calls[-1]
 
-    # A client's own catalogue may reach a plain request; it is not Unsloth's search tool.
     truncation, system, archived = fit(tools = [SEARCH])
     assert not truncation.get("checkpoint") and "carried_forward" not in system
     assert archived["style"] == "inline"
@@ -151,8 +149,6 @@ def test_a_request_resets_only_where_search_can_follow_and_names_only_an_offered
     assert archived["recall_budget_tokens"] == halved
     assert halved < retrieval_budget(1200, 200, truncation["prompt_tokens_after"])
 
-    # The loop's final answer carries no tools: no reset, and its reply never comes back,
-    # so recall gets all the room the fit left.
     turns = [{"role": "user", "content": "x" * size} for size in (3200, 800, 8)]
     truncation, _, archived = fit(messages = turns, tool_loop = True, recall_reachable = True)
     after = truncation["prompt_tokens_after"]
@@ -193,8 +189,6 @@ def _run_loop(monkeypatch, messages, replies, result_chars, **kwargs):
 
 
 @pytest.mark.parametrize("policy", ["checkpoint", "rolling"])
-# The client's history holds a tool result the first fit has to evict, or none: then its
-# small first turn is still there when the loop's own results start to crowd the window.
 @pytest.mark.parametrize("old_result_chars, fits", [(3900, 3), (0, 2)])
 def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     monkeypatch, archive_calls, policy, old_result_chars, fits
@@ -207,10 +201,8 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     truncated, prompts, branches = _run_loop(
         monkeypatch,
         [old, *(old_exchange if old_result_chars else []), ANSWERED, QUESTION],
-        # An announced search is re-prompted with a user turn of the loop's own, as the cap is.
         ["Let me search the web for that.", CALL % 1, CALL % 2, CALL % 3, "done"],
         2400,
-        # Two results fill the window; after the third the loop appends its budget notice.
         max_tool_iterations = 3,
         context_policy = policy,
     )
@@ -218,19 +210,13 @@ def test_the_tool_loop_refits_every_turn_and_keeps_the_question_past_a_reprompt(
     final = prompts[-1]
     assert final[-1]["role"] == "user" and final[-1] is not QUESTION
     assert any(m is QUESTION for m in final) and not any(m is old for m in final)
-    # The newest result stays: the final answer is asked for without tools, so that fit never
-    # resets it away, and the re-prompt before it is not evicted with it in tow.
     assert [m["content"][:8] for m in final if m.get("role") == "tool"] == ["result 3"]
-    # The third call can still search the first result, which a fit had already evicted,
-    # and the last fit archives against all three.
     assert sum(m["content"].startswith("result") for m in branches[2] if m["role"] == "tool") == 2
     last_fit = archive_calls[-1]
     ran = [m for m in last_fit["branch_messages"] if m["role"] == "tool"][-3:]
     assert [m["content"][:8] for m in ran] == ["result 1", "result 2", "result 3"]
-    # Recall searches for the branch's last user turn: the question, not the loop's notice.
     assert [m for m in last_fit["branch_messages"] if m["role"] == "user"] == [old, QUESTION]
     assert len(truncated) == fits and all(event["fits"] for event in truncated)
-    # The loop is the one MLX request that may reset, and it archives under its thread.
     assert bool(truncated[0].get("checkpoint_started")) is (policy == "checkpoint")
     assert last_fit["thread_id"] == "thread-1"
 
@@ -285,7 +271,6 @@ def test_the_only_tool_result_is_not_evicted_to_make_room_for_what_the_loop_says
         max_tool_iterations = 5 if len(replies) > 1 else 1,
     )
 
-    # Dropping the result would fit, and leave nothing to answer from. Only what followed
-    # it may go; failing that, the prompt goes out over.
+    # Dropping the result would fit but leave nothing to answer from.
     assert truncation["fits"] is fits and truncation["dropped_messages"] == dropped
     assert [m["role"] for m in prompts[-1]].count("tool") == 1

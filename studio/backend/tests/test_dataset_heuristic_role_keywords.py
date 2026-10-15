@@ -89,8 +89,6 @@ _CASES = [
 ]
 
 
-# An assistant column must never be drafted into the user turn just because the shadow
-# rule emptied the user candidates: the context column is the better user turn.
 _ASSISTANT_LEFTOVER_CASES = [
     (
         {"context": _LONG, "answer": _MID, "explanation": _MID},
@@ -106,8 +104,6 @@ _ASSISTANT_LEFTOVER_CASES = [
     ),
 ]
 
-# A column that is only ever a system word stays unmapped, so the caller keeps asking
-# for a manual mapping instead of silently training the system prompt as the user turn.
 _NO_USER_COLUMN_ROWS = [
     {"system": _MID, "output": _MID},
     {"system_prompt": _MID, "output": _MID},

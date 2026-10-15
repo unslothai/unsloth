@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""/api/inference/validate must report an INCONCLUSIVE diffusion check as such.
-
-`_classify_diffusion_gguf` is a tri-state: True (diffusion), False (header read,
-ordinary), None (nothing to read, and no family in the name).
-
-The response used to collapse None into `is_diffusion = False`, so a caller could not
-tell "ordinary GGUF" from "unknown". The staged-metadata preflight picks a GPU-layer
-split from that answer, and /load may then apply it to a diffusion runner: an inherited
-0 CPU-masks it, another count repartitions or OOMs it.
-"""
+"""An inconclusive diffusion check must stay unknown, not False, since the GPU split keys on it."""
 
 import asyncio
 import importlib
@@ -31,8 +22,7 @@ _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _load_route_module(name: str):
-    # Some direct llama_cpp tests install a tiny httpx stub during collection.
-    # Latest inference.py imports llama_http, which needs the real package.
+    # Some llama_cpp tests install a tiny httpx stub; inference.py needs the real one.
     sys.modules.pop("httpx", None)
     sys.modules["httpx"] = importlib.import_module("httpx")
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / "routes/inference.py")
@@ -164,12 +154,7 @@ class TestValidateReportsDiffusionUnknown(unittest.TestCase):
         self.assertIn("cannot be applied until", raised.exception.detail)
 
     def test_inherited_env_default_alone_never_rejects_a_load(self):
-        """LLAMA_ARG_THINK_BUDGET* is a machine-wide llama.cpp default, not a request.
-
-        No Studio control writes or clears it, so gating on it refused an undownloaded
-        GGUF and a DiffusionGemma with advice the user cannot follow, and disagreed
-        with LlamaCppBackend's own gate, which reads the explicit values only.
-        """
+        """LLAMA_ARG_THINK_BUDGET* is an inherited machine default, so it alone must never reject a load."""
         route = _ROUTE
         env = {
             "LLAMA_ARG_THINK_BUDGET": "512",

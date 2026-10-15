@@ -55,7 +55,7 @@ def test_rocm_flash_honored_when_imported_and_check_passes(monkeypatch, alias):
     calls = _rocm(monkeypatch)
     assert select_attention_backend(_target(), alias, speed_active = False) == "flash"
     assert select_attention_backend(_target(), alias, speed_active = True) == "flash"
-    assert calls == [("cuda:0", "torch.bfloat16")]  # cached per (device, dtype)
+    assert calls == [("cuda:0", "torch.bfloat16")]
 
 
 def test_rocm_flash_check_cached_per_device_and_dtype(monkeypatch):
@@ -263,14 +263,12 @@ def test_rocm_auto_flash_for_klein_on_gfx11(monkeypatch):
         select_attention_backend(_target(), None, speed_active = True, family = "flux.2-klein")
         == "flash"
     )
-    # unset speed (ROCm resolves it to `off`): the default path, so flash too
     assert (
         select_attention_backend(
             _target(), "auto", speed_active = False, family = _klein(), speed_unset = True
         )
         == "flash"
     )
-    # an explicit `off` stays native (the bit-identical reference path)
     assert select_attention_backend(_target(), "auto", speed_active = False, family = _klein()) is None
     assert calls == [("cuda:0", "torch.bfloat16")]
 
@@ -368,7 +366,6 @@ def test_image_load_passes_the_family():
         if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "select_attention_backend"
     ]
     with_family = [c for c in calls if any(k.arg == "family" for k in c.keywords)]
-    # the load-time pick and the eager re-pick; the pre-lock preinstall needs no family (no ROCm pip install)
     assert len(with_family) == 2
     assert sum(any(k.arg == "speed_unset" for k in c.keywords) for c in with_family) == 1
 
