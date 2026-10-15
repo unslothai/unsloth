@@ -1362,8 +1362,13 @@ class ExportBackend:
                     else save_directory
                 )
                 self._write_export_metadata(final_dir)
-                if not (_IS_MLX or is_compressed or is_torchao):
-                    self._package_drafter_merged(final_dir, repo_id if push_to_hub else None)
+                if not _IS_MLX:
+                    # Compressed / torchao siblings carry no stitched MTP head; an EAGLE-3 drafter ships.
+                    self._package_drafter_merged(
+                        final_dir,
+                        repo_id if push_to_hub else None,
+                        allow_mtp = not (is_compressed or is_torchao),
+                    )
                 logger.info(f"Model saved successfully to {final_dir}")
                 output_path = str(Path(final_dir).resolve())
 
@@ -1933,20 +1938,35 @@ class ExportBackend:
                 )
             return False, f"GGUF export failed: {str(e)}", None
 
-    def _package_drafter_merged(self, final_dir: str, repo_id: Optional[str]) -> None:
+    def _package_drafter_merged(
+        self,
+        final_dir: str,
+        repo_id: Optional[str],
+        allow_mtp: bool = True,
+    ) -> None:
         """Ship the drafter trained with this fine-tune next to a merged export (best-effort: the
         merged model is valid without it)."""
-        from core.export.drafter_export import package_merged
         try:
-            info = package_merged(self.current_checkpoint, final_dir, verifier = repo_id)
+            from core.export.drafter_export import package_merged
+            info = package_merged(
+                self.current_checkpoint, final_dir, verifier = repo_id, allow_mtp = allow_mtp
+            )
             if info:
                 logger.info(f"Packaged the trained {info['strategy']} drafter into {final_dir}")
         except Exception as exception:
             logger.warning(f"Could not package the trained drafter: {exception}")
 
-    def _package_drafter_gguf(self, merged_dir: str, gguf_dir: str, ggufs: List[str]) -> List[str]:
-        from core.export.drafter_export import package_gguf
+    def _package_drafter_lora(self, adapter_dir: str) -> None:
         try:
+            from core.export.drafter_export import package_lora
+            package_lora(self.current_checkpoint, adapter_dir)
+        except Exception as exception:
+            logger.warning(f"Could not carry the drafter manifest with the adapter: {exception}")
+
+    def _package_drafter_gguf(self, merged_dir: str, gguf_dir: str, ggufs: List[str]) -> List[str]:
+        try:
+            from core.export.drafter_export import package_gguf
+
             info, files = package_gguf(self.current_checkpoint, merged_dir, gguf_dir, ggufs)
             if info:
                 logger.info(f"Packaged the trained {info['strategy']} drafter with the GGUF export")
@@ -2327,6 +2347,7 @@ class ExportBackend:
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
+                    self._package_drafter_lora(save_directory)
                 self._write_export_metadata(save_directory)
                 logger.info(f"Adapter saved successfully to {save_directory}")
                 output_path = str(Path(save_directory).resolve())

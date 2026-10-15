@@ -1696,18 +1696,24 @@ async def get_drafter_capability(
     name = (model_name or "").strip()
     if not name or len(name) > 512:
         raise HTTPException(status_code = 400, detail = "model_name is required")
-    if managed_account() and os.path.isabs(name):
-        return {
-            "model_name": name,
-            "has_native_mtp": False,
-            "strategy": None,
-            "supported": False,
-            "reason": "Local paths are not checked for managed accounts.",
-            "vllm": False,
-            "llama_cpp": False,
-        }
-    # No token in a query string: ambient credentials for the owner, anonymous for API keys.
-    token = False if via_api_key is True else None
+    managed = managed_account()
+    if managed:
+        # Same rule as the training routes: Hub ids, or paths inside this account's workspace.
+        try:
+            account_path(name, reference = True, shared_cache = True)
+        except HTTPException:
+            return {
+                "model_name": name,
+                "has_native_mtp": False,
+                "strategy": None,
+                "supported": False,
+                "reason": "Path is outside this account's workspace.",
+                "vllm": False,
+                "llama_cpp": False,
+            }
+    # No token in a query string: ambient credentials for the owner only, anonymous for API keys
+    # and managed accounts (the owner's HF token must not answer for them).
+    token = False if (via_api_key is True or managed) else None
     return await asyncio.to_thread(drafter_capability, name, token)
 
 

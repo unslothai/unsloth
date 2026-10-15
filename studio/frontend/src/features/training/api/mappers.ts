@@ -325,18 +325,22 @@ export function buildTrainingStartPayload(
   };
 }
 
-/** On, a model the backend said can train one, a run type with a drafter phase, and not MLX. */
+/** On, a run type with a drafter phase, not MLX, and not a model the backend said cannot train one.
+ * A capability check still pending (or for a previous model) sends it: the backend re-checks the
+ * model before the drafter phase and reports a warning instead of dropping the request silently. */
 export function sendsDrafter(
   config: TrainingConfigState,
   system: SystemInfoResponse | null = null,
 ): boolean {
   const capability = config.drafterCapability;
+  const refused =
+    capability !== null &&
+    capability.model_name === config.selectedModel &&
+    !capability.supported;
   return (
     config.drafterEnabled &&
     drafterEligible(config) &&
     system?.device_backend !== "mlx" &&
-    capability !== null &&
-    capability.supported &&
-    capability.model_name === config.selectedModel
+    !refused
   );
 }

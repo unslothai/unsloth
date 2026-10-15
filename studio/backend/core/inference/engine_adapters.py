@@ -321,6 +321,10 @@ def vllm_speculative_args(model) -> list[str]:
         return []
     if not isinstance(info, dict):
         return []
+    # A drafter vLLM cannot run (llama.cpp-only EAGLE-3 targets, some MTP families) must not stop
+    # the model from starting.
+    if isinstance(info.get("engines"), dict) and not info["engines"].get("vllm"):
+        return []
     steps = info.get("draft_steps") or 3
     if info.get("strategy") == "mtp":
         spec = {"method": "mtp", "num_speculative_tokens": int(steps)}

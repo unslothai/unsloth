@@ -75,14 +75,19 @@ test("drafter training is off by default and the payload has no drafter key", ()
   assert.equal(Object.hasOwn(payload, "drafter"), false);
 });
 
+test("a capability check still pending or for another model does not drop a ticked drafter", () => {
+  for (const patch of [{ ...ON }, { ...ON, drafterCapability: capability({ model_name: "other/model" }) }]) {
+    const payload = buildTrainingStartPayload(config(patch), null);
+    assert.equal(Object.hasOwn(payload, "drafter"), true);
+  }
+});
+
 test("settings the request cannot carry leave the payload exactly as without the feature", () => {
   const off = buildTrainingStartPayload(config(), null);
   const cases: Partial<TrainingConfigState>[] = [
     // Settings edited but the box unticked.
     { ...ON, drafterEnabled: false, drafterCapability: capability() },
-    // Ticked, capability not known yet / for another model / unsupported.
-    { ...ON },
-    { ...ON, drafterCapability: capability({ model_name: "other/model" }) },
+    // Ticked, but the backend said this model cannot train one.
     { ...ON, drafterCapability: capability({ supported: false, reason: "x" }) },
     // Run types without a drafter phase.
     { ...ON, drafterCapability: capability(), trainingMethod: "cpt" },

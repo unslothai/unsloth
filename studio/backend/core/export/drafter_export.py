@@ -52,6 +52,44 @@ def training_manifest(checkpoint_dir: Optional[str]) -> Optional[dict]:
     return manifest
 
 
+def _engines(manifest: dict) -> dict:
+    # Manifests from before per-engine support was recorded meant both.
+    engines = manifest.get("engines")
+    if not isinstance(engines, dict):
+        return {"vllm": True, "llama_cpp": True}
+    return {"vllm": bool(engines.get("vllm")), "llama_cpp": bool(engines.get("llama_cpp"))}
+
+
+def clear_stale(directory: str, ggufs: Optional[list[str]] = None) -> None:
+    """Remove a previous export's drafter from a reused folder, so nothing pairs it with this model."""
+    info = _read_json(os.path.join(directory, DRAFTER_MANIFEST))
+    if not info or info.get("strategy") not in ("mtp", "eagle3"):
+        return
+    listed = info.get("ggufs") or []
+    if ggufs is not None and listed and not set(listed) & {os.path.basename(g) for g in ggufs}:
+        return  # describes other GGUFs in this folder
+    for name in info.get("files") or []:
+        path = os.path.join(directory, os.path.basename(name))
+        if os.path.basename(name) == EAGLE3_DIRNAME and os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors = True)
+        elif name.lower().endswith(".gguf") and os.path.isfile(path):
+            os.remove(path)
+    os.remove(os.path.join(directory, DRAFTER_MANIFEST))
+
+
+def _vllm_command(target: str, spec: dict, hub: bool) -> str:
+    """`vllm serve` for the exported pair. Hub repos: the repo id, after a download when the EAGLE-3
+    drafter sits in a subfolder (vLLM loads a speculative model from a repo id or a local path only)."""
+    prefix = ""
+    if hub and spec["method"] == "eagle3":
+        local = target.rstrip("/").split("/")[-1] or "model"
+        prefix = f"hf download {shlex.quote(target)} --local-dir {shlex.quote(local)} && "
+        target, spec = local, dict(spec, model = f"{local}/{EAGLE3_DIRNAME}")
+    return f"{prefix}vllm serve {shlex.quote(target)} --speculative-config " + shlex.quote(
+        json.dumps(spec, separators = (",", ":"))
+    )
+
+
 def _steps(manifest: dict) -> int:
     try:
         return max(1, int(manifest.get("draft_steps") or 3))
@@ -83,17 +121,22 @@ def package_merged(
     final_dir: str,
     *,
     verifier: Optional[str] = None,
+    allow_mtp: bool = True,
 ) -> Optional[dict]:
     """Write `drafter.json` (and copy the EAGLE-3 drafter) into a merged export. None when the run
     trained no drafter. `verifier` is what the drafter's config names as its target: the Hub repo on a
     push, else the base model id (vLLM refuses a local verifier path inside a speculators config, so
-    local serving passes the target explicitly)."""
+    local serving passes the target explicitly). `allow_mtp` is False for exports that cannot carry
+    a stitched head (compressed-tensors, torchao): only an EAGLE-3 drafter ships with those."""
     manifest = training_manifest(checkpoint_dir)
-    if manifest is None:
+    if manifest is None or (manifest["strategy"] == "mtp" and not allow_mtp):
+        clear_stale(final_dir)
         return None
     strategy, steps = manifest["strategy"], _steps(manifest)
+    engines = _engines(manifest)
+    hub = verifier is not None
     verifier = verifier or manifest.get("base_model") or ""
-    target = os.path.abspath(final_dir)
+    target = verifier if hub else os.path.abspath(final_dir)
     if strategy == "mtp":
         spec = {"method": "mtp", "num_speculative_tokens": steps}
         files: list[str] = []
@@ -111,8 +154,8 @@ def package_merged(
     info = {
         "strategy": strategy,
         "files": files,
-        "vllm_command": f"vllm serve {shlex.quote(target)} --speculative-config "
-        + shlex.quote(json.dumps(spec, separators = (",", ":"))),
+        "engines": engines,
+        "vllm_command": _vllm_command(target, spec, hub) if engines["vllm"] else None,
         "llama_cpp_args": None,
         "base_model": manifest.get("base_model"),
         "verifier": verifier if strategy == "eagle3" else None,
@@ -136,7 +179,9 @@ def package_gguf(
     EAGLE-3 drafter is converted beside them against the merged target (the converter reads its config
     and tokenizer). Raises when the drafter cannot be converted: a pair missing its drafter is incomplete."""
     manifest = training_manifest(checkpoint_dir)
-    if manifest is None:
+    engines = _engines(manifest) if manifest else {}
+    if manifest is None or not engines["llama_cpp"]:
+        clear_stale(gguf_dir, ggufs)
         return None, []
     strategy, steps = manifest["strategy"], _steps(manifest)
     extra: list[str] = []
@@ -169,6 +214,7 @@ def package_gguf(
         "strategy": strategy,
         "files": [os.path.basename(f) for f in extra],
         "ggufs": names,
+        "engines": engines,
         "mtp_trained": strategy == "mtp",
         "vllm_command": None,
         "llama_cpp_args": args,
@@ -179,6 +225,36 @@ def package_gguf(
     _write(gguf_dir, info)
     extra.append(os.path.join(gguf_dir, DRAFTER_MANIFEST))
     return info, extra
+
+
+def package_lora(checkpoint_dir: Optional[str], adapter_dir: str) -> Optional[dict]:
+    """Carry the training manifest with a LoRA export that kept the trained MTP head beside it, so a
+    later merge / GGUF of that adapter still marks the head as trained (Studio's MTP launch policy)."""
+    manifest = training_manifest(checkpoint_dir)
+    if (
+        manifest is None
+        or manifest["strategy"] != "mtp"
+        or not os.path.isfile(os.path.join(adapter_dir, "mtp_head.safetensors"))
+    ):
+        clear_stale(adapter_dir)
+        return None
+    keep = (
+        "version",
+        "strategy",
+        "base_model",
+        "draft_steps",
+        "metrics",
+        "engines",
+        "family",
+        "llama_cpp_status",
+        "vllm",
+        "llama_cpp",
+        "created_at",
+    )
+    info = {k: manifest[k] for k in keep if k in manifest}
+    info["files"] = ["mtp_head.safetensors"]
+    _write(adapter_dir, info)
+    return info
 
 
 def export_drafter_details(output_path: Optional[str]) -> Optional[dict[str, Any]]:

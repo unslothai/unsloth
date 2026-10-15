@@ -395,8 +395,18 @@ def test_merged_eagle3_export_copies_drafter_and_sets_verifier(tmp_path):
     assert (out / "eagle3" / "model.safetensors").read_bytes() == b"w"
     cfg = json.loads((out / "eagle3" / "config.json").read_text())
     assert cfg["speculators_config"]["verifier"]["name_or_path"] == "me/finetune"
+    # A Hub push publishes no path from this machine: download the repo, then serve it.
+    assert info["vllm_command"].startswith(
+        "hf download me/finetune --local-dir finetune && vllm serve finetune"
+    )
     assert (
-        '"method":"eagle3"' in info["vllm_command"] and str(out / "eagle3") in info["vllm_command"]
+        '"model":"finetune/eagle3"' in info["vllm_command"]
+        and str(tmp_path) not in info["vllm_command"]
+    )
+    local = package_merged(str(run), str(out))
+    assert (
+        str(out / "eagle3") in local["vllm_command"]
+        and '"method":"eagle3"' in local["vllm_command"]
     )
     details = export_drafter_details(str(out))
     assert details["strategy"] == "eagle3" and details["files"] == ["eagle3"]
@@ -700,3 +710,156 @@ def test_regenerate_finds_prompts_in_dataset_template_rows():
     assert "".join(map(chr, row[:end])).endswith("### Response:\n")
     chat = [ord(c) for c in "<u>hi</u><a>hello"]
     assert "".join(map(chr, chat[_prompt_end(chat, list(chat), markers) :])) == "hello"
+
+
+def test_reused_export_folder_drops_a_previous_drafter(tmp_path):
+    from core.export.drafter_export import package_gguf, package_merged
+
+    run = _training_dir(tmp_path, "eagle3")
+    out = tmp_path / "out"
+    out.mkdir()
+    package_merged(str(run), str(out))
+    assert (out / "drafter.json").is_file() and (out / "eagle3").is_dir()
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    assert package_merged(str(plain), str(out)) is None
+    assert not (out / "drafter.json").exists() and not (out / "eagle3").exists()
+
+    gdir = tmp_path / "gguf"
+    gdir.mkdir()
+    (gdir / "model.Q8_0.gguf").write_bytes(b"GGUF")
+    (gdir / "eagle3-model-F16.gguf").write_bytes(b"GGUF")
+    (gdir / "drafter.json").write_text(
+        json.dumps(
+            {"strategy": "eagle3", "ggufs": ["model.Q8_0.gguf"], "files": ["eagle3-model-F16.gguf"]}
+        )
+    )
+    # A manifest about other GGUFs in the folder is left alone.
+    assert package_gguf(str(plain), None, str(gdir), [str(gdir / "other.gguf")]) == (None, [])
+    assert (gdir / "drafter.json").is_file()
+    assert package_gguf(str(plain), None, str(gdir), [str(gdir / "model.Q8_0.gguf")]) == (None, [])
+    assert not (gdir / "drafter.json").exists() and not (gdir / "eagle3-model-F16.gguf").exists()
+
+
+def test_compressed_exports_carry_eagle3_but_not_mtp(tmp_path):
+    from core.export.drafter_export import package_merged
+
+    (tmp_path / "m").mkdir()
+    (tmp_path / "e").mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    assert (
+        package_merged(str(_training_dir(tmp_path / "m", "mtp")), str(out), allow_mtp = False) is None
+    )
+    eagle = package_merged(str(_training_dir(tmp_path / "e", "eagle3")), str(out), allow_mtp = False)
+    assert eagle["strategy"] == "eagle3" and (out / "eagle3" / "config.json").is_file()
+
+
+def test_engine_support_gates_vllm_and_llama_cpp(tmp_path):
+    from core.export.drafter_export import package_gguf, package_merged
+    from core.inference.engine_adapters import vllm_speculative_args
+
+    run = _training_dir(tmp_path, "mtp")
+    manifest = json.loads((run / "drafter.json").read_text())
+    manifest["engines"] = {"vllm": False, "llama_cpp": True}
+    (run / "drafter.json").write_text(json.dumps(manifest))
+    out = tmp_path / "out"
+    out.mkdir()
+    info = package_merged(str(run), str(out))
+    assert info["vllm_command"] is None and vllm_speculative_args(str(out)) == []
+    manifest["engines"] = {"vllm": True, "llama_cpp": False}
+    (run / "drafter.json").write_text(json.dumps(manifest))
+    gdir = tmp_path / "gguf"
+    gdir.mkdir()
+    assert package_gguf(str(run), None, str(gdir), [str(gdir / "m.gguf")]) == (None, [])
+
+
+def test_lora_export_carries_the_mtp_manifest(tmp_path):
+    from core.export.drafter_export import package_lora, training_manifest
+
+    run = _training_dir(tmp_path, "mtp")
+    (run / "adapter_config.json").write_text("{}")
+    out = tmp_path / "adapter"
+    out.mkdir()
+    assert package_lora(str(run), str(out)) is None  # the save wrapper wrote no head here
+    (out / "mtp_head.safetensors").write_bytes(b"h")
+    (out / "adapter_config.json").write_text("{}")
+    info = package_lora(str(run), str(out))
+    assert info["strategy"] == "mtp" and "adapter_dir" not in info
+    assert training_manifest(str(out))["strategy"] == "mtp"
+
+
+def test_capability_probe_is_single_flight(monkeypatch):
+    import subprocess
+    import threading
+    from core.training import drafter
+
+    calls = []
+    gate = threading.Event()
+
+    def fake_run(argv, **kw):
+        calls.append(argv[-1])
+        gate.wait(5)
+        out = {
+            "model_name": argv[-1],
+            "has_native_mtp": False,
+            "strategy": "eagle3",
+            "supported": True,
+            "reason": None,
+            "vllm": True,
+            "llama_cpp": True,
+        }
+        return subprocess.CompletedProcess(
+            argv, 0, "DRAFTER_CAPABILITY " + json.dumps(out) + "\n", ""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    drafter._CAPABILITY_CACHE.clear()
+    results = []
+    threads = [
+        threading.Thread(
+            target = lambda: results.append(drafter.drafter_capability("org/same", False))
+        )
+        for _ in range(6)
+    ]
+    for t in threads:
+        t.start()
+    gate.set()
+    for t in threads:
+        t.join(10)
+    assert calls == ["org/same"] and len(results) == 6
+
+
+def test_remote_adapter_resolves_to_its_base(monkeypatch):
+    from core.training import drafter
+    from utils.models import model_config
+
+    monkeypatch.setattr(
+        model_config,
+        "get_base_model_from_lora_identifier",
+        lambda name, hf_token = None: "org/base" if name == "me/adapter" else None,
+    )
+    assert drafter.capability_source("me/adapter", {}) == "org/base"
+    assert drafter.capability_source("org/plain", {}) == "org/plain"
+
+
+def test_managed_accounts_probe_only_their_paths_and_never_with_the_owner_token(monkeypatch):
+    import asyncio
+
+    from core.training import account_jobs, drafter
+    import routes.training as route
+
+    seen = []
+    monkeypatch.setattr(account_jobs, "managed_account", lambda: True)
+    monkeypatch.setattr(route, "managed_account", lambda: True)
+    monkeypatch.setattr(
+        drafter,
+        "drafter_capability",
+        lambda name, token: seen.append((name, token)) or {"supported": True},
+    )
+    refused = asyncio.run(
+        route.get_drafter_capability("../../accounts/other/outputs/run", "u", False)
+    )
+    assert refused["supported"] is False and "outside" in refused["reason"] and seen == []
+    asyncio.run(route.get_drafter_capability("org/model", "u", False))
+    assert seen == [("org/model", False)]

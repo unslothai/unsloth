@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from typing import Any, Callable, Optional
 
@@ -78,14 +79,27 @@ _QUANT_SUFFIX = re.compile(
 )
 
 
+def _adapter_base(model_name: str, hf_token = None) -> Optional[str]:
+    """The base a LoRA adapter (local folder or Hub repo) was trained on; None for a plain model."""
+    try:
+        from utils.models.model_config import get_base_model_from_lora_identifier
+        return get_base_model_from_lora_identifier(model_name, hf_token = hf_token or None)
+    except Exception as exc:
+        logger.debug("Adapter base lookup failed for %s: %s", model_name, exc)
+    adapter_config = os.path.join(model_name or "", "adapter_config.json")
+    if model_name and os.path.isfile(adapter_config):
+        try:
+            with open(adapter_config, encoding = "utf-8") as f:
+                return json.load(f).get("base_model_name_or_path")
+        except (OSError, ValueError):
+            pass
+    return None
+
+
 def _text_config(model_name: str, hf_token: Optional[str] = None):
     from transformers import AutoConfig
 
-    source = model_name
-    adapter_config = os.path.join(model_name, "adapter_config.json")
-    if os.path.isfile(adapter_config):
-        with open(adapter_config, encoding = "utf-8") as f:
-            source = json.load(f).get("base_model_name_or_path") or model_name
+    source = _adapter_base(model_name, hf_token) or model_name
     config = AutoConfig.from_pretrained(source, token = hf_token)
     return config.get_text_config() if hasattr(config, "get_text_config") else config, source
 
@@ -158,16 +172,30 @@ print("DRAFTER_CAPABILITY " + json.dumps(capability_in_process(sys.argv[1], toke
 """
 
 
+_PROBE_SLOTS = threading.BoundedSemaphore(2)
+_PROBE_LOCKS: dict = {}
+_PROBE_LOCKS_GUARD = threading.Lock()
+
+
 def drafter_capability(model_name: str, hf_token = None) -> dict:
     """The capability, probed in a child process: importing unsloth_zoo in the API server races its
-    background torch warm-up (import deadlock in torch._dynamo) and patches the server process."""
+    background torch warm-up (import deadlock in torch._dynamo) and patches the server process.
+    One probe per key at a time (later callers wait for its cached answer), at most two at once."""
+    key = (model_name, hf_token is False, bool(hf_token))
+    with _PROBE_LOCKS_GUARD:
+        lock = _PROBE_LOCKS.setdefault(key, threading.Lock())
+    with lock:
+        hit = _CAPABILITY_CACHE.get(key)
+        if hit and time.time() - hit[0] < _CAPABILITY_TTL_S:
+            return dict(hit[1])
+        with _PROBE_SLOTS:
+            return _probe_capability(model_name, hf_token, key)
+
+
+def _probe_capability(model_name: str, hf_token, key) -> dict:
     import subprocess
     import sys
 
-    key = (model_name, hf_token is False, bool(hf_token))
-    hit = _CAPABILITY_CACHE.get(key)
-    if hit and time.time() - hit[0] < _CAPABILITY_TTL_S:
-        return dict(hit[1])
     env = dict(os.environ)
     env[_TOKEN_ENV] = "0" if hf_token is False else (hf_token or "")
     result = None
@@ -684,6 +712,11 @@ def run_drafter_phase(
             "data_source": data_source,
             "metrics": metrics,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            # Which engines can run this drafter: exports and launchers only enable it there.
+            "engines": {
+                "vllm": bool(capability.get("vllm")),
+                "llama_cpp": bool(capability.get("llama_cpp")),
+            },
         }
         if strategy == "mtp":
             from unsloth.save import _save_mtp_head_beside_adapter, _stitch_mtp_head
@@ -754,15 +787,10 @@ def run_drafter_phase(
 
 
 def capability_source(model_name: str, config: dict) -> str:
-    """The base checkpoint id (an adapter folder resolves to its base)."""
-    adapter_config = os.path.join(model_name or "", "adapter_config.json")
-    if model_name and os.path.isfile(adapter_config):
-        try:
-            with open(adapter_config, encoding = "utf-8") as f:
-                return json.load(f).get("base_model_name_or_path") or model_name
-        except (OSError, ValueError):
-            pass
-    return model_name
+    """The base checkpoint id (a local or Hub adapter resolves to its base)."""
+    if not model_name:
+        return model_name
+    return _adapter_base(model_name, config.get("hf_token")) or model_name
 
 
 def _model_text_config(model):
