@@ -63,9 +63,8 @@ uses every GPU on its host, so a managed host is listed only once.
 2. A model that fits this machine is served here, as without a cluster.
 3. A larger one is split by layer: `--rpc` lists the workers, `--device` lists their devices
    with this machine's GPU last (so the logits stay local), and `--tensor-split` weights each
-   device by its usable free memory. Projectors and drafters are charged to (and pinned on) this
-   machine; LoRA adapters and control vectors sit beside their layers, so they are spread with
-   the model.
+   device by its usable free memory. A projector is charged to (and pinned on) this machine;
+   LoRA adapters and control vectors sit beside their layers, so they are spread with the model.
 4. A load no set of devices can hold is refused with the numbers, instead of failing mid-load.
 
 A load that sets its own placement (`--device`, `--split-mode`, `--tensor-split`, `-ot`, `--rpc`,
@@ -87,6 +86,5 @@ the plan and the exact arguments used.
   worker, so a split is only chosen when the model does not fit this machine.
 - Copies of the model on several machines (replicas) are only available for two paired Sparks.
 - A worker that restarts loses its share of the model; reload the model afterwards.
-- A split turns automatic speculative decoding off, since an automatically chosen drafter is
-  not in the plan. Ask for a mode explicitly (or pass a drafter) to keep it; the drafter and the
-  projector are pinned to this machine's GPU.
+- A split runs without speculative decoding (n-gram modes excepted): a drafter or MTP state is
+  not in the plan. A load whose own arguments add a draft model or MTP is served on this machine.

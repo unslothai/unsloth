@@ -130,10 +130,22 @@ _HF_DRAFT_FLAGS = frozenset({"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draf
 _HF_DRAFT_ENV = ("LLAMA_ARG_SPEC_DRAFT_HF_REPO", "LLAMA_ARG_HFD_REPO")
 
 
-def _names_drafter(args: Sequence[str]) -> bool:
-    if any(str(a).split("=", 1)[0] in _DRAFTER_FLAGS for a in args):
-        return True
-    return any(os.environ.get(k) for k in _DRAFTER_ENV)
+def _caller_speculation(args: Sequence[str]) -> Optional[str]:
+    """The caller's drafter or MTP setting, if any: its weights, KV and rollback state are not
+    in a plan, so such a load stays on this machine."""
+    for a in args:
+        name = str(a).split("=", 1)[0]
+        if name in _DRAFTER_FLAGS or name in _HF_DRAFT_FLAGS:
+            return name
+    from core.inference.llama_cpp import _accumulated_spec_types, _child_spec_env
+
+    # The launch scrubs every LLAMA_ARG_SPEC_* / drafter variable unless argv sets --spec-type.
+    env = _child_spec_env(args, os.environ)
+    for k in _DRAFTER_ENV + _HF_DRAFT_ENV:
+        if (env.get(k) or "").strip():
+            return k
+    kinds = sorted(t for t in _accumulated_spec_types(args, env) if "draft" in t or "mtp" in t)
+    return f"--spec-type {kinds[0]}" if kinds else None
 
 
 def _normalized(args: Sequence[str]) -> List[str]:
@@ -207,7 +219,6 @@ def _with_cuda_runtime(argv: List[str]) -> List[str]:
     return ["sh", "-c", _CUDA_RUNTIME] + list(argv)
 
 
-_DRAFT_DEVICE_FLAGS = frozenset({"--device-draft", "-devd", "--spec-draft-device"})
 _DEVICE_LINE = re.compile(r"^\s+(\S+): (.*) \((\d+) MiB, (\d+) MiB free\)\s*$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.\-]*$")
 
@@ -630,7 +641,6 @@ class ClusterServing:
         self._down: set = set()
         self._native_ctx: bool = False
         self._projector_url: bool = False
-        self._remote_drafter: bool = False
         self._uncertain_extra: float = 0.0
         # Workers this load (re)started: they hold none of the served split's buffers.
         self._started: set = set()
@@ -772,32 +782,18 @@ class ClusterServing:
             # Nothing then shrinks the context or its compute buffers, which this does not price.
             self.topology, self.reason = "single", "the fitter is off; placement is the caller's"
             return request
+        drafter = _caller_speculation(flags)
+        if drafter:
+            self.topology, self.reason = (
+                "single",
+                f"the caller's speculative decoding ({drafter}) is placed by them",
+            )
+            return request
         model_bytes, kv_bytes, local_extra = await self._size(request, n_parallel, flags, ss)
         if self._native_ctx:
             self.topology, self.reason = (
                 "single",
                 "a context size of 0 opens the model's whole context",
-            )
-            return request
-        if self._remote_drafter:
-            self.topology, self.reason = "single", "a drafter fetched from the Hub cannot be sized"
-            return request
-        mode = str(getattr(request, "speculative_type", None) or "").strip().lower()
-        if mode in ("dspark", "dflash"):
-            # Their sidecar GGUF is found or fetched after planning, so it is not in the budget.
-            self.topology, self.reason = "single", f"the {mode} drafter is resolved after planning"
-            return request
-        from core.inference.llama_cpp import _extra_args_draft_device
-
-        draft_device = (_extra_args_draft_device(flags) or "").strip().lower()
-        if (
-            _names_drafter(flags)
-            and draft_device
-            and set(draft_device.split(",")) - {"cpu", "none"}
-        ):
-            self.topology, self.reason = (
-                "single",
-                "the caller pins the drafter; placement is theirs",
             )
             return request
         if self._has_projector and (
@@ -938,33 +934,16 @@ class ClusterServing:
                 self.topology = "single"
                 self.reason = "this llama-server cannot pin the projector to this machine"
                 return request
-        if (
-            local is not None
-            and not any(str(a).split("=", 1)[0] in _DRAFT_DEVICE_FLAGS for a in flags)
-            and not os.environ.get("LLAMA_ARG_DEVICE_DRAFT")
-        ):
-            if ss.llama_server_supports("--device-draft", binary):
-                # Unpinned, a drafter spreads over every device, workers included; it was charged
-                # here.
-                self.block += ["--device-draft", local.name]
-            elif _names_drafter(flags):
-                self.plan, self.block = None, []
-                self.topology = "single"
-                self.reason = "this llama-server cannot pin the drafter to this machine"
-                return request
         _remember_block(self.block)
         logger.info("cluster serving: layer split %s", " ".join(self.block))
         updates: Dict[str, Any] = {"llama_extra_args": effective + self.block}
-        mode = str(getattr(request, "speculative_type", None) or "").strip().lower()
-        # Only a chosen mode or a named drafter keeps speculation: tuning alone (depth, draft
-        # layers, draft cache types) still lets Auto pick a sidecar after this plan.
-        mode_owned = any(
-            str(a).split("=", 1)[0] in ("--spec-type", "--spec-default") for a in flags
-        ) or bool((os.environ.get("LLAMA_ARG_SPEC_TYPE") or "").strip())
-        if mode in ("", "auto", "default") and not mode_owned and not _names_drafter(flags):
-            # An automatically picked drafter is chosen after this plan and is not in its budget.
+        from core.inference.llama_cpp import _canonicalize_spec_mode, _extra_args_set_spec_type
+
+        mode = _canonicalize_spec_mode(getattr(request, "speculative_type", None)) or "auto"
+        if mode not in ("off", "ngram", "ngram-simple") and not _extra_args_set_spec_type(flags):
+            # MTP state and a drafter Studio picks are resolved after this plan, outside its budget.
             updates["speculative_type"] = "off"
-            self.reason += "; automatic speculative decoding off for the split"
+            self.reason += "; speculative decoding off for the split"
         return ss.SparkServing._request_with(request, updates)
 
     async def _size(self, request, n_parallel, extras, ss) -> Tuple[Optional[float], float, float]:
@@ -982,9 +961,13 @@ class ClusterServing:
 
         named = {"--mmproj", "-mm", "--mmproj-url", "-mmu"}
         disable_vision = bool(getattr(request, "disable_vision", False))
-        self._has_projector = not extra_args_disable_mmproj(extras) and (
-            any(str(a).split("=", 1)[0] in named for a in extras)
-            or any(os.environ.get(k) for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL"))
+        # Inherited projectors survive --no-mmproj (not the vision switch), as the loader reads them.
+        inherited = any(
+            (os.environ.get(k) or "").strip() for k in ("LLAMA_ARG_MMPROJ", "LLAMA_ARG_MMPROJ_URL")
+        )
+        self._has_projector = inherited or (
+            not extra_args_disable_mmproj(extras)
+            and any(str(a).split("=", 1)[0] in named for a in extras)
         )
         from core.inference.llama_cpp import _resolved_mmproj_offload
 
@@ -993,22 +976,16 @@ class ClusterServing:
         env_projector = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
         if _flag_args(extras, frozenset({"--mmproj", "-mm"})):
             env_projector = ""
-        # Drafter sources are last-wins and argv beats the environment: only the winner counts.
-        sources = [t.split("=", 1)[0] for t in (str(a) for a in extras)]
-        sources = [n for n in sources if n in _HF_DRAFT_FLAGS or n in _DRAFTER_FLAGS]
-        if sources:
-            self._remote_drafter = sources[-1] in _HF_DRAFT_FLAGS
-        else:
-            self._remote_drafter = any(
-                os.environ.get(k, "").strip() for k in _HF_DRAFT_ENV
-            ) and not any(os.environ.get(k, "").strip() for k in _DRAFTER_ENV)
         self._projector_url = bool(
             self._has_projector
             and not host_projector
             and not disable_vision
             and (
-                _flag_args(extras, frozenset({"--mmproj-url", "-mmu"}))
-                or (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+                (os.environ.get("LLAMA_ARG_MMPROJ_URL") or "").strip()
+                or (
+                    not extra_args_disable_mmproj(extras)
+                    and _flag_args(extras, frozenset({"--mmproj-url", "-mmu"}))
+                )
             )
         )
         dropped: List[str] = []
@@ -1049,21 +1026,14 @@ class ClusterServing:
                 if disable_vision and not host_projector:
                     self._uncertain_extra = float(remote)
                 self._has_projector = self._has_projector or remote > 0
-        # Files named through the environment (LLAMA_ARG_MMPROJ, a drafter) load all the same.
+        # Files named through the environment (LLAMA_ARG_MMPROJ) load all the same; a drafter there
+        # either kept the load local or is scrubbed by the launch.
         named_files = ss.launch_files_from(extras)
-        env_files = ss.env_launch_files(dict(os.environ))
-        legacy_drafter = (os.environ.get("LLAMA_ARG_MODEL_DRAFT") or "").strip()
-        if legacy_drafter and os.path.isfile(legacy_drafter):
-            env_files.append(os.path.abspath(legacy_drafter))
+        env_files = ss.env_launch_files(
+            {k: v for k, v in os.environ.items() if k not in _DRAFTER_ENV + _HF_DRAFT_ENV}
+        )
         replaced = (os.environ.get("LLAMA_ARG_MMPROJ") or "").strip()
         replaced = {os.path.abspath(replaced)} if replaced and not env_projector else set()
-        argv_drafter = bool(_flag_args(extras, _DRAFTER_FLAGS))
-        env_drafters = [
-            os.path.abspath(v) for v in (os.environ.get(k, "").strip() for k in _DRAFTER_ENV) if v
-        ]
-        if argv_drafter:
-            replaced |= set(env_drafters)  # an argv drafter replaces the environment one
-            env_drafters = []
         for path in dict.fromkeys(env_files):
             if path in named_files or path in replaced:
                 continue
@@ -1074,12 +1044,6 @@ class ClusterServing:
                 except OSError:
                     file_size = 0
             sidecars += int(file_size)
-        from core.inference.llama_cpp import _extra_args_draft_offloaded_to_cpu
-
-        if _extra_args_draft_offloaded_to_cpu(extras, os.environ):
-            # --spec-draft-ngl 0 / --spec-draft-device cpu: the drafter's weights stay in host RAM.
-            drafts = ss.sidecar_files(_flag_args(extras, _DRAFTER_FLAGS)) + env_drafters
-            dropped += [p for p in dict.fromkeys(drafts) if p not in dropped]
         if extra_args_disable_mmproj(extras):
             # --no-mmproj suppresses a projector the args name.
             named_mm = ss.sidecar_files(_flag_args(extras, frozenset({"--mmproj", "-mm"})))
@@ -1129,18 +1093,6 @@ class ClusterServing:
 
         if not _kv_offload_from_args(extras):
             kv = 0.0  # --no-kv-offload keeps the cache in host RAM
-        elif ctx and not _extra_args_draft_offloaded_to_cpu(extras, os.environ):
-            from core.inference.llama_cpp import _extra_args_draft_cache_types
-
-            # The drafter's own cache types, f16 unless set: not the main model's.
-            draft_k, draft_v = _extra_args_draft_cache_types(extras, os.environ)
-            # A separate drafter opens its own context, KV included, beside it on the coordinator.
-            for path in ss.sidecar_files(_flag_args(extras, _DRAFTER_FLAGS)) + env_drafters:
-                if os.path.isfile(path):
-                    draft_kv = await asyncio.to_thread(
-                        ss.estimate_kv_bytes, path, ctx, draft_k or "f16", draft_v or "f16"
-                    )
-                    sidecars += float(draft_kv or 0)
         return (None if size is None else float(size) + adapters), kv, float(sidecars)
 
     async def after_load(self, llama_backend: Any) -> None:

@@ -595,7 +595,7 @@ def test_the_projector_is_pinned_to_the_local_device_it_was_charged_to(monkeypat
     out = run(ss.before_load(_request(), 4))
     args = out.llama_extra_args
     assert args[args.index("--mmproj-device") + 1] == "CUDA0"
-    assert args[args.index("--device-draft") + 1] == "CUDA0"
+    assert "--device-draft" not in args
     # The caller's own choice stands, and a build without the flag gets none.
     out = run(ss.before_load(_request(llama_extra_args = ["-mmdev", "none"]), 4))
     assert "--mmproj-device" not in out.llama_extra_args
@@ -647,21 +647,6 @@ def test_a_worker_the_committed_split_uses_is_kept_when_it_turns_unmanaged(monke
     assert "10.0.0.3:50052" in out.llama_extra_args[1]
     run(ss.after_load(SimpleNamespace(_process = SimpleNamespace(args = out.llama_extra_args)), 4))
     assert stopped == [] and "10.0.0.3:50052" in cs.state().workers
-
-
-def test_a_split_turns_automatic_speculation_off_but_keeps_a_chosen_one(monkeypatch):
-    _cluster_env(monkeypatch)
-    out = run(ss.before_load(_request(speculative_type = None), 4))
-    assert out.speculative_type == "off"
-    assert "speculative decoding off" in ss.status()["reason"]
-    out = run(ss.before_load(_request(speculative_type = "mtp"), 4))
-    assert out.speculative_type == "mtp"
-    out = run(
-        ss.before_load(
-            _request(speculative_type = None, llama_extra_args = ["--spec-type", "ngram-mod"]), 4
-        )
-    )
-    assert out.speculative_type is None
 
 
 def test_one_managed_worker_failing_does_not_stop_the_split(monkeypatch):
@@ -1049,14 +1034,6 @@ def test_a_projector_that_cannot_be_pinned_keeps_the_load_local(monkeypatch):
     assert "cannot pin the projector" in ss.status()["reason"]
 
 
-def test_an_environment_draft_device_is_left_alone(monkeypatch):
-    _cluster_env(monkeypatch)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    monkeypatch.setenv("LLAMA_ARG_DEVICE_DRAFT", "none")
-    out = run(ss.before_load(_request(), 4))
-    assert "--device-draft" not in out.llama_extra_args
-
-
 def test_a_failed_engine_load_that_unloaded_the_split_forgets_it(monkeypatch):
     _cluster_env(monkeypatch)
     out = run(ss.before_load(_request(), 4))
@@ -1211,20 +1188,6 @@ def test_underscore_spellings_are_read_like_llama_cpp_reads_them(monkeypatch):
     monkeypatch.setattr(ss, "estimate_kv_bytes", lambda path, ctx, *a, **k: ctx * 2 * 2**20)
     run(ss.before_load(_request(llama_extra_args = ["--ctx_size", "16384"]), 4))
     assert ss.status()["topology"] == "layer_split"
-
-
-def test_a_named_drafter_that_cannot_be_pinned_keeps_the_load_local(monkeypatch, tmp_path):
-    drafter = tmp_path / "draft.gguf"
-    drafter.write_bytes(b"x")
-    _cluster_env(monkeypatch)
-    monkeypatch.setattr(
-        ss, "llama_server_supports", lambda flag, binary = None: flag != "--device-draft"
-    )
-    sizes = {str(drafter): 1 * GIB}
-    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 250 * GIB))
-    request = _request(llama_extra_args = ["--spec-draft-model", str(drafter)])
-    assert run(ss.before_load(request, 4)) is request
-    assert "cannot pin the drafter" in ss.status()["reason"]
 
 
 def test_a_failed_load_while_retiring_forgets_an_unloaded_split(monkeypatch):
@@ -1522,32 +1485,6 @@ def test_a_worker_restarted_by_this_load_gets_no_residency_credit(monkeypatch):
     assert free["10.0.0.2:50052"] > listed["10.0.0.2:50052"]
 
 
-def test_the_pre_b8955_drafter_variable_is_sized_and_pinned(monkeypatch, tmp_path):
-    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    drafter = tmp_path / "draft.gguf"
-    drafter.write_bytes(b"x")
-    sizes = {str(drafter): 10 * GIB}
-    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
-    monkeypatch.setenv("LLAMA_ARG_MODEL_DRAFT", str(drafter))
-    out = run(ss.before_load(_request(), 4))
-    assert ss.status()["topology"] == "layer_split"  # 90 GiB fits alone, not with the drafter
-    assert "--device-draft" in out.llama_extra_args
-
-
-def test_a_pre_b8955_drafter_keeps_speculation_on(monkeypatch, tmp_path):
-    _cluster_env(monkeypatch, model_bytes = 150 * GIB)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    drafter = tmp_path / "draft.gguf"
-    drafter.write_bytes(b"x")
-    sizes = {str(drafter): 1 * GIB}
-    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 150 * GIB))
-    monkeypatch.setenv("LLAMA_ARG_MODEL_DRAFT", str(drafter))
-    out = run(ss.before_load(_request(), 4))
-    assert ss.status()["topology"] == "layer_split"
-    assert getattr(out, "speculative_type", None) != "off"
-
-
 def test_a_failed_engine_load_detaches_the_two_spark_primary_it_unloaded(monkeypatch):
     _cluster_env(monkeypatch)
     detached = []
@@ -1732,21 +1669,6 @@ def test_a_sized_kv_cache_is_not_counted_as_freed_either(monkeypatch):
     assert sum(cs.state()._resident.values()) == pytest.approx(90 * GIB)
 
 
-@pytest.mark.parametrize("off", [["--spec-draft-ngl", "0"], ["--spec-draft-device", "cpu"]])
-def test_a_drafter_kept_on_the_cpu_is_not_charged_to_a_gpu(monkeypatch, tmp_path, off):
-    _cluster_env(monkeypatch, model_bytes = 90 * GIB)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    drafter = tmp_path / "draft.gguf"
-    drafter.write_bytes(b"x")
-    sizes = {str(drafter): 10 * GIB}
-    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 90 * GIB))
-    run(ss.before_load(_request(llama_extra_args = ["-md", str(drafter)]), 4))
-    assert ss.status()["topology"] == "layer_split"  # 90 + 10 GiB on the GPUs
-    request = _request(llama_extra_args = ["-md", str(drafter)] + off)
-    assert run(ss.before_load(request, 4)) is request
-    assert ss.status()["topology"] == "single"
-
-
 def test_a_projector_the_args_disable_is_not_charged(monkeypatch, tmp_path):
     _cluster_env(monkeypatch, model_bytes = 85 * GIB)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
@@ -1837,33 +1759,6 @@ def test_the_device_probe_runs_with_the_llama_server_environment(monkeypatch):
     assert seen["env"] == {"MARK": "/b/llama-server"} and devices and not error
 
 
-@pytest.mark.parametrize("env", [False, True])
-def test_a_hub_drafter_keeps_the_load_local(monkeypatch, env):
-    seen = _cluster_env(monkeypatch)
-    if env:
-        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_HF_REPO", "org/draft-GGUF")
-    extra = [] if env else ["-hfd", "org/draft-GGUF"]
-    request = _request(llama_extra_args = extra)
-    assert run(ss.before_load(request, 4)) is request and seen == []
-    assert "Hub" in ss.status()["reason"]
-
-
-def test_an_argv_drafter_replaces_the_environment_one(monkeypatch, tmp_path):
-    _cluster_env(monkeypatch, model_bytes = 85 * GIB)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    env_d, argv_d = tmp_path / "env-draft.gguf", tmp_path / "argv-draft.gguf"
-    env_d.write_bytes(b"x")
-    argv_d.write_bytes(b"x")
-    sizes = {str(env_d): 15 * GIB, str(argv_d): 1 * GIB}
-    monkeypatch.setattr(ss, "gguf_size_bytes", lambda path: sizes.get(str(path), 85 * GIB))
-    monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_MODEL", str(env_d))
-    run(ss.before_load(_request(), 4))
-    assert ss.status()["topology"] == "layer_split"  # the 15 GiB environment drafter loads
-    request = _request(llama_extra_args = ["-md", str(argv_d)])
-    assert run(ss.before_load(request, 4)) is request
-    assert ss.status()["topology"] == "single"  # only the 1 GiB argv one does
-
-
 @pytest.mark.parametrize(
     "extra, env",
     [(["--moe-cache-mib", "4096"], None), ([], "4096"), (["--moe-cache-mib", "auto"], None)],
@@ -1886,34 +1781,6 @@ def test_a_caller_pinned_projector_is_caller_placement(monkeypatch):
     request = _request(llama_extra_args = ["--mmproj-device", "CUDA1"])
     assert run(ss.before_load(request, 4)) is request and seen == []
     assert "pins the projector" in ss.status()["reason"]
-
-
-@pytest.mark.parametrize(
-    "extra, env, remote",
-    [
-        (["-md", "/models/d.gguf"], "org/draft-GGUF", False),
-        (["-hfd", "org/draft-GGUF", "-md", "/models/d.gguf"], None, False),
-        (["-md", "/models/d.gguf", "-hfd", "org/draft-GGUF"], None, True),
-    ],
-)
-def test_only_the_winning_drafter_source_decides(monkeypatch, extra, env, remote):
-    _cluster_env(monkeypatch)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    monkeypatch.setattr(
-        ss, "gguf_size_bytes", lambda path: 1 * GIB if str(path).endswith("d.gguf") else 250 * GIB
-    )
-    if env:
-        monkeypatch.setenv("LLAMA_ARG_SPEC_DRAFT_HF_REPO", env)
-    run(ss.before_load(_request(llama_extra_args = extra), 4))
-    assert ("Hub" in ss.status()["reason"]) is remote
-
-
-@pytest.mark.parametrize("mode", ["dspark", "dflash"])
-def test_a_sidecar_speculation_mode_keeps_the_load_local(monkeypatch, mode):
-    seen = _cluster_env(monkeypatch)
-    request = _request(speculative_type = mode)
-    assert run(ss.before_load(request, 4)) is request and seen == []
-    assert mode in ss.status()["reason"]
 
 
 def test_a_failed_cluster_replacement_unloads_the_two_spark_primary_it_orphaned(monkeypatch):
@@ -1968,23 +1835,6 @@ def test_a_restart_mark_survives_a_refused_load(monkeypatch):
     assert free["10.0.0.3:50052"] == listed["10.0.0.3:50052"]
 
 
-def test_a_separate_drafters_kv_is_charged_to_the_coordinator(monkeypatch, tmp_path):
-    _cluster_env(monkeypatch, model_bytes = 80 * GIB)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    drafter = tmp_path / "draft.gguf"
-    drafter.write_bytes(b"x")
-    monkeypatch.setattr(
-        ss, "gguf_size_bytes", lambda path: 1 * GIB if str(path) == str(drafter) else 80 * GIB
-    )
-    monkeypatch.setattr(
-        ss,
-        "estimate_kv_bytes",
-        lambda path, ctx, k, v: 20 * GIB if str(path) == str(drafter) else 0,
-    )
-    run(ss.before_load(_request(llama_extra_args = ["-md", str(drafter)], max_seq_length = 8192), 4))
-    assert ss.status()["topology"] == "layer_split"  # 80 + 1 + 20 GiB no longer fits here
-
-
 def test_an_unverified_hub_projector_is_not_counted_as_freed(monkeypatch):
     _cluster_env(monkeypatch, model_bytes = 90 * GIB)
     monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
@@ -2001,23 +1851,6 @@ def test_an_unverified_hub_projector_is_not_counted_as_freed(monkeypatch):
     assert sum(cs.state()._resident.values()) == pytest.approx(90 * GIB)
 
 
-@pytest.mark.parametrize("device, local", [("CUDA1", True), ("RPC0", True), ("cpu", False)])
-def test_a_caller_pinned_drafter_is_caller_placement(monkeypatch, tmp_path, device, local):
-    _cluster_env(monkeypatch)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    drafter = tmp_path / "draft.gguf"
-    drafter.write_bytes(b"x")
-    monkeypatch.setattr(
-        ss, "gguf_size_bytes", lambda path: 1 * GIB if str(path) == str(drafter) else 250 * GIB
-    )
-    run(
-        ss.before_load(
-            _request(llama_extra_args = ["-md", str(drafter), "--device-draft", device]), 4
-        )
-    )
-    assert ("pins the drafter" in ss.status()["reason"]) is local
-
-
 @pytest.mark.parametrize(
     "flag", ["-otd", "--override-tensor-draft", "--spec-draft-override-tensor"]
 )
@@ -2025,29 +1858,6 @@ def test_draft_tensor_overrides_are_caller_placement(monkeypatch, flag):
     seen = _cluster_env(monkeypatch)
     request = _request(llama_extra_args = [flag, "blk.*=CUDA1"])
     assert run(ss.before_load(request, 4)) is request and seen == []
-
-
-def test_the_drafters_kv_uses_its_own_cache_types(monkeypatch, tmp_path):
-    _cluster_env(monkeypatch, model_bytes = 80 * GIB)
-    monkeypatch.setattr(ss, "llama_server_supports", lambda flag, binary = None: True)
-    drafter = tmp_path / "draft.gguf"
-    drafter.write_bytes(b"x")
-    monkeypatch.setattr(
-        ss, "gguf_size_bytes", lambda path: 1 * GIB if str(path) == str(drafter) else 80 * GIB
-    )
-    seen = []
-    monkeypatch.setattr(
-        ss,
-        "estimate_kv_bytes",
-        lambda path, ctx, k, v: seen.append((str(path) == str(drafter), k, v)) or 0,
-    )
-    extra = ["-md", str(drafter), "-ctk", "q4_0", "-ctv", "q4_0"]
-    run(ss.before_load(_request(llama_extra_args = extra, max_seq_length = 8192), 4))
-    run(
-        ss.before_load(_request(llama_extra_args = extra + ["-ctkd", "q8_0"], max_seq_length = 8192), 4)
-    )
-    drafts = [(k, v) for is_draft, k, v in seen if is_draft]
-    assert drafts == [("f16", "f16"), ("q8_0", "f16")]
 
 
 @pytest.mark.parametrize(
@@ -2058,3 +1868,94 @@ def test_draft_tuning_alone_does_not_keep_auto_speculation(monkeypatch, kw, extr
     _cluster_env(monkeypatch)
     out = run(ss.before_load(_request(speculative_type = None, llama_extra_args = extra, **kw), 4))
     assert out.speculative_type == "off"
+
+
+@pytest.mark.parametrize(
+    "extra, env",
+    [
+        (["-md", "/models/d.gguf"], {}),
+        (["--spec-draft-model=/models/d.gguf"], {}),
+        (["-hfd", "org/draft-GGUF"], {}),
+        (["--spec-type", "draft-simple"], {}),
+        (["--spec-type", "ngram-mod,draft-mtp"], {}),
+        (["--spec-type", "mtp"], {}),
+        (["--spec-type", "ngram-mod"], {"LLAMA_ARG_SPEC_DRAFT_HF_REPO": "org/draft-GGUF"}),
+        (["--spec-type", "ngram-mod"], {"LLAMA_ARG_MODEL_DRAFT": "/models/d.gguf"}),
+        (["--spec-default"], {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"}),
+    ],
+)
+def test_the_callers_drafter_or_mtp_keeps_the_load_local(monkeypatch, extra, env):
+    seen = _cluster_env(monkeypatch)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    request = _request(llama_extra_args = extra)
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "speculative decoding" in ss.status()["reason"]
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"LLAMA_ARG_SPEC_DRAFT_MODEL": "/models/d.gguf"},
+        {"LLAMA_ARG_MODEL_DRAFT": "/models/d.gguf"},
+        {"LLAMA_ARG_SPEC_TYPE": "draft-mtp"},
+    ],
+)
+def test_speculation_the_launch_scrubs_from_the_environment_does_not_count(monkeypatch, env):
+    _cluster_env(monkeypatch)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    out = run(ss.before_load(_request(speculative_type = None), 4))
+    assert ss.status()["topology"] == "layer_split" and out.speculative_type == "off"
+
+
+@pytest.mark.parametrize(
+    "mode, after",
+    [
+        (None, "off"),
+        ("auto", "off"),
+        ("default", "off"),
+        ("mtp", "off"),
+        ("draft-mtp", "off"),
+        ("mtp+ngram", "off"),
+        ("dspark", "off"),
+        ("draft-dspark", "off"),
+        ("draft-dflash", "off"),
+        ("ngram", "ngram"),
+        ("ngram-mod", "ngram-mod"),
+        ("off", "off"),
+    ],
+)
+def test_a_split_runs_studio_speculation_off_except_ngram(monkeypatch, mode, after):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(speculative_type = mode), 4))
+    assert ss.status()["topology"] == "layer_split"
+    assert out.speculative_type == after
+    assert ("speculative decoding off" in ss.status()["reason"]) is (after != (mode or "auto"))
+
+
+@pytest.mark.parametrize("extra", [["--spec-type", "ngram-mod"], ["--spec-default"]])
+def test_a_callers_ngram_speculation_splits_and_is_left_alone(monkeypatch, extra):
+    _cluster_env(monkeypatch)
+    out = run(ss.before_load(_request(speculative_type = None, llama_extra_args = extra), 4))
+    assert ss.status()["topology"] == "layer_split" and out.speculative_type is None
+
+
+def test_a_model_that_fits_keeps_its_speculation(monkeypatch):
+    _cluster_env(monkeypatch, model_bytes = 10 * GIB)
+    request = _request(speculative_type = "mtp")
+    assert run(ss.before_load(request, 4)) is request
+    assert ss.status()["topology"] == "single"
+
+
+@pytest.mark.parametrize("flag", ["--no-mmproj", "--no-mmproj-auto"])
+def test_an_inherited_projector_url_survives_no_mmproj(monkeypatch, flag):
+    seen = _cluster_env(monkeypatch)
+    monkeypatch.setenv("LLAMA_ARG_MMPROJ_URL", "https://example.com/mmproj.gguf")
+    request = _request(llama_extra_args = [flag])
+    assert run(ss.before_load(request, 4)) is request and seen == []
+    assert "URL" in ss.status()["reason"]
+    monkeypatch.delenv("LLAMA_ARG_MMPROJ_URL")
+    request = _request(llama_extra_args = [flag, "--mmproj-url", "https://example.com/m.gguf"])
+    run(ss.before_load(request, 4))
+    assert ss.status()["topology"] == "layer_split"  # an argv URL is suppressed with it
