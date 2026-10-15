@@ -11,8 +11,9 @@
 # llama.cpp is installed as the Vulkan bundle, run by Mesa's RADV driver: a ROCm
 # bundle is per-gfx-family, so baking one would pin this image to one arch, while
 # Vulkan serves RDNA cards through /dev/dri (and is what Studio picks on its own
-# for the Strix APUs). With no RADV device (CDNA, no /dev/dri, the WSL2 DXG bridge)
-# llama.cpp finds no GPU and GGUF chat runs on the CPU, as it did before.
+# for the Strix APUs; the /dev/dri it opens is one ROCm needs anyway). With no RADV
+# device (CDNA, the WSL2 DXG bridge) llama.cpp finds no GPU and GGUF chat runs on the
+# CPU, as it did before.
 #
 # Build (on the published ROCm base, or one built from docker/Dockerfile.rocm):
 #   docker buildx build --build-arg BASE_IMAGE=unsloth/unsloth-rocm:latest \
@@ -108,9 +109,9 @@ RUN apt-get update \
  && test -n "$icd" \
  && mkdir -p /usr/local/share/unsloth \
  && ln -sf "$icd" /usr/local/share/unsloth/radeon_icd.json
-# RADV only: mesa-vulkan-drivers also registers lavapipe (CPU), Dozen (D3D12, which the
-# WSL2 mounts would wake up) and others, none of which should run GGUF chat. The link
-# absorbs Mesa's rename (radeon_icd.x86_64.json in 24.x, radeon_icd.json in 25.x).
+# RADV only: mesa-vulkan-drivers also registers lavapipe (a CPU device) and drivers for
+# other vendors' cards, none of which should run GGUF chat. The link absorbs Mesa's
+# rename (radeon_icd.x86_64.json in 24.x, radeon_icd.json in 25.x).
 ENV VK_DRIVER_FILES=/usr/local/share/unsloth/radeon_icd.json
 
 # JupyterLab and the notebooks' runtime packages into the base venv, so the kernel

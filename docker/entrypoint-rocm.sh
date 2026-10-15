@@ -153,14 +153,6 @@ MSG
     exit 1
 fi
 
-# Studio image (the only one that sets UNSLOTH_STUDIO_HOME): GGUF chat reaches the
-# card through Vulkan, which opens /dev/dri, not /dev/kfd. Advisory, torch is fine.
-if [[ "$UNSLOTH_ROCM_DEV_PATH" == "kfd" && -n "${UNSLOTH_STUDIO_HOME:-}" ]] \
-        && ! compgen -G "$DEV_ROOT/dev/dri/renderD*" >/dev/null; then
-    note "no /dev/dri render node: training uses the GPU, but Studio's GGUF chat will run on the CPU."
-    note "Pass --device /dev/dri as well (bash docker/run.sh --rocm does) to chat on the GPU."
-fi
-
 # --- Check 2: what rocm-smi sees (advisory) --------------------------------
 # rocm-smi does not list every APU (measured on gfx1151: no GPU[..] line inside
 # the container), so it cannot be the gate; check 3 asks torch itself. It reads

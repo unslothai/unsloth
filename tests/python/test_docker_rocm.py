@@ -499,7 +499,6 @@ def _entrypoint(
     kfd = True,
     readable = True,
     dxg = False,
-    dri = False,
     smi_sees_gpu = True,
     python_body = None,
     env_extra = None,
@@ -516,9 +515,6 @@ def _entrypoint(
             os.chmod(dev_root / "dev" / "kfd", 0)
     if dxg:
         (dev_root / "dev" / "dxg").write_text("")
-    if dri:
-        (dev_root / "dev" / "dri").mkdir()
-        (dev_root / "dev" / "dri" / "renderD128").write_text("")
     _stub(
         str(bindir / "rocm-smi"),
         'echo "GPU[0] : GPU ID: 0x1586"\n' if smi_sees_gpu else "echo 'No AMD GPUs specified'\n",
@@ -605,19 +601,6 @@ class TestRocmEntrypoint:
     def test_a_happy_host_runs_the_command(self, tmp_path):
         rc, ran, err = _entrypoint(tmp_path)
         assert rc == 0 and ran, err
-
-    def test_studio_image_without_dri_says_gguf_chat_is_on_the_cpu(self, tmp_path):
-        """Vulkan llama.cpp opens /dev/dri, not /dev/kfd: torch works, chat would not."""
-        rc, ran, err = _entrypoint(tmp_path, env_extra = {"UNSLOTH_STUDIO_HOME": str(tmp_path)})
-        assert rc == 0 and ran, err
-        assert "GGUF chat will run on the CPU" in err and "--device /dev/dri" in err, err
-
-    @pytest.mark.parametrize("dri, studio", [(True, True), (False, False)])
-    def test_the_dri_note_is_only_for_the_studio_image_missing_it(self, tmp_path, dri, studio):
-        env = {"UNSLOTH_STUDIO_HOME": str(tmp_path)} if studio else {}
-        rc, ran, err = _entrypoint(tmp_path, dri = dri, env_extra = env)
-        assert rc == 0 and ran, err
-        assert "GGUF chat" not in err, err
 
     def test_dxg_is_accepted_when_kfd_is_absent(self, tmp_path):
         """WSL2 never has /dev/kfd. /dev/dxg plus librocdxg is the same GPU evidence
