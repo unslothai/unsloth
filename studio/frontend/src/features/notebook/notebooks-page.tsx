@@ -202,16 +202,21 @@ function NotebookCard({
         </div>
 
         <div className="mt-auto flex flex-wrap gap-2">
-          <Button
-            type="button"
-            size="sm"
-            disabled={studioDisabled}
+          {/* The wrapper carries the hint: a disabled button has pointer-events-none. */}
+          <span
+            className="inline-flex"
             title={studioDisabled ? studioDisabledHint : undefined}
-            onClick={() => onUseInStudio(notebook)}
           >
-            <HugeiconsIcon icon={TestTube01Icon} className="size-4" />
-            {t("notebooks.useInStudio")}
-          </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={studioDisabled}
+              onClick={() => onUseInStudio(notebook)}
+            >
+              <HugeiconsIcon icon={TestTube01Icon} className="size-4" />
+              {t("notebooks.useInStudio")}
+            </Button>
+          </span>
           <Button type="button" size="sm" variant="outline" asChild>
             <a href={notebook.colab_url} target="_blank" rel="noreferrer">
               <HugeiconsIcon icon={Globe02Icon} className="size-4" />

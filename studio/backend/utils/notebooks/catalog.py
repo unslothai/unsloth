@@ -14,12 +14,18 @@ import time
 import urllib.request
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from utils.models.model_config import MODEL_NAME_MAPPING
 
 _REPO = "unslothai/notebooks"
 _NB_DIR = "nb"
-NOTEBOOKS_INDEX_URL = f"https://api.github.com/repos/{_REPO}/contents/{_NB_DIR}?ref=main"
+# The notebooks README is the curated index; raw.githubusercontent.com is not
+# subject to the 60 requests/hour anonymous GitHub API limit.
+NOTEBOOKS_INDEX_URL = f"https://raw.githubusercontent.com/{_REPO}/main/README.md"
+_README_LINK_RE = re.compile(
+    rf"colab\.research\.google\.com/github/{re.escape(_REPO)}/blob/main/{_NB_DIR}/([^\s\"'<>]+?\.ipynb)"
+)
 
 _CONFIG_DIR = Path(__file__).resolve().parents[2] / "assets" / "configs"
 _OVERRIDES_PATH = _CONFIG_DIR / "notebooks_index.json"
@@ -122,10 +128,8 @@ def _fetch_repo_notebook_files() -> list[str] | None:
     request = urllib.request.Request(
         NOTEBOOKS_INDEX_URL,
         headers = {
-            "Accept": "application/vnd.github+json",
             "Accept-Encoding": "identity",
             "User-Agent": "unsloth-studio-notebooks",
-            "X-GitHub-Api-Version": "2022-11-28",
         },
     )
     try:
@@ -133,26 +137,22 @@ def _fetch_repo_notebook_files() -> list[str] | None:
             body = response.read(_MAX_INDEX_BYTES + 1)
         if len(body) > _MAX_INDEX_BYTES:
             return None
-        payload = json.loads(body)
+        text = body.decode("utf-8", errors = "replace")
     except Exception as exc:
         logger.debug("Could not fetch notebook index: %s", exc)
         return None
 
-    if not isinstance(payload, list):
-        return None
-    files = sorted(
+    return parse_readme_notebooks(text) or None
+
+
+def parse_readme_notebooks(text: str) -> list[str]:
+    return sorted(
         {
-            item["name"]
-            for item in payload
-            if (
-                isinstance(item, dict)
-                and item.get("type") == "file"
-                and isinstance(item.get("name"), str)
-                and _is_public(item["name"])
-            )
+            name
+            for name in (unquote(match) for match in _README_LINK_RE.findall(text))
+            if _is_public(name)
         }
     )
-    return files or None
 
 
 def _repo_notebook_files() -> list[str]:

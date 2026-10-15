@@ -96,11 +96,11 @@ export const SIDEBAR_NAV_ITEM_IDS = [
   "projects",
   "library",
   "images",
-  "notebooks",
   // Video and Audio sit directly under Images: the media tabs read as one group.
   "video",
   "audio",
   "train",
+  "notebooks",
   "recipes",
   "export",
   "api",
@@ -146,11 +146,10 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   projects: true,
   library: true,
   images: true,
-  notebooks: true,
   video: false,
-  // Under "More" until a user pins it.
   audio: false,
   train: true,
+  notebooks: true,
   recipes: false,
   export: false,
   api: false,
@@ -159,7 +158,8 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
 /** Every previously shipped layout, so a migration can tell an untouched install from one the
  *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
  *  v5 put Video back under "More" and later added API before Audio shipped; v6 added Audio;
- *  v7 pins Video under Images again; v8 adds Library under Projects and moves Video to "More". */
+ *  v7 pins Video under Images again; v8 adds Library under Projects and moves Video to "More";
+ *  v9 adds Notebooks under Train. */
 const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
   [
     { id: "projects", pinned: true },
@@ -214,6 +214,18 @@ const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
     { id: "projects", pinned: true },
     { id: "images", pinned: true },
     { id: "video", pinned: true },
+    { id: "audio", pinned: false },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+    { id: "api", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "library", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: false },
     { id: "audio", pinned: false },
     { id: "train", pinned: true },
     { id: "recipes", pinned: false },
@@ -613,14 +625,14 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 8,
+      version: 9,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         const customization = migrateShippedSidebarNavDefault(
           sanitizeCustomization(state.customization),
           version,
-          8,
+          9,
         );
         return { customization } as AppearanceCustomState;
       },

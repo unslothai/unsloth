@@ -50,6 +50,12 @@
       "title": "DeepSeek OCR (3B)",
       "category": "vision",
       "featured": true
+    },
+    "Llasa_TTS_(3B).ipynb": {
+      "studio_model": "unsloth/Llasa-3B"
+    },
+    "Qwen3_VL_(8B)-Vision.ipynb": {
+      "studio_model": "unsloth/Qwen3-VL-8B-Instruct-unsloth-bnb-4bit"
     }
   }
 }

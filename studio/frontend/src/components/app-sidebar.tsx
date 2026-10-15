@@ -2818,11 +2818,11 @@ export function AppSidebar() {
     notebooks: {
       icon: Notebook01Icon,
       label: t("shell.navigation.notebooks"),
-      active: pathname === "/notebooks" || pathname.startsWith("/notebooks/"),
+      active: pathname === "/notebooks",
       onClick: () => {
         navigate({ to: "/notebooks" });
         closeMobileIfOpen();
-      }
+      },
     },
     // A host with no video device at all is disabled with a hint instead of bouncing off the root guard.
     video: {

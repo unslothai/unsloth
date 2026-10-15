@@ -661,7 +661,7 @@ export const en = {
       library: "Library",
       hub: "Model hub",
       train: "Train",
-      notebooks: "NoteBooks",
+      notebooks: "Notebooks",
       recipes: "Recipes",
       images: "Images",
       video: "Video",
