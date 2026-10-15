@@ -77,8 +77,8 @@ from utils.kernel_install import (
     uninstall_command,
 )
 from utils.ssm_runtime import (
-    SSM_MODEL_SUBSTRINGS as _SSM_MODEL_SUBSTRINGS,
-    model_wants_causal_conv1d as _ssm_model_wants_causal_conv1d,
+    model_is_ssm as _model_is_ssm,
+    model_wants_causal_conv1d as _model_wants_causal_conv1d,
 )
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -1326,10 +1326,6 @@ def _decision_has_llm_backbone(model_load_target: str, hf_token: str | None) -> 
         return False
 
 
-def _model_wants_causal_conv1d(model_name: str) -> bool:
-    return _ssm_model_wants_causal_conv1d(model_name)
-
-
 _hipcc_gcc_install_dir = hipcc_gcc_install_dir
 
 
@@ -1682,8 +1678,16 @@ def _flash_linear_attention_importable() -> bool:
         return False
 
 
-def _ensure_mamba_ssm(event_queue: Any, model_name: str) -> None:
-    if not any(sub in model_name.lower() for sub in _SSM_MODEL_SUBSTRINGS):
+def _ensure_mamba_ssm(
+    event_queue: Any,
+    model_name: str,
+    *,
+    required: bool | None = None,
+) -> None:
+    # `required` is the config-resolved answer (resolved_model_is_ssm); the name is the fallback.
+    if required is None:
+        required = _model_is_ssm(model_name)
+    if not required:
         return
 
     if sys.platform == "win32" and importlib.util.find_spec("triton") is None:
@@ -4001,9 +4005,14 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         or _decision_has_llm_backbone(model_load_target, _worker_hf_token(config))
     ):
         try:
-            from utils.ssm_runtime import resolved_model_wants_causal_conv1d
+            from utils.ssm_runtime import (
+                resolved_model_is_ssm,
+                resolved_model_wants_causal_conv1d,
+            )
 
-            wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+            is_ssm = resolved_model_is_ssm(model_name, model_load_target, _worker_hf_token(config))
+            # Every mamba-ssm model also runs causal-conv1d.
+            wants_causal_conv1d = is_ssm or resolved_model_wants_causal_conv1d(
                 model_name,
                 model_load_target,
                 _worker_hf_token(config),
@@ -4018,7 +4027,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_name,
                 install_causal_conv1d = wants_causal_conv1d,
             )
-            _ensure_mamba_ssm(event_queue, model_name)
+            _ensure_mamba_ssm(event_queue, model_name, required = is_ssm)
             _ensure_flash_attn_for_long_context(
                 event_queue,
                 int(config.get("max_seq_length", 2048)),

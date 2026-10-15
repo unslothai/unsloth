@@ -28,6 +28,13 @@ def _clear_offline_environment(monkeypatch):
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
 
 
+@pytest.fixture(autouse = True)
+def _cuda_host_with_triton(monkeypatch):
+    # A CUDA torch with Triton, where zoo's Triton conv runs; the platform tests below override it.
+    monkeypatch.delenv("UNSLOTH_DISABLE_TRITON_CAUSAL_CONV1D", raising = False)
+    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: True)
+
+
 class _Result:
     def __init__(
         self,
@@ -50,6 +57,11 @@ class _Result:
         "tiiuae/Falcon-H1-0.5B-Instruct",
         "ibm-granite/granite-4.0-h-micro",
         "ibm/granitemoehybrid-test",
+        "state-spaces/mamba-2.8b-hf",
+        "ai21labs/Jamba-v0.1",
+        "Zyphra/Zamba2-7B",
+        "ibm/Bamba-9B",
+        "tiiuae/falcon-mamba-7b",
     ],
 )
 def test_ssm_models_detected(name):
@@ -60,14 +72,7 @@ def test_ssm_models_detected(name):
 
 @pytest.mark.parametrize(
     "name",
-    [
-        "LiquidAI/LFM2-1.2B",
-        "state-spaces/mamba-2.8b-hf",
-        "ai21labs/Jamba-v0.1",
-        "Zyphra/Zamba2-7B",
-        "ibm/Bamba-9B",
-        "tiiuae/falcon-mamba-7b",
-    ],
+    ["LiquidAI/LFM2-1.2B", "LiquidAI/LFM2-8B-A1B"],
 )
 def test_causal_conv1d_only_models(name):
     # linear-attention hybrids need causal-conv1d but not mamba-ssm
@@ -677,7 +682,7 @@ def test_hip_uv_source_build_uses_no_cache(monkeypatch):
 
 def test_inference_worker_calls_ensure_ssm_runtime():
     src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
-    assert "from utils.ssm_runtime import ensure_ssm_runtime" in src
+    assert "from utils.ssm_runtime import (\n            ensure_ssm_runtime," in src
     assert "ensure_ssm_runtime(" in src
 
 
@@ -800,7 +805,8 @@ def test_constants_shared_with_training_worker():
         pytest.skip(f"training worker not importable here: {exc}")
     from utils import kernel_install
 
-    assert tw._SSM_MODEL_SUBSTRINGS is ssm_runtime.SSM_MODEL_SUBSTRINGS
+    assert tw._model_is_ssm is ssm_runtime.model_is_ssm
+    assert tw._model_wants_causal_conv1d is ssm_runtime.model_wants_causal_conv1d
     assert tw.CAUSAL_CONV1D is ssm_runtime.CAUSAL_CONV1D is kernel_install.CAUSAL_CONV1D
     assert tw.MAMBA_SSM is ssm_runtime.MAMBA_SSM is kernel_install.MAMBA_SSM
     assert tw._hipcc_gcc_install_dir is ssm_runtime._hipcc_gcc_install_dir
@@ -980,3 +986,189 @@ def test_zoo_gdn_model_types_match_unsloth_zoo():
     ]
     assert len(values) == 1
     assert set(ast.literal_eval(values[0])) == ssm_runtime.ZOO_GDN_MODEL_TYPES
+
+
+# ── mamba-ssm resolved from the config, not only the name ─────────────────────
+
+
+@pytest.mark.parametrize(
+    "name, model_type",
+    [
+        ("nvidia/NVIDIA-Nemotron-Nano-9B-v2", "nemotron_h"),
+        ("ibm-granite/granite-4.0-tiny-preview", "granitemoehybrid"),
+        ("acme/internal-hybrid", "falcon_h1"),
+        ("acme/internal-hybrid", "bamba"),
+        ("acme/internal-hybrid", "jamba"),
+        ("acme/internal-hybrid", "zamba"),
+        ("acme/internal-hybrid", "zamba2"),
+        ("acme/internal-hybrid", "mamba"),
+        ("acme/internal-hybrid", "mamba2"),
+        ("acme/internal-hybrid", "falcon_mamba"),
+    ],
+)
+def test_renamed_or_unlisted_ssm_models_resolve_from_their_config(tmp_path, name, model_type):
+    target = str(_write_config(tmp_path / "ckpt", {"model_type": model_type}))
+    assert ssm_runtime.resolved_model_is_ssm(name, target, None) is True
+    # Every mamba-ssm model also wants causal-conv1d.
+    assert ssm_runtime.resolved_model_wants_causal_conv1d(name, target, None) is True
+    assert (
+        ssm_runtime.resolved_model_wants_causal_conv1d(
+            name, target, None, scan_modeling_source = False
+        )
+        is True
+    )
+
+
+def test_a_nested_ssm_text_config_resolves_too(tmp_path):
+    config = {"model_type": "some_vlm", "text_config": {"model_type": "nemotron_h"}}
+    target = str(_write_config(tmp_path / "vlm", config))
+    assert ssm_runtime.resolved_model_is_ssm("acme/x", target, None) is True
+
+
+def test_a_known_non_ssm_config_overrides_an_ssm_looking_name(tmp_path):
+    target = str(_write_config(tmp_path / "llama", {"model_type": "llama"}))
+    assert ssm_runtime.resolved_model_is_ssm("user/falcon-h1-style-llama", target, None) is False
+
+
+def test_no_config_falls_back_to_the_name(tmp_path):
+    missing = str(tmp_path / "no-config")
+    assert ssm_runtime.resolved_model_is_ssm("tiiuae/Falcon-H1-0.5B", missing, None) is True
+    assert ssm_runtime.resolved_model_is_ssm("unsloth/Llama-3.2-1B", missing, None) is False
+
+
+def test_resolved_answers_override_the_name(monkeypatch):
+    order = []
+    monkeypatch.setattr(
+        ssm_runtime,
+        "_install_kernel",
+        lambda *, import_name, **_: order.append(import_name) or True,
+    )
+    ssm_runtime.ensure_ssm_runtime("acme/renamed", wants_causal_conv1d = False, is_ssm = True)
+    assert order == ["causal_conv1d", "mamba_ssm"]
+    order.clear()
+    ssm_runtime.ensure_ssm_runtime("tiiuae/Falcon-H1-0.5B", wants_causal_conv1d = False, is_ssm = False)
+    assert order == []
+
+
+def test_the_mamba_ssm_failure_names_the_offline_remedy(monkeypatch):
+    monkeypatch.setattr(ssm_runtime, "_install_kernel", lambda **k: False)
+    with pytest.raises(RuntimeError, match = "unsloth install-kernels"):
+        ssm_runtime.ensure_ssm_runtime("tiiuae/Falcon-H1-0.5B")
+
+
+# ── zoo's Triton conv only counts where it can run ────────────────────────────
+
+
+# The real (cached) platform check, captured before the autouse fixture replaces it.
+_REAL_PLATFORM_USABLE = ssm_runtime._zoo_triton_platform_usable.__wrapped__
+
+
+@pytest.mark.parametrize(
+    "platform, triton, env, usable",
+    [
+        ("linux", True, {"cuda_major": "13", "hip_version": ""}, True),
+        ("win32", True, {"cuda_major": "13", "hip_version": ""}, True),
+        ("linux", True, {"cuda_major": "", "hip_version": "6.4.43483"}, False),
+        ("win32", False, {"cuda_major": "13", "hip_version": ""}, False),
+        ("darwin", True, {"cuda_major": "", "hip_version": ""}, False),
+        ("linux", True, None, False),
+        ("linux", True, {"cuda_major": "", "hip_version": ""}, False),
+    ],
+    ids = ["cuda", "windows-triton", "rocm", "windows-no-triton", "macos", "no-torch", "cpu-torch"],
+)
+def test_zoo_triton_conv_platform_check(monkeypatch, platform, triton, env, usable):
+    monkeypatch.setattr(ssm_runtime.sys, "platform", platform)
+    real_find_spec = ssm_runtime.importlib.util.find_spec
+    monkeypatch.setattr(
+        ssm_runtime.importlib.util,
+        "find_spec",
+        lambda name, *a: (
+            (object() if triton else None) if name == "triton" else real_find_spec(name, *a)
+        ),
+    )
+    monkeypatch.setattr(ssm_runtime, "probe_torch_wheel_env", lambda **kwargs: env)
+    assert _REAL_PLATFORM_USABLE() is usable
+
+
+@pytest.mark.parametrize("name", ["unsloth/Qwen3.5-2B", "Qwen/Qwen3-Next-80B-A3B"])
+def test_qwen_keeps_causal_conv1d_where_zoo_triton_conv_cannot_run(monkeypatch, tmp_path, name):
+    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", lambda: False)
+    assert ssm_runtime.model_wants_causal_conv1d(name) is True
+    config = {"model_type": "qwen3_5", "text_config": {"model_type": "qwen3_5_text"}}
+    assert ssm_runtime.model_config_wants_causal_conv1d(config) is True
+
+
+def test_the_platform_check_is_not_run_for_unrelated_models(monkeypatch):
+    def _boom():
+        raise AssertionError("torch probe must not run for a non-Qwen model")
+
+    monkeypatch.setattr(ssm_runtime, "_zoo_triton_platform_usable", _boom)
+    assert ssm_runtime.model_wants_causal_conv1d("unsloth/Llama-3.2-1B") is False
+    assert ssm_runtime.model_wants_causal_conv1d("LiquidAI/LFM2-1.2B") is True
+
+
+# ── in-process installs reach an already-imported transformers ────────────────
+
+
+def test_refresh_clears_the_gates_and_cached_misses(monkeypatch):
+    import functools
+
+    calls = {"n": 0}
+
+    @functools.lru_cache
+    def is_causal_conv1d_available():
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    import_utils = types.SimpleNamespace(is_causal_conv1d_available = is_causal_conv1d_available)
+    module_type = type(sys)
+    kernel_module = module_type("causal_conv1d")
+    mapping = {"causal-conv1d": None, "mamba-ssm": None, "flash-attn": None, "x": kernel_module}
+    hub_kernels = types.SimpleNamespace(_KERNEL_MODULE_MAPPING = mapping)
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "transformers.utils.import_utils", import_utils)
+    monkeypatch.setitem(sys.modules, "transformers.integrations.hub_kernels", hub_kernels)
+
+    assert is_causal_conv1d_available() is False
+    ssm_runtime.refresh_transformers_kernel_gates()
+    assert is_causal_conv1d_available() is True
+    assert mapping == {"flash-attn": None, "x": kernel_module}
+
+
+def test_refresh_is_a_no_op_without_transformers_and_never_raises(monkeypatch):
+    monkeypatch.delitem(sys.modules, "transformers", raising = False)
+    ssm_runtime.refresh_transformers_kernel_gates()
+
+    class _Broken:
+        def __getattr__(self, name):
+            raise RuntimeError("boom")
+
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "transformers.utils.import_utils", _Broken())
+    monkeypatch.setitem(sys.modules, "transformers.integrations.hub_kernels", _Broken())
+    ssm_runtime.refresh_transformers_kernel_gates()
+
+
+def test_inference_worker_resolves_kernels_from_the_base_config(monkeypatch, tmp_path):
+    from core.inference import worker as iw
+
+    target = str(_write_config(tmp_path / "renamed", {"model_type": "nemotron_h"}))
+    seen = []
+    monkeypatch.setattr(
+        ssm_runtime,
+        "ensure_ssm_runtime",
+        lambda probe, **kwargs: seen.append(
+            (probe, kwargs["wants_causal_conv1d"], kwargs["is_ssm"])
+        ),
+    )
+    refreshed = []
+    monkeypatch.setattr(
+        ssm_runtime, "refresh_transformers_kernel_gates", lambda: refreshed.append(1)
+    )
+    assert iw._ensure_ssm_kernels([("renamed", target)], resp_queue = None, hf_token = None)
+    assert seen == [("renamed", True, True)]
+    assert refreshed == [1]
+
+    src = (_BACKEND / "core" / "inference" / "worker.py").read_text(encoding = "utf-8")
+    assert "_ensure_ssm_kernels(ssm_targets, resp_queue, hf_token)" in src
+    assert "_ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token)" in src

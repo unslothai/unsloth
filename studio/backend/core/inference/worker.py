@@ -386,22 +386,43 @@ def _resolve_lora_4bit(mc, load_in_4bit: bool) -> bool:
     return load_in_4bit
 
 
-def _ensure_ssm_kernels(targets: list, resp_queue: Any) -> bool:
+def _ensure_ssm_kernels(
+    targets: list,
+    resp_queue: Any,
+    hf_token: str | None = None,
+) -> bool:
     """Install the SSM kernels the given model(s) lazy-import in from_pretrained; no-op for
-    non-SSM models, idempotent. Returns True on success; on a fatal mamba-ssm failure sends a
-    'loaded' failure response and returns False. Call BEFORE importing transformers, which
-    snapshots its optional-backend gates at import (a later install may not be picked up).
+    non-SSM models, idempotent. *targets* are ``(probe_identifier, config_target)`` pairs: the
+    kernels are decided from the config at ``config_target`` (the resolved base), the name only
+    when there is none. Returns True on success; on a fatal mamba-ssm failure sends a 'loaded'
+    failure response and returns False. Call BEFORE importing transformers, which snapshots its
+    optional-backend gates at import; an in-process reload clears them after installing.
     """
     try:
-        from utils.ssm_runtime import ensure_ssm_runtime
+        from utils.ssm_runtime import (
+            ensure_ssm_runtime,
+            refresh_transformers_kernel_gates,
+            resolved_model_is_ssm,
+            resolved_model_wants_causal_conv1d,
+        )
     except Exception as exc:
         logger.debug("ssm_runtime unavailable (%s); skipping SSM kernel pre-install", exc)
         return True
 
     _ssm_status = lambda m: _send_response(resp_queue, {"type": "status", "message": m})
     try:
-        for ssm_target in dict.fromkeys(t for t in targets if t):
-            ensure_ssm_runtime(ssm_target, status_cb = _ssm_status)
+        for probe, config_target in dict.fromkeys(t for t in targets if t and t[0]):
+            config_target = config_target or probe
+            ensure_ssm_runtime(
+                probe,
+                status_cb = _ssm_status,
+                # transformers-free: this runs before the worker's transformers import.
+                wants_causal_conv1d = resolved_model_wants_causal_conv1d(
+                    probe, config_target, hf_token, scan_modeling_source = False
+                ),
+                is_ssm = resolved_model_is_ssm(probe, config_target, hf_token),
+            )
+        refresh_transformers_kernel_gates()
         return True
     except Exception as exc:
         _send_response(
@@ -690,8 +711,13 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _ssm_base = (
                 str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
             )
-            ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
-            if not _ensure_ssm_kernels(ssm_targets, resp_queue):
+            ssm_targets = [
+                (
+                    ssm_probe_identifier(config["model_name"], _ssm_base),
+                    _ssm_base or config["model_name"],
+                )
+            ]
+            if not _ensure_ssm_kernels(ssm_targets, resp_queue, hf_token):
                 return
 
         # Heartbeat keeps the orchestrator's inactivity deadline alive during slow
@@ -2397,8 +2423,8 @@ def run_inference_process(
     # (arbitrary names must not match the SSM substrings).
     from utils.ssm_runtime import ssm_probe_identifier
 
-    _ssm_targets = [ssm_probe_identifier(model_name, _base)]
-    if not _ensure_ssm_kernels(_ssm_targets, resp_queue):
+    _ssm_targets = [(ssm_probe_identifier(model_name, _base), _base or model_name)]
+    if not _ensure_ssm_kernels(_ssm_targets, resp_queue, _hf_token):
         return
 
     try:
